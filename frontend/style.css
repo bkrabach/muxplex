@@ -8,6 +8,7 @@
   --bg-header: #0D1117;    /* --color-bg-base (header matches page) */
   --bg-overlay: rgba(13, 17, 23, 0.85); /* brand base with opacity */
   --bg-tile-hover: #1A1F2B; /* --color-bg-surface */
+  --bg-surface: #1A1F2B;
 
   /* Text palette */
   --text: #F0F6FF;         /* --color-text-primary */
@@ -364,8 +365,17 @@ body {
   cursor: pointer;
 }
 
+.view-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .terminal-container {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   background: #000;
   padding: 0 4px;  /* keep text off the side edges */
