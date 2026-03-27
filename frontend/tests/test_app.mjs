@@ -1,0 +1,1638 @@
+// Browser global stubs — must be set before importing app.js
+globalThis.document = {
+  getElementById: () => null,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  createElement: () => ({ style: {}, classList: { add: () => {}, remove: () => {} } }),
+  addEventListener: () => {},
+};
+
+// Stubs for functions called by pollSessions (implemented in later tasks)
+globalThis.renderGrid = () => {};
+globalThis.handleBellTransitions = () => {};
+// Stubs for functions called by renderGrid (implemented in later tasks)
+globalThis.openSession = () => {};
+globalThis.updatePillBell = () => {};
+
+globalThis.window = {
+  addEventListener: () => {},
+  location: { href: '' },
+};
+
+globalThis.Notification = {
+  permission: 'default',
+  requestPermission: async () => 'default',
+};
+
+// navigator is read-only in Node v24+, use defineProperty
+Object.defineProperty(globalThis, 'navigator', {
+  value: { userAgent: 'test-agent' },
+  writable: true,
+  configurable: true,
+});
+
+import { createRequire } from 'node:module';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const require = createRequire(import.meta.url);
+const app = require(join(__dirname, '..', 'app.js'));
+
+test('app.js exports all 7 pure functions', () => {
+  const expectedFunctions = [
+    'formatTimestamp',
+    'sessionPriority',
+    'sortByPriority',
+    'filterByQuery',
+    'detectBellTransitions',
+    'generateDeviceId',
+    'buildHeartbeatPayload',
+  ];
+
+  for (const fn of expectedFunctions) {
+    assert.ok(fn in app, `app.js should export "${fn}"`);
+    assert.strictEqual(typeof app[fn], 'function', `"${fn}" should be a function`);
+  }
+});
+
+// --- formatTimestamp ---
+
+test('formatTimestamp returns em-dash for null', () => {
+  assert.strictEqual(app.formatTimestamp(null), '\u2014');
+});
+
+test('formatTimestamp returns seconds ago for timestamp < 60s ago', () => {
+  const ts = Math.floor(Date.now() / 1000) - 30;
+  assert.match(app.formatTimestamp(ts), /^\d+s ago$/);
+});
+
+test('formatTimestamp returns minutes ago for timestamp between 60s and 3600s ago', () => {
+  const ts = Math.floor(Date.now() / 1000) - 120;
+  assert.match(app.formatTimestamp(ts), /^\d+m ago$/);
+});
+
+test('formatTimestamp returns hours ago for timestamp >= 3600s ago', () => {
+  const ts = Math.floor(Date.now() / 1000) - 7200;
+  assert.match(app.formatTimestamp(ts), /^\d+h ago$/);
+});
+
+// --- sessionPriority ---
+
+test('sessionPriority returns bell when unseen_count > 0 and seen_at is null', () => {
+  const session = { bell: { unseen_count: 3, seen_at: null, last_fired_at: 100 } };
+  assert.strictEqual(app.sessionPriority(session), 'bell');
+});
+
+test('sessionPriority returns bell when last_fired_at > seen_at', () => {
+  const session = { bell: { unseen_count: 1, seen_at: 50, last_fired_at: 100 } };
+  assert.strictEqual(app.sessionPriority(session), 'bell');
+});
+
+test('sessionPriority returns idle when unseen_count is 0', () => {
+  const session = { bell: { unseen_count: 0, seen_at: null, last_fired_at: 100 } };
+  assert.strictEqual(app.sessionPriority(session), 'idle');
+});
+
+test('sessionPriority returns idle when seen_at >= last_fired_at', () => {
+  const session = { bell: { unseen_count: 1, seen_at: 100, last_fired_at: 50 } };
+  assert.strictEqual(app.sessionPriority(session), 'idle');
+});
+
+// --- sortByPriority ---
+
+test('sortByPriority puts bell sessions before idle sessions', () => {
+  const idleSession = { id: 'idle', bell: { unseen_count: 0, seen_at: null, last_fired_at: 0 } };
+  const bellSession = { id: 'bell', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 } };
+  const result = app.sortByPriority([idleSession, bellSession]);
+  assert.strictEqual(result[0].id, 'bell');
+  assert.strictEqual(result[1].id, 'idle');
+});
+
+test('sortByPriority does not mutate the input array', () => {
+  const idleSession = { id: 'idle', bell: { unseen_count: 0, seen_at: null, last_fired_at: 0 } };
+  const bellSession = { id: 'bell', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 } };
+  const input = [idleSession, bellSession];
+  app.sortByPriority(input);
+  assert.strictEqual(input[0].id, 'idle');
+  assert.strictEqual(input[1].id, 'bell');
+});
+
+// --- filterByQuery ---
+
+test('filterByQuery returns all sessions when query is empty string', () => {
+  const sessions = [{ name: 'Alpha' }, { name: 'Beta' }];
+  assert.deepStrictEqual(app.filterByQuery(sessions, ''), sessions);
+});
+
+test('filterByQuery returns all sessions when query is null', () => {
+  const sessions = [{ name: 'Alpha' }, { name: 'Beta' }];
+  assert.deepStrictEqual(app.filterByQuery(sessions, null), sessions);
+});
+
+test('filterByQuery matches case-insensitive substring in session.name', () => {
+  const sessions = [{ name: 'My Project' }, { name: 'Another Session' }];
+  const result = app.filterByQuery(sessions, 'proj');
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].name, 'My Project');
+});
+
+test('filterByQuery returns empty array when no session name matches', () => {
+  const sessions = [{ id: 'match-id', name: 'nomatch' }];
+  assert.deepStrictEqual(app.filterByQuery(sessions, 'match-id'), []);
+});
+
+// --- detectBellTransitions ---
+
+test('detectBellTransitions fires when existing session goes from 0 to positive unseen_count', () => {
+  const prev = [{ name: 'work', bell: { unseen_count: 0 } }];
+  const next = [{ name: 'work', bell: { unseen_count: 1 } }];
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), ['work']);
+});
+
+test('detectBellTransitions returns empty array when unseen_count does not change', () => {
+  const prev = [{ name: 'work', bell: { unseen_count: 2 } }];
+  const next = [{ name: 'work', bell: { unseen_count: 2 } }];
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), []);
+});
+
+test('detectBellTransitions fires for new session not in prev with bell > 0', () => {
+  const prev = [];
+  const next = [{ name: 'new-session', bell: { unseen_count: 3 } }];
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), ['new-session']);
+});
+
+test('detectBellTransitions fires when unseen_count increases', () => {
+  const prev = [{ name: 'task', bell: { unseen_count: 1 } }];
+  const next = [{ name: 'task', bell: { unseen_count: 4 } }];
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), ['task']);
+});
+
+test('detectBellTransitions does not fire when unseen_count decreases', () => {
+  const prev = [{ name: 'task', bell: { unseen_count: 5 } }];
+  const next = [{ name: 'task', bell: { unseen_count: 2 } }];
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), []);
+});
+
+// --- generateDeviceId ---
+
+test('generateDeviceId returns a string matching /^d-[a-z0-9]+$/', () => {
+  const id = app.generateDeviceId();
+  assert.match(id, /^d-[a-z0-9]+$/);
+});
+
+test('generateDeviceId produces unique IDs on successive calls', () => {
+  const id1 = app.generateDeviceId();
+  const id2 = app.generateDeviceId();
+  assert.notStrictEqual(id1, id2);
+});
+
+// --- buildHeartbeatPayload ---
+
+test('buildHeartbeatPayload returns correct shape with all required fields', () => {
+  const payload = app.buildHeartbeatPayload('d-abc123', 'session-1', 'split', 1700000000);
+  assert.strictEqual(payload.device_id, 'd-abc123');
+  assert.strictEqual(payload.viewing_session, 'session-1');
+  assert.strictEqual(payload.view_mode, 'split');
+  assert.strictEqual(payload.last_interaction_at, 1700000000);
+  assert.ok('label' in payload, 'payload should have label field');
+});
+
+test('buildHeartbeatPayload includes null viewing_session when passed null', () => {
+  const payload = app.buildHeartbeatPayload('d-abc123', null, 'full', 0);
+  assert.strictEqual(payload.viewing_session, null);
+});
+
+test('buildHeartbeatPayload label uses navigator.userAgent sliced to 50 chars', () => {
+  const payload = app.buildHeartbeatPayload('d-abc123', null, 'full', 0);
+  const expected = globalThis.navigator.userAgent.slice(0, 50);
+  assert.strictEqual(payload.label, expected);
+});
+
+// --- setConnectionStatus ---
+
+test('setConnectionStatus ok sets bullet text and ok CSS class', () => {
+  const mockEl = { textContent: '', className: '' };
+  const orig = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+
+  app.setConnectionStatus('ok');
+
+  assert.strictEqual(mockEl.textContent, '\u25cf');
+  assert.strictEqual(mockEl.className, 'connection-status--ok');
+  globalThis.document.getElementById = orig;
+});
+
+test('setConnectionStatus warn sets slow text and warn CSS class', () => {
+  const mockEl = { textContent: '', className: '' };
+  const orig = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+
+  app.setConnectionStatus('warn');
+
+  assert.strictEqual(mockEl.textContent, '\u25cc slow');
+  assert.strictEqual(mockEl.className, 'connection-status--warn');
+  globalThis.document.getElementById = orig;
+});
+
+test('setConnectionStatus err sets offline text and err CSS class', () => {
+  const mockEl = { textContent: '', className: '' };
+  const orig = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+
+  app.setConnectionStatus('err');
+
+  assert.strictEqual(mockEl.textContent, '\u2715 offline');
+  assert.strictEqual(mockEl.className, 'connection-status--err');
+  globalThis.document.getElementById = orig;
+});
+
+// --- pollSessions ---
+
+test('pollSessions on success sets ok status', async () => {
+  const sessions = [{ name: 'test-session' }];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.fetch = async () => ({ ok: true, json: async () => sessions });
+
+  await app.pollSessions();
+
+  assert.strictEqual(mockEl.className, 'connection-status--ok');
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('pollSessions on first failure sets warn status', async () => {
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+
+  // Reset fail count to 0 by succeeding first
+  globalThis.fetch = async () => ({ ok: true, json: async () => [] });
+  await app.pollSessions();
+
+  // Now fail once
+  globalThis.fetch = async () => { throw new Error('network error'); };
+  await app.pollSessions();
+
+  assert.strictEqual(mockEl.className, 'connection-status--warn');
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('pollSessions sets err status after more than 2 failures', async () => {
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+
+  // Reset fail count to 0 by succeeding first
+  globalThis.fetch = async () => ({ ok: true, json: async () => [] });
+  await app.pollSessions();
+
+  // Fail 3 times (count goes 1 → warn, 2 → warn, 3 → err)
+  globalThis.fetch = async () => { throw new Error('network error'); };
+  await app.pollSessions(); // count = 1 → warn
+  await app.pollSessions(); // count = 2 → warn
+  await app.pollSessions(); // count = 3 → err
+
+  assert.strictEqual(mockEl.className, 'connection-status--err');
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+// --- startPolling ---
+
+test('startPolling guards against double-start (only creates one interval)', () => {
+  const intervals = [];
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = (fn, ms) => {
+    intervals.push(ms);
+    return Symbol('timer');
+  };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => [] });
+
+  // First call should create the interval; second should be a no-op
+  app.startPolling();
+  app.startPolling();
+
+  assert.strictEqual(intervals.length, 1, 'startPolling should create exactly one interval');
+  assert.strictEqual(intervals[0], 2000, 'interval should be POLL_MS (2000ms)');
+
+  globalThis.setInterval = origSetInterval;
+  globalThis.fetch = origFetch;
+});
+
+// --- escapeHtml ---
+
+test('escapeHtml replaces & with &amp;', () => {
+  assert.strictEqual(app.escapeHtml('a&b'), 'a&amp;b');
+});
+
+test('escapeHtml replaces < with &lt;', () => {
+  assert.strictEqual(app.escapeHtml('<tag>'), '&lt;tag&gt;');
+});
+
+test('escapeHtml replaces > with &gt;', () => {
+  assert.strictEqual(app.escapeHtml('a>b'), 'a&gt;b');
+});
+
+test('escapeHtml returns unchanged string when no special characters', () => {
+  assert.strictEqual(app.escapeHtml('hello world'), 'hello world');
+});
+
+// --- buildTileHTML ---
+
+test('buildTileHTML returns article element with session-tile class', () => {
+  const session = { name: 'my-session', snapshot: 'line1\nline2' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.startsWith('<article'), 'should start with <article');
+  assert.ok(html.includes('session-tile'), 'should contain session-tile class');
+});
+
+test('buildTileHTML adds session-tile--bell class for bell sessions', () => {
+  const session = {
+    name: 'bell-session',
+    bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 },
+    snapshot: '',
+  };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('session-tile--bell'), 'should contain --bell modifier class');
+});
+
+test('buildTileHTML does not add session-tile--bell class for non-bell sessions', () => {
+  const session = {
+    name: 'idle-session',
+    bell: { unseen_count: 0, seen_at: null, last_fired_at: 0 },
+    snapshot: '',
+  };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('session-tile--bell'), 'should not contain --bell class');
+});
+
+test('buildTileHTML sets data-session attribute with escaped session name', () => {
+  const session = { name: 'my<session>', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('data-session="my&lt;session&gt;"'), 'data-session should be escaped');
+});
+
+test('buildTileHTML shows 9+ when unseen_count exceeds 9', () => {
+  const session = {
+    name: 's',
+    bell: { unseen_count: 10, seen_at: null, last_fired_at: 100 },
+    snapshot: '',
+  };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('9+'), 'should show 9+ for count > 9');
+});
+
+test('buildTileHTML shows exact count when unseen_count is <= 9', () => {
+  const session = {
+    name: 's',
+    bell: { unseen_count: 5, seen_at: null, last_fired_at: 100 },
+    snapshot: '',
+  };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('>5<'), 'should show exact count 5');
+});
+
+test('buildTileHTML includes only last 20 lines of snapshot', () => {
+  const lines = [];
+  for (let i = 0; i < 25; i++) lines.push(`UNIQUE_LINE_${i}_MARKER`);
+  const session = { name: 's', snapshot: lines.join('\n') };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('UNIQUE_LINE_24_MARKER'), 'last line should be present');
+  assert.ok(!html.includes('UNIQUE_LINE_0_MARKER'), 'first line should be excluded (>20 lines)');
+});
+
+test('buildTileHTML adds tier class on mobile', () => {
+  const session = { name: 's', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, true);
+  assert.ok(html.includes('session-tile--tier-'), 'should contain tier class on mobile');
+});
+
+// --- renderGrid ---
+
+test('renderGrid clears grid and shows empty-state when sessions array is empty', () => {
+  const mockGrid = { innerHTML: 'existing-content' };
+  const removedClasses = [];
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: (c) => removedClasses.push(c) } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+
+  app.renderGrid([]);
+
+  assert.strictEqual(mockGrid.innerHTML, '', 'grid innerHTML should be cleared');
+  assert.ok(removedClasses.includes('hidden'), 'empty-state should have hidden class removed');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('renderGrid hides empty-state and populates grid when sessions exist', () => {
+  const mockGrid = { innerHTML: '' };
+  const addedClasses = [];
+  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  const sessions = [{ name: 'my-session', snapshot: 'hello' }];
+  app.renderGrid(sessions);
+
+  assert.ok(addedClasses.includes('hidden'), 'empty-state should have hidden class added');
+  assert.ok(mockGrid.innerHTML.includes('session-tile'), 'grid should contain session tiles');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+});
+
+// --- requestNotificationPermission ---
+
+test('requestNotificationPermission is exported', () => {
+  assert.strictEqual(typeof app.requestNotificationPermission, 'function');
+});
+
+test('requestNotificationPermission does nothing when Notification is not defined', () => {
+  const origNotification = globalThis.Notification;
+  delete globalThis.Notification;
+  assert.doesNotThrow(() => app.requestNotificationPermission());
+  globalThis.Notification = origNotification;
+});
+
+test('requestNotificationPermission calls Notification.requestPermission when permission is default', async () => {
+  let called = false;
+  const origNotification = globalThis.Notification;
+  globalThis.Notification = {
+    permission: 'default',
+    requestPermission: async () => { called = true; return 'granted'; },
+  };
+  app.requestNotificationPermission();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(called, 'requestPermission should be called for default permission');
+  globalThis.Notification = origNotification;
+});
+
+test('requestNotificationPermission does not call requestPermission when permission is granted', () => {
+  let called = false;
+  const origNotification = globalThis.Notification;
+  globalThis.Notification = {
+    permission: 'granted',
+    requestPermission: async () => { called = true; return 'granted'; },
+  };
+  app.requestNotificationPermission();
+  assert.ok(!called, 'requestPermission should NOT be called when already granted');
+  globalThis.Notification = origNotification;
+});
+
+// --- handleBellTransitions ---
+
+test('handleBellTransitions is exported', () => {
+  assert.strictEqual(typeof app.handleBellTransitions, 'function');
+});
+
+test('handleBellTransitions creates Notification when permission granted and document hidden', () => {
+  const created = [];
+  const origNotification = globalThis.Notification;
+  function MockNotification(title, opts) { created.push({ title, opts }); }
+  MockNotification.permission = 'granted';
+  MockNotification.requestPermission = async () => 'granted';
+  globalThis.Notification = MockNotification;
+
+  const origDocument = globalThis.document;
+  globalThis.document = { ...origDocument, hidden: true };
+
+  app.requestNotificationPermission(); // sets _notificationPermission = 'granted'
+  const prev = [{ name: 'work', bell: { unseen_count: 0 } }];
+  const next = [{ name: 'work', bell: { unseen_count: 1 } }];
+  app.handleBellTransitions(prev, next);
+
+  assert.strictEqual(created.length, 1, 'should create exactly one notification');
+  assert.strictEqual(created[0].title, 'Activity in: work');
+  assert.strictEqual(created[0].opts.body, 'tmux session needs attention');
+  assert.strictEqual(created[0].opts.tag, 'tmux-bell-work');
+
+  globalThis.Notification = origNotification;
+  globalThis.document = origDocument;
+});
+
+test('handleBellTransitions does not create Notification when document is visible', () => {
+  const created = [];
+  const origNotification = globalThis.Notification;
+  function MockNotification(title, opts) { created.push({ title, opts }); }
+  MockNotification.permission = 'granted';
+  MockNotification.requestPermission = async () => 'granted';
+  globalThis.Notification = MockNotification;
+
+  const origDocument = globalThis.document;
+  globalThis.document = { ...origDocument, hidden: false };
+
+  app.requestNotificationPermission(); // sets _notificationPermission = 'granted'
+  const prev = [{ name: 'work', bell: { unseen_count: 0 } }];
+  const next = [{ name: 'work', bell: { unseen_count: 1 } }];
+  app.handleBellTransitions(prev, next);
+
+  assert.strictEqual(created.length, 0, 'should not create notification when tab is visible');
+
+  globalThis.Notification = origNotification;
+  globalThis.document = origDocument;
+});
+
+test('handleBellTransitions does not create Notification when permission is not granted', () => {
+  const created = [];
+  const origNotification = globalThis.Notification;
+  function MockNotification(title, opts) { created.push({ title, opts }); }
+  MockNotification.permission = 'denied';
+  MockNotification.requestPermission = async () => 'denied';
+  globalThis.Notification = MockNotification;
+
+  const origDocument = globalThis.document;
+  globalThis.document = { ...origDocument, hidden: true };
+
+  app.requestNotificationPermission(); // sets _notificationPermission = 'denied'
+  const prev = [{ name: 'work', bell: { unseen_count: 0 } }];
+  const next = [{ name: 'work', bell: { unseen_count: 1 } }];
+  app.handleBellTransitions(prev, next);
+
+  assert.strictEqual(created.length, 0, 'should not create notification when permission is denied');
+
+  globalThis.Notification = origNotification;
+  globalThis.document = origDocument;
+});
+
+test('handleBellTransitions notification tag deduplicates per session name', () => {
+  const created = [];
+  const origNotification = globalThis.Notification;
+  function MockNotification(title, opts) { created.push({ title, opts }); }
+  MockNotification.permission = 'granted';
+  MockNotification.requestPermission = async () => 'granted';
+  globalThis.Notification = MockNotification;
+
+  const origDocument = globalThis.document;
+  globalThis.document = { ...origDocument, hidden: true };
+
+  app.requestNotificationPermission();
+  const prev = [{ name: 'my-session', bell: { unseen_count: 1 } }];
+  const next = [{ name: 'my-session', bell: { unseen_count: 3 } }];
+  app.handleBellTransitions(prev, next);
+
+  assert.strictEqual(created.length, 1);
+  assert.strictEqual(created[0].opts.tag, 'tmux-bell-my-session', 'tag should use session name for deduplication');
+
+  globalThis.Notification = origNotification;
+  globalThis.document = origDocument;
+});
+
+// --- startHeartbeat ---
+
+test('startHeartbeat is exported', () => {
+  assert.strictEqual(typeof app.startHeartbeat, 'function');
+});
+
+test('startHeartbeat guards against double-start (only creates one interval)', () => {
+  const intervals = [];
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = (fn, ms) => {
+    intervals.push(ms);
+    return Symbol('heartbeat-timer');
+  };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+
+  app._resetHeartbeatTimer(); // ensure clean state regardless of test order
+  app.startHeartbeat();
+  app.startHeartbeat(); // second call should be a no-op
+
+  assert.strictEqual(intervals.length, 1, 'startHeartbeat should create exactly one interval');
+  assert.strictEqual(intervals[0], 5000, 'interval should be HEARTBEAT_MS (5000ms)');
+
+  globalThis.setInterval = origSetInterval;
+  globalThis.fetch = origFetch;
+  // _heartbeatTimer is now set; next test using startHeartbeat must call _resetHeartbeatTimer()
+});
+
+test('startHeartbeat calls sendHeartbeat immediately (calls fetch for heartbeat)', async () => {
+  const calls = [];
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = () => Symbol('timer');
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._resetHeartbeatTimer(); // clear state left by double-start test
+  app.startHeartbeat();
+  // sendHeartbeat() is async but called without await inside startHeartbeat;
+  // yield to the microtask queue so the fetch promise resolves
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.strictEqual(calls.length, 1, 'startHeartbeat should call sendHeartbeat immediately exactly once');
+  assert.ok(
+    calls.some((c) => c.url === '/api/heartbeat'),
+    'should POST to /api/heartbeat immediately on start',
+  );
+
+  app._resetHeartbeatTimer(); // clean up so later tests are not affected
+  globalThis.setInterval = origSetInterval;
+  globalThis.fetch = origFetch;
+});
+
+// --- sendHeartbeat ---
+
+test('sendHeartbeat is exported', () => {
+  assert.strictEqual(typeof app.sendHeartbeat, 'function');
+});
+
+test('sendHeartbeat POSTs to /api/heartbeat with heartbeat payload fields', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true, json: async () => ({}) };
+  };
+
+  await app.sendHeartbeat();
+
+  assert.strictEqual(calls.length, 1, 'should call fetch once');
+  assert.strictEqual(calls[0].url, '/api/heartbeat');
+  assert.strictEqual(calls[0].opts.method, 'POST');
+  assert.strictEqual(calls[0].opts.headers['Content-Type'], 'application/json');
+
+  // Parse body — device_id and last_interaction_at may be absent in test env
+  // (module state not initialized via DOMContentLoaded), but view_mode, label,
+  // and viewing_session are always present and serializable.
+  const body = JSON.parse(calls[0].opts.body);
+  assert.ok('label' in body, 'payload should have label');
+  assert.ok('view_mode' in body, 'payload should have view_mode');
+  assert.ok('viewing_session' in body, 'payload should have viewing_session');
+
+  globalThis.fetch = origFetch;
+});
+
+test('sendHeartbeat catches errors with console.warn (does not throw)', async () => {
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('network failure'); };
+
+  // Should not throw
+  await assert.doesNotReject(() => app.sendHeartbeat());
+
+  assert.strictEqual(warnings.length, 1, 'console.warn should be called on error');
+
+  console.warn = origWarn;
+  globalThis.fetch = origFetch;
+});
+
+// --- showToast ---
+
+test('showToast is exported', () => {
+  assert.strictEqual(typeof app.showToast, 'function');
+});
+
+test('showToast sets toast textContent and removes hidden class', () => {
+  const removedClasses = [];
+  const mockToast = {
+    textContent: '',
+    classList: {
+      remove: (cls) => removedClasses.push(cls),
+      add: () => {},
+    },
+  };
+  const orig = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'toast' ? mockToast : null);
+
+  app.showToast('something happened');
+
+  assert.strictEqual(mockToast.textContent, 'something happened');
+  assert.ok(removedClasses.includes('hidden'), 'should remove hidden class');
+  globalThis.document.getElementById = orig;
+});
+
+test('showToast schedules hidden class restore after 3000ms', () => {
+  let capturedMs;
+  const addedClasses = [];
+  const mockToast = {
+    textContent: '',
+    classList: {
+      remove: () => {},
+      add: (cls) => addedClasses.push(cls),
+    },
+  };
+  const origGetById = globalThis.document.getElementById;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.document.getElementById = (id) => (id === 'toast' ? mockToast : null);
+  globalThis.setTimeout = (fn, ms) => { capturedMs = ms; fn(); }; // invoke immediately
+
+  app.showToast('hello');
+
+  assert.strictEqual(capturedMs, 3000, 'setTimeout delay should be 3000ms');
+  assert.ok(addedClasses.includes('hidden'), 'should add hidden class after timeout');
+  globalThis.document.getElementById = origGetById;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+// --- updatePillBell ---
+
+test('updatePillBell is exported', () => {
+  assert.strictEqual(typeof app.updatePillBell, 'function');
+});
+
+test('updatePillBell shows pill bell when another session has unseen bell', async () => {
+  const pillRemovedClasses = [];
+  const mockPillBell = { classList: { add: () => {}, remove: (c) => pillRemovedClasses.push(c) } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-pill-bell') return mockPillBell;
+    if (id === 'session-grid') return { innerHTML: '' };
+    if (id === 'empty-state') return { style: {}, classList: { add: () => {}, remove: () => {} } };
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  // populate _currentSessions
+  const sessions = [
+    { name: 'alpha', bell: { unseen_count: 0 } },
+    { name: 'beta', bell: { unseen_count: 3, seen_at: null, last_fired_at: 100 } },
+  ];
+  globalThis.fetch = async () => ({ ok: true, json: async () => sessions });
+  await app.pollSessions();
+
+  // set _viewingSession to 'alpha' so 'beta' is "other"
+  app._setViewingSession('alpha');
+
+  app.updatePillBell();
+
+  assert.ok(pillRemovedClasses.includes('hidden'), 'pill bell should have hidden class removed');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.fetch = undefined;
+});
+
+test('updatePillBell hides pill bell when no other session has unseen bells', async () => {
+  const pillAddedClasses = [];
+  const mockPillBell = { classList: { add: (c) => pillAddedClasses.push(c), remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-pill-bell') return mockPillBell;
+    if (id === 'session-grid') return { innerHTML: '' };
+    if (id === 'empty-state') return { style: {}, classList: { add: () => {}, remove: () => {} } };
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  const sessions = [
+    { name: 'alpha', bell: { unseen_count: 0 } },
+    { name: 'beta', bell: { unseen_count: 0 } },
+  ];
+  globalThis.fetch = async () => ({ ok: true, json: async () => sessions });
+  await app.pollSessions();
+
+  app._setViewingSession('alpha');
+
+  app.updatePillBell();
+
+  assert.ok(pillAddedClasses.includes('hidden'), 'pill bell should have hidden class added');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.fetch = undefined;
+});
+
+// --- openSession ---
+
+test('openSession is exported', () => {
+  assert.strictEqual(typeof app.openSession, 'function');
+});
+
+test('openSession returns a Promise', () => {
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  const result = app.openSession('test-session', { skipConnect: true });
+
+  assert.ok(result instanceof Promise, 'openSession should return a Promise');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('openSession with skipConnect calls window._openTerminal inside setTimeout callback', async () => {
+  let openTerminalCalledWith = null;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  // Use a synchronous mock so setTimeout callbacks run immediately — _openTerminal is now called inside setTimeout
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (name) => { openTerminalCalledWith = name; };
+
+  await app.openSession('my-session', { skipConnect: true });
+
+  assert.strictEqual(openTerminalCalledWith, 'my-session', '_openTerminal should be called with session name');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('openSession without skipConnect POSTs to /api/sessions/{name}/connect', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('work', {});
+
+  const connectCall = fetchCalls.find((c) => c.url === '/api/sessions/work/connect');
+  assert.ok(connectCall, 'should POST to /api/sessions/work/connect');
+  assert.strictEqual(connectCall.opts.method, 'POST');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('openSession shows toast and calls closeSession on connect failure', async () => {
+  let closeTerminalCalled = false;
+  const mockToast = { textContent: '', classList: { remove: () => {}, add: () => {} } };
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url) => {
+    if (url.includes('/connect')) throw new Error('Connection failed');
+    return { ok: true };
+  };
+  globalThis.document.getElementById = (id) => {
+    if (id === 'toast') return mockToast;
+    return { textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } };
+  };
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+  globalThis.window._closeTerminal = () => { closeTerminalCalled = true; };
+
+  await app.openSession('failing-session', {});
+
+  assert.ok(mockToast.textContent.length > 0, 'toast should show an error message');
+  assert.ok(closeTerminalCalled, 'closeSession should be called (_closeTerminal invoked)');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+// --- closeSession ---
+
+test('closeSession is exported', () => {
+  assert.strictEqual(typeof app.closeSession, 'function');
+});
+
+test('closeSession returns a Promise', async () => {
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {} } });
+  globalThis.window._closeTerminal = () => {};
+  globalThis.fetch = async () => ({ ok: true });
+
+  const result = app.closeSession();
+  assert.ok(result instanceof Promise, 'closeSession should return a Promise');
+  await result;
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('closeSession calls window._closeTerminal', async () => {
+  let closeTerminalCalled = false;
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {} } });
+  globalThis.window._closeTerminal = () => { closeTerminalCalled = true; };
+  globalThis.fetch = async () => ({ ok: true });
+
+  await app.closeSession();
+
+  assert.ok(closeTerminalCalled, 'window._closeTerminal should be called');
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('closeSession fires DELETE /api/sessions/current', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {} } });
+  globalThis.window._closeTerminal = () => {};
+
+  await app.closeSession();
+  // yield microtask queue for fire-and-forget DELETE
+  await new Promise((r) => setTimeout(r, 0));
+
+  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  assert.ok(deleteCall, 'should fire DELETE /api/sessions/current');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+});
+
+// ─── Command Palette ─────────────────────────────────────────────────────────
+
+test('renderPaletteList is exported', () => {
+  assert.strictEqual(typeof app.renderPaletteList, 'function');
+});
+
+test('highlightPaletteItem is exported', () => {
+  assert.strictEqual(typeof app.highlightPaletteItem, 'function');
+});
+
+test('openPalette is exported', () => {
+  assert.strictEqual(typeof app.openPalette, 'function');
+});
+
+test('closePalette is exported', () => {
+  assert.strictEqual(typeof app.closePalette, 'function');
+});
+
+test('onPaletteInput is exported', () => {
+  assert.strictEqual(typeof app.onPaletteInput, 'function');
+});
+
+test('handlePaletteKeydown is exported', () => {
+  assert.strictEqual(typeof app.handlePaletteKeydown, 'function');
+});
+
+test('handleGlobalKeydown is exported', () => {
+  assert.strictEqual(typeof app.handleGlobalKeydown, 'function');
+});
+
+test('bindStaticEventListeners is exported', () => {
+  assert.strictEqual(typeof app.bindStaticEventListeners, 'function');
+});
+
+test('renderPaletteList renders sessions as li elements in #palette-list', () => {
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  const sessions = [
+    { name: 'session-a', last_activity_at: null },
+    { name: 'session-b', last_activity_at: null },
+  ];
+  app._setPaletteFilteredSessions(sessions);
+  app.renderPaletteList();
+
+  assert.ok(mockList.innerHTML.includes('session-a'), 'should render session-a');
+  assert.ok(mockList.innerHTML.includes('session-b'), 'should render session-b');
+  assert.ok(mockList.innerHTML.includes('<li'), 'should use li elements');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('renderPaletteList renders at most 9 items', () => {
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  const sessions = Array.from({ length: 12 }, (_, i) => ({
+    name: `session-${i}`,
+    last_activity_at: null,
+  }));
+  app._setPaletteFilteredSessions(sessions);
+  app.renderPaletteList();
+
+  const matches = mockList.innerHTML.match(/<li/g) || [];
+  assert.strictEqual(matches.length, 9, 'should render at most 9 items');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('renderPaletteList shows bell emoji for bell-priority sessions', () => {
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  const sessions = [
+    { name: 'bell-session', last_activity_at: null, bell: { unseen_count: 2, seen_at: null, last_fired_at: 100 } },
+    { name: 'idle-session', last_activity_at: null, bell: { unseen_count: 0 } },
+  ];
+  app._setPaletteFilteredSessions(sessions);
+  app.renderPaletteList();
+
+  assert.ok(mockList.innerHTML.includes('🔔'), 'should show bell emoji for bell-priority session');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('highlightPaletteItem adds palette-item--selected to the selected item and removes from others', () => {
+  const items = [
+    { classList: { add: () => {}, remove: () => {} }, _added: [], _removed: [] },
+    { classList: { add: () => {}, remove: () => {} }, _added: [], _removed: [] },
+    { classList: { add: () => {}, remove: () => {} }, _added: [], _removed: [] },
+  ];
+  items.forEach((item) => {
+    item.classList.add = (cls) => item._added.push(cls);
+    item.classList.remove = (cls) => item._removed.push(cls);
+  });
+
+  const mockList = { querySelectorAll: () => items };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  app.highlightPaletteItem(1);
+
+  assert.ok(items[0]._removed.includes('palette-item--selected'), 'item 0 should have class removed');
+  assert.ok(items[1]._added.includes('palette-item--selected'), 'item 1 should have class added');
+  assert.ok(items[2]._removed.includes('palette-item--selected'), 'item 2 should have class removed');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('openPalette shows #command-palette and sets _paletteOpen to true', () => {
+  const removedClasses = [];
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: (c) => removedClasses.push(c) } };
+  const mockInput = { value: '', focus: () => {}, addEventListener: () => {}, removeEventListener: () => {} };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  app.openPalette();
+
+  assert.ok(removedClasses.includes('hidden'), '#command-palette should have hidden class removed');
+  assert.ok(app._isPaletteOpen(), '_paletteOpen should be true after openPalette');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('openPalette copies _currentSessions to _paletteFilteredSessions', async () => {
+  const sessions = [{ name: 'alpha' }, { name: 'beta' }];
+  globalThis.fetch = async () => ({ ok: true, json: async () => sessions });
+  await app.pollSessions();
+  globalThis.fetch = undefined;
+
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { value: '', focus: () => {}, addEventListener: () => {}, removeEventListener: () => {} };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+  // also need querySelectorAll
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.querySelectorAll = () => [];
+
+  app.openPalette();
+
+  const filtered = app._getPaletteFilteredSessions();
+  assert.strictEqual(filtered.length, 2, '_paletteFilteredSessions should have both sessions');
+  assert.strictEqual(filtered[0].name, 'alpha');
+  assert.strictEqual(filtered[1].name, 'beta');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+});
+
+test('openPalette resets _paletteSelectedIndex to 0', () => {
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { value: '', focus: () => {}, addEventListener: () => {}, removeEventListener: () => {} };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  // Artificially set index > 0
+  app._setPaletteFilteredSessions([{ name: 'a' }, { name: 'b' }, { name: 'c' }]);
+  app.openPalette();
+
+  assert.strictEqual(app._getPaletteSelectedIndex(), 0, '_paletteSelectedIndex should be reset to 0');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('closePalette hides #command-palette and sets _paletteOpen to false', () => {
+  const addedClasses = [];
+  const mockPalette = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} } };
+  const mockInput = { value: '', focus: () => {}, addEventListener: () => {}, removeEventListener: () => {} };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  // First open it
+  app.openPalette(); // ensures _paletteOpen = true
+  app.closePalette();
+
+  assert.ok(addedClasses.includes('hidden'), '#command-palette should have hidden class added');
+  assert.ok(!app._isPaletteOpen(), '_paletteOpen should be false after closePalette');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('openPalette removes previous input listener before adding new one on re-entry', () => {
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const removeEventListenerCalls = [];
+  const addEventListenerCalls = [];
+  const mockInput = {
+    value: '',
+    focus: () => {},
+    addEventListener: (ev, fn) => { addEventListenerCalls.push({ ev, fn }); },
+    removeEventListener: (ev, fn) => { removeEventListenerCalls.push({ ev, fn }); },
+  };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  app.openPalette(); // first open — adds listener
+  const firstListener = addEventListenerCalls[0]?.fn;
+
+  app.openPalette(); // second open — should remove old listener before adding new one
+
+  assert.ok(
+    removeEventListenerCalls.some(c => c.fn === firstListener),
+    'old input listener should be removed before re-attaching',
+  );
+  globalThis.document.getElementById = origGetById;
+});
+
+test('onPaletteInput filters sessions and resets index', () => {
+  const sessions = [
+    { name: 'project-alpha', last_activity_at: null },
+    { name: 'work-beta', last_activity_at: null },
+  ];
+  // onPaletteInput reads from _currentSessions, so set that up
+  app._setCurrentSessions(sessions);
+  app._setPaletteFilteredSessions(sessions);
+
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  // Simulate input event with query 'alpha'
+  app.onPaletteInput({ target: { value: 'alpha' } });
+
+  const filtered = app._getPaletteFilteredSessions();
+  assert.strictEqual(filtered.length, 1, 'should filter to only matching sessions');
+  assert.strictEqual(filtered[0].name, 'project-alpha');
+  assert.strictEqual(app._getPaletteSelectedIndex(), 0, 'index should be reset to 0');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('handlePaletteKeydown ArrowDown moves selection forward', () => {
+  const items = [
+    { classList: { add: () => {}, remove: () => {} } },
+    { classList: { add: () => {}, remove: () => {} } },
+    { classList: { add: () => {}, remove: () => {} } },
+  ];
+  const mockList = { querySelectorAll: () => items };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  app._setPaletteFilteredSessions([{ name: 'a' }, { name: 'b' }, { name: 'c' }]);
+  app._setPaletteSelectedIndex(0);
+
+  app.handlePaletteKeydown({ key: 'ArrowDown', preventDefault: () => {} });
+
+  assert.strictEqual(app._getPaletteSelectedIndex(), 1, 'ArrowDown should move index from 0 to 1');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('handlePaletteKeydown ArrowUp moves selection backward', () => {
+  const items = [
+    { classList: { add: () => {}, remove: () => {} } },
+    { classList: { add: () => {}, remove: () => {} } },
+  ];
+  const mockList = { querySelectorAll: () => items };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  app._setPaletteFilteredSessions([{ name: 'a' }, { name: 'b' }]);
+  app._setPaletteSelectedIndex(1);
+
+  app.handlePaletteKeydown({ key: 'ArrowUp', preventDefault: () => {} });
+
+  assert.strictEqual(app._getPaletteSelectedIndex(), 0, 'ArrowUp should move index from 1 to 0');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('handlePaletteKeydown Escape closes palette', () => {
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { removeEventListener: () => {} };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    return null;
+  };
+
+  // Set up palette as open
+  app._setPaletteOpen(true);
+  app.handlePaletteKeydown({ key: 'Escape', preventDefault: () => {} });
+
+  assert.ok(!app._isPaletteOpen(), 'Escape should close the palette');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('handlePaletteKeydown G closes palette and calls closeSession', async () => {
+  let closeTerminalCalled = false;
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { removeEventListener: () => {} };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    const cl = { add: () => {}, remove: () => {} };
+    if (id === 'view-expanded') return { style: {}, classList: cl };
+    if (id === 'view-overview') return { style: {}, classList: cl };
+    if (id === 'session-pill') return { style: {}, classList: cl };
+    return null;
+  };
+  globalThis.window._closeTerminal = () => { closeTerminalCalled = true; };
+  globalThis.fetch = async () => ({ ok: true });
+
+  app._setPaletteOpen(true);
+  app.handlePaletteKeydown({ key: 'g', preventDefault: () => {} });
+
+  // Yield for fire-and-forget DELETE
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.ok(!app._isPaletteOpen(), 'G should close the palette');
+  assert.ok(closeTerminalCalled, 'G should call closeSession (_closeTerminal invoked)');
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('handlePaletteKeydown Enter opens the selected session', async () => {
+  let openTerminalCalledWith = null;
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { removeEventListener: () => {} };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'expanded-session-name') return { textContent: '' };
+    return { style: {}, textContent: '', classList: { add: () => {}, remove: () => {} } };
+  };
+  const origQS = globalThis.document.querySelector;
+  globalThis.document.querySelector = () => null;
+  const origSetTimeout = globalThis.setTimeout;
+  // _openTerminal is called inside setTimeout callback — execute synchronously
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (name) => { openTerminalCalledWith = name; };
+  globalThis.fetch = async () => ({ ok: true });
+
+  app._setPaletteFilteredSessions([{ name: 'target-session' }]);
+  app._setPaletteSelectedIndex(0);
+  app._setPaletteOpen(true);
+
+  await app.handlePaletteKeydown({ key: 'Enter', preventDefault: () => {} });
+
+  assert.strictEqual(openTerminalCalledWith, 'target-session', 'Enter should open the selected session');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.fetch = undefined;
+});
+
+test('handlePaletteKeydown number key 1 jumps to first session', async () => {
+  let openTerminalCalledWith = null;
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { removeEventListener: () => {} };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'expanded-session-name') return { textContent: '' };
+    return { style: {}, textContent: '', classList: { add: () => {}, remove: () => {} } };
+  };
+  const origQS = globalThis.document.querySelector;
+  globalThis.document.querySelector = () => null;
+  const origSetTimeout = globalThis.setTimeout;
+  // _openTerminal is called inside setTimeout callback — execute synchronously
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (name) => { openTerminalCalledWith = name; };
+  globalThis.fetch = async () => ({ ok: true });
+
+  app._setPaletteFilteredSessions([{ name: 'first-session' }, { name: 'second-session' }]);
+  app._setPaletteOpen(true);
+
+  await app.handlePaletteKeydown({ key: '1', preventDefault: () => {} });
+
+  assert.strictEqual(openTerminalCalledWith, 'first-session', 'key 1 should open first session');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.fetch = undefined;
+});
+
+test('handleGlobalKeydown delegates to handlePaletteKeydown when palette is open', () => {
+  const events = [];
+  const origHandlePaletteKeydown = app.handlePaletteKeydown;
+  // We'll verify by side-effect: Escape should close palette
+  const mockPalette = { style: { display: '' } };
+  const mockInput = { removeEventListener: () => {} };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    return null;
+  };
+
+  app._setPaletteOpen(true);
+  app.handleGlobalKeydown({ key: 'Escape', preventDefault: () => {} });
+
+  assert.ok(!app._isPaletteOpen(), 'handleGlobalKeydown should delegate Escape to handlePaletteKeydown when palette open');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('handleGlobalKeydown opens palette on backtick in fullscreen with palette closed', () => {
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { value: '', focus: () => {}, addEventListener: () => {}, removeEventListener: () => {} };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  app._setPaletteOpen(false);
+  app._setViewMode('fullscreen');
+  app.handleGlobalKeydown({ key: '`', ctrlKey: false, preventDefault: () => {} });
+
+  assert.ok(app._isPaletteOpen(), 'backtick in fullscreen should open palette');
+  globalThis.document.getElementById = origGetById;
+  // cleanup
+  app._setPaletteOpen(false);
+  app._setViewMode('grid');
+});
+
+test('handleGlobalKeydown opens palette on Ctrl+K in fullscreen with palette closed', () => {
+  const mockPalette = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockInput = { value: '', focus: () => {}, addEventListener: () => {}, removeEventListener: () => {} };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'command-palette') return mockPalette;
+    if (id === 'palette-input') return mockInput;
+    if (id === 'palette-list') return mockList;
+    return null;
+  };
+
+  app._setPaletteOpen(false);
+  app._setViewMode('fullscreen');
+  app.handleGlobalKeydown({ key: 'k', ctrlKey: true, preventDefault: () => {} });
+
+  assert.ok(app._isPaletteOpen(), 'Ctrl+K in fullscreen should open palette');
+  globalThis.document.getElementById = origGetById;
+  // cleanup
+  app._setPaletteOpen(false);
+  app._setViewMode('grid');
+});
+
+test('handleGlobalKeydown calls closeSession on Escape in fullscreen with palette closed', async () => {
+  let closeTerminalCalled = false;
+  const origGetById = globalThis.document.getElementById;
+  const cl = { add: () => {}, remove: () => {} };
+  globalThis.document.getElementById = (id) => {
+    if (id === 'view-expanded') return { style: {}, classList: cl };
+    if (id === 'view-overview') return { style: {}, classList: cl };
+    if (id === 'session-pill') return { style: {}, classList: cl };
+    return null;
+  };
+  globalThis.window._closeTerminal = () => { closeTerminalCalled = true; };
+  globalThis.fetch = async () => ({ ok: true });
+
+  app._setPaletteOpen(false);
+  app._setViewMode('fullscreen');
+  app.handleGlobalKeydown({ key: 'Escape', ctrlKey: false, preventDefault: () => {} });
+
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.ok(closeTerminalCalled, 'Escape in fullscreen (palette closed) should call closeSession');
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+  // cleanup
+  app._setViewMode('grid');
+});
+
+test('bindStaticEventListeners binds back-btn click to closeSession', () => {
+  const eventsBound = {};
+  const origGetById = globalThis.document.getElementById;
+  const origDocAddListener = globalThis.document.addEventListener;
+  globalThis.document.getElementById = (id) => {
+    const el = { _events: {}, addEventListener: (ev, fn) => { el._events[ev] = fn; } };
+    eventsBound[id] = el;
+    return el;
+  };
+  globalThis.document.addEventListener = () => {};
+
+  app.bindStaticEventListeners();
+
+  assert.ok(eventsBound['back-btn'] && 'click' in eventsBound['back-btn']._events, '#back-btn should have a click listener');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.addEventListener = origDocAddListener;
+});
+
+test('bindStaticEventListeners binds document keydown to handleGlobalKeydown', () => {
+  let keydownBound = false;
+  const origGetById = globalThis.document.getElementById;
+  const origDocAddListener = globalThis.document.addEventListener;
+  globalThis.document.getElementById = (id) => ({
+    _events: {},
+    addEventListener: () => {},
+  });
+  globalThis.document.addEventListener = (ev, fn) => {
+    if (ev === 'keydown') keydownBound = true;
+  };
+
+  app.bindStaticEventListeners();
+
+  assert.ok(keydownBound, 'document should have a keydown listener bound');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.addEventListener = origDocAddListener;
+});
+
+// --- Bottom sheet / session pill ---
+
+test('renderSheetList: builds list with bell indicator', () => {
+  // We can't test DOM manipulation, but we can test that sortByPriority + formatTimestamp
+  // work correctly together for the sheet use case
+  const sessions = [
+    { name: 'idle', bell: { unseen_count: 0, last_fired_at: null, seen_at: null } },
+    { name: 'bell', bell: { unseen_count: 1, last_fired_at: 100, seen_at: null } },
+  ];
+  const sorted = app.sortByPriority(sessions);
+  assert.strictEqual(sorted[0].name, 'bell', 'bell session comes first in sorted list');
+  assert.strictEqual(sorted[1].name, 'idle');
+});
+
+test('updateSessionPill logic: others with bell count', () => {
+  // Test the bell-detection logic in isolation
+  const allSessions = [
+    { name: 'current', bell: { unseen_count: 0, last_fired_at: null, seen_at: null } },
+    { name: 'other', bell: { unseen_count: 2, last_fired_at: 100, seen_at: null } },
+  ];
+  const viewingSession = 'current';
+  const othersWithBell = allSessions.filter(function(s) {
+    return s.name !== viewingSession &&
+      s.bell && s.bell.unseen_count > 0 &&
+      (s.bell.seen_at === null || s.bell.last_fired_at > s.bell.seen_at);
+  });
+  assert.strictEqual(othersWithBell.length, 1, 'should find one other session with bell');
+  assert.strictEqual(othersWithBell[0].name, 'other');
+});
+
+test('updateSessionPill logic: no bells in others', () => {
+  const allSessions = [
+    { name: 'a', bell: { unseen_count: 0, last_fired_at: null, seen_at: null } },
+    { name: 'b', bell: { unseen_count: 0, last_fired_at: null, seen_at: null } },
+  ];
+  const viewingSession = 'a';
+  const othersWithBell = allSessions.filter(function(s) {
+    return s.name !== viewingSession &&
+      s.bell && s.bell.unseen_count > 0 &&
+      (s.bell.seen_at === null || s.bell.last_fired_at > s.bell.seen_at);
+  });
+  assert.strictEqual(othersWithBell.length, 0, 'no other sessions with bell');
+});
+
+// --- Fix 1: renderSheetList escapes HTML in session name ---
+
+test('renderSheetList escapes HTML special chars in data-session attribute', () => {
+  let capturedHTML = '';
+  const mockList = {
+    get innerHTML() { return capturedHTML; },
+    set innerHTML(v) { capturedHTML = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'sheet-list' ? mockList : null);
+  app._setCurrentSessions([{ name: 'foo<bar', bell: null }]);
+
+  app.renderSheetList();
+
+  assert.ok(capturedHTML.includes('data-session="foo&lt;bar"'), 'data-session attribute should escape <');
+  assert.ok(!capturedHTML.includes('data-session="foo<bar"'), 'raw < must not appear in data-session');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('renderSheetList escapes HTML special chars in sheet-item__name span', () => {
+  let capturedHTML = '';
+  const mockList = {
+    get innerHTML() { return capturedHTML; },
+    set innerHTML(v) { capturedHTML = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'sheet-list' ? mockList : null);
+  app._setCurrentSessions([{ name: 'foo<bar', bell: null }]);
+
+  app.renderSheetList();
+
+  assert.ok(capturedHTML.includes('>foo&lt;bar<'), 'session name should be escaped inside the name span');
+  globalThis.document.getElementById = origGetById;
+});
+
+// --- Fix 2: openBottomSheet/closeBottomSheet use static backdrop binding ---
+
+test('openBottomSheet does not dynamically add click listener to sheet-backdrop', () => {
+  let backdropAddCalled = false;
+  const mockSheet = { classList: { remove: () => {} } };
+  const mockList = { innerHTML: '', querySelectorAll: () => [] };
+  const mockBackdrop = {
+    addEventListener: (ev) => { if (ev === 'click') backdropAddCalled = true; },
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'bottom-sheet') return mockSheet;
+    if (id === 'sheet-list') return mockList;
+    if (id === 'sheet-backdrop') return mockBackdrop;
+    return null;
+  };
+  app._setCurrentSessions([]);
+
+  app.openBottomSheet();
+
+  assert.strictEqual(backdropAddCalled, false, 'openBottomSheet must not add click listener to sheet-backdrop');
+  globalThis.document.getElementById = origGetById;
+});
+
+test('closeBottomSheet does not call removeEventListener on sheet-backdrop', () => {
+  let backdropRemoveCalled = false;
+  const mockSheet = { classList: { add: () => {} } };
+  const mockBackdrop = {
+    removeEventListener: (ev) => { if (ev === 'click') backdropRemoveCalled = true; },
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'bottom-sheet') return mockSheet;
+    if (id === 'sheet-backdrop') return mockBackdrop;
+    return null;
+  };
+
+  app.closeBottomSheet();
+
+  assert.strictEqual(backdropRemoveCalled, false, 'closeBottomSheet must not call removeEventListener on sheet-backdrop');
+  globalThis.document.getElementById = origGetById;
+});

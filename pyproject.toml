@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tmux-web-coordinator"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["coordinator/tests"]
+asyncio_mode = "auto"
+addopts = "--import-mode=importlib -m 'not integration'"
+markers = [
+    "integration: marks tests as integration tests requiring real tmux (deselect with '-m not integration')",
+]

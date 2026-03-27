@@ -1,0 +1,355 @@
+/* ================================================================
+   muxplex — Design Tokens
+   ================================================================
+   Single source of truth for all visual properties.
+   Dark mode is the default. Light mode via prefers-color-scheme.
+   Manual override: set `data-theme="light"` on <html>.
+
+   Usage:
+     <link rel="stylesheet" href="tokens.css">
+     <!-- then reference vars anywhere: color: var(--color-text-primary); -->
+
+   Last updated: 2026-03-27
+   ================================================================ */
+
+
+/* ----------------------------------------------------------------
+   1. COLOR — Dark mode (default)
+   ---------------------------------------------------------------- */
+
+:root {
+  /* Backgrounds — luminance stepping (lighter = more elevated) */
+  --color-bg-base:        #0D1117;  /* Page background, deepest layer       */
+  --color-bg-elevated:    #10131C;  /* Cards, panels, icon bg               */
+  --color-bg-surface:     #1A1F2B;  /* Raised surfaces, hover states        */
+  --color-bg-muted:       #222433;  /* Subtle fills, secondary panels       */
+
+  /* Text — three-tier hierarchy */
+  --color-text-primary:   #F0F6FF;  /* Primary text, headings, wordmark     17.4:1 on bg-base  */
+  --color-text-secondary: #8E95A3;  /* Secondary labels, timestamps          6.3:1 on bg-base  */
+  --color-text-disabled:  #4A5060;  /* Disabled controls, placeholder        2.4:1 — decorative */
+
+  /* Accents */
+  --color-accent-cyan:    #00D9F5;  /* Primary accent, links, focus rings   11.0:1 on bg-base  */
+  --color-accent-amber:   #F1A640;  /* Notifications, activity indicators    9.3:1 on bg-base  */
+
+  /* Borders — decorative, not relied upon for meaning */
+  --color-border-subtle:  #1E2430;  /* Dividers within a surface             */
+  --color-border-default: #2A3040;  /* Card outlines, input borders          */
+  --color-border-strong:  #3A4050;  /* Emphasized borders, active outlines   */
+
+  /* State / semantic — GitHub Primer–adjacent, tested on bg-base */
+  --color-success:        #3FB950;  /* 7.5:1 on bg-base   */
+  --color-error:          #F85149;  /* 5.7:1 on bg-base   */
+  --color-warning:        #F1A640;  /* 9.3:1 (= amber)    */
+  --color-info:           #58A6FF;  /* 7.5:1 on bg-base   */
+
+  /* State backgrounds — low-opacity tints for banners, badges */
+  --color-success-bg:     rgba(63, 185, 80, 0.12);
+  --color-error-bg:       rgba(248, 81, 73, 0.12);
+  --color-warning-bg:     rgba(241, 166, 64, 0.12);
+  --color-info-bg:        rgba(88, 166, 255, 0.12);
+
+  /* Overlay */
+  --color-backdrop:       rgba(0, 0, 0, 0.60);
+  --color-scrim:          rgba(13, 17, 23, 0.80);
+
+  /* Focus ring */
+  --color-focus-ring:     #00D9F5;
+}
+
+
+/* ----------------------------------------------------------------
+   2. COLOR — Light mode
+   ----------------------------------------------------------------
+   Activated by OS preference or data-theme="light" on <html>.
+   Accent-accessible variants darken cyan/amber to pass 4.5:1 on
+   white. Use these for TEXT set in accent colors; the bright values
+   remain available for decorative/non-text use.
+   ---------------------------------------------------------------- */
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-bg-base:        #FFFFFF;
+    --color-bg-elevated:    #F0F0F0;
+    --color-bg-surface:     #E8E9EE;
+    --color-bg-muted:       #DADCE0;
+
+    --color-text-primary:   #0D1117;   /* 18.9:1 on bg-base  */
+    --color-text-secondary: #4A5060;   /*  8.1:1 on bg-base  */
+    --color-text-disabled:  #8E95A3;   /*  2.6:1 — decorative */
+
+    /* Bright values kept for icons, decorative indicators */
+    --color-accent-cyan:    #007D8C;   /*  4.9:1 on #FFF — AA text  */
+    --color-accent-amber:   #946000;   /*  5.3:1 on #FFF — AA text  */
+
+    --color-border-subtle:  #E0E2E8;
+    --color-border-default: #D0D2D8;
+    --color-border-strong:  #B0B4BC;
+
+    --color-success:        #1A7F37;
+    --color-error:          #CF222E;
+    --color-warning:        #946000;
+    --color-info:           #0969DA;
+
+    --color-success-bg:     rgba(26, 127, 55, 0.10);
+    --color-error-bg:       rgba(207, 34, 46, 0.10);
+    --color-warning-bg:     rgba(148, 96, 0, 0.10);
+    --color-info-bg:        rgba(9, 105, 218, 0.10);
+
+    --color-backdrop:       rgba(0, 0, 0, 0.30);
+    --color-scrim:          rgba(255, 255, 255, 0.80);
+
+    --color-focus-ring:     #007D8C;
+  }
+}
+
+/* Manual override */
+[data-theme="light"] {
+  --color-bg-base:        #FFFFFF;
+  --color-bg-elevated:    #F0F0F0;
+  --color-bg-surface:     #E8E9EE;
+  --color-bg-muted:       #DADCE0;
+
+  --color-text-primary:   #0D1117;
+  --color-text-secondary: #4A5060;
+  --color-text-disabled:  #8E95A3;
+
+  --color-accent-cyan:    #007D8C;
+  --color-accent-amber:   #946000;
+
+  --color-border-subtle:  #E0E2E8;
+  --color-border-default: #D0D2D8;
+  --color-border-strong:  #B0B4BC;
+
+  --color-success:        #1A7F37;
+  --color-error:          #CF222E;
+  --color-warning:        #946000;
+  --color-info:           #0969DA;
+
+  --color-success-bg:     rgba(26, 127, 55, 0.10);
+  --color-error-bg:       rgba(207, 34, 46, 0.10);
+  --color-warning-bg:     rgba(148, 96, 0, 0.10);
+  --color-info-bg:        rgba(9, 105, 218, 0.10);
+
+  --color-backdrop:       rgba(0, 0, 0, 0.30);
+  --color-scrim:          rgba(255, 255, 255, 0.80);
+
+  --color-focus-ring:     #007D8C;
+}
+
+
+/* ----------------------------------------------------------------
+   3. TYPOGRAPHY
+   ---------------------------------------------------------------- */
+
+:root {
+  /* Font stacks */
+  --font-display:  'Urbanist', system-ui, -apple-system, sans-serif;
+  --font-ui:       'DM Sans', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono:     'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+
+  /* Font weights */
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* Type scale — DM Sans base (UI text) */
+  --text-xs:   0.75rem;    /* 12px */
+  --text-sm:   0.8125rem;  /* 13px */
+  --text-base: 0.875rem;   /* 14px — default UI text */
+  --text-md:   1rem;       /* 16px */
+  --text-lg:   1.25rem;    /* 20px */
+  --text-xl:   1.5rem;     /* 24px */
+  --text-2xl:  1.875rem;   /* 30px — Urbanist headings start here */
+  --text-3xl:  2.25rem;    /* 36px */
+
+  /* Line heights */
+  --leading-none:    1;
+  --leading-tight:   1.2;
+  --leading-snug:    1.375;
+  --leading-base:    1.5;
+  --leading-relaxed: 1.625;
+
+  /* Letter spacing */
+  --tracking-tight:  -0.01em;
+  --tracking-normal:  0;
+  --tracking-wide:    0.02em;
+  --tracking-wider:   0.04em;   /* All-caps labels */
+
+  /* Terminal-specific */
+  --tile-font-size:     10.5px;  /* Monospace in overview tiles */
+  --terminal-font-size: 14px;    /* Monospace in expanded xterm.js */
+}
+
+
+/* ----------------------------------------------------------------
+   4. SPACING
+   ----------------------------------------------------------------
+   4px base unit. Use semantic names for layout constants,
+   numeric names for general-purpose spacing.
+   ---------------------------------------------------------------- */
+
+:root {
+  /* Scale */
+  --space-1:   0.25rem;  /*  4px */
+  --space-2:   0.5rem;   /*  8px */
+  --space-3:   0.75rem;  /* 12px */
+  --space-4:   1rem;     /* 16px */
+  --space-6:   1.5rem;   /* 24px */
+  --space-8:   2rem;     /* 32px */
+  --space-12:  3rem;     /* 48px */
+  --space-16:  4rem;     /* 64px */
+
+  /* Layout constants (from layout spec) */
+  --tile-min-width:       360px;
+  --tile-height:          300px;
+  --grid-gap:             8px;
+  --page-margin:          16px;
+  --app-bar-height:       48px;
+  --status-bar-height:    36px;
+  --tile-header-height:   28px;
+  --picker-width:         400px;
+  --picker-row-height:    36px;
+  --picker-row-height-touch: 48px;
+  --breakpoint-list:      640px;
+}
+
+
+/* ----------------------------------------------------------------
+   5. BORDER RADIUS
+   ---------------------------------------------------------------- */
+
+:root {
+  --radius-none: 0;
+  --radius-sm:   4px;
+  --radius-md:   6px;
+  --radius-lg:   8px;
+  --radius-xl:   12px;
+  --radius-full: 9999px;
+}
+
+
+/* ----------------------------------------------------------------
+   6. SHADOWS / ELEVATION
+   ----------------------------------------------------------------
+   Dark mode: luminance stepping is the primary depth cue.
+   Shadows serve as supplementary reinforcement on overlays.
+   ---------------------------------------------------------------- */
+
+:root {
+  --shadow-none:  none;
+  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md:    0 2px 8px rgba(0, 0, 0, 0.35),
+                  0 1px 2px rgba(0, 0, 0, 0.20);
+  --shadow-lg:    0 4px 16px rgba(0, 0, 0, 0.40),
+                  0 2px 4px rgba(0, 0, 0, 0.25);
+  --shadow-xl:    0 8px 32px rgba(0, 0, 0, 0.50),
+                  0 4px 8px rgba(0, 0, 0, 0.30);
+
+  /* Glow — for bell indicator, focus ring */
+  --glow-cyan:    0 0 8px rgba(0, 217, 245, 0.35);
+  --glow-amber:   0 0 8px rgba(241, 166, 64, 0.40);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-md:    0 2px 8px rgba(0, 0, 0, 0.08),
+                    0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-lg:    0 4px 16px rgba(0, 0, 0, 0.10),
+                    0 2px 4px rgba(0, 0, 0, 0.06);
+    --shadow-xl:    0 8px 32px rgba(0, 0, 0, 0.14),
+                    0 4px 8px rgba(0, 0, 0, 0.08);
+
+    --glow-cyan:    0 0 8px rgba(0, 125, 140, 0.25);
+    --glow-amber:   0 0 8px rgba(148, 96, 0, 0.25);
+  }
+}
+
+[data-theme="light"] {
+  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md:    0 2px 8px rgba(0, 0, 0, 0.08),
+                  0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-lg:    0 4px 16px rgba(0, 0, 0, 0.10),
+                  0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-xl:    0 8px 32px rgba(0, 0, 0, 0.14),
+                  0 4px 8px rgba(0, 0, 0, 0.08);
+
+  --glow-cyan:    0 0 8px rgba(0, 125, 140, 0.25);
+  --glow-amber:   0 0 8px rgba(148, 96, 0, 0.25);
+}
+
+
+/* ----------------------------------------------------------------
+   7. MOTION / TRANSITIONS
+   ----------------------------------------------------------------
+   GPU-accelerated properties only (transform, opacity).
+   Respect prefers-reduced-motion.
+   ---------------------------------------------------------------- */
+
+:root {
+  /* Durations */
+  --duration-instant:     75ms;    /* Hover color shifts           */
+  --duration-fast:        150ms;   /* Button press, toggle, focus  */
+  --duration-moderate:    250ms;   /* Tile zoom, panel slide       */
+  --duration-slow:        400ms;   /* Page transitions, complex    */
+
+  /* Easing */
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);      /* Decelerate — zoom in        */
+  --ease-in-out:   cubic-bezier(0.45, 0, 0.55, 1);     /* Symmetric — zoom out        */
+  --ease-spring:   cubic-bezier(0.34, 1.56, 0.64, 1);  /* Overshoot — picker appear   */
+  --ease-linear:   linear;
+
+  /* Convenience shorthands */
+  --transition-colors:   color var(--duration-instant) var(--ease-out),
+                         background-color var(--duration-instant) var(--ease-out),
+                         border-color var(--duration-instant) var(--ease-out);
+  --transition-opacity:  opacity var(--duration-fast) var(--ease-out);
+  --transition-transform: transform var(--duration-moderate) var(--ease-out);
+}
+
+/* Reduced motion — collapse all durations to near-zero */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-instant:   0ms;
+    --duration-fast:      0ms;
+    --duration-moderate:  0ms;
+    --duration-slow:      0ms;
+  }
+}
+
+
+/* ----------------------------------------------------------------
+   8. Z-INDEX LAYERS
+   ---------------------------------------------------------------- */
+
+:root {
+  --z-base:       0;
+  --z-tile:       1;
+  --z-app-bar:    10;
+  --z-expanding:  20;    /* Tile during zoom transition  */
+  --z-backdrop:   30;
+  --z-picker:     40;    /* Command palette overlay      */
+  --z-toast:      50;
+  --z-tooltip:    60;
+}
+
+
+/* ----------------------------------------------------------------
+   9. FOCUS STYLES
+   ----------------------------------------------------------------
+   Global focus-visible ring. 2px offset ensures it doesn't
+   overlap content. Uses accent cyan for maximum visibility.
+   ---------------------------------------------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Remove default outlines — :focus-visible handles it */
+:focus:not(:focus-visible) {
+  outline: none;
+}
