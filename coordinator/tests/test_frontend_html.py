@@ -2,7 +2,7 @@
 
 import pathlib
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 HTML_PATH = pathlib.Path(__file__).parent.parent.parent / "frontend" / "index.html"
 
@@ -148,11 +148,17 @@ def test_html_sidebar_toggle_button() -> None:
         "#sidebar-toggle-btn must be inside header.expanded-header"
     )
     # Must be after #back-btn and before #expanded-session-name
-    header_children_ids = [el.get("id") for el in header.children if hasattr(el, "get")]
+    header_children_ids = [
+        el.get("id") for el in header.children if isinstance(el, Tag)
+    ]
     header_children_ids = [i for i in header_children_ids if i]
     assert "back-btn" in header_children_ids, "#back-btn must be in expanded-header"
-    assert "sidebar-toggle-btn" in header_children_ids, "#sidebar-toggle-btn must be in expanded-header"
-    assert "expanded-session-name" in header_children_ids, "#expanded-session-name must be in expanded-header"
+    assert "sidebar-toggle-btn" in header_children_ids, (
+        "#sidebar-toggle-btn must be in expanded-header"
+    )
+    assert "expanded-session-name" in header_children_ids, (
+        "#expanded-session-name must be in expanded-header"
+    )
     back_idx = header_children_ids.index("back-btn")
     toggle_idx = header_children_ids.index("sidebar-toggle-btn")
     name_idx = header_children_ids.index("expanded-session-name")
@@ -211,7 +217,9 @@ def test_html_session_sidebar_structure() -> None:
     )
     # #sidebar-collapse-btn
     collapse_btn = sidebar_header.find(id="sidebar-collapse-btn")
-    assert collapse_btn is not None, "Missing #sidebar-collapse-btn inside .sidebar-header"
+    assert collapse_btn is not None, (
+        "Missing #sidebar-collapse-btn inside .sidebar-header"
+    )
     # #sidebar-list
     sidebar_list = sidebar.find(id="sidebar-list")
     assert sidebar_list is not None, "Missing #sidebar-list inside #session-sidebar"
