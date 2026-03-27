@@ -416,6 +416,16 @@ test('buildTileHTML adds tier class on mobile', () => {
   assert.ok(html.includes('session-tile--tier-'), 'should contain tier class on mobile');
 });
 
+test('buildTileHTML wraps snapshot in .tile-body with <pre> as direct child', () => {
+  const session = { name: 'my-session', snapshot: 'line1\nline2' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('class="tile-body"'), 'should contain .tile-body wrapper');
+  assert.ok(
+    /<div class="tile-body"><pre>/.test(html),
+    '<pre> should be a direct child of .tile-body',
+  );
+});
+
 // --- renderGrid ---
 
 test('renderGrid clears grid and shows empty-state when sessions array is empty', () => {

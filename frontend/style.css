@@ -214,6 +214,13 @@ body {
   position: relative;
 }
 
+.tile-body pre {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+}
+
 .tile-pre {
   position: absolute;
   inset: 0;
