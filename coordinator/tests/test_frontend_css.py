@@ -135,3 +135,165 @@ def test_css_terminal_container_min_width():
     assert "overflow: hidden" in block
     assert "background: #000" in block
     assert "padding: 0 4px" in block
+
+
+# ============================================================
+# Sidebar container and collapse animation (task-3)
+# ============================================================
+
+
+def _extract_rule_block(css: str, selector: str) -> str:
+    """Extract the CSS block for a given selector."""
+    idx = css.index(selector)
+    block_start = css.index("{", idx)
+    block_end = css.index("}", block_start)
+    return css[block_start:block_end]
+
+
+def test_css_session_sidebar_exists():
+    """.session-sidebar rule must exist in the CSS."""
+    css = read_css()
+    assert ".session-sidebar" in css
+
+
+def test_css_session_sidebar_dimensions():
+    """.session-sidebar must have width: 200px and min-width: 200px."""
+    css = read_css()
+    block = _extract_rule_block(css, ".session-sidebar {")
+    assert "width: 200px" in block
+    assert "min-width: 200px" in block
+
+
+def test_css_session_sidebar_background():
+    """.session-sidebar must use var(--bg-secondary) background."""
+    css = read_css()
+    block = _extract_rule_block(css, ".session-sidebar {")
+    assert "background: var(--bg-secondary)" in block
+
+
+def test_css_session_sidebar_border():
+    """.session-sidebar must have a border-right using var(--border-subtle)."""
+    css = read_css()
+    block = _extract_rule_block(css, ".session-sidebar {")
+    assert "border-right: 1px solid var(--border-subtle)" in block
+
+
+def test_css_session_sidebar_flex_column():
+    """.session-sidebar must use flex column layout with overflow hidden."""
+    css = read_css()
+    block = _extract_rule_block(css, ".session-sidebar {")
+    assert "display: flex" in block
+    assert "flex-direction: column" in block
+    assert "overflow: hidden" in block
+    assert "flex-shrink: 0" in block
+
+
+def test_css_session_sidebar_transition():
+    """.session-sidebar must have transition on width and min-width for collapse animation."""
+    css = read_css()
+    block = _extract_rule_block(css, ".session-sidebar {")
+    assert "transition:" in block
+    assert "width 0.25s ease" in block
+    assert "min-width 0.25s ease" in block
+
+
+def test_css_sidebar_collapsed_state():
+    """.session-sidebar.sidebar--collapsed must set width and min-width to 0."""
+    css = read_css()
+    assert ".session-sidebar.sidebar--collapsed" in css
+    block = _extract_rule_block(css, ".session-sidebar.sidebar--collapsed")
+    assert "width: 0" in block
+    assert "min-width: 0" in block
+
+
+def test_css_sidebar_before_terminal_container():
+    """.session-sidebar rules must appear after .view-body and before .terminal-container."""
+    css = read_css()
+    assert ".session-sidebar" in css
+    assert ".view-body" in css
+    assert ".terminal-container" in css
+    view_body_idx = css.index(".view-body")
+    sidebar_idx = css.index(".session-sidebar")
+    terminal_idx = css.index(".terminal-container")
+    assert view_body_idx < sidebar_idx, ".session-sidebar must come after .view-body"
+    assert sidebar_idx < terminal_idx, ".session-sidebar must come before .terminal-container"
+
+
+def test_css_sidebar_header():
+    """.sidebar-header must be flex row with space-between and padding."""
+    css = read_css()
+    assert ".sidebar-header" in css
+    block = _extract_rule_block(css, ".sidebar-header {")
+    assert "display: flex" in block
+    assert "flex-direction: row" in block
+    assert "justify-content: space-between" in block
+    assert "padding: 8px 12px" in block
+    assert "border-bottom" in block
+
+
+def test_css_sidebar_title():
+    """.sidebar-title must be styled as a small uppercase label."""
+    css = read_css()
+    assert ".sidebar-title" in css
+    block = _extract_rule_block(css, ".sidebar-title {")
+    assert "font-size: 11px" in block
+    assert "font-weight: 600" in block
+    assert "text-transform: uppercase" in block
+    assert "letter-spacing:" in block
+    assert "color: var(--text-muted)" in block
+
+
+def test_css_sidebar_list():
+    """.sidebar-list must scroll vertically and fill remaining height."""
+    css = read_css()
+    assert ".sidebar-list" in css
+    block = _extract_rule_block(css, ".sidebar-list {")
+    assert "flex: 1" in block
+    assert "overflow-y: auto" in block
+    assert "overflow-x: hidden" in block
+
+
+def test_css_sidebar_collapse_btn():
+    """.sidebar-collapse-btn must be a minimal button styled for the chevron."""
+    css = read_css()
+    assert ".sidebar-collapse-btn" in css
+    block = _extract_rule_block(css, ".sidebar-collapse-btn {")
+    assert "background: none" in block
+    assert "border: none" in block
+    assert "color: var(--text-muted)" in block
+    assert "cursor: pointer" in block
+    assert "font-size: 18px" in block
+    assert "padding: 2px 6px" in block
+    assert "border-radius: 4px" in block
+
+
+def test_css_sidebar_collapse_btn_hover():
+    """.sidebar-collapse-btn:hover must show full text color."""
+    css = read_css()
+    assert ".sidebar-collapse-btn:hover" in css
+    block = _extract_rule_block(css, ".sidebar-collapse-btn:hover {")
+    assert "color: var(--text)" in block
+
+
+def test_css_sidebar_toggle_btn():
+    """.sidebar-toggle-btn must be a 36x36 bordered button with flex centering."""
+    css = read_css()
+    assert ".sidebar-toggle-btn" in css
+    block = _extract_rule_block(css, ".sidebar-toggle-btn {")
+    assert "background: none" in block
+    assert "border: 1px solid var(--border)" in block
+    assert "border-radius: 4px" in block
+    assert "width: 36px" in block
+    assert "height: 36px" in block
+    assert "display: flex" in block
+    assert "align-items: center" in block
+    assert "justify-content: center" in block
+    assert "margin-right: 8px" in block
+
+
+def test_css_sidebar_toggle_btn_hover():
+    """.sidebar-toggle-btn:hover must update border-color to accent."""
+    css = read_css()
+    assert ".sidebar-toggle-btn:hover" in css
+    block = _extract_rule_block(css, ".sidebar-toggle-btn:hover {")
+    assert "border-color: var(--accent)" in block
