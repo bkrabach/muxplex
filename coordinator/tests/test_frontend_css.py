@@ -297,3 +297,123 @@ def test_css_sidebar_toggle_btn_hover():
     assert ".sidebar-toggle-btn:hover" in css
     block = _extract_rule_block(css, ".sidebar-toggle-btn:hover {")
     assert "border-color: var(--accent)" in block
+
+
+# ============================================================
+# Sidebar session card styles (task-4)
+# ============================================================
+
+
+def test_css_sidebar_item_exists():
+    """.sidebar-item rule must exist in the CSS."""
+    css = read_css()
+    assert ".sidebar-item {" in css
+
+
+def test_css_sidebar_item_dimensions_and_layout():
+    """.sidebar-item must be 120px tall, flex column, overflow hidden, position relative."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item {")
+    assert "height: 120px" in block
+    assert "background: var(--bg-secondary)" in block
+    assert "border-bottom: 1px solid var(--border-subtle)" in block
+    assert "cursor: pointer" in block
+    assert "overflow: hidden" in block
+    assert "display: flex" in block
+    assert "flex-direction: column" in block
+    assert "position: relative" in block
+
+
+def test_css_sidebar_item_hover():
+    """.sidebar-item:hover must use --bg-surface background."""
+    css = read_css()
+    assert ".sidebar-item:hover" in css
+    block = _extract_rule_block(css, ".sidebar-item:hover {")
+    assert "background: var(--bg-surface)" in block
+
+
+def test_css_sidebar_item_active():
+    """.sidebar-item--active must have --bg-surface background and 3px accent left border."""
+    css = read_css()
+    assert ".sidebar-item--active" in css
+    block = _extract_rule_block(css, ".sidebar-item--active {")
+    assert "background: var(--bg-surface)" in block
+    assert "border-left: 3px solid var(--accent)" in block
+
+
+def test_css_sidebar_item_header():
+    """.sidebar-item-header must be flex row, space-between, with correct padding/height/gap."""
+    css = read_css()
+    assert ".sidebar-item-header" in css
+    block = _extract_rule_block(css, ".sidebar-item-header {")
+    assert "display: flex" in block
+    assert "flex-direction: row" in block
+    assert "justify-content: space-between" in block
+    assert "padding: 8px 8px 4px" in block
+    assert "height: 32px" in block
+    assert "gap: 4px" in block
+
+
+def test_css_sidebar_item_name():
+    """.sidebar-item-name must be 12px, 600 weight, --text color, ellipsis, flex 1, min-width 0."""
+    css = read_css()
+    assert ".sidebar-item-name" in css
+    block = _extract_rule_block(css, ".sidebar-item-name {")
+    assert "font-size: 12px" in block
+    assert "font-weight: 600" in block
+    assert "color: var(--text)" in block
+    assert "text-overflow: ellipsis" in block
+    assert "overflow: hidden" in block
+    assert "white-space: nowrap" in block
+    assert "flex: 1" in block
+    assert "min-width: 0" in block
+
+
+def test_css_sidebar_item_body():
+    """.sidebar-item-body must be flex: 1, position relative, overflow hidden."""
+    css = read_css()
+    assert ".sidebar-item-body" in css
+    block = _extract_rule_block(css, ".sidebar-item-body {")
+    assert "flex: 1" in block
+    assert "position: relative" in block
+    assert "overflow: hidden" in block
+
+
+def test_css_sidebar_item_body_pre():
+    """.sidebar-item-body pre must be anchored to bottom with 10px monospace font."""
+    css = read_css()
+    assert ".sidebar-item-body pre" in css
+    block = _extract_rule_block(css, ".sidebar-item-body pre {")
+    assert "position: absolute" in block
+    assert "bottom: 0" in block
+    assert "left: 0" in block
+    assert "right: 0" in block
+    assert "font-size: 10px" in block
+    assert "line-height: 1.4" in block
+    assert "color: var(--text-muted)" in block
+    assert "white-space: pre" in block
+    assert "padding: 0 8px 6px" in block
+    # Monospace font family
+    assert "monospace" in block
+    assert "JetBrains Mono" in block
+
+
+def test_css_sidebar_empty():
+    """.sidebar-empty must be centered, 12px, --text-muted color."""
+    css = read_css()
+    assert ".sidebar-empty" in css
+    block = _extract_rule_block(css, ".sidebar-empty {")
+    assert "padding: 16px 12px" in block
+    assert "color: var(--text-muted)" in block
+    assert "font-size: 12px" in block
+    assert "text-align: center" in block
+
+
+def test_css_sidebar_item_after_toggle_btn_hover():
+    """.sidebar-item rules must appear after .sidebar-toggle-btn:hover."""
+    css = read_css()
+    assert ".sidebar-toggle-btn:hover" in css
+    assert ".sidebar-item" in css
+    toggle_idx = css.index(".sidebar-toggle-btn:hover")
+    item_idx = css.index(".sidebar-item")
+    assert toggle_idx < item_idx, ".sidebar-item must come after .sidebar-toggle-btn:hover"
