@@ -6,7 +6,7 @@
  * @returns {string}
  */
 function formatTimestamp(ts) {
-  if (ts == null) return '\u2014';
+  if (ts == null) return '';
   const diff = Math.floor(Date.now() / 1000 - ts);
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;

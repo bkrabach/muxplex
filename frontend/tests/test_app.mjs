@@ -62,8 +62,8 @@ test('app.js exports all 7 pure functions', () => {
 
 // --- formatTimestamp ---
 
-test('formatTimestamp returns em-dash for null', () => {
-  assert.strictEqual(app.formatTimestamp(null), '\u2014');
+test('formatTimestamp returns empty string for null', () => {
+  assert.strictEqual(app.formatTimestamp(null), '');
 });
 
 test('formatTimestamp returns seconds ago for timestamp < 60s ago', () => {

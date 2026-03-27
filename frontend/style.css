@@ -182,15 +182,23 @@ body {
   margin-left: 8px;
 }
 
-/* Bell dot */
+/* Bell notification badge */
 .tile-bell {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 8px;
   background: var(--bell);
-  animation: bell-pulse 1.4s ease-in-out infinite;
-  margin-right: 6px;
+  color: #0D1117;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
   flex-shrink: 0;
+  margin-right: 6px;
+  animation: bell-pulse 1.4s ease-in-out infinite;
 }
 
 @keyframes bell-pulse {
