@@ -340,6 +340,35 @@ function buildSidebarHTML(session, currentSession) {
 }
 
 /**
+ * Render the session sidebar list. Only renders in fullscreen view.
+ * Shows empty state when no sessions exist.
+ * Binds click handlers on each sidebar-item to switch sessions.
+ * @param {object[]} sessions
+ * @param {string|null} currentSession - name of the currently active session
+ */
+function renderSidebar(sessions, currentSession) {
+  if (_viewMode !== 'fullscreen') return;
+
+  const list = $('sidebar-list');
+  if (!list) return;
+
+  if (!sessions || sessions.length === 0) {
+    list.innerHTML = '<div class="sidebar-empty">No sessions</div>';
+    return;
+  }
+
+  list.innerHTML = sessions.map((session) => buildSidebarHTML(session, currentSession)).join('');
+
+  // Bind click handlers on each sidebar item
+  list.querySelectorAll('.sidebar-item').forEach((item) => {
+    const name = item.dataset.session;
+    on(item, 'click', () => {
+      if (name !== currentSession) openSession(name);
+    });
+  });
+}
+
+/**
  * Render the session grid. Shows empty state when no sessions exist.
  * On mobile, sorts sessions by priority before rendering.
  * Binds click and keydown handlers on each tile.
@@ -937,6 +966,7 @@ if (typeof module !== 'undefined' && module.exports) {
     escapeHtml,
     buildTileHTML,
     buildSidebarHTML,
+    renderSidebar,
     renderGrid,
     requestNotificationPermission,
     handleBellTransitions,

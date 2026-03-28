@@ -1692,3 +1692,77 @@ test('buildSidebarHTML includes snapshot preview in a pre element', () => {
   const html = app.buildSidebarHTML(session, '');
   assert.ok(/<pre>[\s\S]*line1[\s\S]*<\/pre>/.test(html), 'snapshot content should be inside a <pre> element');
 });
+
+// --- renderSidebar ---
+
+test('renderSidebar populates sidebar-list innerHTML when viewMode is fullscreen', () => {
+  let capturedHTML = '';
+  const mockList = {
+    get innerHTML() { return capturedHTML; },
+    set innerHTML(v) { capturedHTML = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar-list') return mockList;
+    return null;
+  };
+
+  app._setViewMode('fullscreen');
+  const sessions = [
+    { name: 'session-a', snapshot: '', bell: { unseen_count: 0 } },
+    { name: 'session-b', snapshot: '', bell: { unseen_count: 0 } },
+  ];
+  app.renderSidebar(sessions, 'session-a');
+
+  assert.ok(capturedHTML.includes('sidebar-item'), 'innerHTML should contain sidebar-item');
+  assert.ok(capturedHTML.includes('sidebar-item--active'), 'innerHTML should contain sidebar-item--active for active session');
+
+  globalThis.document.getElementById = origGetById;
+  app._setViewMode('grid');
+});
+
+test('renderSidebar renders empty message when sessions array is empty', () => {
+  let capturedHTML = '';
+  const mockList = {
+    get innerHTML() { return capturedHTML; },
+    set innerHTML(v) { capturedHTML = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar-list') return mockList;
+    return null;
+  };
+
+  app._setViewMode('fullscreen');
+  app.renderSidebar([], null);
+
+  assert.ok(capturedHTML.includes('sidebar-empty'), 'innerHTML should contain sidebar-empty class');
+  assert.ok(capturedHTML.includes('No sessions'), 'innerHTML should contain "No sessions" text');
+
+  globalThis.document.getElementById = origGetById;
+  app._setViewMode('grid');
+});
+
+test('renderSidebar does nothing when view is not fullscreen', () => {
+  let innerHTMLSet = false;
+  const mockList = {
+    get innerHTML() { return ''; },
+    set innerHTML(v) { innerHTMLSet = true; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar-list') return mockList;
+    return null;
+  };
+
+  app._setViewMode('grid');
+  const sessions = [{ name: 'session-a', snapshot: '', bell: { unseen_count: 0 } }];
+  app.renderSidebar(sessions, null);
+
+  assert.strictEqual(innerHTMLSet, false, 'innerHTML setter should never be called when not in fullscreen');
+
+  globalThis.document.getElementById = origGetById;
+});
