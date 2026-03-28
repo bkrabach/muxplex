@@ -365,8 +365,11 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
             async def client_to_ttyd() -> None:
                 try:
                     while True:
-                        data = await websocket.receive_bytes()
-                        await ttyd_ws.send(data)
+                        msg = await websocket.receive()
+                        if msg.get("bytes"):
+                            await ttyd_ws.send(msg["bytes"])
+                        elif msg.get("text"):
+                            await ttyd_ws.send(msg["text"])
                 except Exception:
                     pass
 
