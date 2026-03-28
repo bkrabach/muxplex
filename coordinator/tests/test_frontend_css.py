@@ -355,13 +355,13 @@ def test_css_sidebar_item_hover():
 
 
 def test_css_sidebar_item_active():
-    """.sidebar-item--active must have --bg-surface background and accent full border with 3px left."""
+    """.sidebar-item--active must use inset box-shadow stripe instead of border-left-width to avoid layout shift."""
     css = read_css()
     assert ".sidebar-item--active" in css
     block = _extract_rule_block(css, ".sidebar-item--active {")
     assert "background: var(--bg-surface)" in block
     assert "border-color: var(--accent)" in block
-    assert "border-left-width: 3px" in block
+    assert "box-shadow: inset 3px 0 0 var(--accent)" in block
 
 
 def test_css_sidebar_item_header():
@@ -403,7 +403,7 @@ def test_css_sidebar_item_body():
 
 
 def test_css_sidebar_item_body_pre():
-    """.sidebar-item-body pre must be anchored to bottom with 10px monospace font."""
+    """.sidebar-item-body pre must be anchored to bottom with 10px monospace font using --font-mono token."""
     css = read_css()
     assert ".sidebar-item-body pre" in css
     block = _extract_rule_block(css, ".sidebar-item-body pre {")
@@ -416,9 +416,8 @@ def test_css_sidebar_item_body_pre():
     assert "color: var(--text-muted)" in block
     assert "white-space: pre" in block
     assert "padding: 0 8px 6px" in block
-    # Monospace font family
-    assert "monospace" in block
-    assert "JetBrains Mono" in block
+    # Monospace font family via design token
+    assert "font-family: var(--font-mono)" in block
 
 
 def test_css_sidebar_empty():

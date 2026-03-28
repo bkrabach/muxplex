@@ -479,7 +479,7 @@ body {
 .sidebar-item--active {
   background: var(--bg-surface);
   border-color: var(--accent);
-  border-left-width: 3px;
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .sidebar-item-header {
@@ -531,7 +531,7 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.4;
   color: var(--text-muted);
