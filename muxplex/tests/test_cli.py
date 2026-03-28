@@ -84,6 +84,43 @@ def test_install_service_system_mode_target(tmp_path, monkeypatch):
     assert "multi-user.target" in content
 
 
+def test_install_service_strips_wsl_mnt_paths_from_environment(tmp_path, monkeypatch):
+    """Fix 3: install_service() must strip /mnt/ paths from Environment=PATH.
+
+    WSL mounts Windows at /mnt/c/, /mnt/d/ etc.  Paths like
+    '/mnt/c/Program Files/dotnet/' contain spaces, causing systemd to
+    truncate and reject the Environment= line.
+    """
+    from muxplex.cli import install_service
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    wsl_path = (
+        "/usr/local/bin:/usr/bin:/bin:/mnt/c/Program Files/dotnet:/mnt/d/tools/bin"
+    )
+    monkeypatch.setenv("PATH", wsl_path)
+
+    install_service(system=False)
+
+    unit_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
+    content = unit_path.read_text()
+
+    # Find the Environment=PATH line
+    env_line = next(
+        (line for line in content.splitlines() if line.startswith("Environment=PATH=")),
+        None,
+    )
+    assert env_line is not None, "Environment=PATH line must be present"
+    assert "/mnt/" not in env_line, (
+        f"WSL /mnt/ paths must be stripped from Environment=PATH; got: {env_line!r}"
+    )
+    # Safe paths must still be present
+    assert "/usr/local/bin" in env_line
+    assert "/usr/bin" in env_line
+
+
 def test_dunder_main_calls_main():
     """python -m muxplex must call cli.main()."""
     import importlib.util

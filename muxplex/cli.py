@@ -25,6 +25,10 @@ def install_service(*, system: bool = False) -> None:
     """Install muxplex as a systemd service."""
     executable = sys.executable
 
+    _raw_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    _safe_path = ":".join(p for p in _raw_path.split(":") if not p.startswith("/mnt/"))
+    _safe_path = _safe_path or "/usr/local/bin:/usr/bin:/bin"
+
     unit = f"""\
 [Unit]
 Description=muxplex — web-based tmux session dashboard
@@ -35,7 +39,7 @@ Type=simple
 ExecStart={executable} -m muxplex
 Restart=on-failure
 RestartSec=5s
-Environment=PATH={os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}
+Environment=PATH={_safe_path}
 
 [Install]
 WantedBy={"multi-user.target" if system else "default.target"}

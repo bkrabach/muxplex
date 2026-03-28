@@ -534,3 +534,56 @@ def test_css_reduced_motion_sidebar_after_toast():
     assert toast_idx < sidebar_idx, (
         ".session-sidebar must come after .toast in reduced-motion block"
     )
+
+
+# ── Bug-fix regression tests ─────────────────────────────────────────────────
+
+
+def test_idle_tile_body_not_display_none():
+    """Fix 1: .session-tile--tier-idle .tile-body must NOT use display:none.
+
+    All sessions are 'idle' when zero bell notifications — display:none caused
+    a blank screen on mobile (iPhone).
+    """
+    css = read_css()
+    # Locate the idle rule block
+    marker = ".session-tile--tier-idle .tile-body"
+    assert marker in css, "idle .tile-body rule must exist"
+    idx = css.index(marker)
+    block_start = css.index("{", idx)
+    block_end = css.index("}", block_start)
+    block = css[block_start:block_end]
+    assert "display: none" not in block, (
+        ".session-tile--tier-idle .tile-body must not use display:none "
+        "(hides all tile content on mobile)"
+    )
+
+
+def test_tile_body_pre_has_typography():
+    """Fix 2a: .tile-body pre must carry font-family and color declarations.
+
+    Previously those rules were on dead .tile-pre class which was never in HTML.
+    """
+    css = read_css()
+    marker = ".tile-body pre"
+    assert marker in css, ".tile-body pre rule must exist"
+    idx = css.index(marker)
+    block_start = css.index("{", idx)
+    block_end = css.index("}", block_start)
+    block = css[block_start:block_end]
+    assert "font-family" in block, ".tile-body pre must declare font-family"
+    assert "color" in block, ".tile-body pre must declare color"
+
+
+def test_mobile_active_tier_targets_tile_body_pre_not_tile_pre():
+    """Fix 2b: mobile active-tier selector must be .tile-body pre, not .tile-pre.
+
+    .tile-pre is never applied in HTML; the real element is <pre> inside .tile-body.
+    """
+    css = read_css()
+    assert ".session-tile--tier-active .tile-body pre" in css, (
+        "mobile active-tier must target .tile-body pre"
+    )
+    assert ".session-tile--tier-active .tile-pre" not in css, (
+        ".tile-pre is a dead class — selector must be removed"
+    )

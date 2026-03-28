@@ -228,6 +228,13 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre;
+  overflow: hidden;
+  margin: 0;
 }
 
 .tile-pre {
@@ -678,15 +685,15 @@ body {
   .session-tile--tier-active {
     min-height: 60px;
   }
-  .session-tile--tier-active .tile-pre {
+  .session-tile--tier-active .tile-body pre {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  /* Tier 3 — idle: name-only (~44px total) */
+  /* Tier 3 — idle: compact preview (36px body) */
   .session-tile--tier-idle .tile-body {
-    display: none;
+    height: 36px;
   }
   .session-tile--tier-idle {
     min-height: 44px;
