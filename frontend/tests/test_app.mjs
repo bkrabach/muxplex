@@ -1926,3 +1926,30 @@ test('toggleSidebar removes sidebar--collapsed class when opening (from closed) 
 
   globalThis.document.getElementById = origGetById;
 });
+
+// --- bindStaticEventListeners sidebar toggle buttons ---
+
+test('bindStaticEventListeners binds sidebar-toggle-btn and sidebar-collapse-btn click to toggleSidebar', () => {
+  const eventsBound = {};
+  const origGetById = globalThis.document.getElementById;
+  const origDocAddListener = globalThis.document.addEventListener;
+  globalThis.document.getElementById = (id) => {
+    const el = { _events: {}, addEventListener: (ev, fn) => { el._events[ev] = fn; } };
+    eventsBound[id] = el;
+    return el;
+  };
+  globalThis.document.addEventListener = () => {};
+
+  app.bindStaticEventListeners();
+
+  assert.ok(
+    eventsBound['sidebar-toggle-btn'] && 'click' in eventsBound['sidebar-toggle-btn']._events,
+    '#sidebar-toggle-btn should have a click listener',
+  );
+  assert.ok(
+    eventsBound['sidebar-collapse-btn'] && 'click' in eventsBound['sidebar-collapse-btn']._events,
+    '#sidebar-collapse-btn should have a click listener',
+  );
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.addEventListener = origDocAddListener;
+});

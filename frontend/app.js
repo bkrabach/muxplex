@@ -960,6 +960,8 @@ function updateSessionPill(sessions) {
  */
 function bindStaticEventListeners() {
   on($('back-btn'), 'click', closeSession);
+  on($('sidebar-toggle-btn'), 'click', toggleSidebar);
+  on($('sidebar-collapse-btn'), 'click', toggleSidebar);
   on($('palette-trigger'), 'click', openPalette);
   on($('palette-backdrop'), 'click', closePalette);
   document.addEventListener('keydown', handleGlobalKeydown);
