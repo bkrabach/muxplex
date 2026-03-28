@@ -449,6 +449,29 @@ function toggleSidebar() {
 }
 
 /**
+ * Bind a click-away handler on #terminal-container that collapses the sidebar
+ * when the user taps outside of it in overlay mode (window.innerWidth < 960).
+ * Returns early without collapsing if:
+ *   - the screen is wide enough that the sidebar is not in overlay mode (>= 960px)
+ *   - the sidebar element is missing
+ *   - the sidebar is already collapsed
+ */
+function bindSidebarClickAway() {
+  const container = $('terminal-container');
+  if (!container) return;
+  container.addEventListener('click', () => {
+    if (window.innerWidth >= SIDEBAR_NARROW_THRESHOLD) return;
+    const sidebar = $('sidebar');
+    if (!sidebar) return;
+    if (sidebar.classList.contains('sidebar--collapsed')) return;
+    sidebar.classList.add('sidebar--collapsed');
+    try {
+      localStorage.setItem(SIDEBAR_KEY, JSON.stringify(false));
+    } catch (_) { /* blocked — ok */ }
+  });
+}
+
+/**
  * Render the session grid. Shows empty state when no sessions exist.
  * On mobile, sorts sessions by priority before rendering.
  * Binds click and keydown handlers on each tile.
@@ -972,6 +995,7 @@ function bindStaticEventListeners() {
   on($('back-btn'), 'click', closeSession);
   on($('sidebar-toggle-btn'), 'click', toggleSidebar);
   on($('sidebar-collapse-btn'), 'click', toggleSidebar);
+  bindSidebarClickAway();
   on($('palette-trigger'), 'click', openPalette);
   on($('palette-backdrop'), 'click', closePalette);
   document.addEventListener('keydown', handleGlobalKeydown);
@@ -1058,6 +1082,7 @@ if (typeof module !== 'undefined' && module.exports) {
     renderSidebar,
     initSidebar,
     toggleSidebar,
+    bindSidebarClickAway,
     renderGrid,
     requestNotificationPermission,
     handleBellTransitions,

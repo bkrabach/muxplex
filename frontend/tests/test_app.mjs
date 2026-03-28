@@ -2001,3 +2001,26 @@ test('bindStaticEventListeners binds sidebar-toggle-btn and sidebar-collapse-btn
   globalThis.document.getElementById = origGetById;
   globalThis.document.addEventListener = origDocAddListener;
 });
+
+// --- bindSidebarClickAway ---
+
+test('bindSidebarClickAway is exported and callable', () => {
+  assert.strictEqual(typeof app.bindSidebarClickAway, 'function', 'bindSidebarClickAway should be a function');
+});
+
+test('bindSidebarClickAway registers click listener on terminal-container', () => {
+  let addEventListenerCalledWith = null;
+  const mockTerminalContainer = {
+    addEventListener: (ev, fn) => { addEventListenerCalledWith = ev; },
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'terminal-container') return mockTerminalContainer;
+    return null;
+  };
+
+  app.bindSidebarClickAway();
+
+  assert.strictEqual(addEventListenerCalledWith, 'click', 'bindSidebarClickAway should register a click listener on terminal-container');
+  globalThis.document.getElementById = origGetById;
+});
