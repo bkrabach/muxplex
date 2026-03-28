@@ -1646,3 +1646,49 @@ test('closeBottomSheet does not call removeEventListener on sheet-backdrop', () 
   assert.strictEqual(backdropRemoveCalled, false, 'closeBottomSheet must not call removeEventListener on sheet-backdrop');
   globalThis.document.getElementById = origGetById;
 });
+
+// --- buildSidebarHTML ---
+
+test('buildSidebarHTML adds sidebar-item--active class for active session', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, 'my-session');
+  assert.ok(html.includes('sidebar-item--active'), 'active session should have sidebar-item--active class');
+});
+
+test('buildSidebarHTML does not add sidebar-item--active class for inactive session', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, 'other-session');
+  assert.ok(!html.includes('sidebar-item--active'), 'inactive session should not have sidebar-item--active class');
+});
+
+test('buildSidebarHTML renders bell badge with tile-bell class and count when unseen_count > 0', () => {
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 3 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('tile-bell'), 'should contain tile-bell class when unseen_count > 0');
+  assert.ok(html.includes('>3<'), 'should contain unseen count text');
+});
+
+test('buildSidebarHTML omits bell badge when unseen_count is 0', () => {
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(!html.includes('tile-bell'), 'should not contain tile-bell class when unseen_count is 0');
+});
+
+test('buildSidebarHTML HTML-escapes session name to prevent XSS', () => {
+  const session = { name: '<script>alert(1)</script>', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(!html.includes('<script>'), 'raw <script> tag must not appear in output');
+  assert.ok(html.includes('&lt;script&gt;'), 'name must be HTML-escaped');
+});
+
+test('buildSidebarHTML article element has data-session attribute', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('data-session="my-session"'), 'article must have data-session attribute');
+});
+
+test('buildSidebarHTML includes snapshot preview in a pre element', () => {
+  const session = { name: 's', snapshot: 'line1\nline2\nline3', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(/<pre>[\s\S]*line1[\s\S]*<\/pre>/.test(html), 'snapshot content should be inside a <pre> element');
+});

@@ -302,6 +302,44 @@ function buildTileHTML(session, index, mobile) {
 }
 
 /**
+ * Build the HTML string for a single session sidebar card.
+ * @param {object} session
+ * @param {string} currentSession - name of the currently active session
+ * @returns {string}
+ */
+function buildSidebarHTML(session, currentSession) {
+  const name = session.name || '';
+  const escapedName = escapeHtml(name);
+  const isActive = name === currentSession;
+
+  let classes = 'sidebar-item';
+  if (isActive) classes += ' sidebar-item--active';
+
+  const unseen = session.bell && session.bell.unseen_count;
+
+  // Bell indicator
+  let bellHtml = '';
+  if (unseen && unseen > 0) {
+    const countStr = unseen > 9 ? '9+' : String(unseen);
+    bellHtml = `<span class="tile-bell">${countStr}</span>`;
+  }
+
+  // Last 20 lines of snapshot
+  const snapshot = session.snapshot || '';
+  const lastLines = snapshot.split('\n').slice(-20).join('\n');
+
+  return (
+    `<article class="${classes}" data-session="${escapedName}" tabindex="0" role="listitem">` +
+    `<div class="sidebar-item-header">` +
+    `<span class="sidebar-item-name">${escapedName}</span>` +
+    `${bellHtml}` +
+    `</div>` +
+    `<div class="sidebar-item-body"><pre>${escapeHtml(lastLines)}</pre></div>` +
+    `</article>`
+  );
+}
+
+/**
  * Render the session grid. Shows empty state when no sessions exist.
  * On mobile, sorts sessions by priority before rendering.
  * Binds click and keydown handlers on each tile.
@@ -898,6 +936,7 @@ if (typeof module !== 'undefined' && module.exports) {
     startPolling,
     escapeHtml,
     buildTileHTML,
+    buildSidebarHTML,
     renderGrid,
     requestNotificationPermission,
     handleBellTransitions,
