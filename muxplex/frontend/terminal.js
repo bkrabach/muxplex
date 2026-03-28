@@ -246,3 +246,42 @@ function closeTerminal() {
 // ─── Expose to app.js ─────────────────────────────────────────────────────────
 window._openTerminal = openTerminal;
 window._closeTerminal = closeTerminal;
+
+// ---------------------------------------------------------------------------
+// Touch scroll — translates vertical swipe into xterm.js scrollback
+// ---------------------------------------------------------------------------
+// Runs once after DOM is ready. Mouse wheel scroll is unaffected (separate
+// `wheel` event path handled natively by xterm.js).
+;(function initTerminalTouchScroll() {
+  var container = document.getElementById('terminal-container');
+  if (!container || typeof container.addEventListener !== 'function') return;
+
+  var _touchLastY = 0;
+
+  container.addEventListener('touchstart', function (e) {
+    _touchLastY = e.touches[0].clientY;
+  }, { passive: true });
+
+  container.addEventListener('touchmove', function (e) {
+    if (!_term) return;
+    e.preventDefault(); // prevent page scroll while swiping inside terminal
+
+    var y = e.touches[0].clientY;
+    var deltaY = _touchLastY - y;   // positive = swipe up = scroll toward newer content
+    _touchLastY = y;
+
+    // Convert pixels to lines. xterm.js fontSize is set per device (12 mobile, 14 desktop).
+    // lineHeight ratio is 1.2 — gives ~14-17px per line.
+    var pxPerLine = (_term.options.fontSize || 14) * 1.2;
+    var lines = deltaY / pxPerLine;
+
+    // Only fire if movement is meaningful (avoids micro-jitter)
+    if (Math.abs(lines) >= 0.3) {
+      _term.scrollLines(Math.round(lines));
+    }
+  }, { passive: false }); // passive: false required to allow e.preventDefault()
+
+  container.addEventListener('touchend', function () {
+    _touchLastY = 0;
+  }, { passive: true });
+})();

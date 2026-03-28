@@ -587,3 +587,20 @@ def test_mobile_active_tier_targets_tile_body_pre_not_tile_pre():
     assert ".session-tile--tier-active .tile-pre" not in css, (
         ".tile-pre is a dead class — selector must be removed"
     )
+
+
+def test_sidebar_list_has_touch_action_pan_y():
+    """Regression: without touch-action:pan-y .sidebar-list won't scroll on mobile touch.
+
+    Mobile browsers need an explicit touch-action:pan-y declaration to allow
+    vertical panning on an overflow-y:auto element when adjacent content (like
+    xterm.js canvas) may be consuming touch events.
+    """
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-list {")
+    assert "touch-action: pan-y" in block, (
+        ".sidebar-list must have touch-action:pan-y for mobile vertical scroll"
+    )
+    assert "overscroll-behavior: contain" in block, (
+        ".sidebar-list must have overscroll-behavior:contain to prevent scroll chaining"
+    )

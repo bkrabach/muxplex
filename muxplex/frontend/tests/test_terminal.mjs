@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import fs from 'node:fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -716,4 +717,32 @@ test('terminal is auto-focused when WebSocket opens', () => {
 
   assert.strictEqual(t.focusCallCount, 1,
     '_term.focus() should be called exactly once when the WebSocket open event fires');
+});
+
+// --- Touch scroll source-inspection tests ---
+
+const terminalSrc = fs.readFileSync(
+  new URL('../terminal.js', import.meta.url), 'utf8'
+);
+
+test('terminal.js registers touchmove handler on terminal-container', () => {
+  // Source inspection: verify the touch scroll IIFE is present and uses
+  // e.preventDefault() (passive: false is required for prevent default)
+  assert.ok(terminalSrc.includes('touchmove'),
+    'touchmove listener must be present');
+  assert.ok(terminalSrc.includes('e.preventDefault'),
+    'must call preventDefault to prevent page scroll while swiping inside terminal');
+  assert.ok(terminalSrc.includes('scrollLines'),
+    'must call _term.scrollLines to scroll terminal');
+  assert.ok(terminalSrc.includes('passive: false'),
+    'touchmove must be non-passive to allow preventDefault');
+});
+
+test('terminal.js touchstart and touchend are passive', () => {
+  // touchstart and touchend should be passive: true for performance
+  // (they don't need preventDefault)
+  const touchstartPassive = terminalSrc.match(/touchstart[\s\S]*?passive:\s*(true|false)/);
+  const touchendPassive   = terminalSrc.match(/touchend[\s\S]*?passive:\s*(true|false)/);
+  assert.ok(touchstartPassive, 'touchstart listener must declare passive');
+  assert.ok(touchendPassive,   'touchend listener must declare passive');
 });

@@ -427,6 +427,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  touch-action: pan-y;          /* tell browser vertical panning is allowed on mobile */
+  overscroll-behavior: contain; /* prevent scroll chaining to non-scrollable parent */
 }
 
 .sidebar-collapse-btn {
