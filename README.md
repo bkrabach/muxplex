@@ -124,7 +124,7 @@ git clone https://github.com/bkrabach/muxplex
 cd muxplex
 
 # Install with dev dependencies
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 ### Run the server

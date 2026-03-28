@@ -1,6 +1,6 @@
 # Dependencies are now managed in pyproject.toml.
 # Install runtime + dev dependencies with:
 #
-#   pip install -e ".[dev]"
+#   uv pip install -e ".[dev]"
 #
 # This file is kept for historical reference only and is no longer authoritative.
