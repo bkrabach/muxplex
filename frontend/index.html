@@ -30,17 +30,17 @@
   <div id="view-expanded" class="view hidden">
     <header class="expanded-header">
       <button id="back-btn" class="back-btn" aria-label="Back">&#8592;</button>
-      <button id="sidebar-toggle-btn" aria-label="Toggle session list">&#9776;</button>
+      <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle session list">&#9776;</button>
       <span id="expanded-session-name" class="expanded-session-name"></span>
       <button id="palette-trigger" class="palette-trigger" aria-label="Open command palette">&#8984;K</button>
     </header>
     <div class="view-body">
-      <div id="session-sidebar">
+      <div id="session-sidebar" class="session-sidebar">
         <div class="sidebar-header">
           <span class="sidebar-title">Sessions</span>
-          <button id="sidebar-collapse-btn" aria-label="Collapse session list">&#8249;</button>
+          <button id="sidebar-collapse-btn" class="sidebar-collapse-btn" aria-label="Collapse session list">&#8249;</button>
         </div>
-        <div id="sidebar-list"></div>
+        <div id="sidebar-list" class="sidebar-list"></div>
       </div>
       <div id="terminal-container" class="terminal-container"></div>
     </div>

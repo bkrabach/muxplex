@@ -1829,8 +1829,8 @@ test('initSidebar defaults to open (removes sidebar--collapsed) on wide screens 
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
-    if (id === 'sidebar') return mockSidebar;
-    if (id === 'collapse-btn') return mockCollapseBtn;
+    if (id === 'session-sidebar') return mockSidebar;
+    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -1856,8 +1856,8 @@ test('initSidebar defaults to closed (adds sidebar--collapsed) on narrow screens
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
-    if (id === 'sidebar') return mockSidebar;
-    if (id === 'collapse-btn') return mockCollapseBtn;
+    if (id === 'session-sidebar') return mockSidebar;
+    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -1883,8 +1883,8 @@ test('initSidebar respects stored value true regardless of screen width — even
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
-    if (id === 'sidebar') return mockSidebar;
-    if (id === 'collapse-btn') return mockCollapseBtn;
+    if (id === 'session-sidebar') return mockSidebar;
+    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -1908,8 +1908,8 @@ test('toggleSidebar persists state to localStorage — from true toggles to fals
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
-    if (id === 'sidebar') return mockSidebar;
-    if (id === 'collapse-btn') return mockCollapseBtn;
+    if (id === 'session-sidebar') return mockSidebar;
+    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -1930,8 +1930,8 @@ test('toggleSidebar adds sidebar--collapsed class when closing (from open)', () 
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
-    if (id === 'sidebar') return mockSidebar;
-    if (id === 'collapse-btn') return mockCollapseBtn;
+    if (id === 'session-sidebar') return mockSidebar;
+    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -1952,8 +1952,8 @@ test('toggleSidebar removes sidebar--collapsed class when opening (from closed) 
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
-    if (id === 'sidebar') return mockSidebar;
-    if (id === 'collapse-btn') return mockCollapseBtn;
+    if (id === 'session-sidebar') return mockSidebar;
+    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 

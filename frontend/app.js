@@ -393,7 +393,7 @@ function initSidebar() {
     isOpen = window.innerWidth >= SIDEBAR_NARROW_THRESHOLD;
   }
 
-  const sidebar = $('sidebar');
+  const sidebar = $('session-sidebar');
   if (sidebar) {
     if (isOpen) {
       sidebar.classList.remove('sidebar--collapsed');
@@ -432,7 +432,7 @@ function toggleSidebar() {
   } catch (_) { /* blocked — ok */ }
 
   // Apply class
-  const sidebar = $('sidebar');
+  const sidebar = $('session-sidebar');
   if (sidebar) {
     if (isOpen) {
       sidebar.classList.remove('sidebar--collapsed');
@@ -442,7 +442,7 @@ function toggleSidebar() {
   }
 
   // Update collapse button text (‹ when open, › when closed)
-  const collapseBtn = $('collapse-btn');
+  const collapseBtn = $('sidebar-collapse-btn');
   if (collapseBtn) {
     collapseBtn.textContent = isOpen ? '\u2039' : '\u203a';
   }
@@ -461,7 +461,7 @@ function bindSidebarClickAway() {
   if (!container) return;
   container.addEventListener('click', () => {
     if (window.innerWidth >= SIDEBAR_NARROW_THRESHOLD) return;
-    const sidebar = $('sidebar');
+    const sidebar = $('session-sidebar');
     if (!sidebar) return;
     if (sidebar.classList.contains('sidebar--collapsed')) return;
     sidebar.classList.add('sidebar--collapsed');

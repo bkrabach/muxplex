@@ -247,6 +247,14 @@ def test_html_element_classes() -> None:
         ),
         ("session-pill-label", "session-pill__label", "needs max-width truncation"),
         ("session-pill-bell", "session-pill__bell", "needs amber var(--bell) color"),
+        (
+            "session-sidebar",
+            "session-sidebar",
+            "flex-column layout and collapse transition",
+        ),
+        ("sidebar-toggle-btn", "sidebar-toggle-btn", "36x36 bordered button styles"),
+        ("sidebar-collapse-btn", "sidebar-collapse-btn", "chevron button hover styles"),
+        ("sidebar-list", "sidebar-list", "flex:1 overflow-y:auto scroll container"),
     ]
     for el_id, expected_class, reason in cases:
         el = soup.find(id=el_id)
