@@ -15,7 +15,11 @@ import pathlib
 import time
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+import websockets
+import websockets.exceptions
+from websockets.typing import Subprotocol
+
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -44,6 +48,7 @@ from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 # ---------------------------------------------------------------------------
 
 POLL_INTERVAL: float = float(os.environ.get("POLL_INTERVAL", "2.0"))
+SERVER_PORT: int = int(os.environ.get("MUXPLEX_PORT", "8088"))
 
 _log = logging.getLogger(__name__)
 
@@ -145,7 +150,7 @@ async def lifespan(app: FastAPI):
             "set-hook",
             "-g",
             "alert-bell",
-            "run-shell 'curl -sfo /dev/null -X POST http://localhost:8099/api/sessions/#{session_name}/bell || true'",
+            f"run-shell 'curl -sfo /dev/null -X POST http://localhost:{SERVER_PORT}/api/sessions/#{{session_name}}/bell || true'",
         )
     except Exception:
         pass  # tmux not running at startup is OK; hook will be set on first poll
@@ -330,11 +335,59 @@ async def setup_hooks() -> dict:
             "set-hook",
             "-g",
             "alert-bell",
-            "run-shell 'curl -sfo /dev/null -X POST http://localhost:8099/api/sessions/#{session_name}/bell || true'",
+            f"run-shell 'curl -sfo /dev/null -X POST http://localhost:{SERVER_PORT}/api/sessions/#{{session_name}}/bell || true'",
         )
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket proxy — bridges browser to ttyd (eliminates Caddy dependency)
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/terminal/ws")
+async def terminal_ws_proxy(websocket: WebSocket) -> None:
+    """Proxy WebSocket frames between the browser and ttyd.
+
+    Accepts with subprotocol 'tty' (required by ttyd), then opens a connection
+    to ws://localhost:{TTYD_PORT}/ws and relays frames bidirectionally.
+    """
+    await websocket.accept(subprotocol="tty")
+
+    ttyd_url = f"ws://localhost:{TTYD_PORT}/ws"
+    try:
+        async with websockets.connect(
+            ttyd_url, subprotocols=[Subprotocol("tty")]
+        ) as ttyd_ws:
+
+            async def client_to_ttyd() -> None:
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        await ttyd_ws.send(data)
+                except Exception:
+                    pass
+
+            async def ttyd_to_client() -> None:
+                try:
+                    async for message in ttyd_ws:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except Exception:
+                    pass
+
+            await asyncio.gather(client_to_ttyd(), ttyd_to_client())
+    except Exception:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

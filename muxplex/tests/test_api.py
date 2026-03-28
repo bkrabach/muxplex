@@ -643,3 +643,13 @@ def test_api_routes_not_shadowed(client):
     response = client.get("/api/sessions")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+
+def test_terminal_ws_route_exists():
+    """The app must have a WebSocket route registered at /terminal/ws."""
+    from muxplex.main import app
+    ws_routes = [
+        r for r in app.routes
+        if hasattr(r, "path") and r.path == "/terminal/ws"
+    ]
+    assert len(ws_routes) == 1, "Expected exactly one /terminal/ws route"
