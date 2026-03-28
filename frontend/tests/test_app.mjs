@@ -314,6 +314,44 @@ test('pollSessions sets err status after more than 2 failures', async () => {
   globalThis.fetch = undefined;
 });
 
+test('pollSessions calls renderSidebar when viewMode is fullscreen', async () => {
+  let sidebarRendered = false;
+  const sessions = [{ name: 'test-session', snapshot: '', bell: { unseen_count: 0 } }];
+
+  const mockStatusEl = { textContent: '', className: '' };
+  const mockGrid = { innerHTML: '' };
+  const mockEmptyState = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockPillBell = { classList: { add: () => {}, remove: () => {} } };
+  const mockSidebarList = {
+    get innerHTML() { return ''; },
+    set innerHTML(v) { sidebarRendered = true; },
+    querySelectorAll: () => [],
+  };
+
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'connection-status') return mockStatusEl;
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmptyState;
+    if (id === 'session-pill-bell') return mockPillBell;
+    if (id === 'sidebar-list') return mockSidebarList;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.fetch = async () => ({ ok: true, json: async () => sessions });
+
+  app._setViewMode('fullscreen');
+  await app.pollSessions();
+
+  assert.strictEqual(sidebarRendered, true, 'renderSidebar should set sidebar-list innerHTML during pollSessions in fullscreen mode');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.fetch = undefined;
+  app._setViewMode('grid');
+});
+
 // --- startPolling ---
 
 test('startPolling guards against double-start (only creates one interval)', () => {

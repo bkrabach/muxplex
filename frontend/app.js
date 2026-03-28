@@ -228,6 +228,7 @@ async function pollSessions() {
     _pollFailCount = 0;
     setConnectionStatus('ok');
     renderGrid(sessions);
+    renderSidebar(sessions, _viewingSession);
     handleBellTransitions(prev, sessions);
     updateSessionPill(sessions);
   } catch (err) {
