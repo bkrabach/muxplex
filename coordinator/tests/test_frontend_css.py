@@ -255,6 +255,16 @@ def test_css_sidebar_list():
     assert "overflow-x: hidden" in block
 
 
+def test_css_sidebar_list_padding():
+    """.sidebar-list must have padding and flex column layout with gap for card breathing room."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-list {")
+    assert "padding: 8px" in block
+    assert "display: flex" in block
+    assert "flex-direction: column" in block
+    assert "gap: 6px" in block
+
+
 def test_css_sidebar_collapse_btn():
     """.sidebar-collapse-btn must be a minimal button styled for the chevron."""
     css = read_css()
@@ -313,34 +323,45 @@ def test_css_sidebar_item_exists():
 
 
 def test_css_sidebar_item_dimensions_and_layout():
-    """.sidebar-item must be 120px tall, flex column, overflow hidden, position relative."""
+    """.sidebar-item must be 120px tall, flex column, outlined card with transition."""
     css = read_css()
     block = _extract_rule_block(css, ".sidebar-item {")
     assert "height: 120px" in block
     assert "background: var(--bg-secondary)" in block
-    assert "border-bottom: 1px solid var(--border-subtle)" in block
+    assert "border: 1px solid var(--border)" in block
+    assert "border-radius: 4px" in block
     assert "cursor: pointer" in block
     assert "overflow: hidden" in block
     assert "display: flex" in block
     assert "flex-direction: column" in block
     assert "position: relative" in block
+    assert "transition:" in block
+
+
+def test_css_sidebar_item_border_radius():
+    """.sidebar-item must have border-radius: 4px matching the dashboard tile aesthetic."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item {")
+    assert "border-radius: 4px" in block
 
 
 def test_css_sidebar_item_hover():
-    """.sidebar-item:hover must use --bg-surface background."""
+    """.sidebar-item:hover must use accent border-color (not background change)."""
     css = read_css()
     assert ".sidebar-item:hover" in css
-    block = _extract_rule_block(css, ".sidebar-item:hover {")
-    assert "background: var(--bg-surface)" in block
+    assert ".sidebar-item:focus-visible" in css
+    block = _extract_rule_block(css, ".sidebar-item:hover")
+    assert "border-color: var(--accent)" in block
 
 
 def test_css_sidebar_item_active():
-    """.sidebar-item--active must have --bg-surface background and 3px accent left border."""
+    """.sidebar-item--active must have --bg-surface background and accent full border with 3px left."""
     css = read_css()
     assert ".sidebar-item--active" in css
     block = _extract_rule_block(css, ".sidebar-item--active {")
     assert "background: var(--bg-surface)" in block
-    assert "border-left: 3px solid var(--accent)" in block
+    assert "border-color: var(--accent)" in block
+    assert "border-left-width: 3px" in block
 
 
 def test_css_sidebar_item_header():

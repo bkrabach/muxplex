@@ -416,6 +416,10 @@ body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .sidebar-collapse-btn {
@@ -457,21 +461,25 @@ body {
 .sidebar-item {
   height: 120px;
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-subtle);
   cursor: pointer;
   overflow: hidden;
   display: flex;
   flex-direction: column;
   position: relative;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
 }
 
-.sidebar-item:hover {
-  background: var(--bg-surface);
+.sidebar-item:hover,
+.sidebar-item:focus-visible {
+  border-color: var(--accent);
 }
 
 .sidebar-item--active {
   background: var(--bg-surface);
-  border-left: 3px solid var(--accent);
+  border-color: var(--accent);
+  border-left-width: 3px;
 }
 
 .sidebar-item-header {
@@ -500,6 +508,22 @@ body {
   flex: 1;
   position: relative;
   overflow: hidden;
+}
+
+.sidebar-item-body::before {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: linear-gradient(to bottom, transparent, var(--bg-secondary));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.sidebar-item--active .sidebar-item-body::before {
+  background: linear-gradient(to bottom, transparent, var(--bg-surface));
 }
 
 .sidebar-item-body pre {
