@@ -360,12 +360,14 @@ function renderSidebar(sessions, currentSession) {
   list.innerHTML = sessions.map((session) => buildSidebarHTML(session, currentSession)).join('');
 
   // Bind click handlers on each sidebar item
-  list.querySelectorAll('.sidebar-item').forEach((item) => {
-    const name = item.dataset.session;
-    on(item, 'click', () => {
-      if (name !== currentSession) openSession(name);
+  if (typeof list.querySelectorAll === 'function') {
+    list.querySelectorAll('.sidebar-item').forEach((item) => {
+      const name = item.dataset.session;
+      on(item, 'click', () => {
+        if (name !== currentSession) openSession(name);
+      });
     });
-  });
+  }
 }
 
 const SIDEBAR_KEY = 'muxplex.sidebarOpen';
@@ -604,6 +606,10 @@ async function openSession(name, opts = {}) {
   _viewingSession = name;
   _viewMode = 'fullscreen';
 
+  // Pre-render sidebar with current sessions before first poll tick
+  initSidebar();
+  renderSidebar(_currentSessions, name);
+
   // Update expanded header
   const nameEl = $('expanded-session-name');
   if (nameEl) nameEl.textContent = name;
@@ -638,6 +644,9 @@ async function openSession(name, opts = {}) {
     }
     // Mount terminal AFTER view is visible so FitAddon measures real dimensions
     if (window._openTerminal) window._openTerminal(name);
+    // Re-render sidebar after DOM is visible and dimensions are correct
+    initSidebar();
+    renderSidebar(_currentSessions, name);
   }, 260);
 
   // Mobile pill

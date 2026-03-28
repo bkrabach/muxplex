@@ -1927,6 +1927,16 @@ test('toggleSidebar removes sidebar--collapsed class when opening (from closed) 
   globalThis.document.getElementById = origGetById;
 });
 
+// --- Guard: initSidebar and renderSidebar are exported and callable ---
+
+test('initSidebar is exported and callable', () => {
+  assert.strictEqual(typeof app.initSidebar, 'function', 'initSidebar should be a function');
+});
+
+test('renderSidebar is exported and callable', () => {
+  assert.strictEqual(typeof app.renderSidebar, 'function', 'renderSidebar should be a function');
+});
+
 // --- bindStaticEventListeners sidebar toggle buttons ---
 
 test('bindStaticEventListeners binds sidebar-toggle-btn and sidebar-collapse-btn click to toggleSidebar', () => {
