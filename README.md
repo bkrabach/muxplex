@@ -141,8 +141,9 @@ python -m muxplex
 # Python tests (pytest)
 pytest
 
-# JavaScript tests (node)
-node muxplex/frontend/tests/run-tests.js
+# JavaScript tests (node:test)
+node --test muxplex/frontend/tests/test_terminal.mjs
+node --test muxplex/frontend/tests/test_app.mjs
 ```
 
 ---
@@ -178,7 +179,9 @@ muxplex/
     ├── frontend/           # Static frontend assets (served as package data)
     │   ├── index.html
     │   ├── app.js
+    │   ├── terminal.js     # xterm.js + WebSocket terminal init
     │   ├── style.css
+    │   ├── manifest.json   # PWA manifest
     │   └── tests/          # JavaScript unit tests
     └── tests/              # Python tests (pytest)
 ```
