@@ -46,22 +46,30 @@ function connectWebSocket(name) {
     // 'tty' subprotocol is REQUIRED — without it ttyd never starts the PTY.
     // Confirmed via raw Python WebSocket tests: ttyd accepts the TCP upgrade but
     // sits completely silent (no child process spawned) when subprotocol is omitted.
-    _ws = new WebSocket(url, ['tty']);
-    _ws.binaryType = 'arraybuffer';
+    //
+    // Local const `ws` captures this specific instance so each handler can check
+    // `if (ws !== _ws) return;` (stale guard). Without it, rapid reconnects or
+    // session switches cause old handlers to fire on the new _ws while it is still
+    // CONNECTING → send error → close → reconnect → infinite loop (Bug 2).
+    const ws = new WebSocket(url, ['tty']);
+    _ws = ws;
+    ws.binaryType = 'arraybuffer';
 
-    _ws.addEventListener('open', function() {
+    ws.addEventListener('open', function() {
+      if (ws !== _ws) return; // stale connection — superseded by a newer one, ignore
       if (reconnectOverlay) reconnectOverlay.classList.add('hidden');
       // Step 1: TEXT frame auth handshake — ttyd checks AuthToken before starting PTY
-      _ws.send(JSON.stringify({ AuthToken: '' }));
+      ws.send(JSON.stringify({ AuthToken: '' }));
       // Step 2: BINARY frame with initial terminal dimensions — [0x31] + JSON({columns, rows})
       if (_term) {
-        _ws.send(encodePayload(0x31, JSON.stringify({ columns: _term.cols, rows: _term.rows })));
+        ws.send(encodePayload(0x31, JSON.stringify({ columns: _term.cols, rows: _term.rows })));
       }
       // Auto-focus the terminal so user can type immediately without clicking
       if (_term) _term.focus();
     });
 
-    _ws.addEventListener('message', function(e) {
+    ws.addEventListener('message', function(e) {
+      if (ws !== _ws) return; // stale connection — superseded by a newer one, ignore
       if (!_term) return;
       if (e.data instanceof ArrayBuffer) {
         var msg = new Uint8Array(e.data);
@@ -77,13 +85,15 @@ function connectWebSocket(name) {
       }
     });
 
-    _ws.addEventListener('close', function() {
+    ws.addEventListener('close', function() {
+      if (ws !== _ws) return; // stale connection — don't reconnect for old sockets
       if (!_currentSession) return; // intentional close — don't reconnect
       if (reconnectOverlay) reconnectOverlay.classList.remove('hidden');
       _reconnectTimer = setTimeout(connect, 2000);
     });
 
-    _ws.addEventListener('error', function() {
+    ws.addEventListener('error', function() {
+      if (ws !== _ws) return; // stale connection — ignore
       console.warn('tmux-web: WebSocket error on', url);
     });
   }
@@ -153,6 +163,22 @@ function createTerminal() {
  * @param {string} sessionName
  */
 function openTerminal(sessionName) {
+  // Null _currentSession first so any in-flight close handler on the old WS won't
+  // schedule a reconnect (it checks `if (!_currentSession) return;`).
+  _currentSession = null;
+
+  // Cancel any pending reconnect timer from the previous session.
+  if (_reconnectTimer) {
+    clearTimeout(_reconnectTimer);
+    _reconnectTimer = null;
+  }
+
+  // Close existing WebSocket so it can't write to the new terminal (Bug 1 fix).
+  if (_ws) {
+    _ws.close();
+    _ws = null;
+  }
+
   _currentSession = sessionName;
 
   const container = document.getElementById('terminal-container');

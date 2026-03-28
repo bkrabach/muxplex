@@ -288,6 +288,180 @@ test('initVisualViewport returns early without error when window.visualViewport 
   globalThis.setTimeout = orig;
 });
 
+// ─── Multi-session helpers ────────────────────────────────────────────────────
+
+/**
+ * Load a fresh terminal.js with a multi-WS-instance-aware environment.
+ * Unlike loadTerminal(), this tracks ALL WebSocket instances in order so tests
+ * can inspect individual connections after multiple openTerminal() calls.
+ */
+function createMultiSessionEnv() {
+  const modulePath = join(__dirname, '..', 'terminal.js');
+  delete require.cache[require.resolve(modulePath)];
+
+  const wsInstances = [];   // all WS objects created, in order
+  const termInstances = []; // all Terminal objects created, in order
+
+  class MockWS {
+    constructor(url, protocols) {
+      this.url = url;
+      this.protocols = protocols;
+      this.readyState = 1; // OPEN
+      this.binaryType = '';
+      this._handlers = {};
+      this.closeCalled = false;
+      this.sentMessages = [];
+      wsInstances.push(this);
+    }
+    addEventListener(event, fn) { this._handlers[event] = fn; }
+    fire(event, arg) { if (this._handlers[event]) this._handlers[event](arg); }
+    close() { this.closeCalled = true; }
+    send(data) { this.sentMessages.push(data); }
+  }
+  MockWS.OPEN = 1;
+  MockWS.CONNECTING = 0;
+
+  function makeMockTerm() {
+    const t = {
+      cols: 80, rows: 24,
+      open: () => {},
+      onData: () => {},
+      onResize: () => {},
+      loadAddon: () => {},
+      dispose: () => {},
+      focus: () => {},
+      writeMessages: [],
+    };
+    t.write = (data) => t.writeMessages.push(data);
+    termInstances.push(t);
+    return t;
+  }
+
+  let capturedReconnectFn = null;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => { capturedReconnectFn = fn; return 0; };
+  globalThis.WebSocket = MockWS;
+  globalThis.location = { protocol: 'http:', host: 'localhost' };
+  globalThis.document = {
+    getElementById: (id) => {
+      if (id === 'terminal-container') return { appendChild: () => {} };
+      if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
+      return null;
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    createElement: () => ({ style: {}, classList: { add: () => {}, remove: () => {} } }),
+  };
+  globalThis.window = {
+    addEventListener: () => {},
+    location: { href: '' },
+    innerWidth: 1024,
+    Terminal: function() { return makeMockTerm(); },
+    FitAddon: { FitAddon: function() { return { fit: () => {} }; } },
+    _openTerminal: undefined,
+    _closeTerminal: undefined,
+  };
+
+  require(modulePath);
+  globalThis.setTimeout = origSetTimeout;
+
+  const env = {
+    get wsInstances() { return wsInstances; },
+    get termInstances() { return termInstances; },
+    get capturedReconnectFn() { return capturedReconnectFn; },
+
+    /** Call fn() with setTimeout mocked so reconnect timers are captured but not auto-run. */
+    withTimeout(fn) {
+      const orig = globalThis.setTimeout;
+      globalThis.setTimeout = (cb, _ms) => { capturedReconnectFn = cb; return 0; };
+      fn();
+      globalThis.setTimeout = orig;
+    },
+
+    openTerminal(name) { env.withTimeout(() => globalThis.window._openTerminal(name)); },
+    closeTerminal() { globalThis.window._closeTerminal(); },
+
+    /** Fire the pending reconnect callback (if any), capturing any new reconnect it schedules. */
+    fireReconnect() {
+      if (!capturedReconnectFn) return;
+      const fn = capturedReconnectFn;
+      capturedReconnectFn = null;
+      env.withTimeout(() => fn());
+    },
+  };
+
+  return env;
+}
+
+// ─── Bug-fix regression tests ─────────────────────────────────────────────────
+// Bug 1 — double keystrokes on switch-away-and-back
+// Bug 2 — "Still in CONNECTING state" crash loop
+
+test('openTerminal closes previous WebSocket before opening new connection (bug: stale WS double output)', () => {
+  const env = createMultiSessionEnv();
+
+  env.openTerminal('session-a');
+  assert.strictEqual(env.wsInstances.length, 1, 'First openTerminal should create exactly 1 WS');
+  const ws1 = env.wsInstances[0];
+
+  env.openTerminal('session-b');
+
+  // Bug 1: without the fix, ws1.close() is never called — the old socket stays alive and
+  // both WS1 and WS2 write to the same xterm terminal, producing doubled keystrokes.
+  assert.ok(ws1.closeCalled,
+    'Bug 1: openTerminal must call close() on the previous WebSocket to prevent stale writes');
+  assert.strictEqual(env.wsInstances.length, 2, 'Second openTerminal should have created a second WS');
+});
+
+test('stale open handler is a no-op after session switch (bug: crash loop)', () => {
+  const env = createMultiSessionEnv();
+
+  env.openTerminal('session-a');
+  const ws1 = env.wsInstances[0];
+  // Capture WS1's open handler before the switch displaces it
+  const openHandler1 = ws1._handlers['open'];
+  assert.ok(openHandler1, 'WS1 must have had an open handler registered');
+
+  env.openTerminal('session-b');
+  const ws2 = env.wsInstances[1];
+
+  // Simulate WS1's open event arriving late (browser timing — arrives after WS2 is live).
+  // Bug 2: without the stale guard, the handler does _ws.send() where _ws is now WS2
+  // (which is CONNECTING) → WebSocket error → WS2 close → reconnect → infinite loop.
+  if (openHandler1) openHandler1();
+
+  assert.strictEqual(ws2.sentMessages.length, 0,
+    'Bug 2: stale open handler for WS1 must not send auth/resize on the new WS2');
+});
+
+test('stale close handler does not trigger reconnect after session switch (bug: crash loop)', () => {
+  const env = createMultiSessionEnv();
+
+  env.openTerminal('session-a');
+  const ws1 = env.wsInstances[0];
+  const closeHandler1 = ws1._handlers['close'];
+  assert.ok(closeHandler1, 'WS1 must have had a close handler registered');
+
+  env.openTerminal('session-b');
+
+  // After the switch: _ws = WS2, _currentSession = 'session-b'
+  // Simulate WS1's close event arriving late (server finishes closing the old socket).
+  let reconnectScheduled = false;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => { reconnectScheduled = true; return 0; };
+
+  if (closeHandler1) closeHandler1();
+
+  globalThis.setTimeout = origSetTimeout;
+
+  // Bug 2: without stale guard, !_currentSession is false ('session-b' is set), so the
+  // handler schedules connect() — a fresh WS replaces _ws while WS2 is CONNECTING → loop.
+  // With stale guard: ws1 !== _ws (WS2) → return early → no reconnect.
+  assert.ok(!reconnectScheduled,
+    'Bug 2: stale close handler for WS1 must not schedule a reconnect after switching sessions');
+});
+
 // ─── ttyd protocol tests ──────────────────────────────────────────────────────
 // ttyd 1.7.7 requires:
 //   1. WebSocket subprotocol 'tty' — without it ttyd never starts the PTY
