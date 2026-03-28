@@ -19,8 +19,8 @@ A web-based dashboard for tmux sessions. Access and manage all your tmux session
 ## Running
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (runtime + dev)
+pip install -e ".[dev]"
 
 # Start coordinator (from this directory)
 python -m uvicorn coordinator.main:app --host 0.0.0.0 --port 8099
