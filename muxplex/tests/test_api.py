@@ -1,5 +1,5 @@
 """
-Tests for coordinator/main.py — FastAPI skeleton, lifespan, /health endpoint.
+Tests for muxplex/main.py — FastAPI skeleton, lifespan, /health endpoint.
 """
 
 import pytest
@@ -149,9 +149,7 @@ def test_patch_state_ignores_unknown_fields(client):
 def test_get_sessions_returns_list(client, monkeypatch):
     """GET /api/sessions must return a JSON list."""
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
-    monkeypatch.setattr(
-        "muxplex.main.get_snapshots", lambda: {"alpha": "some text"}
-    )
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"alpha": "some text"})
 
     response = client.get("/api/sessions")
     assert response.status_code == 200
@@ -210,9 +208,7 @@ def test_get_sessions_includes_bell_state(client, monkeypatch):
     from muxplex.state import save_state
 
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["delta"])
-    monkeypatch.setattr(
-        "muxplex.main.get_snapshots", lambda: {"delta": "pane text"}
-    )
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"delta": "pane text"})
     save_state(
         {
             "active_session": None,
@@ -647,9 +643,13 @@ def test_api_routes_not_shadowed(client):
 
 def test_terminal_ws_route_exists():
     """The app must have a WebSocket route registered at /terminal/ws."""
+    from fastapi.routing import APIRoute, APIWebSocketRoute
+
     from muxplex.main import app
+
     ws_routes = [
-        r for r in app.routes
-        if hasattr(r, "path") and r.path == "/terminal/ws"
+        r
+        for r in app.routes
+        if isinstance(r, (APIRoute, APIWebSocketRoute)) and r.path == "/terminal/ws"
     ]
     assert len(ws_routes) == 1, "Expected exactly one /terminal/ws route"

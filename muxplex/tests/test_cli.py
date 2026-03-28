@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-
 def test_cli_module_importable():
     """muxplex.cli must be importable."""
     from muxplex.cli import main  # noqa: F401
@@ -87,12 +86,12 @@ def test_install_service_system_mode_target(tmp_path, monkeypatch):
 
 def test_dunder_main_calls_main():
     """python -m muxplex must call cli.main()."""
-    with patch("muxplex.cli.main") as mock_main:
-        # Simulate `python -m muxplex` by exec'ing __main__.py
-        import muxplex.__main__  # noqa: F401
+    import importlib.util
 
-        # The import itself calls main() at module level
-        # Re-exec to test:
-        mock_main.reset_mock()
-        exec(Path("muxplex/__main__.py").read_text())
+    # Locate __main__.py without executing it (find_spec does not import)
+    spec = importlib.util.find_spec("muxplex.__main__")
+    assert spec is not None and spec.origin is not None
+
+    with patch("muxplex.cli.main") as mock_main:
+        exec(Path(spec.origin).read_text())  # noqa: S102
         mock_main.assert_called_once()

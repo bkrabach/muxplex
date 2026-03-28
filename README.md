@@ -171,10 +171,10 @@ muxplex/
     ├── __init__.py
     ├── __main__.py         # `python -m muxplex` entry point
     ├── cli.py              # CLI argument parsing and `install-service` subcommand
-    ├── main.py             # FastAPI app factory and route registration
+    ├── main.py             # FastAPI app: session API, bell hooks, WebSocket proxy to ttyd, static frontend
     ├── sessions.py         # tmux session discovery and snapshot capture
     ├── bells.py            # Bell/activity notification tracking
-    ├── ttyd.py             # ttyd process lifecycle management and WebSocket proxy
+    ├── ttyd.py             # ttyd process lifecycle management (spawn, kill, PID tracking)
     ├── state.py            # Shared in-process state (sessions, bells, ttyd)
     ├── frontend/           # Static frontend assets (served as package data)
     │   ├── index.html

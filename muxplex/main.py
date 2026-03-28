@@ -1,7 +1,7 @@
 """
-FastAPI coordinator application for tmux-web.
+muxplex — FastAPI application for the tmux session dashboard.
 
-Entry point for the coordinator service. Exposes:
+Entry point for the muxplex server. Exposes:
     GET /health  →  {"status": "ok"}
 
 Background poll loop reconciles tmux session state every POLL_INTERVAL seconds.
@@ -138,7 +138,7 @@ async def _poll_loop() -> None:
 async def lifespan(app: FastAPI):
     global _poll_task
 
-    # Startup: kill any orphaned ttyd from a previous coordinator run, then
+    # Startup: kill any orphaned ttyd from a previous muxplex run, then
     # start the background poll loop.
     await kill_orphan_ttyd()
     _poll_task = asyncio.create_task(_poll_loop())
@@ -170,7 +170,7 @@ async def lifespan(app: FastAPI):
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="tmux-web coordinator", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="muxplex", version="0.1.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
