@@ -1051,33 +1051,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', trackInteraction);
   document.addEventListener('touchstart', trackInteraction);
 
-  // ---------------------------------------------------------------------------
-  // Sidebar touch scroll — manual scrollTop manipulation bypasses the CSS
-  // touch-scroll path that fails when position:fixed + overflow:hidden is on
-  // the parent (.session-sidebar) in mobile overlay mode.
-  // ---------------------------------------------------------------------------
-  ;(function initSidebarTouchScroll() {
-    var list = document.querySelector('.sidebar-list');
-    if (!list || typeof list.addEventListener !== 'function') return;
-
-    var _lastY = 0;
-
-    list.addEventListener('touchstart', function (e) {
-      _lastY = e.touches[0].clientY;
-    }, { passive: true });
-
-    list.addEventListener('touchmove', function (e) {
-      e.preventDefault();                        // block page scroll
-      var y = e.touches[0].clientY;
-      list.scrollTop += _lastY - y;              // direct scrollTop — always works
-      _lastY = y;
-    }, { passive: false });                      // passive:false required for preventDefault
-
-    list.addEventListener('touchend', function () {
-      _lastY = 0;
-    }, { passive: true });
-  })();
-
   restoreState()
     .then(() => {
       startPolling();

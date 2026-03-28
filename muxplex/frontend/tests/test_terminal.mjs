@@ -5,7 +5,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import fs from 'node:fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -719,40 +718,4 @@ test('terminal is auto-focused when WebSocket opens', () => {
     '_term.focus() should be called exactly once when the WebSocket open event fires');
 });
 
-// --- Touch scroll source-inspection tests ---
 
-const terminalSrc = fs.readFileSync(
-  new URL('../terminal.js', import.meta.url), 'utf8'
-);
-
-test('terminal.js touchmove dispatches WheelEvent to xterm viewport', () => {
-  assert.ok(terminalSrc.includes('touchmove'), 'touchmove listener must be present');
-  assert.ok(terminalSrc.includes('e.preventDefault'), 'must call preventDefault to prevent page scroll');
-  assert.ok(terminalSrc.includes('WheelEvent'), 'must dispatch WheelEvent (not call scrollLines)');
-  assert.ok(terminalSrc.includes('.xterm-viewport'), 'must target xterm viewport element');
-  assert.ok(!terminalSrc.includes('scrollLines'), 'must NOT call scrollLines — that only moves local scrollback, not the PTY');
-  assert.ok(terminalSrc.includes('passive: false'), 'touchmove must be non-passive to allow preventDefault');
-});
-
-test('terminal.js touchstart and touchend are passive', () => {
-  // touchstart and touchend should be passive: true for performance
-  // (they don't need preventDefault)
-  const touchstartPassive = terminalSrc.match(/touchstart[\s\S]*?passive:\s*(true|false)/);
-  const touchendPassive   = terminalSrc.match(/touchend[\s\S]*?passive:\s*(true|false)/);
-  assert.ok(touchstartPassive, 'touchstart listener must declare passive');
-  assert.ok(touchendPassive,   'touchend listener must declare passive');
-});
-
-test('terminal.js touchmove uses accumulation for consistent scroll steps', () => {
-  const source = fs.readFileSync(
-    new URL('../terminal.js', import.meta.url), 'utf8'
-  );
-  assert.ok(source.includes('touchmove'), 'touchmove listener must be present');
-  assert.ok(source.includes('e.preventDefault'), 'must call preventDefault');
-  assert.ok(source.includes('WheelEvent'), 'must dispatch WheelEvent');
-  assert.ok(source.includes('.xterm-viewport'), 'must target xterm viewport');
-  assert.ok(source.includes('_accumulated'), 'must accumulate delta between events');
-  assert.ok(source.includes('SCROLL_PX'), 'must use a threshold constant');
-  assert.ok(!source.includes('deltaY * 3'), 'must NOT use variable deltaY scaling (causes jumpy scroll)');
-  assert.ok(source.includes('passive: false'), 'touchmove must be non-passive');
-});

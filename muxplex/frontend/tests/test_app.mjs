@@ -40,7 +40,6 @@ Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
 });
 
-import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -2026,13 +2025,4 @@ test('bindSidebarClickAway registers click listener on terminal-container', () =
   globalThis.document.getElementById = origGetById;
 });
 
-// --- Sidebar touch scroll ---
 
-test('app.js has sidebar touch scroll handler that uses scrollTop', () => {
-  const source = fs.readFileSync(
-    new URL('../app.js', import.meta.url), 'utf8'
-  );
-  assert.ok(source.includes('sidebar-list'), 'must target .sidebar-list');
-  assert.ok(source.includes('scrollTop'), 'must use scrollTop (not scrollLines or WheelEvent)');
-  assert.ok(source.includes('passive: false'), 'touchmove must be non-passive to allow preventDefault');
-});
