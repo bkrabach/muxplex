@@ -368,6 +368,83 @@ function renderSidebar(sessions, currentSession) {
   });
 }
 
+const SIDEBAR_KEY = 'muxplex.sidebarOpen';
+const SIDEBAR_NARROW_THRESHOLD = 960;
+
+/**
+ * Initialise sidebar open/closed state on page load.
+ * Reads muxplex.sidebarOpen from localStorage (JSON.parse with try/catch).
+ * Defaults to open on wide screens (innerWidth >= 960) when no stored value.
+ * Applies sidebar--collapsed class accordingly and persists the initial state.
+ */
+function initSidebar() {
+  let isOpen;
+  try {
+    const stored = localStorage.getItem(SIDEBAR_KEY);
+    if (stored !== null) {
+      isOpen = JSON.parse(stored);
+    } else {
+      isOpen = window.innerWidth >= SIDEBAR_NARROW_THRESHOLD;
+    }
+  } catch (_) {
+    isOpen = window.innerWidth >= SIDEBAR_NARROW_THRESHOLD;
+  }
+
+  const sidebar = $('sidebar');
+  if (sidebar) {
+    if (isOpen) {
+      sidebar.classList.remove('sidebar--collapsed');
+    } else {
+      sidebar.classList.add('sidebar--collapsed');
+    }
+  }
+
+  // Persist initial state
+  try {
+    localStorage.setItem(SIDEBAR_KEY, JSON.stringify(isOpen));
+  } catch (_) { /* blocked — ok */ }
+}
+
+/**
+ * Toggle the sidebar open/closed state.
+ * Reads current state from localStorage, inverts it, persists, applies
+ * sidebar--collapsed class, and updates the collapse button text.
+ * Button shows ‹ when open, › when closed.
+ */
+function toggleSidebar() {
+  let isOpen;
+  try {
+    const stored = localStorage.getItem(SIDEBAR_KEY);
+    isOpen = stored !== null ? JSON.parse(stored) : true;
+  } catch (_) {
+    isOpen = true;
+  }
+
+  // Invert state
+  isOpen = !isOpen;
+
+  // Persist
+  try {
+    localStorage.setItem(SIDEBAR_KEY, JSON.stringify(isOpen));
+  } catch (_) { /* blocked — ok */ }
+
+  // Apply class
+  const sidebar = $('sidebar');
+  if (sidebar) {
+    if (isOpen) {
+      sidebar.classList.remove('sidebar--collapsed');
+    } else {
+      sidebar.classList.add('sidebar--collapsed');
+    }
+  }
+
+  // Update collapse button text (‹ when open, › when closed)
+  const collapseBtn = $('collapse-btn');
+  if (collapseBtn) {
+    collapseBtn.textContent = isOpen ? '\u2039' : '\u203a';
+  }
+}
+
 /**
  * Render the session grid. Shows empty state when no sessions exist.
  * On mobile, sorts sessions by priority before rendering.
@@ -967,6 +1044,8 @@ if (typeof module !== 'undefined' && module.exports) {
     buildTileHTML,
     buildSidebarHTML,
     renderSidebar,
+    initSidebar,
+    toggleSidebar,
     renderGrid,
     requestNotificationPermission,
     handleBellTransitions,

@@ -1,3 +1,11 @@
+// localStorage stub — must be set before importing app.js
+let _localStorageStore = {};
+globalThis.localStorage = {
+  getItem: (key) => (Object.prototype.hasOwnProperty.call(_localStorageStore, key) ? _localStorageStore[key] : null),
+  setItem: (key, value) => { _localStorageStore[key] = String(value); },
+  removeItem: (key) => { delete _localStorageStore[key]; },
+};
+
 // Browser global stubs — must be set before importing app.js
 globalThis.document = {
   getElementById: () => null,
@@ -17,6 +25,7 @@ globalThis.updatePillBell = () => {};
 globalThis.window = {
   addEventListener: () => {},
   location: { href: '' },
+  innerWidth: 1024,
 };
 
 globalThis.Notification = {
@@ -1763,6 +1772,157 @@ test('renderSidebar does nothing when view is not fullscreen', () => {
   app.renderSidebar(sessions, null);
 
   assert.strictEqual(innerHTMLSet, false, 'innerHTML setter should never be called when not in fullscreen');
+
+  globalThis.document.getElementById = origGetById;
+});
+
+// ─── initSidebar ─────────────────────────────────────────────────────────────
+
+test('initSidebar defaults to open (removes sidebar--collapsed) on wide screens when no stored value', () => {
+  delete _localStorageStore['muxplex.sidebarOpen'];
+  const origInnerWidth = globalThis.window.innerWidth;
+  globalThis.window.innerWidth = 1200;
+
+  const removedClasses = [];
+  const addedClasses = [];
+  const mockSidebar = {
+    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) },
+  };
+  const mockCollapseBtn = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar') return mockSidebar;
+    if (id === 'collapse-btn') return mockCollapseBtn;
+    return null;
+  };
+
+  app.initSidebar();
+
+  assert.ok(removedClasses.includes('sidebar--collapsed'), 'should remove sidebar--collapsed on wide screen');
+  assert.ok(!addedClasses.includes('sidebar--collapsed'), 'should not add sidebar--collapsed on wide screen');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.window.innerWidth = origInnerWidth;
+});
+
+test('initSidebar defaults to closed (adds sidebar--collapsed) on narrow screens when no stored value', () => {
+  delete _localStorageStore['muxplex.sidebarOpen'];
+  const origInnerWidth = globalThis.window.innerWidth;
+  globalThis.window.innerWidth = 600;
+
+  const removedClasses = [];
+  const addedClasses = [];
+  const mockSidebar = {
+    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) },
+  };
+  const mockCollapseBtn = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar') return mockSidebar;
+    if (id === 'collapse-btn') return mockCollapseBtn;
+    return null;
+  };
+
+  app.initSidebar();
+
+  assert.ok(addedClasses.includes('sidebar--collapsed'), 'should add sidebar--collapsed on narrow screen');
+  assert.ok(!removedClasses.includes('sidebar--collapsed'), 'should not remove sidebar--collapsed on narrow screen');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.window.innerWidth = origInnerWidth;
+});
+
+test('initSidebar respects stored value true regardless of screen width — even at 600px removes collapsed class', () => {
+  _localStorageStore['muxplex.sidebarOpen'] = 'true';
+  const origInnerWidth = globalThis.window.innerWidth;
+  globalThis.window.innerWidth = 600;
+
+  const removedClasses = [];
+  const addedClasses = [];
+  const mockSidebar = {
+    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) },
+  };
+  const mockCollapseBtn = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar') return mockSidebar;
+    if (id === 'collapse-btn') return mockCollapseBtn;
+    return null;
+  };
+
+  app.initSidebar();
+
+  assert.ok(removedClasses.includes('sidebar--collapsed'), 'should remove sidebar--collapsed when stored value is true, even at 600px');
+  assert.ok(!addedClasses.includes('sidebar--collapsed'), 'should not add sidebar--collapsed when stored value is true');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.window.innerWidth = origInnerWidth;
+});
+
+// ─── toggleSidebar ───────────────────────────────────────────────────────────
+
+test('toggleSidebar persists state to localStorage — from true toggles to false', () => {
+  _localStorageStore['muxplex.sidebarOpen'] = 'true';
+
+  const mockSidebar = {
+    classList: { remove: () => {}, add: () => {} },
+  };
+  const mockCollapseBtn = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar') return mockSidebar;
+    if (id === 'collapse-btn') return mockCollapseBtn;
+    return null;
+  };
+
+  app.toggleSidebar();
+
+  assert.strictEqual(_localStorageStore['muxplex.sidebarOpen'], 'false', 'should persist false after toggling from true');
+
+  globalThis.document.getElementById = origGetById;
+});
+
+test('toggleSidebar adds sidebar--collapsed class when closing (from open)', () => {
+  _localStorageStore['muxplex.sidebarOpen'] = 'true';
+
+  const addedClasses = [];
+  const mockSidebar = {
+    classList: { remove: () => {}, add: (c) => addedClasses.push(c) },
+  };
+  const mockCollapseBtn = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar') return mockSidebar;
+    if (id === 'collapse-btn') return mockCollapseBtn;
+    return null;
+  };
+
+  app.toggleSidebar();
+
+  assert.ok(addedClasses.includes('sidebar--collapsed'), 'should add sidebar--collapsed class when closing');
+
+  globalThis.document.getElementById = origGetById;
+});
+
+test('toggleSidebar removes sidebar--collapsed class when opening (from closed) and sets localStorage to true', () => {
+  _localStorageStore['muxplex.sidebarOpen'] = 'false';
+
+  const removedClasses = [];
+  const mockSidebar = {
+    classList: { remove: (c) => removedClasses.push(c), add: () => {} },
+  };
+  const mockCollapseBtn = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar') return mockSidebar;
+    if (id === 'collapse-btn') return mockCollapseBtn;
+    return null;
+  };
+
+  app.toggleSidebar();
+
+  assert.ok(removedClasses.includes('sidebar--collapsed'), 'should remove sidebar--collapsed class when opening');
+  assert.strictEqual(_localStorageStore['muxplex.sidebarOpen'], 'true', 'should persist true after toggling from false');
 
   globalThis.document.getElementById = origGetById;
 });
