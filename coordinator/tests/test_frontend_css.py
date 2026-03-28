@@ -216,7 +216,9 @@ def test_css_sidebar_before_terminal_container():
     sidebar_idx = css.index(".session-sidebar")
     terminal_idx = css.index(".terminal-container")
     assert view_body_idx < sidebar_idx, ".session-sidebar must come after .view-body"
-    assert sidebar_idx < terminal_idx, ".session-sidebar must come before .terminal-container"
+    assert sidebar_idx < terminal_idx, (
+        ".session-sidebar must come before .terminal-container"
+    )
 
 
 def test_css_sidebar_header():
@@ -416,4 +418,99 @@ def test_css_sidebar_item_after_toggle_btn_hover():
     assert ".sidebar-item" in css
     toggle_idx = css.index(".sidebar-toggle-btn:hover")
     item_idx = css.index(".sidebar-item")
-    assert toggle_idx < item_idx, ".sidebar-item must come after .sidebar-toggle-btn:hover"
+    assert toggle_idx < item_idx, (
+        ".sidebar-item must come after .sidebar-toggle-btn:hover"
+    )
+
+
+# ============================================================
+# Responsive overlay at <960px and reduced-motion (task-5)
+# ============================================================
+
+
+def _extract_media_block(css: str, query: str) -> str:
+    """Extract the inner content of a @media block (balanced-brace aware)."""
+    idx = css.index(query)
+    open_brace = css.index("{", idx)
+    depth = 0
+    pos = open_brace
+    while pos < len(css):
+        if css[pos] == "{":
+            depth += 1
+        elif css[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[open_brace + 1 : pos]
+        pos += 1
+    raise ValueError(f"Could not find matching close brace for {query}")
+
+
+def test_css_responsive_overlay_media_query_exists():
+    """@media (max-width: 959px) block must exist in the CSS."""
+    css = read_css()
+    assert "@media (max-width: 959px)" in css
+
+
+def test_css_responsive_overlay_at_end():
+    """@media (max-width: 959px) must be the last @media block in the file."""
+    css = read_css()
+    last_media_idx = css.rfind("@media")
+    assert "@media (max-width: 959px)" in css[last_media_idx:]
+
+
+def test_css_responsive_overlay_sidebar_fixed():
+    """.session-sidebar inside <960px media query must become a fixed overlay."""
+    css = read_css()
+    media_block = _extract_media_block(css, "@media (max-width: 959px)")
+    assert ".session-sidebar {" in media_block
+    block = _extract_rule_block(media_block, ".session-sidebar {")
+    assert "position: fixed" in block
+    assert "left: 0" in block
+    assert "top: 0" in block
+    assert "height: 100%" in block
+    assert "z-index: 200" in block
+    assert "width: 240px" in block
+    assert "min-width: 240px" in block
+    assert "transition: transform 0.25s ease" in block
+    assert "transform: translateX(0)" in block
+    assert "box-shadow: 2px 0 16px rgba(0,0,0,0.5)" in block
+
+
+def test_css_responsive_overlay_sidebar_collapsed():
+    """.session-sidebar.sidebar--collapsed inside <960px collapses via translateX(-100%)."""
+    css = read_css()
+    media_block = _extract_media_block(css, "@media (max-width: 959px)")
+    assert ".session-sidebar.sidebar--collapsed" in media_block
+    block = _extract_rule_block(media_block, ".session-sidebar.sidebar--collapsed")
+    assert "width: 240px" in block
+    assert "min-width: 240px" in block
+    assert "transform: translateX(-100%)" in block
+
+
+def test_css_responsive_overlay_collapse_btn_hidden():
+    """.sidebar-collapse-btn inside <960px must be display: none."""
+    css = read_css()
+    media_block = _extract_media_block(css, "@media (max-width: 959px)")
+    assert ".sidebar-collapse-btn" in media_block
+    block = _extract_rule_block(media_block, ".sidebar-collapse-btn")
+    assert "display: none" in block
+
+
+def test_css_reduced_motion_sidebar_transition_none():
+    """@media (prefers-reduced-motion: reduce) must include .session-sidebar { transition: none; }."""
+    css = read_css()
+    media_block = _extract_media_block(css, "@media (prefers-reduced-motion: reduce)")
+    assert ".session-sidebar" in media_block
+    block = _extract_rule_block(media_block, ".session-sidebar")
+    assert "transition: none" in block
+
+
+def test_css_reduced_motion_sidebar_after_toast():
+    """In reduced-motion block, .session-sidebar must come after .toast { animation: none; }."""
+    css = read_css()
+    media_block = _extract_media_block(css, "@media (prefers-reduced-motion: reduce)")
+    toast_idx = media_block.index(".toast")
+    sidebar_idx = media_block.index(".session-sidebar")
+    assert toast_idx < sidebar_idx, (
+        ".session-sidebar must come after .toast in reduced-motion block"
+    )

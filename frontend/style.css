@@ -903,6 +903,10 @@ body {
   .toast {
     animation: none;
   }
+
+  .session-sidebar {
+    transition: none;
+  }
 }
 
 /* ============================================================
@@ -919,4 +923,33 @@ body {
   height: 24px;
   width: auto;
   display: block;
+}
+
+/* ============================================================
+   Responsive overlay sidebar at <960px
+   ============================================================ */
+
+@media (max-width: 959px) {
+  .session-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100%;
+    z-index: 200;
+    width: 240px;
+    min-width: 240px;
+    transition: transform 0.25s ease;
+    transform: translateX(0);
+    box-shadow: 2px 0 16px rgba(0,0,0,0.5);
+  }
+
+  .session-sidebar.sidebar--collapsed {
+    width: 240px;
+    min-width: 240px;
+    transform: translateX(-100%);
+  }
+
+  .sidebar-collapse-btn {
+    display: none;
+  }
 }
