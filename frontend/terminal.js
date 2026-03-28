@@ -15,7 +15,7 @@ function connectWebSocket(name) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = `${proto}//${location.host}/terminal/ws`;
   const reconnectOverlay = document.getElementById('reconnect-overlay');
-  var encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+  const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 
   function encodePayload(typeChar, str) {
     // Returns Uint8Array: [typeCharCode, ...utf8bytes]
@@ -26,7 +26,10 @@ function connectWebSocket(name) {
     return payload;
   }
 
-  // Register terminal event handlers (once — _ws captured by closure reference)
+  // Register terminal event handlers once on this _term instance.
+  // These handlers read the module-level _ws at call time (not a captured reference),
+  // so they always target the live socket. createTerminal() disposes _term before
+  // the next session, removing these handlers automatically.
   if (_term) {
     _term.onData(function(data) {
       if (_ws && _ws.readyState === WebSocket.OPEN) {
@@ -197,8 +200,8 @@ function openTerminal(sessionName) {
     // iOS Safari defers flex layout — calling fit() synchronously here gives 0px width
     // → 2-column terminal. The RAF and 500ms fallback fix this race condition.
     // Falls back to immediate execution in Node.js test environments where RAF is absent.
-    var fitAddonRef = _fitAddon;
-    var raf = (typeof requestAnimationFrame !== 'undefined') ? requestAnimationFrame : function(fn) { fn(); };
+    const fitAddonRef = _fitAddon;
+    const raf = typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame : (fn) => fn();
     raf(function() {
       try { fitAddonRef.fit(); } catch (_) {}
       // 500ms fallback for slow mobile layout engines (e.g. first paint on low-end devices)
