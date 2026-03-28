@@ -1,5 +1,5 @@
 """
-Bell flag polling and unseen_count tracking for the tmux-web coordinator.
+Bell flag polling and unseen_count tracking for the tmux-web muxplex.
 
 Based on spike findings: reading the tmux window_bell_flag does NOT clear it.
 The flag persists until the window is made active inside tmux.
@@ -17,8 +17,8 @@ Public API:
 
 import time
 
-from coordinator.sessions import run_tmux
-from coordinator.state import empty_bell
+from muxplex.sessions import run_tmux
+from muxplex.state import empty_bell
 
 # ---------------------------------------------------------------------------
 # In-memory tracking: session_name → bool (was flag set on last poll?)

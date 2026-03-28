@@ -1,5 +1,5 @@
 """
-State schema and factory functions for the tmux-web coordinator.
+State schema and factory functions for the tmux-web muxplex.
 
 State schema (all values are plain JSON-serialisable dicts):
 

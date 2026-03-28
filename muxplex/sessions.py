@@ -1,5 +1,5 @@
 """
-tmux session enumeration and snapshot helpers for the tmux-web coordinator.
+tmux session enumeration and snapshot helpers for the tmux-web muxplex.
 
 In-memory cache:
     _session_list  — most-recently-enumerated list of session names.

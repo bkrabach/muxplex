@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import coordinator.sessions as sessions_mod
-from coordinator.sessions import (
+import muxplex.sessions as sessions_mod
+from muxplex.sessions import (
     capture_pane,
     enumerate_sessions,
     get_snapshots,
@@ -169,7 +169,7 @@ async def test_snapshot_all_returns_dict_keyed_by_name():
     async def mock_capture(name, lines=30):
         return f"output-for-{name}"
 
-    with patch("coordinator.sessions.capture_pane", side_effect=mock_capture):
+    with patch("muxplex.sessions.capture_pane", side_effect=mock_capture):
         result = await snapshot_all(["alpha", "beta", "gamma"])
 
     assert result == {
@@ -181,7 +181,7 @@ async def test_snapshot_all_returns_dict_keyed_by_name():
 
 async def test_snapshot_all_returns_empty_dict_for_empty_input():
     """snapshot_all([]) returns an empty dict without calling capture_pane."""
-    with patch("coordinator.sessions.capture_pane", new=AsyncMock()) as mock_capture:
+    with patch("muxplex.sessions.capture_pane", new=AsyncMock()) as mock_capture:
         result = await snapshot_all([])
 
     assert result == {}
@@ -196,7 +196,7 @@ async def test_snapshot_all_returns_empty_string_on_individual_failure():
             raise RuntimeError("pane not found")
         return f"output-for-{name}"
 
-    with patch("coordinator.sessions.capture_pane", side_effect=mock_capture):
+    with patch("muxplex.sessions.capture_pane", side_effect=mock_capture):
         result = await snapshot_all(["session-a", "bad-session", "session-b"])
 
     assert result == {

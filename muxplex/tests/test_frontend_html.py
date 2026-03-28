@@ -4,7 +4,7 @@ import pathlib
 
 from bs4 import BeautifulSoup, Tag
 
-HTML_PATH = pathlib.Path(__file__).parent.parent.parent / "frontend" / "index.html"
+HTML_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "index.html"
 
 # Parse once per module — tests are read-only so sharing is safe.
 _SOUP: BeautifulSoup = BeautifulSoup(HTML_PATH.read_text(), "html.parser")

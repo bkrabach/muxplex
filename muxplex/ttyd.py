@@ -1,5 +1,5 @@
 """
-ttyd process lifecycle management for the tmux-web coordinator.
+ttyd process lifecycle management for the tmux-web muxplex.
 
 Constants:
     TTYD_PID_DIR  — directory for the PID file (default: ~/.local/share/tmux-web/)

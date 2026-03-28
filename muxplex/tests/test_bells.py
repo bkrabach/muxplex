@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from coordinator.bells import (
+from muxplex.bells import (
     _bell_seen,
     apply_bell_clear_rule,
     poll_bell_flag,
     process_bell_flags,
     should_clear_bell,
 )
-from coordinator.state import empty_bell, empty_state
+from muxplex.state import empty_bell, empty_state
 
 
 # ---------------------------------------------------------------------------
@@ -38,14 +38,14 @@ def reset_bell_seen():
 
 async def test_poll_bell_flag_returns_true_when_flag_is_1():
     """poll_bell_flag returns True when tmux reports window_bell_flag=1."""
-    with patch("coordinator.bells.run_tmux", new=AsyncMock(return_value="1\n")):
+    with patch("muxplex.bells.run_tmux", new=AsyncMock(return_value="1\n")):
         result = await poll_bell_flag("my-session")
     assert result is True
 
 
 async def test_poll_bell_flag_returns_false_when_flag_is_0():
     """poll_bell_flag returns False when tmux reports window_bell_flag=0."""
-    with patch("coordinator.bells.run_tmux", new=AsyncMock(return_value="0\n")):
+    with patch("muxplex.bells.run_tmux", new=AsyncMock(return_value="0\n")):
         result = await poll_bell_flag("my-session")
     assert result is False
 
@@ -53,7 +53,7 @@ async def test_poll_bell_flag_returns_false_when_flag_is_0():
 async def test_poll_bell_flag_returns_false_on_error():
     """poll_bell_flag returns False when run_tmux raises RuntimeError."""
     with patch(
-        "coordinator.bells.run_tmux",
+        "muxplex.bells.run_tmux",
         new=AsyncMock(side_effect=RuntimeError("session not found")),
     ):
         result = await poll_bell_flag("my-session")
@@ -70,7 +70,7 @@ async def test_process_bell_flags_increments_unseen_count_on_new_bell():
     state = empty_state()
     state["sessions"]["session-a"] = {"bell": empty_bell()}
 
-    with patch("coordinator.bells.poll_bell_flag", new=AsyncMock(return_value=True)):
+    with patch("muxplex.bells.poll_bell_flag", new=AsyncMock(return_value=True)):
         changed = await process_bell_flags(["session-a"], state)
 
     assert changed is True
@@ -83,7 +83,7 @@ async def test_process_bell_flags_does_not_double_count_persistent_flag():
     state = empty_state()
     state["sessions"]["session-a"] = {"bell": empty_bell()}
 
-    with patch("coordinator.bells.poll_bell_flag", new=AsyncMock(return_value=True)):
+    with patch("muxplex.bells.poll_bell_flag", new=AsyncMock(return_value=True)):
         # First poll — 0→1 transition
         await process_bell_flags(["session-a"], state)
         # Second poll — 1→1 (persistent), should NOT increment again
@@ -100,7 +100,7 @@ async def test_process_bell_flags_resets_tracking_when_flag_clears():
 
     # side_effect drives three sequential calls: 0→1, 1→0, 0→1
     with patch(
-        "coordinator.bells.poll_bell_flag",
+        "muxplex.bells.poll_bell_flag",
         new=AsyncMock(side_effect=[True, False, True]),
     ):
         for _ in range(3):
@@ -114,7 +114,7 @@ async def test_process_bell_flags_no_change_returns_false():
     state = empty_state()
     state["sessions"]["session-a"] = {"bell": empty_bell()}
 
-    with patch("coordinator.bells.poll_bell_flag", new=AsyncMock(return_value=False)):
+    with patch("muxplex.bells.poll_bell_flag", new=AsyncMock(return_value=False)):
         changed = await process_bell_flags(["session-a"], state)
 
     assert changed is False
@@ -126,7 +126,7 @@ async def test_process_bell_flags_creates_bell_entry_if_missing():
     state = empty_state()
     state["sessions"]["session-a"] = {}  # no 'bell' key
 
-    with patch("coordinator.bells.poll_bell_flag", new=AsyncMock(return_value=False)):
+    with patch("muxplex.bells.poll_bell_flag", new=AsyncMock(return_value=False)):
         await process_bell_flags(["session-a"], state)
 
     assert "bell" in state["sessions"]["session-a"]

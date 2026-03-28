@@ -1,5 +1,5 @@
 """
-Integration tests for the tmux-web coordinator.
+Integration tests for the tmux-web muxplex.
 
 These tests require a real tmux installation and spin up an isolated tmux
 server on socket 'test-server' for the duration of the module.
@@ -18,10 +18,10 @@ from unittest.mock import patch
 
 import pytest
 
-import coordinator.state as state_mod
-from coordinator.bells import poll_bell_flag
-from coordinator.main import _run_poll_cycle
-from coordinator.sessions import enumerate_sessions, get_snapshots
+import muxplex.state as state_mod
+from muxplex.bells import poll_bell_flag
+from muxplex.main import _run_poll_cycle
+from muxplex.sessions import enumerate_sessions, get_snapshots
 
 
 # ---------------------------------------------------------------------------
@@ -87,13 +87,13 @@ def use_tmp_state(tmp_path, monkeypatch):
     """Redirect state and PID files to tmp_path for test isolation."""
     tmp_state_dir = tmp_path / "state"
     tmp_state_path = tmp_state_dir / "state.json"
-    monkeypatch.setattr("coordinator.state.STATE_DIR", tmp_state_dir)
-    monkeypatch.setattr("coordinator.state.STATE_PATH", tmp_state_path)
+    monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
+    monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
 
     tmp_pid_dir = tmp_path / "ttyd"
     tmp_pid_path = tmp_pid_dir / "ttyd.pid"
-    monkeypatch.setattr("coordinator.ttyd.TTYD_PID_DIR", tmp_pid_dir)
-    monkeypatch.setattr("coordinator.ttyd.TTYD_PID_PATH", tmp_pid_path)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_DIR", tmp_pid_dir)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_PATH", tmp_pid_path)
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def make_run_tmux_for_socket(socket: str):
 async def test_enumerate_sessions_finds_test_session(tmux_server):
     """enumerate_sessions discovers the 'test' session on the isolated tmux server."""
     patched_run_tmux = make_run_tmux_for_socket(tmux_server)
-    with patch("coordinator.sessions.run_tmux", side_effect=patched_run_tmux):
+    with patch("muxplex.sessions.run_tmux", side_effect=patched_run_tmux):
         sessions = await enumerate_sessions()
     assert "test" in sessions
 
@@ -158,7 +158,7 @@ async def test_bell_flag_detected_after_printf_bell(tmux_server):
     await asyncio.sleep(1.0)
 
     patched_run_tmux = make_run_tmux_for_socket(tmux_server)
-    with patch("coordinator.bells.run_tmux", side_effect=patched_run_tmux):
+    with patch("muxplex.bells.run_tmux", side_effect=patched_run_tmux):
         result = await poll_bell_flag("test")
     assert result is True
 
@@ -169,8 +169,8 @@ async def test_full_poll_cycle_via_api(tmux_server):
     and populates the in-memory snapshot cache with non-empty content."""
     patched_run_tmux = make_run_tmux_for_socket(tmux_server)
     with (
-        patch("coordinator.sessions.run_tmux", side_effect=patched_run_tmux),
-        patch("coordinator.bells.run_tmux", side_effect=patched_run_tmux),
+        patch("muxplex.sessions.run_tmux", side_effect=patched_run_tmux),
+        patch("muxplex.bells.run_tmux", side_effect=patched_run_tmux),
     ):
         await _run_poll_cycle()
 
@@ -191,8 +191,8 @@ async def test_state_file_written_atomically_by_poll_cycle(tmux_server):
     """After _run_poll_cycle, state.json exists, no .tmp file remains, content is valid JSON."""
     patched_run_tmux = make_run_tmux_for_socket(tmux_server)
     with (
-        patch("coordinator.sessions.run_tmux", side_effect=patched_run_tmux),
-        patch("coordinator.bells.run_tmux", side_effect=patched_run_tmux),
+        patch("muxplex.sessions.run_tmux", side_effect=patched_run_tmux),
+        patch("muxplex.bells.run_tmux", side_effect=patched_run_tmux),
     ):
         await _run_poll_cycle()
 

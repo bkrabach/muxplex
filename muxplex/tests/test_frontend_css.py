@@ -2,7 +2,7 @@
 
 import pathlib
 
-CSS_PATH = pathlib.Path(__file__).parent.parent.parent / "frontend" / "style.css"
+CSS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "style.css"
 
 
 def read_css() -> str:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from coordinator.state import (
+from muxplex.state import (
     empty_bell,
     empty_device,
     empty_state,
@@ -31,8 +31,8 @@ def use_tmp_state_dir(tmp_path, monkeypatch):
     """Redirect state I/O to a fresh temp directory for every test."""
     tmp_state_dir = tmp_path / "state"
     tmp_state_path = tmp_state_dir / "state.json"
-    monkeypatch.setattr("coordinator.state.STATE_DIR", tmp_state_dir)
-    monkeypatch.setattr("coordinator.state.STATE_PATH", tmp_state_path)
+    monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
+    monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ async def test_write_then_read_roundtrip():
 
 async def test_write_creates_state_dir_if_missing():
     """save_state() must create STATE_DIR (and parents) if they do not exist."""
-    import coordinator.state as state_mod
+    import muxplex.state as state_mod
 
     # The tmp "state" subdirectory should not exist yet.
     assert not state_mod.STATE_DIR.exists()
@@ -190,7 +190,7 @@ async def test_write_creates_state_dir_if_missing():
 
 async def test_write_is_atomic_no_tmp_file_left():
     """After write_state(), no .tmp file should remain on disk."""
-    import coordinator.state as state_mod
+    import muxplex.state as state_mod
 
     await write_state(empty_state())
     tmp_file = Path(str(state_mod.STATE_PATH) + ".tmp")

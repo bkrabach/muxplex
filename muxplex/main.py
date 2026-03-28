@@ -19,8 +19,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from coordinator.bells import apply_bell_clear_rule, process_bell_flags
-from coordinator.sessions import (
+from muxplex.bells import apply_bell_clear_rule, process_bell_flags
+from muxplex.sessions import (
     enumerate_sessions,
     get_session_list,
     get_snapshots,
@@ -28,7 +28,7 @@ from coordinator.sessions import (
     snapshot_all,
     update_session_cache,
 )
-from coordinator.state import (
+from muxplex.state import (
     empty_bell,
     load_state,
     prune_devices,
@@ -37,7 +37,7 @@ from coordinator.state import (
     save_state,
     state_lock,
 )
-from coordinator.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
+from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -341,5 +341,5 @@ async def setup_hooks() -> dict:
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------
 
-_FRONTEND_DIR = pathlib.Path(__file__).parent.parent / "frontend"
+_FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
 app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

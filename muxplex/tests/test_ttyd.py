@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import coordinator.ttyd as ttyd_mod
-from coordinator.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd
+import muxplex.ttyd as ttyd_mod
+from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd
 
 
 # ---------------------------------------------------------------------------
@@ -22,8 +22,8 @@ def use_tmp_pid_dir(tmp_path, monkeypatch):
     """Redirect PID file I/O to a fresh temp directory for every test."""
     tmp_pid_dir = tmp_path / "ttyd"
     tmp_pid_path = tmp_pid_dir / "ttyd.pid"
-    monkeypatch.setattr("coordinator.ttyd.TTYD_PID_DIR", tmp_pid_dir)
-    monkeypatch.setattr("coordinator.ttyd.TTYD_PID_PATH", tmp_pid_path)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_DIR", tmp_pid_dir)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_PATH", tmp_pid_path)
 
 
 # ---------------------------------------------------------------------------

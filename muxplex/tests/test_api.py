@@ -5,7 +5,7 @@ Tests for coordinator/main.py — FastAPI skeleton, lifespan, /health endpoint.
 import pytest
 from fastapi.testclient import TestClient
 
-from coordinator.main import app
+from muxplex.main import app
 
 
 # ---------------------------------------------------------------------------
@@ -19,26 +19,26 @@ def patch_startup_and_state(tmp_path, monkeypatch):
     # Redirect state files
     tmp_state_dir = tmp_path / "state"
     tmp_state_path = tmp_state_dir / "state.json"
-    monkeypatch.setattr("coordinator.state.STATE_DIR", tmp_state_dir)
-    monkeypatch.setattr("coordinator.state.STATE_PATH", tmp_state_path)
+    monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
+    monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
 
     # Redirect PID files
     tmp_pid_dir = tmp_path / "ttyd"
     tmp_pid_path = tmp_pid_dir / "ttyd.pid"
-    monkeypatch.setattr("coordinator.ttyd.TTYD_PID_DIR", tmp_pid_dir)
-    monkeypatch.setattr("coordinator.ttyd.TTYD_PID_PATH", tmp_pid_path)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_DIR", tmp_pid_dir)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_PATH", tmp_pid_path)
 
     # Mock kill_orphan_ttyd so startup doesn't touch real processes (must be async)
     async def _mock_kill_orphan():
         return False
 
-    monkeypatch.setattr("coordinator.main.kill_orphan_ttyd", _mock_kill_orphan)
+    monkeypatch.setattr("muxplex.main.kill_orphan_ttyd", _mock_kill_orphan)
 
     # Replace _poll_loop with a no-op so tests don't spin up real poll cycles
     async def noop_poll_loop() -> None:
         pass
 
-    monkeypatch.setattr("coordinator.main._poll_loop", noop_poll_loop)
+    monkeypatch.setattr("muxplex.main._poll_loop", noop_poll_loop)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def test_get_state_active_session_is_none_initially(client):
 
 def test_patch_state_updates_session_order(client):
     """PATCH /api/state updates session_order and persists the change."""
-    from coordinator.state import load_state, save_state
+    from muxplex.state import load_state, save_state
 
     # Write initial state with a known session order
     initial_state = {
@@ -148,9 +148,9 @@ def test_patch_state_ignores_unknown_fields(client):
 
 def test_get_sessions_returns_list(client, monkeypatch):
     """GET /api/sessions must return a JSON list."""
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
     monkeypatch.setattr(
-        "coordinator.main.get_snapshots", lambda: {"alpha": "some text"}
+        "muxplex.main.get_snapshots", lambda: {"alpha": "some text"}
     )
 
     response = client.get("/api/sessions")
@@ -162,10 +162,10 @@ def test_get_sessions_returns_list(client, monkeypatch):
 
 def test_get_sessions_each_item_has_required_fields(client, monkeypatch):
     """Each item in GET /api/sessions must have name, snapshot, and bell fields."""
-    from coordinator.state import save_state
+    from muxplex.state import save_state
 
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["beta"])
-    monkeypatch.setattr("coordinator.main.get_snapshots", lambda: {"beta": "output"})
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["beta"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"beta": "output"})
     save_state(
         {
             "active_session": None,
@@ -191,9 +191,9 @@ def test_get_sessions_each_item_has_required_fields(client, monkeypatch):
 
 def test_get_sessions_includes_snapshot_text(client, monkeypatch):
     """GET /api/sessions snapshot field must contain the cached capture-pane text."""
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["gamma"])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["gamma"])
     monkeypatch.setattr(
-        "coordinator.main.get_snapshots",
+        "muxplex.main.get_snapshots",
         lambda: {"gamma": "hello from tmux pane"},
     )
 
@@ -207,11 +207,11 @@ def test_get_sessions_includes_snapshot_text(client, monkeypatch):
 
 def test_get_sessions_includes_bell_state(client, monkeypatch):
     """GET /api/sessions bell field must include unseen_count from persistent state."""
-    from coordinator.state import save_state
+    from muxplex.state import save_state
 
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["delta"])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["delta"])
     monkeypatch.setattr(
-        "coordinator.main.get_snapshots", lambda: {"delta": "pane text"}
+        "muxplex.main.get_snapshots", lambda: {"delta": "pane text"}
     )
     save_state(
         {
@@ -239,8 +239,8 @@ def test_get_sessions_includes_bell_state(client, monkeypatch):
 
 def test_get_sessions_returns_empty_list_when_no_sessions(client, monkeypatch):
     """GET /api/sessions must return an empty list when there are no sessions."""
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: [])
-    monkeypatch.setattr("coordinator.main.get_snapshots", lambda: {})
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
 
     response = client.get("/api/sessions")
     assert response.status_code == 200
@@ -254,17 +254,17 @@ def test_get_sessions_returns_empty_list_when_no_sessions(client, monkeypatch):
 
 def test_connect_session_returns_200(client, monkeypatch):
     """POST /api/sessions/{name}/connect returns 200 and correct body when session exists."""
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
 
     async def mock_kill():
         return True
 
-    monkeypatch.setattr("coordinator.main.kill_ttyd", mock_kill)
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill)
 
     async def mock_spawn(name):
         pass
 
-    monkeypatch.setattr("coordinator.main.spawn_ttyd", mock_spawn)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", mock_spawn)
 
     response = client.post("/api/sessions/alpha/connect")
     assert response.status_code == 200
@@ -275,19 +275,19 @@ def test_connect_session_returns_200(client, monkeypatch):
 
 def test_connect_session_sets_active_session(client, monkeypatch):
     """POST /api/sessions/{name}/connect persists active_session to state."""
-    from coordinator.state import load_state
+    from muxplex.state import load_state
 
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
 
     async def mock_kill():
         return True
 
-    monkeypatch.setattr("coordinator.main.kill_ttyd", mock_kill)
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill)
 
     async def mock_spawn(name):
         pass
 
-    monkeypatch.setattr("coordinator.main.spawn_ttyd", mock_spawn)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", mock_spawn)
 
     client.post("/api/sessions/alpha/connect")
 
@@ -297,7 +297,7 @@ def test_connect_session_sets_active_session(client, monkeypatch):
 
 def test_connect_session_kills_existing_ttyd(client, monkeypatch):
     """POST /api/sessions/{name}/connect calls kill_ttyd then spawn_ttyd."""
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
 
     call_order = []
 
@@ -308,8 +308,8 @@ def test_connect_session_kills_existing_ttyd(client, monkeypatch):
     async def mock_spawn(name):
         call_order.append(("spawn", name))
 
-    monkeypatch.setattr("coordinator.main.kill_ttyd", mock_kill)
-    monkeypatch.setattr("coordinator.main.spawn_ttyd", mock_spawn)
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", mock_spawn)
 
     response = client.post("/api/sessions/alpha/connect")
     assert response.status_code == 200
@@ -318,7 +318,7 @@ def test_connect_session_kills_existing_ttyd(client, monkeypatch):
 
 def test_connect_nonexistent_session_returns_404(client, monkeypatch):
     """POST /api/sessions/{name}/connect returns 404 when session is not in list."""
-    monkeypatch.setattr("coordinator.main.get_session_list", lambda: ["alpha", "beta"])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
 
     response = client.post("/api/sessions/gamma/connect")
     assert response.status_code == 404
@@ -331,7 +331,7 @@ def test_connect_nonexistent_session_returns_404(client, monkeypatch):
 
 def test_delete_current_kills_ttyd_and_clears_active(client, monkeypatch):
     """DELETE /api/sessions/current kills ttyd and clears active_session."""
-    from coordinator.state import load_state, save_state
+    from muxplex.state import load_state, save_state
 
     # Set up initial state with active session
     save_state(
@@ -349,7 +349,7 @@ def test_delete_current_kills_ttyd_and_clears_active(client, monkeypatch):
         kill_called.append(True)
         return True
 
-    monkeypatch.setattr("coordinator.main.kill_ttyd", mock_kill)
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill)
 
     response = client.delete("/api/sessions/current")
     assert response.status_code == 200
@@ -488,7 +488,7 @@ def test_receive_bell_returns_ok_and_session_name(client):
 
 def test_receive_bell_increments_unseen_count(client):
     """POST /api/sessions/{name}/bell increments unseen_count in state."""
-    from coordinator.state import load_state
+    from muxplex.state import load_state
 
     client.post("/api/sessions/my-session/bell")
 
@@ -499,7 +499,7 @@ def test_receive_bell_increments_unseen_count(client):
 
 def test_receive_bell_creates_session_entry_if_absent(client):
     """POST /api/sessions/{name}/bell creates session/bell entries if missing."""
-    from coordinator.state import load_state
+    from muxplex.state import load_state
 
     # Ensure session does not exist in state yet
     client.post("/api/sessions/brand-new/bell")
@@ -511,7 +511,7 @@ def test_receive_bell_creates_session_entry_if_absent(client):
 
 def test_receive_bell_multiple_calls_accumulate(client):
     """Three POST calls to the bell endpoint accumulate unseen_count to 3."""
-    from coordinator.state import load_state
+    from muxplex.state import load_state
 
     for _ in range(3):
         client.post("/api/sessions/multi-session/bell")
@@ -525,7 +525,7 @@ def test_receive_bell_sets_last_fired_at(client):
     """POST /api/sessions/{name}/bell sets last_fired_at to a recent timestamp."""
     import time
 
-    from coordinator.state import load_state
+    from muxplex.state import load_state
 
     before = time.time()
     client.post("/api/sessions/timed-session/bell")
@@ -546,7 +546,7 @@ def test_setup_hooks_returns_ok(client, monkeypatch):
     """POST /api/internal/setup-hooks returns {"ok": True} when tmux hook registers."""
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr("coordinator.main.run_tmux", AsyncMock(return_value=""))
+    monkeypatch.setattr("muxplex.main.run_tmux", AsyncMock(return_value=""))
 
     response = client.post("/api/internal/setup-hooks")
     assert response.status_code == 200
@@ -559,7 +559,7 @@ def test_setup_hooks_returns_ok_false_on_error(client, monkeypatch):
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(
-        "coordinator.main.run_tmux",
+        "muxplex.main.run_tmux",
         AsyncMock(side_effect=RuntimeError("tmux not found")),
     )
 
@@ -575,7 +575,7 @@ def test_setup_hooks_curl_discards_response_body(client, monkeypatch):
     from unittest.mock import AsyncMock
 
     mock_run_tmux = AsyncMock(return_value="")
-    monkeypatch.setattr("coordinator.main.run_tmux", mock_run_tmux)
+    monkeypatch.setattr("muxplex.main.run_tmux", mock_run_tmux)
 
     response = client.post("/api/internal/setup-hooks")
     assert response.status_code == 200
@@ -594,11 +594,11 @@ def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
     """Lifespan startup registers alert-bell hook with curl -o /dev/null to discard response."""
     from unittest.mock import AsyncMock
     from fastapi.testclient import TestClient
-    from coordinator.main import app
+    from muxplex.main import app
 
     # Mock run_tmux to capture the hook command
     mock_run_tmux = AsyncMock(return_value="")
-    monkeypatch.setattr("coordinator.main.run_tmux", mock_run_tmux)
+    monkeypatch.setattr("muxplex.main.run_tmux", mock_run_tmux)
 
     # Trigger lifespan by creating a TestClient
     with TestClient(app) as _:
