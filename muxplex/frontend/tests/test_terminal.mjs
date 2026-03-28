@@ -742,3 +742,17 @@ test('terminal.js touchstart and touchend are passive', () => {
   assert.ok(touchstartPassive, 'touchstart listener must declare passive');
   assert.ok(touchendPassive,   'touchend listener must declare passive');
 });
+
+test('terminal.js touchmove uses accumulation for consistent scroll steps', () => {
+  const source = fs.readFileSync(
+    new URL('../terminal.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('touchmove'), 'touchmove listener must be present');
+  assert.ok(source.includes('e.preventDefault'), 'must call preventDefault');
+  assert.ok(source.includes('WheelEvent'), 'must dispatch WheelEvent');
+  assert.ok(source.includes('.xterm-viewport'), 'must target xterm viewport');
+  assert.ok(source.includes('_accumulated'), 'must accumulate delta between events');
+  assert.ok(source.includes('SCROLL_PX'), 'must use a threshold constant');
+  assert.ok(!source.includes('deltaY * 3'), 'must NOT use variable deltaY scaling (causes jumpy scroll)');
+  assert.ok(source.includes('passive: false'), 'touchmove must be non-passive');
+});

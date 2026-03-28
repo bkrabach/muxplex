@@ -248,21 +248,23 @@ window._openTerminal = openTerminal;
 window._closeTerminal = closeTerminal;
 
 // ---------------------------------------------------------------------------
-// Touch scroll — forwards vertical swipe to xterm.js as a WheelEvent.
-// xterm.js processes this identically to a real mouse wheel: if mouse
-// reporting is enabled (tmux set -g mouse on), escape sequences are sent
-// to the PTY so tmux/applications handle the scroll (inside).
-// Mouse wheel scroll (the `wheel` event path) is unaffected — this adds
-// touch on top.
+// Touch scroll — accumulates delta and dispatches fixed-size WheelEvents.
+// Fixed deltaY=120 per SCROLL_PX pixels ensures consistent scroll steps
+// regardless of how Android Chrome batches touchmove events. Each WheelEvent
+// travels through xterm.js mouse reporting to tmux (the "inside" path).
+// Mouse wheel (wheel event) and iOS/desktop are unaffected.
 // ---------------------------------------------------------------------------
 ;(function initTerminalTouchScroll() {
   var container = document.getElementById('terminal-container');
   if (!container || typeof container.addEventListener !== 'function') return;
 
   var _touchLastY = 0;
+  var _accumulated = 0;         // running pixel debt between scroll events
+  var SCROLL_PX = 20;           // pixels of touch movement = one scroll click
 
   container.addEventListener('touchstart', function (e) {
     _touchLastY = e.touches[0].clientY;
+    _accumulated = 0;           // reset on new touch
   }, { passive: true });
 
   container.addEventListener('touchmove', function (e) {
@@ -270,28 +272,28 @@ window._closeTerminal = closeTerminal;
     e.preventDefault();
 
     var y = e.touches[0].clientY;
-    var deltaY = _touchLastY - y;   // positive = finger moved up = scroll toward newer content
+    _accumulated += _touchLastY - y;   // accumulate — positive = swipe up
     _touchLastY = y;
 
-    if (Math.abs(deltaY) < 2) return; // ignore micro-jitter
-
-    // Dispatch a synthetic WheelEvent on the xterm.js viewport so xterm.js
-    // handles it exactly as it handles a real mouse wheel: if mouse reporting
-    // is enabled (tmux mouse mode), it sends escape sequences to the PTY
-    // (scrolls inside the session). This is the correct "inside" path —
-    // unlike local-buffer scroll which never reaches the PTY.
     var viewport = container.querySelector('.xterm-viewport');
     if (!viewport) return;
 
-    viewport.dispatchEvent(new WheelEvent('wheel', {
-      deltaY: deltaY * 3,              // scale: ~40px swipe ≈ 1 wheel click
-      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
-      bubbles: true,
-      cancelable: true,
-    }));
+    // Fire one standard-sized click (deltaY=120) per SCROLL_PX pixels.
+    // Fixed deltaY makes every step identical regardless of Android event batching.
+    while (Math.abs(_accumulated) >= SCROLL_PX) {
+      var dir = _accumulated > 0 ? 1 : -1;
+      viewport.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: dir * 120,         // 120 = one standard wheel click, consistent
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+        bubbles: true,
+        cancelable: true,
+      }));
+      _accumulated -= dir * SCROLL_PX;
+    }
   }, { passive: false }); // passive: false required to allow e.preventDefault()
 
   container.addEventListener('touchend', function () {
     _touchLastY = 0;
+    _accumulated = 0;           // discard sub-threshold remainder on lift
   }, { passive: true });
 })();
