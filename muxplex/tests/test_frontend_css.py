@@ -604,3 +604,12 @@ def test_sidebar_list_has_touch_action_pan_y():
     assert "overscroll-behavior: contain" in block, (
         ".sidebar-list must have overscroll-behavior:contain to prevent scroll chaining"
     )
+
+
+def test_sidebar_item_has_flex_shrink_zero():
+    """Regression: without flex-shrink:0 cards shrink to fit, eliminating scroll overflow."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item {")
+    assert "flex-shrink: 0" in block, (
+        ".sidebar-item must have flex-shrink:0 to prevent compression"
+    )

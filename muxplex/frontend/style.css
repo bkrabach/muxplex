@@ -469,6 +469,7 @@ body {
 
 .sidebar-item {
   height: 120px;
+  flex-shrink: 0;          /* prevent flex from compressing cards to fit */
   background: var(--bg-secondary);
   cursor: pointer;
   overflow: hidden;
