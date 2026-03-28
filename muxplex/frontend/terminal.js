@@ -248,10 +248,13 @@ window._openTerminal = openTerminal;
 window._closeTerminal = closeTerminal;
 
 // ---------------------------------------------------------------------------
-// Touch scroll — translates vertical swipe into xterm.js scrollback
+// Touch scroll — forwards vertical swipe to xterm.js as a WheelEvent.
+// xterm.js processes this identically to a real mouse wheel: if mouse
+// reporting is enabled (tmux set -g mouse on), escape sequences are sent
+// to the PTY so tmux/applications handle the scroll (inside).
+// Mouse wheel scroll (the `wheel` event path) is unaffected — this adds
+// touch on top.
 // ---------------------------------------------------------------------------
-// Runs once after DOM is ready. Mouse wheel scroll is unaffected (separate
-// `wheel` event path handled natively by xterm.js).
 ;(function initTerminalTouchScroll() {
   var container = document.getElementById('terminal-container');
   if (!container || typeof container.addEventListener !== 'function') return;
@@ -264,21 +267,28 @@ window._closeTerminal = closeTerminal;
 
   container.addEventListener('touchmove', function (e) {
     if (!_term) return;
-    e.preventDefault(); // prevent page scroll while swiping inside terminal
+    e.preventDefault();
 
     var y = e.touches[0].clientY;
-    var deltaY = _touchLastY - y;   // positive = swipe up = scroll toward newer content
+    var deltaY = _touchLastY - y;   // positive = finger moved up = scroll toward newer content
     _touchLastY = y;
 
-    // Convert pixels to lines. xterm.js fontSize is set per device (12 mobile, 14 desktop).
-    // lineHeight ratio is 1.2 — gives ~14-17px per line.
-    var pxPerLine = (_term.options.fontSize || 14) * 1.2;
-    var lines = deltaY / pxPerLine;
+    if (Math.abs(deltaY) < 2) return; // ignore micro-jitter
 
-    // Only fire if movement is meaningful (avoids micro-jitter)
-    if (Math.abs(lines) >= 0.3) {
-      _term.scrollLines(Math.round(lines));
-    }
+    // Dispatch a synthetic WheelEvent on the xterm.js viewport so xterm.js
+    // handles it exactly as it handles a real mouse wheel: if mouse reporting
+    // is enabled (tmux mouse mode), it sends escape sequences to the PTY
+    // (scrolls inside the session). This is the correct "inside" path —
+    // unlike local-buffer scroll which never reaches the PTY.
+    var viewport = container.querySelector('.xterm-viewport');
+    if (!viewport) return;
+
+    viewport.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: deltaY * 3,              // scale: ~40px swipe ≈ 1 wheel click
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      bubbles: true,
+      cancelable: true,
+    }));
   }, { passive: false }); // passive: false required to allow e.preventDefault()
 
   container.addEventListener('touchend', function () {

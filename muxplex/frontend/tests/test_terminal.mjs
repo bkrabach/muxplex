@@ -725,17 +725,13 @@ const terminalSrc = fs.readFileSync(
   new URL('../terminal.js', import.meta.url), 'utf8'
 );
 
-test('terminal.js registers touchmove handler on terminal-container', () => {
-  // Source inspection: verify the touch scroll IIFE is present and uses
-  // e.preventDefault() (passive: false is required for prevent default)
-  assert.ok(terminalSrc.includes('touchmove'),
-    'touchmove listener must be present');
-  assert.ok(terminalSrc.includes('e.preventDefault'),
-    'must call preventDefault to prevent page scroll while swiping inside terminal');
-  assert.ok(terminalSrc.includes('scrollLines'),
-    'must call _term.scrollLines to scroll terminal');
-  assert.ok(terminalSrc.includes('passive: false'),
-    'touchmove must be non-passive to allow preventDefault');
+test('terminal.js touchmove dispatches WheelEvent to xterm viewport', () => {
+  assert.ok(terminalSrc.includes('touchmove'), 'touchmove listener must be present');
+  assert.ok(terminalSrc.includes('e.preventDefault'), 'must call preventDefault to prevent page scroll');
+  assert.ok(terminalSrc.includes('WheelEvent'), 'must dispatch WheelEvent (not call scrollLines)');
+  assert.ok(terminalSrc.includes('.xterm-viewport'), 'must target xterm viewport element');
+  assert.ok(!terminalSrc.includes('scrollLines'), 'must NOT call scrollLines — that only moves local scrollback, not the PTY');
+  assert.ok(terminalSrc.includes('passive: false'), 'touchmove must be non-passive to allow preventDefault');
 });
 
 test('terminal.js touchstart and touchend are passive', () => {
