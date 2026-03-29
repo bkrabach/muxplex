@@ -1,9 +1,16 @@
 """Tests for muxplex/auth.py — authentication module."""
 
+import base64
 import os
 import pwd
 import stat
 from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.responses import PlainTextResponse
+
+from muxplex.auth import AuthMiddleware, create_session_cookie
 
 
 # ---------------------------------------------------------------------------
@@ -233,3 +240,104 @@ def test_authenticate_pam_wrong_user_rejected(monkeypatch):
     # Mock PAM to always return True — but wrong username should still fail
     monkeypatch.setattr("pam.authenticate", lambda u, p, service="login": True)
     assert authenticate_pam(wrong_user, "any-password") is False
+
+
+# ---------------------------------------------------------------------------
+# Auth middleware
+# ---------------------------------------------------------------------------
+
+
+def _make_test_app(auth_mode: str = "password", password: str = "test-pw") -> FastAPI:
+    """Create a minimal FastAPI app with AuthMiddleware for testing."""
+    test_app = FastAPI()
+
+    test_app.add_middleware(
+        AuthMiddleware,
+        auth_mode=auth_mode,
+        secret="test-secret",
+        ttl_seconds=3600,
+        password=password,
+    )
+
+    @test_app.get("/protected")
+    async def protected():
+        return PlainTextResponse("OK")
+
+    return test_app
+
+
+def test_middleware_localhost_bypasses_auth():
+    """Requests from 127.0.0.1 pass through without auth."""
+    app = _make_test_app()
+    client = TestClient(app, base_url="http://127.0.0.1")
+    response = client.get("/protected")
+    assert response.status_code == 200
+    assert response.text == "OK"
+
+
+def test_middleware_valid_session_cookie_passes():
+    """Non-localhost request with a valid session cookie passes through."""
+    app = _make_test_app()
+    cookie = create_session_cookie("test-secret", ttl_seconds=3600)
+    client = TestClient(app, base_url="http://192.168.1.1")
+    response = client.get("/protected", cookies={"muxplex_session": cookie})
+    assert response.status_code == 200
+    assert response.text == "OK"
+
+
+def test_middleware_tampered_cookie_redirects():
+    """Non-localhost request with a tampered cookie redirects to /login."""
+    app = _make_test_app()
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get("/protected", cookies={"muxplex_session": "bad.cookie.value"})
+    assert response.status_code == 307
+    assert "/login" in response.headers["location"]
+
+
+def test_middleware_no_cookie_non_localhost_redirects():
+    """Non-localhost request with no cookie redirects to /login."""
+    app = _make_test_app()
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get("/protected")
+    assert response.status_code == 307
+    assert "/login" in response.headers["location"]
+
+
+def test_middleware_basic_auth_valid_password():
+    """Non-localhost request with valid Basic auth header passes through."""
+    app = _make_test_app(auth_mode="password", password="test-pw")
+    client = TestClient(app, base_url="http://192.168.1.1")
+    creds = base64.b64encode(b":test-pw").decode()
+    response = client.get("/protected", headers={"Authorization": f"Basic {creds}"})
+    assert response.status_code == 200
+    assert response.text == "OK"
+
+
+def test_middleware_basic_auth_invalid_password():
+    """Non-localhost request with wrong Basic auth header returns 401."""
+    app = _make_test_app(auth_mode="password", password="test-pw")
+    client = TestClient(app, base_url="http://192.168.1.1")
+    creds = base64.b64encode(b":wrong-pw").decode()
+    response = client.get("/protected", headers={"Authorization": f"Basic {creds}"})
+    assert response.status_code == 401
+
+
+def test_middleware_json_request_gets_401_not_redirect():
+    """Non-localhost API request (Accept: application/json) gets 401, not redirect."""
+    app = _make_test_app()
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get("/protected", headers={"Accept": "application/json"})
+    assert response.status_code == 401
+
+
+def test_middleware_login_path_excluded():
+    """/login path is excluded from auth to avoid redirect loops."""
+    app = _make_test_app()
+
+    @app.get("/login")
+    async def login():
+        return PlainTextResponse("login page")
+
+    client = TestClient(app, base_url="http://192.168.1.1")
+    response = client.get("/login")
+    assert response.status_code == 200
