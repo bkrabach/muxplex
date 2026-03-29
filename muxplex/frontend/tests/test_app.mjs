@@ -2050,4 +2050,16 @@ test('openSession mounts terminal AFTER connect POST, not inside animation timer
     '_openTerminal must appear AFTER the /connect POST in the source');
 });
 
+// --- Hover preview popover ---
+
+test('app.js has hover preview popover with desktop-only guard', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('preview-popover'), 'must create popover with preview-popover class');
+  assert.ok(source.includes('ontouchstart'), 'must guard against touch devices (desktop only)');
+  assert.ok(source.includes('session.snapshot'), 'must use full snapshot text (not lastLines)');
+  assert.ok(source.includes('hidePreview'), 'must have cleanup on mouseleave');
+});
+
 

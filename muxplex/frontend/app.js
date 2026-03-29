@@ -125,6 +125,8 @@ let _pollingTimer;
 let _heartbeatTimer;
 let _notificationPermission = 'default';
 let _pollFailCount = 0;
+let _previewPopover = null;
+let _previewTimer = null;
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -509,6 +511,62 @@ function renderGrid(sessions) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Hover preview popover (desktop only — no hover on touch devices)
+// ---------------------------------------------------------------------------
+
+function showPreview(tile) {
+  var name = tile.dataset.session;
+  if (!name || !_currentSessions) return;
+
+  var session = _currentSessions.find(function (s) { return s.name === name; });
+  if (!session || !session.snapshot) return;
+
+  hidePreview();
+
+  var popover = document.createElement('div');
+  popover.className = 'preview-popover';
+  var pre = document.createElement('pre');
+  pre.textContent = session.snapshot;
+  popover.appendChild(pre);
+  document.body.appendChild(popover);
+
+  // Position: right of tile if room, else left
+  var rect = tile.getBoundingClientRect();
+  var popW = popover.offsetWidth;
+  var popH = popover.offsetHeight;
+  var left, top;
+
+  if (rect.right + popW + 12 < window.innerWidth) {
+    left = rect.right + 8;
+  } else {
+    left = rect.left - popW - 8;
+  }
+
+  // Vertically: align top with tile, clamp to viewport
+  top = rect.top;
+  if (top + popH > window.innerHeight - 16) {
+    top = window.innerHeight - popH - 16;
+  }
+  if (top < 8) top = 8;
+
+  popover.style.left = left + 'px';
+  popover.style.top = top + 'px';
+
+  _previewPopover = popover;
+}
+
+function hidePreview() {
+  if (_previewTimer) {
+    clearTimeout(_previewTimer);
+    _previewTimer = null;
+  }
+  if (_previewPopover) {
+    _previewPopover.remove();
+    _previewPopover = null;
+  }
+}
+
 // ─── Notification permission ────────────────────────────────────────────────
 
 /**
@@ -627,6 +685,7 @@ function updatePillBell() {
  * @returns {Promise<void>}
  */
 async function openSession(name, opts = {}) {
+  hidePreview();
   _viewingSession = name;
   _viewMode = 'fullscreen';
 
@@ -1010,6 +1069,22 @@ function bindStaticEventListeners() {
   document.addEventListener('keydown', handleGlobalKeydown);
   on($('session-pill'), 'click', openBottomSheet);
   on($('sheet-backdrop'), 'click', closeBottomSheet);
+
+  // Hover preview — delegated on grid container (tiles are re-rendered each poll)
+  var gridEl = $('session-grid');
+  if (gridEl && !('ontouchstart' in window)) {  // desktop only
+    gridEl.addEventListener('mouseenter', function (e) {
+      var tile = e.target.closest('.session-tile');
+      if (!tile) return;
+      _previewTimer = setTimeout(function () { showPreview(tile); }, 100);
+    }, true);  // useCapture: true for delegation with mouseenter
+
+    gridEl.addEventListener('mouseleave', function (e) {
+      var tile = e.target.closest('.session-tile');
+      if (!tile) return;
+      hidePreview();
+    }, true);
+  }
 }
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────
@@ -1117,6 +1192,9 @@ if (typeof module !== 'undefined' && module.exports) {
     closeBottomSheet,
     renderSheetList,
     updateSessionPill,
+    // Hover preview popover
+    showPreview,
+    hidePreview,
     // Test-only helpers
     _setCurrentSessions,
     _setPaletteFilteredSessions,

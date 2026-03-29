@@ -960,6 +960,35 @@ body {
 }
 
 /* ============================================================
+   Hover preview popover (desktop dashboard)
+   ============================================================ */
+
+.preview-popover {
+  position: fixed;
+  z-index: 500;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  min-width: 480px;
+  max-width: 640px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  pointer-events: none;   /* don't interfere with mouse leaving tile */
+}
+
+.preview-popover pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  white-space: pre;
+  overflow-x: hidden;
+}
+
+/* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */
 

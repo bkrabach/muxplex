@@ -613,3 +613,21 @@ def test_sidebar_item_has_flex_shrink_zero():
     assert "flex-shrink: 0" in block, (
         ".sidebar-item must have flex-shrink:0 to prevent compression"
     )
+
+
+# ============================================================
+# Hover preview popover (desktop dashboard)
+# ============================================================
+
+
+def test_preview_popover_css_exists():
+    """Preview popover must have CSS rules with position: fixed."""
+    css = read_css()
+    assert ".preview-popover" in css, "must have .preview-popover CSS class"
+    popover_idx = css.index(".preview-popover")
+    block_start = css.index("{", popover_idx)
+    block_end = css.index("}", block_start)
+    block = css[block_start:block_end]
+    assert "position: fixed" in block or "position:fixed" in block, (
+        ".preview-popover must use position: fixed"
+    )
