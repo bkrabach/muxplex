@@ -2074,4 +2074,21 @@ test('hover preview popover works for both grid tiles and sidebar items', () => 
     'must handle sidebar items too');
 });
 
+test('hover preview popover has dim overlay and highlights hovered element', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('preview-dimmer'), 'must create dimmer overlay');
+  assert.ok(source.includes('tile--previewing'), 'must lift grid tile above dimmer');
+  assert.ok(source.includes('item--previewing'), 'must lift sidebar item above dimmer');
+});
+
+test('hover preview delay is 1500ms (not 350ms)', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('1500'), 'hover delay must be 1500ms');
+  assert.ok(!source.includes(', 350)'), 'old 350ms delay must be removed');
+});
+
 

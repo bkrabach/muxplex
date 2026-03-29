@@ -631,3 +631,9 @@ def test_preview_popover_css_exists():
     assert "position: fixed" in block or "position:fixed" in block, (
         ".preview-popover must use position: fixed"
     )
+
+
+def test_preview_dimmer_css_exists():
+    """Dim overlay behind popover must have CSS rules."""
+    css = read_css()
+    assert ".preview-dimmer" in css

@@ -986,6 +986,20 @@ body {
   overflow-x: hidden;
 }
 
+.preview-dimmer {
+  position: fixed;
+  inset: 0;
+  z-index: 499;              /* behind popover (500), above everything else */
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;       /* clicks pass through — don't block mouseleave */
+}
+
+.session-tile.tile--previewing,
+.sidebar-item.item--previewing {
+  position: relative;
+  z-index: 500;               /* same as popover — above dimmer */
+}
+
 /* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */

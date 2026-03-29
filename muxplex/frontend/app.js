@@ -127,6 +127,8 @@ let _notificationPermission = 'default';
 let _pollFailCount = 0;
 let _previewPopover = null;
 let _previewTimer = null;
+var _previewDimmer = null;
+var _previewEl = null;
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -526,6 +528,16 @@ function showPreview(el, name) {
 
   hidePreview();
 
+  // Dim layer — behind popover, above everything else
+  var dimmer = document.createElement('div');
+  dimmer.className = 'preview-dimmer';
+  document.body.appendChild(dimmer);
+  _previewDimmer = dimmer;
+
+  // Lift the hovered element above the dimmer
+  el.classList.add(el.classList.contains('sidebar-item') ? 'item--previewing' : 'tile--previewing');
+  _previewEl = el;  // track so we can remove the class later
+
   var popover = document.createElement('div');
   popover.className = 'preview-popover';
   var pre = document.createElement('pre');
@@ -591,6 +603,14 @@ function hidePreview() {
   if (_previewPopover) {
     _previewPopover.remove();
     _previewPopover = null;
+  }
+  if (_previewDimmer) {
+    _previewDimmer.remove();
+    _previewDimmer = null;
+  }
+  if (_previewEl) {
+    _previewEl.classList.remove('tile--previewing', 'item--previewing');
+    _previewEl = null;
   }
 }
 
@@ -1103,7 +1123,7 @@ function bindStaticEventListeners() {
     gridEl.addEventListener('mouseenter', function (e) {
       var tile = e.target.closest('.session-tile');
       if (!tile) return;
-      _previewTimer = setTimeout(function () { showPreview(tile); }, 350);
+      _previewTimer = setTimeout(function () { showPreview(tile); }, 1500);
     }, true);  // useCapture: true for delegation with mouseenter
 
     gridEl.addEventListener('mouseleave', function (e) {
@@ -1121,7 +1141,7 @@ function bindStaticEventListeners() {
       if (!item) return;
       var name = item.dataset.session;
       if (!name) return;
-      _previewTimer = setTimeout(function () { showPreview(item, name); }, 350);
+      _previewTimer = setTimeout(function () { showPreview(item, name); }, 1500);
     }, true);
 
     sidebarListEl.addEventListener('mouseleave', function (e) {
