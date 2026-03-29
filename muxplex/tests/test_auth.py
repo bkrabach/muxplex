@@ -366,3 +366,84 @@ def test_middleware_login_path_excluded():
     client = TestClient(app, base_url="http://192.168.1.1")
     response = client.get("/login")
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# _resolve_auth startup logging
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_auth_pam_mode_logs_pam(monkeypatch, capsys, tmp_path):
+    """_resolve_auth() in PAM mode logs 'PAM' to stderr."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("MUXPLEX_AUTH", raising=False)
+    monkeypatch.delenv("MUXPLEX_PASSWORD", raising=False)
+    monkeypatch.setattr("muxplex.main.pam_available", lambda: True)
+
+    from muxplex.main import _resolve_auth
+
+    mode, pw = _resolve_auth()
+    captured = capsys.readouterr()
+
+    assert mode == "pam"
+    assert "PAM" in captured.err
+
+
+def test_resolve_auth_env_password_logs_env(monkeypatch, capsys, tmp_path):
+    """_resolve_auth() with MUXPLEX_PASSWORD env var logs 'env' to stderr."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setenv("MUXPLEX_AUTH", "password")
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "from-env")
+    monkeypatch.setattr("muxplex.main.pam_available", lambda: False)
+
+    from muxplex.main import _resolve_auth
+
+    mode, pw = _resolve_auth()
+    captured = capsys.readouterr()
+
+    assert mode == "password"
+    assert pw == "from-env"
+    assert "env" in captured.err
+
+
+def test_resolve_auth_file_password_logs_file(monkeypatch, capsys, tmp_path):
+    """_resolve_auth() with a file password logs the file path to stderr (not module name)."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setenv("MUXPLEX_AUTH", "password")
+    monkeypatch.delenv("MUXPLEX_PASSWORD", raising=False)
+    monkeypatch.setattr("muxplex.main.pam_available", lambda: False)
+
+    # Create password file
+    pw_path = tmp_path / ".config" / "muxplex" / "password"
+    pw_path.parent.mkdir(parents=True, exist_ok=True)
+    pw_path.write_text("file-secret-pw\n")
+    pw_path.chmod(0o600)
+
+    from muxplex.main import _resolve_auth
+
+    mode, pw = _resolve_auth()
+    captured = capsys.readouterr()
+
+    assert mode == "password"
+    assert pw == "file-secret-pw"
+    # Should log the actual file path, NOT the module name (Phase 1 bug fix)
+    assert "muxplex.auth" not in captured.err
+    assert "file" in captured.err or "password" in captured.err
+
+
+def test_resolve_auth_generates_password_as_last_resort(monkeypatch, capsys, tmp_path):
+    """_resolve_auth() generates a password when no env or file password exists."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setenv("MUXPLEX_AUTH", "password")
+    monkeypatch.delenv("MUXPLEX_PASSWORD", raising=False)
+    monkeypatch.setattr("muxplex.main.pam_available", lambda: False)
+
+    from muxplex.main import _resolve_auth
+
+    mode, pw = _resolve_auth()
+    captured = capsys.readouterr()
+
+    assert mode == "password"
+    assert len(pw) > 10
+    assert "generated" in captured.err
+    assert pw in captured.err

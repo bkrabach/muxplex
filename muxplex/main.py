@@ -33,6 +33,7 @@ from muxplex.auth import (
     authenticate_pam,
     create_session_cookie,
     generate_and_save_password,
+    get_password_path,
     load_or_create_secret,
     load_password,
     pam_available,
@@ -221,15 +222,13 @@ def _resolve_auth() -> tuple[str, str]:
     file_pw = load_password()
     if file_pw:
         print(
-            f"  muxplex auth: password (file: {load_password.__module__})",
+            f"  muxplex auth: password (file: {get_password_path()})",
             file=sys.stderr,
         )
         return "password", file_pw
 
     # Last resort: auto-generate
     generated = generate_and_save_password()
-    from muxplex.auth import get_password_path
-
     print(
         f"  muxplex auth: password generated — {generated} — saved to {get_password_path()}",
         file=sys.stderr,
