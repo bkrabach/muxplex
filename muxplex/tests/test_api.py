@@ -838,7 +838,7 @@ def _wrap_with_client_host(wrapped_app, host: str):
     return _middleware
 
 
-def test_ws_localhost_no_cookie_bypasses_auth(monkeypatch):
+def test_ws_localhost_no_cookie_bypasses_auth():
     """WebSocket from 127.0.0.1 is accepted even without a session cookie."""
     from starlette.websockets import WebSocketDisconnect
 
@@ -857,7 +857,7 @@ def test_ws_localhost_no_cookie_bypasses_auth(monkeypatch):
             )
 
 
-def test_ws_valid_cookie_non_localhost_not_rejected_4001(monkeypatch):
+def test_ws_valid_cookie_non_localhost_not_rejected_4001():
     """WebSocket from non-localhost with a valid cookie is not rejected with 4001."""
     from starlette.websockets import WebSocketDisconnect
     from muxplex.auth import create_session_cookie
@@ -867,10 +867,9 @@ def test_ws_valid_cookie_non_localhost_not_rejected_4001(monkeypatch):
 
     # TestClient default host is "testclient" — treated as non-localhost
     with TestClient(app) as c:
+        c.cookies["muxplex_session"] = cookie
         try:
-            with c.websocket_connect(
-                "/terminal/ws", cookies={"muxplex_session": cookie}
-            ) as _:
+            with c.websocket_connect("/terminal/ws") as _:
                 pass  # connection was accepted — auth passed
         except WebSocketDisconnect as e:
             # Auth passed; ttyd not running → proxy fails → close with code != 4001
@@ -896,10 +895,8 @@ def test_ws_invalid_cookie_non_localhost_rejected_4001():
     from starlette.websockets import WebSocketDisconnect
 
     with TestClient(app) as c:
+        c.cookies["muxplex_session"] = "tampered.invalid.cookie.value"
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            with c.websocket_connect(
-                "/terminal/ws",
-                cookies={"muxplex_session": "tampered.invalid.cookie.value"},
-            ) as _:
+            with c.websocket_connect("/terminal/ws") as _:
                 pass
     assert exc_info.value.code == 4001
