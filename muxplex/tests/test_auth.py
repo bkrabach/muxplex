@@ -1,6 +1,7 @@
 """Tests for muxplex/auth.py — authentication module."""
 
 import os
+import pwd
 import stat
 from pathlib import Path
 
@@ -205,8 +206,6 @@ def test_pam_available_returns_false_on_import_error(monkeypatch):
 
 def test_authenticate_pam_success(monkeypatch):
     """authenticate_pam() returns True when PAM succeeds for the running user."""
-    import pwd
-
     from muxplex.auth import authenticate_pam
 
     running_user = pwd.getpwuid(os.getuid()).pw_name
@@ -216,8 +215,6 @@ def test_authenticate_pam_success(monkeypatch):
 
 def test_authenticate_pam_wrong_password(monkeypatch):
     """authenticate_pam() returns False when PAM rejects credentials."""
-    import pwd
-
     from muxplex.auth import authenticate_pam
 
     running_user = pwd.getpwuid(os.getuid()).pw_name
@@ -229,6 +226,10 @@ def test_authenticate_pam_wrong_user_rejected(monkeypatch):
     """authenticate_pam() rejects a different username even if PAM would accept it."""
     from muxplex.auth import authenticate_pam
 
+    # Pick a wrong user that is guaranteed to differ from whoever is running the tests
+    running_user = pwd.getpwuid(os.getuid()).pw_name
+    wrong_user = "nobody" if running_user == "root" else "root"
+
     # Mock PAM to always return True — but wrong username should still fail
     monkeypatch.setattr("pam.authenticate", lambda u, p, service="login": True)
-    assert authenticate_pam("root", "any-password") is False
+    assert authenticate_pam(wrong_user, "any-password") is False

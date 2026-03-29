@@ -114,12 +114,12 @@ def pam_available() -> bool:
 
 def authenticate_pam(username: str, password: str) -> bool:
     """Authenticate via PAM. Username must match the running process owner."""
-    import os as _os
+    import os
     import pwd
 
     import pam
 
-    running_user = pwd.getpwuid(_os.getuid()).pw_name
+    running_user = pwd.getpwuid(os.getuid()).pw_name
     if username != running_user:
         return False
     return pam.authenticate(username, password, service="login")
