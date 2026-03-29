@@ -160,6 +160,57 @@ def test_install_service_strips_wsl_mnt_paths_from_environment(tmp_path, monkeyp
     assert "/usr/bin" in env_line
 
 
+def test_show_password_prints_password_from_file(tmp_path, monkeypatch, capsys):
+    """show_password() prints the password when MUXPLEX_AUTH=password and file exists."""
+    from muxplex.cli import show_password
+
+    # Set up fake home with password file
+    fake_home = tmp_path / "home"
+    pw_dir = fake_home / ".config" / "muxplex"
+    pw_dir.mkdir(parents=True)
+    pw_file = pw_dir / "password"
+    pw_file.write_text("my-test-password\n")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setenv("MUXPLEX_AUTH", "password")
+
+    show_password()
+
+    captured = capsys.readouterr()
+    assert "my-test-password" in captured.out
+
+
+def test_show_password_no_file(tmp_path, monkeypatch, capsys):
+    """show_password() tells user no file found when in password mode with no file."""
+    from muxplex.cli import show_password
+
+    # Set up fake home WITHOUT password file
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(parents=True)
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setenv("MUXPLEX_AUTH", "password")
+
+    show_password()
+
+    captured = capsys.readouterr()
+    output_lower = captured.out.lower()
+    assert "no password" in output_lower or "not found" in output_lower
+
+
+def test_show_password_pam_mode(monkeypatch, capsys):
+    """show_password() reports PAM mode when pam_available() is True and not password mode."""
+    from muxplex.cli import show_password
+
+    monkeypatch.delenv("MUXPLEX_AUTH", raising=False)
+
+    with patch("muxplex.cli.pam_available", return_value=True):
+        show_password()
+
+    captured = capsys.readouterr()
+    assert "pam" in captured.out.lower()
+
+
 def test_dunder_main_calls_main():
     """python -m muxplex must call cli.main()."""
     import importlib.util

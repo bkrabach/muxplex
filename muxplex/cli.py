@@ -5,8 +5,23 @@ import os
 import sys
 from pathlib import Path
 
+from muxplex.auth import load_password, pam_available
+
 # Module-level path constants (overridable in tests via monkeypatch)
 _system_service_path = Path("/etc/systemd/system/muxplex.service")
+
+
+def show_password() -> None:
+    """Print the current muxplex password or indicate PAM mode."""
+    auth_mode = os.environ.get("MUXPLEX_AUTH", "").lower()
+    if auth_mode != "password" and pam_available():
+        print("Auth mode: PAM — no password file used")
+        return
+    pw = load_password()
+    if pw:
+        print(f"Password: {pw}")
+    else:
+        print("No password file found. Start muxplex to auto-generate one.")
 
 
 def serve(
@@ -101,10 +116,14 @@ def main() -> None:
         "--system", action="store_true", help="System-wide (requires sudo)"
     )
 
+    sub.add_parser("show-password", help="Show the current muxplex password")
+
     args = parser.parse_args()
 
     if args.command == "install-service":
         install_service(system=args.system)
+    elif args.command == "show-password":
+        show_password()
     else:
         serve(
             host=args.host, port=args.port, auth=args.auth, session_ttl=args.session_ttl
