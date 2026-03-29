@@ -778,6 +778,11 @@ def test_post_login_pam_mode_wrong_creds(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # GET /auth/logout
+#
+# Note: these tests intentionally bypass the shared `client` fixture.
+# The `client` fixture pre-injects a valid muxplex_session cookie; these
+# tests verify that logout works correctly even for an unauthenticated
+# (or expired-session) request, so they create their own TestClient.
 # ---------------------------------------------------------------------------
 
 
