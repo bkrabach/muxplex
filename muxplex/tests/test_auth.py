@@ -61,3 +61,14 @@ def test_generate_and_save_password_sets_0600_permissions(monkeypatch, tmp_path)
     pw_path = tmp_path / ".config" / "muxplex" / "password"
     mode = stat.S_IMODE(pw_path.stat().st_mode)
     assert mode == 0o600
+
+
+def test_generate_and_save_password_sets_0700_on_config_dir(monkeypatch, tmp_path):
+    """generate_and_save_password() creates the config directory with mode 0700."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    from muxplex.auth import generate_and_save_password
+
+    generate_and_save_password()
+    config_dir = tmp_path / ".config" / "muxplex"
+    mode = stat.S_IMODE(config_dir.stat().st_mode)
+    assert mode == 0o700
