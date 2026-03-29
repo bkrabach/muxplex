@@ -5,6 +5,7 @@ import pathlib
 from bs4 import BeautifulSoup, Tag
 
 HTML_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "index.html"
+LOGIN_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "login.html"
 
 # Parse once per module — tests are read-only so sharing is safe.
 _SOUP: BeautifulSoup = BeautifulSoup(HTML_PATH.read_text(), "html.parser")
@@ -263,3 +264,64 @@ def test_html_element_classes() -> None:
         assert expected_class in classes, (
             f"#{el_id} is missing class '{expected_class}' — {reason}. Has: {classes}"
         )
+
+
+# ── Login page tests ─────────────────────────────────────────────────────────
+
+
+def _get_login_soup() -> BeautifulSoup:
+    """Load and parse login.html — raises FileNotFoundError if file is missing."""
+    return BeautifulSoup(LOGIN_PATH.read_text(), "html.parser")
+
+
+def test_login_html_exists() -> None:
+    """login.html must exist in the frontend directory."""
+    assert LOGIN_PATH.exists(), f"Missing login.html at {LOGIN_PATH}"
+
+
+def test_login_html_has_form() -> None:
+    """login.html must have a <form> that POSTs to /login."""
+    soup = _get_login_soup()
+    form = soup.find("form")
+    assert form is not None, "Missing <form> element in login.html"
+    method = str(form.get("method", "")).lower()  # type: ignore[union-attr]
+    assert method == "post", f"Form method must be 'post', got: {method!r}"
+    action = str(form.get("action", ""))  # type: ignore[union-attr]
+    assert action == "/login", f"Form action must be '/login', got: {action!r}"
+
+
+def test_login_html_has_password_autocomplete() -> None:
+    """Password input must have autocomplete='current-password'."""
+    soup = _get_login_soup()
+    pw = soup.find("input", attrs={"type": "password"})
+    assert pw is not None, "Missing <input type='password'> in login.html"
+    ac = str(pw.get("autocomplete", ""))  # type: ignore[union-attr]
+    assert ac == "current-password", (
+        f"Password input must have autocomplete='current-password', got: {ac!r}"
+    )
+
+
+def test_login_html_has_wordmark() -> None:
+    """login.html must include an <img> whose src contains 'wordmark'."""
+    soup = _get_login_soup()
+    imgs = soup.find_all("img")
+    srcs = [str(img.get("src", "")) for img in imgs]
+    assert any("wordmark" in s for s in srcs), (
+        f"No <img> with src containing 'wordmark' found; srcs: {srcs}"
+    )
+
+
+def test_login_html_references_muxplex_auth() -> None:
+    """login.html must reference MUXPLEX_AUTH (for JS-based auth mode detection)."""
+    text = LOGIN_PATH.read_text()
+    assert "MUXPLEX_AUTH" in text, (
+        "login.html must reference window.MUXPLEX_AUTH for auth mode detection"
+    )
+
+
+def test_login_html_has_error_display() -> None:
+    """login.html must include an error display element (text 'error' must appear)."""
+    text = LOGIN_PATH.read_text().lower()
+    assert "error" in text, (
+        "login.html must include an error display element (text 'error' not found)"
+    )
