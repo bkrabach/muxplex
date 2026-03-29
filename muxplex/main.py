@@ -37,6 +37,7 @@ from muxplex.auth import (
     load_or_create_secret,
     load_password,
     pam_available,
+    verify_session_cookie,
 )
 from muxplex.bells import apply_bell_clear_rule, process_bell_flags
 from muxplex.sessions import (
@@ -437,6 +438,16 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
     Accepts with subprotocol 'tty' (required by ttyd), then opens a connection
     to ws://localhost:{TTYD_PORT}/ws and relays frames bidirectionally.
     """
+    # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
+    host = websocket.client.host if websocket.client else ""
+    if host not in ("127.0.0.1", "::1"):
+        session_cookie = websocket.cookies.get("muxplex_session")
+        if not session_cookie or not verify_session_cookie(
+            _auth_secret, session_cookie, _auth_ttl
+        ):
+            await websocket.close(code=4001)
+            return
+
     await websocket.accept(subprotocol="tty")
 
     ttyd_url = f"ws://localhost:{TTYD_PORT}/ws"
