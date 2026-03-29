@@ -1,5 +1,6 @@
 """Tests for muxplex/cli.py — CLI entry point."""
 
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -209,6 +210,54 @@ def test_show_password_pam_mode(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "pam" in captured.out.lower()
+
+
+def test_reset_secret_writes_new_secret(tmp_path, monkeypatch):
+    """reset_secret() writes a new secret file with content longer than 20 chars."""
+    from muxplex.cli import reset_secret
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    reset_secret()
+
+    secret_path = fake_home / ".config" / "muxplex" / "secret"
+    assert secret_path.exists(), "Secret file must be created"
+    content = secret_path.read_text().strip()
+    assert len(content) > 20, f"Secret must be longer than 20 chars, got {len(content)}"
+
+
+def test_reset_secret_sets_0600_permissions(tmp_path, monkeypatch):
+    """reset_secret() sets file permissions to 0o600."""
+    from muxplex.cli import reset_secret
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    reset_secret()
+
+    secret_path = fake_home / ".config" / "muxplex" / "secret"
+    file_mode = stat.S_IMODE(secret_path.stat().st_mode)
+    assert file_mode == 0o600, f"Expected 0o600, got {oct(file_mode)}"
+
+
+def test_reset_secret_prints_warning(tmp_path, monkeypatch, capsys):
+    """reset_secret() prints a warning that sessions are now invalid."""
+    from muxplex.cli import reset_secret
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    reset_secret()
+
+    captured = capsys.readouterr()
+    output_lower = captured.out.lower()
+    assert "invalid" in output_lower or "warning" in output_lower, (
+        f"Expected 'invalid' or 'warning' in output, got: {captured.out!r}"
+    )
 
 
 def test_dunder_main_calls_main():

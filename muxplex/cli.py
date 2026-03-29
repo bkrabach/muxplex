@@ -5,10 +5,23 @@ import os
 import sys
 from pathlib import Path
 
-from muxplex.auth import load_password, pam_available
+import secrets as _secrets
+
+from muxplex.auth import get_secret_path, load_password, pam_available
 
 # Module-level path constants (overridable in tests via monkeypatch)
 _system_service_path = Path("/etc/systemd/system/muxplex.service")
+
+
+def reset_secret() -> None:
+    """Regenerate the signing secret and warn that all sessions are now invalid."""
+    path = get_secret_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret = _secrets.token_urlsafe(32)
+    path.write_text(secret + "\n")
+    path.chmod(0o600)
+    print(f"Secret written to {path}")
+    print("Warning: all active sessions are now invalid.")
 
 
 def show_password() -> None:
@@ -118,12 +131,18 @@ def main() -> None:
 
     sub.add_parser("show-password", help="Show the current muxplex password")
 
+    sub.add_parser(
+        "reset-secret", help="Regenerate signing secret (invalidates sessions)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "install-service":
         install_service(system=args.system)
     elif args.command == "show-password":
         show_password()
+    elif args.command == "reset-secret":
+        reset_secret()
     else:
         serve(
             host=args.host, port=args.port, auth=args.auth, session_ttl=args.session_ttl
