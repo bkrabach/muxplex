@@ -774,3 +774,32 @@ def test_post_login_pam_mode_wrong_creds(monkeypatch):
 
     assert response.status_code == 303
     assert "error=1" in response.headers["location"]
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/logout
+# ---------------------------------------------------------------------------
+
+
+def test_logout_redirects_to_login(monkeypatch):
+    """GET /auth/logout returns 303 redirect to /login."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+
+    with TestClient(app, follow_redirects=False) as c:
+        response = c.get("/auth/logout")
+
+    assert response.status_code == 303
+    assert "/login" in response.headers["location"]
+
+
+def test_logout_clears_session_cookie(monkeypatch):
+    """GET /auth/logout clears muxplex_session cookie (Set-Cookie with max-age=0)."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+
+    with TestClient(app, follow_redirects=False) as c:
+        response = c.get("/auth/logout")
+
+    assert response.status_code == 303
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "muxplex_session" in set_cookie
+    assert "max-age=0" in set_cookie.lower()

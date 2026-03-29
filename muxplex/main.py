@@ -524,6 +524,14 @@ async def post_login(
     return response
 
 
+@app.get("/auth/logout")
+async def logout() -> RedirectResponse:
+    """Clear the muxplex_session cookie and redirect to /login."""
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie("muxplex_session")
+    return response
+
+
 @app.get("/auth/mode")
 async def auth_mode_endpoint():
     """Return the current auth mode and running username."""
