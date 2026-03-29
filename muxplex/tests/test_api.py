@@ -707,6 +707,14 @@ def test_get_auth_mode_returns_json(client):
     assert data["mode"] in ("pam", "password")
 
 
+def test_get_login_injects_muxplex_auth(client):
+    """GET /login returns 200 with MUXPLEX_AUTH injected into HTML."""
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert "MUXPLEX_AUTH" in response.text
+    assert '"mode"' in response.text
+
+
 # ---------------------------------------------------------------------------
 # POST /login
 # ---------------------------------------------------------------------------

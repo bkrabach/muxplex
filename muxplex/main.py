@@ -9,6 +9,7 @@ Background poll loop reconciles tmux session state every POLL_INTERVAL seconds.
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import pathlib
@@ -267,6 +268,13 @@ class HeartbeatPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Frontend directory
+# ---------------------------------------------------------------------------
+
+_FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -476,16 +484,14 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
-    """Stub login page — replaced in Phase 2 with branded login.html."""
-    return HTMLResponse(
-        "<html><body>"
-        "<h1>muxplex login</h1>"
-        "<form method='POST' action='/login'>"
-        "<input name='password' type='password' placeholder='Password' autocomplete='current-password'>"
-        "<button type='submit'>Login</button>"
-        "</form>"
-        "</body></html>"
+    """Serve branded login.html with injected window.MUXPLEX_AUTH containing auth mode and username."""
+    html = (_FRONTEND_DIR / "login.html").read_text()
+    username = pwd.getpwuid(os.getuid()).pw_name if _auth_mode == "pam" else ""
+    mode_data = json.dumps({"mode": _auth_mode, "user": username})
+    html = html.replace(
+        "</head>", f"<script>window.MUXPLEX_AUTH = {mode_data};</script></head>"
     )
+    return HTMLResponse(html)
 
 
 @app.post("/login")
@@ -545,5 +551,4 @@ async def auth_mode_endpoint():
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------
 
-_FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
 app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
