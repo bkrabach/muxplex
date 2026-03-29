@@ -21,13 +21,16 @@ import websockets
 import websockets.exceptions
 from websockets.typing import Subprotocol
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.responses import RedirectResponse
 
 from muxplex.auth import (
     AuthMiddleware,
+    authenticate_pam,
+    create_session_cookie,
     generate_and_save_password,
     load_or_create_secret,
     load_password,
@@ -483,6 +486,42 @@ async def login_page():
         "</form>"
         "</body></html>"
     )
+
+
+@app.post("/login")
+async def post_login(
+    request: Request,
+    username: str = Form(default=""),
+    password: str = Form(default=""),
+) -> RedirectResponse:
+    """Validate credentials and issue a session cookie on success.
+
+    In PAM mode, delegates to authenticate_pam(username, password).
+    In password mode, compares the submitted password to _auth_password.
+
+    On success: redirect to / with a signed muxplex_session cookie.
+    On failure: redirect to /login?error=1.
+    """
+    # Validate credentials
+    if _auth_mode == "pam":
+        valid = authenticate_pam(username, password)
+    else:
+        valid = password == _auth_password
+
+    if not valid:
+        return RedirectResponse("/login?error=1", status_code=303)
+
+    # Issue session cookie
+    cookie_value = create_session_cookie(_auth_secret, _auth_ttl)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        "muxplex_session",
+        cookie_value,
+        httponly=True,
+        samesite="strict",
+        max_age=_auth_ttl if _auth_ttl > 0 else None,
+    )
+    return response
 
 
 @app.get("/auth/mode")

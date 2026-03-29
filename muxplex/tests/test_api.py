@@ -705,3 +705,72 @@ def test_get_auth_mode_returns_json(client):
     data = response.json()
     assert "mode" in data
     assert data["mode"] in ("pam", "password")
+
+
+# ---------------------------------------------------------------------------
+# POST /login
+# ---------------------------------------------------------------------------
+
+
+def test_post_login_correct_password_redirects_to_root(monkeypatch):
+    """POST /login with correct password: 303 redirect to / with muxplex_session cookie."""
+    import muxplex.main as main_module
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    monkeypatch.setattr(main_module, "_auth_mode", "password")
+    monkeypatch.setattr(main_module, "_auth_password", "test-password")
+
+    with TestClient(app, follow_redirects=False) as c:
+        response = c.post(
+            "/login", data={"username": "user", "password": "test-password"}
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    assert "muxplex_session" in response.cookies
+
+
+def test_post_login_wrong_password_redirects_to_login_error(monkeypatch):
+    """POST /login with wrong password: 303 redirect to /login?error=1."""
+    import muxplex.main as main_module
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    monkeypatch.setattr(main_module, "_auth_mode", "password")
+    monkeypatch.setattr(main_module, "_auth_password", "test-password")
+
+    with TestClient(app, follow_redirects=False) as c:
+        response = c.post(
+            "/login", data={"username": "user", "password": "wrong-password"}
+        )
+
+    assert response.status_code == 303
+    assert "error=1" in response.headers["location"]
+
+
+def test_post_login_pam_mode_correct_creds(monkeypatch):
+    """POST /login in PAM mode with correct creds: 303 to / with muxplex_session cookie."""
+    import muxplex.main as main_module
+
+    monkeypatch.setattr(main_module, "_auth_mode", "pam")
+    monkeypatch.setattr("muxplex.main.authenticate_pam", lambda u, p: True)
+
+    with TestClient(app, follow_redirects=False) as c:
+        response = c.post("/login", data={"username": "user", "password": "correct"})
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    assert "muxplex_session" in response.cookies
+
+
+def test_post_login_pam_mode_wrong_creds(monkeypatch):
+    """POST /login in PAM mode with wrong creds: 303 redirect to /login?error=1."""
+    import muxplex.main as main_module
+
+    monkeypatch.setattr(main_module, "_auth_mode", "pam")
+    monkeypatch.setattr("muxplex.main.authenticate_pam", lambda u, p: False)
+
+    with TestClient(app, follow_redirects=False) as c:
+        response = c.post("/login", data={"username": "user", "password": "wrong"})
+
+    assert response.status_code == 303
+    assert "error=1" in response.headers["location"]
