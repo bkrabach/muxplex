@@ -14,7 +14,7 @@ from pathlib import Path
 def _config_dir() -> Path:
     """Return ~/.config/muxplex, creating it (mode 0700) if needed."""
     d = Path.home() / ".config" / "muxplex"
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
     return d
 
 
