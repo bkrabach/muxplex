@@ -1,5 +1,5 @@
 """
-muxplex authentication — password file management.
+muxplex authentication — password and signing secret file management.
 """
 
 import secrets
@@ -62,7 +62,7 @@ def load_or_create_secret() -> str:
     if path.exists():
         return path.read_text().strip()
     secret = secrets.token_urlsafe(32)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _config_dir()  # ensures dir exists with mode 0700, consistent with generate_and_save_password()
     path.write_text(secret + "\n")
     path.chmod(0o600)
     return secret
