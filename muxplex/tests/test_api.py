@@ -47,9 +47,19 @@ def patch_startup_and_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def client():
-    """Return a TestClient that triggers the app lifespan on entry/exit."""
+def client(monkeypatch):
+    """Return a TestClient that triggers the app lifespan on entry/exit.
+
+    Sets a valid session cookie so existing tests bypass the AuthMiddleware
+    (TestClient uses host='testclient', which is not a localhost address).
+    """
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
     with TestClient(app) as c:
+        from muxplex.auth import create_session_cookie
+        from muxplex.main import _auth_secret, _auth_ttl
+
+        cookie = create_session_cookie(_auth_secret, _auth_ttl)
+        c.cookies.set("muxplex_session", cookie)
         yield c
 
 
@@ -653,3 +663,23 @@ def test_terminal_ws_route_exists():
         if isinstance(r, (APIRoute, APIWebSocketRoute)) and r.path == "/terminal/ws"
     ]
     assert len(ws_routes) == 1, "Expected exactly one /terminal/ws route"
+
+
+# ---------------------------------------------------------------------------
+# Auth middleware integration
+# ---------------------------------------------------------------------------
+
+
+def test_non_localhost_without_auth_gets_redirected(monkeypatch):
+    """A non-localhost request without credentials is redirected to /login."""
+    from fastapi.testclient import TestClient
+
+    from muxplex.main import app
+
+    # Ensure auth is active — set a known password via env
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-pw-for-api")
+
+    with TestClient(app, base_url="http://192.168.1.1") as c:
+        response = c.get("/health", follow_redirects=False)
+        # Should be redirected to /login or get 307/401
+        assert response.status_code in (307, 401)

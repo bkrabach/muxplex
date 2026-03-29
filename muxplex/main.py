@@ -12,6 +12,8 @@ import contextlib
 import logging
 import os
 import pathlib
+import pwd
+import sys
 import time
 from typing import Literal
 
@@ -23,6 +25,13 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from muxplex.auth import (
+    AuthMiddleware,
+    generate_and_save_password,
+    load_or_create_secret,
+    load_password,
+    pam_available,
+)
 from muxplex.bells import apply_bell_clear_rule, process_bell_flags
 from muxplex.sessions import (
     enumerate_sessions,
@@ -171,6 +180,69 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="muxplex", version="0.1.0", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Auth setup
+# ---------------------------------------------------------------------------
+
+
+def _resolve_auth() -> tuple[str, str]:
+    """Determine auth mode and resolve password. Returns (auth_mode, password).
+
+    Fallback chain for non-localhost:
+      1. PAM available → ("pam", "")
+      2. MUXPLEX_PASSWORD env → ("password", <env value>)
+      3. ~/.config/muxplex/password file → ("password", <file value>)
+      4. Auto-generate → ("password", <generated>)
+    """
+    # Explicit override: MUXPLEX_AUTH=password forces password mode
+    force_password = os.environ.get("MUXPLEX_AUTH", "").lower() == "password"
+
+    if not force_password and pam_available():
+        running_user = pwd.getpwuid(os.getuid()).pw_name
+        print(f"  muxplex auth: PAM (user: {running_user})", file=sys.stderr)
+        return "pam", ""
+
+    if not force_password:
+        print("  muxplex auth: PAM unavailable, using password mode", file=sys.stderr)
+
+    # Password mode — resolve password
+    env_pw = os.environ.get("MUXPLEX_PASSWORD")
+    if env_pw:
+        print("  muxplex auth: password (env)", file=sys.stderr)
+        return "password", env_pw
+
+    file_pw = load_password()
+    if file_pw:
+        print(
+            f"  muxplex auth: password (file: {load_password.__module__})",
+            file=sys.stderr,
+        )
+        return "password", file_pw
+
+    # Last resort: auto-generate
+    generated = generate_and_save_password()
+    from muxplex.auth import get_password_path
+
+    print(
+        f"  muxplex auth: password generated — {generated} — saved to {get_password_path()}",
+        file=sys.stderr,
+    )
+    return "password", generated
+
+
+_auth_mode, _auth_password = _resolve_auth()
+_auth_secret = load_or_create_secret()
+_auth_ttl = int(os.environ.get("MUXPLEX_SESSION_TTL", "604800"))
+
+app.add_middleware(
+    AuthMiddleware,
+    auth_mode=_auth_mode,
+    secret=_auth_secret,
+    ttl_seconds=_auth_ttl,
+    password=_auth_password,
+)
 
 
 # ---------------------------------------------------------------------------
