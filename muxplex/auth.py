@@ -78,6 +78,8 @@ def load_or_create_secret() -> str:
 def create_session_cookie(secret: str, ttl_seconds: int) -> str:
     """Create a signed, timestamped session cookie value."""
     signer = TimestampSigner(secret)
+    # ttl_seconds is not used at signing time; the timestamp is embedded in
+    # the signed value and checked against ttl_seconds during verification.
     return signer.sign("muxplex-session").decode()
 
 
