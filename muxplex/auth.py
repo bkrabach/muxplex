@@ -44,3 +44,25 @@ def generate_and_save_password() -> str:
     path.write_text(pw + "\n")
     path.chmod(0o600)
     return pw
+
+
+# ---------------------------------------------------------------------------
+# Secret (signing key) management
+# ---------------------------------------------------------------------------
+
+
+def get_secret_path() -> Path:
+    """Return the path to the signing secret file: ~/.config/muxplex/secret."""
+    return Path.home() / ".config" / "muxplex" / "secret"
+
+
+def load_or_create_secret() -> str:
+    """Load the signing secret from file, or create one if it doesn't exist."""
+    path = get_secret_path()
+    if path.exists():
+        return path.read_text().strip()
+    secret = secrets.token_urlsafe(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(secret + "\n")
+    path.chmod(0o600)
+    return secret

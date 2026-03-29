@@ -72,3 +72,50 @@ def test_generate_and_save_password_sets_0700_on_config_dir(monkeypatch, tmp_pat
     config_dir = tmp_path / ".config" / "muxplex"
     mode = stat.S_IMODE(config_dir.stat().st_mode)
     assert mode == 0o700
+
+
+# ---------------------------------------------------------------------------
+# Secret file management
+# ---------------------------------------------------------------------------
+
+
+def test_get_secret_path_returns_expected_path(monkeypatch, tmp_path):
+    """get_secret_path() returns ~/.config/muxplex/secret."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    from muxplex.auth import get_secret_path
+
+    assert get_secret_path() == tmp_path / ".config" / "muxplex" / "secret"
+
+
+def test_load_or_create_secret_creates_new_file(monkeypatch, tmp_path):
+    """load_or_create_secret() creates a secret file when none exists."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    from muxplex.auth import load_or_create_secret
+
+    secret = load_or_create_secret()
+    assert isinstance(secret, str)
+    assert len(secret) > 20
+
+    secret_path = tmp_path / ".config" / "muxplex" / "secret"
+    assert secret_path.exists()
+
+
+def test_load_or_create_secret_sets_0600_permissions(monkeypatch, tmp_path):
+    """load_or_create_secret() sets the secret file to mode 0600."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    from muxplex.auth import load_or_create_secret
+
+    load_or_create_secret()
+    secret_path = tmp_path / ".config" / "muxplex" / "secret"
+    mode = stat.S_IMODE(secret_path.stat().st_mode)
+    assert mode == 0o600
+
+
+def test_load_or_create_secret_returns_same_value_on_second_call(monkeypatch, tmp_path):
+    """load_or_create_secret() returns the same secret on subsequent calls."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    from muxplex.auth import load_or_create_secret
+
+    first = load_or_create_secret()
+    second = load_or_create_secret()
+    assert first == second
