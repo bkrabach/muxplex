@@ -2062,4 +2062,16 @@ test('app.js has hover preview popover with desktop-only guard', () => {
   assert.ok(source.includes('hidePreview'), 'must have cleanup on mouseleave');
 });
 
+test('hover preview popover works for both grid tiles and sidebar items', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('preview-popover'), 'must create popover');
+  assert.ok(source.includes('ontouchstart'), 'desktop-only guard');
+  assert.ok(source.includes('session.snapshot'), 'uses full snapshot');
+  assert.ok(source.includes('scrollHeight'), 'auto-scrolls to bottom');
+  assert.ok(source.includes('sidebar-list') || source.includes('sidebar-item'),
+    'must handle sidebar items too');
+});
+
 

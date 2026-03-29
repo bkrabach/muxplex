@@ -515,8 +515,10 @@ function renderGrid(sessions) {
 // Hover preview popover (desktop only — no hover on touch devices)
 // ---------------------------------------------------------------------------
 
-function showPreview(tile) {
-  var name = tile.dataset.session;
+function showPreview(el, name) {
+  // el = the DOM element to position relative to
+  // name = session name (optional — reads from el.dataset.session if omitted)
+  if (!name) name = el.dataset.session;
   if (!name || !_currentSessions) return;
 
   var session = _currentSessions.find(function (s) { return s.name === name; });
@@ -531,20 +533,42 @@ function showPreview(tile) {
   popover.appendChild(pre);
   document.body.appendChild(popover);
 
-  // Position: right of tile if room, else left
-  var rect = tile.getBoundingClientRect();
-  var popW = popover.offsetWidth;
-  var popH = popover.offsetHeight;
-  var left, top;
+  // Position: try right of element, then left
+  var rect = el.getBoundingClientRect();
+  var left;
 
-  if (rect.right + popW + 12 < window.innerWidth) {
+  if (rect.right + 288 < window.innerWidth) {
     left = rect.right + 8;
+  } else if (rect.left > 288) {
+    left = rect.left - 8;  // will be adjusted after width is set
   } else {
-    left = rect.left - popW - 8;
+    // Fallback: center horizontally
+    left = Math.max(8, (window.innerWidth - 400) / 2);
   }
 
-  // Vertically: align top with tile, clamp to viewport
-  top = rect.top;
+  // Calculate available width for the popover
+  var availW;
+  if (left >= rect.right) {
+    availW = window.innerWidth - left - 16;
+  } else if (left < rect.left) {
+    availW = rect.left - 16;
+  } else {
+    availW = window.innerWidth - 32;
+  }
+  // Clamp between 280px (minimum readable) and 640px (comfortable max)
+  var popWidth = Math.min(Math.max(availW, 280), 640);
+  popover.style.width = popWidth + 'px';
+
+  // If positioned to the left, adjust left edge now that we know width
+  var fallback = Math.max(8, (window.innerWidth - 400) / 2);
+  if (left < rect.left && left !== fallback) {
+    left = rect.left - popWidth - 8;
+    if (left < 8) left = 8;
+  }
+
+  // Vertically: align top with element, clamp to viewport
+  var popH = popover.offsetHeight;
+  var top = rect.top;
   if (top + popH > window.innerHeight - 16) {
     top = window.innerHeight - popH - 16;
   }
@@ -552,6 +576,9 @@ function showPreview(tile) {
 
   popover.style.left = left + 'px';
   popover.style.top = top + 'px';
+
+  // Auto-scroll to bottom — the prompt/cursor area is the valuable part
+  popover.scrollTop = popover.scrollHeight;
 
   _previewPopover = popover;
 }
@@ -1076,12 +1103,30 @@ function bindStaticEventListeners() {
     gridEl.addEventListener('mouseenter', function (e) {
       var tile = e.target.closest('.session-tile');
       if (!tile) return;
-      _previewTimer = setTimeout(function () { showPreview(tile); }, 100);
+      _previewTimer = setTimeout(function () { showPreview(tile); }, 350);
     }, true);  // useCapture: true for delegation with mouseenter
 
     gridEl.addEventListener('mouseleave', function (e) {
       var tile = e.target.closest('.session-tile');
       if (!tile) return;
+      hidePreview();
+    }, true);
+  }
+
+  // Hover preview — delegated on sidebar list (items are re-rendered each poll)
+  var sidebarListEl = $('sidebar-list');
+  if (sidebarListEl && !('ontouchstart' in window)) {  // desktop only
+    sidebarListEl.addEventListener('mouseenter', function (e) {
+      var item = e.target.closest('.sidebar-item');
+      if (!item) return;
+      var name = item.dataset.session;
+      if (!name) return;
+      _previewTimer = setTimeout(function () { showPreview(item, name); }, 350);
+    }, true);
+
+    sidebarListEl.addEventListener('mouseleave', function (e) {
+      var item = e.target.closest('.sidebar-item');
+      if (!item) return;
       hidePreview();
     }, true);
   }

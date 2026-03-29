@@ -970,8 +970,6 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px 12px;
-  min-width: 480px;
-  max-width: 640px;
   max-height: 80vh;
   overflow-y: auto;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
