@@ -683,3 +683,25 @@ def test_non_localhost_without_auth_gets_redirected(monkeypatch):
         response = c.get("/health", follow_redirects=False)
         # Should be redirected to /login or get 307/401
         assert response.status_code in (307, 401)
+
+
+# ---------------------------------------------------------------------------
+# Login stub and auth mode endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_get_login_returns_200_html(client):
+    """GET /login returns 200 with HTML content."""
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "<form" in response.text
+
+
+def test_get_auth_mode_returns_json(client):
+    """GET /auth/mode returns JSON with mode field."""
+    response = client.get("/auth/mode")
+    assert response.status_code == 200
+    data = response.json()
+    assert "mode" in data
+    assert data["mode"] in ("pam", "password")

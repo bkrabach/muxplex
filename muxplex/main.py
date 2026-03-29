@@ -22,6 +22,7 @@ import websockets.exceptions
 from websockets.typing import Subprotocol
 
 from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.responses import HTMLResponse, JSONResponse as FastJSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -463,6 +464,34 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
             await websocket.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------------------------
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    """Stub login page — replaced in Phase 2 with branded login.html."""
+    return HTMLResponse(
+        "<html><body>"
+        "<h1>muxplex login</h1>"
+        "<form method='POST' action='/login'>"
+        "<input name='password' type='password' placeholder='Password' autocomplete='current-password'>"
+        "<button type='submit'>Login</button>"
+        "</form>"
+        "</body></html>"
+    )
+
+
+@app.get("/auth/mode")
+async def auth_mode_endpoint():
+    """Return the current auth mode and running username."""
+    username = ""
+    if _auth_mode == "pam":
+        username = pwd.getpwuid(os.getuid()).pw_name
+    return {"mode": _auth_mode, "user": username}
 
 
 # ---------------------------------------------------------------------------
