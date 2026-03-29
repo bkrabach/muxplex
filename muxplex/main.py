@@ -22,7 +22,7 @@ import websockets.exceptions
 from websockets.typing import Subprotocol
 
 from fastapi import FastAPI, HTTPException, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse as FastJSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
