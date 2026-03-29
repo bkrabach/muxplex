@@ -136,6 +136,9 @@ def authenticate_pam(username: str, password: str) -> bool:
 # Paths that bypass auth (login page itself, static assets it needs)
 _AUTH_EXEMPT_PATHS = {"/login", "/auth/mode", "/auth/logout"}
 
+# Socket-level localhost addresses — cannot be forged via HTTP headers
+_LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """FastAPI middleware that enforces authentication on non-localhost requests."""
@@ -155,13 +158,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.password = password
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # 1. Localhost bypass — check both client IP and server hostname.
-        # In production, client.host is the connecting IP (127.0.0.1 for local).
-        # In tests (TestClient), base_url affects request.url.hostname instead.
+        # 1. Localhost bypass — client.host is the socket-level IP and cannot
+        # be forged by the client (unlike the HTTP Host header).
         client_host = request.client.host if request.client else ""
-        server_host = request.url.hostname or ""
-        _localhost_addrs = ("127.0.0.1", "::1", "localhost")
-        if client_host in _localhost_addrs or server_host in _localhost_addrs:
+        if client_host in _LOCALHOST_ADDRS:
             return await call_next(request)
 
         # 2. Exempt paths (login page, auth endpoints)
@@ -177,6 +177,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("basic "):
             try:
+                # Strip "Basic " prefix (6 chars) before base64-decoding
                 decoded = base64.b64decode(auth_header[6:]).decode()
                 username, _, pw = decoded.partition(":")
                 if self._check_credentials(username, pw):

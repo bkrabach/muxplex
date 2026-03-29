@@ -247,6 +247,25 @@ def test_authenticate_pam_wrong_user_rejected(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+class _InjectClientMiddleware:
+    """Thin ASGI wrapper that injects a fake client address into the scope.
+
+    Starlette's TestClient sets request.client.host to "testclient" regardless
+    of base_url.  Wrapping the app with this middleware lets tests supply a
+    specific socket-level IP so the AuthMiddleware localhost check is exercised
+    with real values rather than relying on the (user-controlled) Host header.
+    """
+
+    def __init__(self, app, client_host: str, client_port: int = 50000):
+        self.app = app
+        self._client = (client_host, client_port)
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            scope = {**scope, "client": self._client}
+        await self.app(scope, receive, send)
+
+
 def _make_test_app(auth_mode: str = "password", password: str = "test-pw") -> FastAPI:
     """Create a minimal FastAPI app with AuthMiddleware for testing."""
     test_app = FastAPI()
@@ -269,7 +288,11 @@ def _make_test_app(auth_mode: str = "password", password: str = "test-pw") -> Fa
 def test_middleware_localhost_bypasses_auth():
     """Requests from 127.0.0.1 pass through without auth."""
     app = _make_test_app()
-    client = TestClient(app, base_url="http://127.0.0.1")
+    # TestClient always sets request.client.host to "testclient".  Wrap the app
+    # with _InjectClientMiddleware to set the socket-level client IP to 127.0.0.1
+    # so the middleware's localhost check is exercised with a real address.
+    app_with_client = _InjectClientMiddleware(app, "127.0.0.1")
+    client = TestClient(app_with_client)
     response = client.get("/protected")
     assert response.status_code == 200
     assert response.text == "OK"
@@ -280,7 +303,8 @@ def test_middleware_valid_session_cookie_passes():
     app = _make_test_app()
     cookie = create_session_cookie("test-secret", ttl_seconds=3600)
     client = TestClient(app, base_url="http://192.168.1.1")
-    response = client.get("/protected", cookies={"muxplex_session": cookie})
+    client.cookies.set("muxplex_session", cookie)
+    response = client.get("/protected")
     assert response.status_code == 200
     assert response.text == "OK"
 
@@ -289,7 +313,8 @@ def test_middleware_tampered_cookie_redirects():
     """Non-localhost request with a tampered cookie redirects to /login."""
     app = _make_test_app()
     client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
-    response = client.get("/protected", cookies={"muxplex_session": "bad.cookie.value"})
+    client.cookies.set("muxplex_session", "bad.cookie.value")
+    response = client.get("/protected")
     assert response.status_code == 307
     assert "/login" in response.headers["location"]
 
