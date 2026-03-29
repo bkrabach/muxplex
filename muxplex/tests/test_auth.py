@@ -1,5 +1,6 @@
 """Tests for muxplex/auth.py — authentication module."""
 
+import os
 import stat
 from pathlib import Path
 
@@ -170,3 +171,64 @@ def test_verify_session_cookie_expired():
     # age = 2 > max_age = 1, ensuring reliable expiry detection
     time.sleep(2)
     assert verify_session_cookie("test-secret", cookie, ttl_seconds=1) is False
+
+
+# ---------------------------------------------------------------------------
+# PAM authentication
+# ---------------------------------------------------------------------------
+
+
+def test_pam_available_returns_true_when_pam_importable():
+    """pam_available() returns True when python-pam is installed."""
+    from muxplex.auth import pam_available
+
+    # python-pam is in our deps, so it should be importable
+    assert pam_available() is True
+
+
+def test_pam_available_returns_false_on_import_error(monkeypatch):
+    """pam_available() returns False when pam cannot be imported."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "pam":
+            raise ImportError("mock: no pam")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+    from muxplex.auth import pam_available
+
+    assert pam_available() is False
+
+
+def test_authenticate_pam_success(monkeypatch):
+    """authenticate_pam() returns True when PAM succeeds for the running user."""
+    import pwd
+
+    from muxplex.auth import authenticate_pam
+
+    running_user = pwd.getpwuid(os.getuid()).pw_name
+    monkeypatch.setattr("pam.authenticate", lambda u, p, service="login": True)
+    assert authenticate_pam(running_user, "correct-password") is True
+
+
+def test_authenticate_pam_wrong_password(monkeypatch):
+    """authenticate_pam() returns False when PAM rejects credentials."""
+    import pwd
+
+    from muxplex.auth import authenticate_pam
+
+    running_user = pwd.getpwuid(os.getuid()).pw_name
+    monkeypatch.setattr("pam.authenticate", lambda u, p, service="login": False)
+    assert authenticate_pam(running_user, "wrong-password") is False
+
+
+def test_authenticate_pam_wrong_user_rejected(monkeypatch):
+    """authenticate_pam() rejects a different username even if PAM would accept it."""
+    from muxplex.auth import authenticate_pam
+
+    # Mock PAM to always return True — but wrong username should still fail
+    monkeypatch.setattr("pam.authenticate", lambda u, p, service="login": True)
+    assert authenticate_pam("root", "any-password") is False

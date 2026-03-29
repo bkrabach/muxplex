@@ -95,3 +95,31 @@ def verify_session_cookie(secret: str, cookie: str, ttl_seconds: int) -> bool:
         return True
     except (BadSignature, SignatureExpired):
         return False
+
+
+# ---------------------------------------------------------------------------
+# PAM authentication
+# ---------------------------------------------------------------------------
+
+
+def pam_available() -> bool:
+    """Check whether the python-pam module is importable."""
+    try:
+        import pam  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def authenticate_pam(username: str, password: str) -> bool:
+    """Authenticate via PAM. Username must match the running process owner."""
+    import os as _os
+    import pwd
+
+    import pam
+
+    running_user = pwd.getpwuid(_os.getuid()).pw_name
+    if username != running_user:
+        return False
+    return pam.authenticate(username, password, service="login")
