@@ -1,6 +1,5 @@
 """
-muxplex authentication — password management, secret management,
-session cookies, PAM integration, and request middleware.
+muxplex authentication — password file management.
 """
 
 import secrets
@@ -41,7 +40,7 @@ def generate_and_save_password() -> str:
     """Generate a random password, write it to the password file (0600), return it."""
     pw = secrets.token_urlsafe(20)
     path = get_password_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _config_dir()  # ensures dir exists with mode 0700
     path.write_text(pw + "\n")
     path.chmod(0o600)
     return pw
