@@ -247,4 +247,70 @@ function closeTerminal() {
 window._openTerminal = openTerminal;
 window._closeTerminal = closeTerminal;
 
+// ---------------------------------------------------------------------------
+// Android touch scroll — rAF-batched WheelEvent dispatch
+// Android batches touchmove events irregularly; dispatching one WheelEvent
+// per frame (via requestAnimationFrame) smooths over burst delivery.
+// UA-gated: iOS and macOS are unaffected (they use mouse wheel natively).
+// ---------------------------------------------------------------------------
+;(function initAndroidTerminalScroll() {
+  if (!/Android/i.test(navigator.userAgent)) return;
+
+  var container = document.getElementById('terminal-container');
+  if (!container) return;
+
+  var _lastY      = 0;
+  var _accumulated = 0;  // pixel debt between rAF ticks
+  var _rafId       = null;
+  var SCROLL_PX    = 20; // pixels of touch movement = one WheelEvent dispatch
+
+  function flushScroll() {
+    _rafId = null;
+    if (!_term || Math.abs(_accumulated) < SCROLL_PX) return;
+
+    var viewport = container.querySelector('.xterm-viewport');
+    if (!viewport) { _accumulated = 0; return; }
+
+    // One WheelEvent per frame — dir * 120 = one standard scroll click
+    var dir = _accumulated > 0 ? 1 : -1;
+    viewport.dispatchEvent(new WheelEvent('wheel', {
+      deltaY: dir * 120,
+      deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      bubbles: true,
+      cancelable: true,
+    }));
+    _accumulated -= dir * SCROLL_PX;
+
+    // Self-schedule until remainder is consumed
+    if (Math.abs(_accumulated) >= SCROLL_PX) {
+      _rafId = requestAnimationFrame(flushScroll);
+    }
+  }
+
+  container.addEventListener('touchstart', function (e) {
+    _lastY       = e.touches[0].clientY;
+    _accumulated = 0;
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+  }, { passive: true });
+
+  container.addEventListener('touchmove', function (e) {
+    if (!_term) return;
+    e.preventDefault(); // block outer-container scroll
+
+    var y      = e.touches[0].clientY;
+    _accumulated += _lastY - y;   // positive = swipe up = newer content
+    _lastY = y;
+
+    if (!_rafId) {
+      _rafId = requestAnimationFrame(flushScroll);
+    }
+  }, { passive: false }); // passive:false required for preventDefault
+
+  container.addEventListener('touchend', function () {
+    _lastY       = 0;
+    _accumulated = 0;
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+  }, { passive: true });
+})();
+
 

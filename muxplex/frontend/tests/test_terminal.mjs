@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import fs from 'node:fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -716,6 +717,20 @@ test('terminal is auto-focused when WebSocket opens', () => {
 
   assert.strictEqual(t.focusCallCount, 1,
     '_term.focus() should be called exactly once when the WebSocket open event fires');
+});
+
+// --- Android touch scroll ---------------------------------------------------
+
+test('terminal.js Android touch scroll is UA-gated', () => {
+  const source = fs.readFileSync(
+    new URL('../terminal.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('Android'), 'must UA-detect Android before adding handlers');
+  assert.ok(source.includes('requestAnimationFrame'), 'must use rAF to batch scroll dispatch');
+  assert.ok(source.includes('e.preventDefault'), 'touchmove must preventDefault to block outer scroll');
+  assert.ok(source.includes('WheelEvent'), 'must dispatch WheelEvent to xterm viewport');
+  assert.ok(source.includes('passive: false'), 'touchmove must be non-passive');
+  assert.ok(!source.includes('scrollLines'), 'must NOT use scrollLines (scrolls local buffer not PTY)');
 });
 
 
