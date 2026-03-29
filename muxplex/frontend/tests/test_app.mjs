@@ -45,6 +45,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import fs from 'node:fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2023,6 +2024,30 @@ test('bindSidebarClickAway registers click listener on terminal-container', () =
 
   assert.strictEqual(addEventListenerCalledWith, 'click', 'bindSidebarClickAway should register a click listener on terminal-container');
   globalThis.document.getElementById = origGetById;
+});
+
+test('openSession mounts terminal AFTER connect POST, not inside animation timer', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+
+  // Find the openSession function body
+  const fnStart = source.indexOf('async function openSession');
+  const fnBody = source.substring(fnStart, fnStart + 3000);
+
+  // _openTerminal must NOT appear inside setTimeout
+  const setTimeoutIdx = fnBody.indexOf('setTimeout');
+  const setTimeoutEnd = fnBody.indexOf('}, 260)', setTimeoutIdx);
+  const setTimeoutBody = fnBody.substring(setTimeoutIdx, setTimeoutEnd);
+
+  assert.ok(!setTimeoutBody.includes('_openTerminal'),
+    '_openTerminal must NOT be inside the 260ms setTimeout — causes race condition with /connect POST');
+
+  // _openTerminal must appear AFTER the /connect POST
+  const connectIdx = fnBody.indexOf('/api/sessions/');
+  const openTermIdx = fnBody.indexOf('_openTerminal', connectIdx);
+  assert.ok(openTermIdx > connectIdx,
+    '_openTerminal must appear AFTER the /connect POST in the source');
 });
 
 

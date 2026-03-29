@@ -657,21 +657,24 @@ async function openSession(name, opts = {}) {
     tile.style.height = '100vh';
   }
 
-  // After animation completes: switch views, then mount terminal
-  setTimeout(() => {
-    const overview = $('view-overview');
-    const expanded = $('view-expanded');
-    if (overview) overview.style.display = 'none';
-    if (expanded) {
-      expanded.classList.remove('hidden');     // must remove class — !important wins over style.display
-      expanded.classList.add('view--active');  // makes it display:flex
-    }
-    // Mount terminal AFTER view is visible so FitAddon measures real dimensions
-    if (window._openTerminal) window._openTerminal(name);
-    // Re-render sidebar after DOM is visible and dimensions are correct
-    initSidebar();
-    renderSidebar(_currentSessions, name);
-  }, 260);
+  // Start animation concurrently with /connect POST — resolve when view is ready
+  var animDone = new Promise(function (resolve) {
+    var timerId = setTimeout(function () {
+      var overview = $('view-overview');
+      var expanded = $('view-expanded');
+      if (overview) overview.style.display = 'none';
+      if (expanded) {
+        expanded.classList.remove('hidden');     // must remove class — !important wins over style.display
+        expanded.classList.add('view--active');  // makes it display:flex
+      }
+      // Re-render sidebar after DOM is visible and dimensions are correct
+      initSidebar();
+      renderSidebar(_currentSessions, name);
+      resolve();
+    }, 260);
+    // If setTimeout is stubbed (e.g. in test env), resolve immediately so we don't hang
+    if (timerId == null) resolve();
+  });
 
   // Mobile pill
   if (isMobile()) {
@@ -685,7 +688,7 @@ async function openSession(name, opts = {}) {
     updateSessionPill(_currentSessions);
   }
 
-  // Connect to session (before animation completes so ttyd is ready)
+  // Connect to session (kill old ttyd, spawn new one for this session)
   try {
     if (!opts.skipConnect) {
       await api('POST', `/api/sessions/${name}/connect`);
@@ -694,6 +697,12 @@ async function openSession(name, opts = {}) {
     showToast(err.message || 'Connection failed');
     return closeSession();
   }
+
+  // Wait for animation to finish (may already be done if /connect was slow)
+  await animDone;
+
+  // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
+  if (window._openTerminal) window._openTerminal(name);
 }
 
 /**
