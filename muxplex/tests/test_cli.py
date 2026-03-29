@@ -10,13 +10,15 @@ def test_cli_module_importable():
 
 
 def test_main_calls_serve_by_default():
-    """Calling main() with no args must invoke serve()."""
+    """Calling main() with no args must invoke serve() with new defaults."""
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
         with patch("sys.argv", ["muxplex"]):
             main()
-        mock_serve.assert_called_once_with(host="0.0.0.0", port=8088)
+        mock_serve.assert_called_once_with(
+            host="127.0.0.1", port=8088, auth="pam", session_ttl=604800
+        )
 
 
 def test_main_passes_custom_host_and_port():
@@ -24,9 +26,46 @@ def test_main_passes_custom_host_and_port():
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
-        with patch("sys.argv", ["muxplex", "--host", "127.0.0.1", "--port", "9000"]):
+        with patch("sys.argv", ["muxplex", "--host", "192.168.1.1", "--port", "9000"]):
             main()
-        mock_serve.assert_called_once_with(host="127.0.0.1", port=9000)
+        mock_serve.assert_called_once_with(
+            host="192.168.1.1", port=9000, auth="pam", session_ttl=604800
+        )
+
+
+def test_main_default_host_is_localhost():
+    """Default --host must be 127.0.0.1 (not 0.0.0.0)."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch("sys.argv", ["muxplex"]):
+            main()
+        _, kwargs = mock_serve.call_args
+        assert kwargs["host"] == "127.0.0.1"
+
+
+def test_main_passes_auth_flag():
+    """main() with --auth password must forward auth='password' to serve()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch("sys.argv", ["muxplex", "--auth", "password"]):
+            main()
+        mock_serve.assert_called_once_with(
+            host="127.0.0.1", port=8088, auth="password", session_ttl=604800
+        )
+
+
+def test_main_passes_session_ttl_flag():
+    """main() with --session-ttl 3600 must forward session_ttl=3600 to serve()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch("sys.argv", ["muxplex", "--session-ttl", "3600"]):
+            main()
+        mock_serve.assert_called_once_with(
+            host="127.0.0.1", port=8088, auth="pam", session_ttl=3600
+        )
 
 
 def test_main_install_service_subcommand():

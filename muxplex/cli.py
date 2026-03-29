@@ -9,11 +9,18 @@ from pathlib import Path
 _system_service_path = Path("/etc/systemd/system/muxplex.service")
 
 
-def serve(host: str = "0.0.0.0", port: int = 8088) -> None:
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8088,
+    auth: str = "pam",
+    session_ttl: int = 604800,
+) -> None:
     """Start the muxplex server."""
     import uvicorn  # noqa: PLC0415
 
     os.environ.setdefault("MUXPLEX_PORT", str(port))
+    os.environ.setdefault("MUXPLEX_AUTH", auth)
+    os.environ.setdefault("MUXPLEX_SESSION_TTL", str(session_ttl))
 
     from muxplex.main import app  # noqa: PLC0415
 
@@ -69,9 +76,22 @@ def main() -> None:
         description="muxplex — web-based tmux session dashboard",
     )
     parser.add_argument(
-        "--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)"
+        "--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)"
     )
     parser.add_argument("--port", type=int, default=8088, help="Port (default: 8088)")
+    parser.add_argument(
+        "--auth",
+        choices=["pam", "password"],
+        default="pam",
+        help="Authentication method: pam or password (default: pam)",
+    )
+    parser.add_argument(
+        "--session-ttl",
+        type=int,
+        default=604800,
+        dest="session_ttl",
+        help="Session TTL in seconds (default: 604800 = 7 days; 0 = browser session)",
+    )
 
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="Start the server (default)")
@@ -86,4 +106,6 @@ def main() -> None:
     if args.command == "install-service":
         install_service(system=args.system)
     else:
-        serve(host=args.host, port=args.port)
+        serve(
+            host=args.host, port=args.port, auth=args.auth, session_ttl=args.session_ttl
+        )
