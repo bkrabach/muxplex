@@ -119,3 +119,54 @@ def test_load_or_create_secret_returns_same_value_on_second_call(monkeypatch, tm
     first = load_or_create_secret()
     second = load_or_create_secret()
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Session cookie signing / verification
+# ---------------------------------------------------------------------------
+
+
+def test_create_session_cookie_returns_string():
+    """create_session_cookie() returns a non-empty string."""
+    from muxplex.auth import create_session_cookie
+
+    cookie = create_session_cookie("test-secret", ttl_seconds=3600)
+    assert isinstance(cookie, str)
+    assert len(cookie) > 0
+
+
+def test_verify_session_cookie_valid_roundtrip():
+    """A cookie created by create_session_cookie verifies successfully."""
+    from muxplex.auth import create_session_cookie, verify_session_cookie
+
+    cookie = create_session_cookie("test-secret", ttl_seconds=3600)
+    assert verify_session_cookie("test-secret", cookie, ttl_seconds=3600) is True
+
+
+def test_verify_session_cookie_tampered():
+    """A tampered cookie fails verification."""
+    from muxplex.auth import create_session_cookie, verify_session_cookie
+
+    cookie = create_session_cookie("test-secret", ttl_seconds=3600)
+    tampered = cookie + "X"
+    assert verify_session_cookie("test-secret", tampered, ttl_seconds=3600) is False
+
+
+def test_verify_session_cookie_wrong_secret():
+    """A cookie signed with a different secret fails verification."""
+    from muxplex.auth import create_session_cookie, verify_session_cookie
+
+    cookie = create_session_cookie("secret-A", ttl_seconds=3600)
+    assert verify_session_cookie("secret-B", cookie, ttl_seconds=3600) is False
+
+
+def test_verify_session_cookie_expired():
+    """A cookie verified with a very short TTL fails (simulates expiry)."""
+    import time
+    from muxplex.auth import create_session_cookie, verify_session_cookie
+
+    cookie = create_session_cookie("test-secret", ttl_seconds=1)
+    # itsdangerous uses integer-second timestamps; sleep 2s to guarantee
+    # age = 2 > max_age = 1, ensuring reliable expiry detection
+    time.sleep(2)
+    assert verify_session_cookie("test-secret", cookie, ttl_seconds=1) is False

@@ -5,6 +5,8 @@ muxplex authentication — password and signing secret file management.
 import secrets
 from pathlib import Path
 
+from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
+
 
 # ---------------------------------------------------------------------------
 # Config directory
@@ -66,3 +68,28 @@ def load_or_create_secret() -> str:
     path.write_text(secret + "\n")
     path.chmod(0o600)
     return secret
+
+
+# ---------------------------------------------------------------------------
+# Session cookie signing / verification
+# ---------------------------------------------------------------------------
+
+
+def create_session_cookie(secret: str, ttl_seconds: int) -> str:
+    """Create a signed, timestamped session cookie value."""
+    signer = TimestampSigner(secret)
+    return signer.sign("muxplex-session").decode()
+
+
+def verify_session_cookie(secret: str, cookie: str, ttl_seconds: int) -> bool:
+    """Verify a session cookie's signature and expiry. Returns True/False.
+
+    ttl_seconds=0 means session cookie — no server-side expiry check.
+    """
+    signer = TimestampSigner(secret)
+    try:
+        max_age = ttl_seconds if ttl_seconds > 0 else None
+        signer.unsign(cookie, max_age=max_age)
+        return True
+    except (BadSignature, SignatureExpired):
+        return False
