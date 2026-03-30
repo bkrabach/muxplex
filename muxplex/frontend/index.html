@@ -32,7 +32,6 @@
       <button id="back-btn" class="back-btn" aria-label="Back">&#8592;</button>
       <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle session list">&#9776;</button>
       <span id="expanded-session-name" class="expanded-session-name"></span>
-      <button id="palette-trigger" class="palette-trigger" aria-label="Open command palette">&#8984;K</button>
     </header>
     <div class="view-body">
       <div id="session-sidebar" class="session-sidebar">
@@ -47,13 +46,7 @@
     <div id="reconnect-overlay" class="reconnect-overlay hidden" aria-live="polite">Reconnecting&hellip;</div>
   </div>
 
-  <!-- ── Command palette ───────────────────────────────────────────────────── -->
-  <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="Switch session">
-    <div class="command-palette__backdrop" id="palette-backdrop"></div>
-    <div class="command-palette__dialog">
-      <input id="palette-input" class="command-palette__input" type="text"
              placeholder="Jump to session…" autocomplete="off" spellcheck="false">
-      <ul id="palette-list" class="command-palette__list" role="listbox" aria-label="Sessions"></ul>
     </div>
   </div>
 

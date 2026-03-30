@@ -66,14 +66,6 @@ def test_css_mobile_tiers():
     assert "session-tile--tier-idle" in css
 
 
-def test_css_command_palette():
-    css = read_css()
-    assert ".command-palette__dialog" in css
-    assert ".command-palette__input" in css
-    assert ".palette-item" in css
-    assert ".palette-item--selected" in css
-
-
 def test_css_bottom_sheet():
     css = read_css()
     assert ".bottom-sheet__panel" in css

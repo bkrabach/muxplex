@@ -58,21 +58,13 @@ def test_html_required_views() -> None:
 
 
 def test_html_expanded_view_elements() -> None:
-    """id=back-btn, expanded-session-name, palette-trigger, reconnect-overlay."""
+    """id=back-btn, expanded-session-name, reconnect-overlay."""
     soup = _SOUP
     for id_ in (
         "back-btn",
         "expanded-session-name",
-        "palette-trigger",
         "reconnect-overlay",
     ):
-        assert soup.find(id=id_), f"Missing element with id='{id_}'"
-
-
-def test_html_command_palette() -> None:
-    """id=command-palette, palette-input, palette-list, palette-backdrop."""
-    soup = _SOUP
-    for id_ in ("command-palette", "palette-input", "palette-list", "palette-backdrop"):
         assert soup.find(id=id_), f"Missing element with id='{id_}'"
 
 
@@ -240,7 +232,6 @@ def test_html_element_classes() -> None:
         ("session-pill", "session-pill", "needs position:fixed to float"),
         ("toast", "toast", "needs position:fixed and animation"),
         ("back-btn", "back-btn", "needs border and hover styles"),
-        ("palette-trigger", "palette-trigger", "needs border and hover styles"),
         (
             "expanded-session-name",
             "expanded-session-name",
