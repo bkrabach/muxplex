@@ -1543,58 +1543,58 @@ def test_create_new_session_function_exists() -> None:
 
 
 def test_show_new_session_input_creates_input_with_class() -> None:
-    """showNewSessionInput must create an input element with class 'new-session-input'."""
+    """Input setup must set class 'new-session-input' (via _createSessionInput factory)."""
     match = re.search(
-        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
-    assert match, "showNewSessionInput function not found"
+    assert match, "_createSessionInput function not found"
     body = match.group(1)
     assert "new-session-input" in body, (
-        "showNewSessionInput must create an input with class 'new-session-input'"
+        "_createSessionInput must set input.className = 'new-session-input'"
     )
 
 
 def test_show_new_session_input_sets_placeholder() -> None:
-    """showNewSessionInput must set placeholder to 'Session name…'."""
+    """Input setup must set placeholder containing 'Session name' (via _createSessionInput factory)."""
     match = re.search(
-        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
-    assert match, "showNewSessionInput function not found"
+    assert match, "_createSessionInput function not found"
     body = match.group(1)
     assert "Session name" in body, (
-        "showNewSessionInput must set placeholder containing 'Session name'"
+        "_createSessionInput must set placeholder containing 'Session name'"
     )
 
 
 def test_show_new_session_input_disables_autocomplete() -> None:
-    """showNewSessionInput must set autocomplete off on the input."""
+    """Input setup must set autocomplete off (via _createSessionInput factory)."""
     match = re.search(
-        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
-    assert match, "showNewSessionInput function not found"
+    assert match, "_createSessionInput function not found"
     body = match.group(1)
     assert "autocomplete" in body.lower() and "off" in body.lower(), (
-        "showNewSessionInput must set autocomplete off"
+        "_createSessionInput must set autocomplete off"
     )
 
 
 def test_show_new_session_input_disables_spellcheck() -> None:
-    """showNewSessionInput must set spellcheck false on the input."""
+    """Input setup must set spellcheck false (via _createSessionInput factory)."""
     match = re.search(
-        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
-    assert match, "showNewSessionInput function not found"
+    assert match, "_createSessionInput function not found"
     body = match.group(1)
     assert "spellcheck" in body.lower() and "false" in body.lower(), (
-        "showNewSessionInput must set spellcheck false"
+        "_createSessionInput must set spellcheck false"
     )
 
 
@@ -1927,4 +1927,121 @@ def test_js_fab_click_calls_show_fab_session_input() -> None:
     assert "showFabSessionInput" in body, (
         "bindStaticEventListeners must call showFabSessionInput for FAB click — "
         "the old showNewSessionInput(fab) inserts into body which is clipped by overflow:hidden"
+    )
+
+
+def test_js_show_fab_session_input_guards_against_duplicate_overlay() -> None:
+    """showFabSessionInput must guard against creating a second overlay if one already exists."""
+    match = re.search(
+        r"function showFabSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showFabSessionInput function not found"
+    body = match.group(1)
+    assert "fab-input-overlay" in body, (
+        "showFabSessionInput must check for an existing .fab-input-overlay before creating another — "
+        "prevents duplicate overlays if called programmatically while one is already open"
+    )
+    # Guard must be present: querySelector('.fab-input-overlay') with early return
+    assert "querySelector" in body and "return" in body, (
+        "showFabSessionInput must guard with document.querySelector('.fab-input-overlay') return; "
+        "at the top to prevent duplicate overlays"
+    )
+
+
+# ============================================================
+# _createSessionInput factory (quality refactor — suggestion 1)
+# ============================================================
+
+
+def test_js_create_session_input_factory_exists() -> None:
+    """_createSessionInput factory must exist in app.js to eliminate input setup duplication."""
+    assert "function _createSessionInput" in _JS, (
+        "_createSessionInput must be defined in app.js — "
+        "shared factory eliminates duplicated input setup in showNewSessionInput and showFabSessionInput"
+    )
+
+
+def test_js_create_session_input_factory_sets_class() -> None:
+    """_createSessionInput must return an input with class 'new-session-input'."""
+    match = re.search(
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_createSessionInput function not found"
+    body = match.group(1)
+    assert "new-session-input" in body, (
+        "_createSessionInput must set input.className = 'new-session-input'"
+    )
+
+
+def test_js_create_session_input_factory_sets_placeholder() -> None:
+    """_createSessionInput must set placeholder containing 'Session name'."""
+    match = re.search(
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_createSessionInput function not found"
+    body = match.group(1)
+    assert "Session name" in body, (
+        "_createSessionInput must set placeholder containing 'Session name'"
+    )
+
+
+def test_js_create_session_input_factory_disables_autocomplete() -> None:
+    """_createSessionInput must set autocomplete off."""
+    match = re.search(
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_createSessionInput function not found"
+    body = match.group(1)
+    assert "autocomplete" in body.lower() and "off" in body.lower(), (
+        "_createSessionInput must set autocomplete off"
+    )
+
+
+def test_js_create_session_input_factory_disables_spellcheck() -> None:
+    """_createSessionInput must set spellcheck false."""
+    match = re.search(
+        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_createSessionInput function not found"
+    body = match.group(1)
+    assert "spellcheck" in body.lower() and "false" in body.lower(), (
+        "_createSessionInput must set spellcheck false"
+    )
+
+
+def test_js_show_new_session_input_uses_factory() -> None:
+    """showNewSessionInput must call _createSessionInput() instead of duplicating input setup."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "_createSessionInput" in body, (
+        "showNewSessionInput must call _createSessionInput() to create the input element"
+    )
+
+
+def test_js_show_fab_session_input_uses_factory() -> None:
+    """showFabSessionInput must call _createSessionInput() instead of duplicating input setup."""
+    match = re.search(
+        r"function showFabSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showFabSessionInput function not found"
+    body = match.group(1)
+    assert "_createSessionInput" in body, (
+        "showFabSessionInput must call _createSessionInput() to create the input element"
     )

@@ -1292,13 +1292,24 @@ function updateSessionPill(sessions) {
  * On blur: delayed cleanup (150ms) to allow click handlers.
  * @param {HTMLElement} btn - The button element to replace temporarily.
  */
-function showNewSessionInput(btn) {
+/**
+ * Create a new session name input element with shared base configuration.
+ * Used by both showNewSessionInput (inline) and showFabSessionInput (overlay)
+ * to avoid duplicating the five setup properties.
+ * @returns {HTMLInputElement}
+ */
+function _createSessionInput() {
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'new-session-input';
   input.placeholder = 'Session name\u2026';
   input.autocomplete = 'off';
   input.spellcheck = false;
+  return input;
+}
+
+function showNewSessionInput(btn) {
+  const input = _createSessionInput();
 
   function cleanup() {
     if (input.parentNode) input.parentNode.removeChild(input);
@@ -1331,17 +1342,14 @@ function showNewSessionInput(btn) {
  * visible on mobile regardless of body/view overflow:hidden constraints.
  */
 function showFabSessionInput() {
+  if (document.querySelector('.fab-input-overlay')) return;
+
   const fab = $('new-session-fab');
 
   const overlay = document.createElement('div');
   overlay.className = 'fab-input-overlay';
 
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'new-session-input';
-  input.placeholder = 'Session name\u2026';
-  input.autocomplete = 'off';
-  input.spellcheck = false;
+  const input = _createSessionInput();
 
   overlay.appendChild(input);
 

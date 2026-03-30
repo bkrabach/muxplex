@@ -1,6 +1,7 @@
 """Tests for frontend/style.css — design tokens and dark theme."""
 
 import pathlib
+import re
 
 CSS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "style.css"
 
@@ -1605,4 +1606,20 @@ def test_css_fab_active_transform() -> None:
     css = read_css()
     assert ".new-session-fab:active" in css, (
         "Missing .new-session-fab:active rule in style.css"
+    )
+
+
+def test_css_fab_focus_visible_outline_not_accent() -> None:
+    """.new-session-fab:focus-visible outline must not use var(--accent) — same color as FAB background gives zero contrast."""
+    css = read_css()
+    match = re.search(r"\.new-session-fab:focus-visible\s*\{([^}]*)\}", css)
+    assert match, "Missing .new-session-fab:focus-visible rule in style.css"
+    body = match.group(1)
+    assert "outline" in body, ".new-session-fab:focus-visible must have an outline property"
+    # The FAB background IS var(--accent), so using the same color as outline gives zero visible ring.
+    # Must use var(--bg) or var(--text) for sufficient contrast.
+    assert "var(--accent)" not in body, (
+        ".new-session-fab:focus-visible outline must not use var(--accent) — "
+        "the FAB background is already var(--accent), so the outline would be invisible. "
+        "Use var(--bg) or var(--text) for contrast."
     )
