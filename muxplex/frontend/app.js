@@ -1038,6 +1038,29 @@ function openSettings() {
   const gridColumnsEl = $('setting-grid-columns');
   if (gridColumnsEl) gridColumnsEl.value = String(settings.gridColumns);
 
+  // Populate Notifications tab from display settings
+  const bellSoundEl = $('setting-bell-sound');
+  if (bellSoundEl) bellSoundEl.checked = !!settings.bellSound;
+
+  // Update notification permission status text/button
+  const statusEl = $('notification-status-text');
+  const reqBtn = $('notification-request-btn');
+  if (statusEl && reqBtn) {
+    if (typeof Notification === 'undefined') {
+      statusEl.textContent = 'Not supported';
+      reqBtn.disabled = true;
+    } else if (Notification.permission === 'granted') {
+      statusEl.textContent = 'Granted';
+      reqBtn.disabled = true;
+    } else if (Notification.permission === 'denied') {
+      statusEl.textContent = 'Denied (check browser settings)';
+      reqBtn.disabled = true;
+    } else {
+      statusEl.textContent = 'Not requested';
+      reqBtn.disabled = false;
+    }
+  }
+
   // Populate Sessions tab from server settings
   loadServerSettings().then(function(ss) {
     // Default session dropdown
@@ -1329,6 +1352,41 @@ function bindStaticEventListeners() {
       patchServerSetting('hidden_sessions', hidden);
     });
   }
+
+  // Notifications settings — bell sound toggle persists to display settings localStorage
+  on($('setting-bell-sound'), 'change', function() {
+    var el = $('setting-bell-sound');
+    if (!el) return;
+    var ds = loadDisplaySettings();
+    ds.bellSound = el.checked;
+    saveDisplaySettings(ds);
+  });
+
+  // Notifications settings — permission request button
+  on($('notification-request-btn'), 'click', function() {
+    if (typeof Notification === 'undefined') return;
+    Notification.requestPermission().then(function(permission) {
+      _notificationPermission = permission;
+      var ds = loadDisplaySettings();
+      ds.notificationPermission = permission;
+      saveDisplaySettings(ds);
+      // Update UI state
+      var statusEl = $('notification-status-text');
+      var reqBtn = $('notification-request-btn');
+      if (statusEl && reqBtn) {
+        if (permission === 'granted') {
+          statusEl.textContent = 'Granted';
+          reqBtn.disabled = true;
+        } else if (permission === 'denied') {
+          statusEl.textContent = 'Denied (check browser settings)';
+          reqBtn.disabled = true;
+        } else {
+          statusEl.textContent = 'Not requested';
+          reqBtn.disabled = false;
+        }
+      }
+    });
+  });
 }
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────

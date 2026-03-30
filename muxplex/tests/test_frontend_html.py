@@ -662,3 +662,59 @@ def test_html_sessions_panel_has_auto_open_checkbox_default_checked() -> None:
     assert el.get("checked") is not None, (
         "#setting-auto-open must be checked by default"
     )
+
+
+# ============================================================
+# Notifications tab (task-2-notifications-tab)
+# ============================================================
+
+
+def test_html_notifications_panel_has_bell_sound_checkbox() -> None:
+    """Notifications panel must contain a #setting-bell-sound checkbox."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    notif_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "notifications"})
+    assert notif_panel is not None, "Missing notifications settings-panel"
+    el = notif_panel.find(id="setting-bell-sound")
+    assert el is not None, "Missing #setting-bell-sound inside notifications panel"
+    assert el.name == "input", (
+        f"#setting-bell-sound must be an <input>, got: {el.name}"
+    )
+    assert el.get("type") == "checkbox", (
+        f"#setting-bell-sound must be type='checkbox', got: {el.get('type')}"
+    )
+    classes = el.get("class") or []
+    assert "settings-checkbox" in classes, (
+        f"#setting-bell-sound must have class 'settings-checkbox', has: {classes}"
+    )
+
+
+def test_html_notifications_panel_has_notification_status_text() -> None:
+    """Notifications panel must contain #notification-status-text with class settings-status-text."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    notif_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "notifications"})
+    assert notif_panel is not None, "Missing notifications settings-panel"
+    el = notif_panel.find(id="notification-status-text")
+    assert el is not None, "Missing #notification-status-text inside notifications panel"
+    classes = el.get("class") or []
+    assert "settings-status-text" in classes, (
+        f"#notification-status-text must have class 'settings-status-text', has: {classes}"
+    )
+
+
+def test_html_notifications_panel_has_request_btn() -> None:
+    """Notifications panel must contain #notification-request-btn with class settings-action-btn."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    notif_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "notifications"})
+    assert notif_panel is not None, "Missing notifications settings-panel"
+    el = notif_panel.find(id="notification-request-btn")
+    assert el is not None, "Missing #notification-request-btn inside notifications panel"
+    classes = el.get("class") or []
+    assert "settings-action-btn" in classes, (
+        f"#notification-request-btn must have class 'settings-action-btn', has: {classes}"
+    )

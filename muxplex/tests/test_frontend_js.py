@@ -1297,3 +1297,110 @@ def test_exports_patch_server_setting() -> None:
     assert "patchServerSetting" in exports, (
         "module.exports must export patchServerSetting"
     )
+
+
+# ─── Notifications tab (task-2-notifications-tab) ─────────────────────────────
+
+def test_open_settings_populates_bell_sound() -> None:
+    """openSettings must set setting-bell-sound checkbox from loadDisplaySettings().bellSound."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "setting-bell-sound" in body, (
+        "openSettings must reference setting-bell-sound to set bell sound checkbox"
+    )
+    assert "bellSound" in body, (
+        "openSettings must read bellSound from display settings"
+    )
+
+
+def test_open_settings_updates_notification_status_text() -> None:
+    """openSettings must update notification permission status text and button."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "notification-status-text" in body, (
+        "openSettings must reference notification-status-text to update permission status"
+    )
+    assert "notification-request-btn" in body, (
+        "openSettings must reference notification-request-btn to update button state"
+    )
+
+
+def test_open_settings_checks_notification_permission() -> None:
+    """openSettings must check Notification.permission to update UI."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "Notification" in body or "_notificationPermission" in body, (
+        "openSettings must check Notification.permission or _notificationPermission"
+    )
+
+
+def test_bind_static_event_listeners_binds_bell_sound_change() -> None:
+    """bindStaticEventListeners must bind change on setting-bell-sound to save to localStorage."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-bell-sound" in body, (
+        "bindStaticEventListeners must bind setting-bell-sound change event"
+    )
+
+
+def test_bind_static_event_listeners_bell_sound_saves_to_display_settings() -> None:
+    """bindStaticEventListeners bell sound change handler must save to display settings."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    # The handler needs to reference saveDisplaySettings and bellSound
+    assert "saveDisplaySettings" in body or "bellSound" in body, (
+        "bindStaticEventListeners bell sound change handler must save to display settings via saveDisplaySettings or bellSound"
+    )
+
+
+def test_bind_static_event_listeners_binds_permission_btn() -> None:
+    """bindStaticEventListeners must bind click on notification-request-btn."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "notification-request-btn" in body, (
+        "bindStaticEventListeners must bind notification-request-btn click event"
+    )
+
+
+def test_bind_static_event_listeners_permission_btn_calls_request_permission() -> None:
+    """bindStaticEventListeners permission button handler must call Notification.requestPermission()."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "requestPermission" in body, (
+        "bindStaticEventListeners permission button must call Notification.requestPermission()"
+    )

@@ -898,3 +898,116 @@ def test_css_settings_checkbox() -> None:
     assert ".settings-checkbox" in css, (
         ".settings-checkbox class must be defined in style.css"
     )
+
+
+# ============================================================
+# Notifications tab CSS (task-2-notifications-tab)
+# ============================================================
+
+
+def test_css_settings_notification_status_exists() -> None:
+    """.settings-notification-status must exist with flex column, align-items flex-end."""
+    import re
+    css = read_css()
+    assert ".settings-notification-status" in css, (
+        ".settings-notification-status class must be defined in style.css"
+    )
+    match = re.search(
+        r"\.settings-notification-status\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-notification-status rule not found"
+    body = match.group(1)
+    assert "flex-direction" in body and "column" in body, (
+        ".settings-notification-status must set flex-direction: column"
+    )
+    assert "align-items" in body and "flex-end" in body, (
+        ".settings-notification-status must set align-items: flex-end"
+    )
+
+
+def test_css_settings_status_text_exists() -> None:
+    """.settings-status-text must exist with 12px font-size and text-muted color."""
+    import re
+    css = read_css()
+    assert ".settings-status-text" in css, (
+        ".settings-status-text class must be defined in style.css"
+    )
+    match = re.search(
+        r"\.settings-status-text\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-status-text rule not found"
+    body = match.group(1)
+    assert "font-size: 12px" in body or "font-size:12px" in body, (
+        ".settings-status-text must set font-size: 12px"
+    )
+    # Must use text-muted color (either via var(--text-muted) or inline)
+    assert "var(--text-muted)" in body or "text-muted" in body, (
+        ".settings-status-text must use var(--text-muted) color"
+    )
+
+
+def test_css_settings_action_btn_exists() -> None:
+    """.settings-action-btn must exist with background, border, 12px font-size."""
+    import re
+    css = read_css()
+    assert ".settings-action-btn" in css, (
+        ".settings-action-btn class must be defined in style.css"
+    )
+    match = re.search(
+        r"\.settings-action-btn\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-action-btn rule not found"
+    body = match.group(1)
+    assert "font-size: 12px" in body or "font-size:12px" in body, (
+        ".settings-action-btn must set font-size: 12px"
+    )
+    assert "border" in body, (
+        ".settings-action-btn must have border property"
+    )
+    assert "background" in body, (
+        ".settings-action-btn must have background property"
+    )
+
+
+def test_css_settings_action_btn_hover_exists() -> None:
+    """.settings-action-btn:hover must exist with border-color accent."""
+    import re
+    css = read_css()
+    assert ".settings-action-btn:hover" in css, (
+        ".settings-action-btn:hover must be defined in style.css"
+    )
+    match = re.search(
+        r"\.settings-action-btn:hover\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-action-btn:hover rule not found"
+    body = match.group(1)
+    assert "border-color" in body and "var(--accent)" in body, (
+        ".settings-action-btn:hover must set border-color: var(--accent)"
+    )
+
+
+def test_css_settings_action_btn_disabled_opacity() -> None:
+    """.settings-action-btn:disabled must have opacity 0.5."""
+    import re
+    css = read_css()
+    assert ".settings-action-btn:disabled" in css, (
+        ".settings-action-btn:disabled must be defined in style.css"
+    )
+    match = re.search(
+        r"\.settings-action-btn:disabled\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-action-btn:disabled rule not found"
+    body = match.group(1)
+    assert "opacity: 0.5" in body or "opacity:0.5" in body, (
+        ".settings-action-btn:disabled must set opacity: 0.5"
+    )

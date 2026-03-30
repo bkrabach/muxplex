@@ -139,7 +139,19 @@
             <input type="checkbox" id="setting-auto-open" class="settings-checkbox" checked />
           </div>
         </div>
-        <div class="settings-panel hidden" data-tab="notifications"></div>
+        <div class="settings-panel hidden" data-tab="notifications">
+          <div class="settings-field">
+            <label class="settings-label" for="setting-bell-sound">Bell Sound</label>
+            <input type="checkbox" id="setting-bell-sound" class="settings-checkbox" />
+          </div>
+          <div class="settings-field">
+            <label class="settings-label">Desktop Notifications</label>
+            <div class="settings-notification-status">
+              <span id="notification-status-text" class="settings-status-text">Not requested</span>
+              <button id="notification-request-btn" class="settings-action-btn">Request Permission</button>
+            </div>
+          </div>
+        </div>
         <div class="settings-panel hidden" data-tab="new-session"></div>
       </div>
     </div>
