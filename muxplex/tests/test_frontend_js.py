@@ -845,3 +845,274 @@ def test_exports_switch_settings_tab() -> None:
     assert "switchSettingsTab" in exports, (
         "module.exports must export switchSettingsTab"
     )
+
+
+# ── Display tab wiring (task-8) ────────────────────────────────────────────────
+
+def test_apply_display_settings_function_exists() -> None:
+    """applyDisplaySettings function must exist."""
+    assert "function applyDisplaySettings" in _JS, (
+        "applyDisplaySettings must be defined in app.js"
+    )
+
+
+def test_apply_display_settings_sets_font_size_css_property() -> None:
+    """applyDisplaySettings must set --preview-font-size CSS custom property."""
+    match = re.search(
+        r"function applyDisplaySettings\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "applyDisplaySettings function not found"
+    body = match.group(1)
+    assert "--preview-font-size" in body, (
+        "applyDisplaySettings must set --preview-font-size CSS property"
+    )
+    assert "documentElement" in body, (
+        "applyDisplaySettings must call setProperty on document.documentElement"
+    )
+
+
+def test_apply_display_settings_sets_grid_columns_repeat() -> None:
+    """applyDisplaySettings must set repeat(N, 1fr) for numeric grid columns."""
+    match = re.search(
+        r"function applyDisplaySettings\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "applyDisplaySettings function not found"
+    body = match.group(1)
+    assert "repeat" in body and "1fr" in body, (
+        "applyDisplaySettings must set repeat(N, 1fr) for numeric grid columns"
+    )
+
+
+def test_apply_display_settings_handles_auto_grid_columns() -> None:
+    """applyDisplaySettings must handle 'auto' gridColumns by removing inline style."""
+    match = re.search(
+        r"function applyDisplaySettings\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "applyDisplaySettings function not found"
+    body = match.group(1)
+    assert "auto" in body, (
+        "applyDisplaySettings must handle 'auto' gridColumns"
+    )
+    assert "session-grid" in body or "gridTemplateColumns" in body, (
+        "applyDisplaySettings must update session-grid or gridTemplateColumns"
+    )
+
+
+def test_on_display_setting_change_function_exists() -> None:
+    """onDisplaySettingChange function must exist."""
+    assert "function onDisplaySettingChange" in _JS, (
+        "onDisplaySettingChange must be defined in app.js"
+    )
+
+
+def test_on_display_setting_change_reads_font_size() -> None:
+    """onDisplaySettingChange must read from setting-font-size element."""
+    match = re.search(
+        r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "onDisplaySettingChange function not found"
+    body = match.group(1)
+    assert "setting-font-size" in body, (
+        "onDisplaySettingChange must read from setting-font-size"
+    )
+
+
+def test_on_display_setting_change_reads_hover_delay() -> None:
+    """onDisplaySettingChange must read from setting-hover-delay element."""
+    match = re.search(
+        r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "onDisplaySettingChange function not found"
+    body = match.group(1)
+    assert "setting-hover-delay" in body, (
+        "onDisplaySettingChange must read from setting-hover-delay"
+    )
+
+
+def test_on_display_setting_change_reads_grid_columns() -> None:
+    """onDisplaySettingChange must read from setting-grid-columns element."""
+    match = re.search(
+        r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "onDisplaySettingChange function not found"
+    body = match.group(1)
+    assert "setting-grid-columns" in body, (
+        "onDisplaySettingChange must read from setting-grid-columns"
+    )
+
+
+def test_on_display_setting_change_calls_save_display_settings() -> None:
+    """onDisplaySettingChange must call saveDisplaySettings."""
+    match = re.search(
+        r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "onDisplaySettingChange function not found"
+    body = match.group(1)
+    assert "saveDisplaySettings" in body, (
+        "onDisplaySettingChange must call saveDisplaySettings"
+    )
+
+
+def test_on_display_setting_change_calls_apply_display_settings() -> None:
+    """onDisplaySettingChange must call applyDisplaySettings."""
+    match = re.search(
+        r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "onDisplaySettingChange function not found"
+    body = match.group(1)
+    assert "applyDisplaySettings" in body, (
+        "onDisplaySettingChange must call applyDisplaySettings"
+    )
+
+
+def test_hover_preview_no_hardcoded_1500() -> None:
+    """Hover preview delays must not be hardcoded 1500ms — must use loadDisplaySettings."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    # Count occurrences of hardcoded 1500 in the body
+    hardcoded_count = body.count(", 1500)")
+    assert hardcoded_count == 0, (
+        f"Hover preview must not use hardcoded 1500ms delay (found {hardcoded_count} occurrences). "
+        "Use loadDisplaySettings().hoverPreviewDelay instead."
+    )
+
+
+def test_hover_preview_reads_delay_from_settings() -> None:
+    """Hover preview must read delay from loadDisplaySettings().hoverPreviewDelay."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "loadDisplaySettings" in body and "hoverPreviewDelay" in body, (
+        "bindStaticEventListeners hover preview must read delay from loadDisplaySettings().hoverPreviewDelay"
+    )
+
+
+def test_hover_preview_skips_when_delay_zero() -> None:
+    """Hover preview must check delay > 0 before setting setTimeout."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    # The body must have a conditional guard on the delay value
+    assert "delay > 0" in body or "> 0" in body, (
+        "bindStaticEventListeners hover preview must guard: if (delay > 0) before setTimeout"
+    )
+
+
+def test_bind_static_event_listeners_binds_font_size_change() -> None:
+    """bindStaticEventListeners must bind change event on setting-font-size."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-font-size" in body, (
+        "bindStaticEventListeners must reference setting-font-size for change binding"
+    )
+    assert "onDisplaySettingChange" in body, (
+        "bindStaticEventListeners must call onDisplaySettingChange on change"
+    )
+
+
+def test_bind_static_event_listeners_binds_hover_delay_change() -> None:
+    """bindStaticEventListeners must bind change event on setting-hover-delay."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-hover-delay" in body, (
+        "bindStaticEventListeners must reference setting-hover-delay for change binding"
+    )
+
+
+def test_bind_static_event_listeners_binds_grid_columns_change() -> None:
+    """bindStaticEventListeners must bind change event on setting-grid-columns."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-grid-columns" in body, (
+        "bindStaticEventListeners must reference setting-grid-columns for change binding"
+    )
+
+
+def test_dom_content_loaded_calls_apply_display_settings() -> None:
+    """DOMContentLoaded handler must call applyDisplaySettings(loadDisplaySettings())."""
+    # Find the DOMContentLoaded handler block
+    match = re.search(
+        r"DOMContentLoaded.*?\{(.*?)(?=\}\);?\s*\n// |\}\);\s*$)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "DOMContentLoaded handler not found"
+    body = match.group(1)
+    assert "applyDisplaySettings" in body, (
+        "DOMContentLoaded handler must call applyDisplaySettings(loadDisplaySettings())"
+    )
+    assert "loadDisplaySettings" in body, (
+        "DOMContentLoaded handler must call applyDisplaySettings(loadDisplaySettings())"
+    )
+
+
+def test_exports_apply_display_settings() -> None:
+    """module.exports must export applyDisplaySettings."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "applyDisplaySettings" in exports, (
+        "module.exports must export applyDisplaySettings"
+    )
+
+
+def test_exports_on_display_setting_change() -> None:
+    """module.exports must export onDisplaySettingChange."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "onDisplaySettingChange" in exports, (
+        "module.exports must export onDisplaySettingChange"
+    )

@@ -938,6 +938,51 @@ function saveDisplaySettings(settings) {
 }
 
 /**
+ * Apply display settings to the live DOM.
+ * Sets --preview-font-size CSS custom property and updates #session-grid
+ * grid-template-columns based on the gridColumns setting.
+ * @param {object} ds - display settings object
+ */
+function applyDisplaySettings(ds) {
+  // Apply font size as CSS custom property
+  document.documentElement.style.setProperty('--preview-font-size', ds.fontSize + 'px');
+
+  // Apply grid columns
+  var grid = document.getElementById('session-grid');
+  if (grid) {
+    if (ds.gridColumns === 'auto') {
+      grid.style.removeProperty('grid-template-columns');
+    } else {
+      grid.style.gridTemplateColumns = 'repeat(' + ds.gridColumns + ', 1fr)';
+    }
+  }
+}
+
+/**
+ * Handle a change event on any Display settings control.
+ * Reads current values from form elements, saves via saveDisplaySettings,
+ * and applies via applyDisplaySettings immediately.
+ */
+function onDisplaySettingChange() {
+  var ds = loadDisplaySettings();
+
+  var fontSizeEl = document.getElementById('setting-font-size');
+  if (fontSizeEl) ds.fontSize = parseInt(fontSizeEl.value, 10) || ds.fontSize;
+
+  var hoverDelayEl = document.getElementById('setting-hover-delay');
+  if (hoverDelayEl) ds.hoverPreviewDelay = parseInt(hoverDelayEl.value, 10);
+
+  var gridColumnsEl = document.getElementById('setting-grid-columns');
+  if (gridColumnsEl) {
+    var raw = gridColumnsEl.value;
+    ds.gridColumns = raw === 'auto' ? 'auto' : parseInt(raw, 10);
+  }
+
+  saveDisplaySettings(ds);
+  applyDisplaySettings(ds);
+}
+
+/**
  * Open the settings dialog.
  * Sets _settingsOpen, calls dialog.showModal(), removes hidden from backdrop,
  * and loads current display settings into form controls.
@@ -1126,7 +1171,8 @@ function bindStaticEventListeners() {
       if (!tile) return;
       if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
       var name = tile.dataset.session;
-      _previewTimer = setTimeout(function () { showPreview(name); }, 1500);
+      var delay = loadDisplaySettings().hoverPreviewDelay;
+      if (delay > 0) _previewTimer = setTimeout(function () { showPreview(name); }, delay);
     }, true);  // useCapture: true for delegation with mouseenter
 
     gridEl.addEventListener('mouseleave', function (e) {
@@ -1144,7 +1190,8 @@ function bindStaticEventListeners() {
       if (!item) return;
       if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
       var name = item.dataset.session;
-      _previewTimer = setTimeout(function () { showPreview(name); }, 1500);
+      var delay = loadDisplaySettings().hoverPreviewDelay;
+      if (delay > 0) _previewTimer = setTimeout(function () { showPreview(name); }, delay);
     }, true);
 
     sidebarListEl.addEventListener('mouseleave', function (e) {
@@ -1153,6 +1200,11 @@ function bindStaticEventListeners() {
       hidePreview();
     }, true);
   }
+
+  // Display settings — bind change events for immediate apply
+  on($('setting-font-size'), 'change', onDisplaySettingChange);
+  on($('setting-hover-delay'), 'change', onDisplaySettingChange);
+  on($('setting-grid-columns'), 'change', onDisplaySettingChange);
 }
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────
@@ -1169,6 +1221,7 @@ function _setViewMode(mode) {
 
 document.addEventListener('DOMContentLoaded', () => {
   initDeviceId();
+  applyDisplaySettings(loadDisplaySettings());
   document.addEventListener('keydown', trackInteraction);
   document.addEventListener('click', trackInteraction);
   document.addEventListener('touchstart', trackInteraction);
@@ -1233,6 +1286,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // Settings
     loadDisplaySettings,
     saveDisplaySettings,
+    applyDisplaySettings,
+    onDisplaySettingChange,
     openSettings,
     closeSettings,
     switchSettingsTab,
