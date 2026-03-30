@@ -985,7 +985,7 @@ body {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text);
+  color: #c9d1d9;               /* match xterm.js foreground exactly */
   white-space: pre-wrap;        /* WRAP text instead of horizontal overflow */
   word-break: break-all;        /* break long lines at viewport edge */
   overflow-x: hidden;
