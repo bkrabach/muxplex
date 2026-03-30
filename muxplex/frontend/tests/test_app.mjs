@@ -13,6 +13,7 @@ globalThis.document = {
   querySelectorAll: () => [],
   createElement: () => ({ style: {}, classList: { add: () => {}, remove: () => {} } }),
   addEventListener: () => {},
+  removeEventListener: () => {},
 };
 
 // Stubs for functions called by pollSessions (implemented in later tasks)
@@ -2091,16 +2092,18 @@ test('hover preview delay is 1500ms (not 350ms)', () => {
   assert.ok(!source.includes(', 350)'), 'old 350ms delay must be removed');
 });
 
-test('hover preview uses session name tracking instead of DOM element reference', () => {
+test('hover preview uses full-window overlay with text wrapping', () => {
   const source = fs.readFileSync(
     new URL('../app.js', import.meta.url), 'utf8'
   );
-  assert.ok(source.includes('_previewSessionName'), 'must track by session name, not DOM element');
-  assert.ok(source.includes('repositionPreview'), 'must have repositionPreview for re-anchoring');
-  assert.ok(source.includes('liftHoveredTile'), 'must re-lift tile after render cycles');
-  assert.ok(source.includes('scrollHeight'), 'must auto-scroll popover to bottom');
+  assert.ok(source.includes('_previewSessionName'), 'must track by session name');
+  assert.ok(source.includes('liftHoveredTile'), 'must re-lift tile after renders');
+  assert.ok(source.includes('scrollHeight'), 'must auto-scroll to bottom');
   assert.ok(source.includes('preview-dimmer'), 'must have dim overlay');
   assert.ok(source.includes('ontouchstart'), 'must be desktop-only');
+  assert.ok(source.includes('_previewClickHandler'), 'must have click-to-navigate handler');
+  // Must NOT have repositionPreview (old side-positioned approach)
+  assert.ok(!source.includes('repositionPreview'), 'must NOT have repositionPreview (old approach)');
 });
 
 test('renderGrid and renderSidebar re-lift hovered tile after innerHTML rebuild', () => {

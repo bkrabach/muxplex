@@ -968,21 +968,26 @@ body {
   z-index: 500;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-  max-height: 80vh;
+  border-radius: 8px;
+  padding: 16px 20px;
+  /* Cover most of the viewport — centered with margin */
+  top: 5vh;
+  left: 5vw;
+  right: 5vw;
+  bottom: 5vh;
   overflow-y: auto;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  pointer-events: none;   /* don't interfere with mouse leaving tile */
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  pointer-events: none;   /* mouse events pass through to tiles below */
 }
 
 .preview-popover pre {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--text-muted);
-  white-space: pre;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  white-space: pre-wrap;        /* WRAP text instead of horizontal overflow */
+  word-break: break-all;        /* break long lines at viewport edge */
   overflow-x: hidden;
 }
 

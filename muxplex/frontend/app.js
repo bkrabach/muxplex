@@ -523,30 +523,37 @@ function renderGrid(sessions) {
 // Hover preview popover (desktop only — no hover on touch devices)
 // ---------------------------------------------------------------------------
 
+// Click handler registered while preview is showing — navigates to the previewed session
+function _previewClickHandler(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  var name = _previewSessionName;
+  hidePreview();
+  if (name) openSession(name);
+}
+
 function showPreview(name) {
   if (!name || !_currentSessions) return;
   var session = _currentSessions.find(function (s) { return s.name === name; });
   if (!session || !session.snapshot) return;
 
-  // If already showing this session's preview, just update content + position
+  // If already showing this session, just update content
   if (_previewPopover && _previewSessionName === name) {
     var pre = _previewPopover.querySelector('pre');
     if (pre) pre.textContent = session.snapshot;
-    repositionPreview();
     return;
   }
 
-  // New preview — clean slate (DOM only, no render trigger)
   hidePreviewDOM();
   _previewSessionName = name;
 
-  // Dimmer layer — behind popover, above everything else
+  // Dimmer
   var dimmer = document.createElement('div');
   dimmer.className = 'preview-dimmer';
   document.body.appendChild(dimmer);
   _previewDimmer = dimmer;
 
-  // Popover
+  // Full-window overlay
   var popover = document.createElement('div');
   popover.className = 'preview-popover';
   var pre = document.createElement('pre');
@@ -555,67 +562,14 @@ function showPreview(name) {
   document.body.appendChild(popover);
   _previewPopover = popover;
 
-  // Lift the tile/item above the dimmer + position
+  // Lift the original tile above dimmer
   liftHoveredTile();
-  repositionPreview();
 
-  // Auto-scroll to bottom — the prompt/cursor area is the valuable part
+  // Auto-scroll to bottom (prompt area)
   popover.scrollTop = popover.scrollHeight;
-}
 
-function repositionPreview() {
-  if (!_previewPopover || !_previewSessionName) return;
-
-  // Re-query DOM for the current element (may have been rebuilt by a render cycle)
-  var el = document.querySelector(
-    '.session-tile[data-session="' + _previewSessionName + '"], ' +
-    '.sidebar-item[data-session="' + _previewSessionName + '"]'
-  );
-  if (!el) return;
-
-  var rect = el.getBoundingClientRect();
-  var popover = _previewPopover;
-  var left;
-
-  if (rect.right + 288 < window.innerWidth) {
-    left = rect.right + 8;
-  } else if (rect.left > 288) {
-    left = rect.left - 8;  // will be adjusted after width is set
-  } else {
-    // Fallback: center horizontally
-    left = Math.max(8, (window.innerWidth - 400) / 2);
-  }
-
-  // Calculate available width for the popover
-  var availW;
-  if (left >= rect.right) {
-    availW = window.innerWidth - left - 16;
-  } else if (left < rect.left) {
-    availW = rect.left - 16;
-  } else {
-    availW = window.innerWidth - 32;
-  }
-  // Clamp between 280px (minimum readable) and 640px (comfortable max)
-  var popWidth = Math.min(Math.max(availW, 280), 640);
-  popover.style.width = popWidth + 'px';
-
-  // If positioned to the left, adjust left edge now that we know width
-  var fallback = Math.max(8, (window.innerWidth - 400) / 2);
-  if (left < rect.left && left !== fallback) {
-    left = rect.left - popWidth - 8;
-    if (left < 8) left = 8;
-  }
-
-  // Vertically: align top with element, clamp to viewport
-  var popH = popover.offsetHeight;
-  var top = rect.top;
-  if (top + popH > window.innerHeight - 16) {
-    top = window.innerHeight - popH - 16;
-  }
-  if (top < 8) top = 8;
-
-  popover.style.left = left + 'px';
-  popover.style.top = top + 'px';
+  // Click anywhere navigates to previewed session
+  document.addEventListener('click', _previewClickHandler, true);
 }
 
 function liftHoveredTile() {
@@ -636,6 +590,7 @@ function liftHoveredTile() {
 
 // hidePreviewDOM: removes the visual elements only (no render trigger)
 function hidePreviewDOM() {
+  document.removeEventListener('click', _previewClickHandler, true);
   if (_previewPopover) {
     _previewPopover.remove();
     _previewPopover = null;
