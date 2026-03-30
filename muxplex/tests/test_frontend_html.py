@@ -577,3 +577,88 @@ def test_html_settings_tab_panel_data_tab_alignment() -> None:
         f"Tab buttons {missing_panels} have no matching settings-panel[data-tab=...]. "
         f"Panel data-tab values found: {panel_values}"
     )
+
+
+# ============================================================
+# Sessions tab (task-1-sessions-tab)
+# ============================================================
+
+
+def test_html_sessions_panel_has_default_session_select() -> None:
+    """Sessions panel must contain a #setting-default-session select."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="setting-default-session")
+    assert el is not None, "Missing #setting-default-session inside sessions panel"
+    assert el.name == "select", (
+        f"#setting-default-session must be a <select>, got: {el.name}"
+    )
+
+
+def test_html_sessions_panel_has_sort_order_select() -> None:
+    """Sessions panel must contain a #setting-sort-order select with manual/alphabetical/recent options."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="setting-sort-order")
+    assert el is not None, "Missing #setting-sort-order inside sessions panel"
+    assert el.name == "select", (
+        f"#setting-sort-order must be a <select>, got: {el.name}"
+    )
+    options = el.find_all("option")
+    values = [o.get("value") for o in options]
+    for v in ("manual", "alphabetical", "recent"):
+        assert v in values, f"#setting-sort-order missing option value='{v}'"
+
+
+def test_html_sessions_panel_has_hidden_sessions_container() -> None:
+    """Sessions panel must contain a #setting-hidden-sessions container for checkboxes."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="setting-hidden-sessions")
+    assert el is not None, "Missing #setting-hidden-sessions inside sessions panel"
+
+
+def test_html_sessions_panel_has_window_size_largest_checkbox() -> None:
+    """Sessions panel must contain a #setting-window-size-largest checkbox."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="setting-window-size-largest")
+    assert el is not None, "Missing #setting-window-size-largest inside sessions panel"
+    assert el.name == "input", (
+        f"#setting-window-size-largest must be an <input>, got: {el.name}"
+    )
+    assert el.get("type") == "checkbox", (
+        f"#setting-window-size-largest must be type='checkbox', got: {el.get('type')}"
+    )
+
+
+def test_html_sessions_panel_has_auto_open_checkbox_default_checked() -> None:
+    """Sessions panel must contain a #setting-auto-open checkbox with default checked."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="setting-auto-open")
+    assert el is not None, "Missing #setting-auto-open inside sessions panel"
+    assert el.name == "input", (
+        f"#setting-auto-open must be an <input>, got: {el.name}"
+    )
+    assert el.get("type") == "checkbox", (
+        f"#setting-auto-open must be type='checkbox', got: {el.get('type')}"
+    )
+    assert el.get("checked") is not None, (
+        "#setting-auto-open must be checked by default"
+    )

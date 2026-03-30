@@ -132,6 +132,7 @@ var _previewSessionName = null;  // track by NAME, not DOM element
 
 // ─── Settings state ───────────────────────────────────────────────────────────
 let _settingsOpen = false;
+let _serverSettings = null;
 const DISPLAY_SETTINGS_KEY = 'muxplex.display';
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
@@ -909,6 +910,42 @@ function _setViewingSession(name) {
   _viewingSession = name;
 }
 
+// ─── Server settings ─────────────────────────────────────────────────────────
+
+/**
+ * Load server settings from GET /api/settings and cache in _serverSettings.
+ * Always resolves — errors are logged as warnings.
+ * @returns {Promise<object>}
+ */
+async function loadServerSettings() {
+  try {
+    const res = await api('GET', '/api/settings');
+    _serverSettings = await res.json();
+  } catch (err) {
+    console.warn('[loadServerSettings] failed:', err);
+    if (!_serverSettings) _serverSettings = {};
+  }
+  return _serverSettings;
+}
+
+/**
+ * Send a PATCH to /api/settings with a single key/value update.
+ * Shows a toast on success or failure.
+ * @param {string} key
+ * @param {*} value
+ * @returns {Promise<void>}
+ */
+async function patchServerSetting(key, value) {
+  try {
+    await api('PATCH', '/api/settings', { [key]: value });
+    _serverSettings = Object.assign({}, _serverSettings, { [key]: value });
+    showToast('Setting saved');
+  } catch (err) {
+    showToast('Failed to save setting');
+    console.warn('[patchServerSetting] failed:', err);
+  }
+}
+
 // ─── Settings dialog ──────────────────────────────────────────────────────────
 
 /**
@@ -1000,6 +1037,61 @@ function openSettings() {
   if (hoverDelayEl) hoverDelayEl.value = String(settings.hoverPreviewDelay);
   const gridColumnsEl = $('setting-grid-columns');
   if (gridColumnsEl) gridColumnsEl.value = String(settings.gridColumns);
+
+  // Populate Sessions tab from server settings
+  loadServerSettings().then(function(ss) {
+    // Default session dropdown
+    const defaultSessionEl = $('setting-default-session');
+    if (defaultSessionEl) {
+      // Rebuild options from current sessions
+      defaultSessionEl.innerHTML = '<option value="">(none)</option>';
+      (_currentSessions || []).forEach(function(s) {
+        const opt = document.createElement('option');
+        opt.value = s.name || '';
+        opt.textContent = s.name || '';
+        if (ss && ss.default_session === s.name) opt.selected = true;
+        defaultSessionEl.appendChild(opt);
+      });
+    }
+
+    // Sort order
+    const sortOrderEl = $('setting-sort-order');
+    if (sortOrderEl && ss && ss.sort_order) {
+      sortOrderEl.value = ss.sort_order;
+    }
+
+    // Hidden sessions checkboxes
+    const hiddenSessionsEl = $('setting-hidden-sessions');
+    if (hiddenSessionsEl) {
+      hiddenSessionsEl.innerHTML = '';
+      const hiddenList = (ss && ss.hidden_sessions) || [];
+      (_currentSessions || []).forEach(function(s) {
+        const name = s.name || '';
+        const item = document.createElement('label');
+        item.className = 'settings-checkbox-item';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'settings-checkbox';
+        cb.value = name;
+        cb.checked = hiddenList.includes(name);
+        item.appendChild(cb);
+        item.appendChild(document.createTextNode(' ' + name));
+        hiddenSessionsEl.appendChild(item);
+      });
+    }
+
+    // Window size largest
+    const windowSizeEl = $('setting-window-size-largest');
+    if (windowSizeEl) {
+      windowSizeEl.checked = !!(ss && ss.window_size_largest);
+    }
+
+    // Auto-open
+    const autoOpenEl = $('setting-auto-open');
+    if (autoOpenEl) {
+      autoOpenEl.checked = ss && ss.auto_open !== undefined ? !!ss.auto_open : true;
+    }
+  });
 }
 
 /**
@@ -1205,6 +1297,38 @@ function bindStaticEventListeners() {
   on($('setting-font-size'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
   on($('setting-grid-columns'), 'change', onDisplaySettingChange);
+
+  // Sessions settings — bind change events for server-side persistence
+  on($('setting-default-session'), 'change', function() {
+    var el = $('setting-default-session');
+    if (el) patchServerSetting('default_session', el.value);
+  });
+  on($('setting-sort-order'), 'change', function() {
+    var el = $('setting-sort-order');
+    if (el) patchServerSetting('sort_order', el.value);
+  });
+  on($('setting-window-size-largest'), 'change', function() {
+    var el = $('setting-window-size-largest');
+    if (el) patchServerSetting('window_size_largest', el.checked);
+  });
+  on($('setting-auto-open'), 'change', function() {
+    var el = $('setting-auto-open');
+    if (el) patchServerSetting('auto_open', el.checked);
+  });
+
+  // Hidden sessions — delegated handler on container (checkboxes are dynamic)
+  var hiddenSessionsContainer = $('setting-hidden-sessions');
+  if (hiddenSessionsContainer) {
+    hiddenSessionsContainer.addEventListener('change', function(e) {
+      var cb = e.target.closest('input[type="checkbox"]');
+      if (!cb) return;
+      var hidden = [];
+      hiddenSessionsContainer.querySelectorAll('input[type="checkbox"]').forEach(function(c) {
+        if (c.checked) hidden.push(c.value);
+      });
+      patchServerSetting('hidden_sessions', hidden);
+    });
+  }
 }
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────
@@ -1291,6 +1415,9 @@ if (typeof module !== 'undefined' && module.exports) {
     openSettings,
     closeSettings,
     switchSettingsTab,
+    // Server settings
+    loadServerSettings,
+    patchServerSetting,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,

@@ -851,3 +851,50 @@ def test_css_settings_mobile_tabs_horizontal():
     tabs_block = _extract_rule_block(media_block, ".settings-tabs {")
     assert "flex-direction: row" in tabs_block, ".settings-tabs must become horizontal on mobile"
     assert "overflow-x: auto" in tabs_block, ".settings-tabs must scroll horizontally on mobile"
+
+
+# ─── Sessions tab CSS (task-1-sessions-tab) ───────────────────────────────────
+
+
+def test_css_settings_field_column() -> None:
+    """.settings-field--column must set flex-direction: column."""
+    css = read_css()
+    assert ".settings-field--column" in css, (
+        ".settings-field--column class must be defined in style.css"
+    )
+    # Find the rule and check flex-direction
+    import re
+    match = re.search(
+        r"\.settings-field--column\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-field--column rule not found"
+    body = match.group(1)
+    assert "flex-direction" in body and "column" in body, (
+        ".settings-field--column must set flex-direction: column"
+    )
+
+
+def test_css_settings_checkbox_list() -> None:
+    """.settings-checkbox-list class must be defined."""
+    css = read_css()
+    assert ".settings-checkbox-list" in css, (
+        ".settings-checkbox-list class must be defined in style.css"
+    )
+
+
+def test_css_settings_checkbox_item() -> None:
+    """.settings-checkbox-item class must be defined."""
+    css = read_css()
+    assert ".settings-checkbox-item" in css, (
+        ".settings-checkbox-item class must be defined in style.css"
+    )
+
+
+def test_css_settings_checkbox() -> None:
+    """.settings-checkbox class must be defined."""
+    css = read_css()
+    assert ".settings-checkbox" in css, (
+        ".settings-checkbox class must be defined in style.css"
+    )

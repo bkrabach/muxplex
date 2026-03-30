@@ -111,7 +111,34 @@
             </select>
           </div>
         </div>
-        <div class="settings-panel hidden" data-tab="sessions"></div>
+        <div class="settings-panel hidden" data-tab="sessions">
+          <div class="settings-field">
+            <label class="settings-label" for="setting-default-session">Default Session</label>
+            <select id="setting-default-session" class="settings-select">
+              <option value="">(none)</option>
+            </select>
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-sort-order">Sort Order</label>
+            <select id="setting-sort-order" class="settings-select">
+              <option value="manual">Manual</option>
+              <option value="alphabetical">Alphabetical</option>
+              <option value="recent">Recent</option>
+            </select>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Hidden Sessions</label>
+            <div id="setting-hidden-sessions" class="settings-checkbox-list"></div>
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-window-size-largest">Auto-set window size (largest)</label>
+            <input type="checkbox" id="setting-window-size-largest" class="settings-checkbox" />
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-auto-open">Auto-open created sessions</label>
+            <input type="checkbox" id="setting-auto-open" class="settings-checkbox" checked />
+          </div>
+        </div>
         <div class="settings-panel hidden" data-tab="notifications"></div>
         <div class="settings-panel hidden" data-tab="new-session"></div>
       </div>

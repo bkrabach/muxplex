@@ -1116,3 +1116,184 @@ def test_exports_on_display_setting_change() -> None:
     assert "onDisplaySettingChange" in exports, (
         "module.exports must export onDisplaySettingChange"
     )
+
+
+# ─── Server settings functions (task-1-sessions-tab) ─────────────────────────
+
+def test_load_server_settings_function_exists() -> None:
+    """loadServerSettings function must exist."""
+    assert "function loadServerSettings" in _JS, (
+        "loadServerSettings must be defined in app.js"
+    )
+
+
+def test_load_server_settings_fetches_api_settings() -> None:
+    """loadServerSettings must fetch GET /api/settings."""
+    match = re.search(
+        r"async function loadServerSettings\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "loadServerSettings function not found"
+    body = match.group(1)
+    assert "/api/settings" in body, "loadServerSettings must fetch /api/settings"
+    assert "GET" in body, "loadServerSettings must use GET method"
+
+
+def test_load_server_settings_caches_in_server_settings() -> None:
+    """loadServerSettings must cache result in _serverSettings."""
+    assert "_serverSettings" in _JS, "_serverSettings variable must exist in app.js"
+    match = re.search(
+        r"async function loadServerSettings\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "loadServerSettings function not found"
+    body = match.group(1)
+    assert "_serverSettings" in body, (
+        "loadServerSettings must cache the result in _serverSettings"
+    )
+
+
+def test_patch_server_setting_function_exists() -> None:
+    """patchServerSetting function must exist."""
+    assert "function patchServerSetting" in _JS, (
+        "patchServerSetting must be defined in app.js"
+    )
+
+
+def test_patch_server_setting_sends_patch_request() -> None:
+    """patchServerSetting must send PATCH to /api/settings."""
+    match = re.search(
+        r"async function patchServerSetting\s*\(.*?\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "patchServerSetting function not found"
+    body = match.group(1)
+    assert "/api/settings" in body, "patchServerSetting must send to /api/settings"
+    assert "PATCH" in body, "patchServerSetting must use PATCH method"
+
+
+def test_patch_server_setting_shows_toast() -> None:
+    """patchServerSetting must call showToast."""
+    match = re.search(
+        r"async function patchServerSetting\s*\(.*?\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "patchServerSetting function not found"
+    body = match.group(1)
+    assert "showToast" in body, "patchServerSetting must call showToast"
+
+
+def test_open_settings_calls_load_server_settings() -> None:
+    """openSettings must call loadServerSettings to populate sessions tab."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "loadServerSettings" in body, (
+        "openSettings must call loadServerSettings"
+    )
+
+
+def test_bind_static_event_listeners_binds_default_session_change() -> None:
+    """bindStaticEventListeners must bind change on setting-default-session."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-default-session" in body, (
+        "bindStaticEventListeners must bind setting-default-session change"
+    )
+
+
+def test_bind_static_event_listeners_binds_sort_order_change() -> None:
+    """bindStaticEventListeners must bind change on setting-sort-order."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-sort-order" in body, (
+        "bindStaticEventListeners must bind setting-sort-order change"
+    )
+
+
+def test_bind_static_event_listeners_binds_window_size_largest_change() -> None:
+    """bindStaticEventListeners must bind change on setting-window-size-largest."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-window-size-largest" in body, (
+        "bindStaticEventListeners must bind setting-window-size-largest change"
+    )
+
+
+def test_bind_static_event_listeners_binds_auto_open_change() -> None:
+    """bindStaticEventListeners must bind change on setting-auto-open."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-auto-open" in body, (
+        "bindStaticEventListeners must bind setting-auto-open change"
+    )
+
+
+def test_bind_static_event_listeners_uses_delegated_handler_for_hidden_sessions() -> None:
+    """bindStaticEventListeners must use delegated change handler on #setting-hidden-sessions."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-hidden-sessions" in body, (
+        "bindStaticEventListeners must use delegated handler on setting-hidden-sessions"
+    )
+
+
+def test_exports_load_server_settings() -> None:
+    """module.exports must export loadServerSettings."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "loadServerSettings" in exports, (
+        "module.exports must export loadServerSettings"
+    )
+
+
+def test_exports_patch_server_setting() -> None:
+    """module.exports must export patchServerSetting."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "patchServerSetting" in exports, (
+        "module.exports must export patchServerSetting"
+    )
