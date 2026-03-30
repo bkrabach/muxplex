@@ -19,11 +19,16 @@
 
 ## Prerequisites
 
-| Requirement | Notes |
-|---|---|
-| **tmux** | Must have at least one session running (`tmux new -s main`) |
-| **ttyd** | WebSocket bridge — `brew install ttyd` (macOS) / `apt install ttyd` (Debian/Ubuntu) |
-| **Python 3.11+** | Required by the muxplex server |
+- **Python 3.11+** — installed via `uv` or system Python
+- **tmux** — terminal multiplexer
+  - macOS: `brew install tmux`
+  - Ubuntu/WSL: `sudo apt install tmux`
+- **ttyd** — terminal sharing over HTTP (required for interactive terminal access)
+  - macOS: `brew install ttyd`
+  - Ubuntu/WSL: `sudo apt install ttyd` or `sudo snap install ttyd`
+  - Other: https://github.com/tsl0922/ttyd#installation
+
+> **Tip:** muxplex checks for `tmux` and `ttyd` at startup and prints install instructions if either is missing.
 
 ---
 
@@ -57,9 +62,22 @@ muxplex
 
 ---
 
-## Install as a Service (systemd)
+## Install as a Service
 
-### User service (no sudo required)
+### macOS (launchd)
+
+```bash
+# Install and load the launchd agent (auto-starts on login)
+muxplex install-service
+launchctl load ~/Library/LaunchAgents/com.muxplex.plist
+```
+
+To stop and remove:
+```bash
+launchctl unload ~/Library/LaunchAgents/com.muxplex.plist
+```
+
+### Linux / WSL — User service (no sudo required)
 
 ```bash
 # Install and enable the user systemd service
@@ -70,7 +88,7 @@ systemctl --user enable --now muxplex
 
 The service starts automatically when you log in and restarts on failure.
 
-### System-wide service (requires sudo)
+### Linux — System-wide service (requires sudo)
 
 ```bash
 # Install as a system service (runs at boot for all users)
@@ -91,7 +109,7 @@ muxplex [OPTIONS]
 |---|---|---|
 | `--host HOST` | `0.0.0.0` | Interface to bind (use `127.0.0.1` to restrict to localhost) |
 | `--port PORT` | `8088` | Port to listen on |
-| `install-service` | — | Install a systemd service unit for muxplex |
+| `install-service` | — | Install as a background service (launchd on macOS, systemd on Linux/WSL) |
 | `--system` | — | (with `install-service`) Install as a system service instead of user service |
 
 ### Examples
