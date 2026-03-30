@@ -2075,13 +2075,12 @@ test('hover preview popover works for both grid tiles and sidebar items', () => 
     'must handle sidebar items too');
 });
 
-test('hover preview popover has dim overlay and highlights hovered element', () => {
+test('hover preview popover uses cyan border and no dimmer', () => {
   const source = fs.readFileSync(
     new URL('../app.js', import.meta.url), 'utf8'
   );
-  assert.ok(source.includes('preview-dimmer'), 'must create dimmer overlay');
-  assert.ok(source.includes('tile--previewing'), 'must lift grid tile above dimmer');
-  assert.ok(source.includes('item--previewing'), 'must lift sidebar item above dimmer');
+  assert.ok(source.includes('preview-popover'), 'must create popover');
+  assert.ok(!source.includes('preview-dimmer'), 'must NOT use dimmer overlay (removed)');
 });
 
 test('hover preview delay is 1500ms (not 350ms)', () => {
@@ -2092,31 +2091,16 @@ test('hover preview delay is 1500ms (not 350ms)', () => {
   assert.ok(!source.includes(', 350)'), 'old 350ms delay must be removed');
 });
 
-test('hover preview uses full-window overlay with text wrapping', () => {
+test('hover preview uses full-window overlay with click-to-navigate', () => {
   const source = fs.readFileSync(
     new URL('../app.js', import.meta.url), 'utf8'
   );
   assert.ok(source.includes('_previewSessionName'), 'must track by session name');
-  assert.ok(source.includes('liftHoveredTile'), 'must re-lift tile after renders');
   assert.ok(source.includes('scrollHeight'), 'must auto-scroll to bottom');
-  assert.ok(source.includes('preview-dimmer'), 'must have dim overlay');
   assert.ok(source.includes('ontouchstart'), 'must be desktop-only');
   assert.ok(source.includes('_previewClickHandler'), 'must have click-to-navigate handler');
-  // Must NOT have repositionPreview (old side-positioned approach)
   assert.ok(!source.includes('repositionPreview'), 'must NOT have repositionPreview (old approach)');
-});
-
-test('renderGrid and renderSidebar re-lift hovered tile after innerHTML rebuild', () => {
-  const source = fs.readFileSync(
-    new URL('../app.js', import.meta.url), 'utf8'
-  );
-  // renderGrid should call liftHoveredTile after innerHTML
-  const gridFn = source.substring(source.indexOf('function renderGrid'), source.indexOf('function renderGrid') + 1500);
-  assert.ok(gridFn.includes('liftHoveredTile'), 'renderGrid must re-lift tile after render');
-
-  // renderGrid should NOT have the old _previewPopover guard
-  assert.ok(!gridFn.includes('if (_previewPopover) return'),
-    'renderGrid must NOT skip renders while preview active (old approach caused bugs)');
+  assert.ok(!source.includes('preview-dimmer'), 'must NOT have dimmer (removed — ANSI colors are readable without it)');
 });
 
 test('ansiToHtml converts SGR codes to styled spans', () => {

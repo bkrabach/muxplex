@@ -633,7 +633,10 @@ def test_preview_popover_css_exists():
     )
 
 
-def test_preview_dimmer_css_exists():
-    """Dim overlay behind popover must have CSS rules."""
+def test_preview_popover_has_accent_border():
+    """Preview popover must use brand cyan border."""
     css = read_css()
-    assert ".preview-dimmer" in css
+    start = css.index(".preview-popover {")
+    end = css.index("}", start)
+    block = css[start:end]
+    assert "var(--accent)" in block, ".preview-popover must use var(--accent) border"

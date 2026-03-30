@@ -127,7 +127,7 @@ let _notificationPermission = 'default';
 let _pollFailCount = 0;
 let _previewPopover = null;
 let _previewTimer = null;
-var _previewDimmer = null;
+
 var _previewSessionName = null;  // track by NAME, not DOM element
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
@@ -465,8 +465,6 @@ function renderSidebar(sessions, currentSession) {
     });
   }
 
-  // Re-apply z-index lift after innerHTML rebuild (preview survives re-renders)
-  if (_previewSessionName) liftHoveredTile();
 }
 
 const SIDEBAR_KEY = 'muxplex.sidebarOpen';
@@ -606,8 +604,6 @@ function renderGrid(sessions) {
     updatePillBell();
   }
 
-  // Re-apply z-index lift after innerHTML rebuild (preview survives re-renders)
-  if (_previewSessionName) liftHoveredTile();
 }
 
 // ---------------------------------------------------------------------------
@@ -638,12 +634,6 @@ function showPreview(name) {
   hidePreviewDOM();
   _previewSessionName = name;
 
-  // Dimmer
-  var dimmer = document.createElement('div');
-  dimmer.className = 'preview-dimmer';
-  document.body.appendChild(dimmer);
-  _previewDimmer = dimmer;
-
   // Full-window overlay
   var popover = document.createElement('div');
   popover.className = 'preview-popover';
@@ -653,30 +643,11 @@ function showPreview(name) {
   document.body.appendChild(popover);
   _previewPopover = popover;
 
-  // Lift the original tile above dimmer
-  liftHoveredTile();
-
   // Auto-scroll to bottom (prompt area)
   popover.scrollTop = popover.scrollHeight;
 
   // Click anywhere navigates to previewed session
   document.addEventListener('click', _previewClickHandler, true);
-}
-
-function liftHoveredTile() {
-  // Remove any existing lift class from all tiles/items
-  document.querySelectorAll('.tile--previewing, .item--previewing').forEach(function (el) {
-    el.classList.remove('tile--previewing', 'item--previewing');
-  });
-  if (!_previewSessionName) return;
-  var el = document.querySelector(
-    '.session-tile[data-session="' + _previewSessionName + '"]'
-  );
-  if (el) el.classList.add('tile--previewing');
-  var item = document.querySelector(
-    '.sidebar-item[data-session="' + _previewSessionName + '"]'
-  );
-  if (item) item.classList.add('item--previewing');
 }
 
 // hidePreviewDOM: removes the visual elements only (no render trigger)
@@ -686,13 +657,6 @@ function hidePreviewDOM() {
     _previewPopover.remove();
     _previewPopover = null;
   }
-  if (_previewDimmer) {
-    _previewDimmer.remove();
-    _previewDimmer = null;
-  }
-  document.querySelectorAll('.tile--previewing, .item--previewing').forEach(function (el) {
-    el.classList.remove('tile--previewing', 'item--previewing');
-  });
 }
 
 // hidePreview: full cleanup including timer and session name
