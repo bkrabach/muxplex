@@ -1346,6 +1346,8 @@ function bindStaticEventListeners() {
   on($('back-btn'), 'click', closeSession);
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
+  var sidebarNewSessionBtn = $('sidebar-new-session-btn');
+  if (sidebarNewSessionBtn) on(sidebarNewSessionBtn, 'click', function() { showNewSessionInput(sidebarNewSessionBtn); });
   on($('sidebar-toggle-btn'), 'click', toggleSidebar);
   on($('sidebar-collapse-btn'), 'click', toggleSidebar);
   bindSidebarClickAway();

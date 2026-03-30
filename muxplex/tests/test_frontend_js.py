@@ -1776,3 +1776,25 @@ def test_exports_create_new_session() -> None:
     assert "createNewSession" in exports, (
         "module.exports must export createNewSession"
     )
+
+
+# ============================================================
+# Sidebar + New sticky footer (task-5-sidebar-new-footer)
+# ============================================================
+
+
+def test_bind_sidebar_new_session_btn_in_bind_static_event_listeners() -> None:
+    """bindStaticEventListeners must bind #sidebar-new-session-btn click to showNewSessionInput."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "sidebar-new-session-btn" in body, (
+        "bindStaticEventListeners must reference 'sidebar-new-session-btn'"
+    )
+    assert "showNewSessionInput" in body, (
+        "bindStaticEventListeners must call showNewSessionInput for the sidebar new-session button"
+    )

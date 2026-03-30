@@ -1175,6 +1175,33 @@ body {
 }
 
 /* ============================================================
+   Sidebar sticky footer (+ New button)
+   ============================================================ */
+
+.sidebar-footer {
+  padding: 8px;
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.sidebar-new-btn {
+  width: 100%;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 8px;
+  cursor: pointer;
+}
+
+.sidebar-new-btn:hover {
+  color: var(--text-muted);
+  border-color: var(--text-muted);
+}
+
+/* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */
 

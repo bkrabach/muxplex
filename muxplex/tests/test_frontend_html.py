@@ -860,3 +860,92 @@ def test_html_new_session_panel_has_reset_button() -> None:
     assert "settings-action-btn" in classes, (
         f"#setting-template-reset must have class 'settings-action-btn', has: {classes}"
     )
+
+
+# ============================================================
+# Sidebar sticky footer (task-5-sidebar-new-footer)
+# ============================================================
+
+
+def test_html_sidebar_footer_exists() -> None:
+    """#session-sidebar must contain a div.sidebar-footer after #sidebar-list."""
+    soup = _SOUP
+    sidebar = soup.find(id="session-sidebar")
+    assert sidebar is not None, "Missing #session-sidebar"
+    footer = sidebar.find("div", class_="sidebar-footer")
+    assert footer is not None, "Missing div.sidebar-footer inside #session-sidebar"
+
+
+def test_html_sidebar_footer_after_sidebar_list() -> None:
+    """div.sidebar-footer must appear after #sidebar-list inside #session-sidebar."""
+    soup = _SOUP
+    sidebar = soup.find(id="session-sidebar")
+    assert sidebar is not None, "Missing #session-sidebar"
+    children = [el for el in sidebar.children if isinstance(el, Tag)]
+    child_ids_and_classes = []
+    for el in children:
+        cid = el.get("id")
+        cls = el.get("class") or []
+        child_ids_and_classes.append((cid, cls))
+
+    # Find sidebar-list and sidebar-footer positions
+    list_idx = None
+    footer_idx = None
+    for i, (cid, cls) in enumerate(child_ids_and_classes):
+        if cid == "sidebar-list":
+            list_idx = i
+        if "sidebar-footer" in cls:
+            footer_idx = i
+
+    assert list_idx is not None, "#sidebar-list must be in #session-sidebar children"
+    assert footer_idx is not None, "div.sidebar-footer must be in #session-sidebar children"
+    assert list_idx < footer_idx, (
+        f"div.sidebar-footer must appear after #sidebar-list, "
+        f"got list_idx={list_idx}, footer_idx={footer_idx}"
+    )
+
+
+def test_html_sidebar_new_session_btn_exists() -> None:
+    """#sidebar-new-session-btn must exist inside div.sidebar-footer."""
+    soup = _SOUP
+    sidebar = soup.find(id="session-sidebar")
+    assert sidebar is not None, "Missing #session-sidebar"
+    footer = sidebar.find("div", class_="sidebar-footer")
+    assert footer is not None, "Missing div.sidebar-footer inside #session-sidebar"
+    btn = footer.find(id="sidebar-new-session-btn")
+    assert btn is not None, "Missing #sidebar-new-session-btn inside div.sidebar-footer"
+
+
+def test_html_sidebar_new_session_btn_class() -> None:
+    """#sidebar-new-session-btn must have class sidebar-new-btn."""
+    soup = _SOUP
+    btn = soup.find(id="sidebar-new-session-btn")
+    assert btn is not None, "Missing #sidebar-new-session-btn"
+    classes = btn.get("class") or []
+    assert "sidebar-new-btn" in classes, (
+        f"#sidebar-new-session-btn must have class 'sidebar-new-btn', has: {classes}"
+    )
+
+
+def test_html_sidebar_new_session_btn_text() -> None:
+    """#sidebar-new-session-btn must have text '+ New'."""
+    soup = _SOUP
+    btn = soup.find(id="sidebar-new-session-btn")
+    assert btn is not None, "Missing #sidebar-new-session-btn"
+    text = btn.get_text(strip=True)
+    assert text == "+ New", (
+        f"#sidebar-new-session-btn text must be '+ New', got: {text!r}"
+    )
+
+
+def test_html_sidebar_structure_complete() -> None:
+    """#session-sidebar must have sidebar-header, sidebar-list, and sidebar-footer in order."""
+    soup = _SOUP
+    sidebar = soup.find(id="session-sidebar")
+    assert sidebar is not None, "Missing #session-sidebar"
+    header = sidebar.find(class_="sidebar-header")
+    list_ = sidebar.find(id="sidebar-list")
+    footer = sidebar.find(class_="sidebar-footer")
+    assert header is not None, "Missing .sidebar-header in #session-sidebar"
+    assert list_ is not None, "Missing #sidebar-list in #session-sidebar"
+    assert footer is not None, "Missing .sidebar-footer in #session-sidebar"

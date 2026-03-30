@@ -1390,3 +1390,101 @@ def test_css_new_session_input_placeholder_color() -> None:
     assert "color" in body and ("text-dim" in body or "--text-dim" in body), (
         ".new-session-input::placeholder must have color: var(--text-dim)"
     )
+
+
+# ============================================================
+# Sidebar footer (task-5-sidebar-new-footer)
+# ============================================================
+
+
+def test_css_sidebar_footer_rule_exists() -> None:
+    """.sidebar-footer rule must exist in style.css."""
+    css = read_css()
+    assert ".sidebar-footer" in css, "Missing .sidebar-footer rule in style.css"
+
+
+def test_css_sidebar_footer_padding() -> None:
+    """.sidebar-footer must have padding: 8px."""
+    import re
+    css = read_css()
+    match = re.search(
+        r"\.sidebar-footer\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".sidebar-footer rule not found"
+    body = match.group(1)
+    assert "padding" in body, ".sidebar-footer must have padding property"
+    assert "8px" in body, ".sidebar-footer padding must include 8px"
+
+
+def test_css_sidebar_footer_border_top() -> None:
+    """.sidebar-footer must have border-top."""
+    import re
+    css = read_css()
+    match = re.search(
+        r"\.sidebar-footer\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".sidebar-footer rule not found"
+    body = match.group(1)
+    assert "border-top" in body, ".sidebar-footer must have border-top property"
+
+
+def test_css_sidebar_footer_flex_shrink_0() -> None:
+    """.sidebar-footer must have flex-shrink: 0."""
+    import re
+    css = read_css()
+    match = re.search(
+        r"\.sidebar-footer\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".sidebar-footer rule not found"
+    body = match.group(1)
+    assert "flex-shrink" in body, ".sidebar-footer must have flex-shrink property"
+    assert "0" in body, ".sidebar-footer flex-shrink must be 0"
+
+
+def test_css_sidebar_new_btn_rule_exists() -> None:
+    """.sidebar-new-btn rule must exist in style.css."""
+    css = read_css()
+    assert ".sidebar-new-btn" in css, "Missing .sidebar-new-btn rule in style.css"
+
+
+def test_css_sidebar_new_btn_width_100() -> None:
+    """.sidebar-new-btn must have width: 100%."""
+    import re
+    css = read_css()
+    match = re.search(
+        r"\.sidebar-new-btn\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".sidebar-new-btn rule not found"
+    body = match.group(1)
+    assert "width" in body, ".sidebar-new-btn must have width property"
+    assert "100%" in body, ".sidebar-new-btn width must be 100%"
+
+
+def test_css_sidebar_new_btn_dashed_border() -> None:
+    """.sidebar-new-btn must have a dashed border."""
+    import re
+    css = read_css()
+    match = re.search(
+        r"\.sidebar-new-btn\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".sidebar-new-btn rule not found"
+    body = match.group(1)
+    assert "dashed" in body, ".sidebar-new-btn must have border: 1px dashed"
+
+
+def test_css_sidebar_new_btn_hover_exists() -> None:
+    """.sidebar-new-btn:hover rule must exist."""
+    css = read_css()
+    assert ".sidebar-new-btn:hover" in css, (
+        "Missing .sidebar-new-btn:hover rule in style.css"
+    )
