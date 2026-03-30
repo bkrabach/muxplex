@@ -313,6 +313,110 @@ def install_service(*, system: bool = False) -> None:
         _install_systemd(executable, system=system)
 
 
+def upgrade() -> None:
+    """Upgrade muxplex to the latest version and restart the service."""
+    print("\nmuxplex upgrade\n")
+
+    # 1. Detect platform and stop service
+    if sys.platform == "darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
+        if plist.exists():
+            print("  Stopping launchd service...")
+            subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+        else:
+            print("  No launchd service found (skipping stop)")
+    else:
+        # Linux/WSL — check systemd
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", "muxplex"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print("  Stopping systemd service...")
+            subprocess.run(
+                ["systemctl", "--user", "stop", "muxplex"], capture_output=True
+            )
+        else:
+            print("  No active systemd service found (skipping stop)")
+
+    # 2. Reinstall via uv tool install
+    print("  Installing latest version...")
+    uv_path = shutil.which("uv")
+    if uv_path:
+        result = subprocess.run(
+            [
+                uv_path,
+                "tool",
+                "install",
+                "git+https://github.com/bkrabach/muxplex",
+                "--force",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"  ERROR: uv tool install failed:\n{result.stderr}")
+            return
+        print("  Installed successfully")
+    else:
+        # Fallback: pip
+        pip_path = shutil.which("pip") or shutil.which("pip3")
+        if pip_path:
+            result = subprocess.run(
+                [
+                    pip_path,
+                    "install",
+                    "--upgrade",
+                    "git+https://github.com/bkrabach/muxplex",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                print(f"  ERROR: pip install failed:\n{result.stderr}")
+                return
+            print("  Installed successfully")
+        else:
+            print("  ERROR: neither uv nor pip found — cannot upgrade")
+            return
+
+    # 3. Regenerate service file (picks up any plist/unit changes)
+    print("  Regenerating service file...")
+    install_service(system=False)
+
+    # 4. Restart service
+    if sys.platform == "darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
+        if plist.exists():
+            print("  Starting launchd service...")
+            subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
+            print("  Service started")
+        else:
+            print("  Service file not found — run: muxplex install-service")
+    else:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-enabled", "muxplex"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print("  Restarting systemd service...")
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"], capture_output=True
+            )
+            subprocess.run(
+                ["systemctl", "--user", "start", "muxplex"], capture_output=True
+            )
+            print("  Service started")
+        else:
+            print("  Service not enabled — run: muxplex install-service")
+
+    # 5. Doctor check
+    print("\n  Verifying...")
+    doctor()
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -356,6 +460,11 @@ def main() -> None:
 
     sub.add_parser("doctor", help="Check dependencies and system status")
 
+    sub.add_parser(
+        "upgrade", help="Upgrade muxplex to latest version and restart service"
+    )
+    sub.add_parser("update", help="Alias for upgrade")
+
     args = parser.parse_args()
 
     if args.command == "install-service":
@@ -366,6 +475,8 @@ def main() -> None:
         reset_secret()
     elif args.command == "doctor":
         doctor()
+    elif args.command in ("upgrade", "update"):
+        upgrade()
     else:
         _check_dependencies()
         serve(

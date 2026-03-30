@@ -516,3 +516,94 @@ def test_main_dispatches_to_doctor(monkeypatch):
     assert len(calls) == 1, (
         "doctor() must be called once when 'doctor' subcommand is used"
     )
+
+
+# ---------------------------------------------------------------------------
+# upgrade / update subcommand tests
+# ---------------------------------------------------------------------------
+
+
+def test_upgrade_subcommand_registered():
+    """upgrade must be a valid subcommand."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue().lower()
+    assert "upgrade" in help_text
+
+
+def test_update_alias_registered():
+    """update must be a valid subcommand (alias for upgrade)."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue().lower()
+    assert "update" in help_text
+
+
+def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
+    """upgrade must attempt uv tool install."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    calls = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "install_service", lambda system=False: None)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+
+    cli_mod.upgrade()
+
+    # Should have called uv tool install
+    uv_calls = [c for c in calls if isinstance(c, list) and "uv" in str(c)]
+    assert len(uv_calls) > 0, "upgrade must call uv tool install"
+
+
+def test_main_dispatches_to_upgrade(monkeypatch):
+    """main() with 'upgrade' subcommand must invoke upgrade()."""
+    from muxplex.cli import main
+
+    calls = []
+    monkeypatch.setattr("muxplex.cli.upgrade", lambda: calls.append(True))
+
+    with patch("sys.argv", ["muxplex", "upgrade"]):
+        main()
+
+    assert len(calls) == 1, "upgrade() must be called once for 'upgrade' subcommand"
+
+
+def test_main_dispatches_update_to_upgrade(monkeypatch):
+    """main() with 'update' subcommand must also invoke upgrade()."""
+    from muxplex.cli import main
+
+    calls = []
+    monkeypatch.setattr("muxplex.cli.upgrade", lambda: calls.append(True))
+
+    with patch("sys.argv", ["muxplex", "update"]):
+        main()
+
+    assert len(calls) == 1, "upgrade() must be called once for 'update' subcommand"
