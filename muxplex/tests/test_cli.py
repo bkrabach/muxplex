@@ -263,12 +263,18 @@ def test_reset_secret_prints_warning(tmp_path, monkeypatch, capsys):
 
 def test_install_service_writes_launchd_plist_on_macos(tmp_path, monkeypatch):
     """install_service() on macOS writes a launchd plist to ~/Library/LaunchAgents/."""
+    import subprocess
     from muxplex.cli import install_service
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
     monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
 
     install_service(system=False)
 
@@ -283,17 +289,81 @@ def test_install_service_writes_launchd_plist_on_macos(tmp_path, monkeypatch):
 
 def test_install_service_does_not_write_systemd_on_macos(tmp_path, monkeypatch):
     """install_service() on macOS must NOT write a systemd unit file."""
+    import subprocess
     from muxplex.cli import install_service
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
     monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
 
     install_service(system=False)
 
     systemd_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
     assert not systemd_path.exists(), "No systemd unit file should be written on macOS"
+
+
+def test_install_service_uses_modern_launchctl_on_macos(tmp_path, monkeypatch, capsys):
+    """install-service on macOS must use launchctl bootstrap (not load)."""
+    import subprocess
+    from muxplex.cli import install_service
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
+
+    calls = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    install_service(system=False)
+
+    launchctl_cmds = [c for c in calls if isinstance(c, list) and "launchctl" in str(c)]
+    assert any(
+        "bootout" in str(c) for c in launchctl_cmds
+    ), "must bootout old service before loading"
+    assert any(
+        "bootstrap" in str(c) for c in launchctl_cmds
+    ), "must use launchctl bootstrap (modern API)"
+    # Must NOT use deprecated load
+    assert not any(
+        c == ["launchctl", "load"] or (isinstance(c, list) and c[:2] == ["launchctl", "load"])
+        for c in launchctl_cmds
+    ), "must NOT use deprecated launchctl load"
+
+
+def test_install_service_plist_includes_host_flag(tmp_path, monkeypatch):
+    """The generated plist must include --host 0.0.0.0 for network access."""
+    import subprocess
+    from muxplex.cli import install_service
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    install_service(system=False)
+
+    plist_path = fake_home / "Library" / "LaunchAgents" / "com.muxplex.plist"
+    content = plist_path.read_text()
+    assert "0.0.0.0" in content, "plist must bind to 0.0.0.0 for network access"
 
 
 def test_install_service_writes_systemd_on_linux(tmp_path, monkeypatch):

@@ -287,7 +287,18 @@ def doctor() -> None:
     if sys.platform == "darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
         if plist.exists():
-            print(f"  {ok_mark} Service: launchd agent installed ({plist})")
+            uid = os.getuid()
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/com.muxplex"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print(f"  {ok_mark} Service: launchd agent running")
+            else:
+                print(
+                    f"  {warn_mark} Service: launchd agent installed but not running ({plist})"
+                )
         else:
             print(
                 f"  {warn_mark} Service: not installed (run: muxplex install-service)"
@@ -336,21 +347,25 @@ def _install_launchd(executable: str) -> None:
     import shutil
 
     # Prefer the entry point script ('muxplex') so macOS shows the correct
-    # process name in Activity Monitor, launchctl list, and login items.
-    # Fall back to 'python -m muxplex' if the entry point isn't on PATH.
+    # process name in Activity Monitor and launchctl list.
     muxplex_bin = shutil.which("muxplex")
     if muxplex_bin:
         program_args = f"""    <array>
         <string>{muxplex_bin}</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
     </array>"""
     else:
         program_args = f"""    <array>
         <string>{executable}</string>
         <string>-m</string>
         <string>muxplex</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
     </array>"""
 
     label = "com.muxplex"
+    uid = os.getuid()
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -372,12 +387,44 @@ def _install_launchd(executable: str) -> None:
 """
     path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Unload existing service first (ignore errors if not loaded)
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{uid}/{label}"],
+        capture_output=True,
+    )
+
     path.write_text(plist)
     print(f"Launch agent written to {path}")
-    print("Enable with:")
-    print(f"  launchctl load {path}")
-    print("Disable with:")
-    print(f"  launchctl unload {path}")
+    print()
+
+    # Load the service using the modern bootstrap API
+    result = subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"  Service started (launchctl bootstrap gui/{uid})")
+    else:
+        # Fallback to legacy load for older macOS
+        result2 = subprocess.run(
+            ["launchctl", "load", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        if result2.returncode == 0:
+            print("  Service started (launchctl load)")
+        else:
+            print("  Could not auto-start. Try manually:")
+            print(f"    launchctl bootstrap gui/{uid} {path}")
+
+    print()
+    print("Management commands:")
+    print(f"  Stop:    launchctl bootout gui/{uid}/{label}")
+    print(f"  Start:   launchctl bootstrap gui/{uid} {path}")
+    print(f"  Status:  launchctl print gui/{uid}/{label}")
+    print("  Logs:    tail -f /tmp/muxplex.log")
 
 
 def _install_systemd(executable: str, *, system: bool = False) -> None:
@@ -453,10 +500,14 @@ def upgrade(*, force: bool = False) -> None:
 
     # 1. Detect platform and stop service
     if sys.platform == "darwin":
-        plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
+        label = "com.muxplex"
+        uid = os.getuid()
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
         if plist.exists():
             print("  Stopping launchd service...")
-            subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+            subprocess.run(
+                ["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True
+            )
         else:
             print("  No launchd service found (skipping stop)")
     else:
@@ -521,11 +572,22 @@ def upgrade(*, force: bool = False) -> None:
 
     # 4. Restart service
     if sys.platform == "darwin":
-        plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
+        label = "com.muxplex"
+        uid = os.getuid()
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
         if plist.exists():
             print("  Starting launchd service...")
-            subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
-            print("  Service started")
+            result = subprocess.run(
+                ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print("  Service started")
+            else:
+                # Fallback to legacy load for older macOS
+                subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
+                print("  Service started (legacy)")
         else:
             print("  Service file not found — run: muxplex install-service")
     else:
