@@ -1020,6 +1020,28 @@ function onDisplaySettingChange() {
 }
 
 /**
+ * Update notification UI controls to reflect the current permission state.
+ * @param {Element} statusEl  - The status text element.
+ * @param {Element} reqBtn    - The request-permission button.
+ * @param {string}  permission - Notification.permission value, or 'unsupported'.
+ */
+function _updateNotificationUI(statusEl, reqBtn, permission) {
+  if (permission === 'granted') {
+    statusEl.textContent = 'Granted';
+    reqBtn.disabled = true;
+  } else if (permission === 'denied') {
+    statusEl.textContent = 'Denied (check browser settings)';
+    reqBtn.disabled = true;
+  } else if (permission === 'unsupported') {
+    statusEl.textContent = 'Not supported';
+    reqBtn.disabled = true;
+  } else {
+    statusEl.textContent = 'Not requested';
+    reqBtn.disabled = false;
+  }
+}
+
+/**
  * Open the settings dialog.
  * Sets _settingsOpen, calls dialog.showModal(), removes hidden from backdrop,
  * and loads current display settings into form controls.
@@ -1046,19 +1068,8 @@ function openSettings() {
   const statusEl = $('notification-status-text');
   const reqBtn = $('notification-request-btn');
   if (statusEl && reqBtn) {
-    if (typeof Notification === 'undefined') {
-      statusEl.textContent = 'Not supported';
-      reqBtn.disabled = true;
-    } else if (Notification.permission === 'granted') {
-      statusEl.textContent = 'Granted';
-      reqBtn.disabled = true;
-    } else if (Notification.permission === 'denied') {
-      statusEl.textContent = 'Denied (check browser settings)';
-      reqBtn.disabled = true;
-    } else {
-      statusEl.textContent = 'Not requested';
-      reqBtn.disabled = false;
-    }
+    const permission = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+    _updateNotificationUI(statusEl, reqBtn, permission);
   }
 
   // Populate Sessions tab from server settings
@@ -1355,10 +1366,8 @@ function bindStaticEventListeners() {
 
   // Notifications settings — bell sound toggle persists to display settings localStorage
   on($('setting-bell-sound'), 'change', function() {
-    var el = $('setting-bell-sound');
-    if (!el) return;
-    var ds = loadDisplaySettings();
-    ds.bellSound = el.checked;
+    const ds = loadDisplaySettings();
+    ds.bellSound = this.checked;
     saveDisplaySettings(ds);
   });
 
@@ -1367,23 +1376,14 @@ function bindStaticEventListeners() {
     if (typeof Notification === 'undefined') return;
     Notification.requestPermission().then(function(permission) {
       _notificationPermission = permission;
-      var ds = loadDisplaySettings();
+      const ds = loadDisplaySettings();
       ds.notificationPermission = permission;
       saveDisplaySettings(ds);
       // Update UI state
-      var statusEl = $('notification-status-text');
-      var reqBtn = $('notification-request-btn');
+      const statusEl = $('notification-status-text');
+      const reqBtn = $('notification-request-btn');
       if (statusEl && reqBtn) {
-        if (permission === 'granted') {
-          statusEl.textContent = 'Granted';
-          reqBtn.disabled = true;
-        } else if (permission === 'denied') {
-          statusEl.textContent = 'Denied (check browser settings)';
-          reqBtn.disabled = true;
-        } else {
-          statusEl.textContent = 'Not requested';
-          reqBtn.disabled = false;
-        }
+        _updateNotificationUI(statusEl, reqBtn, permission);
       }
     });
   });
