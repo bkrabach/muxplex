@@ -1623,3 +1623,54 @@ def test_css_fab_focus_visible_outline_not_accent() -> None:
         "the FAB background is already var(--accent), so the outline would be invisible. "
         "Use var(--bg) or var(--text) for contrast."
     )
+
+
+# ============================================================
+# Consolidated settings CSS selectors (task-8-frontend-tests)
+# ============================================================
+
+
+def test_css_settings_dialog() -> None:
+    """All settings dialog CSS selectors must exist: .settings-dialog, .settings-tabs, .settings-tab--active, .settings-content, .settings-field, .settings-select."""
+    css = read_css()
+    for cls in (
+        ".settings-dialog",
+        ".settings-tabs",
+        ".settings-tab--active",
+        ".settings-content",
+        ".settings-field",
+        ".settings-select",
+    ):
+        assert cls in css, f"Missing CSS selector '{cls}'"
+
+
+def test_css_header_btn() -> None:
+    """.header-btn and .header-actions CSS selectors must exist."""
+    css = read_css()
+    for cls in (".header-btn", ".header-actions"):
+        assert cls in css, f"Missing CSS selector '{cls}'"
+
+
+def test_css_new_session_fab() -> None:
+    """.new-session-fab CSS selector must exist."""
+    css = read_css()
+    assert ".new-session-fab" in css, "Missing .new-session-fab CSS selector"
+
+
+def test_css_new_session_input() -> None:
+    """.new-session-input CSS selector must exist."""
+    css = read_css()
+    assert ".new-session-input" in css, "Missing .new-session-input CSS selector"
+
+
+def test_css_settings_textarea() -> None:
+    """.settings-textarea CSS selector must exist."""
+    css = read_css()
+    assert ".settings-textarea" in css, "Missing .settings-textarea CSS selector"
+
+
+def test_css_sidebar_footer() -> None:
+    """.sidebar-footer and .sidebar-new-btn CSS selectors must exist."""
+    css = read_css()
+    for cls in (".sidebar-footer", ".sidebar-new-btn"):
+        assert cls in css, f"Missing CSS selector '{cls}'"

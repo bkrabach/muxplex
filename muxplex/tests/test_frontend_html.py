@@ -335,7 +335,7 @@ def test_html_header_actions_div() -> None:
 
 
 def test_html_new_session_btn() -> None:
-    """#new-session-btn must exist in .header-actions with class header-btn."""
+    """#new-session-btn must exist in .header-actions with class header-btn; #new-session-fab must also exist."""
     soup = _SOUP
     btn = soup.find(id="new-session-btn")
     assert btn is not None, "Missing #new-session-btn"
@@ -349,6 +349,8 @@ def test_html_new_session_btn() -> None:
     assert header_actions.find(id="new-session-btn") is not None, (
         "#new-session-btn must be inside .header-actions"
     )
+    # Mobile FAB button must also exist
+    assert soup.find(id="new-session-fab") is not None, "Missing #new-session-fab"
 
 
 def test_html_settings_btn() -> None:
@@ -416,7 +418,7 @@ def test_html_settings_backdrop() -> None:
 
 
 def test_html_settings_dialog() -> None:
-    """#settings-dialog must be a <dialog> with class settings-dialog."""
+    """#settings-dialog must be a <dialog> with class settings-dialog; #settings-backdrop and #settings-btn must also exist."""
     soup = _SOUP
     el = soup.find(id="settings-dialog")
     assert el is not None, "Missing #settings-dialog"
@@ -427,6 +429,8 @@ def test_html_settings_dialog() -> None:
     assert "settings-dialog" in classes, (
         f"#settings-dialog must have class 'settings-dialog', has: {classes}"
     )
+    assert soup.find(id="settings-backdrop") is not None, "Missing #settings-backdrop"
+    assert soup.find(id="settings-btn") is not None, "Missing #settings-btn"
 
 
 def test_html_settings_tabs() -> None:
@@ -999,3 +1003,49 @@ def test_html_fab_before_toast() -> None:
     assert fab_idx < toast_idx, (
         f"#new-session-fab (idx={fab_idx}) must appear before #toast (idx={toast_idx})"
     )
+
+
+# ============================================================
+# Consolidated settings tests (task-8-frontend-tests)
+# ============================================================
+
+
+def test_html_display_tab_controls() -> None:
+    """Display tab panel must contain setting-font-size, setting-hover-delay, setting-grid-columns."""
+    soup = _SOUP
+    for id_ in ("setting-font-size", "setting-hover-delay", "setting-grid-columns"):
+        assert soup.find(id=id_), f"Missing element with id='{id_}'"
+
+
+def test_html_sidebar_new_session_btn() -> None:
+    """#sidebar-new-session-btn must exist in the document."""
+    soup = _SOUP
+    assert soup.find(id="sidebar-new-session-btn") is not None, (
+        "Missing #sidebar-new-session-btn"
+    )
+
+
+def test_html_sessions_tab_controls() -> None:
+    """Sessions tab must contain setting-default-session, setting-sort-order, setting-window-size-largest, setting-auto-open."""
+    soup = _SOUP
+    for id_ in (
+        "setting-default-session",
+        "setting-sort-order",
+        "setting-window-size-largest",
+        "setting-auto-open",
+    ):
+        assert soup.find(id=id_), f"Missing element with id='{id_}'"
+
+
+def test_html_notifications_tab_controls() -> None:
+    """Notifications tab must contain setting-bell-sound and notification-request-btn."""
+    soup = _SOUP
+    for id_ in ("setting-bell-sound", "notification-request-btn"):
+        assert soup.find(id=id_), f"Missing element with id='{id_}'"
+
+
+def test_html_new_session_tab_controls() -> None:
+    """New Session tab must contain setting-template and setting-template-reset."""
+    soup = _SOUP
+    for id_ in ("setting-template", "setting-template-reset"):
+        assert soup.find(id=id_), f"Missing element with id='{id_}'"
