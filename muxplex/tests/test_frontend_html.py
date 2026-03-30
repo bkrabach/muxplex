@@ -589,7 +589,9 @@ def test_html_sessions_panel_has_default_session_select() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
+    )
     assert sessions_panel is not None, "Missing sessions settings-panel"
     el = sessions_panel.find(id="setting-default-session")
     assert el is not None, "Missing #setting-default-session inside sessions panel"
@@ -603,7 +605,9 @@ def test_html_sessions_panel_has_sort_order_select() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
+    )
     assert sessions_panel is not None, "Missing sessions settings-panel"
     el = sessions_panel.find(id="setting-sort-order")
     assert el is not None, "Missing #setting-sort-order inside sessions panel"
@@ -621,7 +625,9 @@ def test_html_sessions_panel_has_hidden_sessions_container() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
+    )
     assert sessions_panel is not None, "Missing sessions settings-panel"
     el = sessions_panel.find(id="setting-hidden-sessions")
     assert el is not None, "Missing #setting-hidden-sessions inside sessions panel"
@@ -632,7 +638,9 @@ def test_html_sessions_panel_has_window_size_largest_checkbox() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
+    )
     assert sessions_panel is not None, "Missing sessions settings-panel"
     el = sessions_panel.find(id="setting-window-size-largest")
     assert el is not None, "Missing #setting-window-size-largest inside sessions panel"
@@ -649,13 +657,13 @@ def test_html_sessions_panel_has_auto_open_checkbox_default_checked() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    sessions_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "sessions"})
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
+    )
     assert sessions_panel is not None, "Missing sessions settings-panel"
     el = sessions_panel.find(id="setting-auto-open")
     assert el is not None, "Missing #setting-auto-open inside sessions panel"
-    assert el.name == "input", (
-        f"#setting-auto-open must be an <input>, got: {el.name}"
-    )
+    assert el.name == "input", f"#setting-auto-open must be an <input>, got: {el.name}"
     assert el.get("type") == "checkbox", (
         f"#setting-auto-open must be type='checkbox', got: {el.get('type')}"
     )
@@ -674,13 +682,13 @@ def test_html_notifications_panel_has_bell_sound_checkbox() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    notif_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "notifications"})
+    notif_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "notifications"}
+    )
     assert notif_panel is not None, "Missing notifications settings-panel"
     el = notif_panel.find(id="setting-bell-sound")
     assert el is not None, "Missing #setting-bell-sound inside notifications panel"
-    assert el.name == "input", (
-        f"#setting-bell-sound must be an <input>, got: {el.name}"
-    )
+    assert el.name == "input", f"#setting-bell-sound must be an <input>, got: {el.name}"
     assert el.get("type") == "checkbox", (
         f"#setting-bell-sound must be type='checkbox', got: {el.get('type')}"
     )
@@ -695,10 +703,14 @@ def test_html_notifications_panel_has_notification_status_text() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    notif_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "notifications"})
+    notif_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "notifications"}
+    )
     assert notif_panel is not None, "Missing notifications settings-panel"
     el = notif_panel.find(id="notification-status-text")
-    assert el is not None, "Missing #notification-status-text inside notifications panel"
+    assert el is not None, (
+        "Missing #notification-status-text inside notifications panel"
+    )
     classes = el.get("class") or []
     assert "settings-status-text" in classes, (
         f"#notification-status-text must have class 'settings-status-text', has: {classes}"
@@ -710,11 +722,141 @@ def test_html_notifications_panel_has_request_btn() -> None:
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    notif_panel = dialog.find(class_="settings-panel", attrs={"data-tab": "notifications"})
+    notif_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "notifications"}
+    )
     assert notif_panel is not None, "Missing notifications settings-panel"
     el = notif_panel.find(id="notification-request-btn")
-    assert el is not None, "Missing #notification-request-btn inside notifications panel"
+    assert el is not None, (
+        "Missing #notification-request-btn inside notifications panel"
+    )
     classes = el.get("class") or []
     assert "settings-action-btn" in classes, (
         f"#notification-request-btn must have class 'settings-action-btn', has: {classes}"
+    )
+
+
+# ============================================================
+# New Session tab (task-3-new-session-tab)
+# ============================================================
+
+
+def test_html_new_session_panel_exists() -> None:
+    """New Session settings panel must exist with data-tab='new-session'."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+
+
+def test_html_new_session_panel_has_settings_field_column() -> None:
+    """New Session panel must contain a .settings-field--column div."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+    field = new_session_panel.find(class_="settings-field--column")
+    assert field is not None, "Missing .settings-field--column inside new-session panel"
+
+
+def test_html_new_session_panel_has_template_label() -> None:
+    """New Session panel must have a label for #setting-template with text 'Command template'."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+    label = new_session_panel.find("label", attrs={"for": "setting-template"})
+    assert label is not None, (
+        "Missing <label for='setting-template'> inside new-session panel"
+    )
+    label_text = label.get_text(strip=True)
+    assert "Command template" in label_text, (
+        f"Label for #setting-template must contain 'Command template', got: {label_text!r}"
+    )
+
+
+def test_html_new_session_panel_has_template_textarea() -> None:
+    """New Session panel must contain #setting-template textarea with class settings-textarea."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+    textarea = new_session_panel.find("textarea", id="setting-template")
+    assert textarea is not None, (
+        "Missing <textarea id='setting-template'> inside new-session panel"
+    )
+    classes = textarea.get("class") or []
+    assert "settings-textarea" in classes, (
+        f"#setting-template must have class 'settings-textarea', has: {classes}"
+    )
+
+
+def test_html_new_session_template_textarea_rows() -> None:
+    """#setting-template textarea must have rows=3."""
+    soup = _SOUP
+    textarea = soup.find("textarea", id="setting-template")
+    assert textarea is not None, "Missing #setting-template textarea"
+    rows = textarea.get("rows")
+    assert rows == "3", f"#setting-template must have rows='3', got: {rows!r}"
+
+
+def test_html_new_session_template_textarea_placeholder() -> None:
+    """#setting-template textarea must have placeholder 'tmux new-session -d -s {name}'."""
+    soup = _SOUP
+    textarea = soup.find("textarea", id="setting-template")
+    assert textarea is not None, "Missing #setting-template textarea"
+    placeholder = textarea.get("placeholder")
+    assert placeholder == "tmux new-session -d -s {name}", (
+        f"#setting-template placeholder must be 'tmux new-session -d -s {{name}}', got: {placeholder!r}"
+    )
+
+
+def test_html_new_session_panel_has_helper_text() -> None:
+    """New Session panel must contain a .settings-helper span with '{name} is replaced...' text."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+    helper = new_session_panel.find(class_="settings-helper")
+    assert helper is not None, "Missing .settings-helper inside new-session panel"
+    helper_text = helper.get_text(strip=True)
+    assert "{name}" in helper_text, (
+        f".settings-helper must contain '{{name}}', got: {helper_text!r}"
+    )
+    assert "replaced" in helper_text.lower() or "session name" in helper_text.lower(), (
+        f".settings-helper must describe what {{name}} is replaced with, got: {helper_text!r}"
+    )
+
+
+def test_html_new_session_panel_has_reset_button() -> None:
+    """New Session panel must contain #setting-template-reset button with class settings-action-btn."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+    reset_btn = new_session_panel.find(id="setting-template-reset")
+    assert reset_btn is not None, (
+        "Missing #setting-template-reset inside new-session panel"
+    )
+    classes = reset_btn.get("class") or []
+    assert "settings-action-btn" in classes, (
+        f"#setting-template-reset must have class 'settings-action-btn', has: {classes}"
     )

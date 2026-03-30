@@ -141,6 +141,7 @@ const DISPLAY_DEFAULTS = {
   bellSound: false,
   notificationPermission: 'default',
 };
+const NEW_SESSION_DEFAULT_TEMPLATE = 'tmux new-session -d -s {name}';
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -1126,6 +1127,12 @@ function openSettings() {
     if (autoOpenEl) {
       autoOpenEl.checked = ss && ss.auto_open !== undefined ? !!ss.auto_open : true;
     }
+
+    // New Session tab - populate template textarea
+    const templateEl = $('setting-template');
+    if (templateEl) {
+      templateEl.value = (ss && ss.new_session_template) || NEW_SESSION_DEFAULT_TEMPLATE;
+    }
   });
 }
 
@@ -1389,6 +1396,23 @@ function bindStaticEventListeners() {
     }).catch(function(err) {
       console.error('Notification.requestPermission() failed:', err);
     });
+  });
+
+  // New Session tab — template textarea with 500ms debounce
+  var _templateDebounceTimer;
+  on($('setting-template'), 'input', function() {
+    clearTimeout(_templateDebounceTimer);
+    var val = this.value;
+    _templateDebounceTimer = setTimeout(function() {
+      patchServerSetting('new_session_template', val);
+    }, 500);
+  });
+
+  // New Session tab — reset button restores default template
+  on($('setting-template-reset'), 'click', function() {
+    var el = $('setting-template');
+    if (el) el.value = NEW_SESSION_DEFAULT_TEMPLATE;
+    patchServerSetting('new_session_template', NEW_SESSION_DEFAULT_TEMPLATE);
   });
 }
 

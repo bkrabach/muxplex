@@ -11,6 +11,7 @@ _JS: str = JS_PATH.read_text()
 
 # ── Palette state variables must be removed ──────────────────────────────────
 
+
 def test_no_palette_max_items_constant() -> None:
     """PALETTE_MAX_ITEMS constant must be removed."""
     assert "PALETTE_MAX_ITEMS" not in _JS, (
@@ -34,9 +35,7 @@ def test_no_palette_filtered_sessions_variable() -> None:
 
 def test_no_palette_open_variable() -> None:
     """_paletteOpen variable must be removed."""
-    assert "_paletteOpen" not in _JS, (
-        "_paletteOpen must be removed from app.js"
-    )
+    assert "_paletteOpen" not in _JS, "_paletteOpen must be removed from app.js"
 
 
 def test_no_palette_input_listener_variable() -> None:
@@ -47,6 +46,7 @@ def test_no_palette_input_listener_variable() -> None:
 
 
 # ── Palette functions must be removed ────────────────────────────────────────
+
 
 def test_no_render_palette_list_function() -> None:
     """renderPaletteList function must be removed."""
@@ -64,23 +64,17 @@ def test_no_highlight_palette_item_function() -> None:
 
 def test_no_open_palette_function() -> None:
     """openPalette function must be removed."""
-    assert "openPalette" not in _JS, (
-        "openPalette must be removed from app.js"
-    )
+    assert "openPalette" not in _JS, "openPalette must be removed from app.js"
 
 
 def test_no_close_palette_function() -> None:
     """closePalette function must be removed."""
-    assert "closePalette" not in _JS, (
-        "closePalette must be removed from app.js"
-    )
+    assert "closePalette" not in _JS, "closePalette must be removed from app.js"
 
 
 def test_no_on_palette_input_function() -> None:
     """onPaletteInput function must be removed."""
-    assert "onPaletteInput" not in _JS, (
-        "onPaletteInput must be removed from app.js"
-    )
+    assert "onPaletteInput" not in _JS, "onPaletteInput must be removed from app.js"
 
 
 def test_no_handle_palette_keydown_function() -> None:
@@ -91,6 +85,7 @@ def test_no_handle_palette_keydown_function() -> None:
 
 
 # ── handleGlobalKeydown must be simplified ───────────────────────────────────
+
 
 def test_handle_global_keydown_exists() -> None:
     """handleGlobalKeydown function must exist."""
@@ -123,9 +118,7 @@ def test_handle_global_keydown_no_open_palette_call() -> None:
     )
     assert match, "handleGlobalKeydown function not found"
     body = match.group(1)
-    assert "openPalette" not in body, (
-        "handleGlobalKeydown must not call openPalette"
-    )
+    assert "openPalette" not in body, "handleGlobalKeydown must not call openPalette"
 
 
 def test_handle_global_keydown_handles_escape_in_fullscreen() -> None:
@@ -143,6 +136,7 @@ def test_handle_global_keydown_handles_escape_in_fullscreen() -> None:
 
 
 # ── bindStaticEventListeners must have no palette references ─────────────────
+
 
 def test_bind_static_event_listeners_no_palette_trigger() -> None:
     """bindStaticEventListeners must not bind palette-trigger click."""
@@ -174,6 +168,7 @@ def test_bind_static_event_listeners_no_palette_backdrop() -> None:
 
 # ── Palette test-only helpers must be removed ─────────────────────────────────
 
+
 def test_no_set_palette_filtered_sessions_helper() -> None:
     """_setPaletteFilteredSessions test helper must be removed."""
     assert "_setPaletteFilteredSessions" not in _JS, (
@@ -204,19 +199,16 @@ def test_no_get_palette_selected_index_helper() -> None:
 
 def test_no_set_palette_open_helper() -> None:
     """_setPaletteOpen test helper must be removed."""
-    assert "_setPaletteOpen" not in _JS, (
-        "_setPaletteOpen must be removed from app.js"
-    )
+    assert "_setPaletteOpen" not in _JS, "_setPaletteOpen must be removed from app.js"
 
 
 def test_no_is_palette_open_helper() -> None:
     """_isPaletteOpen test helper must be removed."""
-    assert "_isPaletteOpen" not in _JS, (
-        "_isPaletteOpen must be removed from app.js"
-    )
+    assert "_isPaletteOpen" not in _JS, "_isPaletteOpen must be removed from app.js"
 
 
 # ── module.exports must not include palette exports ───────────────────────────
+
 
 def test_exports_no_render_palette_list() -> None:
     """module.exports must not export renderPaletteList."""
@@ -255,9 +247,7 @@ def test_exports_no_open_palette() -> None:
     )
     assert match, "module.exports block not found"
     exports = match.group(1)
-    assert "openPalette" not in exports, (
-        "module.exports must not export openPalette"
-    )
+    assert "openPalette" not in exports, "module.exports must not export openPalette"
 
 
 def test_exports_no_close_palette() -> None:
@@ -269,9 +259,7 @@ def test_exports_no_close_palette() -> None:
     )
     assert match, "module.exports block not found"
     exports = match.group(1)
-    assert "closePalette" not in exports, (
-        "module.exports must not export closePalette"
-    )
+    assert "closePalette" not in exports, "module.exports must not export closePalette"
 
 
 def test_exports_no_on_palette_input() -> None:
@@ -332,6 +320,7 @@ def test_exports_still_has_bind_static_event_listeners() -> None:
 
 # ── Settings state variables ─────────────────────────────────────────────────
 
+
 def test_settings_open_state_variable_exists() -> None:
     """_settingsOpen state variable must be declared."""
     assert "_settingsOpen" in _JS, "_settingsOpen must be declared in app.js"
@@ -377,10 +366,13 @@ def test_display_defaults_has_bell_sound() -> None:
 
 def test_display_defaults_has_notification_permission() -> None:
     """DISPLAY_DEFAULTS must contain notificationPermission: 'default'."""
-    assert "notificationPermission" in _JS, "DISPLAY_DEFAULTS must include notificationPermission"
+    assert "notificationPermission" in _JS, (
+        "DISPLAY_DEFAULTS must include notificationPermission"
+    )
 
 
 # ── Settings functions must exist ─────────────────────────────────────────────
+
 
 def test_load_display_settings_function_exists() -> None:
     """loadDisplaySettings function must exist."""
@@ -415,6 +407,7 @@ def test_switch_settings_tab_function_exists() -> None:
 
 # ── loadDisplaySettings implementation ───────────────────────────────────────
 
+
 def test_load_display_settings_reads_from_localstorage() -> None:
     """loadDisplaySettings must read from localStorage using DISPLAY_SETTINGS_KEY."""
     match = re.search(
@@ -439,7 +432,9 @@ def test_load_display_settings_uses_object_assign() -> None:
     )
     assert match, "loadDisplaySettings function not found"
     body = match.group(1)
-    assert "Object.assign" in body, "loadDisplaySettings must use Object.assign to merge with defaults"
+    assert "Object.assign" in body, (
+        "loadDisplaySettings must use Object.assign to merge with defaults"
+    )
 
 
 def test_load_display_settings_returns_defaults_on_error() -> None:
@@ -457,6 +452,7 @@ def test_load_display_settings_returns_defaults_on_error() -> None:
 
 
 # ── saveDisplaySettings implementation ───────────────────────────────────────
+
 
 def test_save_display_settings_writes_to_localstorage() -> None:
     """saveDisplaySettings must write to localStorage."""
@@ -486,6 +482,7 @@ def test_save_display_settings_catches_errors() -> None:
 
 
 # ── openSettings implementation ───────────────────────────────────────────────
+
 
 def test_open_settings_sets_settings_open_true() -> None:
     """openSettings must set _settingsOpen = true."""
@@ -535,12 +532,19 @@ def test_open_settings_loads_form_controls() -> None:
     )
     assert match, "openSettings function not found"
     body = match.group(1)
-    assert "setting-font-size" in body, "openSettings must set setting-font-size form control"
-    assert "setting-hover-delay" in body, "openSettings must set setting-hover-delay form control"
-    assert "setting-grid-columns" in body, "openSettings must set setting-grid-columns form control"
+    assert "setting-font-size" in body, (
+        "openSettings must set setting-font-size form control"
+    )
+    assert "setting-hover-delay" in body, (
+        "openSettings must set setting-hover-delay form control"
+    )
+    assert "setting-grid-columns" in body, (
+        "openSettings must set setting-grid-columns form control"
+    )
 
 
 # ── closeSettings implementation ──────────────────────────────────────────────
+
 
 def test_close_settings_sets_settings_open_false() -> None:
     """closeSettings must set _settingsOpen = false."""
@@ -582,6 +586,7 @@ def test_close_settings_adds_hidden_to_backdrop() -> None:
 
 
 # ── switchSettingsTab implementation ──────────────────────────────────────────
+
 
 def test_switch_settings_tab_has_tab_name_param() -> None:
     """switchSettingsTab must accept tabName parameter."""
@@ -635,6 +640,7 @@ def test_switch_settings_tab_toggles_panel_hidden() -> None:
 
 # ── handleGlobalKeydown settings integration ─────────────────────────────────
 
+
 def test_handle_global_keydown_checks_settings_open() -> None:
     """handleGlobalKeydown must check _settingsOpen."""
     match = re.search(
@@ -644,9 +650,7 @@ def test_handle_global_keydown_checks_settings_open() -> None:
     )
     assert match, "handleGlobalKeydown function not found"
     body = match.group(1)
-    assert "_settingsOpen" in body, (
-        "handleGlobalKeydown must check _settingsOpen"
-    )
+    assert "_settingsOpen" in body, "handleGlobalKeydown must check _settingsOpen"
 
 
 def test_handle_global_keydown_calls_close_settings_on_escape() -> None:
@@ -658,9 +662,7 @@ def test_handle_global_keydown_calls_close_settings_on_escape() -> None:
     )
     assert match, "handleGlobalKeydown function not found"
     body = match.group(1)
-    assert "closeSettings" in body, (
-        "handleGlobalKeydown must call closeSettings"
-    )
+    assert "closeSettings" in body, "handleGlobalKeydown must call closeSettings"
 
 
 def test_handle_global_keydown_opens_settings_on_comma() -> None:
@@ -691,9 +693,11 @@ def test_handle_global_keydown_comma_guards_input_elements() -> None:
     body = match.group(1)
     # Must guard against inputs
     has_input_guard = (
-        "INPUT" in body or "input" in body.lower() or
-        "textarea" in body.lower() or "select" in body.lower() or
-        "tagName" in body
+        "INPUT" in body
+        or "input" in body.lower()
+        or "textarea" in body.lower()
+        or "select" in body.lower()
+        or "tagName" in body
     )
     assert has_input_guard, (
         "handleGlobalKeydown comma shortcut must guard against input/textarea/select"
@@ -701,6 +705,7 @@ def test_handle_global_keydown_comma_guards_input_elements() -> None:
 
 
 # ── bindStaticEventListeners settings wiring ─────────────────────────────────
+
 
 def test_bind_static_event_listeners_binds_settings_btn() -> None:
     """bindStaticEventListeners must bind settings-btn click to openSettings."""
@@ -753,9 +758,7 @@ def test_bind_static_event_listeners_binds_dialog_cancel() -> None:
     )
     assert match, "bindStaticEventListeners function not found"
     body = match.group(1)
-    assert "cancel" in body, (
-        "bindStaticEventListeners must bind dialog cancel event"
-    )
+    assert "cancel" in body, "bindStaticEventListeners must bind dialog cancel event"
 
 
 def test_bind_static_event_listeners_binds_settings_tabs() -> None:
@@ -776,6 +779,7 @@ def test_bind_static_event_listeners_binds_settings_tabs() -> None:
 
 
 # ── module.exports for new settings functions ────────────────────────────────
+
 
 def test_exports_load_display_settings() -> None:
     """module.exports must export loadDisplaySettings."""
@@ -814,9 +818,7 @@ def test_exports_open_settings() -> None:
     )
     assert match, "module.exports block not found"
     exports = match.group(1)
-    assert "openSettings" in exports, (
-        "module.exports must export openSettings"
-    )
+    assert "openSettings" in exports, "module.exports must export openSettings"
 
 
 def test_exports_close_settings() -> None:
@@ -828,9 +830,7 @@ def test_exports_close_settings() -> None:
     )
     assert match, "module.exports block not found"
     exports = match.group(1)
-    assert "closeSettings" in exports, (
-        "module.exports must export closeSettings"
-    )
+    assert "closeSettings" in exports, "module.exports must export closeSettings"
 
 
 def test_exports_switch_settings_tab() -> None:
@@ -848,6 +848,7 @@ def test_exports_switch_settings_tab() -> None:
 
 
 # ── Display tab wiring (task-8) ────────────────────────────────────────────────
+
 
 def test_apply_display_settings_function_exists() -> None:
     """applyDisplaySettings function must exist."""
@@ -896,9 +897,7 @@ def test_apply_display_settings_handles_auto_grid_columns() -> None:
     )
     assert match, "applyDisplaySettings function not found"
     body = match.group(1)
-    assert "auto" in body, (
-        "applyDisplaySettings must handle 'auto' gridColumns"
-    )
+    assert "auto" in body, "applyDisplaySettings must handle 'auto' gridColumns"
     assert "session-grid" in body or "gridTemplateColumns" in body, (
         "applyDisplaySettings must update session-grid or gridTemplateColumns"
     )
@@ -1120,6 +1119,7 @@ def test_exports_on_display_setting_change() -> None:
 
 # ─── Server settings functions (task-1-sessions-tab) ─────────────────────────
 
+
 def test_load_server_settings_function_exists() -> None:
     """loadServerSettings function must exist."""
     assert "function loadServerSettings" in _JS, (
@@ -1196,9 +1196,7 @@ def test_open_settings_calls_load_server_settings() -> None:
     )
     assert match, "openSettings function not found"
     body = match.group(1)
-    assert "loadServerSettings" in body, (
-        "openSettings must call loadServerSettings"
-    )
+    assert "loadServerSettings" in body, "openSettings must call loadServerSettings"
 
 
 def test_bind_static_event_listeners_binds_default_session_change() -> None:
@@ -1257,7 +1255,9 @@ def test_bind_static_event_listeners_binds_auto_open_change() -> None:
     )
 
 
-def test_bind_static_event_listeners_uses_delegated_handler_for_hidden_sessions() -> None:
+def test_bind_static_event_listeners_uses_delegated_handler_for_hidden_sessions() -> (
+    None
+):
     """bindStaticEventListeners must use delegated change handler on #setting-hidden-sessions."""
     match = re.search(
         r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
@@ -1301,6 +1301,7 @@ def test_exports_patch_server_setting() -> None:
 
 # ─── Notifications tab (task-2-notifications-tab) ─────────────────────────────
 
+
 def test_open_settings_populates_bell_sound() -> None:
     """openSettings must set setting-bell-sound checkbox from loadDisplaySettings().bellSound."""
     match = re.search(
@@ -1313,9 +1314,7 @@ def test_open_settings_populates_bell_sound() -> None:
     assert "setting-bell-sound" in body, (
         "openSettings must reference setting-bell-sound to set bell sound checkbox"
     )
-    assert "bellSound" in body, (
-        "openSettings must read bellSound from display settings"
-    )
+    assert "bellSound" in body, "openSettings must read bellSound from display settings"
 
 
 def test_open_settings_updates_notification_status_text() -> None:
@@ -1429,6 +1428,98 @@ def test_update_notification_ui_has_null_guard() -> None:
     )
     assert match, "_updateNotificationUI function not found"
     body = match.group(1)
-    assert "null" in body or "non-null" in body or "!statusEl" in body or "!reqBtn" in body, (
+    assert (
+        "null" in body or "non-null" in body or "!statusEl" in body or "!reqBtn" in body
+    ), (
         "_updateNotificationUI must include a null guard (null check) or JSDoc non-null annotation"
+    )
+
+
+# ─── New Session tab (task-3-new-session-tab) ─────────────────────────────────
+
+
+def test_new_session_default_template_constant_exists() -> None:
+    """NEW_SESSION_DEFAULT_TEMPLATE constant must be declared in app.js."""
+    assert "NEW_SESSION_DEFAULT_TEMPLATE" in _JS, (
+        "NEW_SESSION_DEFAULT_TEMPLATE constant must be declared in app.js"
+    )
+
+
+def test_new_session_default_template_value() -> None:
+    """NEW_SESSION_DEFAULT_TEMPLATE must equal 'tmux new-session -d -s {name}'."""
+    assert "tmux new-session -d -s {name}" in _JS, (
+        "NEW_SESSION_DEFAULT_TEMPLATE must be 'tmux new-session -d -s {name}'"
+    )
+
+
+def test_open_settings_populates_template_textarea() -> None:
+    """openSettings must populate #setting-template textarea from server settings."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "setting-template" in body, (
+        "openSettings must reference setting-template textarea"
+    )
+    assert "new_session_template" in body, (
+        "openSettings must populate template from ss.new_session_template"
+    )
+    assert "NEW_SESSION_DEFAULT_TEMPLATE" in body, (
+        "openSettings must fall back to NEW_SESSION_DEFAULT_TEMPLATE"
+    )
+
+
+def test_bind_static_event_listeners_binds_template_input_with_debounce() -> None:
+    """bindStaticEventListeners must bind input on #setting-template with 500ms debounce."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-template" in body, (
+        "bindStaticEventListeners must bind setting-template input event"
+    )
+    assert "500" in body, (
+        "bindStaticEventListeners template input handler must use 500ms debounce"
+    )
+    assert "patchServerSetting" in body, (
+        "bindStaticEventListeners template input handler must call patchServerSetting"
+    )
+    assert "new_session_template" in body, (
+        "bindStaticEventListeners template input handler must pass 'new_session_template' key"
+    )
+
+
+def test_bind_static_event_listeners_binds_template_reset_button() -> None:
+    """bindStaticEventListeners must bind click on #setting-template-reset."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-template-reset" in body, (
+        "bindStaticEventListeners must bind setting-template-reset click event"
+    )
+
+
+def test_bind_static_event_listeners_reset_patches_server() -> None:
+    """bindStaticEventListeners reset handler must call patchServerSetting with default template."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    # The reset button section must patch with the default template
+    assert "setting-template-reset" in body, "setting-template-reset must be referenced"
+    assert "NEW_SESSION_DEFAULT_TEMPLATE" in body, (
+        "bindStaticEventListeners reset handler must use NEW_SESSION_DEFAULT_TEMPLATE"
     )

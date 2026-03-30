@@ -2127,4 +2127,259 @@ test('ANSI_COLORS uses xterm.js default GTK/Tango palette', () => {
   assert.strictEqual(app.ansi256Color(14), '#34e2e2', 'color 14 must be xterm.js default: #34e2e2');
 });
 
+// --- New Session tab ---
+
+test('HTML index.html has setting-template textarea with correct attributes', () => {
+  const source = fs.readFileSync(
+    new URL('../index.html', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('id="setting-template"'), 'must have setting-template textarea');
+  assert.ok(source.includes('settings-textarea'), 'must have settings-textarea class');
+  assert.ok(source.includes('rows="3"'), 'must have rows=3');
+  assert.ok(source.includes('placeholder="tmux new-session -d -s {name}"'), 'must have correct placeholder');
+});
+
+test('HTML index.html has setting-template-reset button', () => {
+  const source = fs.readFileSync(
+    new URL('../index.html', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('id="setting-template-reset"'), 'must have setting-template-reset button');
+  assert.ok(source.includes('settings-action-btn'), 'must use settings-action-btn class on reset button');
+});
+
+test('HTML index.html has settings-helper text for template', () => {
+  const source = fs.readFileSync(
+    new URL('../index.html', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('settings-helper'), 'must have settings-helper class');
+  assert.ok(source.includes('{name} is replaced with the session name'), 'must have helper text');
+});
+
+test('CSS style.css has .settings-textarea class', () => {
+  const source = fs.readFileSync(
+    new URL('../style.css', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('.settings-textarea'), 'must have .settings-textarea CSS class');
+});
+
+test('CSS style.css has .settings-helper class', () => {
+  const source = fs.readFileSync(
+    new URL('../style.css', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('.settings-helper'), 'must have .settings-helper CSS class');
+});
+
+test('openSettings populates setting-template textarea from server settings', async () => {
+  // Reset _currentSessions to empty to avoid createTextNode calls in openSettings callback
+  app._setCurrentSessions([]);
+
+  const elements = {};
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url === '/api/settings') {
+      return {
+        ok: true,
+        json: async () => ({ new_session_template: 'my-custom-template' }),
+      };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (!elements[id]) {
+      elements[id] = {
+        value: '',
+        checked: false,
+        innerHTML: '',
+        disabled: false,
+        appendChild: () => {},
+        querySelectorAll: () => [],
+        classList: { add: () => {}, remove: () => {} },
+        showModal: () => {},
+        close: () => {},
+        addEventListener: () => {},
+      };
+    }
+    return elements[id];
+  };
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.querySelectorAll = () => [];
+  const origCreateTextNode = globalThis.document.createTextNode;
+  globalThis.document.createTextNode = (text) => ({ nodeType: 3, textContent: text });
+
+  app.openSettings();
+  // Flush microtask queue so all Promises in loadServerSettings chain resolve
+  // before yielding to macrotask queue (where other tests could start).
+  // Each await Promise.resolve() flushes one microtask hop; 10 covers nested chains.
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+
+  assert.strictEqual(
+    elements['setting-template'] && elements['setting-template'].value,
+    'my-custom-template',
+    'textarea should be populated with new_session_template from server settings',
+  );
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.document.createTextNode = origCreateTextNode;
+});
+
+test('openSettings uses default template when new_session_template not in server settings', async () => {
+  // Reset _currentSessions to empty to avoid createTextNode calls in openSettings callback
+  app._setCurrentSessions([]);
+
+  const elements = {};
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url === '/api/settings') {
+      return {
+        ok: true,
+        json: async () => ({}),
+      };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (!elements[id]) {
+      elements[id] = {
+        value: '',
+        checked: false,
+        innerHTML: '',
+        disabled: false,
+        appendChild: () => {},
+        querySelectorAll: () => [],
+        classList: { add: () => {}, remove: () => {} },
+        showModal: () => {},
+        close: () => {},
+        addEventListener: () => {},
+      };
+    }
+    return elements[id];
+  };
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.querySelectorAll = () => [];
+  const origCreateTextNode = globalThis.document.createTextNode;
+  globalThis.document.createTextNode = (text) => ({ nodeType: 3, textContent: text });
+
+  app.openSettings();
+  // Flush microtask queue so all Promises in loadServerSettings chain resolve
+  // before yielding to macrotask queue (where other tests could start).
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+
+  assert.strictEqual(
+    elements['setting-template'] && elements['setting-template'].value,
+    'tmux new-session -d -s {name}',
+    'textarea should use default when new_session_template not set',
+  );
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.document.createTextNode = origCreateTextNode;
+});
+
+test('bindStaticEventListeners binds input on setting-template', () => {
+  const eventsBound = {};
+  const origGetById = globalThis.document.getElementById;
+  const origDocAddListener = globalThis.document.addEventListener;
+  globalThis.document.getElementById = (id) => {
+    const el = {
+      _events: {},
+      addEventListener: (ev, fn) => { el._events[ev] = fn; },
+      value: '',
+      querySelectorAll: () => [],
+    };
+    eventsBound[id] = el;
+    return el;
+  };
+  globalThis.document.addEventListener = () => {};
+
+  app.bindStaticEventListeners();
+
+  assert.ok(
+    eventsBound['setting-template'] && 'input' in eventsBound['setting-template']._events,
+    '#setting-template should have an input listener',
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.addEventListener = origDocAddListener;
+});
+
+test('bindStaticEventListeners binds click on setting-template-reset', () => {
+  const eventsBound = {};
+  const origGetById = globalThis.document.getElementById;
+  const origDocAddListener = globalThis.document.addEventListener;
+  globalThis.document.getElementById = (id) => {
+    const el = {
+      _events: {},
+      addEventListener: (ev, fn) => { el._events[ev] = fn; },
+      value: '',
+      querySelectorAll: () => [],
+    };
+    eventsBound[id] = el;
+    return el;
+  };
+  globalThis.document.addEventListener = () => {};
+
+  app.bindStaticEventListeners();
+
+  assert.ok(
+    eventsBound['setting-template-reset'] && 'click' in eventsBound['setting-template-reset']._events,
+    '#setting-template-reset should have a click listener',
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.addEventListener = origDocAddListener;
+});
+
+test('setting-template-reset click resets textarea to default value', () => {
+  const elements = {};
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+
+  const origGetById = globalThis.document.getElementById;
+  const origDocAddListener = globalThis.document.addEventListener;
+  globalThis.document.getElementById = (id) => {
+    if (!elements[id]) {
+      elements[id] = {
+        _events: {},
+        addEventListener: (ev, fn) => { elements[id]._events[ev] = fn; },
+        value: 'custom-value',
+        querySelectorAll: () => [],
+      };
+    }
+    return elements[id];
+  };
+  globalThis.document.addEventListener = () => {};
+
+  app.bindStaticEventListeners();
+
+  // Simulate reset button click
+  if (elements['setting-template-reset']) {
+    elements['setting-template-reset']._events.click();
+  }
+
+  assert.strictEqual(
+    elements['setting-template'] && elements['setting-template'].value,
+    'tmux new-session -d -s {name}',
+    'textarea should be reset to default value on reset button click',
+  );
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.addEventListener = origDocAddListener;
+});
+
+test('app.js source uses 500ms debounce for template input and references new_session_template', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('500'), 'must have 500ms debounce timeout');
+  assert.ok(source.includes('new_session_template'), 'must reference new_session_template setting key');
+});
+
 

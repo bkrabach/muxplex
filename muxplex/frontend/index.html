@@ -152,7 +152,14 @@
             </div>
           </div>
         </div>
-        <div class="settings-panel hidden" data-tab="new-session"></div>
+        <div class="settings-panel hidden" data-tab="new-session">
+          <div class="settings-field settings-field--column">
+            <label class="settings-label" for="setting-template">Command template</label>
+            <textarea id="setting-template" class="settings-textarea" rows="3" placeholder="tmux new-session -d -s {name}"></textarea>
+            <span class="settings-helper">{name} is replaced with the session name</span>
+            <button id="setting-template-reset" class="settings-action-btn">Reset to default</button>
+          </div>
+        </div>
       </div>
     </div>
   </dialog>

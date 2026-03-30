@@ -404,12 +404,16 @@ def test_css_sidebar_item_body_pre():
     assert "left: 0" in block
     assert "right: 0" in block
     assert "font-size: 10px" in block
-    assert "line-height: 1.0" in block, "sidebar-item-body pre must use line-height: 1.0 (xterm.js default)"
+    assert "line-height: 1.0" in block, (
+        "sidebar-item-body pre must use line-height: 1.0 (xterm.js default)"
+    )
     assert "#c9d1d9" in block, "sidebar-item-body pre must match xterm.js foreground"
     assert "white-space: pre" in block
     assert "padding: 0 8px 6px" in block
     # Explicit xterm.js font family (not design token variable)
-    assert "'SF Mono'" in block or "SF Mono" in block, "sidebar-item-body pre must use explicit xterm.js font family"
+    assert "'SF Mono'" in block or "SF Mono" in block, (
+        "sidebar-item-body pre must use explicit xterm.js font family"
+    )
 
 
 def test_css_sidebar_empty():
@@ -649,8 +653,12 @@ def test_preview_popover_pre_matches_xterm_typography():
     """.preview-popover pre must match xterm.js terminal: 14px, line-height 1.0, explicit font stack."""
     css = read_css()
     block = _extract_rule_block(css, ".preview-popover pre {")
-    assert "font-size: 14px" in block, ".preview-popover pre must use 14px (xterm.js default)"
-    assert "line-height: 1.0" in block, ".preview-popover pre must use line-height: 1.0 (xterm.js default)"
+    assert "font-size: 14px" in block, (
+        ".preview-popover pre must use 14px (xterm.js default)"
+    )
+    assert "line-height: 1.0" in block, (
+        ".preview-popover pre must use line-height: 1.0 (xterm.js default)"
+    )
     assert "'SF Mono'" in block or "SF Mono" in block, (
         ".preview-popover pre must use explicit xterm.js font family"
     )
@@ -669,7 +677,9 @@ def test_tile_body_pre_has_xterm_line_height():
     """.tile-body pre must use line-height: 1.0 to match xterm.js terminal."""
     css = read_css()
     block = _extract_rule_block(css, ".tile-body pre {")
-    assert "line-height: 1.0" in block, ".tile-body pre must use line-height: 1.0 (xterm.js default)"
+    assert "line-height: 1.0" in block, (
+        ".tile-body pre must use line-height: 1.0 (xterm.js default)"
+    )
 
 
 def test_tile_body_pre_has_explicit_font_family():
@@ -694,7 +704,9 @@ def test_sidebar_item_body_pre_has_xterm_line_height():
     """.sidebar-item-body pre must use line-height: 1.0 to match xterm.js terminal."""
     css = read_css()
     block = _extract_rule_block(css, ".sidebar-item-body pre {")
-    assert "line-height: 1.0" in block, ".sidebar-item-body pre must use line-height: 1.0 (xterm.js default)"
+    assert "line-height: 1.0" in block, (
+        ".sidebar-item-body pre must use line-height: 1.0 (xterm.js default)"
+    )
 
 
 def test_sidebar_item_body_pre_has_explicit_font_family():
@@ -710,7 +722,9 @@ def test_no_gradient_fade_on_previews():
     """Gradient fade overlays must be removed — they obscure ANSI colors at the bottom."""
     css = read_css()
     assert ".tile-body::before" not in css, "tile-body::before gradient must be removed"
-    assert ".sidebar-item-body::before" not in css, "sidebar-item-body::before gradient must be removed"
+    assert ".sidebar-item-body::before" not in css, (
+        "sidebar-item-body::before gradient must be removed"
+    )
 
 
 # ============================================================
@@ -750,7 +764,9 @@ def test_css_settings_backdrop_exists():
     assert ".settings-backdrop" in css, "Missing .settings-backdrop CSS rule"
     block = _extract_rule_block(css, ".settings-backdrop {")
     assert "position: fixed" in block, ".settings-backdrop must use position: fixed"
-    assert "blur" in block or "backdrop-filter" in block, ".settings-backdrop must use blur"
+    assert "blur" in block or "backdrop-filter" in block, (
+        ".settings-backdrop must use blur"
+    )
 
 
 def test_css_settings_dialog_exists():
@@ -767,7 +783,9 @@ def test_css_settings_dialog_exists():
 def test_css_settings_dialog_backdrop_transparent():
     """.settings-dialog::backdrop must be transparent."""
     css = read_css()
-    assert ".settings-dialog::backdrop" in css, "Missing .settings-dialog::backdrop CSS rule"
+    assert ".settings-dialog::backdrop" in css, (
+        "Missing .settings-dialog::backdrop CSS rule"
+    )
     block = _extract_rule_block(css, ".settings-dialog::backdrop {")
     assert "transparent" in block, ".settings-dialog::backdrop must be transparent"
 
@@ -810,7 +828,9 @@ def test_css_settings_content_exists():
     css = read_css()
     assert ".settings-content" in css, "Missing .settings-content CSS rule"
     block = _extract_rule_block(css, ".settings-content {")
-    assert "overflow-y: auto" in block, ".settings-content must be scrollable (overflow-y: auto)"
+    assert "overflow-y: auto" in block, (
+        ".settings-content must be scrollable (overflow-y: auto)"
+    )
 
 
 def test_css_settings_field_exists():
@@ -819,8 +839,12 @@ def test_css_settings_field_exists():
     assert ".settings-field" in css, "Missing .settings-field CSS rule"
     block = _extract_rule_block(css, ".settings-field {")
     assert "display: flex" in block, ".settings-field must use display: flex"
-    assert "flex-direction: row" in block, ".settings-field must use flex-direction: row"
-    assert "justify-content: space-between" in block, ".settings-field must use justify-content: space-between"
+    assert "flex-direction: row" in block, (
+        ".settings-field must use flex-direction: row"
+    )
+    assert "justify-content: space-between" in block, (
+        ".settings-field must use justify-content: space-between"
+    )
 
 
 def test_css_settings_select_exists():
@@ -833,24 +857,36 @@ def test_css_settings_select_exists():
 def test_css_settings_mobile_media_query():
     """@media (max-width: 599px) block must exist for settings dialog mobile styles."""
     css = read_css()
-    assert "@media (max-width: 599px)" in css, "Missing @media (max-width: 599px) for settings mobile"
+    assert "@media (max-width: 599px)" in css, (
+        "Missing @media (max-width: 599px) for settings mobile"
+    )
     media_block = _extract_media_block(css, "@media (max-width: 599px)")
-    assert ".settings-dialog" in media_block, ".settings-dialog mobile styles must be in 599px media block"
+    assert ".settings-dialog" in media_block, (
+        ".settings-dialog mobile styles must be in 599px media block"
+    )
     # Bottom sheet: 100% width
     block = _extract_rule_block(media_block, ".settings-dialog {")
     assert "width: 100%" in block, ".settings-dialog must be 100% wide on mobile"
     assert "85vh" in block, ".settings-dialog must be 85vh tall on mobile"
-    assert "bottom: 0" in block or "bottom:0" in block, ".settings-dialog must be bottom-anchored on mobile"
+    assert "bottom: 0" in block or "bottom:0" in block, (
+        ".settings-dialog must be bottom-anchored on mobile"
+    )
 
 
 def test_css_settings_mobile_tabs_horizontal():
     """Inside mobile media query, settings tabs must become horizontal scrolling row."""
     css = read_css()
     media_block = _extract_media_block(css, "@media (max-width: 599px)")
-    assert ".settings-tabs" in media_block, ".settings-tabs must have mobile styles in 599px media block"
+    assert ".settings-tabs" in media_block, (
+        ".settings-tabs must have mobile styles in 599px media block"
+    )
     tabs_block = _extract_rule_block(media_block, ".settings-tabs {")
-    assert "flex-direction: row" in tabs_block, ".settings-tabs must become horizontal on mobile"
-    assert "overflow-x: auto" in tabs_block, ".settings-tabs must scroll horizontally on mobile"
+    assert "flex-direction: row" in tabs_block, (
+        ".settings-tabs must become horizontal on mobile"
+    )
+    assert "overflow-x: auto" in tabs_block, (
+        ".settings-tabs must scroll horizontally on mobile"
+    )
 
 
 # ─── Sessions tab CSS (task-1-sessions-tab) ───────────────────────────────────
@@ -864,6 +900,7 @@ def test_css_settings_field_column() -> None:
     )
     # Find the rule and check flex-direction
     import re
+
     match = re.search(
         r"\.settings-field--column\s*\{([^}]*)\}",
         css,
@@ -908,6 +945,7 @@ def test_css_settings_checkbox() -> None:
 def test_css_settings_notification_status_exists() -> None:
     """.settings-notification-status must exist with flex column, align-items flex-end."""
     import re
+
     css = read_css()
     assert ".settings-notification-status" in css, (
         ".settings-notification-status class must be defined in style.css"
@@ -930,6 +968,7 @@ def test_css_settings_notification_status_exists() -> None:
 def test_css_settings_status_text_exists() -> None:
     """.settings-status-text must exist with 12px font-size and text-muted color."""
     import re
+
     css = read_css()
     assert ".settings-status-text" in css, (
         ".settings-status-text class must be defined in style.css"
@@ -953,6 +992,7 @@ def test_css_settings_status_text_exists() -> None:
 def test_css_settings_action_btn_exists() -> None:
     """.settings-action-btn must exist with background, border, 12px font-size."""
     import re
+
     css = read_css()
     assert ".settings-action-btn" in css, (
         ".settings-action-btn class must be defined in style.css"
@@ -967,17 +1007,14 @@ def test_css_settings_action_btn_exists() -> None:
     assert "font-size: 12px" in body or "font-size:12px" in body, (
         ".settings-action-btn must set font-size: 12px"
     )
-    assert "border" in body, (
-        ".settings-action-btn must have border property"
-    )
-    assert "background" in body, (
-        ".settings-action-btn must have background property"
-    )
+    assert "border" in body, ".settings-action-btn must have border property"
+    assert "background" in body, ".settings-action-btn must have background property"
 
 
 def test_css_settings_action_btn_hover_exists() -> None:
     """.settings-action-btn:hover must exist with border-color accent."""
     import re
+
     css = read_css()
     assert ".settings-action-btn:hover" in css, (
         ".settings-action-btn:hover must be defined in style.css"
@@ -997,6 +1034,7 @@ def test_css_settings_action_btn_hover_exists() -> None:
 def test_css_settings_action_btn_disabled_opacity() -> None:
     """.settings-action-btn:disabled must have opacity 0.5."""
     import re
+
     css = read_css()
     assert ".settings-action-btn:disabled" in css, (
         ".settings-action-btn:disabled must be defined in style.css"
@@ -1010,4 +1048,207 @@ def test_css_settings_action_btn_disabled_opacity() -> None:
     body = match.group(1)
     assert "opacity: 0.5" in body or "opacity:0.5" in body, (
         ".settings-action-btn:disabled must set opacity: 0.5"
+    )
+
+
+# ============================================================
+# New Session tab CSS (task-3-new-session-tab)
+# ============================================================
+
+
+def test_css_settings_textarea_exists() -> None:
+    """.settings-textarea must be defined in style.css."""
+    css = read_css()
+    assert ".settings-textarea" in css, (
+        ".settings-textarea class must be defined in style.css"
+    )
+
+
+def test_css_settings_textarea_full_width() -> None:
+    """.settings-textarea must have width: 100%."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-textarea\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-textarea rule not found"
+    body = match.group(1)
+    assert "width: 100%" in body or "width:100%" in body, (
+        ".settings-textarea must set width: 100%"
+    )
+
+
+def test_css_settings_textarea_background() -> None:
+    """.settings-textarea must use var(--bg-secondary) background."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-textarea\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-textarea rule not found"
+    body = match.group(1)
+    assert "var(--bg-secondary)" in body, (
+        ".settings-textarea must use var(--bg-secondary) background"
+    )
+
+
+def test_css_settings_textarea_border_and_radius() -> None:
+    """.settings-textarea must have border and border-radius: 4px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-textarea\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-textarea rule not found"
+    body = match.group(1)
+    assert "border:" in body or "border :" in body, (
+        ".settings-textarea must have a border property"
+    )
+    assert "border-radius: 4px" in body or "border-radius:4px" in body, (
+        ".settings-textarea must have border-radius: 4px"
+    )
+
+
+def test_css_settings_textarea_font_mono_13px() -> None:
+    """.settings-textarea must use font-family var(--font-mono) and font-size 13px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-textarea\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-textarea rule not found"
+    body = match.group(1)
+    assert "var(--font-mono)" in body, (
+        ".settings-textarea must use var(--font-mono) font-family"
+    )
+    assert "font-size: 13px" in body or "font-size:13px" in body, (
+        ".settings-textarea must use font-size: 13px"
+    )
+
+
+def test_css_settings_textarea_padding_and_resize() -> None:
+    """.settings-textarea must have padding: 10px and resize: vertical."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-textarea\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-textarea rule not found"
+    body = match.group(1)
+    assert "padding: 10px" in body or "padding:10px" in body, (
+        ".settings-textarea must have padding: 10px"
+    )
+    assert "resize: vertical" in body or "resize:vertical" in body, (
+        ".settings-textarea must have resize: vertical"
+    )
+
+
+def test_css_settings_textarea_min_height() -> None:
+    """.settings-textarea must have min-height: 60px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-textarea\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-textarea rule not found"
+    body = match.group(1)
+    assert "min-height: 60px" in body or "min-height:60px" in body, (
+        ".settings-textarea must have min-height: 60px"
+    )
+
+
+def test_css_settings_textarea_focus_accent_border() -> None:
+    """.settings-textarea:focus must use border-color: var(--accent)."""
+    import re
+
+    css = read_css()
+    assert ".settings-textarea:focus" in css, (
+        ".settings-textarea:focus rule must be defined in style.css"
+    )
+    match = re.search(
+        r"\.settings-textarea:focus\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-textarea:focus rule not found"
+    body = match.group(1)
+    assert "var(--accent)" in body, (
+        ".settings-textarea:focus must use var(--accent) border-color"
+    )
+
+
+def test_css_settings_helper_exists() -> None:
+    """.settings-helper must be defined in style.css."""
+    css = read_css()
+    assert ".settings-helper" in css, (
+        ".settings-helper class must be defined in style.css"
+    )
+
+
+def test_css_settings_helper_font_size() -> None:
+    """.settings-helper must have font-size: 12px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-helper\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-helper rule not found"
+    body = match.group(1)
+    assert "font-size: 12px" in body or "font-size:12px" in body, (
+        ".settings-helper must have font-size: 12px"
+    )
+
+
+def test_css_settings_helper_text_muted_color() -> None:
+    """.settings-helper must use var(--text-muted) color."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-helper\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-helper rule not found"
+    body = match.group(1)
+    assert "var(--text-muted)" in body, (
+        ".settings-helper must use var(--text-muted) color"
+    )
+
+
+def test_css_settings_helper_italic() -> None:
+    """.settings-helper must have font-style: italic."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.settings-helper\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".settings-helper rule not found"
+    body = match.group(1)
+    assert "font-style: italic" in body or "font-style:italic" in body, (
+        ".settings-helper must have font-style: italic"
     )
