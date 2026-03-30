@@ -966,3 +966,57 @@ def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert "unknown_key" not in data
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sessions (create new session)
+# ---------------------------------------------------------------------------
+
+
+def test_create_session_returns_200_with_name(client, monkeypatch):
+    """POST /api/sessions with valid name returns 200 with {name: name}."""
+    from unittest.mock import MagicMock
+
+    mock_popen = MagicMock()
+    monkeypatch.setattr("muxplex.main.subprocess.Popen", mock_popen)
+
+    response = client.post("/api/sessions", json={"name": "my-project"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "my-project"
+
+
+def test_create_session_substitutes_name_in_template(client, tmp_path, monkeypatch):
+    """POST /api/sessions substitutes {name} with actual name in new_session_template."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"new_session_template": "echo {name}"}))
+
+    popen_calls = []
+
+    def mock_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return object()
+
+    monkeypatch.setattr("muxplex.main.subprocess.Popen", mock_popen)
+
+    response = client.post("/api/sessions", json={"name": "my-project"})
+    assert response.status_code == 200
+    assert len(popen_calls) == 1
+    assert popen_calls[0] == "echo my-project"
+
+
+def test_create_session_rejects_empty_name(client):
+    """POST /api/sessions with empty name returns 422."""
+    response = client.post("/api/sessions", json={"name": ""})
+    assert response.status_code == 422
+
+
+def test_create_session_rejects_missing_name(client):
+    """POST /api/sessions with missing name returns 422."""
+    response = client.post("/api/sessions", json={})
+    assert response.status_code == 422

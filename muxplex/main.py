@@ -14,6 +14,7 @@ import logging
 import os
 import pathlib
 import pwd
+import subprocess
 import sys
 import time
 from typing import Literal
@@ -25,7 +26,7 @@ from websockets.typing import Subprotocol
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse
 
 from muxplex.auth import (
@@ -268,6 +269,18 @@ class HeartbeatPayload(BaseModel):
     last_interaction_at: float
 
 
+class CreateSessionPayload(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("name must not be empty or whitespace")
+        return stripped
+
+
 # ---------------------------------------------------------------------------
 # Frontend directory
 # ---------------------------------------------------------------------------
@@ -321,6 +334,31 @@ async def get_sessions() -> list[dict]:
             }
         )
     return result
+
+
+@app.post("/api/sessions")
+async def create_session(payload: CreateSessionPayload) -> dict:
+    """Create a new tmux session using the new_session_template from settings.
+
+    Substitutes {name} in the template with the validated payload name, then
+    runs the command as a fire-and-forget subprocess (stdout/stderr discarded).
+
+    Returns {name: name} regardless of outcome.
+    Raises HTTP 422 if name is empty or whitespace (handled by Pydantic).
+    """
+    name = payload.name
+    settings = load_settings()
+    command = settings["new_session_template"].replace("{name}", name)
+    try:
+        subprocess.Popen(
+            command,
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        _log.warning("Failed to launch new-session command: %r", command)
+    return {"name": name}
 
 
 @app.post("/api/sessions/{name}/connect")
