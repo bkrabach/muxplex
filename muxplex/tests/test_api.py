@@ -1066,3 +1066,62 @@ def test_delete_session_not_found(client, monkeypatch):
 
     response = client.delete("/api/sessions/nonexistent")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: Static assets exempt from auth middleware
+# ---------------------------------------------------------------------------
+
+
+def test_static_asset_accessible_from_non_localhost_without_auth(monkeypatch):
+    """Static assets (.svg, .css, .js etc.) are served without auth from non-localhost.
+
+    The login page needs its own CSS/JS/images to render before the user has
+    authenticated. The auth middleware must exempt static file extensions.
+    """
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-pw")
+    with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
+        response = c.get("/wordmark-on-dark.svg")
+    assert response.status_code == 200, (
+        f"Expected 200 for static asset from non-localhost, got {response.status_code}"
+    )
+
+
+def test_css_asset_accessible_from_non_localhost_without_auth(monkeypatch):
+    """CSS files are served without auth from non-localhost."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-pw")
+    with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
+        response = c.get("/style.css")
+    assert response.status_code == 200, (
+        f"Expected 200 for CSS from non-localhost, got {response.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue 2: Hostname in page title
+# ---------------------------------------------------------------------------
+
+
+def test_index_page_title_contains_hostname(client):
+    """GET / returns HTML with hostname in page title (e.g. 'myhost — muxplex')."""
+    import socket
+
+    hostname = socket.gethostname().split(".")[0]
+    response = client.get("/")
+    assert response.status_code == 200
+    assert hostname in response.text, (
+        f"Expected hostname '{hostname}' in title of index page"
+    )
+    assert "muxplex" in response.text
+
+
+def test_login_page_title_contains_hostname(client):
+    """GET /login returns HTML with hostname in page title (e.g. 'Sign in — myhost — muxplex')."""
+    import socket
+
+    hostname = socket.gethostname().split(".")[0]
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert hostname in response.text, (
+        f"Expected hostname '{hostname}' in title of login page"
+    )
