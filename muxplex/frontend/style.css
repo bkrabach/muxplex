@@ -1202,6 +1202,34 @@ body {
 }
 
 /* ============================================================
+   Mobile FAB — new session floating action button
+   ============================================================ */
+
+.new-session-fab {
+  display: none;
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.new-session-fab:active {
+  transform: scale(0.95);
+}
+
+/* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */
 
@@ -1226,6 +1254,17 @@ body {
   }
 
   .sidebar-collapse-btn {
+    display: none;
+  }
+
+  /* Mobile FAB: show on mobile, hide header + button */
+  .new-session-fab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #new-session-btn {
     display: none;
   }
 }

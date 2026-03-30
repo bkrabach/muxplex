@@ -949,3 +949,53 @@ def test_html_sidebar_structure_complete() -> None:
     assert header is not None, "Missing .sidebar-header in #session-sidebar"
     assert list_ is not None, "Missing #sidebar-list in #session-sidebar"
     assert footer is not None, "Missing .sidebar-footer in #session-sidebar"
+
+
+# ============================================================
+# Mobile FAB (task-6-mobile-fab)
+# ============================================================
+
+
+def test_html_fab_exists() -> None:
+    """#new-session-fab button must exist with class new-session-fab, aria-label='New session', text '+'."""
+    soup = _SOUP
+    fab = soup.find(id="new-session-fab")
+    assert fab is not None, "Missing #new-session-fab"
+    assert fab.name == "button", (
+        f"#new-session-fab must be a <button>, got: {fab.name}"
+    )
+    classes = fab.get("class") or []
+    assert "new-session-fab" in classes, (
+        f"#new-session-fab must have class 'new-session-fab', has: {classes}"
+    )
+    assert fab.get("aria-label") == "New session", (
+        f"#new-session-fab must have aria-label='New session', got: {fab.get('aria-label')!r}"
+    )
+    text = fab.get_text(strip=True)
+    assert text == "+", (
+        f"#new-session-fab text must be '+', got: {text!r}"
+    )
+
+
+def test_html_fab_before_toast() -> None:
+    """#new-session-fab must appear before #toast in the document."""
+    soup = _SOUP
+    fab = soup.find(id="new-session-fab")
+    toast = soup.find(id="toast")
+    assert fab is not None, "Missing #new-session-fab"
+    assert toast is not None, "Missing #toast"
+    # Find positions in the flat list of all elements
+    all_elements = list(soup.find_all(True))
+    fab_idx = next(
+        (i for i, el in enumerate(all_elements) if el.get("id") == "new-session-fab"),
+        None,
+    )
+    toast_idx = next(
+        (i for i, el in enumerate(all_elements) if el.get("id") == "toast"),
+        None,
+    )
+    assert fab_idx is not None, "#new-session-fab not found in element list"
+    assert toast_idx is not None, "#toast not found in element list"
+    assert fab_idx < toast_idx, (
+        f"#new-session-fab (idx={fab_idx}) must appear before #toast (idx={toast_idx})"
+    )

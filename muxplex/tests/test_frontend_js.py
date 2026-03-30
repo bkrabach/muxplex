@@ -1798,3 +1798,63 @@ def test_bind_sidebar_new_session_btn_in_bind_static_event_listeners() -> None:
     assert "showNewSessionInput" in body, (
         "bindStaticEventListeners must call showNewSessionInput for the sidebar new-session button"
     )
+
+
+# ============================================================
+# Mobile FAB (task-6-mobile-fab)
+# ============================================================
+
+
+def test_js_fab_bound_in_bind_static_event_listeners() -> None:
+    """bindStaticEventListeners must bind #new-session-fab click to showNewSessionInput."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "new-session-fab" in body, (
+        "bindStaticEventListeners must reference 'new-session-fab'"
+    )
+
+
+def test_js_open_session_hides_fab() -> None:
+    """openSession must add 'hidden' class to the FAB element."""
+    match = re.search(
+        r"async function openSession\s*\(.*?\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSession function not found"
+    body = match.group(1)
+    assert "new-session-fab" in body, (
+        "openSession must reference 'new-session-fab' to hide FAB during fullscreen view"
+    )
+    assert "hidden" in body, (
+        "openSession must add 'hidden' class to FAB (classList.add('hidden'))"
+    )
+
+
+def test_js_close_session_restores_fab() -> None:
+    """closeSession must remove 'hidden' class from the FAB element."""
+    match = re.search(
+        r"function closeSession\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "closeSession function not found"
+    body = match.group(1)
+    assert "new-session-fab" in body, (
+        "closeSession must reference 'new-session-fab' to restore FAB when session closed"
+    )
+    assert "remove" in body, (
+        "closeSession must call classList.remove('hidden') on FAB"
+    )
+
+
+def test_js_fab_exported() -> None:
+    """new-session-fab binding functions must work - showNewSessionInput is exported."""
+    assert "showNewSessionInput" in _JS, (
+        "showNewSessionInput must exist in app.js (used by FAB click handler)"
+    )

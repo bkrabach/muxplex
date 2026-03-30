@@ -862,6 +862,10 @@ async function openSession(name, opts = {}) {
     updateSessionPill(_currentSessions);
   }
 
+  // Hide FAB during fullscreen session view
+  const fab = $('new-session-fab');
+  if (fab) fab.classList.add('hidden');
+
   // Connect to session (kill old ttyd, spawn new one for this session)
   try {
     if (!opts.skipConnect) {
@@ -902,6 +906,10 @@ function closeSession() {
 
   const pill = $('session-pill');
   if (pill) pill.classList.add('hidden');
+
+  // Restore FAB when returning to overview
+  const fab = $('new-session-fab');
+  if (fab) fab.classList.remove('hidden');
 
   return Promise.resolve();
 }
@@ -1348,6 +1356,8 @@ function bindStaticEventListeners() {
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
   var sidebarNewSessionBtn = $('sidebar-new-session-btn');
   if (sidebarNewSessionBtn) on(sidebarNewSessionBtn, 'click', function() { showNewSessionInput(sidebarNewSessionBtn); });
+  var newSessionFab = $('new-session-fab');
+  if (newSessionFab) on(newSessionFab, 'click', function() { showNewSessionInput(newSessionFab); });
   on($('sidebar-toggle-btn'), 'click', toggleSidebar);
   on($('sidebar-collapse-btn'), 'click', toggleSidebar);
   bindSidebarClickAway();
