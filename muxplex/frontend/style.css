@@ -231,7 +231,7 @@ body {
   padding: 6px 8px;
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-dim);
+  color: #c9d1d9;               /* match xterm.js foreground */
   white-space: pre;
   overflow: hidden;
   margin: 0;
@@ -544,7 +544,7 @@ body {
   font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.4;
-  color: var(--text-muted);
+  color: #c9d1d9;               /* match xterm.js foreground */
   white-space: pre;
   padding: 0 8px 6px;
   margin: 0;

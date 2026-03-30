@@ -413,7 +413,7 @@ def test_css_sidebar_item_body_pre():
     assert "right: 0" in block
     assert "font-size: 10px" in block
     assert "line-height: 1.4" in block
-    assert "color: var(--text-muted)" in block
+    assert "#c9d1d9" in block, "sidebar-item-body pre must match xterm.js foreground"
     assert "white-space: pre" in block
     assert "padding: 0 8px 6px" in block
     # Monospace font family via design token
