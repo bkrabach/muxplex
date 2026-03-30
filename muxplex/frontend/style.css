@@ -251,18 +251,7 @@ body {
   margin: 0;
 }
 
-/* Fade gradient at bottom of tile body */
-.tile-body::before {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 40px;
-  background: linear-gradient(to bottom, transparent, #000000);
-  pointer-events: none;
-  z-index: 1;
-}
+
 
 /* ============================================================
    Empty state
@@ -491,7 +480,7 @@ body {
 .sidebar-item--active {
   background: var(--bg-surface);
   border-color: var(--accent);
-  box-shadow: inset 3px 0 0 var(--accent);
+  border-left: 3px solid var(--accent);
 }
 
 .sidebar-item-header {
@@ -523,21 +512,7 @@ body {
   background: #000000;
 }
 
-.sidebar-item-body::before {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 32px;
-  background: linear-gradient(to bottom, transparent, #000000);
-  pointer-events: none;
-  z-index: 1;
-}
 
-.sidebar-item--active .sidebar-item-body::before {
-  background: linear-gradient(to bottom, transparent, #000000);
-}
 
 .sidebar-item-body pre {
   position: absolute;

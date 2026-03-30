@@ -355,13 +355,13 @@ def test_css_sidebar_item_hover():
 
 
 def test_css_sidebar_item_active():
-    """.sidebar-item--active must use inset box-shadow stripe instead of border-left-width to avoid layout shift."""
+    """.sidebar-item--active must use border-left for full-height accent indicator."""
     css = read_css()
     assert ".sidebar-item--active" in css
     block = _extract_rule_block(css, ".sidebar-item--active {")
     assert "background: var(--bg-surface)" in block
     assert "border-color: var(--accent)" in block
-    assert "box-shadow: inset 3px 0 0 var(--accent)" in block
+    assert "border-left: 3px solid var(--accent)" in block
 
 
 def test_css_sidebar_item_header():
@@ -714,19 +714,8 @@ def test_sidebar_item_body_pre_has_explicit_font_family():
     )
 
 
-def test_sidebar_item_body_gradient_fades_to_black():
-    """.sidebar-item-body::before gradient must fade to #000000 (not theme background)."""
+def test_no_gradient_fade_on_previews():
+    """Gradient fade overlays must be removed — they obscure ANSI colors at the bottom."""
     css = read_css()
-    block = _extract_rule_block(css, ".sidebar-item-body::before {")
-    assert "#000000" in block or "transparent, #000" in block, (
-        ".sidebar-item-body::before gradient must fade to #000000 to match black terminal bg"
-    )
-
-
-def test_tile_body_gradient_fades_to_black():
-    """.tile-body::before gradient must fade to #000000 (not theme background)."""
-    css = read_css()
-    block = _extract_rule_block(css, ".tile-body::before {")
-    assert "#000000" in block or "transparent, #000" in block, (
-        ".tile-body::before gradient must fade to #000000 to match black terminal bg"
-    )
+    assert ".tile-body::before" not in css, "tile-body::before gradient must be removed"
+    assert ".sidebar-item-body::before" not in css, "sidebar-item-body::before gradient must be removed"
