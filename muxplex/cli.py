@@ -2,13 +2,20 @@
 
 import argparse
 import os
+import platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import secrets as _secrets
 
-from muxplex.auth import get_secret_path, load_password, pam_available
+from muxplex.auth import (
+    get_password_path,
+    get_secret_path,
+    load_password,
+    pam_available,
+)
 
 # Module-level path constants (overridable in tests via monkeypatch)
 _system_service_path = Path("/etc/systemd/system/muxplex.service")
@@ -55,6 +62,134 @@ def serve(
 
     print(f"  muxplex → http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+def doctor() -> None:
+    """Run diagnostic checks and report system status."""
+    ok_mark = "\033[32m✓\033[0m"  # green check
+    fail_mark = "\033[31m✗\033[0m"  # red x
+    warn_mark = "\033[33m!\033[0m"  # yellow warning
+
+    print("\nmuxplex doctor\n")
+
+    # Python version
+    py_version = platform.python_version()
+    py_ok = tuple(int(x) for x in py_version.split(".")[:2]) >= (3, 11)
+    print(
+        f"  {ok_mark if py_ok else fail_mark} Python {py_version}"
+        + ("" if py_ok else " (3.11+ required)")
+    )
+
+    # tmux
+    tmux_path = shutil.which("tmux")
+    if tmux_path:
+        try:
+            result = subprocess.run(
+                ["tmux", "-V"], capture_output=True, text=True, timeout=5
+            )
+            tmux_version = result.stdout.strip()
+            print(f"  {ok_mark} {tmux_version}")
+        except Exception:
+            print(f"  {ok_mark} tmux (version unknown)")
+    else:
+        print(f"  {fail_mark} tmux — not found")
+        if sys.platform == "darwin":
+            print("    Install: brew install tmux")
+        else:
+            print("    Install: sudo apt install tmux")
+
+    # ttyd
+    ttyd_path = shutil.which("ttyd")
+    if ttyd_path:
+        try:
+            result = subprocess.run(
+                ["ttyd", "--version"], capture_output=True, text=True, timeout=5
+            )
+            ttyd_version = result.stdout.strip() or result.stderr.strip()
+            print(f"  {ok_mark} ttyd {ttyd_version}")
+        except Exception:
+            print(f"  {ok_mark} ttyd (version unknown)")
+    else:
+        print(f"  {fail_mark} ttyd — not found")
+        if sys.platform == "darwin":
+            print("    Install: brew install ttyd")
+        else:
+            print("    Install: sudo apt install ttyd")
+
+    # muxplex version
+    try:
+        from importlib.metadata import version as pkg_version  # noqa: PLC0415
+
+        muxplex_version = pkg_version("muxplex")
+    except Exception:
+        muxplex_version = "dev"
+    print(f"  {ok_mark} muxplex {muxplex_version}")
+
+    # Settings file
+    from muxplex.settings import SETTINGS_PATH  # noqa: PLC0415
+
+    if SETTINGS_PATH.exists():
+        print(f"  {ok_mark} Settings: {SETTINGS_PATH}")
+    else:
+        print(
+            f"  {warn_mark} Settings: {SETTINGS_PATH} (not yet created — will use defaults)"
+        )
+
+    # Auth status
+    pw_path = get_password_path()
+    if pam_available():
+        import pwd  # noqa: PLC0415
+
+        username = pwd.getpwuid(os.getuid()).pw_name
+        print(f"  {ok_mark} Auth: PAM available (user: {username})")
+    elif pw_path.exists():
+        print(f"  {ok_mark} Auth: password file ({pw_path})")
+    elif os.environ.get("MUXPLEX_PASSWORD"):
+        print(f"  {ok_mark} Auth: password (env var)")
+    else:
+        print(f"  {warn_mark} Auth: no PAM, no password — will auto-generate on serve")
+
+    # tmux sessions (if tmux is available)
+    if tmux_path:
+        try:
+            result = subprocess.run(
+                ["tmux", "list-sessions", "-F", "#{session_name}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                sessions = [s for s in result.stdout.strip().split("\n") if s]
+                print(f"  {ok_mark} tmux sessions: {len(sessions)} active")
+            else:
+                print(f"  {warn_mark} tmux server not running (no sessions)")
+        except Exception:
+            print(f"  {warn_mark} tmux server not running")
+
+    # Platform + service status
+    print(f"  {ok_mark} Platform: {sys.platform} ({platform.machine()})")
+    if sys.platform == "darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
+        if plist.exists():
+            print(f"  {ok_mark} Service: launchd agent installed ({plist})")
+        else:
+            print(
+                f"  {warn_mark} Service: not installed (run: muxplex install-service)"
+            )
+    else:
+        systemd_user = Path.home() / ".config" / "systemd" / "user" / "muxplex.service"
+        if systemd_user.exists():
+            print(f"  {ok_mark} Service: systemd user unit installed ({systemd_user})")
+        elif _system_service_path.exists():
+            print(
+                f"  {ok_mark} Service: systemd system unit installed ({_system_service_path})"
+            )
+        else:
+            print(
+                f"  {warn_mark} Service: not installed (run: muxplex install-service)"
+            )
+
+    print()  # trailing newline
 
 
 def _check_dependencies() -> None:
@@ -206,6 +341,8 @@ def main() -> None:
         "reset-secret", help="Regenerate signing secret (invalidates sessions)"
     )
 
+    sub.add_parser("doctor", help="Check dependencies and system status")
+
     args = parser.parse_args()
 
     if args.command == "install-service":
@@ -214,6 +351,8 @@ def main() -> None:
         show_password()
     elif args.command == "reset-secret":
         reset_secret()
+    elif args.command == "doctor":
+        doctor()
     else:
         _check_dependencies()
         serve(

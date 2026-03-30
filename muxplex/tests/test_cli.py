@@ -1,5 +1,6 @@
 """Tests for muxplex/cli.py — CLI entry point."""
 
+import shutil
 import stat
 from pathlib import Path
 from unittest.mock import patch
@@ -420,3 +421,98 @@ def test_dunder_main_calls_main():
     with patch("muxplex.cli.main") as mock_main:
         exec(Path(spec.origin).read_text())  # noqa: S102
         mock_main.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# doctor() tests
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_shows_python_version(capsys):
+    """doctor must show Python version."""
+    from muxplex.cli import doctor
+
+    doctor()
+    out = capsys.readouterr().out
+    assert "Python" in out
+
+
+def test_doctor_checks_tmux(capsys, monkeypatch):
+    """doctor must check for tmux."""
+    import subprocess
+
+    from muxplex.cli import doctor
+
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/tmux" if name == "tmux" else None
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: type(
+            "R", (), {"returncode": 0, "stdout": "tmux 3.4", "stderr": ""}
+        )(),
+    )
+    doctor()
+    out = capsys.readouterr().out
+    assert "tmux" in out
+
+
+def test_doctor_reports_missing_ttyd(capsys, monkeypatch):
+    """doctor must report when ttyd is missing."""
+    from muxplex.cli import doctor
+
+    original_which = shutil.which
+
+    def mock_which(name):
+        if name == "ttyd":
+            return None
+        return original_which(name)
+
+    monkeypatch.setattr("shutil.which", mock_which)
+    doctor()
+    out = capsys.readouterr().out
+    assert "ttyd" in out
+    assert "not found" in out
+
+
+def test_doctor_shows_platform(capsys):
+    """doctor must show platform info."""
+    from muxplex.cli import doctor
+
+    doctor()
+    out = capsys.readouterr().out
+    assert "Platform" in out
+
+
+def test_doctor_subcommand_registered():
+    """doctor must be a valid subcommand in main() argparse."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue().lower()
+    assert "doctor" in help_text
+
+
+def test_main_dispatches_to_doctor(monkeypatch):
+    """main() with 'doctor' subcommand must invoke doctor()."""
+    from muxplex.cli import main
+
+    calls = []
+    monkeypatch.setattr("muxplex.cli.doctor", lambda: calls.append(True))
+
+    with patch("sys.argv", ["muxplex", "doctor"]):
+        main()
+
+    assert len(calls) == 1, (
+        "doctor() must be called once when 'doctor' subcommand is used"
+    )
