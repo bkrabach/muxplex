@@ -1402,8 +1402,10 @@ function showFabSessionInput() {
 
 /**
  * Create a new tmux session via POST /api/sessions.
- * Shows a toast with the created session name, calls pollSessions() to refresh,
- * and if ss.auto_open_created !== false, calls openSession(data.name) after 500ms.
+ * Shows a toast, then polls _currentSessions until the session name appears
+ * (or times out after 30s) before calling openSession — this handles commands
+ * that take time to create the tmux session (e.g. cloning repos, setup scripts).
+ * If auto_open_created is false in server settings, skips the auto-open.
  * @param {string} name - The session name to create.
  * @returns {Promise<void>}
  */
@@ -1411,12 +1413,34 @@ async function createNewSession(name) {
   try {
     const res = await api('POST', '/api/sessions', { name });
     const data = await res.json();
-    showToast('Created: ' + (data.name || name));
-    await pollSessions();
+    const sessionName = data.name || name;
+    showToast('Creating session \'' + sessionName + '\'…');
+
     const ss = _serverSettings || {};
-    if (ss.auto_open_created !== false) {
-      setTimeout(() => openSession(data.name || name), 500);
+    if (ss.auto_open_created === false) {
+      // Auto-open disabled — just do one refresh
+      await pollSessions();
+      return;
     }
+
+    // Poll until the session appears in _currentSessions (max 30s, every 2s)
+    var attempts = 0;
+    var maxAttempts = 15;
+    var pollForSession = setInterval(async function() {
+      attempts++;
+      await pollSessions();
+      var found = _currentSessions && _currentSessions.find(function(s) {
+        return s.name === sessionName;
+      });
+      if (found) {
+        clearInterval(pollForSession);
+        showToast('Session \'' + sessionName + '\' ready');
+        openSession(sessionName);
+      } else if (attempts >= maxAttempts) {
+        clearInterval(pollForSession);
+        showToast('Session \'' + sessionName + '\' is taking longer than expected');
+      }
+    }, 2000);
   } catch (err) {
     showToast(err.message || 'Failed to create session');
   }

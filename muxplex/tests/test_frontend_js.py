@@ -1721,8 +1721,8 @@ def test_create_new_session_auto_opens_session() -> None:
     )
 
 
-def test_create_new_session_auto_open_delay() -> None:
-    """createNewSession must use a 500ms delay before calling openSession."""
+def test_create_new_session_polls_before_open() -> None:
+    """createNewSession must poll for the session to appear before calling openSession (not immediate setTimeout)."""
     match = re.search(
         r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
@@ -1730,7 +1730,14 @@ def test_create_new_session_auto_open_delay() -> None:
     )
     assert match, "createNewSession function not found"
     body = match.group(1)
-    assert "500" in body, "createNewSession must use 500ms delay before openSession"
+    # Old immediate pattern must be gone
+    assert "setTimeout(() => openSession" not in body, (
+        "createNewSession must not use immediate setTimeout(() => openSession) — should poll instead"
+    )
+    # New polling pattern must be present
+    assert "setInterval" in body, (
+        "createNewSession must use setInterval to poll for session readiness"
+    )
 
 
 def test_bind_static_event_listeners_binds_new_session_btn() -> None:

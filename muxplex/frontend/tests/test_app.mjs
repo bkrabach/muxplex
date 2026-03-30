@@ -2382,4 +2382,28 @@ test('app.js source uses 500ms debounce for template input and references new_se
   assert.ok(source.includes('new_session_template'), 'must reference new_session_template setting key');
 });
 
+test('createNewSession polls for session before auto-opening (not immediate setTimeout openSession)', () => {
+  // The old behavior was: setTimeout(() => openSession(...), 500) immediately after POST.
+  // The new behavior must use a polling interval to wait for the session to appear in
+  // _currentSessions before calling openSession — so the immediate pattern must be gone.
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  // Extract the createNewSession function body
+  const start = source.indexOf('async function createNewSession(');
+  assert.ok(start !== -1, 'createNewSession function must exist');
+  // Find the end of the function (next function declaration at same indent level)
+  const snippet = source.slice(start, start + 2000);
+  // Must NOT contain the old immediate-open pattern inside createNewSession
+  assert.ok(
+    !snippet.includes("setTimeout(() => openSession"),
+    'createNewSession must not use immediate setTimeout(() => openSession) — should poll instead'
+  );
+  // Must contain a polling mechanism (setInterval)
+  assert.ok(
+    snippet.includes('setInterval'),
+    'createNewSession must use setInterval to poll for session readiness'
+  );
+});
+
 
