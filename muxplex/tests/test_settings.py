@@ -116,3 +116,29 @@ def test_patch_settings_ignores_unknown_keys(tmp_path, monkeypatch):
 
     assert "unknown_key" not in result
     assert result["sort_order"] == "alpha"
+
+
+def test_load_does_not_mutate_default_settings():
+    """Mutating the list returned by load_settings() must not corrupt DEFAULT_SETTINGS."""
+    result = load_settings()
+    # Mutate the returned hidden_sessions list
+    result["hidden_sessions"].append("leaked_session")
+
+    # DEFAULT_SETTINGS must be unchanged
+    assert DEFAULT_SETTINGS["hidden_sessions"] == []
+
+    # A second load must still return the clean default
+    result2 = load_settings()
+    assert result2["hidden_sessions"] == []
+
+
+def test_load_propagates_non_json_errors(monkeypatch):
+    """load_settings() must not swallow unexpected errors (e.g. PermissionError)."""
+    from unittest.mock import MagicMock
+
+    mock_path = MagicMock()
+    mock_path.read_text.side_effect = PermissionError("no read permission")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", mock_path)
+
+    with pytest.raises(PermissionError):
+        load_settings()

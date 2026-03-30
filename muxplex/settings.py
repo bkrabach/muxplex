@@ -4,6 +4,7 @@ Server-side settings management for muxplex.
 Settings are stored at ~/.config/muxplex/settings.json.
 """
 
+import copy
 import json
 from pathlib import Path
 
@@ -25,16 +26,14 @@ def load_settings() -> dict:
     Returns DEFAULT_SETTINGS if the file does not exist or contains corrupt JSON.
     Unknown keys in the file are ignored.
     """
-    result = DEFAULT_SETTINGS.copy()
+    result = copy.deepcopy(DEFAULT_SETTINGS)
     try:
         text = SETTINGS_PATH.read_text()
         data = json.loads(text)
         for key in DEFAULT_SETTINGS:
             if key in data:
                 result[key] = data[key]
-    except FileNotFoundError:
-        pass
-    except (json.JSONDecodeError, Exception):
+    except (FileNotFoundError, json.JSONDecodeError):
         pass
     return result
 
@@ -45,7 +44,7 @@ def save_settings(data: dict) -> None:
     Creates parent directories as needed. Writes JSON with indent=2 and a
     trailing newline.
     """
-    merged = DEFAULT_SETTINGS.copy()
+    merged = copy.deepcopy(DEFAULT_SETTINGS)
     for key in DEFAULT_SETTINGS:
         if key in data:
             merged[key] = data[key]
