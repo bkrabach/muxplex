@@ -2119,4 +2119,15 @@ test('renderGrid and renderSidebar re-lift hovered tile after innerHTML rebuild'
     'renderGrid must NOT skip renders while preview active (old approach caused bugs)');
 });
 
+test('ansiToHtml converts SGR codes to styled spans', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  assert.ok(source.includes('function ansiToHtml'), 'ansiToHtml parser must exist');
+  assert.ok(source.includes('ANSI_COLORS'), 'must have color lookup table');
+  assert.ok(source.includes('ansi256Color'), 'must support 256-color mode');
+  assert.ok(source.includes('ansiToHtml(lastLines)'), 'tiles must use ansiToHtml not escapeHtml');
+  assert.ok(source.includes('ansiToHtml(session.snapshot)'), 'overlay must use ansiToHtml');
+});
+
 

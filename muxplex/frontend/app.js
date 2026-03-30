@@ -264,6 +264,97 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
+// ---------------------------------------------------------------------------
+// ANSI escape → HTML span converter (SGR codes only)
+// Converts terminal color sequences to <span> tags with inline styles.
+// ---------------------------------------------------------------------------
+var ANSI_COLORS = [
+  '#000','#c23621','#25bc26','#adad27','#492ee1','#d338d3','#33bbc8','#cbcccd',
+  '#818383','#fc391f','#31e722','#eaec23','#5833ff','#f935f8','#14f0f0','#e9ebeb'
+];
+
+function ansiToHtml(raw) {
+  if (!raw) return '';
+  var out = '';
+  var spans = 0;
+  var i = 0;
+  var len = raw.length;
+
+  while (i < len) {
+    // Look for ESC [ ... m  (SGR sequence)
+    if (raw[i] === '\x1b' && raw[i + 1] === '[') {
+      var j = i + 2;
+      while (j < len && raw[j] !== 'm' && j - i < 20) j++;
+      if (j < len && raw[j] === 'm') {
+        var params = raw.substring(i + 2, j).split(';');
+        var style = ansiParamsToStyle(params);
+        if (style === 'reset') {
+          // Close all open spans
+          while (spans > 0) { out += '</span>'; spans--; }
+        } else if (style) {
+          out += '<span style="' + style + '">';
+          spans++;
+        }
+        i = j + 1;
+        continue;
+      }
+    }
+    // Escape HTML characters
+    var ch = raw[i];
+    if (ch === '<') out += '&lt;';
+    else if (ch === '>') out += '&gt;';
+    else if (ch === '&') out += '&amp;';
+    else if (ch === '"') out += '&quot;';
+    else out += ch;
+    i++;
+  }
+  while (spans > 0) { out += '</span>'; spans--; }
+  return out;
+}
+
+function ansiParamsToStyle(params) {
+  var styles = [];
+  var k = 0;
+  while (k < params.length) {
+    var p = parseInt(params[k], 10) || 0;
+    if (p === 0) return 'reset';
+    if (p === 1) styles.push('font-weight:bold');
+    else if (p === 2) styles.push('opacity:0.7');
+    else if (p === 3) styles.push('font-style:italic');
+    else if (p === 4) styles.push('text-decoration:underline');
+    else if (p === 7) styles.push('filter:invert(1)');
+    else if (p === 9) styles.push('text-decoration:line-through');
+    else if (p >= 30 && p <= 37) styles.push('color:' + ANSI_COLORS[p - 30]);
+    else if (p === 38 && params[k + 1] === '5') {
+      var c = parseInt(params[k + 2], 10) || 0;
+      styles.push('color:' + ansi256Color(c));
+      k += 2;
+    }
+    else if (p === 39) styles.push('color:inherit');
+    else if (p >= 40 && p <= 47) styles.push('background:' + ANSI_COLORS[p - 40]);
+    else if (p === 48 && params[k + 1] === '5') {
+      var c2 = parseInt(params[k + 2], 10) || 0;
+      styles.push('background:' + ansi256Color(c2));
+      k += 2;
+    }
+    else if (p === 49) styles.push('background:inherit');
+    else if (p >= 90 && p <= 97) styles.push('color:' + ANSI_COLORS[p - 90 + 8]);
+    else if (p >= 100 && p <= 107) styles.push('background:' + ANSI_COLORS[p - 100 + 8]);
+    k++;
+  }
+  return styles.length ? styles.join(';') : '';
+}
+
+function ansi256Color(n) {
+  if (n < 16) return ANSI_COLORS[n];
+  if (n >= 232) { var g = 8 + (n - 232) * 10; return 'rgb(' + g + ',' + g + ',' + g + ')'; }
+  n -= 16;
+  var r = Math.floor(n / 36) * 51;
+  var g2 = Math.floor((n % 36) / 6) * 51;
+  var b = (n % 6) * 51;
+  return 'rgb(' + r + ',' + g2 + ',' + b + ')';
+}
+
 /**
  * Build the HTML string for a single session tile.
  * @param {object} session
@@ -301,7 +392,7 @@ function buildTileHTML(session, index, mobile) {
     `<span class="tile-name">${escapeHtml(name)}</span>` +
     `<span class="tile-meta">${bellHtml}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
     `</div>` +
-    `<div class="tile-body"><pre>${escapeHtml(lastLines)}</pre></div>` +
+    `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `</article>`
   );
 }
@@ -339,7 +430,7 @@ function buildSidebarHTML(session, currentSession) {
     `<span class="sidebar-item-name">${escapedName}</span>` +
     `${bellHtml}` +
     `</div>` +
-    `<div class="sidebar-item-body"><pre>${escapeHtml(lastLines)}</pre></div>` +
+    `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `</article>`
   );
 }
@@ -540,7 +631,7 @@ function showPreview(name) {
   // If already showing this session, just update content
   if (_previewPopover && _previewSessionName === name) {
     var pre = _previewPopover.querySelector('pre');
-    if (pre) pre.textContent = session.snapshot;
+    if (pre) pre.innerHTML = ansiToHtml(session.snapshot);
     return;
   }
 
@@ -557,7 +648,7 @@ function showPreview(name) {
   var popover = document.createElement('div');
   popover.className = 'preview-popover';
   var pre = document.createElement('pre');
-  pre.textContent = session.snapshot;
+  pre.innerHTML = ansiToHtml(session.snapshot);
   popover.appendChild(pre);
   document.body.appendChild(popover);
   _previewPopover = popover;
@@ -1259,6 +1350,10 @@ if (typeof module !== 'undefined' && module.exports) {
     closeBottomSheet,
     renderSheetList,
     updateSessionPill,
+    // ANSI color rendering
+    ansiToHtml,
+    ansiParamsToStyle,
+    ansi256Color,
     // Hover preview popover
     showPreview,
     hidePreview,

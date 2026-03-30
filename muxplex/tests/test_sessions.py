@@ -139,10 +139,11 @@ async def test_capture_pane_returns_empty_string_on_error(mock_subprocess):
 
 
 async def test_capture_pane_calls_correct_tmux_args(mock_subprocess):
-    """capture_pane() calls tmux with: capture-pane -p -t <name> -S -<lines>.
+    """capture_pane() calls tmux with: capture-pane -e -p -t <name> -S -<lines>.
 
+    Uses -e to preserve ANSI escape sequences for color rendering.
     Uses -S -N (start N lines from bottom) to limit output.
-    Does NOT pass -e (escape sequences) or -l (invalid in tmux 3.4).
+    Does NOT pass -l (invalid in tmux 3.4).
     """
     with mock_subprocess("output text\n") as mock_create:
         await capture_pane("target-session", lines=50)
@@ -150,12 +151,13 @@ async def test_capture_pane_calls_correct_tmux_args(mock_subprocess):
     call_args = mock_create.call_args[0]
     assert call_args[0] == "tmux"
     assert call_args[1] == "capture-pane"
-    assert call_args[2] == "-p"
-    assert call_args[3] == "-t"
-    assert call_args[4] == "target-session"
-    assert call_args[5] == "-S"
-    assert call_args[6] == "-50"
-    assert len(call_args) == 7, "No extra args — -e and -l must not be present"
+    assert call_args[2] == "-e"
+    assert call_args[3] == "-p"
+    assert call_args[4] == "-t"
+    assert call_args[5] == "target-session"
+    assert call_args[6] == "-S"
+    assert call_args[7] == "-50"
+    assert len(call_args) == 8, "-e must be present; no other extra args"
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +211,15 @@ async def test_snapshot_all_returns_empty_string_on_individual_failure():
 # ---------------------------------------------------------------------------
 # update_session_cache tests
 # ---------------------------------------------------------------------------
+
+
+def test_capture_pane_uses_escape_flag():
+    """capture-pane must include -e for ANSI color preservation."""
+    import inspect
+    from muxplex.sessions import capture_pane
+
+    source = inspect.getsource(capture_pane)
+    assert '"-e"' in source, "capture_pane must pass -e flag to preserve ANSI escapes"
 
 
 def test_update_session_cache_populates_snapshots():

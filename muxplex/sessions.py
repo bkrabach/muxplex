@@ -105,6 +105,7 @@ async def capture_pane(session_name: str, lines: int = 30) -> str:
     try:
         return await run_tmux(
             "capture-pane",
+            "-e",  # preserve ANSI escape sequences for color rendering
             "-p",
             "-t",
             session_name,
