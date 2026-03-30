@@ -4,9 +4,11 @@ import pathlib
 import re
 
 JS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "app.js"
+TERMINAL_JS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "terminal.js"
 
 # Read once per module — tests are read-only so sharing is safe.
 _JS: str = JS_PATH.read_text()
+_TERMINAL_JS: str = TERMINAL_JS_PATH.read_text()
 
 
 # ── Palette state variables must be removed ──────────────────────────────────
@@ -2050,10 +2052,6 @@ def test_js_show_fab_session_input_uses_factory() -> None:
 # ─── Task 7: Apply settings effects (task-7-apply-settings-effects) ──────────
 
 
-TERMINAL_JS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "terminal.js"
-_TERMINAL_JS: str = TERMINAL_JS_PATH.read_text()
-
-
 # ── terminal.js: createTerminal reads font size from localStorage ─────────────
 
 
@@ -2136,11 +2134,31 @@ def test_create_terminal_has_default_font_size_14() -> None:
     )
 
 
+# ── app.js: getVisibleSessions helper filters hidden sessions ─────────────────
+
+
+def test_get_visible_sessions_filters_hidden_sessions() -> None:
+    """getVisibleSessions() must filter sessions using _serverSettings.hidden_sessions."""
+    match = re.search(
+        r"function getVisibleSessions\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "getVisibleSessions function not found in app.js"
+    body = match.group(1)
+    assert "hidden_sessions" in body, (
+        "getVisibleSessions must filter sessions using _serverSettings.hidden_sessions"
+    )
+    assert "_serverSettings" in body, (
+        "getVisibleSessions must reference _serverSettings to access hidden_sessions"
+    )
+
+
 # ── app.js: renderGrid filters hidden sessions ────────────────────────────────
 
 
 def test_render_grid_filters_hidden_sessions() -> None:
-    """renderGrid() must filter out hidden sessions using _serverSettings.hidden_sessions."""
+    """renderGrid() must filter out hidden sessions via getVisibleSessions()."""
     match = re.search(
         r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _JS,
@@ -2148,11 +2166,8 @@ def test_render_grid_filters_hidden_sessions() -> None:
     )
     assert match, "renderGrid function not found in app.js"
     body = match.group(1)
-    assert "hidden_sessions" in body, (
-        "renderGrid must filter sessions using _serverSettings.hidden_sessions"
-    )
-    assert "_serverSettings" in body, (
-        "renderGrid must reference _serverSettings to access hidden_sessions"
+    assert "getVisibleSessions" in body, (
+        "renderGrid must call getVisibleSessions() to filter hidden sessions"
     )
 
 
@@ -2171,7 +2186,7 @@ def test_render_grid_creates_visible_array() -> None:
 
 
 def test_render_grid_uses_visible_for_empty_state_check() -> None:
-    """renderGrid() must use visible array (not sessions) for empty-state check."""
+    """renderGrid() must use visible.length (not sessions.length) for empty-state check."""
     match = re.search(
         r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _JS,
@@ -2179,10 +2194,10 @@ def test_render_grid_uses_visible_for_empty_state_check() -> None:
     )
     assert match, "renderGrid function not found in app.js"
     body = match.group(1)
-    # After filtering hidden sessions, the empty state check should use visible.length,
-    # not sessions.length. Check that visible is used before the empty state handling.
-    assert "visible" in body, (
-        "renderGrid must use 'visible' array for empty-state check"
+    # The empty-state guard must check visible.length, not sessions.length, so hidden
+    # sessions do not trigger the "no sessions" state.
+    assert "visible.length" in body, (
+        "renderGrid must use 'visible.length' for empty-state check, not sessions.length"
     )
 
 
@@ -2221,7 +2236,7 @@ def test_render_grid_reads_sort_order_from_server_settings() -> None:
 
 
 def test_render_sidebar_filters_hidden_sessions() -> None:
-    """renderSidebar() must filter out hidden sessions using _serverSettings.hidden_sessions."""
+    """renderSidebar() must filter out hidden sessions via getVisibleSessions()."""
     match = re.search(
         r"function renderSidebar\s*\(\w+,\s*\w+\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
         _JS,
@@ -2229,11 +2244,8 @@ def test_render_sidebar_filters_hidden_sessions() -> None:
     )
     assert match, "renderSidebar function not found in app.js"
     body = match.group(1)
-    assert "hidden_sessions" in body, (
-        "renderSidebar must filter sessions using _serverSettings.hidden_sessions"
-    )
-    assert "_serverSettings" in body, (
-        "renderSidebar must reference _serverSettings to access hidden_sessions"
+    assert "getVisibleSessions" in body, (
+        "renderSidebar must call getVisibleSessions() to filter hidden sessions"
     )
 
 

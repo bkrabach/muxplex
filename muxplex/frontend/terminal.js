@@ -150,7 +150,7 @@ function createTerminal() {
     }
   } catch (_) { /* use default 14 */ }
 
-  const mobile = window.innerWidth < 600;
+  const mobile = window.innerWidth < 600; // matches MOBILE_THRESHOLD in app.js
   const fontSize = mobile ? Math.min(storedFontSize, 12) : storedFontSize;
 
   _term = new window.Terminal({

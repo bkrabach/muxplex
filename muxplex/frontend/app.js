@@ -449,6 +449,17 @@ function buildSidebarHTML(session, currentSession) {
 }
 
 /**
+ * Returns sessions with hidden session names removed.
+ * Consolidates the hidden-session filter used by all render paths.
+ * @param {object[]} sessions
+ * @returns {object[]}
+ */
+function getVisibleSessions(sessions) {
+  const hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  return (sessions || []).filter((s) => !hidden.includes(s.name));
+}
+
+/**
  * Render the session sidebar list. Only renders in fullscreen view.
  * Shows empty state when no sessions exist.
  * Binds click handlers on each sidebar-item to switch sessions.
@@ -461,9 +472,7 @@ function renderSidebar(sessions, currentSession) {
   const list = $('sidebar-list');
   if (!list) return;
 
-  // Filter hidden sessions
-  const hiddenSessions = (_serverSettings && _serverSettings.hidden_sessions) || [];
-  const visible = (sessions || []).filter((s) => !hiddenSessions.includes(s.name));
+  const visible = getVisibleSessions(sessions);
 
   if (visible.length === 0) {
     list.innerHTML = '<div class="sidebar-empty">No sessions</div>';
@@ -594,9 +603,7 @@ function renderGrid(sessions) {
   const grid = $('session-grid');
   const emptyState = $('empty-state');
 
-  // Filter hidden sessions
-  const hiddenSessions = (_serverSettings && _serverSettings.hidden_sessions) || [];
-  const visible = (sessions || []).filter((s) => !hiddenSessions.includes(s.name));
+  const visible = getVisibleSessions(sessions);
 
   if (visible.length === 0) {
     if (grid) grid.innerHTML = '';
