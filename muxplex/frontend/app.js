@@ -133,7 +133,13 @@ var _previewSessionName = null;  // track by NAME, not DOM element
 // ─── Settings state ───────────────────────────────────────────────────────────
 let _settingsOpen = false;
 const DISPLAY_SETTINGS_KEY = 'muxplex.display';
-const DISPLAY_DEFAULTS = {fontSize: 14, hoverPreviewDelay: 1500, gridColumns: 'auto', bellSound: false, notificationPermission: 'default'};
+const DISPLAY_DEFAULTS = {
+  fontSize: 14,
+  hoverPreviewDelay: 1500,
+  gridColumns: 'auto',
+  bellSound: false,
+  notificationPermission: 'default',
+};
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -981,7 +987,7 @@ function switchSettingsTab(tabName) {
     }
   });
   document.querySelectorAll('.settings-panel').forEach(function(panel) {
-    const panelTab = panel.dataset.tab || panel.dataset.panel;
+    const panelTab = panel.dataset.tab;
     if (panelTab === tabName) {
       panel.classList.remove('hidden');
     } else {
