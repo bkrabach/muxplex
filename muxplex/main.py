@@ -14,6 +14,7 @@ import logging
 import os
 import pathlib
 import pwd
+import socket
 import subprocess
 import sys
 import time
@@ -282,10 +283,14 @@ class CreateSessionPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Frontend directory
+# Frontend directory + hostname
 # ---------------------------------------------------------------------------
 
 _FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
+
+# Short hostname (no domain) injected into page titles so browser tabs show
+# which machine each muxplex instance is running on.
+_HOSTNAME = socket.gethostname().split(".")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +569,18 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
 # ---------------------------------------------------------------------------
 
 
+@app.get("/", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse)
+async def index_page():
+    """Serve index.html with hostname injected into the page title."""
+    html = (_FRONTEND_DIR / "index.html").read_text()
+    html = html.replace(
+        "<title>muxplex</title>",
+        f"<title>{_HOSTNAME} \u2014 muxplex</title>",
+    )
+    return HTMLResponse(html)
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
     """Serve branded login.html with injected window.MUXPLEX_AUTH containing auth mode and username."""
@@ -572,6 +589,10 @@ async def login_page():
     mode_data = json.dumps({"mode": _auth_mode, "user": username})
     html = html.replace(
         "</head>", f"<script>window.MUXPLEX_AUTH = {mode_data};</script></head>"
+    )
+    html = html.replace(
+        "<title>Sign in \u2014 muxplex</title>",
+        f"<title>Sign in \u2014 {_HOSTNAME} \u2014 muxplex</title>",
     )
     return HTMLResponse(html)
 
