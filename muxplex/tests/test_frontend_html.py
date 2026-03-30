@@ -340,7 +340,9 @@ def test_html_new_session_btn() -> None:
     btn = soup.find(id="new-session-btn")
     assert btn is not None, "Missing #new-session-btn"
     classes = btn.get("class") or []
-    assert "header-btn" in classes, f"#new-session-btn must have class 'header-btn', has: {classes}"
+    assert "header-btn" in classes, (
+        f"#new-session-btn must have class 'header-btn', has: {classes}"
+    )
     # Must be inside header-actions
     header_actions = soup.find(class_="header-actions")
     assert header_actions is not None, "Missing .header-actions"
@@ -355,7 +357,9 @@ def test_html_settings_btn() -> None:
     btn = soup.find(id="settings-btn")
     assert btn is not None, "Missing #settings-btn"
     classes = btn.get("class") or []
-    assert "header-btn" in classes, f"#settings-btn must have class 'header-btn', has: {classes}"
+    assert "header-btn" in classes, (
+        f"#settings-btn must have class 'header-btn', has: {classes}"
+    )
     # Must be inside header-actions
     header_actions = soup.find(class_="header-actions")
     assert header_actions is not None, "Missing .header-actions"
@@ -370,7 +374,9 @@ def test_html_settings_btn_expanded() -> None:
     btn = soup.find(id="settings-btn-expanded")
     assert btn is not None, "Missing #settings-btn-expanded"
     classes = btn.get("class") or []
-    assert "header-btn" in classes, f"#settings-btn-expanded must have class 'header-btn', has: {classes}"
+    assert "header-btn" in classes, (
+        f"#settings-btn-expanded must have class 'header-btn', has: {classes}"
+    )
     # Must be inside expanded-header
     header = soup.find("header", class_="expanded-header")
     assert header is not None, "Missing header.expanded-header"
@@ -382,8 +388,12 @@ def test_html_settings_btn_expanded() -> None:
         el.get("id") for el in header.children if isinstance(el, Tag)
     ]
     header_children_ids = [i for i in header_children_ids if i]
-    assert "expanded-session-name" in header_children_ids, "#expanded-session-name must be in expanded-header"
-    assert "settings-btn-expanded" in header_children_ids, "#settings-btn-expanded must be in expanded-header"
+    assert "expanded-session-name" in header_children_ids, (
+        "#expanded-session-name must be in expanded-header"
+    )
+    assert "settings-btn-expanded" in header_children_ids, (
+        "#settings-btn-expanded must be in expanded-header"
+    )
     name_idx = header_children_ids.index("expanded-session-name")
     settings_idx = header_children_ids.index("settings-btn-expanded")
     assert name_idx < settings_idx, (
@@ -397,8 +407,12 @@ def test_html_settings_backdrop() -> None:
     el = soup.find(id="settings-backdrop")
     assert el is not None, "Missing #settings-backdrop"
     classes = el.get("class") or []
-    assert "settings-backdrop" in classes, f"#settings-backdrop must have class 'settings-backdrop', has: {classes}"
-    assert "hidden" in classes, f"#settings-backdrop must have class 'hidden', has: {classes}"
+    assert "settings-backdrop" in classes, (
+        f"#settings-backdrop must have class 'settings-backdrop', has: {classes}"
+    )
+    assert "hidden" in classes, (
+        f"#settings-backdrop must have class 'hidden', has: {classes}"
+    )
 
 
 def test_html_settings_dialog() -> None:
@@ -406,9 +420,13 @@ def test_html_settings_dialog() -> None:
     soup = _SOUP
     el = soup.find(id="settings-dialog")
     assert el is not None, "Missing #settings-dialog"
-    assert el.name == "dialog", f"#settings-dialog must be a <dialog> element, got: {el.name}"
+    assert el.name == "dialog", (
+        f"#settings-dialog must be a <dialog> element, got: {el.name}"
+    )
     classes = el.get("class") or []
-    assert "settings-dialog" in classes, f"#settings-dialog must have class 'settings-dialog', has: {classes}"
+    assert "settings-dialog" in classes, (
+        f"#settings-dialog must have class 'settings-dialog', has: {classes}"
+    )
 
 
 def test_html_settings_tabs() -> None:
@@ -417,11 +435,15 @@ def test_html_settings_tabs() -> None:
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
     tabs_container = dialog.find("nav", class_="settings-tabs")
-    assert tabs_container is not None, "Missing nav.settings-tabs inside #settings-dialog"
+    assert tabs_container is not None, (
+        "Missing nav.settings-tabs inside #settings-dialog"
+    )
     expected_tabs = ["display", "sessions", "notifications", "new-session"]
     for tab_value in expected_tabs:
         tab = tabs_container.find("button", attrs={"data-tab": tab_value})
-        assert tab is not None, f"Missing tab button with data-tab='{tab_value}' in settings-tabs"
+        assert tab is not None, (
+            f"Missing tab button with data-tab='{tab_value}' in settings-tabs"
+        )
     # Display tab must be active by default
     display_tab = tabs_container.find("button", attrs={"data-tab": "display"})
     assert display_tab is not None
@@ -446,7 +468,9 @@ def test_html_settings_display_panel_controls() -> None:
     for ctrl_id in ("setting-font-size", "setting-hover-delay", "setting-grid-columns"):
         el = dialog.find(id=ctrl_id)
         assert el is not None, f"Missing #{ctrl_id} inside #settings-dialog"
-        assert el.name == "select", f"#{ctrl_id} must be a <select> element, got: {el.name}"
+        assert el.name == "select", (
+            f"#{ctrl_id} must be a <select> element, got: {el.name}"
+        )
 
 
 def test_html_settings_font_size_options() -> None:
@@ -497,4 +521,59 @@ def test_html_settings_grid_columns_options() -> None:
     assert selected_opt is not None, "setting-grid-columns must have a selected option"
     assert selected_opt.get("value") == "auto", (
         f"setting-grid-columns default selection must be auto, got: {selected_opt.get('value')}"
+    )
+
+
+def test_html_settings_panels_use_data_tab() -> None:
+    """settings-panel elements must use data-tab (not data-panel) to match switchSettingsTab().
+
+    switchSettingsTab() in app.js reads panel.dataset.tab which corresponds to the
+    data-tab HTML attribute. If panels use data-panel instead, all panels get hidden
+    on the first tab click — the entire settings dialog becomes non-functional.
+    """
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    panels = dialog.find_all(class_="settings-panel")
+    assert len(panels) == 4, (
+        f"Expected 4 .settings-panel elements, found: {len(panels)}"
+    )
+    for panel in panels:
+        assert panel.get("data-tab") is not None, (
+            f"settings-panel must use data-tab attribute, found: {dict(panel.attrs)}"
+        )
+        assert panel.get("data-panel") is None, (
+            f"settings-panel must NOT use data-panel attribute (use data-tab instead), found: {dict(panel.attrs)}"
+        )
+
+
+def test_html_settings_tab_panel_data_tab_alignment() -> None:
+    """Every tab button data-tab value must have a matching settings-panel data-tab value.
+
+    Cross-check test: verifies the HTML attribute names are consistent between tab buttons
+    (which use data-tab) and content panels (which must also use data-tab). A mismatch
+    causes switchSettingsTab() to read undefined for every panel, hiding all panels.
+    """
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+
+    # Collect tab button data-tab values
+    tabs_container = dialog.find("nav", class_="settings-tabs")
+    assert tabs_container is not None, "Missing nav.settings-tabs"
+    tab_buttons = tabs_container.find_all("button", attrs={"data-tab": True})
+    tab_values = {str(btn.get("data-tab")) for btn in tab_buttons}
+    assert len(tab_values) > 0, "No tab buttons with data-tab found"
+
+    # Collect panel data-tab values
+    panels = dialog.find_all(class_="settings-panel")
+    panel_values = {
+        str(p.get("data-tab")) for p in panels if p.get("data-tab") is not None
+    }
+
+    # Every tab button must have a matching panel
+    missing_panels = tab_values - panel_values
+    assert not missing_panels, (
+        f"Tab buttons {missing_panels} have no matching settings-panel[data-tab=...]. "
+        f"Panel data-tab values found: {panel_values}"
     )
