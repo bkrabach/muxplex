@@ -140,11 +140,22 @@ function createTerminal() {
     _fitAddon = null;
   }
 
+  // Read font size from display settings (localStorage key 'muxplex.display')
+  var storedFontSize = 14;
+  try {
+    var raw = localStorage.getItem('muxplex.display');
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (parsed && parsed.fontSize) storedFontSize = parsed.fontSize;
+    }
+  } catch (_) { /* use default 14 */ }
+
   const mobile = window.innerWidth < 600;
+  const fontSize = mobile ? Math.min(storedFontSize, 12) : storedFontSize;
 
   _term = new window.Terminal({
     cursorBlink: true,
-    fontSize: mobile ? 12 : 14,
+    fontSize: fontSize,
     fontFamily: "'SF Mono', 'Fira Code', Consolas, monospace",
     theme: {
       background: '#000000',

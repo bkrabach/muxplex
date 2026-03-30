@@ -461,12 +461,16 @@ function renderSidebar(sessions, currentSession) {
   const list = $('sidebar-list');
   if (!list) return;
 
-  if (!sessions || sessions.length === 0) {
+  // Filter hidden sessions
+  const hiddenSessions = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  const visible = (sessions || []).filter((s) => !hiddenSessions.includes(s.name));
+
+  if (visible.length === 0) {
     list.innerHTML = '<div class="sidebar-empty">No sessions</div>';
     return;
   }
 
-  list.innerHTML = sessions.map((session) => buildSidebarHTML(session, currentSession)).join('');
+  list.innerHTML = visible.map((session) => buildSidebarHTML(session, currentSession)).join('');
 
   // Bind click handlers on each sidebar item
   if (typeof list.querySelectorAll === 'function') {
@@ -590,7 +594,11 @@ function renderGrid(sessions) {
   const grid = $('session-grid');
   const emptyState = $('empty-state');
 
-  if (!sessions || sessions.length === 0) {
+  // Filter hidden sessions
+  const hiddenSessions = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  const visible = (sessions || []).filter((s) => !hiddenSessions.includes(s.name));
+
+  if (visible.length === 0) {
     if (grid) grid.innerHTML = '';
     if (emptyState) emptyState.classList.remove('hidden');
     return;
@@ -598,8 +606,16 @@ function renderGrid(sessions) {
 
   if (emptyState) emptyState.classList.add('hidden');
 
+  // Apply sort order from server settings
+  const sortOrder = _serverSettings && _serverSettings.sort_order;
   const mobile = isMobile();
-  const ordered = mobile ? sortByPriority(sessions) : sessions;
+  let ordered;
+  if (sortOrder === 'alphabetical') {
+    ordered = visible.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  } else {
+    // 'recent', 'manual', and default use server-provided order; priority sort on mobile
+    ordered = mobile ? sortByPriority(visible) : visible;
+  }
   const html = ordered.map((session, index) => buildTileHTML(session, index, mobile)).join('');
   if (grid) grid.innerHTML = html;
 
@@ -1569,6 +1585,7 @@ document.addEventListener('DOMContentLoaded', () => {
   restoreState()
     .then(() => {
       startPolling();
+      loadServerSettings();
       startHeartbeat();
       requestNotificationPermission();
       bindStaticEventListeners();

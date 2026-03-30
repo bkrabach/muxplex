@@ -2045,3 +2045,225 @@ def test_js_show_fab_session_input_uses_factory() -> None:
     assert "_createSessionInput" in body, (
         "showFabSessionInput must call _createSessionInput() to create the input element"
     )
+
+
+# ─── Task 7: Apply settings effects (task-7-apply-settings-effects) ──────────
+
+
+TERMINAL_JS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "terminal.js"
+_TERMINAL_JS: str = TERMINAL_JS_PATH.read_text()
+
+
+# ── terminal.js: createTerminal reads font size from localStorage ─────────────
+
+
+def test_create_terminal_reads_font_size_from_localstorage() -> None:
+    """createTerminal() must read font size from localStorage key 'muxplex.display'."""
+    match = re.search(
+        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _TERMINAL_JS,
+        re.DOTALL,
+    )
+    assert match, "createTerminal function not found in terminal.js"
+    body = match.group(1)
+    assert "muxplex.display" in body or "DISPLAY_SETTINGS_KEY" in body, (
+        "createTerminal must read from localStorage key 'muxplex.display'"
+    )
+    assert "localStorage" in body, (
+        "createTerminal must use localStorage to read font size"
+    )
+
+
+def test_create_terminal_parses_json_for_font_size() -> None:
+    """createTerminal() must parse JSON from localStorage to extract fontSize."""
+    match = re.search(
+        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _TERMINAL_JS,
+        re.DOTALL,
+    )
+    assert match, "createTerminal function not found in terminal.js"
+    body = match.group(1)
+    assert "JSON.parse" in body, (
+        "createTerminal must use JSON.parse to extract fontSize from localStorage"
+    )
+    assert "fontSize" in body, (
+        "createTerminal must extract fontSize from parsed display settings"
+    )
+
+
+def test_create_terminal_applies_mobile_cap_with_math_min() -> None:
+    """createTerminal() must apply mobile cap using Math.min(storedFontSize, 12)."""
+    match = re.search(
+        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _TERMINAL_JS,
+        re.DOTALL,
+    )
+    assert match, "createTerminal function not found in terminal.js"
+    body = match.group(1)
+    assert "Math.min" in body, (
+        "createTerminal must use Math.min for mobile font size cap"
+    )
+
+
+def test_create_terminal_uses_stored_font_size_not_hardcoded() -> None:
+    """createTerminal() must use stored fontSize variable, not hardcoded 14 or ternary."""
+    match = re.search(
+        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _TERMINAL_JS,
+        re.DOTALL,
+    )
+    assert match, "createTerminal function not found in terminal.js"
+    body = match.group(1)
+    # The font size in Terminal constructor should use a variable, not a ternary with literal 14
+    # Check that there's no raw "mobile ? 12 : 14" pattern anymore
+    assert "mobile ? 12 : 14" not in body, (
+        "createTerminal must not use hardcoded 'mobile ? 12 : 14' ternary; "
+        "use stored font size from localStorage with Math.min cap"
+    )
+
+
+def test_create_terminal_has_default_font_size_14() -> None:
+    """createTerminal() must default to fontSize 14 when not set in localStorage."""
+    match = re.search(
+        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _TERMINAL_JS,
+        re.DOTALL,
+    )
+    assert match, "createTerminal function not found in terminal.js"
+    body = match.group(1)
+    assert "14" in body, (
+        "createTerminal must have default font size of 14 for when localStorage is not set"
+    )
+
+
+# ── app.js: renderGrid filters hidden sessions ────────────────────────────────
+
+
+def test_render_grid_filters_hidden_sessions() -> None:
+    """renderGrid() must filter out hidden sessions using _serverSettings.hidden_sessions."""
+    match = re.search(
+        r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderGrid function not found in app.js"
+    body = match.group(1)
+    assert "hidden_sessions" in body, (
+        "renderGrid must filter sessions using _serverSettings.hidden_sessions"
+    )
+    assert "_serverSettings" in body, (
+        "renderGrid must reference _serverSettings to access hidden_sessions"
+    )
+
+
+def test_render_grid_creates_visible_array() -> None:
+    """renderGrid() must create a 'visible' array excluding hidden session names."""
+    match = re.search(
+        r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderGrid function not found in app.js"
+    body = match.group(1)
+    assert "visible" in body, (
+        "renderGrid must create a 'visible' variable/array for non-hidden sessions"
+    )
+
+
+def test_render_grid_uses_visible_for_empty_state_check() -> None:
+    """renderGrid() must use visible array (not sessions) for empty-state check."""
+    match = re.search(
+        r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderGrid function not found in app.js"
+    body = match.group(1)
+    # After filtering hidden sessions, the empty state check should use visible.length,
+    # not sessions.length. Check that visible is used before the empty state handling.
+    assert "visible" in body, (
+        "renderGrid must use 'visible' array for empty-state check"
+    )
+
+
+def test_render_grid_applies_alphabetical_sort_with_locale_compare() -> None:
+    """renderGrid() must sort alphabetically using localeCompare when sortOrder is 'alphabetical'."""
+    match = re.search(
+        r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderGrid function not found in app.js"
+    body = match.group(1)
+    assert "alphabetical" in body, (
+        "renderGrid must check for 'alphabetical' sort order"
+    )
+    assert "localeCompare" in body, (
+        "renderGrid must use localeCompare for alphabetical sort"
+    )
+
+
+def test_render_grid_reads_sort_order_from_server_settings() -> None:
+    """renderGrid() must read sort_order from _serverSettings to determine ordering."""
+    match = re.search(
+        r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderGrid function not found in app.js"
+    body = match.group(1)
+    assert "sort_order" in body or "sortOrder" in body, (
+        "renderGrid must read sort_order from _serverSettings"
+    )
+
+
+# ── app.js: renderSidebar filters hidden sessions ─────────────────────────────
+
+
+def test_render_sidebar_filters_hidden_sessions() -> None:
+    """renderSidebar() must filter out hidden sessions using _serverSettings.hidden_sessions."""
+    match = re.search(
+        r"function renderSidebar\s*\(\w+,\s*\w+\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebar function not found in app.js"
+    body = match.group(1)
+    assert "hidden_sessions" in body, (
+        "renderSidebar must filter sessions using _serverSettings.hidden_sessions"
+    )
+    assert "_serverSettings" in body, (
+        "renderSidebar must reference _serverSettings to access hidden_sessions"
+    )
+
+
+def test_render_sidebar_uses_visible_array() -> None:
+    """renderSidebar() must use visible array for rendering, not original sessions."""
+    match = re.search(
+        r"function renderSidebar\s*\(\w+,\s*\w+\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebar function not found in app.js"
+    body = match.group(1)
+    assert "visible" in body, (
+        "renderSidebar must use 'visible' array after filtering hidden sessions"
+    )
+
+
+# ── app.js: DOMContentLoaded calls loadServerSettings ────────────────────────
+
+
+def test_dom_content_loaded_calls_load_server_settings() -> None:
+    """DOMContentLoaded handler must call loadServerSettings() after startPolling()."""
+    match = re.search(
+        r"DOMContentLoaded.*?\{(.*?)(?=\}\);?\s*\n// |\}\);\s*$)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "DOMContentLoaded handler not found"
+    body = match.group(1)
+    assert "loadServerSettings" in body, (
+        "DOMContentLoaded handler must call loadServerSettings() "
+        "after startPolling() in the restoreState().then() chain"
+    )
