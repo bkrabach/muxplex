@@ -1666,9 +1666,7 @@ def test_show_new_session_input_handles_blur_with_delay() -> None:
     assert match, "showNewSessionInput function not found"
     body = match.group(1)
     assert "blur" in body, "showNewSessionInput must handle blur event"
-    assert "150" in body, (
-        "showNewSessionInput must use 150ms delay on blur"
-    )
+    assert "150" in body, "showNewSessionInput must use 150ms delay on blur"
 
 
 def test_create_new_session_posts_to_api_sessions() -> None:
@@ -1775,9 +1773,7 @@ def test_exports_create_new_session() -> None:
     )
     assert match, "module.exports block not found"
     exports = match.group(1)
-    assert "createNewSession" in exports, (
-        "module.exports must export createNewSession"
-    )
+    assert "createNewSession" in exports, "module.exports must export createNewSession"
 
 
 # ============================================================
@@ -1850,9 +1846,7 @@ def test_js_close_session_restores_fab() -> None:
     assert "new-session-fab" in body, (
         "closeSession must reference 'new-session-fab' to restore FAB when session closed"
     )
-    assert "remove" in body, (
-        "closeSession must call classList.remove('hidden') on FAB"
-    )
+    assert "remove" in body, "closeSession must call classList.remove('hidden') on FAB"
 
 
 def test_js_fab_exported() -> None:
@@ -2210,9 +2204,7 @@ def test_render_grid_applies_alphabetical_sort_with_locale_compare() -> None:
     )
     assert match, "renderGrid function not found in app.js"
     body = match.group(1)
-    assert "alphabetical" in body, (
-        "renderGrid must check for 'alphabetical' sort order"
-    )
+    assert "alphabetical" in body, "renderGrid must check for 'alphabetical' sort order"
     assert "localeCompare" in body, (
         "renderGrid must use localeCompare for alphabetical sort"
     )

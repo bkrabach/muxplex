@@ -1370,10 +1370,10 @@ def test_css_new_session_input_has_outline_none() -> None:
 def test_css_new_session_input_placeholder_rule_exists() -> None:
     """.new-session-input::placeholder CSS rule must exist."""
     css = read_css()
-    assert ".new-session-input::placeholder" in css or \
-        ".new-session-input::-webkit-input-placeholder" in css, (
-        ".new-session-input::placeholder CSS rule must exist"
-    )
+    assert (
+        ".new-session-input::placeholder" in css
+        or ".new-session-input::-webkit-input-placeholder" in css
+    ), ".new-session-input::placeholder CSS rule must exist"
 
 
 def test_css_new_session_input_placeholder_color() -> None:
@@ -1407,6 +1407,7 @@ def test_css_sidebar_footer_rule_exists() -> None:
 def test_css_sidebar_footer_padding() -> None:
     """.sidebar-footer must have padding: 8px."""
     import re
+
     css = read_css()
     match = re.search(
         r"\.sidebar-footer\s*\{([^}]*)\}",
@@ -1422,6 +1423,7 @@ def test_css_sidebar_footer_padding() -> None:
 def test_css_sidebar_footer_border_top() -> None:
     """.sidebar-footer must have border-top."""
     import re
+
     css = read_css()
     match = re.search(
         r"\.sidebar-footer\s*\{([^}]*)\}",
@@ -1436,6 +1438,7 @@ def test_css_sidebar_footer_border_top() -> None:
 def test_css_sidebar_footer_flex_shrink_0() -> None:
     """.sidebar-footer must have flex-shrink: 0."""
     import re
+
     css = read_css()
     match = re.search(
         r"\.sidebar-footer\s*\{([^}]*)\}",
@@ -1457,6 +1460,7 @@ def test_css_sidebar_new_btn_rule_exists() -> None:
 def test_css_sidebar_new_btn_width_100() -> None:
     """.sidebar-new-btn must have width: 100%."""
     import re
+
     css = read_css()
     match = re.search(
         r"\.sidebar-new-btn\s*\{([^}]*)\}",
@@ -1472,6 +1476,7 @@ def test_css_sidebar_new_btn_width_100() -> None:
 def test_css_sidebar_new_btn_dashed_border() -> None:
     """.sidebar-new-btn must have a dashed border."""
     import re
+
     css = read_css()
     match = re.search(
         r"\.sidebar-new-btn\s*\{([^}]*)\}",
@@ -1505,24 +1510,26 @@ def test_css_fab_class_exists() -> None:
 def test_css_fab_display_none_by_default() -> None:
     """.new-session-fab must have display:none as default (hidden on desktop)."""
     import re
+
     css = read_css()
     # Find the .new-session-fab block (non-media-query context)
     # Match the block that is NOT inside a @media rule
     # Look for .new-session-fab { ... display: none ... } outside of @media
     # Simple check: the rule body should contain 'display' before the first @media containing it
-    match = re.search(r'\.new-session-fab\s*\{([^}]*)\}', css)
+    match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", css)
     assert match, ".new-session-fab rule not found"
     body = match.group(1)
-    assert "display" in body and ("none" in body or "display:none" in body.replace(" ", "")), (
-        f".new-session-fab must have display:none by default, got body: {body!r}"
-    )
+    assert "display" in body and (
+        "none" in body or "display:none" in body.replace(" ", "")
+    ), f".new-session-fab must have display:none by default, got body: {body!r}"
 
 
 def test_css_fab_position_fixed() -> None:
     """.new-session-fab must be position:fixed."""
     import re
+
     css = read_css()
-    match = re.search(r'\.new-session-fab\s*\{([^}]*)\}', css)
+    match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", css)
     assert match, ".new-session-fab rule not found"
     body = match.group(1)
     assert "position" in body and "fixed" in body, (
@@ -1533,8 +1540,9 @@ def test_css_fab_position_fixed() -> None:
 def test_css_fab_size_56px() -> None:
     """.new-session-fab must be 56px width and height."""
     import re
+
     css = read_css()
-    match = re.search(r'\.new-session-fab\s*\{([^}]*)\}', css)
+    match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", css)
     assert match, ".new-session-fab rule not found"
     body = match.group(1)
     assert "56px" in body, (
@@ -1545,24 +1553,22 @@ def test_css_fab_size_56px() -> None:
 def test_css_fab_border_radius_50_percent() -> None:
     """.new-session-fab must have border-radius:50% for circular shape."""
     import re
+
     css = read_css()
-    match = re.search(r'\.new-session-fab\s*\{([^}]*)\}', css)
+    match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", css)
     assert match, ".new-session-fab rule not found"
     body = match.group(1)
-    assert "50%" in body, (
-        f".new-session-fab must have border-radius:50%, got: {body!r}"
-    )
+    assert "50%" in body, f".new-session-fab must have border-radius:50%, got: {body!r}"
 
 
 def test_css_fab_mobile_media_query_shows_flex() -> None:
     """At max-width: 959px, .new-session-fab must be shown as display:flex."""
     import re
+
     css = read_css()
     # Find the 959px media query and check that .new-session-fab uses display:flex
     match = re.search(
-        r'@media\s*\([^)]*max-width\s*:\s*959px[^)]*\)\s*\{([^@]*)\}',
-        css,
-        re.DOTALL
+        r"@media\s*\([^)]*max-width\s*:\s*959px[^)]*\)\s*\{([^@]*)\}", css, re.DOTALL
     )
     assert match, "Missing @media (max-width: 959px) block"
     media_body = match.group(1)
@@ -1570,7 +1576,7 @@ def test_css_fab_mobile_media_query_shows_flex() -> None:
         "@media (max-width: 959px) block must contain .new-session-fab rule"
     )
     # Find the .new-session-fab rule within the media query
-    fab_match = re.search(r'\.new-session-fab\s*\{([^}]*)\}', media_body)
+    fab_match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", media_body)
     assert fab_match, ".new-session-fab rule not found in 959px media query"
     fab_body = fab_match.group(1)
     assert "flex" in fab_body, (
@@ -1581,11 +1587,10 @@ def test_css_fab_mobile_media_query_shows_flex() -> None:
 def test_css_fab_mobile_media_query_hides_new_session_btn() -> None:
     """At max-width: 959px, #new-session-btn must be hidden."""
     import re
+
     css = read_css()
     match = re.search(
-        r'@media\s*\([^)]*max-width\s*:\s*959px[^)]*\)\s*\{([^@]*)\}',
-        css,
-        re.DOTALL
+        r"@media\s*\([^)]*max-width\s*:\s*959px[^)]*\)\s*\{([^@]*)\}", css, re.DOTALL
     )
     assert match, "Missing @media (max-width: 959px) block"
     media_body = match.group(1)
@@ -1593,7 +1598,7 @@ def test_css_fab_mobile_media_query_hides_new_session_btn() -> None:
         "@media (max-width: 959px) block must contain #new-session-btn rule to hide it"
     )
     # Find the #new-session-btn rule and verify it has display:none
-    btn_match = re.search(r'#new-session-btn\s*\{([^}]*)\}', media_body)
+    btn_match = re.search(r"#new-session-btn\s*\{([^}]*)\}", media_body)
     assert btn_match, "#new-session-btn rule not found in 959px media query"
     btn_body = btn_match.group(1)
     assert "none" in btn_body, (
@@ -1615,7 +1620,9 @@ def test_css_fab_focus_visible_outline_not_accent() -> None:
     match = re.search(r"\.new-session-fab:focus-visible\s*\{([^}]*)\}", css)
     assert match, "Missing .new-session-fab:focus-visible rule in style.css"
     body = match.group(1)
-    assert "outline" in body, ".new-session-fab:focus-visible must have an outline property"
+    assert "outline" in body, (
+        ".new-session-fab:focus-visible must have an outline property"
+    )
     # The FAB background IS var(--accent), so using the same color as outline gives zero visible ring.
     # Must use var(--bg) or var(--text) for sufficient contrast.
     assert "var(--accent)" not in body, (

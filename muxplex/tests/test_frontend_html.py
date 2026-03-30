@@ -458,6 +458,7 @@ def test_html_settings_tabs() -> None:
     # All tabs must have settings-tab class
     for tab_value in expected_tabs:
         tab = tabs_container.find("button", attrs={"data-tab": tab_value})
+        assert tab is not None, f"Missing tab button with data-tab='{tab_value}'"
         tab_classes = tab.get("class") or []
         assert "settings-tab" in tab_classes, (
             f"Tab data-tab='{tab_value}' must have class 'settings-tab', has: {tab_classes}"
@@ -902,7 +903,9 @@ def test_html_sidebar_footer_after_sidebar_list() -> None:
             footer_idx = i
 
     assert list_idx is not None, "#sidebar-list must be in #session-sidebar children"
-    assert footer_idx is not None, "div.sidebar-footer must be in #session-sidebar children"
+    assert footer_idx is not None, (
+        "div.sidebar-footer must be in #session-sidebar children"
+    )
     assert list_idx < footer_idx, (
         f"div.sidebar-footer must appear after #sidebar-list, "
         f"got list_idx={list_idx}, footer_idx={footer_idx}"
@@ -965,9 +968,7 @@ def test_html_fab_exists() -> None:
     soup = _SOUP
     fab = soup.find(id="new-session-fab")
     assert fab is not None, "Missing #new-session-fab"
-    assert fab.name == "button", (
-        f"#new-session-fab must be a <button>, got: {fab.name}"
-    )
+    assert fab.name == "button", f"#new-session-fab must be a <button>, got: {fab.name}"
     classes = fab.get("class") or []
     assert "new-session-fab" in classes, (
         f"#new-session-fab must have class 'new-session-fab', has: {classes}"
@@ -976,9 +977,7 @@ def test_html_fab_exists() -> None:
         f"#new-session-fab must have aria-label='New session', got: {fab.get('aria-label')!r}"
     )
     text = fab.get_text(strip=True)
-    assert text == "+", (
-        f"#new-session-fab text must be '+', got: {text!r}"
-    )
+    assert text == "+", f"#new-session-fab text must be '+', got: {text!r}"
 
 
 def test_html_fab_before_toast() -> None:
