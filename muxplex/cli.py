@@ -21,6 +21,110 @@ from muxplex.auth import (
 _system_service_path = Path("/etc/systemd/system/muxplex.service")
 
 
+def _get_install_info() -> dict:
+    """Detect how muxplex was installed using PEP 610 direct_url.json.
+
+    Returns dict with keys:
+      source: 'git' | 'editable' | 'pypi' | 'unknown'
+      version: installed version string
+      commit: installed commit sha (git only)
+      url: git repo URL (git only)
+    """
+    import json
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    info: dict = {
+        "source": "unknown",
+        "version": "0.0.0",
+        "commit": None,
+        "url": None,
+    }
+
+    try:
+        dist = distribution("muxplex")
+        info["version"] = dist.metadata["Version"]
+
+        du_text = dist.read_text("direct_url.json")
+        if du_text:
+            du = json.loads(du_text)
+
+            if "vcs_info" in du:
+                info["source"] = "git"
+                info["commit"] = du["vcs_info"].get("commit_id", "")
+                info["url"] = du.get("url", "")
+            elif "dir_info" in du and du["dir_info"].get("editable"):
+                info["source"] = "editable"
+            else:
+                info["source"] = "unknown"
+        else:
+            # No direct_url.json → probably PyPI
+            info["source"] = "pypi"
+    except PackageNotFoundError:
+        pass
+
+    return info
+
+
+def _check_for_update(info: dict) -> tuple[bool, str]:
+    """Check if an update is available. Returns (update_available, message).
+
+    For git: compares installed commit_id against remote HEAD sha.
+    For pypi: compares installed version against latest PyPI version.
+    For editable: always returns (False, "editable install").
+    For unknown: always returns (True, "unknown install source").
+    """
+    import json
+    import urllib.request
+
+    if info["source"] == "editable":
+        return False, "editable install — manage updates manually"
+
+    if info["source"] == "git":
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", info["url"], "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return True, "could not check remote — upgrading to be safe"
+
+            remote_sha = (
+                result.stdout.strip().split()[0] if result.stdout.strip() else ""
+            )
+            local_sha = info["commit"] or ""
+
+            if not remote_sha:
+                return True, "could not read remote sha — upgrading to be safe"
+
+            if local_sha == remote_sha:
+                return False, f"up to date (commit {local_sha[:8]})"
+            else:
+                return True, f"update available ({local_sha[:8]} → {remote_sha[:8]})"
+        except Exception:
+            return True, "check failed — upgrading to be safe"
+
+    if info["source"] == "pypi":
+        try:
+            req = urllib.request.Request(
+                "https://pypi.org/pypi/muxplex/json",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                latest = data["info"]["version"]
+                if latest == info["version"]:
+                    return False, f"up to date (v{info['version']})"
+                else:
+                    return True, f"update available (v{info['version']} → v{latest})"
+        except Exception:
+            return True, "could not check PyPI — upgrading to be safe"
+
+    # Unknown source
+    return True, "unknown install source — upgrading to be safe"
+
+
 def reset_secret() -> None:
     """Regenerate the signing secret and warn that all sessions are now invalid."""
     path = get_secret_path()
@@ -116,14 +220,26 @@ def doctor() -> None:
         else:
             print("    Install: sudo apt install ttyd")
 
-    # muxplex version
+    # muxplex version + install source + update check
     try:
         from importlib.metadata import version as pkg_version  # noqa: PLC0415
 
         muxplex_version = pkg_version("muxplex")
     except Exception:
         muxplex_version = "dev"
-    print(f"  {ok_mark} muxplex {muxplex_version}")
+
+    info = _get_install_info()
+    source_label = info["source"]
+    if info["commit"]:
+        source_label += f" @ {info['commit'][:8]}"
+    print(f"  {ok_mark} muxplex {muxplex_version} (installed via {source_label})")
+
+    update_available, update_msg = _check_for_update(info)
+    if update_available:
+        print(f"  {warn_mark} Update: {update_msg}")
+        print("    Run: muxplex upgrade")
+    else:
+        print(f"  {ok_mark} {update_msg}")
 
     # Settings file
     from muxplex.settings import SETTINGS_PATH  # noqa: PLC0415
@@ -313,9 +429,27 @@ def install_service(*, system: bool = False) -> None:
         _install_systemd(executable, system=system)
 
 
-def upgrade() -> None:
+def upgrade(*, force: bool = False) -> None:
     """Upgrade muxplex to the latest version and restart the service."""
     print("\nmuxplex upgrade\n")
+
+    # Show current install info
+    info = _get_install_info()
+    commit_suffix = f" (commit {info['commit'][:8]})" if info["commit"] else ""
+    print(f"  Installed: v{info['version']}{commit_suffix} via {info['source']}")
+
+    if not force:
+        update_available, message = _check_for_update(info)
+        print(f"  Status: {message}")
+
+        if not update_available:
+            print(
+                "\n  Already up to date."
+                " Use 'muxplex upgrade --force' to reinstall anyway.\n"
+            )
+            return
+    else:
+        print("  Status: --force specified — skipping version check")
 
     # 1. Detect platform and stop service
     if sys.platform == "darwin":
@@ -460,10 +594,20 @@ def main() -> None:
 
     sub.add_parser("doctor", help="Check dependencies and system status")
 
-    sub.add_parser(
+    upgrade_parser = sub.add_parser(
         "upgrade", help="Upgrade muxplex to latest version and restart service"
     )
-    sub.add_parser("update", help="Alias for upgrade")
+    upgrade_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force reinstall even if already up to date",
+    )
+    update_parser = sub.add_parser("update", help="Alias for upgrade")
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force reinstall even if already up to date",
+    )
 
     args = parser.parse_args()
 
@@ -476,7 +620,7 @@ def main() -> None:
     elif args.command == "doctor":
         doctor()
     elif args.command in ("upgrade", "update"):
-        upgrade()
+        upgrade(force=getattr(args, "force", False))
     else:
         _check_dependencies()
         serve(

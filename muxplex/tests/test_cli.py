@@ -560,7 +560,7 @@ def test_update_alias_registered():
 
 
 def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
-    """upgrade must attempt uv tool install."""
+    """upgrade must attempt uv tool install when update is available."""
     import subprocess
 
     import muxplex.cli as cli_mod
@@ -575,6 +575,12 @@ def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "install_service", lambda system=False: None)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # Mock version check so upgrade proceeds regardless of local install type
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (abc12345 → def67890)"),
+    )
 
     cli_mod.upgrade()
 
@@ -588,7 +594,7 @@ def test_main_dispatches_to_upgrade(monkeypatch):
     from muxplex.cli import main
 
     calls = []
-    monkeypatch.setattr("muxplex.cli.upgrade", lambda: calls.append(True))
+    monkeypatch.setattr("muxplex.cli.upgrade", lambda force=False: calls.append(True))
 
     with patch("sys.argv", ["muxplex", "upgrade"]):
         main()
@@ -601,9 +607,118 @@ def test_main_dispatches_update_to_upgrade(monkeypatch):
     from muxplex.cli import main
 
     calls = []
-    monkeypatch.setattr("muxplex.cli.upgrade", lambda: calls.append(True))
+    monkeypatch.setattr("muxplex.cli.upgrade", lambda force=False: calls.append(True))
 
     with patch("sys.argv", ["muxplex", "update"]):
         main()
 
     assert len(calls) == 1, "upgrade() must be called once for 'update' subcommand"
+
+
+# ---------------------------------------------------------------------------
+# Smart version-check tests (_get_install_info / _check_for_update)
+# ---------------------------------------------------------------------------
+
+
+def test_get_install_info_returns_dict():
+    """_get_install_info must return a dict with all required keys."""
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert "source" in info
+    assert "version" in info
+    assert "commit" in info
+    assert "url" in info
+    assert info["source"] in ("git", "editable", "pypi", "unknown")
+
+
+def test_check_for_update_editable_returns_false():
+    """Editable installs must never suggest an update."""
+    from muxplex.cli import _check_for_update
+
+    info = {"source": "editable", "version": "0.1.0", "commit": None, "url": None}
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert "editable" in msg
+
+
+def test_upgrade_force_skips_version_check(monkeypatch, capsys):
+    """upgrade(force=True) must skip the version check and proceed to install."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    calls = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "install_service", lambda system=False: None)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # With force=True the version check must be bypassed entirely
+    check_calls = []
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: check_calls.append(info) or (True, "should not be reached"),
+    )
+
+    cli_mod.upgrade(force=True)
+
+    # _check_for_update must NOT have been called when force=True
+    assert len(check_calls) == 0, "Version check must be skipped when force=True"
+    # uv install must still be attempted
+    uv_calls = [c for c in calls if isinstance(c, list) and "uv" in str(c)]
+    assert len(uv_calls) > 0, "upgrade(force=True) must still call uv tool install"
+
+
+def test_upgrade_already_up_to_date_skips_install(monkeypatch, capsys):
+    """upgrade() must print 'up to date' and NOT call uv when version check says current."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    calls = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "install_service", lambda system=False: None)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (False, "up to date (commit abcd1234)"),
+    )
+
+    cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    assert "up to date" in out.lower() or "already" in out.lower()
+    # uv install must NOT have been called
+    uv_calls = [c for c in calls if isinstance(c, list) and "uv" in str(c)]
+    assert len(uv_calls) == 0, "uv must NOT be called when already up to date"
+
+
+def test_upgrade_force_flag_registered():
+    """upgrade --force must be accepted by argparse without error."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "upgrade", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue()
+    assert "--force" in help_text
