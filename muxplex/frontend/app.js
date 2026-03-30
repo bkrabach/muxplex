@@ -898,187 +898,14 @@ function _setViewingSession(name) {
   _viewingSession = name;
 }
 
-// ─── Command palette state ────────────────────────────────────────────────────
-const PALETTE_MAX_ITEMS = 9;
-let _paletteSelectedIndex = 0;
-let _paletteFilteredSessions = [];
-let _paletteOpen = false;
-let _paletteInputListener = null;
-
-// ─── Command palette functions ────────────────────────────────────────────────
-
-/**
- * Render the filtered session list inside #palette-list.
- * Shows up to 9 items. Each item is a <li> with index number,
- * session name, optional bell emoji, and timestamp.
- */
-function renderPaletteList() {
-  const list = $('palette-list');
-  if (!list) return;
-
-  const items = _paletteFilteredSessions.slice(0, PALETTE_MAX_ITEMS);
-  list.innerHTML = items
-    .map((session, i) => {
-      const isBell = sessionPriority(session) === 'bell';
-      const bell = isBell ? ' 🔔' : '';
-      const time = formatTimestamp(session.last_activity_at || null);
-      const name = escapeHtml(session.name || '');
-      return `<li class="palette-item" data-index="${i}">${i + 1} ${name}${bell} ${escapeHtml(time)}</li>`;
-    })
-    .join('');
-
-  // Bind click handlers on each item
-  list.querySelectorAll('.palette-item').forEach((item) => {
-    on(item, 'click', () => {
-      const idx = parseInt(item.dataset.index, 10);
-      const session = _paletteFilteredSessions[idx];
-      if (session) {
-        closePalette();
-        openSession(session.name).catch((err) => console.error('[renderPaletteList]', err));
-      }
-    });
-  });
-
-  highlightPaletteItem(_paletteSelectedIndex);
-}
-
-/**
- * Toggle the palette-item--selected class on the item at `index`.
- * @param {number} index
- */
-function highlightPaletteItem(index) {
-  const list = $('palette-list');
-  if (!list) return;
-  list.querySelectorAll('.palette-item').forEach((item, i) => {
-    if (i === index) {
-      item.classList.add('palette-item--selected');
-    } else {
-      item.classList.remove('palette-item--selected');
-    }
-  });
-}
-
-/**
- * Open the command palette.
- * Shows #command-palette, copies _currentSessions to _paletteFilteredSessions,
- * renders the list, resets selection index, focuses #palette-input, and binds
- * the input event listener.
- */
-function openPalette() {
-  _paletteOpen = true;
-  _paletteFilteredSessions = _currentSessions.slice();
-  _paletteSelectedIndex = 0;
-
-  const palette = $('command-palette');
-  if (palette) palette.classList.remove('hidden');  // palette starts with hidden class
-
-  renderPaletteList();
-
-  const input = $('palette-input');
-  if (input) {
-    input.value = '';
-    input.focus();
-    if (_paletteInputListener) {
-      input.removeEventListener('input', _paletteInputListener);
-    }
-    _paletteInputListener = onPaletteInput;
-    input.addEventListener('input', _paletteInputListener);
-  }
-}
-
-/**
- * Close the command palette.
- * Hides #command-palette and removes the input event listener.
- */
-function closePalette() {
-  _paletteOpen = false;
-
-  const palette = $('command-palette');
-  if (palette) palette.classList.add('hidden');
-
-  const input = $('palette-input');
-  if (input && _paletteInputListener) {
-    input.removeEventListener('input', _paletteInputListener);
-    _paletteInputListener = null;
-  }
-}
-
-/**
- * Handle input events on #palette-input.
- * Filters sessions by the current query, re-renders the list, resets selection.
- * @param {Event} e
- */
-function onPaletteInput(e) {
-  const query = e && e.target ? e.target.value : '';
-  _paletteFilteredSessions = filterByQuery(_currentSessions, query);
-  _paletteSelectedIndex = 0;
-  renderPaletteList();
-}
-
-/**
- * Handle keydown events inside the command palette.
- * ArrowDown/Up moves selection, Enter opens selected session,
- * Escape closes palette, G closes palette + returns to grid,
- * number keys 1-9 jump directly to that item.
- * @param {KeyboardEvent} e
- * @returns {Promise<void>}
- */
-async function handlePaletteKeydown(e) {
-  const visibleCount = Math.min(_paletteFilteredSessions.length, PALETTE_MAX_ITEMS);
-
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    closePalette();
-  } else if (e.key === 'g' || e.key === 'G') {
-    e.preventDefault();
-    closePalette();
-    await closeSession();
-  } else if (visibleCount > 0) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      _paletteSelectedIndex = (_paletteSelectedIndex + 1) % visibleCount;
-      highlightPaletteItem(_paletteSelectedIndex);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      _paletteSelectedIndex = (_paletteSelectedIndex - 1 + visibleCount) % visibleCount;
-      highlightPaletteItem(_paletteSelectedIndex);
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      const session = _paletteFilteredSessions[_paletteSelectedIndex];
-      if (session) {
-        closePalette();
-        await openSession(session.name);
-      }
-    } else if (e.key >= '1' && e.key <= '9') {
-      const idx = parseInt(e.key, 10) - 1;
-      if (idx < visibleCount) {
-        e.preventDefault();
-        const session = _paletteFilteredSessions[idx];
-        closePalette();
-        await openSession(session.name);
-      }
-    }
-  }
-}
-
 /**
  * Global keydown handler.
- * When palette is open: delegates to handlePaletteKeydown.
- * When in fullscreen with palette closed: backtick or Ctrl+K opens palette,
- * Escape returns to grid.
+ * When in fullscreen: Escape returns to grid.
  * @param {KeyboardEvent} e
  */
 function handleGlobalKeydown(e) {
-  if (_paletteOpen) {
-    handlePaletteKeydown(e).catch((err) => console.error('[handleGlobalKeydown]', err));
-    return;
-  }
-
   if (_viewMode === 'fullscreen') {
-    if (e.key === '`' || (e.ctrlKey && e.key === 'k')) {
-      e.preventDefault();
-      openPalette();
-    } else if (e.key === 'Escape') {
+    if (e.key === 'Escape') {
       e.preventDefault();
       closeSession();
     }
@@ -1166,8 +993,6 @@ function bindStaticEventListeners() {
   on($('sidebar-toggle-btn'), 'click', toggleSidebar);
   on($('sidebar-collapse-btn'), 'click', toggleSidebar);
   bindSidebarClickAway();
-  on($('palette-trigger'), 'click', openPalette);
-  on($('palette-backdrop'), 'click', closePalette);
   document.addEventListener('keydown', handleGlobalKeydown);
   on($('session-pill'), 'click', openBottomSheet);
   on($('sheet-backdrop'), 'click', closeBottomSheet);
@@ -1214,36 +1039,6 @@ function bindStaticEventListeners() {
 /** Test-only: set _currentSessions directly. */
 function _setCurrentSessions(sessions) {
   _currentSessions = sessions;
-}
-
-/** Test-only: set _paletteFilteredSessions directly. */
-function _setPaletteFilteredSessions(sessions) {
-  _paletteFilteredSessions = sessions;
-}
-
-/** Test-only: get _paletteFilteredSessions. */
-function _getPaletteFilteredSessions() {
-  return _paletteFilteredSessions;
-}
-
-/** Test-only: set _paletteSelectedIndex directly. */
-function _setPaletteSelectedIndex(index) {
-  _paletteSelectedIndex = index;
-}
-
-/** Test-only: get _paletteSelectedIndex. */
-function _getPaletteSelectedIndex() {
-  return _paletteSelectedIndex;
-}
-
-/** Test-only: set _paletteOpen directly. */
-function _setPaletteOpen(val) {
-  _paletteOpen = val;
-}
-
-/** Test-only: get _paletteOpen. */
-function _isPaletteOpen() {
-  return _paletteOpen;
 }
 
 /** Test-only: set _viewMode directly. */
@@ -1301,13 +1096,6 @@ if (typeof module !== 'undefined' && module.exports) {
     openSession,
     closeSession,
     _setViewingSession,
-    // Command palette
-    renderPaletteList,
-    highlightPaletteItem,
-    openPalette,
-    closePalette,
-    onPaletteInput,
-    handlePaletteKeydown,
     handleGlobalKeydown,
     bindStaticEventListeners,
     openBottomSheet,
@@ -1323,12 +1111,6 @@ if (typeof module !== 'undefined' && module.exports) {
     hidePreview,
     // Test-only helpers
     _setCurrentSessions,
-    _setPaletteFilteredSessions,
-    _getPaletteFilteredSessions,
-    _setPaletteSelectedIndex,
-    _getPaletteSelectedIndex,
-    _setPaletteOpen,
-    _isPaletteOpen,
     _setViewMode,
   };
 }
