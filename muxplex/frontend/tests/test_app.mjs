@@ -2382,6 +2382,20 @@ test('app.js source uses 500ms debounce for template input and references new_se
   assert.ok(source.includes('new_session_template'), 'must reference new_session_template setting key');
 });
 
+test('buildTileHTML includes tile-delete button with data-session attribute', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0, seen_at: null, last_fired_at: null } };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('tile-delete'), 'buildTileHTML must include tile-delete button class');
+  assert.ok(html.includes('data-session="my-session"'), 'tile-delete button must have data-session attribute');
+});
+
+test('buildSidebarHTML includes sidebar-delete button with data-session attribute', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0, seen_at: null, last_fired_at: null } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(html.includes('sidebar-delete'), 'buildSidebarHTML must include sidebar-delete button class');
+  assert.ok(html.includes('data-session="my-session"'), 'sidebar-delete button must have data-session attribute');
+});
+
 test('createNewSession polls for session before auto-opening (not immediate setTimeout openSession)', () => {
   // The old behavior was: setTimeout(() => openSession(...), 500) immediately after POST.
   // The new behavior must use a polling interval to wait for the session to appear in

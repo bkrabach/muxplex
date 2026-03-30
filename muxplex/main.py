@@ -404,6 +404,26 @@ async def delete_current_session() -> dict:
     return {"active_session": None}
 
 
+@app.delete("/api/sessions/{name}")
+async def delete_session(name: str) -> dict:
+    """Kill a tmux session by name.
+
+    Runs `tmux kill-session -t {name}`. Returns {ok: True, name: name}.
+    404 if session is not in the known session list (when non-empty).
+    Must be declared after DELETE /api/sessions/current so "current" routes correctly.
+    """
+    known = get_session_list()
+    if known and name not in known:
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    try:
+        await run_tmux("kill-session", "-t", name)
+    except RuntimeError:
+        raise HTTPException(status_code=500, detail=f"Failed to kill session '{name}'")
+
+    return {"ok": True, "name": name}
+
+
 @app.post("/api/heartbeat")
 async def heartbeat(payload: HeartbeatPayload) -> dict:
     """Register or update a device heartbeat.

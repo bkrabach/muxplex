@@ -406,6 +406,7 @@ function buildTileHTML(session, index, mobile) {
     `<span class="tile-meta">${bellHtml}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
     `</div>` +
     `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
+    `<button class="tile-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
     `</article>`
   );
 }
@@ -442,6 +443,7 @@ function buildSidebarHTML(session, currentSession) {
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
     `${bellHtml}` +
+    `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
     `</div>` +
     `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `</article>`
@@ -1447,10 +1449,36 @@ async function createNewSession(name) {
 }
 
 /**
+ * Kill a tmux session by name via DELETE /api/sessions/{name}.
+ * Shows a confirmation dialog before killing. Refreshes the session list on success.
+ * @param {string} name - The session name to kill.
+ */
+function killSession(name) {
+  if (!confirm('Kill session "' + name + '"?')) return;
+  api('DELETE', '/api/sessions/' + name)
+    .then(function() {
+      showToast('Session \'' + name + '\' killed');
+      pollSessions();
+    })
+    .catch(function(err) {
+      showToast('Failed to kill session: ' + (err.message || 'unknown error'));
+    });
+}
+
+/**
  * Bind all static (once-only) event listeners for the app UI.
  * Called once after restoreState() resolves.
  */
 function bindStaticEventListeners() {
+  // Delegated kill-session handler (tiles + sidebar items are re-rendered each poll)
+  document.addEventListener('click', function(e) {
+    var deleteBtn = e.target.closest && e.target.closest('.tile-delete, .sidebar-delete');
+    if (!deleteBtn) return;
+    e.stopPropagation();
+    var name = deleteBtn.dataset.session;
+    if (name) killSession(name);
+  });
+
   on($('back-btn'), 'click', closeSession);
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
@@ -1687,6 +1715,8 @@ if (typeof module !== 'undefined' && module.exports) {
     showNewSessionInput,
     showFabSessionInput,
     createNewSession,
+    // Kill session
+    killSession,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,

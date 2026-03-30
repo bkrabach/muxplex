@@ -1020,3 +1020,49 @@ def test_create_session_rejects_missing_name(client):
     """POST /api/sessions with missing name returns 422."""
     response = client.post("/api/sessions", json={})
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/sessions/{name}
+# ---------------------------------------------------------------------------
+
+
+def test_delete_session_success(client, monkeypatch):
+    """DELETE /api/sessions/{name} returns 200 with {ok: True, name: name} when session exists."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["my-session", "other"]
+    )
+    monkeypatch.setattr("muxplex.main.run_tmux", AsyncMock(return_value=""))
+
+    response = client.delete("/api/sessions/my-session")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["name"] == "my-session"
+
+
+def test_delete_session_calls_kill_session(client, monkeypatch):
+    """DELETE /api/sessions/{name} calls tmux kill-session -t {name}."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["my-session"])
+    mock_run_tmux = AsyncMock(return_value="")
+    monkeypatch.setattr("muxplex.main.run_tmux", mock_run_tmux)
+
+    client.delete("/api/sessions/my-session")
+
+    assert mock_run_tmux.called
+    args = mock_run_tmux.call_args[0]
+    assert args[0] == "kill-session"
+    assert "-t" in args
+    assert "my-session" in args
+
+
+def test_delete_session_not_found(client, monkeypatch):
+    """DELETE /api/sessions/{name} returns 404 when session is not in list."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
+
+    response = client.delete("/api/sessions/nonexistent")
+    assert response.status_code == 404
