@@ -897,20 +897,24 @@ test('openSession returns a Promise', () => {
   globalThis.setTimeout = origSetTimeout;
 });
 
-test('openSession with skipConnect calls window._openTerminal inside setTimeout callback', async () => {
+test('openSession with skipAnimation calls window._openTerminal after connect POST', async () => {
+  // After the fix: skipAnimation only skips the zoom animation, connect always fires.
   let openTerminalCalledWith = null;
+  const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => ({ ok: true });
   globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
   globalThis.document.querySelector = () => null;
-  // Use a synchronous mock so setTimeout callbacks run immediately — _openTerminal is now called inside setTimeout
+  // Use a synchronous mock so setTimeout callbacks run immediately
   globalThis.setTimeout = (fn) => { fn(); };
   globalThis.window._openTerminal = (name) => { openTerminalCalledWith = name; };
 
-  await app.openSession('my-session', { skipConnect: true });
+  await app.openSession('my-session', { skipAnimation: true });
 
   assert.strictEqual(openTerminalCalledWith, 'my-session', '_openTerminal should be called with session name');
+  globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
   globalThis.setTimeout = origSetTimeout;
@@ -1949,6 +1953,89 @@ test('createNewSession polls for session before auto-opening (not immediate setT
   assert.ok(
     snippet.includes('setInterval'),
     'createNewSession must use setInterval to poll for session readiness'
+  );
+});
+
+// --- Issue 1: Loading placeholder tile ---
+
+test('createNewSession injects tile--loading placeholder after POST succeeds', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function createNewSession(');
+  assert.ok(start !== -1, 'createNewSession must exist');
+  const snippet = source.slice(start, start + 2500);
+  assert.ok(snippet.includes('tile--loading'), 'createNewSession must inject tile--loading placeholder class');
+  assert.ok(snippet.includes('loading-tile-'), 'createNewSession must use loading-tile- id prefix for the placeholder');
+});
+
+test('createNewSession removes loading placeholder when session is found', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function createNewSession(');
+  const snippet = source.slice(start, start + 2500);
+  assert.ok(
+    snippet.includes('loadingTile') && snippet.includes('.remove()'),
+    'createNewSession must remove the loading tile (loadingTile.remove()) when session is found'
+  );
+});
+
+test('CSS style.css has tile--loading and shimmer animation', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('tile--loading'), 'style.css must have .tile--loading rule');
+  assert.ok(source.includes('shimmer'), 'style.css must have shimmer animation');
+});
+
+// --- Issue 2: Always call connect on restore ---
+
+test('openSession always POSTs to connect even when skipConnect option is passed', async () => {
+  // Before the fix, skipConnect:true skipped the connect POST entirely.
+  // After the fix, connect is always called; the option is renamed to skipAnimation.
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('work', { skipConnect: true });
+
+  const connectCall = fetchCalls.find((c) => c.url === '/api/sessions/work/connect');
+  assert.ok(connectCall, 'skipConnect:true must NOT prevent connect POST — connect always fires after fix');
+  assert.strictEqual(connectCall.opts.method, 'POST');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+// --- Issue 3: Notification permission on user click only ---
+
+test('DOMContentLoaded handler does NOT call requestNotificationPermission at startup', () => {
+  // Browsers require notification permission to be requested in response to a user gesture.
+  // Auto-calling at startup is silently blocked, leaving the permission in a broken state.
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const domContentLoadedIdx = source.indexOf("document.addEventListener('DOMContentLoaded'");
+  assert.ok(domContentLoadedIdx !== -1, 'DOMContentLoaded handler must exist');
+  // Extract the DOMContentLoaded handler body (next ~600 chars covers the entire handler)
+  const handlerBody = source.substring(domContentLoadedIdx, domContentLoadedIdx + 600);
+  assert.ok(
+    !handlerBody.includes('requestNotificationPermission'),
+    'requestNotificationPermission must NOT be called automatically in DOMContentLoaded — only on user click'
+  );
+});
+
+// --- Issue 4: Apply font size to live terminal without reconnecting ---
+
+test('applyDisplaySettings calls window._setTerminalFontSize when available', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function applyDisplaySettings(');
+  assert.ok(fnStart !== -1, 'applyDisplaySettings must exist');
+  const fnBody = source.substring(fnStart, fnStart + 600);
+  assert.ok(
+    fnBody.includes('_setTerminalFontSize'),
+    'applyDisplaySettings must call window._setTerminalFontSize to update live terminal font size'
   );
 });
 

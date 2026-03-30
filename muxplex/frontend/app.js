@@ -195,8 +195,8 @@ function trackInteraction() {
 // ─── State restoration ───────────────────────────────────────────────────────
 /**
  * Restore application state from the server on page load.
- * Calls GET /api/state and, if an active session exists, re-opens it
- * without POSTing to /connect (ttyd is already running).
+ * Calls GET /api/state and, if an active session exists, re-opens it,
+ * skipping only the zoom animation (ttyd is re-spawned to handle service restarts).
  * Always resolves — errors are logged as warnings so the app can start normally.
  * @returns {Promise<void>}
  */
@@ -205,7 +205,7 @@ async function restoreState() {
     const res = await api('GET', '/api/state');
     const state = await res.json();
     if (state.active_session) {
-      await openSession(state.active_session, { skipConnect: true });
+      await openSession(state.active_session, { skipAnimation: true });
     }
   } catch (err) {
     console.warn('[restoreState] could not restore previous session:', err);
@@ -821,7 +821,7 @@ function updatePillBell() {
  * Open a session in fullscreen view with a zoom transition.
  * @param {string} name - session name
  * @param {object} [opts]
- * @param {boolean} [opts.skipConnect] - if true, skip the /connect POST (ttyd already running)
+ * @param {boolean} [opts.skipAnimation] - if true, skip the zoom animation (e.g. on page restore)
  * @returns {Promise<void>}
  */
 async function openSession(name, opts = {}) {
@@ -838,7 +838,8 @@ async function openSession(name, opts = {}) {
   if (nameEl) nameEl.textContent = name;
 
   // Zoom animation: pin tile at current position, then animate to full viewport
-  const tile = document.querySelector(`[data-session="${name}"]`);
+  // Skipped on restore (skipAnimation:true) — no tile DOM element to zoom from
+  const tile = opts.skipAnimation ? null : document.querySelector(`[data-session="${name}"]`);
   if (tile) {
     const rect = tile.getBoundingClientRect();
     tile.style.position = 'fixed';
@@ -870,7 +871,7 @@ async function openSession(name, opts = {}) {
       initSidebar();
       renderSidebar(_currentSessions, name);
       resolve();
-    }, 260);
+    }, opts.skipAnimation ? 0 : 260);
     // If setTimeout is stubbed (e.g. in test env), resolve immediately so we don't hang
     if (timerId == null) resolve();
   });
@@ -891,11 +892,9 @@ async function openSession(name, opts = {}) {
   const fab = $('new-session-fab');
   if (fab) fab.classList.add('hidden');
 
-  // Connect to session (kill old ttyd, spawn new one for this session)
+  // Always spawn ttyd for this session — ensures correct session after service restart or page restore
   try {
-    if (!opts.skipConnect) {
-      await api('POST', `/api/sessions/${name}/connect`);
-    }
+    await api('POST', `/api/sessions/${name}/connect`);
   } catch (err) {
     showToast(err.message || 'Connection failed');
     return closeSession();
@@ -1015,8 +1014,13 @@ function saveDisplaySettings(settings) {
  * @param {object} ds - display settings object
  */
 function applyDisplaySettings(ds) {
-  // Apply font size as CSS custom property
+  // Apply font size as CSS custom property (tile previews)
   document.documentElement.style.setProperty('--preview-font-size', ds.fontSize + 'px');
+
+  // Apply font size to the live xterm.js terminal without reconnecting
+  if (window._setTerminalFontSize) {
+    window._setTerminalFontSize(ds.fontSize);
+  }
 
   // Apply grid columns
   var grid = document.getElementById('session-grid');
@@ -1418,10 +1422,30 @@ async function createNewSession(name) {
     const sessionName = data.name || name;
     showToast('Creating session \'' + sessionName + '\'…');
 
+    // Inject a loading placeholder tile so the user sees feedback immediately
+    var loadingTile = null;
+    var grid = document.getElementById('session-grid');
+    if (grid) {
+      loadingTile = document.createElement('div');
+      loadingTile.className = 'session-tile tile--loading';
+      loadingTile.id = 'loading-tile-' + sessionName;
+      loadingTile.innerHTML =
+        '<div class="tile-header"><span class="tile-name">' + escapeHtml(sessionName) + '</span>' +
+        '<span class="tile-meta">Creating...</span></div>' +
+        '<div class="tile-body"><pre class="loading-pulse"></pre></div>';
+      grid.appendChild(loadingTile);
+    }
+
+    function removeLoadingTile() {
+      var tile = document.getElementById('loading-tile-' + sessionName);
+      if (tile) tile.remove();
+    }
+
     const ss = _serverSettings || {};
     if (ss.auto_open_created === false) {
       // Auto-open disabled — just do one refresh
       await pollSessions();
+      removeLoadingTile();
       return;
     }
 
@@ -1436,10 +1460,12 @@ async function createNewSession(name) {
       });
       if (found) {
         clearInterval(pollForSession);
+        removeLoadingTile();
         showToast('Session \'' + sessionName + '\' ready');
         openSession(sessionName);
       } else if (attempts >= maxAttempts) {
         clearInterval(pollForSession);
+        removeLoadingTile();
         showToast('Session \'' + sessionName + '\' is taking longer than expected');
       }
     }, 2000);
@@ -1647,7 +1673,6 @@ document.addEventListener('DOMContentLoaded', () => {
       startPolling();
       loadServerSettings();
       startHeartbeat();
-      requestNotificationPermission();
       bindStaticEventListeners();
     })
     .catch((err) => {

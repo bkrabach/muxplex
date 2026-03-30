@@ -239,6 +239,30 @@ body {
   margin: 0;
 }
 
+/* Loading placeholder tile — shown while a new session is being created */
+.tile--loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.tile--loading .tile-body pre {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--border) 0px,
+    var(--bg-surface) 30px,
+    var(--border) 60px
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  min-height: 60px;
+  border-radius: 2px;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 .tile-pre {
   position: absolute;
   inset: 0;

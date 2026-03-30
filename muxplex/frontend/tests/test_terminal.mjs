@@ -733,4 +733,28 @@ test('terminal.js Android touch scroll is UA-gated', () => {
   assert.ok(!source.includes('scrollLines'), 'must NOT use scrollLines (scrolls local buffer not PTY)');
 });
 
+// --- Issue 4: setTerminalFontSize ---
+
+test('terminal.js exposes window._setTerminalFontSize function', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('window._setTerminalFontSize'),
+    'terminal.js must expose window._setTerminalFontSize for live font size updates'
+  );
+});
+
+test('_setTerminalFontSize sets _term.options.fontSize and calls _fitAddon.fit()', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  // The function body must update _term.options.fontSize
+  assert.ok(
+    source.includes('_term.options.fontSize = size'),
+    '_setTerminalFontSize must assign _term.options.fontSize = size'
+  );
+  // And call _fitAddon.fit()
+  assert.ok(
+    source.includes('_fitAddon.fit()'),
+    '_setTerminalFontSize must call _fitAddon.fit() to reflow the terminal'
+  );
+});
+
 
