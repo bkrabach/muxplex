@@ -56,10 +56,44 @@ def serve(
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
-def install_service(*, system: bool = False) -> None:
-    """Install muxplex as a systemd service."""
-    executable = sys.executable
+def _install_launchd(executable: str) -> None:
+    """Install a macOS launchd agent plist to ~/Library/LaunchAgents/."""
+    label = "com.muxplex"
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{executable}</string>
+        <string>-m</string>
+        <string>muxplex</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/muxplex.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/muxplex.err</string>
+</dict>
+</plist>
+"""
+    path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(plist)
+    print(f"Launch agent written to {path}")
+    print("Enable with:")
+    print(f"  launchctl load {path}")
+    print("Disable with:")
+    print(f"  launchctl unload {path}")
 
+
+def _install_systemd(executable: str, *, system: bool = False) -> None:
+    """Install a Linux systemd service unit file."""
     _raw_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     _safe_path = ":".join(p for p in _raw_path.split(":") if not p.startswith("/mnt/"))
     _safe_path = _safe_path or "/usr/local/bin:/usr/bin:/bin"
@@ -97,6 +131,16 @@ WantedBy={"multi-user.target" if system else "default.target"}
     print(f"Enable with:\n  {reload_cmd}")
 
 
+def install_service(*, system: bool = False) -> None:
+    """Install muxplex as a background service (launchd on macOS, systemd on Linux)."""
+    executable = sys.executable
+
+    if sys.platform == "darwin":
+        _install_launchd(executable)
+    else:
+        _install_systemd(executable, system=system)
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -124,7 +168,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="Start the server (default)")
 
-    svc = sub.add_parser("install-service", help="Install systemd service unit")
+    svc = sub.add_parser(
+        "install-service",
+        help="Install as a background service (systemd on Linux, launchd on macOS)",
+    )
     svc.add_argument(
         "--system", action="store_true", help="System-wide (requires sudo)"
     )

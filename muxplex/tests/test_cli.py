@@ -260,6 +260,76 @@ def test_reset_secret_prints_warning(tmp_path, monkeypatch, capsys):
     )
 
 
+def test_install_service_writes_launchd_plist_on_macos(tmp_path, monkeypatch):
+    """install_service() on macOS writes a launchd plist to ~/Library/LaunchAgents/."""
+    from muxplex.cli import install_service
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr("sys.platform", "darwin")
+
+    install_service(system=False)
+
+    plist_path = fake_home / "Library" / "LaunchAgents" / "com.muxplex.plist"
+    assert plist_path.exists(), "Plist file must be created on macOS"
+    content = plist_path.read_text()
+    assert "com.muxplex" in content
+    assert "RunAtLoad" in content
+    assert "ProgramArguments" in content
+    assert "LaunchAgents" in str(plist_path)
+
+
+def test_install_service_does_not_write_systemd_on_macos(tmp_path, monkeypatch):
+    """install_service() on macOS must NOT write a systemd unit file."""
+    from muxplex.cli import install_service
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr("sys.platform", "darwin")
+
+    install_service(system=False)
+
+    systemd_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
+    assert not systemd_path.exists(), "No systemd unit file should be written on macOS"
+
+
+def test_install_service_writes_systemd_on_linux(tmp_path, monkeypatch):
+    """install_service() on Linux writes a systemd unit to ~/.config/systemd/user/."""
+    from muxplex.cli import install_service
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr("sys.platform", "linux")
+
+    install_service(system=False)
+
+    unit_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
+    assert unit_path.exists(), "Systemd unit file must be created on Linux"
+    content = unit_path.read_text()
+    assert "[Unit]" in content
+    assert "[Service]" in content
+
+
+def test_install_service_help_text_mentions_background_service():
+    """install-service help must mention 'service', not just 'systemd'."""
+    import io
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "install-service", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue().lower()
+    assert "service" in help_text
+
+
 def test_dunder_main_calls_main():
     """python -m muxplex must call cli.main()."""
     import importlib.util
