@@ -991,6 +991,13 @@ body {
   padding: 0;
   overflow: hidden;
   margin: 0;
+}
+
+/* <dialog> is display:none by default (UA stylesheet). When opened via
+   showModal(), the browser adds the [open] attribute. We apply flex layout
+   only when open — otherwise our display:flex would override the UA
+   display:none and make the dialog always visible. */
+.settings-dialog[open] {
   display: flex;
   flex-direction: column;
 }
