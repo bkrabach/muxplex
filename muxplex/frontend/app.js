@@ -1444,6 +1444,7 @@ function bindStaticEventListeners() {
   // Settings dialog bindings
   on($('settings-btn'), 'click', openSettings);
   on($('settings-btn-expanded'), 'click', openSettings);
+  on($('settings-close-btn'), 'click', closeSettings);
   on($('settings-backdrop'), 'click', closeSettings);
   const settingsDialog = $('settings-dialog');
   if (settingsDialog) settingsDialog.addEventListener('cancel', closeSettings);

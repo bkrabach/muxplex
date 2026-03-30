@@ -1048,3 +1048,17 @@ def test_html_new_session_tab_controls() -> None:
     soup = _SOUP
     for id_ in ("setting-template", "setting-template-reset"):
         assert soup.find(id=id_), f"Missing element with id='{id_}'"
+
+
+def test_html_settings_close_btn_exists() -> None:
+    """settings-dialog must contain a #settings-close-btn button to dismiss the modal."""
+    soup = _SOUP
+    close_btn = soup.find(id="settings-close-btn")
+    assert close_btn is not None, "Missing #settings-close-btn inside settings dialog"
+    # Must be inside the settings dialog
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    # Verify close button is a descendant of the dialog
+    assert dialog.find(id="settings-close-btn") is not None, (
+        "#settings-close-btn must be a descendant of #settings-dialog"
+    )
