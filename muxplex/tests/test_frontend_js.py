@@ -1404,3 +1404,31 @@ def test_bind_static_event_listeners_permission_btn_calls_request_permission() -
     assert "requestPermission" in body, (
         "bindStaticEventListeners permission button must call Notification.requestPermission()"
     )
+
+
+def test_bind_static_event_listeners_permission_btn_has_catch() -> None:
+    """Notification.requestPermission() in permission button handler must have a .catch() handler."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert ".catch(" in body, (
+        "Notification.requestPermission() must have a .catch() handler for defensive error handling"
+    )
+
+
+def test_update_notification_ui_has_null_guard() -> None:
+    """_updateNotificationUI must guard against null inputs."""
+    match = re.search(
+        r"function _updateNotificationUI\s*\(.*?\)\s*\{(.*?)(?=\n\})",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_updateNotificationUI function not found"
+    body = match.group(1)
+    assert "null" in body or "non-null" in body or "!statusEl" in body or "!reqBtn" in body, (
+        "_updateNotificationUI must include a null guard (null check) or JSDoc non-null annotation"
+    )

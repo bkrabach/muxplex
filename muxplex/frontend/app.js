@@ -1026,6 +1026,7 @@ function onDisplaySettingChange() {
  * @param {string}  permission - Notification.permission value, or 'unsupported'.
  */
 function _updateNotificationUI(statusEl, reqBtn, permission) {
+  if (!statusEl || !reqBtn) return;
   if (permission === 'granted') {
     statusEl.textContent = 'Granted';
     reqBtn.disabled = true;
@@ -1385,6 +1386,8 @@ function bindStaticEventListeners() {
       if (statusEl && reqBtn) {
         _updateNotificationUI(statusEl, reqBtn, permission);
       }
+    }).catch(function(err) {
+      console.error('Notification.requestPermission() failed:', err);
     });
   });
 }
