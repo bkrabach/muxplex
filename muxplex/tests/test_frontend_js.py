@@ -1858,3 +1858,73 @@ def test_js_fab_exported() -> None:
     assert "showNewSessionInput" in _JS, (
         "showNewSessionInput must exist in app.js (used by FAB click handler)"
     )
+
+
+# ============================================================
+# Mobile FAB — dedicated fixed-position input (quality fix)
+# ============================================================
+
+
+def test_js_show_fab_session_input_exists() -> None:
+    """showFabSessionInput function must exist in app.js (dedicated FAB input overlay)."""
+    assert "function showFabSessionInput" in _JS, (
+        "showFabSessionInput must be defined in app.js — "
+        "FAB needs a fixed-position overlay, not inline body insertion"
+    )
+
+
+def test_js_show_fab_session_input_appends_to_body() -> None:
+    """showFabSessionInput must append the overlay to document.body (fixed positioning)."""
+    match = re.search(
+        r"function showFabSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showFabSessionInput function not found"
+    body = match.group(1)
+    assert "document.body" in body, (
+        "showFabSessionInput must append to document.body "
+        "(fixed-position overlays must be direct body children to escape overflow:hidden)"
+    )
+
+
+def test_js_show_fab_session_input_handles_enter() -> None:
+    """showFabSessionInput must call createNewSession on Enter key."""
+    match = re.search(
+        r"function showFabSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showFabSessionInput function not found"
+    body = match.group(1)
+    assert "Enter" in body, "showFabSessionInput must handle Enter key"
+    assert "createNewSession" in body, (
+        "showFabSessionInput must call createNewSession on Enter"
+    )
+
+
+def test_js_show_fab_session_input_handles_escape() -> None:
+    """showFabSessionInput must handle Escape key to cancel."""
+    match = re.search(
+        r"function showFabSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showFabSessionInput function not found"
+    body = match.group(1)
+    assert "Escape" in body, "showFabSessionInput must handle Escape key"
+
+
+def test_js_fab_click_calls_show_fab_session_input() -> None:
+    """bindStaticEventListeners must bind FAB click to showFabSessionInput (not inline body insert)."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "showFabSessionInput" in body, (
+        "bindStaticEventListeners must call showFabSessionInput for FAB click — "
+        "the old showNewSessionInput(fab) inserts into body which is clipped by overflow:hidden"
+    )

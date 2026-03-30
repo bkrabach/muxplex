@@ -821,6 +821,10 @@ body {
   .session-sidebar {
     transition: none;
   }
+
+  .new-session-fab:active {
+    transform: none;
+  }
 }
 
 /* ============================================================
@@ -1222,11 +1226,25 @@ body {
   cursor: pointer;
   z-index: 100;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  transition: transform 150ms ease, box-shadow 150ms ease;
+  transition: transform 150ms ease;
 }
 
 .new-session-fab:active {
   transform: scale(0.95);
+}
+
+.new-session-fab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Fixed-position input overlay triggered by mobile FAB —
+   appended to body so position:fixed escapes overflow:hidden on views */
+.fab-input-overlay {
+  position: fixed;
+  bottom: 80px;
+  right: 16px;
+  z-index: 200;
 }
 
 /* ============================================================

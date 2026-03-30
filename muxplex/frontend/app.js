@@ -1325,6 +1325,51 @@ function showNewSessionInput(btn) {
 }
 
 /**
+ * Show a fixed-position input overlay for creating a new session from the mobile FAB.
+ * Unlike showNewSessionInput (which inserts inline into btn.parentNode), this renders
+ * a fixed-position overlay appended directly to document.body — ensuring it is always
+ * visible on mobile regardless of body/view overflow:hidden constraints.
+ */
+function showFabSessionInput() {
+  const fab = $('new-session-fab');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'fab-input-overlay';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'new-session-input';
+  input.placeholder = 'Session name\u2026';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+
+  overlay.appendChild(input);
+
+  function cleanup() {
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    if (fab) fab.style.display = '';
+  }
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      const name = input.value.trim();
+      cleanup();
+      if (name) createNewSession(name);
+    } else if (e.key === 'Escape') {
+      cleanup();
+    }
+  });
+
+  input.addEventListener('blur', function() {
+    setTimeout(cleanup, 150);
+  });
+
+  if (fab) fab.style.display = 'none';
+  document.body.appendChild(overlay);
+  input.focus();
+}
+
+/**
  * Create a new tmux session via POST /api/sessions.
  * Shows a toast with the created session name, calls pollSessions() to refresh,
  * and if ss.auto_open_created !== false, calls openSession(data.name) after 500ms.
@@ -1357,7 +1402,7 @@ function bindStaticEventListeners() {
   var sidebarNewSessionBtn = $('sidebar-new-session-btn');
   if (sidebarNewSessionBtn) on(sidebarNewSessionBtn, 'click', function() { showNewSessionInput(sidebarNewSessionBtn); });
   var newSessionFab = $('new-session-fab');
-  if (newSessionFab) on(newSessionFab, 'click', function() { showNewSessionInput(newSessionFab); });
+  if (newSessionFab) on(newSessionFab, 'click', showFabSessionInput);
   on($('sidebar-toggle-btn'), 'click', toggleSidebar);
   on($('sidebar-collapse-btn'), 'click', toggleSidebar);
   bindSidebarClickAway();
@@ -1583,6 +1628,7 @@ if (typeof module !== 'undefined' && module.exports) {
     patchServerSetting,
     // Header + button with inline name input
     showNewSessionInput,
+    showFabSessionInput,
     createNewSession,
     // Test-only helpers
     _setCurrentSessions,
