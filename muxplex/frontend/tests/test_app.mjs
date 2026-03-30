@@ -2040,3 +2040,26 @@ test('applyDisplaySettings calls window._setTerminalFontSize when available', ()
 });
 
 
+
+// --- Issue: Dynamic favicon badge with activity dot ---
+
+test('updateFaviconBadge function exists in app.js', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('function updateFaviconBadge'),
+    'app.js must define updateFaviconBadge function'
+  );
+});
+
+test('pollSessions calls updateFaviconBadge', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const pollStart = source.indexOf('async function pollSessions()');
+  assert.ok(pollStart !== -1, 'pollSessions must exist');
+  // Find the closing brace of pollSessions (next line starting with "}")
+  const pollEnd = source.indexOf('\n}', pollStart);
+  const pollBody = source.substring(pollStart, pollEnd + 2);
+  assert.ok(
+    pollBody.includes('updateFaviconBadge'),
+    'pollSessions must call updateFaviconBadge — update favicon on every poll cycle'
+  );
+});

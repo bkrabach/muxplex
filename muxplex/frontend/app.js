@@ -248,6 +248,7 @@ async function pollSessions() {
     renderSidebar(sessions, _viewingSession);
     handleBellTransitions(prev, sessions);
     updateSessionPill(sessions);
+    updateFaviconBadge();
   } catch (err) {
     _pollFailCount++;
     setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
@@ -813,6 +814,61 @@ function updatePillBell() {
     (s) => s.name !== _viewingSession && s.bell && s.bell.unseen_count > 0,
   );
   if (hasBell) el.classList.remove('hidden'); else el.classList.add('hidden');
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic favicon — activity dot overlay
+// ---------------------------------------------------------------------------
+
+var _originalFavicon = null; // cached original favicon href
+
+/**
+ * Update the favicon with an activity dot if any session has unseen bells.
+ * Uses a 32x32 canvas to draw the original favicon + a colored circle overlay.
+ * Restores the original favicon when there are no unseen bells.
+ */
+function updateFaviconBadge() {
+  var hasActivity = _currentSessions && _currentSessions.some(function (s) {
+    return s.bell && s.bell.unseen_count > 0;
+  });
+
+  var link = document.querySelector('link[rel="icon"][sizes="32x32"]') ||
+             document.querySelector('link[rel="icon"]');
+  if (!link) return;
+
+  // Cache the original favicon on first call
+  if (!_originalFavicon) _originalFavicon = link.href;
+
+  if (!hasActivity) {
+    // Restore original favicon when no activity
+    if (link.href !== _originalFavicon) link.href = _originalFavicon;
+    return;
+  }
+
+  // Draw favicon + activity dot on canvas
+  var canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 32;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  var img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = function () {
+    ctx.drawImage(img, 0, 0, 32, 32);
+
+    // Activity dot — brand amber (same as bell indicator)
+    ctx.beginPath();
+    ctx.arc(24, 8, 7, 0, 2 * Math.PI); // top-right area
+    ctx.fillStyle = '#F1A640';           // var(--bell-color)
+    ctx.fill();
+    ctx.strokeStyle = '#0D1117';         // var(--bg) — border for contrast
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    link.href = canvas.toDataURL('image/png');
+  };
+  img.src = _originalFavicon;
 }
 
 // ─── Session open / close ────────────────────────────────────────────────────
