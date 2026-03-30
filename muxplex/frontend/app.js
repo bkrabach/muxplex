@@ -1285,14 +1285,6 @@ function updateSessionPill(sessions) {
 // ─── Header + button with inline name input ────────────────────────────────────
 
 /**
- * Replace the header + button with an inline text input for session naming.
- * Hides the button, inserts the input before it, and focuses it.
- * On Enter: if name is non-empty after trim, calls createNewSession(name).
- * On Escape: restores the button (cleanup only).
- * On blur: delayed cleanup (150ms) to allow click handlers.
- * @param {HTMLElement} btn - The button element to replace temporarily.
- */
-/**
  * Create a new session name input element with shared base configuration.
  * Used by both showNewSessionInput (inline) and showFabSessionInput (overlay)
  * to avoid duplicating the five setup properties.
@@ -1308,6 +1300,14 @@ function _createSessionInput() {
   return input;
 }
 
+/**
+ * Replace the header + button with an inline text input for session naming.
+ * Hides the button, inserts the input before it, and focuses it.
+ * On Enter: if name is non-empty after trim, calls createNewSession(name).
+ * On Escape: restores the button (cleanup only).
+ * On blur: delayed cleanup (150ms) to allow click handlers.
+ * @param {HTMLElement} btn - The button element to replace temporarily.
+ */
 function showNewSessionInput(btn) {
   const input = _createSessionInput();
 
