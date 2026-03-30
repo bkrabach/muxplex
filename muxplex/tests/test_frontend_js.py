@@ -328,3 +328,520 @@ def test_exports_still_has_bind_static_event_listeners() -> None:
     assert "bindStaticEventListeners" in exports, (
         "module.exports must still export bindStaticEventListeners"
     )
+
+
+# ── Settings state variables ─────────────────────────────────────────────────
+
+def test_settings_open_state_variable_exists() -> None:
+    """_settingsOpen state variable must be declared."""
+    assert "_settingsOpen" in _JS, "_settingsOpen must be declared in app.js"
+
+
+def test_display_settings_key_constant_exists() -> None:
+    """DISPLAY_SETTINGS_KEY constant must be declared."""
+    assert "DISPLAY_SETTINGS_KEY" in _JS, "DISPLAY_SETTINGS_KEY must be in app.js"
+
+
+def test_display_settings_key_value() -> None:
+    """DISPLAY_SETTINGS_KEY must be 'muxplex.display'."""
+    assert "'muxplex.display'" in _JS or '"muxplex.display"' in _JS, (
+        "DISPLAY_SETTINGS_KEY must be 'muxplex.display'"
+    )
+
+
+def test_display_defaults_constant_exists() -> None:
+    """DISPLAY_DEFAULTS constant must be declared."""
+    assert "DISPLAY_DEFAULTS" in _JS, "DISPLAY_DEFAULTS must be in app.js"
+
+
+def test_display_defaults_has_font_size() -> None:
+    """DISPLAY_DEFAULTS must contain fontSize: 14."""
+    assert "fontSize" in _JS, "DISPLAY_DEFAULTS must include fontSize"
+    assert "14" in _JS, "DISPLAY_DEFAULTS fontSize must be 14"
+
+
+def test_display_defaults_has_hover_preview_delay() -> None:
+    """DISPLAY_DEFAULTS must contain hoverPreviewDelay: 1500."""
+    assert "hoverPreviewDelay" in _JS, "DISPLAY_DEFAULTS must include hoverPreviewDelay"
+
+
+def test_display_defaults_has_grid_columns() -> None:
+    """DISPLAY_DEFAULTS must contain gridColumns: 'auto'."""
+    assert "gridColumns" in _JS, "DISPLAY_DEFAULTS must include gridColumns"
+
+
+def test_display_defaults_has_bell_sound() -> None:
+    """DISPLAY_DEFAULTS must contain bellSound: false."""
+    assert "bellSound" in _JS, "DISPLAY_DEFAULTS must include bellSound"
+
+
+def test_display_defaults_has_notification_permission() -> None:
+    """DISPLAY_DEFAULTS must contain notificationPermission: 'default'."""
+    assert "notificationPermission" in _JS, "DISPLAY_DEFAULTS must include notificationPermission"
+
+
+# ── Settings functions must exist ─────────────────────────────────────────────
+
+def test_load_display_settings_function_exists() -> None:
+    """loadDisplaySettings function must exist."""
+    assert "function loadDisplaySettings" in _JS, (
+        "loadDisplaySettings must be defined in app.js"
+    )
+
+
+def test_save_display_settings_function_exists() -> None:
+    """saveDisplaySettings function must exist."""
+    assert "function saveDisplaySettings" in _JS, (
+        "saveDisplaySettings must be defined in app.js"
+    )
+
+
+def test_open_settings_function_exists() -> None:
+    """openSettings function must exist."""
+    assert "function openSettings" in _JS, "openSettings must be defined in app.js"
+
+
+def test_close_settings_function_exists() -> None:
+    """closeSettings function must exist."""
+    assert "function closeSettings" in _JS, "closeSettings must be defined in app.js"
+
+
+def test_switch_settings_tab_function_exists() -> None:
+    """switchSettingsTab function must exist."""
+    assert "function switchSettingsTab" in _JS, (
+        "switchSettingsTab must be defined in app.js"
+    )
+
+
+# ── loadDisplaySettings implementation ───────────────────────────────────────
+
+def test_load_display_settings_reads_from_localstorage() -> None:
+    """loadDisplaySettings must read from localStorage using DISPLAY_SETTINGS_KEY."""
+    match = re.search(
+        r"function loadDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "loadDisplaySettings function not found"
+    body = match.group(1)
+    assert "localStorage" in body, "loadDisplaySettings must read from localStorage"
+    assert "DISPLAY_SETTINGS_KEY" in body or "muxplex.display" in body, (
+        "loadDisplaySettings must use DISPLAY_SETTINGS_KEY"
+    )
+
+
+def test_load_display_settings_uses_object_assign() -> None:
+    """loadDisplaySettings must merge with DISPLAY_DEFAULTS via Object.assign."""
+    match = re.search(
+        r"function loadDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "loadDisplaySettings function not found"
+    body = match.group(1)
+    assert "Object.assign" in body, "loadDisplaySettings must use Object.assign to merge with defaults"
+
+
+def test_load_display_settings_returns_defaults_on_error() -> None:
+    """loadDisplaySettings must catch errors and return defaults."""
+    match = re.search(
+        r"function loadDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "loadDisplaySettings function not found"
+    body = match.group(1)
+    assert "catch" in body or "try" in body, (
+        "loadDisplaySettings must have error handling (try/catch)"
+    )
+
+
+# ── saveDisplaySettings implementation ───────────────────────────────────────
+
+def test_save_display_settings_writes_to_localstorage() -> None:
+    """saveDisplaySettings must write to localStorage."""
+    match = re.search(
+        r"function saveDisplaySettings\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "saveDisplaySettings function not found"
+    body = match.group(1)
+    assert "localStorage" in body, "saveDisplaySettings must write to localStorage"
+    assert "setItem" in body, "saveDisplaySettings must call localStorage.setItem"
+
+
+def test_save_display_settings_catches_errors() -> None:
+    """saveDisplaySettings must catch errors."""
+    match = re.search(
+        r"function saveDisplaySettings\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "saveDisplaySettings function not found"
+    body = match.group(1)
+    assert "catch" in body or "try" in body, (
+        "saveDisplaySettings must have error handling (try/catch)"
+    )
+
+
+# ── openSettings implementation ───────────────────────────────────────────────
+
+def test_open_settings_sets_settings_open_true() -> None:
+    """openSettings must set _settingsOpen = true."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "_settingsOpen" in body and "true" in body, (
+        "openSettings must set _settingsOpen = true"
+    )
+
+
+def test_open_settings_calls_show_modal() -> None:
+    """openSettings must call dialog.showModal()."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "showModal" in body, "openSettings must call dialog.showModal()"
+
+
+def test_open_settings_removes_hidden_from_backdrop() -> None:
+    """openSettings must remove hidden class from backdrop."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "settings-backdrop" in body, "openSettings must reference settings-backdrop"
+    assert "remove" in body, "openSettings must call remove (hidden class removal)"
+
+
+def test_open_settings_loads_form_controls() -> None:
+    """openSettings must load display settings into form controls."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found"
+    body = match.group(1)
+    assert "setting-font-size" in body, "openSettings must set setting-font-size form control"
+    assert "setting-hover-delay" in body, "openSettings must set setting-hover-delay form control"
+    assert "setting-grid-columns" in body, "openSettings must set setting-grid-columns form control"
+
+
+# ── closeSettings implementation ──────────────────────────────────────────────
+
+def test_close_settings_sets_settings_open_false() -> None:
+    """closeSettings must set _settingsOpen = false."""
+    match = re.search(
+        r"function closeSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "closeSettings function not found"
+    body = match.group(1)
+    assert "_settingsOpen" in body and "false" in body, (
+        "closeSettings must set _settingsOpen = false"
+    )
+
+
+def test_close_settings_calls_dialog_close() -> None:
+    """closeSettings must call dialog.close()."""
+    match = re.search(
+        r"function closeSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "closeSettings function not found"
+    body = match.group(1)
+    assert ".close()" in body, "closeSettings must call dialog.close()"
+
+
+def test_close_settings_adds_hidden_to_backdrop() -> None:
+    """closeSettings must add hidden class to backdrop."""
+    match = re.search(
+        r"function closeSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "closeSettings function not found"
+    body = match.group(1)
+    assert "settings-backdrop" in body, "closeSettings must reference settings-backdrop"
+    assert "add" in body, "closeSettings must call add (hidden class addition)"
+
+
+# ── switchSettingsTab implementation ──────────────────────────────────────────
+
+def test_switch_settings_tab_has_tab_name_param() -> None:
+    """switchSettingsTab must accept tabName parameter."""
+    assert "function switchSettingsTab" in _JS, "switchSettingsTab must be defined"
+    match = re.search(
+        r"function switchSettingsTab\s*\((\w+)\)",
+        _JS,
+    )
+    assert match, "switchSettingsTab must have a parameter"
+
+
+def test_switch_settings_tab_toggles_active_class() -> None:
+    """switchSettingsTab must toggle settings-tab--active class."""
+    match = re.search(
+        r"function switchSettingsTab\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "switchSettingsTab function not found"
+    body = match.group(1)
+    assert "settings-tab--active" in body, (
+        "switchSettingsTab must toggle settings-tab--active class"
+    )
+
+
+def test_switch_settings_tab_toggles_aria_selected() -> None:
+    """switchSettingsTab must toggle aria-selected on tab buttons."""
+    match = re.search(
+        r"function switchSettingsTab\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "switchSettingsTab function not found"
+    body = match.group(1)
+    assert "aria-selected" in body, "switchSettingsTab must toggle aria-selected"
+
+
+def test_switch_settings_tab_toggles_panel_hidden() -> None:
+    """switchSettingsTab must toggle hidden class on settings-panel elements."""
+    match = re.search(
+        r"function switchSettingsTab\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "switchSettingsTab function not found"
+    body = match.group(1)
+    assert "settings-panel" in body or "data-tab" in body, (
+        "switchSettingsTab must handle settings-panel elements via data-tab"
+    )
+
+
+# ── handleGlobalKeydown settings integration ─────────────────────────────────
+
+def test_handle_global_keydown_checks_settings_open() -> None:
+    """handleGlobalKeydown must check _settingsOpen."""
+    match = re.search(
+        r"function handleGlobalKeydown\s*\(e\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "handleGlobalKeydown function not found"
+    body = match.group(1)
+    assert "_settingsOpen" in body, (
+        "handleGlobalKeydown must check _settingsOpen"
+    )
+
+
+def test_handle_global_keydown_calls_close_settings_on_escape() -> None:
+    """handleGlobalKeydown must call closeSettings on Escape when settings open."""
+    match = re.search(
+        r"function handleGlobalKeydown\s*\(e\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "handleGlobalKeydown function not found"
+    body = match.group(1)
+    assert "closeSettings" in body, (
+        "handleGlobalKeydown must call closeSettings"
+    )
+
+
+def test_handle_global_keydown_opens_settings_on_comma() -> None:
+    """handleGlobalKeydown must open settings when comma pressed."""
+    match = re.search(
+        r"function handleGlobalKeydown\s*\(e\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "handleGlobalKeydown function not found"
+    body = match.group(1)
+    assert "openSettings" in body, (
+        "handleGlobalKeydown must call openSettings for comma key"
+    )
+    assert "," in body or "comma" in body.lower(), (
+        "handleGlobalKeydown must check for comma key"
+    )
+
+
+def test_handle_global_keydown_comma_guards_input_elements() -> None:
+    """handleGlobalKeydown comma shortcut must not fire in input/textarea/select."""
+    match = re.search(
+        r"function handleGlobalKeydown\s*\(e\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "handleGlobalKeydown function not found"
+    body = match.group(1)
+    # Must guard against inputs
+    has_input_guard = (
+        "INPUT" in body or "input" in body.lower() or
+        "textarea" in body.lower() or "select" in body.lower() or
+        "tagName" in body
+    )
+    assert has_input_guard, (
+        "handleGlobalKeydown comma shortcut must guard against input/textarea/select"
+    )
+
+
+# ── bindStaticEventListeners settings wiring ─────────────────────────────────
+
+def test_bind_static_event_listeners_binds_settings_btn() -> None:
+    """bindStaticEventListeners must bind settings-btn click to openSettings."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "settings-btn" in body, (
+        "bindStaticEventListeners must bind settings-btn click"
+    )
+
+
+def test_bind_static_event_listeners_binds_settings_btn_expanded() -> None:
+    """bindStaticEventListeners must bind settings-btn-expanded click to openSettings."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "settings-btn-expanded" in body, (
+        "bindStaticEventListeners must bind settings-btn-expanded click"
+    )
+
+
+def test_bind_static_event_listeners_binds_settings_backdrop() -> None:
+    """bindStaticEventListeners must bind settings-backdrop click to closeSettings."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "settings-backdrop" in body, (
+        "bindStaticEventListeners must bind settings-backdrop click"
+    )
+
+
+def test_bind_static_event_listeners_binds_dialog_cancel() -> None:
+    """bindStaticEventListeners must bind dialog cancel event to closeSettings."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "cancel" in body, (
+        "bindStaticEventListeners must bind dialog cancel event"
+    )
+
+
+def test_bind_static_event_listeners_binds_settings_tabs() -> None:
+    """bindStaticEventListeners must bind .settings-tab click to switchSettingsTab."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "settings-tab" in body, (
+        "bindStaticEventListeners must bind .settings-tab click"
+    )
+    assert "switchSettingsTab" in body, (
+        "bindStaticEventListeners must call switchSettingsTab"
+    )
+
+
+# ── module.exports for new settings functions ────────────────────────────────
+
+def test_exports_load_display_settings() -> None:
+    """module.exports must export loadDisplaySettings."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "loadDisplaySettings" in exports, (
+        "module.exports must export loadDisplaySettings"
+    )
+
+
+def test_exports_save_display_settings() -> None:
+    """module.exports must export saveDisplaySettings."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "saveDisplaySettings" in exports, (
+        "module.exports must export saveDisplaySettings"
+    )
+
+
+def test_exports_open_settings() -> None:
+    """module.exports must export openSettings."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "openSettings" in exports, (
+        "module.exports must export openSettings"
+    )
+
+
+def test_exports_close_settings() -> None:
+    """module.exports must export closeSettings."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "closeSettings" in exports, (
+        "module.exports must export closeSettings"
+    )
+
+
+def test_exports_switch_settings_tab() -> None:
+    """module.exports must export switchSettingsTab."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "switchSettingsTab" in exports, (
+        "module.exports must export switchSettingsTab"
+    )

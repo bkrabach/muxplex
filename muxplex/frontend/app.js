@@ -130,6 +130,11 @@ let _previewTimer = null;
 
 var _previewSessionName = null;  // track by NAME, not DOM element
 
+// ─── Settings state ───────────────────────────────────────────────────────────
+let _settingsOpen = false;
+const DISPLAY_SETTINGS_KEY = 'muxplex.display';
+const DISPLAY_DEFAULTS = {fontSize: 14, hoverPreviewDelay: 1500, gridColumns: 'auto', bellSound: false, notificationPermission: 'default'};
+
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
   return document.getElementById(id);
@@ -898,17 +903,117 @@ function _setViewingSession(name) {
   _viewingSession = name;
 }
 
+// ─── Settings dialog ──────────────────────────────────────────────────────────
+
+/**
+ * Load display settings from localStorage, merging with DISPLAY_DEFAULTS.
+ * Returns defaults on any error.
+ * @returns {object}
+ */
+function loadDisplaySettings() {
+  try {
+    const raw = localStorage.getItem(DISPLAY_SETTINGS_KEY);
+    if (raw === null) return Object.assign({}, DISPLAY_DEFAULTS);
+    const saved = JSON.parse(raw);
+    return Object.assign({}, DISPLAY_DEFAULTS, saved);
+  } catch (_) {
+    return Object.assign({}, DISPLAY_DEFAULTS);
+  }
+}
+
+/**
+ * Save display settings to localStorage.
+ * @param {object} settings
+ */
+function saveDisplaySettings(settings) {
+  try {
+    localStorage.setItem(DISPLAY_SETTINGS_KEY, JSON.stringify(settings));
+  } catch (_) { /* blocked — ok */ }
+}
+
+/**
+ * Open the settings dialog.
+ * Sets _settingsOpen, calls dialog.showModal(), removes hidden from backdrop,
+ * and loads current display settings into form controls.
+ */
+function openSettings() {
+  _settingsOpen = true;
+  const dialog = $('settings-dialog');
+  if (dialog) dialog.showModal();
+  const backdrop = $('settings-backdrop');
+  if (backdrop) backdrop.classList.remove('hidden');
+  const settings = loadDisplaySettings();
+  const fontSizeEl = $('setting-font-size');
+  if (fontSizeEl) fontSizeEl.value = String(settings.fontSize);
+  const hoverDelayEl = $('setting-hover-delay');
+  if (hoverDelayEl) hoverDelayEl.value = String(settings.hoverPreviewDelay);
+  const gridColumnsEl = $('setting-grid-columns');
+  if (gridColumnsEl) gridColumnsEl.value = String(settings.gridColumns);
+}
+
+/**
+ * Close the settings dialog.
+ * Sets _settingsOpen to false, calls dialog.close(), adds hidden to backdrop.
+ */
+function closeSettings() {
+  _settingsOpen = false;
+  const dialog = $('settings-dialog');
+  if (dialog) dialog.close();
+  const backdrop = $('settings-backdrop');
+  if (backdrop) backdrop.classList.add('hidden');
+}
+
+/**
+ * Switch the active settings tab.
+ * Toggles settings-tab--active class and aria-selected on tab buttons,
+ * toggles hidden class on settings-panel elements by matching data-tab.
+ * @param {string} tabName
+ */
+function switchSettingsTab(tabName) {
+  document.querySelectorAll('.settings-tab').forEach(function(tab) {
+    const isActive = tab.dataset.tab === tabName;
+    if (isActive) {
+      tab.classList.add('settings-tab--active');
+      tab.setAttribute('aria-selected', 'true');
+    } else {
+      tab.classList.remove('settings-tab--active');
+      tab.setAttribute('aria-selected', 'false');
+    }
+  });
+  document.querySelectorAll('.settings-panel').forEach(function(panel) {
+    const panelTab = panel.dataset.tab || panel.dataset.panel;
+    if (panelTab === tabName) {
+      panel.classList.remove('hidden');
+    } else {
+      panel.classList.add('hidden');
+    }
+  });
+}
+
 /**
  * Global keydown handler.
- * When in fullscreen: Escape returns to grid.
+ * If settings are open: Escape closes settings.
+ * Comma key (not in inputs) opens settings.
+ * In fullscreen: Escape returns to grid.
  * @param {KeyboardEvent} e
  */
 function handleGlobalKeydown(e) {
-  if (_viewMode === 'fullscreen') {
+  if (_settingsOpen) {
     if (e.key === 'Escape') {
-      e.preventDefault();
-      closeSession();
+      closeSettings();
     }
+    return;
+  }
+  if (e.key === ',' && !e.ctrlKey && !e.metaKey) {
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+      openSettings();
+      return;
+    }
+  }
+  if (_viewMode === 'fullscreen' && e.key === 'Escape') {
+    e.preventDefault();
+    closeSession();
   }
 }
 
@@ -996,6 +1101,16 @@ function bindStaticEventListeners() {
   document.addEventListener('keydown', handleGlobalKeydown);
   on($('session-pill'), 'click', openBottomSheet);
   on($('sheet-backdrop'), 'click', closeBottomSheet);
+
+  // Settings dialog bindings
+  on($('settings-btn'), 'click', openSettings);
+  on($('settings-btn-expanded'), 'click', openSettings);
+  on($('settings-backdrop'), 'click', closeSettings);
+  const settingsDialog = $('settings-dialog');
+  if (settingsDialog) settingsDialog.addEventListener('cancel', closeSettings);
+  document.querySelectorAll('.settings-tab').forEach(function(tab) {
+    on(tab, 'click', function() { switchSettingsTab(tab.dataset.tab); });
+  });
 
   // Hover preview — delegated on grid container (tiles are re-rendered each poll)
   var gridEl = $('session-grid');
@@ -1109,6 +1224,12 @@ if (typeof module !== 'undefined' && module.exports) {
     // Hover preview popover
     showPreview,
     hidePreview,
+    // Settings
+    loadDisplaySettings,
+    saveDisplaySettings,
+    openSettings,
+    closeSettings,
+    switchSettingsTab,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,
