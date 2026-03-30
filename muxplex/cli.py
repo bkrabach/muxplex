@@ -364,6 +364,20 @@ def _install_launchd(executable: str) -> None:
         <string>0.0.0.0</string>
     </array>"""
 
+    # Build PATH that includes Homebrew and common tool locations.
+    # launchd agents run with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
+    # Homebrew binaries (tmux, ttyd, uv, git) won't be found without this.
+    _homebrew_paths = [
+        "/opt/homebrew/bin",  # Apple Silicon Homebrew
+        "/usr/local/bin",  # Intel Homebrew + system extras
+        "/opt/homebrew/sbin",
+        "/usr/local/sbin",
+    ]
+    _user_local = str(Path.home() / ".local" / "bin")  # uv/pip tool installs
+    _extra = [_user_local] + _homebrew_paths
+    _base = "/usr/bin:/bin:/usr/sbin:/sbin"
+    _service_path = ":".join(_extra) + ":" + _base
+
     label = "com.muxplex"
     uid = os.getuid()
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -374,6 +388,11 @@ def _install_launchd(executable: str) -> None:
     <string>{label}</string>
     <key>ProgramArguments</key>
 {program_args}
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{_service_path}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
