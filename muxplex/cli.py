@@ -217,6 +217,23 @@ def _check_dependencies() -> None:
 
 def _install_launchd(executable: str) -> None:
     """Install a macOS launchd agent plist to ~/Library/LaunchAgents/."""
+    import shutil
+
+    # Prefer the entry point script ('muxplex') so macOS shows the correct
+    # process name in Activity Monitor, launchctl list, and login items.
+    # Fall back to 'python -m muxplex' if the entry point isn't on PATH.
+    muxplex_bin = shutil.which("muxplex")
+    if muxplex_bin:
+        program_args = f"""    <array>
+        <string>{muxplex_bin}</string>
+    </array>"""
+    else:
+        program_args = f"""    <array>
+        <string>{executable}</string>
+        <string>-m</string>
+        <string>muxplex</string>
+    </array>"""
+
     label = "com.muxplex"
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -225,11 +242,7 @@ def _install_launchd(executable: str) -> None:
     <key>Label</key>
     <string>{label}</string>
     <key>ProgramArguments</key>
-    <array>
-        <string>{executable}</string>
-        <string>-m</string>
-        <string>muxplex</string>
-    </array>
+{program_args}
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
