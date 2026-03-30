@@ -128,7 +128,7 @@ let _pollFailCount = 0;
 let _previewPopover = null;
 let _previewTimer = null;
 var _previewDimmer = null;
-var _previewEl = null;
+var _previewSessionName = null;  // track by NAME, not DOM element
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -353,7 +353,6 @@ function buildSidebarHTML(session, currentSession) {
  */
 function renderSidebar(sessions, currentSession) {
   if (_viewMode !== 'fullscreen') return;
-  if (_previewPopover) return;  // skip re-render while hover preview is active
 
   const list = $('sidebar-list');
   if (!list) return;
@@ -374,6 +373,9 @@ function renderSidebar(sessions, currentSession) {
       });
     });
   }
+
+  // Re-apply z-index lift after innerHTML rebuild (preview survives re-renders)
+  if (_previewSessionName) liftHoveredTile();
 }
 
 const SIDEBAR_KEY = 'muxplex.sidebarOpen';
@@ -483,8 +485,6 @@ function bindSidebarClickAway() {
  * @param {object[]} sessions
  */
 function renderGrid(sessions) {
-  if (_previewPopover) return;  // skip re-render while hover preview is active
-
   const grid = $('session-grid');
   const emptyState = $('empty-state');
 
@@ -514,42 +514,67 @@ function renderGrid(sessions) {
   if (_viewMode === 'fullscreen') {
     updatePillBell();
   }
+
+  // Re-apply z-index lift after innerHTML rebuild (preview survives re-renders)
+  if (_previewSessionName) liftHoveredTile();
 }
 
 // ---------------------------------------------------------------------------
 // Hover preview popover (desktop only — no hover on touch devices)
 // ---------------------------------------------------------------------------
 
-function showPreview(el, name) {
-  // el = the DOM element to position relative to
-  // name = session name (optional — reads from el.dataset.session if omitted)
-  if (!name) name = el.dataset.session;
+function showPreview(name) {
   if (!name || !_currentSessions) return;
-
   var session = _currentSessions.find(function (s) { return s.name === name; });
   if (!session || !session.snapshot) return;
 
-  hidePreview();
+  // If already showing this session's preview, just update content + position
+  if (_previewPopover && _previewSessionName === name) {
+    var pre = _previewPopover.querySelector('pre');
+    if (pre) pre.textContent = session.snapshot;
+    repositionPreview();
+    return;
+  }
 
-  // Dim layer — behind popover, above everything else
+  // New preview — clean slate (DOM only, no render trigger)
+  hidePreviewDOM();
+  _previewSessionName = name;
+
+  // Dimmer layer — behind popover, above everything else
   var dimmer = document.createElement('div');
   dimmer.className = 'preview-dimmer';
   document.body.appendChild(dimmer);
   _previewDimmer = dimmer;
 
-  // Lift the hovered element above the dimmer
-  el.classList.add(el.classList.contains('sidebar-item') ? 'item--previewing' : 'tile--previewing');
-  _previewEl = el;  // track so we can remove the class later
-
+  // Popover
   var popover = document.createElement('div');
   popover.className = 'preview-popover';
   var pre = document.createElement('pre');
   pre.textContent = session.snapshot;
   popover.appendChild(pre);
   document.body.appendChild(popover);
+  _previewPopover = popover;
 
-  // Position: try right of element, then left
+  // Lift the tile/item above the dimmer + position
+  liftHoveredTile();
+  repositionPreview();
+
+  // Auto-scroll to bottom — the prompt/cursor area is the valuable part
+  popover.scrollTop = popover.scrollHeight;
+}
+
+function repositionPreview() {
+  if (!_previewPopover || !_previewSessionName) return;
+
+  // Re-query DOM for the current element (may have been rebuilt by a render cycle)
+  var el = document.querySelector(
+    '.session-tile[data-session="' + _previewSessionName + '"], ' +
+    '.sidebar-item[data-session="' + _previewSessionName + '"]'
+  );
+  if (!el) return;
+
   var rect = el.getBoundingClientRect();
+  var popover = _previewPopover;
   var left;
 
   if (rect.right + 288 < window.innerWidth) {
@@ -591,18 +616,26 @@ function showPreview(el, name) {
 
   popover.style.left = left + 'px';
   popover.style.top = top + 'px';
-
-  // Auto-scroll to bottom — the prompt/cursor area is the valuable part
-  popover.scrollTop = popover.scrollHeight;
-
-  _previewPopover = popover;
 }
 
-function hidePreview() {
-  if (_previewTimer) {
-    clearTimeout(_previewTimer);
-    _previewTimer = null;
-  }
+function liftHoveredTile() {
+  // Remove any existing lift class from all tiles/items
+  document.querySelectorAll('.tile--previewing, .item--previewing').forEach(function (el) {
+    el.classList.remove('tile--previewing', 'item--previewing');
+  });
+  if (!_previewSessionName) return;
+  var el = document.querySelector(
+    '.session-tile[data-session="' + _previewSessionName + '"]'
+  );
+  if (el) el.classList.add('tile--previewing');
+  var item = document.querySelector(
+    '.sidebar-item[data-session="' + _previewSessionName + '"]'
+  );
+  if (item) item.classList.add('item--previewing');
+}
+
+// hidePreviewDOM: removes the visual elements only (no render trigger)
+function hidePreviewDOM() {
   if (_previewPopover) {
     _previewPopover.remove();
     _previewPopover = null;
@@ -611,15 +644,19 @@ function hidePreview() {
     _previewDimmer.remove();
     _previewDimmer = null;
   }
-  if (_previewEl) {
-    _previewEl.classList.remove('tile--previewing', 'item--previewing');
-    _previewEl = null;
+  document.querySelectorAll('.tile--previewing, .item--previewing').forEach(function (el) {
+    el.classList.remove('tile--previewing', 'item--previewing');
+  });
+}
+
+// hidePreview: full cleanup including timer and session name
+function hidePreview() {
+  if (_previewTimer) {
+    clearTimeout(_previewTimer);
+    _previewTimer = null;
   }
-  // Catch-up render after preview is dismissed — apply any data missed while paused
-  if (_currentSessions) {
-    renderGrid(_currentSessions);
-    renderSidebar(_currentSessions, _viewingSession);
-  }
+  hidePreviewDOM();
+  _previewSessionName = null;
 }
 
 // ─── Notification permission ────────────────────────────────────────────────
@@ -1131,7 +1168,9 @@ function bindStaticEventListeners() {
     gridEl.addEventListener('mouseenter', function (e) {
       var tile = e.target.closest('.session-tile');
       if (!tile) return;
-      _previewTimer = setTimeout(function () { showPreview(tile); }, 1500);
+      if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
+      var name = tile.dataset.session;
+      _previewTimer = setTimeout(function () { showPreview(name); }, 1500);
     }, true);  // useCapture: true for delegation with mouseenter
 
     gridEl.addEventListener('mouseleave', function (e) {
@@ -1147,9 +1186,9 @@ function bindStaticEventListeners() {
     sidebarListEl.addEventListener('mouseenter', function (e) {
       var item = e.target.closest('.sidebar-item');
       if (!item) return;
+      if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
       var name = item.dataset.session;
-      if (!name) return;
-      _previewTimer = setTimeout(function () { showPreview(item, name); }, 1500);
+      _previewTimer = setTimeout(function () { showPreview(name); }, 1500);
     }, true);
 
     sidebarListEl.addEventListener('mouseleave', function (e) {

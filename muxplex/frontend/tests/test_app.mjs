@@ -2091,22 +2091,29 @@ test('hover preview delay is 1500ms (not 350ms)', () => {
   assert.ok(!source.includes(', 350)'), 'old 350ms delay must be removed');
 });
 
-test('renderGrid and renderSidebar skip re-render while preview is active', () => {
+test('hover preview uses session name tracking instead of DOM element reference', () => {
   const source = fs.readFileSync(
     new URL('../app.js', import.meta.url), 'utf8'
   );
+  assert.ok(source.includes('_previewSessionName'), 'must track by session name, not DOM element');
+  assert.ok(source.includes('repositionPreview'), 'must have repositionPreview for re-anchoring');
+  assert.ok(source.includes('liftHoveredTile'), 'must re-lift tile after render cycles');
+  assert.ok(source.includes('scrollHeight'), 'must auto-scroll popover to bottom');
+  assert.ok(source.includes('preview-dimmer'), 'must have dim overlay');
+  assert.ok(source.includes('ontouchstart'), 'must be desktop-only');
+});
 
-  // Find renderGrid function body
-  const gridFnStart = source.indexOf('function renderGrid');
-  const gridFnBody = source.substring(gridFnStart, gridFnStart + 500);
-  assert.ok(gridFnBody.includes('_previewPopover'),
-    'renderGrid must check _previewPopover and skip while active');
+test('renderGrid and renderSidebar re-lift hovered tile after innerHTML rebuild', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+  // renderGrid should call liftHoveredTile after innerHTML
+  const gridFn = source.substring(source.indexOf('function renderGrid'), source.indexOf('function renderGrid') + 1500);
+  assert.ok(gridFn.includes('liftHoveredTile'), 'renderGrid must re-lift tile after render');
 
-  // Find renderSidebar function body
-  const sidebarFnStart = source.indexOf('function renderSidebar');
-  const sidebarFnBody = source.substring(sidebarFnStart, sidebarFnStart + 500);
-  assert.ok(sidebarFnBody.includes('_previewPopover'),
-    'renderSidebar must check _previewPopover and skip while active');
+  // renderGrid should NOT have the old _previewPopover guard
+  assert.ok(!gridFn.includes('if (_previewPopover) return'),
+    'renderGrid must NOT skip renders while preview active (old approach caused bugs)');
 });
 
 
