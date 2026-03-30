@@ -1523,3 +1523,256 @@ def test_bind_static_event_listeners_reset_patches_server() -> None:
     assert "NEW_SESSION_DEFAULT_TEMPLATE" in body, (
         "bindStaticEventListeners reset handler must use NEW_SESSION_DEFAULT_TEMPLATE"
     )
+
+
+# ─── Header + button with inline name input (task-4-header-plus-button) ──────
+
+
+def test_show_new_session_input_function_exists() -> None:
+    """showNewSessionInput function must exist in app.js."""
+    assert "function showNewSessionInput" in _JS, (
+        "showNewSessionInput must be defined in app.js"
+    )
+
+
+def test_create_new_session_function_exists() -> None:
+    """createNewSession function must exist in app.js."""
+    assert "function createNewSession" in _JS, (
+        "createNewSession must be defined in app.js"
+    )
+
+
+def test_show_new_session_input_creates_input_with_class() -> None:
+    """showNewSessionInput must create an input element with class 'new-session-input'."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "new-session-input" in body, (
+        "showNewSessionInput must create an input with class 'new-session-input'"
+    )
+
+
+def test_show_new_session_input_sets_placeholder() -> None:
+    """showNewSessionInput must set placeholder to 'Session name…'."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "Session name" in body, (
+        "showNewSessionInput must set placeholder containing 'Session name'"
+    )
+
+
+def test_show_new_session_input_disables_autocomplete() -> None:
+    """showNewSessionInput must set autocomplete off on the input."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "autocomplete" in body.lower() and "off" in body.lower(), (
+        "showNewSessionInput must set autocomplete off"
+    )
+
+
+def test_show_new_session_input_disables_spellcheck() -> None:
+    """showNewSessionInput must set spellcheck false on the input."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "spellcheck" in body.lower() and "false" in body.lower(), (
+        "showNewSessionInput must set spellcheck false"
+    )
+
+
+def test_show_new_session_input_hides_button() -> None:
+    """showNewSessionInput must hide the button."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    # Must hide the button (display none or style.display)
+    assert "display" in body or "style.display" in body or "hidden" in body, (
+        "showNewSessionInput must hide the button"
+    )
+
+
+def test_show_new_session_input_focuses_input() -> None:
+    """showNewSessionInput must call focus() on the input."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert ".focus()" in body or "focus()" in body, (
+        "showNewSessionInput must call focus() on the input"
+    )
+
+
+def test_show_new_session_input_handles_enter_key() -> None:
+    """showNewSessionInput must handle Enter key to create session."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "Enter" in body, "showNewSessionInput must handle Enter key"
+    assert "createNewSession" in body, (
+        "showNewSessionInput must call createNewSession on Enter"
+    )
+
+
+def test_show_new_session_input_handles_escape_key() -> None:
+    """showNewSessionInput must handle Escape key to cancel."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "Escape" in body, "showNewSessionInput must handle Escape key"
+
+
+def test_show_new_session_input_handles_blur_with_delay() -> None:
+    """showNewSessionInput must handle blur with 150ms delay."""
+    match = re.search(
+        r"function showNewSessionInput\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewSessionInput function not found"
+    body = match.group(1)
+    assert "blur" in body, "showNewSessionInput must handle blur event"
+    assert "150" in body, (
+        "showNewSessionInput must use 150ms delay on blur"
+    )
+
+
+def test_create_new_session_posts_to_api_sessions() -> None:
+    """createNewSession must POST to /api/sessions."""
+    match = re.search(
+        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "/api/sessions" in body, "createNewSession must POST to /api/sessions"
+    assert "POST" in body, "createNewSession must use POST method"
+
+
+def test_create_new_session_shows_toast() -> None:
+    """createNewSession must call showToast."""
+    match = re.search(
+        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "showToast" in body, "createNewSession must call showToast"
+
+
+def test_create_new_session_calls_poll_sessions() -> None:
+    """createNewSession must call pollSessions."""
+    match = re.search(
+        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "pollSessions" in body, "createNewSession must call pollSessions"
+
+
+def test_create_new_session_auto_opens_session() -> None:
+    """createNewSession must call openSession when auto_open_created is not false."""
+    match = re.search(
+        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "openSession" in body, "createNewSession must call openSession"
+    assert "auto_open_created" in body, (
+        "createNewSession must check ss.auto_open_created"
+    )
+
+
+def test_create_new_session_auto_open_delay() -> None:
+    """createNewSession must use a 500ms delay before calling openSession."""
+    match = re.search(
+        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "500" in body, "createNewSession must use 500ms delay before openSession"
+
+
+def test_bind_static_event_listeners_binds_new_session_btn() -> None:
+    """bindStaticEventListeners must bind click on new-session-btn to showNewSessionInput."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "new-session-btn" in body, (
+        "bindStaticEventListeners must bind new-session-btn click"
+    )
+    assert "showNewSessionInput" in body, (
+        "bindStaticEventListeners must call showNewSessionInput for new-session-btn"
+    )
+
+
+def test_exports_show_new_session_input() -> None:
+    """module.exports must export showNewSessionInput."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "showNewSessionInput" in exports, (
+        "module.exports must export showNewSessionInput"
+    )
+
+
+def test_exports_create_new_session() -> None:
+    """module.exports must export createNewSession."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "createNewSession" in exports, (
+        "module.exports must export createNewSession"
+    )

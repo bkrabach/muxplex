@@ -1155,6 +1155,26 @@ body {
 }
 
 /* ============================================================
+   Header + button inline name input (new-session-btn)
+   ============================================================ */
+
+.new-session-input {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  padding: 4px 10px;
+  width: 180px;
+  outline: none;
+  color: var(--text);
+}
+
+.new-session-input::placeholder {
+  color: var(--text-dim);
+}
+
+/* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */
 

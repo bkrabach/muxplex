@@ -1252,3 +1252,141 @@ def test_css_settings_helper_italic() -> None:
     assert "font-style: italic" in body or "font-style:italic" in body, (
         ".settings-helper must have font-style: italic"
     )
+
+
+# ─── .new-session-input (task-4-header-plus-button) ──────────────────────────
+
+
+def test_css_new_session_input_rule_exists() -> None:
+    """.new-session-input CSS rule must exist in style.css."""
+    css = read_css()
+    assert ".new-session-input" in css, (
+        ".new-session-input CSS rule must exist in style.css"
+    )
+
+
+def test_css_new_session_input_has_border() -> None:
+    """.new-session-input must have a border (1px solid accent)."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.new-session-input\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".new-session-input rule not found"
+    body = match.group(1)
+    assert "border" in body, ".new-session-input must have a border property"
+    assert "accent" in body or "#00D9F5" in body or "1px solid" in body, (
+        ".new-session-input border must reference accent color"
+    )
+
+
+def test_css_new_session_input_has_border_radius() -> None:
+    """.new-session-input must have border-radius: 4px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.new-session-input\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".new-session-input rule not found"
+    body = match.group(1)
+    assert "border-radius" in body, ".new-session-input must have border-radius"
+    assert "4px" in body, ".new-session-input border-radius must be 4px"
+
+
+def test_css_new_session_input_has_font_size() -> None:
+    """.new-session-input must have font-size: 13px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.new-session-input\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".new-session-input rule not found"
+    body = match.group(1)
+    assert "font-size" in body, ".new-session-input must have font-size"
+    assert "13px" in body, ".new-session-input font-size must be 13px"
+
+
+def test_css_new_session_input_has_padding() -> None:
+    """.new-session-input must have padding: 4px 10px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.new-session-input\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".new-session-input rule not found"
+    body = match.group(1)
+    assert "padding" in body, ".new-session-input must have padding"
+    assert "4px" in body and "10px" in body, (
+        ".new-session-input padding must be 4px 10px"
+    )
+
+
+def test_css_new_session_input_has_width() -> None:
+    """.new-session-input must have width: 180px."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.new-session-input\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".new-session-input rule not found"
+    body = match.group(1)
+    assert "width" in body, ".new-session-input must have width"
+    assert "180px" in body, ".new-session-input width must be 180px"
+
+
+def test_css_new_session_input_has_outline_none() -> None:
+    """.new-session-input must have outline: none."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.new-session-input\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".new-session-input rule not found"
+    body = match.group(1)
+    assert "outline" in body and "none" in body, (
+        ".new-session-input must have outline: none"
+    )
+
+
+def test_css_new_session_input_placeholder_rule_exists() -> None:
+    """.new-session-input::placeholder CSS rule must exist."""
+    css = read_css()
+    assert ".new-session-input::placeholder" in css or \
+        ".new-session-input::-webkit-input-placeholder" in css, (
+        ".new-session-input::placeholder CSS rule must exist"
+    )
+
+
+def test_css_new_session_input_placeholder_color() -> None:
+    """.new-session-input::placeholder must have color: var(--text-dim)."""
+    import re
+
+    css = read_css()
+    match = re.search(
+        r"\.new-session-input::placeholder\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
+    )
+    assert match, ".new-session-input::placeholder rule not found"
+    body = match.group(1)
+    assert "color" in body and ("text-dim" in body or "--text-dim" in body), (
+        ".new-session-input::placeholder must have color: var(--text-dim)"
+    )

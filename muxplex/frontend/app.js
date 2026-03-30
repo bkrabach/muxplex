@@ -1274,12 +1274,78 @@ function updateSessionPill(sessions) {
   }
 }
 
+// ─── Header + button with inline name input ────────────────────────────────────
+
+/**
+ * Replace the header + button with an inline text input for session naming.
+ * Hides the button, inserts the input before it, and focuses it.
+ * On Enter: if name is non-empty after trim, calls createNewSession(name).
+ * On Escape: restores the button (cleanup only).
+ * On blur: delayed cleanup (150ms) to allow click handlers.
+ * @param {HTMLElement} btn - The button element to replace temporarily.
+ */
+function showNewSessionInput(btn) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'new-session-input';
+  input.placeholder = 'Session name\u2026';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+
+  function cleanup() {
+    if (input.parentNode) input.parentNode.removeChild(input);
+    btn.style.display = '';
+  }
+
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      const name = input.value.trim();
+      cleanup();
+      if (name) createNewSession(name);
+    } else if (e.key === 'Escape') {
+      cleanup();
+    }
+  });
+
+  input.addEventListener('blur', function () {
+    setTimeout(cleanup, 150);
+  });
+
+  btn.style.display = 'none';
+  btn.parentNode.insertBefore(input, btn);
+  input.focus();
+}
+
+/**
+ * Create a new tmux session via POST /api/sessions.
+ * Shows a toast with the created session name, calls pollSessions() to refresh,
+ * and if ss.auto_open_created !== false, calls openSession(data.name) after 500ms.
+ * @param {string} name - The session name to create.
+ * @returns {Promise<void>}
+ */
+async function createNewSession(name) {
+  try {
+    const res = await api('POST', '/api/sessions', { name });
+    const data = await res.json();
+    showToast('Created: ' + (data.name || name));
+    await pollSessions();
+    const ss = _serverSettings || {};
+    if (ss.auto_open_created !== false) {
+      setTimeout(() => openSession(data.name || name), 500);
+    }
+  } catch (err) {
+    showToast(err.message || 'Failed to create session');
+  }
+}
+
 /**
  * Bind all static (once-only) event listeners for the app UI.
  * Called once after restoreState() resolves.
  */
 function bindStaticEventListeners() {
   on($('back-btn'), 'click', closeSession);
+  var newSessionBtn = $('new-session-btn');
+  if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
   on($('sidebar-toggle-btn'), 'click', toggleSidebar);
   on($('sidebar-collapse-btn'), 'click', toggleSidebar);
   bindSidebarClickAway();
@@ -1503,6 +1569,9 @@ if (typeof module !== 'undefined' && module.exports) {
     // Server settings
     loadServerSettings,
     patchServerSetting,
+    // Header + button with inline name input
+    showNewSessionInput,
+    createNewSession,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,
