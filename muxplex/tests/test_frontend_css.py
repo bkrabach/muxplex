@@ -403,7 +403,7 @@ def test_css_sidebar_item_body():
 
 
 def test_css_sidebar_item_body_pre():
-    """.sidebar-item-body pre must be anchored to bottom with 10px monospace font using --font-mono token."""
+    """.sidebar-item-body pre must be anchored to bottom with 10px monospace font matching xterm.js."""
     css = read_css()
     assert ".sidebar-item-body pre" in css
     block = _extract_rule_block(css, ".sidebar-item-body pre {")
@@ -412,12 +412,12 @@ def test_css_sidebar_item_body_pre():
     assert "left: 0" in block
     assert "right: 0" in block
     assert "font-size: 10px" in block
-    assert "line-height: 1.4" in block
+    assert "line-height: 1.0" in block, "sidebar-item-body pre must use line-height: 1.0 (xterm.js default)"
     assert "#c9d1d9" in block, "sidebar-item-body pre must match xterm.js foreground"
     assert "white-space: pre" in block
     assert "padding: 0 8px 6px" in block
-    # Monospace font family via design token
-    assert "font-family: var(--font-mono)" in block
+    # Explicit xterm.js font family (not design token variable)
+    assert "'SF Mono'" in block or "SF Mono" in block, "sidebar-item-body pre must use explicit xterm.js font family"
 
 
 def test_css_sidebar_empty():
@@ -640,3 +640,93 @@ def test_preview_popover_has_accent_border():
     end = css.index("}", start)
     block = css[start:end]
     assert "var(--accent)" in block, ".preview-popover must use var(--accent) border"
+
+
+def test_preview_popover_has_black_background():
+    """.preview-popover must use #000000 background to match xterm.js terminal."""
+    css = read_css()
+    start = css.index(".preview-popover {")
+    end = css.index("}", start)
+    block = css[start:end]
+    assert "#000000" in block or "background: #000" in block, (
+        ".preview-popover must use #000000 background (not var(--bg-secondary))"
+    )
+
+
+def test_preview_popover_pre_matches_xterm_typography():
+    """.preview-popover pre must match xterm.js terminal: 14px, line-height 1.0, explicit font stack."""
+    css = read_css()
+    block = _extract_rule_block(css, ".preview-popover pre {")
+    assert "font-size: 14px" in block, ".preview-popover pre must use 14px (xterm.js default)"
+    assert "line-height: 1.0" in block, ".preview-popover pre must use line-height: 1.0 (xterm.js default)"
+    assert "'SF Mono'" in block or "SF Mono" in block, (
+        ".preview-popover pre must use explicit xterm.js font family"
+    )
+
+
+def test_tile_body_has_black_background():
+    """.tile-body must use #000000 background to match xterm.js terminal."""
+    css = read_css()
+    block = _extract_rule_block(css, ".tile-body {")
+    assert "#000000" in block or "background: #000" in block, (
+        ".tile-body must use #000000 background to match xterm.js"
+    )
+
+
+def test_tile_body_pre_has_xterm_line_height():
+    """.tile-body pre must use line-height: 1.0 to match xterm.js terminal."""
+    css = read_css()
+    block = _extract_rule_block(css, ".tile-body pre {")
+    assert "line-height: 1.0" in block, ".tile-body pre must use line-height: 1.0 (xterm.js default)"
+
+
+def test_tile_body_pre_has_explicit_font_family():
+    """.tile-body pre must use explicit xterm.js font family, not CSS variable."""
+    css = read_css()
+    block = _extract_rule_block(css, ".tile-body pre {")
+    assert "'SF Mono'" in block or "SF Mono" in block, (
+        ".tile-body pre must use explicit xterm.js font family"
+    )
+
+
+def test_sidebar_item_body_has_black_background():
+    """.sidebar-item-body must use #000000 background to match xterm.js terminal."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item-body {")
+    assert "#000000" in block or "background: #000" in block, (
+        ".sidebar-item-body must use #000000 background to match xterm.js"
+    )
+
+
+def test_sidebar_item_body_pre_has_xterm_line_height():
+    """.sidebar-item-body pre must use line-height: 1.0 to match xterm.js terminal."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item-body pre {")
+    assert "line-height: 1.0" in block, ".sidebar-item-body pre must use line-height: 1.0 (xterm.js default)"
+
+
+def test_sidebar_item_body_pre_has_explicit_font_family():
+    """.sidebar-item-body pre must use explicit xterm.js font family, not CSS variable."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item-body pre {")
+    assert "'SF Mono'" in block or "SF Mono" in block, (
+        ".sidebar-item-body pre must use explicit xterm.js font family"
+    )
+
+
+def test_sidebar_item_body_gradient_fades_to_black():
+    """.sidebar-item-body::before gradient must fade to #000000 (not theme background)."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item-body::before {")
+    assert "#000000" in block or "transparent, #000" in block, (
+        ".sidebar-item-body::before gradient must fade to #000000 to match black terminal bg"
+    )
+
+
+def test_tile_body_gradient_fades_to_black():
+    """.tile-body::before gradient must fade to #000000 (not theme background)."""
+    css = read_css()
+    block = _extract_rule_block(css, ".tile-body::before {")
+    assert "#000000" in block or "transparent, #000" in block, (
+        ".tile-body::before gradient must fade to #000000 to match black terminal bg"
+    )

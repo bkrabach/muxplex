@@ -2114,4 +2114,17 @@ test('ansiToHtml converts SGR codes to styled spans', () => {
   assert.ok(source.includes('ansiToHtml(session.snapshot)'), 'overlay must use ansiToHtml');
 });
 
+test('ANSI_COLORS uses xterm.js default GTK/Tango palette', () => {
+  // xterm.js default palette (GTK/Tango-derived) — must match exactly
+  // so previews render colors identically to the interactive terminal
+  assert.strictEqual(app.ansi256Color(0), '#2e3436', 'color 0 must be xterm.js default: #2e3436');
+  assert.strictEqual(app.ansi256Color(1), '#cc0000', 'color 1 must be xterm.js default: #cc0000');
+  assert.strictEqual(app.ansi256Color(2), '#4e9a06', 'color 2 must be xterm.js default: #4e9a06');
+  assert.strictEqual(app.ansi256Color(3), '#c4a000', 'color 3 must be xterm.js default: #c4a000');
+  assert.strictEqual(app.ansi256Color(7), '#d3d7cf', 'color 7 must be xterm.js default: #d3d7cf');
+  assert.strictEqual(app.ansi256Color(8), '#555753', 'color 8 must be xterm.js default: #555753');
+  assert.strictEqual(app.ansi256Color(10), '#8ae234', 'color 10 must be xterm.js default: #8ae234');
+  assert.strictEqual(app.ansi256Color(14), '#34e2e2', 'color 14 must be xterm.js default: #34e2e2');
+});
+
 

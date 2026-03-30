@@ -269,8 +269,8 @@ function escapeHtml(str) {
 // Converts terminal color sequences to <span> tags with inline styles.
 // ---------------------------------------------------------------------------
 var ANSI_COLORS = [
-  '#000','#c23621','#25bc26','#adad27','#492ee1','#d338d3','#33bbc8','#cbcccd',
-  '#818383','#fc391f','#31e722','#eaec23','#5833ff','#f935f8','#14f0f0','#e9ebeb'
+  '#2e3436','#cc0000','#4e9a06','#c4a000','#3465a4','#75507b','#06989a','#d3d7cf',
+  '#555753','#ef2929','#8ae234','#fce94f','#729fcf','#ad7fa8','#34e2e2','#eeeeec'
 ];
 
 function ansiToHtml(raw) {

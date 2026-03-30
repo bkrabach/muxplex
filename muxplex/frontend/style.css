@@ -221,6 +221,7 @@ body {
   flex: 1;
   overflow: hidden;
   position: relative;
+  background: #000000;
 }
 
 .tile-body pre {
@@ -229,8 +230,9 @@ body {
   left: 0;
   right: 0;
   padding: 6px 8px;
-  font-family: var(--font-mono);
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
   font-size: 11px;
+  line-height: 1.0;
   color: #c9d1d9;               /* match xterm.js foreground */
   white-space: pre;
   overflow: hidden;
@@ -257,7 +259,7 @@ body {
   left: 0;
   right: 0;
   height: 40px;
-  background: linear-gradient(to bottom, transparent, var(--bg-tile));
+  background: linear-gradient(to bottom, transparent, #000000);
   pointer-events: none;
   z-index: 1;
 }
@@ -518,6 +520,7 @@ body {
   flex: 1;
   position: relative;
   overflow: hidden;
+  background: #000000;
 }
 
 .sidebar-item-body::before {
@@ -527,13 +530,13 @@ body {
   left: 0;
   right: 0;
   height: 32px;
-  background: linear-gradient(to bottom, transparent, var(--bg-secondary));
+  background: linear-gradient(to bottom, transparent, #000000);
   pointer-events: none;
   z-index: 1;
 }
 
 .sidebar-item--active .sidebar-item-body::before {
-  background: linear-gradient(to bottom, transparent, var(--bg-surface));
+  background: linear-gradient(to bottom, transparent, #000000);
 }
 
 .sidebar-item-body pre {
@@ -541,9 +544,9 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
-  font-family: var(--font-mono);
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
   font-size: 10px;
-  line-height: 1.4;
+  line-height: 1.0;
   color: #c9d1d9;               /* match xterm.js foreground */
   white-space: pre;
   padding: 0 8px 6px;
@@ -966,7 +969,7 @@ body {
 .preview-popover {
   position: fixed;
   z-index: 500;
-  background: var(--bg-secondary);
+  background: #000000;
   border: 2px solid var(--accent);
   border-radius: 8px;
   padding: 16px 20px;
@@ -982,9 +985,9 @@ body {
 
 .preview-popover pre {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.0;
   color: #c9d1d9;               /* match xterm.js foreground exactly */
   white-space: pre-wrap;        /* WRAP text instead of horizontal overflow */
   word-break: break-all;        /* break long lines at viewport edge */
