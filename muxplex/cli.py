@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -54,6 +55,29 @@ def serve(
 
     print(f"  muxplex → http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+def _check_dependencies() -> None:
+    """Verify required external programs are installed.
+
+    Checks for tmux and ttyd. Prints a helpful error message and exits with
+    code 1 if any are missing.
+    """
+    missing = []
+    if shutil.which("tmux") is None:
+        missing.append(("tmux", "sudo apt install tmux  /  brew install tmux"))
+    if shutil.which("ttyd") is None:
+        missing.append(("ttyd", "sudo apt install ttyd  /  brew install ttyd"))
+
+    if missing:
+        print("\n  ERROR: Required dependencies not found:\n", file=sys.stderr)
+        for name, install_hint in missing:
+            print(f"    {name}: {install_hint}", file=sys.stderr)
+        print(
+            "\n  For details: https://github.com/bkrabach/muxplex#prerequisites\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _install_launchd(executable: str) -> None:
@@ -191,6 +215,7 @@ def main() -> None:
     elif args.command == "reset-secret":
         reset_secret()
     else:
+        _check_dependencies()
         serve(
             host=args.host, port=args.port, auth=args.auth, session_ttl=args.session_ttl
         )

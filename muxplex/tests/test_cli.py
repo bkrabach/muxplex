@@ -330,6 +330,85 @@ def test_install_service_help_text_mentions_background_service():
     assert "service" in help_text
 
 
+def test_check_dependencies_exits_when_ttyd_missing(monkeypatch):
+    """_check_dependencies() must sys.exit(1) when ttyd is not in PATH."""
+    import shutil
+    import pytest
+    from muxplex.cli import _check_dependencies
+
+    orig_which = shutil.which
+
+    def fake_which(name):
+        if name == "ttyd":
+            return None
+        return orig_which(name)
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _check_dependencies()
+    assert exc_info.value.code == 1
+
+
+def test_check_dependencies_exits_when_tmux_missing(monkeypatch):
+    """_check_dependencies() must sys.exit(1) when tmux is not in PATH."""
+    import shutil
+    import pytest
+    from muxplex.cli import _check_dependencies
+
+    orig_which = shutil.which
+
+    def fake_which(name):
+        if name == "tmux":
+            return None
+        return orig_which(name)
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _check_dependencies()
+    assert exc_info.value.code == 1
+
+
+def test_check_dependencies_passes_when_all_present(monkeypatch):
+    """_check_dependencies() must not raise when both tmux and ttyd are found."""
+    import shutil
+    from muxplex.cli import _check_dependencies
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    # Should not raise
+    _check_dependencies()
+
+
+def test_main_check_dependencies_called_for_serve(monkeypatch):
+    """main() must call _check_dependencies() when subcommand is serve."""
+    from muxplex.cli import main
+
+    calls = []
+    monkeypatch.setattr("muxplex.cli._check_dependencies", lambda: calls.append(True))
+
+    with patch("muxplex.cli.serve"):
+        with patch("sys.argv", ["muxplex"]):
+            main()
+
+    assert len(calls) == 1, "_check_dependencies must be called once for serve"
+
+
+def test_main_check_dependencies_not_called_for_install_service(monkeypatch):
+    """main() must NOT call _check_dependencies() for install-service subcommand."""
+    from muxplex.cli import main
+
+    calls = []
+    monkeypatch.setattr("muxplex.cli._check_dependencies", lambda: calls.append(True))
+
+    with patch("muxplex.cli.install_service"):
+        with patch("sys.argv", ["muxplex", "install-service"]):
+            main()
+
+    assert len(calls) == 0, "_check_dependencies must NOT be called for install-service"
+
+
 def test_dunder_main_calls_main():
     """python -m muxplex must call cli.main()."""
     import importlib.util
