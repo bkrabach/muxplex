@@ -57,6 +57,7 @@ from muxplex.state import (
     save_state,
     state_lock,
 )
+from muxplex.settings import load_settings, patch_settings
 from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
 # ---------------------------------------------------------------------------
@@ -424,6 +425,19 @@ async def setup_hooks() -> dict:
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/settings")
+async def get_settings() -> dict:
+    """Return the current settings."""
+    return load_settings()
+
+
+@app.patch("/api/settings")
+async def update_settings(request: Request) -> dict:
+    """Merge known keys from the request body into settings and return updated settings."""
+    body = await request.json()
+    return patch_settings(body)
 
 
 # ---------------------------------------------------------------------------

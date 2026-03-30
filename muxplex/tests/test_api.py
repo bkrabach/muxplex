@@ -900,3 +900,69 @@ def test_ws_invalid_cookie_non_localhost_rejected_4001():
             with c.websocket_connect("/terminal/ws") as _:
                 pass
     assert exc_info.value.code == 4001
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_returns_defaults(client, tmp_path, monkeypatch):
+    """GET /api/settings returns 200 with default settings when no file exists."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sort_order"] == "manual"
+    assert data["new_session_template"] == "tmux new-session -d -s {name}"
+
+
+def test_get_settings_returns_saved_values(client, tmp_path, monkeypatch):
+    """GET /api/settings returns saved values when settings.json exists."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Pre-write a settings.json with a custom sort_order
+    settings_path.write_text(json.dumps({"sort_order": "alphabetical"}))
+
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sort_order"] == "alphabetical"
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/settings
+# ---------------------------------------------------------------------------
+
+
+def test_patch_settings_updates_field(client, tmp_path, monkeypatch):
+    """PATCH /api/settings with {sort_order: 'alphabetical'} returns 200 with updated sort_order and unchanged default_session."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"sort_order": "alphabetical"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sort_order"] == "alphabetical"
+    assert data["default_session"] is None
+
+
+def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
+    """PATCH /api/settings with {unknown_key: 'value'} returns 200 without unknown_key."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"unknown_key": "value"})
+    assert response.status_code == 200
+    data = response.json()
+    assert "unknown_key" not in data
