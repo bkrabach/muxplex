@@ -2263,6 +2263,24 @@ def test_render_sidebar_uses_visible_array() -> None:
     )
 
 
+# ── app.js: renderSheetList filters hidden sessions ───────────────────────────
+
+
+def test_render_sheet_list_filters_hidden_sessions() -> None:
+    """renderSheetList() must filter out hidden sessions via getVisibleSessions()."""
+    match = re.search(
+        r"function renderSheetList\s*\(\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSheetList function not found in app.js"
+    body = match.group(1)
+    assert "getVisibleSessions" in body, (
+        "renderSheetList must call getVisibleSessions() to filter hidden sessions; "
+        "currently it reads _currentSessions directly and bypasses the filter"
+    )
+
+
 # ── app.js: DOMContentLoaded calls loadServerSettings ────────────────────────
 
 

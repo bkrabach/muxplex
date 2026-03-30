@@ -1261,7 +1261,7 @@ function closeBottomSheet() {
 function renderSheetList() {
   var list = $('sheet-list');
   if (!list) return;
-  var sorted = sortByPriority(_currentSessions);
+  var sorted = sortByPriority(getVisibleSessions(_currentSessions));
   list.innerHTML = sorted.map(function(s) {
     var hasBell = s.bell && s.bell.unseen_count > 0 &&
       (s.bell.seen_at === null || s.bell.last_fired_at > s.bell.seen_at);
