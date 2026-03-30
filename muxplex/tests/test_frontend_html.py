@@ -316,3 +316,185 @@ def test_login_html_has_error_display() -> None:
     assert "error" in text, (
         "login.html must include an error display element (text 'error' not found)"
     )
+
+
+# ============================================================
+# Settings modal (task-6)
+# ============================================================
+
+
+def test_html_header_actions_div() -> None:
+    """overview header must have .header-actions div containing #new-session-btn, #settings-btn, and #connection-status."""
+    soup = _SOUP
+    view_overview = soup.find(id="view-overview")
+    assert view_overview is not None, "Missing #view-overview"
+    header = view_overview.find("header", class_="app-header")
+    assert header is not None, "Missing header.app-header inside #view-overview"
+    header_actions = header.find(class_="header-actions")
+    assert header_actions is not None, "Missing .header-actions inside app-header"
+
+
+def test_html_new_session_btn() -> None:
+    """#new-session-btn must exist in .header-actions with class header-btn."""
+    soup = _SOUP
+    btn = soup.find(id="new-session-btn")
+    assert btn is not None, "Missing #new-session-btn"
+    classes = btn.get("class") or []
+    assert "header-btn" in classes, f"#new-session-btn must have class 'header-btn', has: {classes}"
+    # Must be inside header-actions
+    header_actions = soup.find(class_="header-actions")
+    assert header_actions is not None, "Missing .header-actions"
+    assert header_actions.find(id="new-session-btn") is not None, (
+        "#new-session-btn must be inside .header-actions"
+    )
+
+
+def test_html_settings_btn() -> None:
+    """#settings-btn must exist in .header-actions with class header-btn."""
+    soup = _SOUP
+    btn = soup.find(id="settings-btn")
+    assert btn is not None, "Missing #settings-btn"
+    classes = btn.get("class") or []
+    assert "header-btn" in classes, f"#settings-btn must have class 'header-btn', has: {classes}"
+    # Must be inside header-actions
+    header_actions = soup.find(class_="header-actions")
+    assert header_actions is not None, "Missing .header-actions"
+    assert header_actions.find(id="settings-btn") is not None, (
+        "#settings-btn must be inside .header-actions"
+    )
+
+
+def test_html_settings_btn_expanded() -> None:
+    """#settings-btn-expanded must exist in expanded-header after #expanded-session-name."""
+    soup = _SOUP
+    btn = soup.find(id="settings-btn-expanded")
+    assert btn is not None, "Missing #settings-btn-expanded"
+    classes = btn.get("class") or []
+    assert "header-btn" in classes, f"#settings-btn-expanded must have class 'header-btn', has: {classes}"
+    # Must be inside expanded-header
+    header = soup.find("header", class_="expanded-header")
+    assert header is not None, "Missing header.expanded-header"
+    assert header.find(id="settings-btn-expanded") is not None, (
+        "#settings-btn-expanded must be inside header.expanded-header"
+    )
+    # Must appear after #expanded-session-name
+    header_children_ids = [
+        el.get("id") for el in header.children if isinstance(el, Tag)
+    ]
+    header_children_ids = [i for i in header_children_ids if i]
+    assert "expanded-session-name" in header_children_ids, "#expanded-session-name must be in expanded-header"
+    assert "settings-btn-expanded" in header_children_ids, "#settings-btn-expanded must be in expanded-header"
+    name_idx = header_children_ids.index("expanded-session-name")
+    settings_idx = header_children_ids.index("settings-btn-expanded")
+    assert name_idx < settings_idx, (
+        f"#settings-btn-expanded must come after #expanded-session-name, got indices {name_idx}, {settings_idx}"
+    )
+
+
+def test_html_settings_backdrop() -> None:
+    """#settings-backdrop must exist with class settings-backdrop and hidden."""
+    soup = _SOUP
+    el = soup.find(id="settings-backdrop")
+    assert el is not None, "Missing #settings-backdrop"
+    classes = el.get("class") or []
+    assert "settings-backdrop" in classes, f"#settings-backdrop must have class 'settings-backdrop', has: {classes}"
+    assert "hidden" in classes, f"#settings-backdrop must have class 'hidden', has: {classes}"
+
+
+def test_html_settings_dialog() -> None:
+    """#settings-dialog must be a <dialog> with class settings-dialog."""
+    soup = _SOUP
+    el = soup.find(id="settings-dialog")
+    assert el is not None, "Missing #settings-dialog"
+    assert el.name == "dialog", f"#settings-dialog must be a <dialog> element, got: {el.name}"
+    classes = el.get("class") or []
+    assert "settings-dialog" in classes, f"#settings-dialog must have class 'settings-dialog', has: {classes}"
+
+
+def test_html_settings_tabs() -> None:
+    """settings-dialog must contain 4 tab buttons with correct data-tab values."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    tabs_container = dialog.find("nav", class_="settings-tabs")
+    assert tabs_container is not None, "Missing nav.settings-tabs inside #settings-dialog"
+    expected_tabs = ["display", "sessions", "notifications", "new-session"]
+    for tab_value in expected_tabs:
+        tab = tabs_container.find("button", attrs={"data-tab": tab_value})
+        assert tab is not None, f"Missing tab button with data-tab='{tab_value}' in settings-tabs"
+    # Display tab must be active by default
+    display_tab = tabs_container.find("button", attrs={"data-tab": "display"})
+    assert display_tab is not None
+    display_classes = display_tab.get("class") or []
+    assert "settings-tab--active" in display_classes, (
+        f"Display tab must have class 'settings-tab--active', has: {display_classes}"
+    )
+    # All tabs must have settings-tab class
+    for tab_value in expected_tabs:
+        tab = tabs_container.find("button", attrs={"data-tab": tab_value})
+        tab_classes = tab.get("class") or []
+        assert "settings-tab" in tab_classes, (
+            f"Tab data-tab='{tab_value}' must have class 'settings-tab', has: {tab_classes}"
+        )
+
+
+def test_html_settings_display_panel_controls() -> None:
+    """Display panel must have font-size, hover-delay, and grid-columns selects."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    for ctrl_id in ("setting-font-size", "setting-hover-delay", "setting-grid-columns"):
+        el = dialog.find(id=ctrl_id)
+        assert el is not None, f"Missing #{ctrl_id} inside #settings-dialog"
+        assert el.name == "select", f"#{ctrl_id} must be a <select> element, got: {el.name}"
+
+
+def test_html_settings_font_size_options() -> None:
+    """setting-font-size select must have options 11, 12, 13, 14 (selected), 16."""
+    soup = _SOUP
+    select = soup.find(id="setting-font-size")
+    assert select is not None, "Missing #setting-font-size"
+    options = select.find_all("option")
+    values = [o.get("value") for o in options]
+    for v in ("11", "12", "13", "14", "16"):
+        assert v in values, f"#setting-font-size missing option value='{v}'"
+    # 14 must be selected
+    selected_opt = select.find("option", attrs={"selected": True})
+    assert selected_opt is not None, "setting-font-size must have a selected option"
+    assert selected_opt.get("value") == "14", (
+        f"setting-font-size default selection must be 14, got: {selected_opt.get('value')}"
+    )
+
+
+def test_html_settings_hover_delay_options() -> None:
+    """setting-hover-delay select must have Off (0), 1000, 1500 (selected), 2000, 3000."""
+    soup = _SOUP
+    select = soup.find(id="setting-hover-delay")
+    assert select is not None, "Missing #setting-hover-delay"
+    options = select.find_all("option")
+    values = [o.get("value") for o in options]
+    for v in ("0", "1000", "1500", "2000", "3000"):
+        assert v in values, f"#setting-hover-delay missing option value='{v}'"
+    # 1500 must be selected
+    selected_opt = select.find("option", attrs={"selected": True})
+    assert selected_opt is not None, "setting-hover-delay must have a selected option"
+    assert selected_opt.get("value") == "1500", (
+        f"setting-hover-delay default selection must be 1500, got: {selected_opt.get('value')}"
+    )
+
+
+def test_html_settings_grid_columns_options() -> None:
+    """setting-grid-columns select must have auto (selected), 2, 3, 4."""
+    soup = _SOUP
+    select = soup.find(id="setting-grid-columns")
+    assert select is not None, "Missing #setting-grid-columns"
+    options = select.find_all("option")
+    values = [o.get("value") for o in options]
+    for v in ("auto", "2", "3", "4"):
+        assert v in values, f"#setting-grid-columns missing option value='{v}'"
+    # auto must be selected
+    selected_opt = select.find("option", attrs={"selected": True})
+    assert selected_opt is not None, "setting-grid-columns must have a selected option"
+    assert selected_opt.get("value") == "auto", (
+        f"setting-grid-columns default selection must be auto, got: {selected_opt.get('value')}"
+    )

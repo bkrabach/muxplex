@@ -20,7 +20,11 @@
   <div id="view-overview" class="view view--active">
     <header class="app-header">
       <h1 class="app-wordmark"><img src="/wordmark-on-dark.svg" alt="muxplex" height="24" /></h1>
-      <span id="connection-status"></span>
+      <div class="header-actions">
+        <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
+        <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;</button>
+        <span id="connection-status"></span>
+      </div>
     </header>
     <div id="session-grid" class="session-grid" role="list"></div>
     <div id="empty-state" class="empty-state hidden">No active tmux sessions</div>
@@ -32,6 +36,7 @@
       <button id="back-btn" class="back-btn" aria-label="Back">&#8592;</button>
       <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle session list">&#9776;</button>
       <span id="expanded-session-name" class="expanded-session-name"></span>
+      <button id="settings-btn-expanded" class="header-btn" aria-label="Settings">&#9881;</button>
     </header>
     <div class="view-body">
       <div id="session-sidebar" class="session-sidebar">
@@ -63,6 +68,55 @@
 
   <!-- ── Toast notification ─────────────────────────────────────────────────── -->
   <div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- ── Settings ─────────────────────────────────────────────────────────────────────── -->
+  <div id="settings-backdrop" class="settings-backdrop hidden"></div>
+  <dialog id="settings-dialog" class="settings-dialog">
+    <div class="settings-layout">
+      <nav class="settings-tabs">
+        <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
+        <button class="settings-tab" data-tab="sessions">Sessions</button>
+        <button class="settings-tab" data-tab="notifications">Notifications</button>
+        <button class="settings-tab" data-tab="new-session">New Session</button>
+      </nav>
+      <div class="settings-content">
+        <div class="settings-panel" data-panel="display">
+          <div class="settings-field">
+            <label class="settings-label" for="setting-font-size">Font Size</label>
+            <select id="setting-font-size" class="settings-select">
+              <option value="11">11</option>
+              <option value="12">12</option>
+              <option value="13">13</option>
+              <option value="14" selected>14</option>
+              <option value="16">16</option>
+            </select>
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-hover-delay">Hover Delay</label>
+            <select id="setting-hover-delay" class="settings-select">
+              <option value="0">Off</option>
+              <option value="1000">1000ms</option>
+              <option value="1500" selected>1500ms</option>
+              <option value="2000">2000ms</option>
+              <option value="3000">3000ms</option>
+            </select>
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-grid-columns">Grid Columns</label>
+            <select id="setting-grid-columns" class="settings-select">
+              <option value="auto" selected>Auto</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-panel hidden" data-panel="sessions"></div>
+        <div class="settings-panel hidden" data-panel="notifications"></div>
+        <div class="settings-panel hidden" data-panel="new-session"></div>
+      </div>
+    </div>
+  </dialog>
 
   <!-- ── Scripts ─────────────────────────────────────────────────────────────── -->
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>

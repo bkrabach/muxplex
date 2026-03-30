@@ -711,3 +711,143 @@ def test_no_gradient_fade_on_previews():
     css = read_css()
     assert ".tile-body::before" not in css, "tile-body::before gradient must be removed"
     assert ".sidebar-item-body::before" not in css, "sidebar-item-body::before gradient must be removed"
+
+
+# ============================================================
+# Settings modal CSS (task-6)
+# ============================================================
+
+
+def test_css_header_actions_exists():
+    """.header-actions must exist with flex layout and gap."""
+    css = read_css()
+    assert ".header-actions" in css, "Missing .header-actions CSS rule"
+    block = _extract_rule_block(css, ".header-actions {")
+    assert "display: flex" in block, ".header-actions must use display: flex"
+    assert "gap:" in block and "8px" in block, ".header-actions must have gap: 8px"
+
+
+def test_css_header_btn_exists():
+    """.header-btn must exist with 32x32 size, border, cursor."""
+    css = read_css()
+    assert ".header-btn" in css, "Missing .header-btn CSS rule"
+    block = _extract_rule_block(css, ".header-btn {")
+    assert "width: 32px" in block, ".header-btn must be 32px wide"
+    assert "height: 32px" in block, ".header-btn must be 32px tall"
+    assert "border:" in block or "border :" in block, ".header-btn must have border"
+    assert "cursor: pointer" in block, ".header-btn must have cursor: pointer"
+
+
+def test_css_header_btn_hover():
+    """.header-btn:hover must exist."""
+    css = read_css()
+    assert ".header-btn:hover" in css, "Missing .header-btn:hover CSS rule"
+
+
+def test_css_settings_backdrop_exists():
+    """.settings-backdrop must exist with position: fixed and blur."""
+    css = read_css()
+    assert ".settings-backdrop" in css, "Missing .settings-backdrop CSS rule"
+    block = _extract_rule_block(css, ".settings-backdrop {")
+    assert "position: fixed" in block, ".settings-backdrop must use position: fixed"
+    assert "blur" in block or "backdrop-filter" in block, ".settings-backdrop must use blur"
+
+
+def test_css_settings_dialog_exists():
+    """.settings-dialog must exist with correct dimensions and z-index."""
+    css = read_css()
+    assert ".settings-dialog" in css, "Missing .settings-dialog CSS rule"
+    block = _extract_rule_block(css, ".settings-dialog {")
+    assert "600px" in block, ".settings-dialog must be 600px wide"
+    assert "480px" in block, ".settings-dialog must be 480px tall"
+    assert "z-index: 300" in block, ".settings-dialog must have z-index: 300"
+    assert "border-radius:" in block, ".settings-dialog must have border-radius"
+
+
+def test_css_settings_dialog_backdrop_transparent():
+    """.settings-dialog::backdrop must be transparent."""
+    css = read_css()
+    assert ".settings-dialog::backdrop" in css, "Missing .settings-dialog::backdrop CSS rule"
+    block = _extract_rule_block(css, ".settings-dialog::backdrop {")
+    assert "transparent" in block, ".settings-dialog::backdrop must be transparent"
+
+
+def test_css_settings_layout_flex():
+    """.settings-layout must use flex layout."""
+    css = read_css()
+    assert ".settings-layout" in css, "Missing .settings-layout CSS rule"
+    block = _extract_rule_block(css, ".settings-layout {")
+    assert "display: flex" in block, ".settings-layout must use display: flex"
+
+
+def test_css_settings_tabs_exists():
+    """.settings-tabs must exist with 140px width sidebar."""
+    css = read_css()
+    assert ".settings-tabs" in css, "Missing .settings-tabs CSS rule"
+    block = _extract_rule_block(css, ".settings-tabs {")
+    assert "140px" in block, ".settings-tabs must have 140px width"
+
+
+def test_css_settings_tab_exists():
+    """.settings-tab must exist as text buttons with left border indicator."""
+    css = read_css()
+    assert ".settings-tab" in css, "Missing .settings-tab CSS rule"
+    block = _extract_rule_block(css, ".settings-tab {")
+    assert "border-left:" in block, ".settings-tab must have border-left indicator"
+    assert "cursor: pointer" in block, ".settings-tab must have cursor: pointer"
+
+
+def test_css_settings_tab_active():
+    """.settings-tab--active must exist with accent color."""
+    css = read_css()
+    assert ".settings-tab--active" in css, "Missing .settings-tab--active CSS rule"
+    block = _extract_rule_block(css, ".settings-tab--active {")
+    assert "var(--accent)" in block, ".settings-tab--active must use var(--accent)"
+
+
+def test_css_settings_content_exists():
+    """.settings-content must exist as scrollable container."""
+    css = read_css()
+    assert ".settings-content" in css, "Missing .settings-content CSS rule"
+    block = _extract_rule_block(css, ".settings-content {")
+    assert "overflow-y: auto" in block, ".settings-content must be scrollable (overflow-y: auto)"
+
+
+def test_css_settings_field_exists():
+    """.settings-field must exist as flex row between."""
+    css = read_css()
+    assert ".settings-field" in css, "Missing .settings-field CSS rule"
+    block = _extract_rule_block(css, ".settings-field {")
+    assert "display: flex" in block, ".settings-field must use display: flex"
+    assert "flex-direction: row" in block, ".settings-field must use flex-direction: row"
+    assert "justify-content: space-between" in block, ".settings-field must use justify-content: space-between"
+
+
+def test_css_settings_select_exists():
+    """.settings-select must exist as styled select."""
+    css = read_css()
+    assert ".settings-select" in css, "Missing .settings-select CSS rule"
+    assert ".settings-select:focus" in css, "Missing .settings-select:focus CSS rule"
+
+
+def test_css_settings_mobile_media_query():
+    """@media (max-width: 599px) block must exist for settings dialog mobile styles."""
+    css = read_css()
+    assert "@media (max-width: 599px)" in css, "Missing @media (max-width: 599px) for settings mobile"
+    media_block = _extract_media_block(css, "@media (max-width: 599px)")
+    assert ".settings-dialog" in media_block, ".settings-dialog mobile styles must be in 599px media block"
+    # Bottom sheet: 100% width
+    block = _extract_rule_block(media_block, ".settings-dialog {")
+    assert "width: 100%" in block, ".settings-dialog must be 100% wide on mobile"
+    assert "85vh" in block, ".settings-dialog must be 85vh tall on mobile"
+    assert "bottom: 0" in block or "bottom:0" in block, ".settings-dialog must be bottom-anchored on mobile"
+
+
+def test_css_settings_mobile_tabs_horizontal():
+    """Inside mobile media query, settings tabs must become horizontal scrolling row."""
+    css = read_css()
+    media_block = _extract_media_block(css, "@media (max-width: 599px)")
+    assert ".settings-tabs" in media_block, ".settings-tabs must have mobile styles in 599px media block"
+    tabs_block = _extract_rule_block(media_block, ".settings-tabs {")
+    assert "flex-direction: row" in tabs_block, ".settings-tabs must become horizontal on mobile"
+    assert "overflow-x: auto" in tabs_block, ".settings-tabs must scroll horizontally on mobile"
