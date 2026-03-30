@@ -353,6 +353,7 @@ function buildSidebarHTML(session, currentSession) {
  */
 function renderSidebar(sessions, currentSession) {
   if (_viewMode !== 'fullscreen') return;
+  if (_previewPopover) return;  // skip re-render while hover preview is active
 
   const list = $('sidebar-list');
   if (!list) return;
@@ -482,6 +483,8 @@ function bindSidebarClickAway() {
  * @param {object[]} sessions
  */
 function renderGrid(sessions) {
+  if (_previewPopover) return;  // skip re-render while hover preview is active
+
   const grid = $('session-grid');
   const emptyState = $('empty-state');
 
@@ -611,6 +614,11 @@ function hidePreview() {
   if (_previewEl) {
     _previewEl.classList.remove('tile--previewing', 'item--previewing');
     _previewEl = null;
+  }
+  // Catch-up render after preview is dismissed — apply any data missed while paused
+  if (_currentSessions) {
+    renderGrid(_currentSessions);
+    renderSidebar(_currentSessions, _viewingSession);
   }
 }
 

@@ -2091,4 +2091,22 @@ test('hover preview delay is 1500ms (not 350ms)', () => {
   assert.ok(!source.includes(', 350)'), 'old 350ms delay must be removed');
 });
 
+test('renderGrid and renderSidebar skip re-render while preview is active', () => {
+  const source = fs.readFileSync(
+    new URL('../app.js', import.meta.url), 'utf8'
+  );
+
+  // Find renderGrid function body
+  const gridFnStart = source.indexOf('function renderGrid');
+  const gridFnBody = source.substring(gridFnStart, gridFnStart + 500);
+  assert.ok(gridFnBody.includes('_previewPopover'),
+    'renderGrid must check _previewPopover and skip while active');
+
+  // Find renderSidebar function body
+  const sidebarFnStart = source.indexOf('function renderSidebar');
+  const sidebarFnBody = source.substring(sidebarFnStart, sidebarFnStart + 500);
+  assert.ok(sidebarFnBody.includes('_previewPopover'),
+    'renderSidebar must check _previewPopover and skip while active');
+});
+
 
