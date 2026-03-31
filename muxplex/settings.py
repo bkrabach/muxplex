@@ -6,6 +6,7 @@ Settings are stored at ~/.config/muxplex/settings.json.
 
 import copy
 import json
+import socket
 from pathlib import Path
 
 SETTINGS_PATH = Path.home() / ".config" / "muxplex" / "settings.json"
@@ -17,6 +18,8 @@ DEFAULT_SETTINGS: dict = {
     "window_size_largest": False,
     "auto_open_created": True,
     "new_session_template": "tmux new-session -d -s {name}",
+    "remote_instances": [],
+    "device_name": "",
 }
 
 
@@ -35,6 +38,8 @@ def load_settings() -> dict:
                 result[key] = data[key]
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    if not result["device_name"]:
+        result["device_name"] = socket.gethostname()
     return result
 
 

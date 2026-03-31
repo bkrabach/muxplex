@@ -34,10 +34,14 @@ def redirect_settings_path(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_load_returns_defaults_when_no_file():
-    """load_settings() returns DEFAULT_SETTINGS when no file exists."""
+def test_load_returns_defaults_when_no_file(monkeypatch):
+    """load_settings() returns DEFAULT_SETTINGS (with hostname fill-in) when no file exists."""
+    import socket
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "test-host")
     result = load_settings()
-    assert result == DEFAULT_SETTINGS
+    expected = {**DEFAULT_SETTINGS, "device_name": "test-host"}
+    assert result == expected
 
 
 def test_load_returns_saved_values(tmp_path, monkeypatch):
@@ -82,13 +86,17 @@ def test_save_merges_with_defaults(tmp_path, monkeypatch):
 
 def test_load_handles_corrupt_json(tmp_path, monkeypatch):
     """load_settings() returns defaults gracefully on corrupt JSON."""
+    import socket
+
     fake_path = tmp_path / "settings.json"
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+    monkeypatch.setattr(socket, "gethostname", lambda: "test-host")
     fake_path.write_text("NOT VALID JSON {{{{")
 
     result = load_settings()
 
-    assert result == DEFAULT_SETTINGS
+    expected = {**DEFAULT_SETTINGS, "device_name": "test-host"}
+    assert result == expected
 
 
 def test_patch_settings_merges_single_field(tmp_path, monkeypatch):
@@ -142,3 +150,81 @@ def test_load_propagates_non_json_errors(monkeypatch):
 
     with pytest.raises(PermissionError):
         load_settings()
+
+
+# ---------------------------------------------------------------------------
+# Federation fields tests (task-3-extend-settings-federation-fields)
+# ---------------------------------------------------------------------------
+
+
+def test_defaults_include_remote_instances():
+    """DEFAULT_SETTINGS must have 'remote_instances' key initialised to []."""
+    assert "remote_instances" in DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["remote_instances"] == []
+
+
+def test_defaults_include_device_name():
+    """DEFAULT_SETTINGS must have 'device_name' key initialised to empty string."""
+    assert "device_name" in DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["device_name"] == ""
+
+
+def test_load_returns_hostname_when_device_name_empty(monkeypatch):
+    """load_settings() fills empty device_name with socket.gethostname()."""
+    import socket
+
+    monkeypatch.setattr(socket, "gethostname", lambda: "my-laptop")
+    result = load_settings()
+    assert result["device_name"] == "my-laptop"
+
+
+def test_load_preserves_explicit_device_name(tmp_path, monkeypatch):
+    """load_settings() keeps an explicitly saved device_name (does not overwrite with hostname)."""
+    import socket
+
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+    fake_path.write_text(json.dumps({"device_name": "Work PC"}))
+    monkeypatch.setattr(socket, "gethostname", lambda: "should-not-appear")
+
+    result = load_settings()
+    assert result["device_name"] == "Work PC"
+
+
+def test_remote_instances_round_trip(tmp_path, monkeypatch):
+    """remote_instances survive a save/load cycle unchanged."""
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+
+    instances = [
+        {"url": "http://host1:7681", "name": "Host 1"},
+        {"url": "http://host2:7681", "name": "Host 2"},
+    ]
+    save_settings({"remote_instances": instances})
+
+    result = load_settings()
+    assert result["remote_instances"] == instances
+
+
+def test_device_name_round_trip(tmp_path, monkeypatch):
+    """An explicit device_name survives a save/load cycle unchanged."""
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+
+    save_settings({"device_name": "My Server"})
+
+    result = load_settings()
+    assert result["device_name"] == "My Server"
+
+
+def test_load_does_not_mutate_default_remote_instances():
+    """Mutating the list returned by load_settings() must not corrupt DEFAULT_SETTINGS."""
+    result = load_settings()
+    result["remote_instances"].append({"url": "http://leaked", "name": "leaked"})
+
+    # DEFAULT_SETTINGS must be unchanged
+    assert DEFAULT_SETTINGS["remote_instances"] == []
+
+    # A second load must still return the clean default
+    result2 = load_settings()
+    assert result2["remote_instances"] == []
