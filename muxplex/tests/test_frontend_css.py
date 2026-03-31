@@ -1697,4 +1697,6 @@ def test_css_remote_instances_classes() -> None:
         ".settings-remote-remove",
         ".settings-input",
     ):
-        assert cls in css, f"Missing CSS selector '{cls}' — required for Remote Instances UI"
+        assert cls in css, (
+            f"Missing CSS selector '{cls}' — required for Remote Instances UI"
+        )
