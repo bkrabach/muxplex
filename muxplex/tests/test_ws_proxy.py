@@ -1,10 +1,107 @@
 """
-Regression tests for the WebSocket proxy in muxplex/main.py.
+Comprehensive tests for the WebSocket proxy in muxplex/main.py.
 """
 
 import inspect
+import threading
+import time
 
-from muxplex.main import terminal_ws_proxy
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from muxplex.auth import create_session_cookie
+from muxplex.main import app, terminal_ws_proxy
+
+
+# ---------------------------------------------------------------------------
+# autouse fixture — redirect state/PID files to tmp_path, mock startup side-effects
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def patch_startup_and_state(tmp_path, monkeypatch):
+    """Redirect state/PID files to tmp_path, mock kill_orphan_ttyd, replace _poll_loop with no-op."""
+    # Redirect state files
+    tmp_state_dir = tmp_path / "state"
+    tmp_state_path = tmp_state_dir / "state.json"
+    monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
+    monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
+
+    # Redirect PID files
+    tmp_pid_dir = tmp_path / "ttyd"
+    tmp_pid_path = tmp_pid_dir / "ttyd.pid"
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_DIR", tmp_pid_dir)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_PATH", tmp_pid_path)
+
+    # Mock kill_orphan_ttyd so startup doesn't touch real processes (must be async)
+    async def _mock_kill_orphan():
+        return False
+
+    monkeypatch.setattr("muxplex.main.kill_orphan_ttyd", _mock_kill_orphan)
+
+    # Replace _poll_loop with a no-op so tests don't spin up real poll cycles
+    async def noop_poll_loop() -> None:
+        pass
+
+    monkeypatch.setattr("muxplex.main._poll_loop", noop_poll_loop)
+
+
+# ---------------------------------------------------------------------------
+# Helper — create TestClient with valid session cookie
+# ---------------------------------------------------------------------------
+
+
+def _make_authed_client():
+    """Creates TestClient with valid session cookie."""
+    from muxplex.main import _auth_secret, _auth_ttl
+
+    cookie = create_session_cookie(_auth_secret, _auth_ttl)
+    client = TestClient(app)
+    client.cookies.set("muxplex_session", cookie)
+    return client
+
+
+# ---------------------------------------------------------------------------
+# FakeTtydWs — mock ttyd WebSocket for relay testing
+# ---------------------------------------------------------------------------
+
+
+class FakeTtydWs:
+    """Mock ttyd WebSocket that stores sent messages and yields pre-loaded responses.
+
+    Supports send(), close(), async iterator, and async context manager.
+    """
+
+    def __init__(self, responses=None):
+        self.sent = []
+        self._responses = list(responses or [])
+        self._closed = False
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    async def close(self):
+        self._closed = True
+
+    def __aiter__(self):
+        return self._async_gen()
+
+    async def _async_gen(self):
+        for msg in self._responses:
+            yield msg
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Test 1: regression — proxy source must use receive(), not receive_bytes()
+# ---------------------------------------------------------------------------
 
 
 def test_terminal_ws_proxy_does_not_use_receive_bytes():
@@ -26,3 +123,180 @@ def test_terminal_ws_proxy_does_not_use_receive_bytes():
     assert ".receive()" in source, (
         "client_to_ttyd must use receive() to handle both text and binary frames"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests 2–3: auth rejection
+# ---------------------------------------------------------------------------
+
+
+def test_ws_auth_rejection_no_cookie():
+    """WebSocket from non-localhost without cookie is closed with code 4001."""
+    # TestClient default host is "testclient" which is treated as non-localhost
+    with TestClient(app) as c:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with c.websocket_connect("/terminal/ws") as _:
+                pass
+    assert exc_info.value.code == 4001
+
+
+def test_ws_auth_rejection_invalid_cookie():
+    """WebSocket from non-localhost with a tampered cookie is closed with code 4001."""
+    with TestClient(app) as c:
+        c.cookies.set("muxplex_session", "tampered.invalid.cookie.value")
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with c.websocket_connect("/terminal/ws") as _:
+                pass
+    assert exc_info.value.code == 4001
+
+
+# ---------------------------------------------------------------------------
+# Tests 4–5: browser → ttyd relay
+# ---------------------------------------------------------------------------
+
+
+def test_browser_text_relayed_to_ttyd(monkeypatch):
+    """Text message from browser is forwarded to ttyd via FakeTtydWs.send()."""
+    fake_ws = FakeTtydWs()
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as ws:
+            ws.send_text("hello from browser")
+            time.sleep(0.2)  # wait for async relay
+
+    assert "hello from browser" in fake_ws.sent
+
+
+def test_browser_bytes_relayed_to_ttyd(monkeypatch):
+    """Binary message from browser is forwarded to ttyd via FakeTtydWs.send()."""
+    fake_ws = FakeTtydWs()
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as ws:
+            ws.send_bytes(b"\x00\x01\x02 binary data")
+            time.sleep(0.2)  # wait for async relay
+
+    assert b"\x00\x01\x02 binary data" in fake_ws.sent
+
+
+# ---------------------------------------------------------------------------
+# Tests 6–7: ttyd → browser relay
+# ---------------------------------------------------------------------------
+
+
+def test_ttyd_text_relayed_to_browser(monkeypatch):
+    """Text message from ttyd is forwarded to browser via websocket.send_text()."""
+    fake_ws = FakeTtydWs(responses=["hello from ttyd"])
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as ws:
+            msg = ws.receive_text()
+    assert msg == "hello from ttyd"
+
+
+def test_ttyd_bytes_relayed_to_browser(monkeypatch):
+    """Binary message from ttyd is forwarded to browser via websocket.send_bytes()."""
+    fake_ws = FakeTtydWs(responses=[b"\xde\xad\xbe\xef binary"])
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as ws:
+            msg = ws.receive_bytes()
+    assert msg == b"\xde\xad\xbe\xef binary"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: ttyd close propagates to browser
+# ---------------------------------------------------------------------------
+
+
+def test_ttyd_close_propagates_to_browser(monkeypatch):
+    """When ttyd exhausts its messages, the proxy cleans up and closes the browser WS."""
+    fake_ws = FakeTtydWs(responses=[])  # no responses — exhausts immediately
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as _:
+            time.sleep(0.2)  # give ttyd_to_client time to exhaust
+            # exit the context manager — this closes the browser-side WS,
+            # which causes client_to_ttyd to complete, then gather finishes
+            # and the proxy finally-block closes the WS
+
+    # fake_ws should have been closed when the async-with block exited
+    assert fake_ws._closed
+
+
+# ---------------------------------------------------------------------------
+# Test 9: ttyd unreachable closes browser WS
+# ---------------------------------------------------------------------------
+
+
+def test_ttyd_unreachable_closes_browser_ws(monkeypatch):
+    """OSError on ttyd connect closes the browser WebSocket (no hang, no 4001)."""
+
+    def mock_connect_raises(*args, **kwargs):
+        raise OSError("Connection refused — ttyd not running")
+
+    monkeypatch.setattr("muxplex.main.websockets.connect", mock_connect_raises)
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as ws:
+            # Proxy accepts, then closes after failing to reach ttyd.
+            # Receive the close frame — proves the proxy closed (no hang)
+            # and that auth was not rejected (which would use code 4001).
+            close_frame = ws.receive()
+    assert close_frame.get("type") == "websocket.close", (
+        "Proxy must close the WebSocket"
+    )
+    assert close_frame.get("code") != 4001, "Must not be an auth rejection (4001)"
+
+
+# ---------------------------------------------------------------------------
+# Test 10: concurrent sessions don't interfere
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_ws_sessions(monkeypatch):
+    """Two simultaneous proxy sessions relay to separate FakeTtydWs instances."""
+    # Create two separate FakeTtydWs instances, one per connection
+    ws_pool = [FakeTtydWs(), FakeTtydWs()]
+    call_count = 0
+    lock = threading.Lock()
+
+    def mock_connect(*args, **kwargs):
+        nonlocal call_count
+        with lock:
+            idx = call_count % len(ws_pool)
+            call_count += 1
+        return ws_pool[idx]
+
+    monkeypatch.setattr("muxplex.main.websockets.connect", mock_connect)
+
+    errors = []
+
+    with _make_authed_client() as c:
+
+        def send_msg(text):
+            try:
+                with c.websocket_connect("/terminal/ws") as ws:
+                    ws.send_text(text)
+                    time.sleep(0.2)
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=send_msg, args=("session_one_msg",))
+        t2 = threading.Thread(target=send_msg, args=("session_two_msg",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+    assert not errors, f"Concurrent sessions raised errors: {errors}"
+
+    # Both messages must have been relayed (one to each fake_ws)
+    all_sent = ws_pool[0].sent + ws_pool[1].sent
+    assert "session_one_msg" in all_sent
+    assert "session_two_msg" in all_sent
