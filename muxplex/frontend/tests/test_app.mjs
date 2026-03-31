@@ -2759,3 +2759,79 @@ test('renderSidebar does NOT group when only one source configured', () => {
   app._setViewMode('grid');
 });
 
+// --- Phase 2 integration tests (task-19) ---
+
+test('app.js exports all Phase 2 federation functions', () => {
+  const expectedFunctions = [
+    'api',
+    'buildSources',
+    'tagSessions',
+    'mergeSources',
+    'getVisibleSessions',
+    'renderGroupedGrid',
+    'renderFilterBar',
+    'loadGridViewMode',
+    'saveGridViewMode',
+    '_setSources',
+    '_getSources',
+    '_setServerSettings',
+    '_getGridViewMode',
+    '_setGridViewMode',
+    '_setActiveFilterDevice',
+  ];
+
+  for (const fn of expectedFunctions) {
+    assert.ok(fn in app, `app.js should export "${fn}"`);
+    assert.strictEqual(typeof app[fn], 'function', `"${fn}" should be a function`);
+  }
+});
+
+test('Phase 2 end-to-end: buildSources → tagSessions → mergeSources produces valid merged list', () => {
+  // Step 1: buildSources — build the federation source list from server settings
+  const sources = app.buildSources({
+    device_name: 'Laptop',
+    remote_instances: [
+      { url: 'https://server.example.com', name: 'Server' },
+    ],
+  });
+  assert.strictEqual(sources.length, 2, 'buildSources should produce 2 sources (local + 1 remote)');
+  assert.strictEqual(sources[0].url, '', 'first source should be local (empty url)');
+  assert.strictEqual(sources[1].url, 'https://server.example.com', 'second source should be remote');
+
+  // Step 2: tagSessions — tag sessions from each source with device/URL metadata.
+  // Both sources have a session named "main" — the classic multi-device naming conflict.
+  const rawLocal = [{ name: 'main', bell: { unseen_count: 0 } }];
+  const rawRemote = [{ name: 'main', bell: { unseen_count: 0 } }];
+  const taggedLocal = app.tagSessions(rawLocal, sources[0].name, sources[0].url);
+  const taggedRemote = app.tagSessions(rawRemote, sources[1].name, sources[1].url);
+
+  assert.strictEqual(taggedLocal[0].sessionKey, '::main', 'local session key should be ::main');
+  assert.strictEqual(
+    taggedRemote[0].sessionKey,
+    'https://server.example.com::main',
+    'remote session key should include source URL',
+  );
+
+  // Step 3: mergeSources — merge all source results into a flat tagged list.
+  // mergeSources internally calls tagSessions, so we pass raw (untagged) sessions.
+  const merged = app.mergeSources([
+    { source: sources[0], sessions: rawLocal },
+    { source: sources[1], sessions: rawRemote },
+  ]);
+
+  assert.strictEqual(merged.length, 2, 'merged list should contain 2 sessions total');
+
+  // Same-named sessions from different devices must have different sessionKeys.
+  const sessionKeys = merged.map((s) => s.sessionKey);
+  assert.strictEqual(
+    new Set(sessionKeys).size,
+    2,
+    'same-named sessions from different devices should have different sessionKeys',
+  );
+  assert.ok(sessionKeys.includes('::main'), 'local session key "::main" should be present in merged list');
+  assert.ok(
+    sessionKeys.includes('https://server.example.com::main'),
+    'remote session key "https://server.example.com::main" should be present in merged list',
+  );
+});
+
