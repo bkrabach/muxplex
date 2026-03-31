@@ -1198,11 +1198,13 @@ function _buildRemoteInstanceRow(url, name) {
   urlInput.className = 'settings-remote-url';
   urlInput.placeholder = 'http://192.168.1.x:8000';
   urlInput.value = url || '';
+  urlInput.setAttribute('aria-label', 'Remote instance URL');
   var nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.className = 'settings-remote-name';
   nameInput.placeholder = 'Device name';
   nameInput.value = name || '';
+  nameInput.setAttribute('aria-label', 'Remote instance display name');
   var removeBtn = document.createElement('button');
   removeBtn.className = 'settings-remote-remove';
   removeBtn.textContent = '\u00d7';

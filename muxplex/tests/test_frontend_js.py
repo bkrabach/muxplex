@@ -2416,3 +2416,31 @@ def test_bind_static_event_listeners_remote_instance_remove() -> None:
     assert "settings-remote-remove" in body, (
         "bindStaticEventListeners must handle delegated clicks on .settings-remote-remove buttons"
     )
+
+
+def test_build_remote_instance_row_url_input_aria_label() -> None:
+    """urlInput in _buildRemoteInstanceRow must have an aria-label attribute."""
+    match = re.search(
+        r"function _buildRemoteInstanceRow\s*\(.*?\)\s*\{(.*?)(?=\n(?:function|/\*\*|window\.)|\n})",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_buildRemoteInstanceRow function not found in app.js"
+    body = match.group(1)
+    assert "Remote instance URL" in body, (
+        "urlInput must have aria-label='Remote instance URL' for screen-reader accessibility"
+    )
+
+
+def test_build_remote_instance_row_name_input_aria_label() -> None:
+    """nameInput in _buildRemoteInstanceRow must have an aria-label attribute."""
+    match = re.search(
+        r"function _buildRemoteInstanceRow\s*\(.*?\)\s*\{(.*?)(?=\n(?:function|/\*\*|window\.)|\n})",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_buildRemoteInstanceRow function not found in app.js"
+    body = match.group(1)
+    assert "Remote instance display name" in body, (
+        "nameInput must have aria-label='Remote instance display name' for screen-reader accessibility"
+    )

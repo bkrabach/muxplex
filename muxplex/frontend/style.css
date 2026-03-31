@@ -1485,8 +1485,8 @@ body {
   align-items: center;
 }
 
-.settings-remote-url {
-  flex: 2;
+.settings-remote-url,
+.settings-remote-name {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1497,22 +1497,15 @@ body {
   transition: border-color 0.15s;
 }
 
-.settings-remote-url:focus {
-  border-color: var(--accent);
+.settings-remote-url {
+  flex: 2;
 }
 
 .settings-remote-name {
   flex: 1;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 13px;
-  padding: 5px 8px;
-  outline: none;
-  transition: border-color 0.15s;
 }
 
+.settings-remote-url:focus,
 .settings-remote-name:focus {
   border-color: var(--accent);
 }
@@ -1531,6 +1524,7 @@ body {
 }
 
 .settings-remote-remove:hover {
-  border-color: var(--accent);
-  color: var(--text);
+  border-color: #ef4444;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
 }
