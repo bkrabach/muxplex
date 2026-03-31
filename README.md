@@ -68,7 +68,7 @@ muxplex
 
 ```bash
 # Install and load the launchd agent (auto-starts on login)
-muxplex install-service
+muxplex install-service   # deprecated — use 'muxplex service install'
 launchctl load ~/Library/LaunchAgents/com.muxplex.plist
 ```
 
@@ -81,7 +81,7 @@ launchctl unload ~/Library/LaunchAgents/com.muxplex.plist
 
 ```bash
 # Install and enable the user systemd service
-muxplex install-service
+muxplex install-service   # deprecated — use 'muxplex service install'
 systemctl --user daemon-reload
 systemctl --user enable --now muxplex
 ```
@@ -92,7 +92,7 @@ The service starts automatically when you log in and restarts on failure.
 
 ```bash
 # Install as a system service (runs at boot for all users)
-muxplex install-service --system
+muxplex install-service --system   # deprecated — use 'muxplex service install --system'
 sudo systemctl daemon-reload
 sudo systemctl enable --now muxplex
 ```
@@ -103,32 +103,39 @@ sudo systemctl enable --now muxplex
 
 ```bash
 muxplex [OPTIONS]
+muxplex serve [OPTIONS]     # explicit form
 ```
 
-| Option | Default | Description |
-|---|---|---|
-| `--host HOST` | `0.0.0.0` | Interface to bind (use `127.0.0.1` to restrict to localhost) |
-| `--port PORT` | `8088` | Port to listen on |
-| `install-service` | — | Install as a background service (launchd on macOS, systemd on Linux/WSL) |
-| `--system` | — | (with `install-service`) Install as a system service instead of user service |
+All serve options read from `~/.config/muxplex/settings.json` by default. CLI flags override for that run only.
+
+| Option | settings.json key | Default | Description |
+|---|---|---|---|
+| `--host HOST` | `host` | `127.0.0.1` | Interface to bind (`0.0.0.0` for network access) |
+| `--port PORT` | `port` | `8088` | Port to listen on |
+| `--auth MODE` | `auth` | `pam` | Auth method: `pam` or `password` |
+| `--session-ttl SEC` | `session_ttl` | `604800` | Session TTL in seconds (7 days; 0 = browser session) |
+
+### Other commands
+
+| Command | Description |
+|---|---|
+| `muxplex doctor` | Check dependencies and system status |
+| `muxplex upgrade` | Upgrade to latest version and restart service |
+| `muxplex show-password` | Show the current muxplex password |
+| `muxplex reset-secret` | Regenerate signing secret (invalidates sessions) |
+| `muxplex install-service` | *(deprecated — use `muxplex service install`)* |
 
 ### Examples
 
 ```bash
-# Start on default host/port
+# Start with defaults from settings.json
 muxplex
 
-# Start on a specific port
+# Override port for this run only
 muxplex --port 9000
 
-# Start bound to localhost only
-muxplex --host 127.0.0.1
-
-# Install as a user systemd service
-muxplex install-service
-
-# Install as a system-wide systemd service
-muxplex install-service --system
+# Override host for this run only
+muxplex serve --host 0.0.0.0
 ```
 
 ---
