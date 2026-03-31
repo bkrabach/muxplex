@@ -681,39 +681,101 @@ function bindSidebarClickAway() {
  * Binds click and keydown handlers on each tile.
  * @param {object[]} sessions
  */
-function renderGrid(sessions) {
-  const grid = $('session-grid');
-  const emptyState = $('empty-state');
 
-  const visible = getVisibleSessions(sessions);
+/**
+ * Render sessions grouped by device name. Returns HTML string.
+ * @param {object[]} sessions - sorted, visible sessions
+ * @param {boolean} mobile
+ * @returns {string}
+ */
+function renderGroupedGrid(sessions, mobile) {
+  // Group by deviceName
+  var groups = {};
+  var groupOrder = [];
+  for (var i = 0; i < sessions.length; i++) {
+    var dn = sessions[i].deviceName || 'Unknown';
+    if (!groups[dn]) {
+      groups[dn] = [];
+      groupOrder.push(dn);
+    }
+    groups[dn].push(sessions[i]);
+  }
+
+  var html = '';
+  for (var g = 0; g < groupOrder.length; g++) {
+    var name = groupOrder[g];
+    html += '<h3 class="device-group-header">' + escapeHtml(name) + '</h3>';
+    var groupSessions = groups[name];
+    for (var j = 0; j < groupSessions.length; j++) {
+      html += buildTileHTML(groupSessions[j], j, mobile);
+    }
+  }
+  return html;
+}
+
+function renderGrid(sessions) {
+  var grid = $('session-grid');
+  var emptyState = $('empty-state');
+  var filterBar = $('filter-bar');
+
+  var visible = getVisibleSessions(sessions);
+
+  // In filtered mode, apply device filter
+  if (_gridViewMode === 'filtered' && _activeFilterDevice !== 'all') {
+    visible = visible.filter(function(s) { return s.deviceName === _activeFilterDevice; });
+  }
 
   if (visible.length === 0) {
     if (grid) grid.innerHTML = '';
     if (emptyState) emptyState.classList.remove('hidden');
+    // Show filter bar even when filtered to empty (so user can switch back)
+    if (filterBar) {
+      if (_gridViewMode === 'filtered') {
+        renderFilterBar(filterBar, sessions);
+      } else {
+        filterBar.innerHTML = '';
+      }
+    }
     return;
   }
 
   if (emptyState) emptyState.classList.add('hidden');
 
   // Apply sort order from server settings
-  const sortOrder = _serverSettings && _serverSettings.sort_order;
-  const mobile = isMobile();
-  let ordered;
+  var sortOrder = _serverSettings && _serverSettings.sort_order;
+  var mobile = isMobile();
+  var ordered;
   if (sortOrder === 'alphabetical') {
-    ordered = visible.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    ordered = visible.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
   } else {
     // 'recent', 'manual', and default use server-provided order; priority sort on mobile
     ordered = mobile ? sortByPriority(visible) : visible;
   }
-  const html = ordered.map((session, index) => buildTileHTML(session, index, mobile)).join('');
+
+  var html;
+  if (_gridViewMode === 'grouped') {
+    html = renderGroupedGrid(ordered, mobile);
+  } else {
+    html = ordered.map(function(session, index) { return buildTileHTML(session, index, mobile); }).join('');
+  }
+
   if (grid) grid.innerHTML = html;
 
+  // Render filter bar
+  if (filterBar) {
+    if (_gridViewMode === 'filtered') {
+      renderFilterBar(filterBar, sessions);
+    } else {
+      filterBar.innerHTML = '';
+    }
+  }
+
   // Bind interaction handlers on each tile
-  document.querySelectorAll('.session-tile').forEach((tile) => {
-    on(tile, 'click', () => openSession(tile.dataset.session));
-    on(tile, 'keydown', (e) => {
+  document.querySelectorAll('.session-tile').forEach(function(tile) {
+    on(tile, 'click', function() { openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl }); });
+    on(tile, 'keydown', function(e) {
       if (e.key === 'Enter' || e.key === ' ') {
-        openSession(tile.dataset.session);
+        openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl });
       }
     });
   });
@@ -1791,6 +1853,11 @@ function _getGridViewMode() {
   return _gridViewMode;
 }
 
+/** Test-only: set _gridViewMode directly. */
+function _setGridViewMode(mode) {
+  _gridViewMode = mode;
+}
+
 /** Test-only: get _sources. */
 function _getSources() {
   return _sources;
@@ -1839,6 +1906,7 @@ if (typeof module !== 'undefined' && module.exports) {
     toggleSidebar,
     bindSidebarClickAway,
     renderGrid,
+    renderGroupedGrid,
     requestNotificationPermission,
     handleBellTransitions,
     sendHeartbeat,
@@ -1891,6 +1959,7 @@ if (typeof module !== 'undefined' && module.exports) {
     _setSources,
     _setServerSettings,
     _getGridViewMode,
+    _setGridViewMode,
     _getSources,
   };
 }

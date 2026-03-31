@@ -2503,4 +2503,47 @@ test('pollSessions sets unreachable and applies exponential backoff on network e
   app._setSources([]);
 });
 
+// --- renderGrid grouped mode (task-11) ---
+
+test('renderGrid in grouped mode produces device-group-header elements', () => {
+  const collectedHTML = [];
+  const mockGrid = {
+    get innerHTML() { return collectedHTML[0] || ''; },
+    set innerHTML(v) { collectedHTML[0] = v; },
+  };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  // Set up sessions from two different devices
+  const sessions = [
+    { name: 'alpha', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::alpha', snapshot: '' },
+    { name: 'beta', deviceName: 'Server', sourceUrl: 'http://remote', sessionKey: 'http://remote::beta', snapshot: '' },
+  ];
+
+  app._setGridViewMode('grouped');
+  app.renderGrid(sessions);
+
+  const html = mockGrid.innerHTML;
+  assert.ok(html.includes('device-group-header'), 'grid HTML should contain device-group-header elements');
+  assert.ok(html.includes('Laptop'), 'grid HTML should contain device name "Laptop"');
+  assert.ok(html.includes('Server'), 'grid HTML should contain device name "Server"');
+
+  // Reset state
+  app._setGridViewMode('flat');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+});
+
+test('_setGridViewMode and renderGroupedGrid are exported', () => {
+  assert.strictEqual(typeof app._setGridViewMode, 'function', '_setGridViewMode should be exported');
+  assert.strictEqual(typeof app.renderGroupedGrid, 'function', 'renderGroupedGrid should be exported');
+});
+
 
