@@ -33,6 +33,35 @@ Environment=PATH={safe_path}
 WantedBy=default.target
 """
 
+_LAUNCHD_PLIST_TEMPLATE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.muxplex</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{muxplex_bin}</string>
+        <string>serve</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{safe_path}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/muxplex.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/muxplex.err</string>
+</dict>
+</plist>
+"""
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
@@ -122,36 +151,56 @@ def _systemd_logs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Private stubs — launchd (macOS)
+# Private implementations — launchd (macOS)
 # ---------------------------------------------------------------------------
 
 
 def _launchd_install() -> None:
-    raise NotImplementedError("launchd install not implemented")
+    muxplex_bin = _resolve_muxplex_bin()
+    base_path = os.environ.get("PATH", "/usr/bin:/bin")
+    safe_path = f"/opt/homebrew/bin:/usr/local/bin:{base_path}"
+    plist_content = _LAUNCHD_PLIST_TEMPLATE.format(
+        muxplex_bin=muxplex_bin, safe_path=safe_path
+    )
+    _LAUNCHD_PLIST_DIR.mkdir(parents=True, exist_ok=True)
+    _LAUNCHD_PLIST_PATH.write_text(plist_content)
+    uid = os.getuid()
+    subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(_LAUNCHD_PLIST_PATH)], check=True
+    )
+    _prompt_host_if_localhost()
 
 
 def _launchd_uninstall() -> None:
-    raise NotImplementedError("launchd uninstall not implemented")
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"], check=True)
+    _LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
 
 
 def _launchd_start() -> None:
-    raise NotImplementedError("launchd start not implemented")
+    uid = os.getuid()
+    subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(_LAUNCHD_PLIST_PATH)], check=True
+    )
 
 
 def _launchd_stop() -> None:
-    raise NotImplementedError("launchd stop not implemented")
+    uid = os.getuid()
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"], check=True)
 
 
 def _launchd_restart() -> None:
-    raise NotImplementedError("launchd restart not implemented")
+    _launchd_stop()
+    _launchd_start()
 
 
 def _launchd_status() -> None:
-    raise NotImplementedError("launchd status not implemented")
+    uid = os.getuid()
+    subprocess.run(["launchctl", "print", f"gui/{uid}/{_LAUNCHD_LABEL}"], check=True)
 
 
 def _launchd_logs() -> None:
-    raise NotImplementedError("launchd logs not implemented")
+    subprocess.run(["tail", "-f", "/tmp/muxplex.log"], check=True)
 
 
 # ---------------------------------------------------------------------------

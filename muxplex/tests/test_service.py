@@ -148,3 +148,120 @@ def test_systemd_logs_calls_journalctl(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
     svc._systemd_logs()
     assert ["journalctl", "--user", "-u", "muxplex", "-f"] in calls
+
+
+# ---------------------------------------------------------------------------
+# launchd tests
+# ---------------------------------------------------------------------------
+
+
+def test_launchd_install_writes_plist_and_bootstraps(monkeypatch, tmp_path):
+    """_launchd_install writes plist with 'com.muxplex' and 'serve' (no --host/--port)
+    and calls launchctl bootstrap with gui/{uid}."""
+    import os
+
+    import muxplex.service as svc
+
+    plist_dir = tmp_path / "LaunchAgents"
+    plist_path = plist_dir / "com.muxplex.plist"
+
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    # Suppress interactive prompt
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._launchd_install()
+
+    # Plist file must exist and contain expected content
+    assert plist_path.exists(), "plist file was not written"
+    content = plist_path.read_text()
+    assert "com.muxplex" in content, "plist must contain 'com.muxplex'"
+    assert "serve" in content, "plist ProgramArguments must include 'serve'"
+    assert "--host" not in content, "plist must NOT contain --host"
+    assert "--port" not in content, "plist must NOT contain --port"
+
+    # bootstrap must be called with gui/501
+    bootstrap_calls = [c for c in calls if "bootstrap" in c]
+    assert bootstrap_calls, "launchctl bootstrap not called"
+    bootstrap_cmd = bootstrap_calls[0]
+    assert "gui/501" in bootstrap_cmd, (
+        f"bootstrap must use gui/501, got: {bootstrap_cmd}"
+    )
+
+
+def test_launchd_uninstall_bootouts_and_removes(monkeypatch, tmp_path):
+    """_launchd_uninstall calls launchctl bootout and removes the plist file."""
+    import os
+
+    import muxplex.service as svc
+
+    plist_dir = tmp_path / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    plist_path = plist_dir / "com.muxplex.plist"
+    plist_path.write_text("<plist/>")
+
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    svc._launchd_uninstall()
+
+    # bootout must be called
+    bootout_calls = [c for c in calls if "bootout" in c]
+    assert bootout_calls, "launchctl bootout not called"
+    bootout_cmd = bootout_calls[0]
+    assert "gui/501" in " ".join(bootout_cmd), (
+        f"bootout must reference gui/501, got: {bootout_cmd}"
+    )
+    assert "com.muxplex" in " ".join(bootout_cmd), (
+        f"bootout must reference com.muxplex, got: {bootout_cmd}"
+    )
+
+    # plist must be removed
+    assert not plist_path.exists(), "plist file was not deleted"
+
+
+def test_launchd_stop_calls_bootout(monkeypatch):
+    """_launchd_stop runs launchctl bootout gui/{uid}/com.muxplex."""
+    import os
+
+    import muxplex.service as svc
+
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    svc._launchd_stop()
+
+    bootout_calls = [c for c in calls if "bootout" in c]
+    assert bootout_calls, "launchctl bootout not called"
+    bootout_cmd = bootout_calls[0]
+    assert "gui/501" in " ".join(bootout_cmd), (
+        f"bootout must reference gui/501, got: {bootout_cmd}"
+    )
+    assert "com.muxplex" in " ".join(bootout_cmd), (
+        f"bootout must reference com.muxplex, got: {bootout_cmd}"
+    )
+
+
+def test_launchd_logs_tails_log_file(monkeypatch):
+    """_launchd_logs runs exactly ['tail', '-f', '/tmp/muxplex.log']."""
+    import muxplex.service as svc
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    svc._launchd_logs()
+
+    assert ["tail", "-f", "/tmp/muxplex.log"] in calls, (
+        f"Expected ['tail', '-f', '/tmp/muxplex.log'], got: {calls}"
+    )
