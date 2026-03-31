@@ -241,25 +241,84 @@ function setConnectionStatus(level) {
 
 // ─── Session polling ─────────────────────────────────────────────────────────────────────────────
 /**
- * Fetch /api/sessions and update the UI. Called by startPolling.
+ * Fetch sessions from all configured _sources in parallel and update the UI.
+ * Falls back to local-only polling when _sources is empty.
+ * Called by startPolling.
  * @returns {Promise<void>}
  */
 async function pollSessions() {
-  try {
-    const res = await api('GET', '/api/sessions');
-    const sessions = await res.json();
-    const prev = _currentSessions;
-    _currentSessions = sessions;
+  // Falls back to local-only if _sources is empty
+  if (!_sources || _sources.length === 0) {
+    try {
+      const res = await api('GET', '/api/sessions');
+      const sessions = await res.json();
+      const prev = _currentSessions;
+      _currentSessions = sessions;
+      _pollFailCount = 0;
+      setConnectionStatus('ok');
+      renderGrid(sessions);
+      renderSidebar(sessions, _viewingSession);
+      handleBellTransitions(prev, sessions);
+      updateSessionPill(sessions);
+    } catch (err) {
+      _pollFailCount++;
+      setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
+    }
+    return;
+  }
+
+  // Multi-source parallel polling
+  const now = Date.now();
+  const fetchResults = await Promise.all(
+    _sources.map(async (source) => {
+      // Skip sources currently in backoff (nextRetryAt in future)
+      if (source.nextRetryAt && now < source.nextRetryAt) {
+        return null;
+      }
+      try {
+        const res = await api('GET', '/api/sessions', undefined, source.url || undefined);
+        const sessions = await res.json();
+        // Reset source status on success
+        source.status = 'authenticated';
+        source.backoffMs = 2000;
+        delete source.nextRetryAt;
+        return { source, sessions };
+      } catch (err) {
+        const msg = err.message || '';
+        if (msg.includes('401') || msg.includes('403')) {
+          source.status = 'auth_required';
+        } else {
+          source.status = 'unreachable';
+          // Exponential backoff: current * 2, capped at 30s
+          const newBackoff = Math.min((source.backoffMs || 2000) * 2, 30000);
+          source.backoffMs = newBackoff;
+          source.nextRetryAt = Date.now() + newBackoff;
+        }
+        return null;
+      }
+    }),
+  );
+
+  // Filter skipped/failed sources and merge results
+  const validResults = fetchResults.filter((r) => r !== null);
+  const merged = mergeSources(validResults);
+
+  // Connection status is based on local source health
+  const localSource = _sources.find((s) => s.type === 'local' || s.url === '');
+  if (localSource && localSource.status === 'authenticated') {
     _pollFailCount = 0;
     setConnectionStatus('ok');
-    renderGrid(sessions);
-    renderSidebar(sessions, _viewingSession);
-    handleBellTransitions(prev, sessions);
-    updateSessionPill(sessions);
-  } catch (err) {
+  } else {
     _pollFailCount++;
     setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
   }
+
+  const prev = _currentSessions;
+  _currentSessions = merged;
+  renderGrid(merged);
+  renderSidebar(merged, _viewingSession);
+  handleBellTransitions(prev, merged);
+  updateSessionPill(merged);
 }
 
 /**
