@@ -1025,3 +1025,96 @@ def test_doctor_shows_serve_config(tmp_path, monkeypatch, capsys):
     assert "0.0.0.0" in out
     assert "9999" in out
     assert "password" in out
+
+
+# ---------------------------------------------------------------------------
+# service subcommand dispatch tests
+# ---------------------------------------------------------------------------
+
+
+def test_service_install_dispatches():
+    """muxplex service install must call service_install()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_install") as mock_fn:
+        with patch("sys.argv", ["muxplex", "service", "install"]):
+            main()
+    mock_fn.assert_called_once()
+
+
+def test_service_uninstall_dispatches():
+    """muxplex service uninstall must call service_uninstall()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_uninstall") as mock_fn:
+        with patch("sys.argv", ["muxplex", "service", "uninstall"]):
+            main()
+    mock_fn.assert_called_once()
+
+
+def test_service_start_dispatches():
+    """muxplex service start must call service_start()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_start") as mock_fn:
+        with patch("sys.argv", ["muxplex", "service", "start"]):
+            main()
+    mock_fn.assert_called_once()
+
+
+def test_service_stop_dispatches():
+    """muxplex service stop must call service_stop()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_stop") as mock_fn:
+        with patch("sys.argv", ["muxplex", "service", "stop"]):
+            main()
+    mock_fn.assert_called_once()
+
+
+def test_service_restart_dispatches():
+    """muxplex service restart must call service_restart()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_restart") as mock_fn:
+        with patch("sys.argv", ["muxplex", "service", "restart"]):
+            main()
+    mock_fn.assert_called_once()
+
+
+def test_service_status_dispatches():
+    """muxplex service status must call service_status()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_status") as mock_fn:
+        with patch("sys.argv", ["muxplex", "service", "status"]):
+            main()
+    mock_fn.assert_called_once()
+
+
+def test_service_logs_dispatches():
+    """muxplex service logs must call service_logs()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_logs") as mock_fn:
+        with patch("sys.argv", ["muxplex", "service", "logs"]):
+            main()
+    mock_fn.assert_called_once()
+
+
+def test_service_subcommand_in_help():
+    """'service' must appear in muxplex --help output."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue().lower()
+    assert "service" in help_text

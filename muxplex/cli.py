@@ -707,6 +707,18 @@ def main() -> None:
         "--system", action="store_true", help="System-wide (requires sudo)"
     )
 
+    service_parser = sub.add_parser(
+        "service", help="Manage the muxplex background service"
+    )
+    service_sub = service_parser.add_subparsers(dest="service_command")
+    service_sub.add_parser("install", help="Install + enable + start the service")
+    service_sub.add_parser("uninstall", help="Stop + disable + remove the service")
+    service_sub.add_parser("start", help="Start the service")
+    service_sub.add_parser("stop", help="Stop the service")
+    service_sub.add_parser("restart", help="Stop + start the service")
+    service_sub.add_parser("status", help="Show service status")
+    service_sub.add_parser("logs", help="Tail service logs")
+
     sub.add_parser("show-password", help="Show the current muxplex password")
 
     sub.add_parser(
@@ -743,6 +755,34 @@ def main() -> None:
         doctor()
     elif args.command in ("upgrade", "update"):
         upgrade(force=getattr(args, "force", False))
+    elif args.command == "service":
+        from muxplex.service import (  # noqa: PLC0415
+            service_install,
+            service_logs,
+            service_restart,
+            service_start,
+            service_status,
+            service_stop,
+            service_uninstall,
+        )
+
+        cmd = getattr(args, "service_command", None)
+        if cmd == "install":
+            service_install()
+        elif cmd == "uninstall":
+            service_uninstall()
+        elif cmd == "start":
+            service_start()
+        elif cmd == "stop":
+            service_stop()
+        elif cmd == "restart":
+            service_restart()
+        elif cmd == "status":
+            service_status()
+        elif cmd == "logs":
+            service_logs()
+        else:
+            service_parser.print_help()
     else:
         _check_dependencies()
         serve(
