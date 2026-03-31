@@ -1254,13 +1254,11 @@ async function openSession(name, opts = {}) {
   // Always spawn ttyd for this session — ensures correct session after service restart or page restore
   var _sourceUrl = opts.sourceUrl || '';
   try {
-    if (!opts.skipConnect) {
-      if (_sourceUrl) {
-        var remoteConnectUrl = _sourceUrl.replace(/\/+$/, '') + '/api/sessions/' + encodeURIComponent(name) + '/connect';
-        await fetch(remoteConnectUrl, { method: 'POST', credentials: 'include' });
-      } else {
-        await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/connect');
-      }
+    if (_sourceUrl) {
+      var remoteConnectUrl = _sourceUrl.replace(/\/+$/, '') + '/api/sessions/' + encodeURIComponent(name) + '/connect';
+      await fetch(remoteConnectUrl, { method: 'POST', credentials: 'include' });
+    } else {
+      await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/connect');
     }
   } catch (err) {
     showToast(err.message || 'Connection failed');

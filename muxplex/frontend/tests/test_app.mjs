@@ -3317,7 +3317,7 @@ test('openSession always POSTs to connect even when skipConnect option is passed
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: { removeProperty: () => {} }, classList: { remove: () => {}, add: () => {} } });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
