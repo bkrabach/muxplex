@@ -2936,14 +2936,15 @@ test('loadGridViewMode reads from localStorage when scope is local', () => {
   _localStorageStore = {};
 });
 
-test('loadGridViewMode reads from serverSettings when scope is server', () => {
-  // Set display settings with viewPreferenceScope 'server', server has grid_view_mode 'filtered'
+test('loadGridViewMode reads from localStorage regardless of viewPreferenceScope', () => {
+  // viewPreferenceScope is no longer used — loadGridViewMode always reads from localStorage
   _localStorageStore = {};
-  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server' });
-  app._setServerSettings({ grid_view_mode: 'filtered' });
+  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server', gridViewMode: 'filtered' });
+  app._setServerSettings({ grid_view_mode: 'grouped' });
 
   const mode = app.loadGridViewMode();
-  assert.strictEqual(mode, 'filtered', 'loadGridViewMode should return grid_view_mode from serverSettings when scope is server');
+  // Must return localStorage value ('filtered'), NOT server value ('grouped')
+  assert.strictEqual(mode, 'filtered', 'loadGridViewMode should always return gridViewMode from localStorage');
 
   // Cleanup
   _localStorageStore = {};
@@ -3709,5 +3710,110 @@ test('applyFitLayout does NOT measure DOM dimensions (pure arithmetic)', () => {
     'applyFitLayout must NOT call getComputedStyle — pure 1fr CSS handles gap/padding');
   assert.ok(!fnBody.includes('.style.height'),
     'applyFitLayout must NOT set inline tile heights — CSS grid 1fr rows handle sizing');
+});
+
+// ─── Settings tab reorganization (4 tabs) ────────────────────────────────────
+
+test('HTML settings dialog has exactly 4 tab buttons', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const tabMatches = source.match(/class="settings-tab[^"]*"\s+data-tab=/g) || [];
+  assert.strictEqual(tabMatches.length, 4, 'settings dialog must have exactly 4 tab buttons (not 5)');
+});
+
+test('HTML index.html has no Notifications tab button', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(!source.includes('data-tab="notifications"'), 'Notifications tab button must be removed');
+});
+
+test('HTML Sessions panel contains bell-sound checkbox', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  // Find the sessions PANEL div specifically (not the tab button)
+  const sessionsPanelStart = source.indexOf('<div class="settings-panel hidden" data-tab="sessions"');
+  assert.ok(sessionsPanelStart !== -1, 'sessions panel div must exist');
+  // Find the end: next settings-panel div
+  const nextPanel = source.indexOf('<div class="settings-panel', sessionsPanelStart + 1);
+  const sessionsPanelContent = source.substring(sessionsPanelStart, nextPanel !== -1 ? nextPanel : sessionsPanelStart + 4000);
+  assert.ok(sessionsPanelContent.includes('setting-bell-sound'), 'bell-sound checkbox must be in sessions panel');
+});
+
+test('HTML Sessions panel contains desktop notifications request button', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  // Find the sessions PANEL div specifically (not the tab button)
+  const sessionsPanelStart = source.indexOf('<div class="settings-panel hidden" data-tab="sessions"');
+  assert.ok(sessionsPanelStart !== -1, 'sessions panel div must exist');
+  const nextPanel = source.indexOf('<div class="settings-panel', sessionsPanelStart + 1);
+  const sessionsPanelContent = source.substring(sessionsPanelStart, nextPanel !== -1 ? nextPanel : sessionsPanelStart + 4000);
+  assert.ok(sessionsPanelContent.includes('notification-request-btn'), 'notification-request-btn must be in sessions panel');
+});
+
+test('HTML Display panel contains device name input outside #multi-device-fields', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  // Find the display PANEL div specifically (not the tab button)
+  const displayPanelStart = source.indexOf('<div class="settings-panel" data-tab="display"');
+  assert.ok(displayPanelStart !== -1, 'display panel div must exist');
+  const nextPanel = source.indexOf('<div class="settings-panel', displayPanelStart + 1);
+  const displayPanelContent = source.substring(displayPanelStart, nextPanel !== -1 ? nextPanel : displayPanelStart + 3000);
+  assert.ok(displayPanelContent.includes('setting-device-name'), 'device name input must be in display panel');
+  // Must NOT be inside #multi-device-fields
+  const multiDeviceIdx = displayPanelContent.indexOf('multi-device-fields');
+  const deviceNameIdx = displayPanelContent.indexOf('setting-device-name');
+  if (multiDeviceIdx !== -1) {
+    assert.ok(deviceNameIdx < multiDeviceIdx, 'device name input must NOT be inside #multi-device-fields');
+  }
+});
+
+test('HTML index.html has no setting-view-scope select element', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(!source.includes('setting-view-scope'), '#setting-view-scope must be removed from HTML');
+});
+
+test('loadGridViewMode always reads from localStorage (ignores viewPreferenceScope=server)', () => {
+  // After removing view scope, loadGridViewMode should ALWAYS use localStorage regardless
+  _localStorageStore = {};
+  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server', gridViewMode: 'grouped' });
+  app._setServerSettings({ grid_view_mode: 'filtered' });
+
+  const mode = app.loadGridViewMode();
+  // Must return the localStorage value ('grouped'), NOT the server value ('filtered')
+  assert.strictEqual(mode, 'grouped', 'loadGridViewMode must always read from localStorage — server scope removed');
+
+  // Cleanup
+  _localStorageStore = {};
+  app._setServerSettings(null);
+});
+
+test('saveGridViewMode always writes to localStorage (ignores viewPreferenceScope=server)', () => {
+  _localStorageStore = {};
+  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server' });
+  app._setServerSettings({ grid_view_mode: 'flat' });
+
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true, json: async () => ({}) }; };
+
+  app.saveGridViewMode('filtered');
+
+  // Must NOT call fetch (no server PATCH), must write to localStorage
+  assert.strictEqual(fetchCalls.length, 0, 'saveGridViewMode must NOT call fetch — server scope removed');
+  const saved = JSON.parse(_localStorageStore['muxplex.display'] || '{}');
+  assert.strictEqual(saved.gridViewMode, 'filtered', 'gridViewMode must be saved to localStorage');
+
+  // Cleanup
+  globalThis.fetch = origFetch;
+  _localStorageStore = {};
+  app._setGridViewMode('flat');
+  app._setServerSettings(null);
+});
+
+test('bindStaticEventListeners does NOT bind change event to setting-view-scope', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 8000);
+  assert.ok(
+    !fnBody.includes('setting-view-scope'),
+    'bindStaticEventListeners must NOT reference setting-view-scope — view scope removed',
+  );
 });
 

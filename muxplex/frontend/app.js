@@ -1593,36 +1593,23 @@ function applyDisplaySettings(ds) {
 }
 
 /**
- * Load grid view mode preference based on viewPreferenceScope in display settings.
- * When scope is 'local' (default), reads gridViewMode from display settings (localStorage).
- * When scope is 'server', reads grid_view_mode from _serverSettings.
+ * Load grid view mode preference from display settings (localStorage).
  * Returns 'flat' as default.
  * @returns {string}
  */
 function loadGridViewMode() {
   var ds = loadDisplaySettings();
-  var scope = ds.viewPreferenceScope || 'local';
-  if (scope === 'server') {
-    return (_serverSettings && _serverSettings.grid_view_mode) || 'flat';
-  }
   return ds.gridViewMode || 'flat';
 }
 
 /**
- * Save grid view mode preference to the appropriate scope and update _gridViewMode.
- * When scope is 'local', saves gridViewMode to display settings (localStorage).
- * When scope is 'server', patches the server setting via patchServerSetting.
+ * Save grid view mode preference to display settings (localStorage) and update _gridViewMode.
  * @param {string} mode - The grid view mode to save.
  */
 function saveGridViewMode(mode) {
   var ds = loadDisplaySettings();
-  var scope = ds.viewPreferenceScope || 'local';
-  if (scope === 'server') {
-    patchServerSetting('grid_view_mode', mode);
-  } else {
-    ds.gridViewMode = mode;
-    saveDisplaySettings(ds);
-  }
+  ds.gridViewMode = mode;
+  saveDisplaySettings(ds);
   _gridViewMode = mode;
 }
 
@@ -1693,8 +1680,6 @@ function openSettings() {
   if (gridColumnsEl) gridColumnsEl.value = String(settings.gridColumns);
   const viewModeEl = $('setting-view-mode');
   if (viewModeEl) viewModeEl.value = loadGridViewMode();
-  const viewScopeEl = $('setting-view-scope');
-  if (viewScopeEl) viewScopeEl.value = settings.viewPreferenceScope || 'local';
 
   // Populate Notifications tab from display settings
   const bellSoundEl = $('setting-bell-sound');
@@ -2225,17 +2210,7 @@ function bindStaticEventListeners() {
       renderGrid(_currentSessions || []);
     }
   });
-  on($('setting-view-scope'), 'change', function() {
-    var el = $('setting-view-scope');
-    if (!el) return;
-    var newScope = el.value;
-    var currentMode = _gridViewMode;
-    var ds = loadDisplaySettings();
-    ds.viewPreferenceScope = newScope;
-    saveDisplaySettings(ds);
-    // Migrate current mode to new scope
-    saveGridViewMode(currentMode);
-  });
+
 
   // Sessions settings — bind change events for server-side persistence
   on($('setting-default-session'), 'change', function() {
