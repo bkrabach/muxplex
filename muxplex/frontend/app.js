@@ -1086,9 +1086,12 @@ async function openSession(name, opts = {}) {
   if (fab) fab.classList.add('hidden');
 
   // Connect to session (kill old ttyd, spawn new one for this session)
+  var sourceUrl = opts.sourceUrl || '';
   try {
     if (!opts.skipConnect) {
-      await api('POST', `/api/sessions/${name}/connect`);
+      if (!sourceUrl) {
+        await api('POST', `/api/sessions/${name}/connect`);
+      }
     }
   } catch (err) {
     showToast(err.message || 'Connection failed');
@@ -1099,7 +1102,7 @@ async function openSession(name, opts = {}) {
   await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (window._openTerminal) window._openTerminal(name);
+  if (!sourceUrl && window._openTerminal) window._openTerminal(name);
 }
 
 /**
