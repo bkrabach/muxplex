@@ -2570,7 +2570,7 @@ test('renderFilterBar produces pill buttons for each device plus All', () => {
   assert.ok(html.includes('Server'), 'filter bar should include a pill for "Server"');
 
   // Should have exactly 3 buttons: All, Laptop, Server (Laptop appears only once despite two sessions)
-  const pillCount = (html.match(/filter-pill/g) || []).length;
+  const pillCount = (html.match(/<button/g) || []).length;
   assert.ok(pillCount >= 3, 'filter bar should have at least 3 filter-pill buttons (All + 2 devices)');
 });
 
@@ -2593,11 +2593,10 @@ test('renderFilterBar marks active device pill with filter-pill--active class', 
   const html = mockContainer.innerHTML;
   // The 'Laptop' pill should have the active class
   assert.ok(html.includes('filter-pill--active'), 'filter bar should mark active device with filter-pill--active class');
-  // Verify the active pill corresponds to 'Laptop'
+  // Verify the active pill corresponds to 'Laptop' specifically
   assert.ok(
-    html.match(/filter-pill--active[^>]*>Laptop|Laptop[^<]*filter-pill--active/) ||
-    html.includes('filter-pill--active'),
-    'filter-pill--active should be present in the rendered HTML'
+    html.match(/filter-pill--active[^>]*>Laptop|Laptop[^<]*filter-pill--active/),
+    'filter-pill--active should be on the Laptop pill specifically'
   );
 
   // Reset

@@ -721,6 +721,7 @@ function renderGroupedGrid(sessions, mobile) {
  * @param {Array} allSessions - Full (unfiltered) session list used to derive device names.
  */
 function renderFilterBar(container, allSessions) {
+  allSessions = allSessions || [];
   // Collect unique device names preserving insertion order
   var devices = [];
   var seen = {};
