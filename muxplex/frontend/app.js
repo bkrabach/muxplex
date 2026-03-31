@@ -142,6 +142,7 @@ const DISPLAY_DEFAULTS = {
   notificationPermission: 'default',
 };
 const NEW_SESSION_DEFAULT_TEMPLATE = 'tmux new-session -d -s {name}';
+const DELETE_SESSION_DEFAULT_TEMPLATE = 'tmux kill-session -t {name}';
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -1221,10 +1222,16 @@ function openSettings() {
       autoOpenEl.checked = ss && ss.auto_open !== undefined ? !!ss.auto_open : true;
     }
 
-    // New Session tab - populate template textarea
+    // Commands tab - populate create template textarea
     const templateEl = $('setting-template');
     if (templateEl) {
       templateEl.value = (ss && ss.new_session_template) || NEW_SESSION_DEFAULT_TEMPLATE;
+    }
+
+    // Commands tab - populate delete template textarea
+    const deleteTemplateEl = $('setting-delete-template');
+    if (deleteTemplateEl) {
+      deleteTemplateEl.value = (ss && ss.delete_session_template) || DELETE_SESSION_DEFAULT_TEMPLATE;
     }
   });
 }
@@ -1687,7 +1694,7 @@ function bindStaticEventListeners() {
     });
   });
 
-  // New Session tab — template textarea with 500ms debounce
+  // Commands tab — create template textarea with 500ms debounce
   var _templateDebounceTimer;
   on($('setting-template'), 'input', function() {
     clearTimeout(_templateDebounceTimer);
@@ -1697,11 +1704,28 @@ function bindStaticEventListeners() {
     }, 500);
   });
 
-  // New Session tab — reset button restores default template
+  // Commands tab — create template reset button restores default
   on($('setting-template-reset'), 'click', function() {
     var el = $('setting-template');
     if (el) el.value = NEW_SESSION_DEFAULT_TEMPLATE;
     patchServerSetting('new_session_template', NEW_SESSION_DEFAULT_TEMPLATE);
+  });
+
+  // Commands tab — delete template textarea with 500ms debounce
+  var _deleteTemplateDebounceTimer;
+  on($('setting-delete-template'), 'input', function() {
+    clearTimeout(_deleteTemplateDebounceTimer);
+    var val = this.value;
+    _deleteTemplateDebounceTimer = setTimeout(function() {
+      patchServerSetting('delete_session_template', val);
+    }, 500);
+  });
+
+  // Commands tab — delete template reset button restores default
+  on($('setting-delete-template-reset'), 'click', function() {
+    var el = $('setting-delete-template');
+    if (el) el.value = DELETE_SESSION_DEFAULT_TEMPLATE;
+    patchServerSetting('delete_session_template', DELETE_SESSION_DEFAULT_TEMPLATE);
   });
 }
 
@@ -1798,6 +1822,9 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
+    // Constants
+    NEW_SESSION_DEFAULT_TEMPLATE,
+    DELETE_SESSION_DEFAULT_TEMPLATE,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,

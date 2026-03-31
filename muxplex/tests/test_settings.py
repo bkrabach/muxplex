@@ -142,3 +142,45 @@ def test_load_propagates_non_json_errors(monkeypatch):
 
     with pytest.raises(PermissionError):
         load_settings()
+
+
+# ============================================================
+# Delete session template (task: customizable delete command)
+# ============================================================
+
+
+def test_default_settings_include_delete_template():
+    """DEFAULT_SETTINGS must include delete_session_template with default tmux kill-session value."""
+    assert "delete_session_template" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'delete_session_template'"
+    )
+    assert (
+        DEFAULT_SETTINGS["delete_session_template"] == "tmux kill-session -t {name}"
+    ), (
+        f"delete_session_template default must be 'tmux kill-session -t {{name}}', "
+        f"got: {DEFAULT_SETTINGS['delete_session_template']!r}"
+    )
+
+
+def test_delete_session_template_returned_by_load_settings():
+    """load_settings() must return delete_session_template with default value."""
+    result = load_settings()
+    assert "delete_session_template" in result, (
+        "load_settings() must include 'delete_session_template'"
+    )
+    assert result["delete_session_template"] == "tmux kill-session -t {name}", (
+        f"load_settings() delete_session_template must default to 'tmux kill-session -t {{name}}', "
+        f"got: {result['delete_session_template']!r}"
+    )
+
+
+def test_delete_session_template_patchable():
+    """patch_settings() must accept and persist delete_session_template."""
+    custom = "amplifier-dev ~/dev/{name} --destroy"
+    result = patch_settings({"delete_session_template": custom})
+    assert result["delete_session_template"] == custom, (
+        f"patch_settings() must accept delete_session_template, got: {result['delete_session_template']!r}"
+    )
+    # Verify it was persisted
+    loaded = load_settings()
+    assert loaded["delete_session_template"] == custom

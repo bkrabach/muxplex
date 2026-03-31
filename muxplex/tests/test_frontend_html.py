@@ -1062,3 +1062,94 @@ def test_html_settings_close_btn_exists() -> None:
     assert dialog.find(id="settings-close-btn") is not None, (
         "#settings-close-btn must be a descendant of #settings-dialog"
     )
+
+
+# ============================================================
+# Delete session template (task: customizable delete command)
+# ============================================================
+
+
+def test_html_delete_template_textarea_exists() -> None:
+    """New Session (Commands) panel must contain #setting-delete-template textarea."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+    textarea = new_session_panel.find("textarea", id="setting-delete-template")
+    assert textarea is not None, (
+        "Missing <textarea id='setting-delete-template'> inside new-session panel"
+    )
+    classes = textarea.get("class") or []
+    assert "settings-textarea" in classes, (
+        f"#setting-delete-template must have class 'settings-textarea', has: {classes}"
+    )
+
+
+def test_html_delete_template_textarea_placeholder() -> None:
+    """#setting-delete-template must have placeholder 'tmux kill-session -t {name}'."""
+    soup = _SOUP
+    textarea = soup.find("textarea", id="setting-delete-template")
+    assert textarea is not None, "Missing #setting-delete-template textarea"
+    placeholder = textarea.get("placeholder")
+    assert placeholder == "tmux kill-session -t {name}", (
+        f"#setting-delete-template placeholder must be 'tmux kill-session -t {{name}}', "
+        f"got: {placeholder!r}"
+    )
+
+
+def test_html_delete_template_textarea_rows() -> None:
+    """#setting-delete-template textarea must have rows=3."""
+    soup = _SOUP
+    textarea = soup.find("textarea", id="setting-delete-template")
+    assert textarea is not None, "Missing #setting-delete-template textarea"
+    rows = textarea.get("rows")
+    assert rows == "3", f"#setting-delete-template must have rows='3', got: {rows!r}"
+
+
+def test_html_delete_template_reset_button_exists() -> None:
+    """New Session (Commands) panel must contain #setting-delete-template-reset button."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    new_session_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "new-session"}
+    )
+    assert new_session_panel is not None, "Missing new-session settings-panel"
+    reset_btn = new_session_panel.find(id="setting-delete-template-reset")
+    assert reset_btn is not None, (
+        "Missing #setting-delete-template-reset inside new-session panel"
+    )
+    classes = reset_btn.get("class") or []
+    assert "settings-action-btn" in classes, (
+        f"#setting-delete-template-reset must have class 'settings-action-btn', has: {classes}"
+    )
+
+
+def test_html_commands_tab_label() -> None:
+    """The new-session tab button must be labeled 'Commands' (not 'New Session')."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    tabs_container = dialog.find("nav", class_="settings-tabs")
+    assert tabs_container is not None, "Missing nav.settings-tabs"
+    tab_btn = tabs_container.find("button", attrs={"data-tab": "new-session"})
+    assert tab_btn is not None, "Missing tab button with data-tab='new-session'"
+    label = tab_btn.get_text(strip=True)
+    assert label == "Commands", (
+        f"Tab button data-tab='new-session' must be labeled 'Commands', got: {label!r}"
+    )
+
+
+def test_html_new_session_tab_controls_with_delete() -> None:
+    """New Session (Commands) tab must contain create template, delete template, and both reset buttons."""
+    soup = _SOUP
+    for id_ in (
+        "setting-template",
+        "setting-template-reset",
+        "setting-delete-template",
+        "setting-delete-template-reset",
+    ):
+        assert soup.find(id=id_), f"Missing element with id='{id_}'"

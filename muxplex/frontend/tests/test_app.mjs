@@ -2063,3 +2063,58 @@ test('pollSessions calls updateFaviconBadge', () => {
     'pollSessions must call updateFaviconBadge — update favicon on every poll cycle'
   );
 });
+
+
+// --- Delete session template (task: customizable delete command) ---
+
+test('app.js defines DELETE_SESSION_DEFAULT_TEMPLATE constant', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('DELETE_SESSION_DEFAULT_TEMPLATE'),
+    'app.js must define DELETE_SESSION_DEFAULT_TEMPLATE constant'
+  );
+});
+
+test('DELETE_SESSION_DEFAULT_TEMPLATE value is tmux kill-session -t {name}', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes("'tmux kill-session -t {name}'") || source.includes('"tmux kill-session -t {name}"'),
+    "DELETE_SESSION_DEFAULT_TEMPLATE must be set to 'tmux kill-session -t {name}'"
+  );
+});
+
+test('openSettings loads delete_session_template from server settings', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function openSettings(');
+  assert.ok(fnStart !== -1, 'openSettings must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 3000);
+  assert.ok(
+    fnBody.includes('setting-delete-template'),
+    'openSettings must populate #setting-delete-template from server settings'
+  );
+});
+
+test('bindStaticEventListeners wires delete template input to save', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
+  assert.ok(
+    fnBody.includes('setting-delete-template'),
+    'bindStaticEventListeners must wire #setting-delete-template input event to save'
+  );
+});
+
+test('bindStaticEventListeners wires delete template reset button', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
+  assert.ok(
+    fnBody.includes('setting-delete-template-reset'),
+    'bindStaticEventListeners must wire #setting-delete-template-reset click handler'
+  );
+});

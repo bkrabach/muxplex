@@ -87,7 +87,7 @@
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
         <button class="settings-tab" data-tab="notifications">Notifications</button>
-        <button class="settings-tab" data-tab="new-session">New Session</button>
+        <button class="settings-tab" data-tab="new-session">Commands</button>
       </nav>
       <div class="settings-content">
         <div class="settings-panel" data-tab="display">
@@ -168,6 +168,12 @@
             <textarea id="setting-template" class="settings-textarea" rows="3" placeholder="tmux new-session -d -s {name}"></textarea>
             <span class="settings-helper">{name} is replaced with the session name</span>
             <button id="setting-template-reset" class="settings-action-btn">Reset to default</button>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label" for="setting-delete-template">Delete session command</label>
+            <textarea id="setting-delete-template" class="settings-textarea" rows="3" placeholder="tmux kill-session -t {name}"></textarea>
+            <span class="settings-helper">{name} is replaced with the session name</span>
+            <button id="setting-delete-template-reset" class="settings-action-btn">Reset to default</button>
           </div>
         </div>
       </div>

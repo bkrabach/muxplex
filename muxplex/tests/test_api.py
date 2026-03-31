@@ -1044,20 +1044,34 @@ def test_delete_session_success(client, monkeypatch):
 
 
 def test_delete_session_calls_kill_session(client, monkeypatch):
-    """DELETE /api/sessions/{name} calls tmux kill-session -t {name}."""
-    from unittest.mock import AsyncMock
+    """DELETE /api/sessions/{name} runs 'tmux kill-session -t {name}' via subprocess (default template)."""
+    from unittest.mock import MagicMock, patch
 
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["my-session"])
-    mock_run_tmux = AsyncMock(return_value="")
-    monkeypatch.setattr("muxplex.main.run_tmux", mock_run_tmux)
 
-    client.delete("/api/sessions/my-session")
+    captured = []
 
-    assert mock_run_tmux.called
-    args = mock_run_tmux.call_args[0]
-    assert args[0] == "kill-session"
-    assert "-t" in args
-    assert "my-session" in args
+    def mock_run(cmd, **kwargs):
+        captured.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        client.delete("/api/sessions/my-session")
+
+    assert len(captured) == 1, "subprocess.run must be called exactly once"
+    executed_cmd = captured[0]
+    assert "kill-session" in executed_cmd, (
+        f"Default command must include 'kill-session', got: {executed_cmd!r}"
+    )
+    assert "-t" in executed_cmd, (
+        f"Default command must include '-t', got: {executed_cmd!r}"
+    )
+    assert "my-session" in executed_cmd, (
+        f"Command must include session name 'my-session', got: {executed_cmd!r}"
+    )
 
 
 def test_delete_session_not_found(client, monkeypatch):
@@ -1124,4 +1138,109 @@ def test_login_page_title_contains_hostname(client):
     assert response.status_code == 200
     assert hostname in response.text, (
         f"Expected hostname '{hostname}' in title of login page"
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/sessions/{name} — custom template (task: customizable delete command)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_session_uses_template_command(client, monkeypatch, tmp_path):
+    """DELETE /api/sessions/{name} must execute the delete_session_template from settings.
+
+    The template {name} placeholder must be substituted with the session name.
+    The command must be run synchronously via subprocess.run (not run_tmux).
+    """
+    from unittest.mock import MagicMock, patch
+
+    # Make the session appear to exist so the 404 guard passes
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["myworkspace"])
+
+    # Redirect settings to a temp path so we can write a custom template
+    import muxplex.settings as settings_mod
+
+    fake_settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_settings_path)
+
+    # Write a custom template
+    import json
+
+    fake_settings_path.write_text(
+        json.dumps(
+            {
+                "delete_session_template": "echo destroy {name}",
+            }
+        )
+    )
+
+    # Capture subprocess.run calls
+    captured_commands = []
+
+    def mock_run(cmd, **kwargs):
+        captured_commands.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        response = client.delete("/api/sessions/myworkspace")
+
+    assert response.status_code == 200, (
+        f"DELETE /api/sessions/myworkspace must return 200, got {response.status_code}"
+    )
+    data = response.json()
+    assert data.get("ok") is True, f"Response must have ok=True, got: {data}"
+    assert data.get("name") == "myworkspace", (
+        f"Response must have name='myworkspace', got: {data}"
+    )
+
+    # Verify template substitution happened
+    assert len(captured_commands) == 1, (
+        f"subprocess.run must be called exactly once, called {len(captured_commands)} times"
+    )
+    executed_cmd = captured_commands[0]
+    assert "myworkspace" in executed_cmd, (
+        f"Executed command must contain session name 'myworkspace', got: {executed_cmd!r}"
+    )
+    assert "echo destroy" in executed_cmd, (
+        f"Executed command must use the custom template, got: {executed_cmd!r}"
+    )
+
+
+def test_delete_session_default_template_is_tmux_kill(client, monkeypatch, tmp_path):
+    """DELETE /api/sessions/{name} uses 'tmux kill-session -t {name}' when no custom template is set."""
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["mysession"])
+
+    # Redirect settings to empty temp file (no settings file = use defaults)
+    import muxplex.settings as settings_mod
+
+    fake_settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_settings_path)
+    # Don't write any settings — defaults should be used
+
+    captured_commands = []
+
+    def mock_run(cmd, **kwargs):
+        captured_commands.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        response = client.delete("/api/sessions/mysession")
+
+    assert response.status_code == 200
+    assert len(captured_commands) == 1
+    executed_cmd = captured_commands[0]
+    # Default template substituted
+    assert "mysession" in executed_cmd, (
+        f"Default template must substitute session name, got: {executed_cmd!r}"
+    )
+    assert "kill-session" in executed_cmd, (
+        f"Default template must contain 'kill-session', got: {executed_cmd!r}"
     )

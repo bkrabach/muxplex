@@ -17,6 +17,7 @@ DEFAULT_SETTINGS: dict = {
     "window_size_largest": False,
     "auto_open_created": True,
     "new_session_template": "tmux new-session -d -s {name}",
+    "delete_session_template": "tmux kill-session -t {name}",
 }
 
 
