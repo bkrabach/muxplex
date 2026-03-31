@@ -150,17 +150,30 @@ def show_password() -> None:
 
 
 def serve(
-    host: str = "127.0.0.1",
-    port: int = 8088,
-    auth: str = "pam",
-    session_ttl: int = 604800,
+    host: str | None = None,
+    port: int | None = None,
+    auth: str | None = None,
+    session_ttl: int | None = None,
 ) -> None:
-    """Start the muxplex server."""
+    """Start the muxplex server.
+
+    Resolution order: CLI flag (if not None) > settings.json > hardcoded default.
+    """
     import uvicorn  # noqa: PLC0415
 
-    os.environ.setdefault("MUXPLEX_PORT", str(port))
-    os.environ.setdefault("MUXPLEX_AUTH", auth)
-    os.environ.setdefault("MUXPLEX_SESSION_TTL", str(session_ttl))
+    from muxplex.settings import load_settings  # noqa: PLC0415
+
+    settings = load_settings()
+    host = host if host is not None else settings.get("host", "127.0.0.1")
+    port = port if port is not None else settings.get("port", 8088)
+    auth = auth if auth is not None else settings.get("auth", "pam")
+    session_ttl = (
+        session_ttl if session_ttl is not None else settings.get("session_ttl", 604800)
+    )
+
+    os.environ["MUXPLEX_PORT"] = str(port)
+    os.environ["MUXPLEX_AUTH"] = auth
+    os.environ["MUXPLEX_SESSION_TTL"] = str(session_ttl)
 
     from muxplex.main import app  # noqa: PLC0415
 

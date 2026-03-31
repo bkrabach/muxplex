@@ -1,9 +1,11 @@
 """Tests for muxplex/cli.py — CLI entry point."""
 
+import json
+import os
 import shutil
 import stat
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def test_cli_module_importable():
@@ -330,15 +332,16 @@ def test_install_service_uses_modern_launchctl_on_macos(tmp_path, monkeypatch, c
     install_service(system=False)
 
     launchctl_cmds = [c for c in calls if isinstance(c, list) and "launchctl" in str(c)]
-    assert any(
-        "bootout" in str(c) for c in launchctl_cmds
-    ), "must bootout old service before loading"
-    assert any(
-        "bootstrap" in str(c) for c in launchctl_cmds
-    ), "must use launchctl bootstrap (modern API)"
+    assert any("bootout" in str(c) for c in launchctl_cmds), (
+        "must bootout old service before loading"
+    )
+    assert any("bootstrap" in str(c) for c in launchctl_cmds), (
+        "must use launchctl bootstrap (modern API)"
+    )
     # Must NOT use deprecated load
     assert not any(
-        c == ["launchctl", "load"] or (isinstance(c, list) and c[:2] == ["launchctl", "load"])
+        c == ["launchctl", "load"]
+        or (isinstance(c, list) and c[:2] == ["launchctl", "load"])
         for c in launchctl_cmds
     ), "must NOT use deprecated launchctl load"
 
@@ -792,3 +795,131 @@ def test_upgrade_force_flag_registered():
 
     help_text = buf.getvalue()
     assert "--force" in help_text
+
+
+# ---------------------------------------------------------------------------
+# serve() settings.json integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_serve_reads_host_from_settings(tmp_path, monkeypatch):
+    """serve(host=None) must use host from settings.json."""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "192.168.0.1"}))
+
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            from muxplex.cli import serve
+
+            serve(host=None)
+
+    assert len(calls) == 1
+    assert calls[0]["host"] == "192.168.0.1"
+
+
+def test_serve_cli_flag_overrides_settings(tmp_path, monkeypatch):
+    """serve(host='10.0.0.1') must override settings.json host."""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "192.168.0.1"}))
+
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            from muxplex.cli import serve
+
+            serve(host="10.0.0.1")
+
+    assert len(calls) == 1
+    assert calls[0]["host"] == "10.0.0.1"
+
+
+def test_serve_falls_back_to_default_when_no_settings_file(tmp_path, monkeypatch):
+    """serve() with no settings file and no CLI flags uses hardcoded defaults."""
+    settings_file = tmp_path / "nonexistent_settings.json"
+    # Deliberately not written — file does not exist
+
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            from muxplex.cli import serve
+
+            serve()
+
+    assert len(calls) == 1
+    assert calls[0]["host"] == "127.0.0.1"
+    assert calls[0]["port"] == 8088
+
+
+def test_serve_port_from_settings(tmp_path, monkeypatch):
+    """serve(port=None) must use port from settings.json."""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"port": 9999}))
+
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            from muxplex.cli import serve
+
+            serve(port=None)
+
+    assert len(calls) == 1
+    assert calls[0]["port"] == 9999
+
+
+def test_serve_session_ttl_from_settings(tmp_path, monkeypatch):
+    """serve(session_ttl=None) must use session_ttl from settings.json."""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"session_ttl": 3600}))
+
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+    monkeypatch.delenv("MUXPLEX_SESSION_TTL", raising=False)
+
+    with patch("uvicorn.run"):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            from muxplex.cli import serve
+
+            serve(session_ttl=None)
+
+    assert os.environ.get("MUXPLEX_SESSION_TTL") == "3600"
+
+
+def test_serve_session_ttl_zero_is_valid(tmp_path, monkeypatch):
+    """serve(session_ttl=0) must work — 0 means browser session, a valid value."""
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"session_ttl": 3600}))
+
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+    monkeypatch.delenv("MUXPLEX_SESSION_TTL", raising=False)
+
+    with patch("uvicorn.run"):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            from muxplex.cli import serve
+
+            serve(session_ttl=0)
+
+    assert os.environ.get("MUXPLEX_SESSION_TTL") == "0"
