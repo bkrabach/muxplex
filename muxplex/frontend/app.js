@@ -1675,13 +1675,11 @@ function bindStaticEventListeners() {
  * @returns {object[]}
  */
 function tagSessions(sessions, deviceName, sourceUrl) {
-  return (sessions || []).map(function(s) {
-    return Object.assign({}, s, {
-      deviceName: deviceName,
-      sourceUrl: sourceUrl,
-      sessionKey: sourceUrl + '::' + (s.name || ''),
-    });
-  });
+  return (sessions || []).map((s) => Object.assign({}, s, {
+    deviceName,
+    sourceUrl,
+    sessionKey: sourceUrl + '::' + (s.name || ''),
+  }));
 }
 
 /**
@@ -1692,13 +1690,7 @@ function tagSessions(sessions, deviceName, sourceUrl) {
  * @returns {object[]}
  */
 function mergeSources(results) {
-  var all = [];
-  for (var i = 0; i < results.length; i++) {
-    var r = results[i];
-    var tagged = tagSessions(r.sessions, r.source.name, r.source.url);
-    for (var j = 0; j < tagged.length; j++) { all.push(tagged[j]); }
-  }
-  return all;
+  return (results || []).reduce((all, r) => all.concat(tagSessions(r.sessions, r.source.name, r.source.url)), []);
 }
 
 /** Test-only: set _currentSessions directly. */
