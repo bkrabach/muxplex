@@ -2285,6 +2285,59 @@ test('pollSessions sets auth_required on 401 response', async () => {
   app._setSources([]);
 });
 
+// --- getVisibleSessions (task-7) ---
+
+test('getVisibleSessions exported and filters hidden sessions', () => {
+  // Verify getVisibleSessions is exported as a function
+  assert.strictEqual(typeof app.getVisibleSessions, 'function', 'getVisibleSessions should be exported as a function');
+
+  // Set up server settings with hidden_sessions
+  app._setServerSettings({ hidden_sessions: ['secret', 'hidden-local'] });
+
+  // Local sessions (no sourceUrl) matching hidden list should be filtered
+  const sessions = [
+    { name: 'visible', sourceUrl: '' },
+    { name: 'secret', sourceUrl: '' },          // local, should be hidden
+    { name: 'hidden-local', sourceUrl: '' },    // local, should be hidden
+    { name: 'other', sourceUrl: '' },
+  ];
+
+  const result = app.getVisibleSessions(sessions);
+  assert.strictEqual(result.length, 2, 'should hide 2 local sessions matching the hidden list');
+  assert.ok(result.some((s) => s.name === 'visible'), 'visible should remain');
+  assert.ok(result.some((s) => s.name === 'other'), 'other should remain');
+  assert.ok(!result.some((s) => s.name === 'secret'), 'secret (local) should be hidden');
+  assert.ok(!result.some((s) => s.name === 'hidden-local'), 'hidden-local should be hidden');
+
+  // Clean up
+  app._setServerSettings(null);
+});
+
+test('getVisibleSessions hides local sessions by name but not remote sessions with same name', () => {
+  // Set server settings with a session name that exists both locally and remotely
+  app._setServerSettings({ hidden_sessions: ['shared-name'] });
+
+  const sessions = [
+    { name: 'shared-name', sourceUrl: '' },                         // local — should be hidden
+    { name: 'shared-name', sourceUrl: 'https://remote.example.com' }, // remote — should remain visible
+    { name: 'another', sourceUrl: '' },                             // local, not in hidden list — should remain
+  ];
+
+  const result = app.getVisibleSessions(sessions);
+  assert.strictEqual(result.length, 2, 'should show 2 sessions (remote + another)');
+  // The remote one should survive
+  const remote = result.find((s) => s.sourceUrl === 'https://remote.example.com');
+  assert.ok(remote, 'remote session with same name should not be hidden');
+  assert.strictEqual(remote.name, 'shared-name', 'remote session name should be shared-name');
+  // The local one should be hidden
+  assert.ok(!result.some((s) => s.sourceUrl === '' && s.name === 'shared-name'), 'local session with hidden name should be removed');
+  // another should remain
+  assert.ok(result.some((s) => s.name === 'another'), 'another should remain visible');
+
+  // Clean up
+  app._setServerSettings(null);
+});
+
 test('pollSessions sets unreachable and applies exponential backoff on network error', async () => {
   const mockStatusEl = { textContent: '', className: '' };
   const mockGrid = { innerHTML: '' };

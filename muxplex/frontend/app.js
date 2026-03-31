@@ -520,13 +520,20 @@ function buildSidebarHTML(session, currentSession) {
 
 /**
  * Returns sessions with hidden session names removed.
+ * Only hides LOCAL sessions (those with empty/absent sourceUrl) matching the
+ * hidden_sessions list. Remote sessions with the same name remain visible.
  * Consolidates the hidden-session filter used by all render paths.
  * @param {object[]} sessions
  * @returns {object[]}
  */
 function getVisibleSessions(sessions) {
-  const hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
-  return (sessions || []).filter((s) => !hidden.includes(s.name));
+  var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  return (sessions || []).filter(function(s) {
+    if (hidden.length > 0 && (!s.sourceUrl) && hidden.includes(s.name)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 /**
@@ -1821,6 +1828,7 @@ if (typeof module !== 'undefined' && module.exports) {
     escapeHtml,
     buildTileHTML,
     buildSidebarHTML,
+    getVisibleSessions,
     renderSidebar,
     initSidebar,
     toggleSidebar,
