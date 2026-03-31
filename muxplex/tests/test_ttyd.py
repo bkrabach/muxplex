@@ -217,6 +217,100 @@ async def test_kill_orphan_ttyd_handles_pid_file_with_dead_process():
     assert not pid_path.exists(), "PID file should be removed after orphan cleanup"
 
 
+async def test_kill_ttyd_kills_orphan_on_port_when_pid_file_desynced():
+    """kill_ttyd() must also kill orphaned ttyd processes on TTYD_PORT.
+
+    If the PID file points to a dead process (desynced), but the REAL ttyd is
+    still running on TTYD_PORT (orphaned from a previous spawn), kill_ttyd()
+    must find and kill it via lsof -ti :<port>.  This is the belt-and-suspenders
+    fallback that prevents the session-switching bug where a new ttyd cannot bind
+    the port because the old one is still running.
+    """
+    pid_path = ttyd_mod.TTYD_PID_PATH
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    # PID file with a dead process (desynced)
+    pid_path.write_text("99999")
+
+    killed_pids: list[tuple[int, int]] = []
+
+    def mock_os_kill(pid: int, sig: int) -> None:
+        if pid == 99999 and sig == 0:
+            raise ProcessLookupError  # PID file process is already dead
+        killed_pids.append((pid, sig))
+
+    mock_lsof_result = MagicMock()
+    mock_lsof_result.returncode = 0
+    mock_lsof_result.stdout = "12345\n"  # orphan PID occupying TTYD_PORT
+
+    def mock_subprocess_run(cmd, **kwargs):  # noqa: ANN001
+        result = MagicMock()
+        if "lsof" in cmd and "-ti" in cmd:
+            return mock_lsof_result
+        result.returncode = 1
+        result.stdout = ""
+        return result
+
+    with (
+        patch("os.kill", side_effect=mock_os_kill),
+        patch("muxplex.ttyd._subprocess.run", side_effect=mock_subprocess_run),
+    ):
+        result = await kill_ttyd()
+
+    assert result is True, "kill_ttyd must return True when orphan found on port"
+    orphan_killed = any(
+        pid == 12345 and sig == signal.SIGTERM for pid, sig in killed_pids
+    )
+    assert orphan_killed, (
+        "kill_ttyd must send SIGTERM to orphan process (12345) found via "
+        "lsof on TTYD_PORT when PID file is desynced"
+    )
+
+
+async def test_spawn_ttyd_force_kills_process_on_port_before_binding():
+    """spawn_ttyd() must force-kill any process occupying TTYD_PORT before spawning.
+
+    If kill_ttyd() completed but the port is still occupied (race condition),
+    spawn_ttyd() must do a final SIGKILL cleanup so the new ttyd can bind.
+    """
+    mock_proc = _make_mock_ttyd_process(pid=22222)
+
+    # First lsof call returns an occupant; second call (after kill) returns empty
+    call_count = 0
+
+    def mock_subprocess_run(cmd, **kwargs):  # noqa: ANN001
+        nonlocal call_count
+        result = MagicMock()
+        if "lsof" in cmd and "-ti" in cmd:
+            call_count += 1
+            if call_count == 1:
+                result.returncode = 0
+                result.stdout = "54321\n"  # port still occupied
+                return result
+        result.returncode = 1
+        result.stdout = ""
+        return result
+
+    killed_pids: list[tuple[int, int]] = []
+
+    def mock_os_kill(pid: int, sig: int) -> None:
+        killed_pids.append((pid, sig))
+
+    with (
+        patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)),
+        patch("muxplex.ttyd._subprocess.run", side_effect=mock_subprocess_run),
+        patch("os.kill", side_effect=mock_os_kill),
+    ):
+        await spawn_ttyd("test-session")
+
+    force_killed = any(
+        pid == 54321 and sig == signal.SIGKILL for pid, sig in killed_pids
+    )
+    assert force_killed, (
+        "spawn_ttyd must SIGKILL any process occupying TTYD_PORT before spawning "
+        "to prevent 'address already in use' errors"
+    )
+
+
 async def test_kill_orphan_ttyd_handles_invalid_pid_file_content():
     """kill_orphan_ttyd() gracefully handles a PID file with non-integer content."""
     pid_path = ttyd_mod.TTYD_PID_PATH
