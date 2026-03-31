@@ -1,6 +1,8 @@
 """muxplex/service.py — System service management (systemd on Linux, launchd on macOS)."""
 
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +16,22 @@ _SYSTEMD_UNIT_PATH: Path = _SYSTEMD_UNIT_DIR / "muxplex.service"
 _LAUNCHD_PLIST_DIR: Path = Path.home() / "Library" / "LaunchAgents"
 _LAUNCHD_PLIST_PATH: Path = _LAUNCHD_PLIST_DIR / "com.muxplex.plist"
 _LAUNCHD_LABEL: str = "com.muxplex"
+
+_SYSTEMD_UNIT_TEMPLATE = """\
+[Unit]
+Description=muxplex
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={exec_start}
+Restart=on-failure
+RestartSec=5s
+Environment=PATH={safe_path}
+
+[Install]
+WantedBy=default.target
+"""
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -38,36 +56,69 @@ def _resolve_muxplex_bin() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Private stubs — systemd (Linux)
+# Helper
+# ---------------------------------------------------------------------------
+
+
+def _prompt_host_if_localhost() -> None:
+    """Prompt the user to change host from 127.0.0.1 to 0.0.0.0 for service use."""
+    from muxplex.settings import load_settings, patch_settings
+
+    settings = load_settings()
+    if settings["host"] == "127.0.0.1":
+        answer = input(
+            "Host is 127.0.0.1 — change to 0.0.0.0 so the service is reachable? [Y/n] "
+        )
+        if answer.strip().lower() in ("y", ""):
+            patch_settings({"host": "0.0.0.0"})
+
+
+# ---------------------------------------------------------------------------
+# Private implementations — systemd (Linux)
 # ---------------------------------------------------------------------------
 
 
 def _systemd_install() -> None:
-    raise NotImplementedError("systemd install not implemented")
+    muxplex_bin = _resolve_muxplex_bin()
+    safe_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    exec_start = f"{muxplex_bin} serve"
+    unit_content = _SYSTEMD_UNIT_TEMPLATE.format(
+        exec_start=exec_start, safe_path=safe_path
+    )
+    _SYSTEMD_UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    _SYSTEMD_UNIT_PATH.write_text(unit_content)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "enable", "--now", "muxplex"], check=True)
+    _prompt_host_if_localhost()
 
 
 def _systemd_uninstall() -> None:
-    raise NotImplementedError("systemd uninstall not implemented")
+    subprocess.run(["systemctl", "--user", "stop", "muxplex"], check=True)
+    subprocess.run(["systemctl", "--user", "disable", "muxplex"], check=True)
+    _SYSTEMD_UNIT_PATH.unlink(missing_ok=True)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
 
 
 def _systemd_start() -> None:
-    raise NotImplementedError("systemd start not implemented")
+    subprocess.run(["systemctl", "--user", "start", "muxplex"], check=True)
 
 
 def _systemd_stop() -> None:
-    raise NotImplementedError("systemd stop not implemented")
+    subprocess.run(["systemctl", "--user", "stop", "muxplex"], check=True)
 
 
 def _systemd_restart() -> None:
-    raise NotImplementedError("systemd restart not implemented")
+    subprocess.run(["systemctl", "--user", "restart", "muxplex"], check=True)
 
 
 def _systemd_status() -> None:
-    raise NotImplementedError("systemd status not implemented")
+    subprocess.run(
+        ["systemctl", "--user", "status", "muxplex", "--no-pager"], check=True
+    )
 
 
 def _systemd_logs() -> None:
-    raise NotImplementedError("systemd logs not implemented")
+    subprocess.run(["journalctl", "--user", "-u", "muxplex", "-f"], check=True)
 
 
 # ---------------------------------------------------------------------------
