@@ -134,7 +134,7 @@ def authenticate_pam(username: str, password: str) -> bool:
 # ---------------------------------------------------------------------------
 
 # Paths that bypass auth (login page itself, static assets it needs)
-_AUTH_EXEMPT_PATHS = {"/login", "/auth/mode", "/auth/logout"}
+_AUTH_EXEMPT_PATHS = {"/login", "/auth/mode", "/auth/logout", "/api/instance-info"}
 
 # Socket-level localhost addresses — cannot be forged via HTTP headers
 _LOCALHOST_ADDRS = {"127.0.0.1", "::1"}

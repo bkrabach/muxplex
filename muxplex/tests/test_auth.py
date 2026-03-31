@@ -447,3 +447,16 @@ def test_resolve_auth_generates_password_as_last_resort(monkeypatch, capsys, tmp
     assert len(pw) > 10
     assert "generated" in captured.err
     assert pw in captured.err
+
+
+def test_middleware_instance_info_path_excluded():
+    """/api/instance-info is excluded from auth (public metadata endpoint)."""
+    app = _make_test_app()
+
+    @app.get("/api/instance-info")
+    async def instance_info():
+        return PlainTextResponse("info")
+
+    client = TestClient(app, base_url="http://192.168.1.1")
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
