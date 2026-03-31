@@ -2608,4 +2608,62 @@ test('renderFilterBar and _setActiveFilterDevice are exported', () => {
   assert.strictEqual(typeof app._setActiveFilterDevice, 'function', '_setActiveFilterDevice should be exported');
 });
 
+// --- loadGridViewMode / saveGridViewMode (task-13) ---
+
+test('loadGridViewMode returns flat by default', () => {
+  // Clear display settings and server settings so everything is at defaults
+  _localStorageStore = {};
+  app._setServerSettings(null);
+
+  const mode = app.loadGridViewMode();
+  assert.strictEqual(mode, 'flat', 'loadGridViewMode should return flat when no preference is set');
+});
+
+test('loadGridViewMode reads from localStorage when scope is local', () => {
+  // Set display settings with viewPreferenceScope 'local' and gridViewMode 'grouped'
+  _localStorageStore = {};
+  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'local', gridViewMode: 'grouped' });
+  app._setServerSettings(null);
+
+  const mode = app.loadGridViewMode();
+  assert.strictEqual(mode, 'grouped', 'loadGridViewMode should return gridViewMode from localStorage when scope is local');
+
+  // Cleanup
+  _localStorageStore = {};
+});
+
+test('loadGridViewMode reads from serverSettings when scope is server', () => {
+  // Set display settings with viewPreferenceScope 'server', server has grid_view_mode 'filtered'
+  _localStorageStore = {};
+  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server' });
+  app._setServerSettings({ grid_view_mode: 'filtered' });
+
+  const mode = app.loadGridViewMode();
+  assert.strictEqual(mode, 'filtered', 'loadGridViewMode should return grid_view_mode from serverSettings when scope is server');
+
+  // Cleanup
+  _localStorageStore = {};
+  app._setServerSettings(null);
+});
+
+test('saveGridViewMode stores to localStorage when scope is local', () => {
+  // Set scope to local (default)
+  _localStorageStore = {};
+  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'local' });
+  app._setServerSettings(null);
+
+  app.saveGridViewMode('grouped');
+
+  // Verify _gridViewMode was updated
+  assert.strictEqual(app._getGridViewMode(), 'grouped', '_gridViewMode should be set to grouped');
+
+  // Verify it was saved to localStorage display settings
+  const saved = JSON.parse(_localStorageStore['muxplex.display'] || '{}');
+  assert.strictEqual(saved.gridViewMode, 'grouped', 'gridViewMode should be saved to localStorage display settings');
+
+  // Cleanup
+  _localStorageStore = {};
+  app._setGridViewMode('flat');
+});
+
 

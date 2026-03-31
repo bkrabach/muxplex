@@ -1234,6 +1234,40 @@ function applyDisplaySettings(ds) {
 }
 
 /**
+ * Load grid view mode preference based on viewPreferenceScope in display settings.
+ * When scope is 'local' (default), reads gridViewMode from display settings (localStorage).
+ * When scope is 'server', reads grid_view_mode from _serverSettings.
+ * Returns 'flat' as default.
+ * @returns {string}
+ */
+function loadGridViewMode() {
+  var ds = loadDisplaySettings();
+  var scope = ds.viewPreferenceScope || 'local';
+  if (scope === 'server') {
+    return (_serverSettings && _serverSettings.grid_view_mode) || 'flat';
+  }
+  return ds.gridViewMode || 'flat';
+}
+
+/**
+ * Save grid view mode preference to the appropriate scope and update _gridViewMode.
+ * When scope is 'local', saves gridViewMode to display settings (localStorage).
+ * When scope is 'server', patches the server setting via patchServerSetting.
+ * @param {string} mode - The grid view mode to save.
+ */
+function saveGridViewMode(mode) {
+  var ds = loadDisplaySettings();
+  var scope = ds.viewPreferenceScope || 'local';
+  if (scope === 'server') {
+    patchServerSetting('grid_view_mode', mode);
+  } else {
+    ds.gridViewMode = mode;
+    saveDisplaySettings(ds);
+  }
+  _gridViewMode = mode;
+}
+
+/**
  * Handle a change event on any Display settings control.
  * Reads current values from form elements, saves via saveDisplaySettings,
  * and applies via applyDisplaySettings immediately.
@@ -1913,6 +1947,7 @@ function _setActiveFilterDevice(device) {
 document.addEventListener('DOMContentLoaded', () => {
   initDeviceId();
   applyDisplaySettings(loadDisplaySettings());
+  _gridViewMode = loadGridViewMode();
   document.addEventListener('keydown', trackInteraction);
   document.addEventListener('click', trackInteraction);
   document.addEventListener('touchstart', trackInteraction);
@@ -1981,6 +2016,8 @@ if (typeof module !== 'undefined' && module.exports) {
     loadDisplaySettings,
     saveDisplaySettings,
     applyDisplaySettings,
+    loadGridViewMode,
+    saveGridViewMode,
     onDisplaySettingChange,
     openSettings,
     closeSettings,
