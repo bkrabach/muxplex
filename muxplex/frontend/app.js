@@ -173,7 +173,9 @@ async function api(method, path, body, baseUrl) {
   }
   const res = await fetch(url, opts);
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    const err = new Error(`HTTP ${res.status}: ${res.statusText}`);
+    err.status = res.status;
+    throw err;
   }
   return res;
 }
@@ -248,7 +250,7 @@ function setConnectionStatus(level) {
  */
 async function pollSessions() {
   // Falls back to local-only if _sources is empty
-  if (!_sources || _sources.length === 0) {
+  if (_sources.length === 0) {
     try {
       const res = await api('GET', '/api/sessions');
       const sessions = await res.json();
@@ -284,8 +286,7 @@ async function pollSessions() {
         delete source.nextRetryAt;
         return { source, sessions };
       } catch (err) {
-        const msg = err.message || '';
-        if (msg.includes('401') || msg.includes('403')) {
+        if (err.status === 401 || err.status === 403) {
           source.status = 'auth_required';
         } else {
           source.status = 'unreachable';
