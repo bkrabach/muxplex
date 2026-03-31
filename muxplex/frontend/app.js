@@ -860,7 +860,18 @@ function renderGrid(sessions) {
     html = ordered.map(function(session, index) { return buildTileHTML(session, index, mobile); }).join('');
   }
 
-  if (grid) grid.innerHTML = html;
+  // Append status tiles for auth_required and unreachable sources
+  var statusTilesHtml = '';
+  if (typeof _sources !== 'undefined' && _sources) {
+    _sources.forEach(function(source) {
+      if (source.status === 'auth_required') {
+        statusTilesHtml += buildAuthTileHTML(source);
+      } else if (source.status === 'unreachable') {
+        statusTilesHtml += buildOfflineTileHTML(source);
+      }
+    });
+  }
+  if (grid) grid.innerHTML = html + statusTilesHtml;
 
   // Render filter bar
   if (filterBar) {

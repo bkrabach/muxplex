@@ -538,6 +538,62 @@ test('renderGrid hides empty-state and populates grid when sessions exist', () =
   globalThis.document.querySelectorAll = origQSA;
 });
 
+test('renderGrid includes auth tile HTML when a source is auth_required', () => {
+  const mockGrid = { innerHTML: '' };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  app._setSources([
+    { url: 'http://local:8088', name: 'Local', status: 'authenticated' },
+    { url: 'http://workstation:8088', name: 'Workstation', status: 'auth_required' },
+  ]);
+
+  const sessions = [{ name: 'my-session', snapshot: 'hello' }];
+  app.renderGrid(sessions);
+
+  assert.ok(mockGrid.innerHTML.includes('source-tile--auth'), 'grid should include auth tile class');
+  assert.ok(mockGrid.innerHTML.includes('Workstation'), 'grid should include device name Workstation');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  app._setSources([]);
+});
+
+test('renderGrid includes offline tile HTML when a source is unreachable', () => {
+  const mockGrid = { innerHTML: '' };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  app._setSources([
+    { url: 'http://local:8088', name: 'Local', status: 'authenticated' },
+    { url: 'http://devserver:8088', name: 'Dev Server', status: 'unreachable', lastSeenAt: Date.now() - 300000 },
+  ]);
+
+  const sessions = [{ name: 'my-session', snapshot: 'hello' }];
+  app.renderGrid(sessions);
+
+  assert.ok(mockGrid.innerHTML.includes('source-tile--offline'), 'grid should include offline tile class');
+  assert.ok(mockGrid.innerHTML.includes('Dev Server'), 'grid should include device name Dev Server');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  app._setSources([]);
+});
+
 // --- requestNotificationPermission ---
 
 test('requestNotificationPermission is exported', () => {
