@@ -2835,3 +2835,32 @@ test('Phase 2 end-to-end: buildSources → tagSessions → mergeSources produces
   );
 });
 
+// --- buildAuthTileHTML ---
+
+test('buildAuthTileHTML is exported as a function', () => {
+  assert.strictEqual(typeof app.buildAuthTileHTML, 'function');
+});
+
+test('buildAuthTileHTML returns article with source-tile--auth class', () => {
+  const html = app.buildAuthTileHTML({ name: 'Dev Server', url: 'http://dev:8088' });
+  assert.ok(html.startsWith('<article'), 'html should start with <article');
+  assert.ok(html.includes('source-tile--auth'), 'html should include source-tile--auth class');
+});
+
+test('buildAuthTileHTML includes device name', () => {
+  const html = app.buildAuthTileHTML({ name: 'Dev Server', url: 'http://dev:8088' });
+  assert.ok(html.includes('Dev Server'), 'html should include the device name');
+});
+
+test('buildAuthTileHTML includes login button with data-url attribute', () => {
+  const html = app.buildAuthTileHTML({ name: 'Dev Server', url: 'http://dev:8088' });
+  assert.ok(html.includes('source-tile__login-btn'), 'html should include source-tile__login-btn class');
+  assert.ok(html.includes('data-url="http://dev:8088"'), 'html should include data-url attribute with correct value');
+});
+
+test('buildAuthTileHTML escapes HTML in device name', () => {
+  const html = app.buildAuthTileHTML({ name: '<script>alert(1)</script>', url: '' });
+  assert.ok(!html.includes('<script>alert(1)</script>'), 'raw script tag should not appear in html');
+  assert.ok(html.includes('&lt;script&gt;'), 'escaped script tag should appear in html');
+});
+

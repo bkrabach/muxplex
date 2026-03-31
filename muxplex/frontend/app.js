@@ -525,6 +525,23 @@ function buildSidebarHTML(session, currentSession) {
 }
 
 /**
+ * Build the HTML string for an auth-required source tile.
+ * @param {{ name: string, url: string }} source
+ * @returns {string}
+ */
+function buildAuthTileHTML(source) {
+  const escapedName = escapeHtml(source.name || '');
+  const escapedUrl = escapeHtml(source.url || '');
+  return (
+    '<article class="source-tile source-tile--auth">' +
+    '<span class="source-tile__name">' + escapedName + '</span>' +
+    '<button class="source-tile__login-btn" data-url="' + escapedUrl + '">Log in</button>' +
+    '<span class="source-tile__hint">Authenticate to see sessions</span>' +
+    '</article>'
+  );
+}
+
+/**
  * Returns sessions with hidden session names removed.
  * Only hides LOCAL sessions (those with empty/absent sourceUrl) matching the
  * hidden_sessions list. Remote sessions with the same name remain visible.
@@ -2200,6 +2217,8 @@ if (typeof module !== 'undefined' && module.exports) {
     mergeSources,
     // Filter bar
     renderFilterBar,
+    // Federation tiles
+    buildAuthTileHTML,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,
