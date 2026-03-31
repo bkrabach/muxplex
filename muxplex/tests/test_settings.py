@@ -272,7 +272,6 @@ def test_delete_session_template_patchable():
     assert loaded["delete_session_template"] == custom
 
 
-
 # ============================================================
 # Multi-device enabled flag (task: settings UI reorganization)
 # ============================================================
@@ -307,7 +306,6 @@ def test_multi_device_enabled_patchable():
     )
     loaded = load_settings()
     assert loaded["multi_device_enabled"] is True
-
 
 
 # ============================================================
@@ -411,4 +409,3 @@ def test_old_settings_file_without_serve_keys_loads_correctly(redirect_settings_
     assert result["session_ttl"] == 604800, (
         f"session_ttl must default to 604800 for old settings files, got: {result['session_ttl']!r}"
     )
-
