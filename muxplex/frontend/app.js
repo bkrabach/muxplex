@@ -1674,16 +1674,24 @@ function _setViewMode(mode) {
 }
 
 /** Test-only: set _sources directly. */
-function _setSources(sources) { _sources = sources; }
+function _setSources(sources) {
+  _sources = sources;
+}
 
 /** Test-only: set _serverSettings directly. */
-function _setServerSettings(settings) { _serverSettings = settings; }
+function _setServerSettings(settings) {
+  _serverSettings = settings;
+}
 
 /** Test-only: get _gridViewMode. */
-function _getGridViewMode() { return _gridViewMode; }
+function _getGridViewMode() {
+  return _gridViewMode;
+}
 
 /** Test-only: get _sources. */
-function _getSources() { return _sources; }
+function _getSources() {
+  return _sources;
+}
 
 document.addEventListener('DOMContentLoaded', () => {
   initDeviceId();
