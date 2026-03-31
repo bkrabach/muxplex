@@ -143,7 +143,7 @@ const DISPLAY_DEFAULTS = {
   viewMode: 'auto',
 };
 
-var VIEW_MODES = ['auto', 'fit', 'compact'];
+var VIEW_MODES = ['auto', 'fit'];
 const NEW_SESSION_DEFAULT_TEMPLATE = 'tmux new-session -d -s {name}';
 const DELETE_SESSION_DEFAULT_TEMPLATE = 'tmux kill-session -t {name}';
 
@@ -653,9 +653,6 @@ function renderGrid(sessions) {
   if (currentMode === 'fit' && grid) {
     grid.classList.add('session-grid--fit');
     applyFitLayout(grid);
-  } else if (currentMode === 'compact' && grid) {
-    grid.classList.add('session-grid--compact');
-    grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(200px, 1fr))';
   }
 
 }
@@ -1137,7 +1134,7 @@ function applyFitLayout(grid) {
 }
 
 /**
- * Cycle the dashboard view mode: auto → fit → compact → auto.
+ * Cycle the dashboard view mode: auto → fit → auto.
  * Persists to localStorage and reapplies display settings.
  */
 function cycleViewMode() {
@@ -1176,7 +1173,7 @@ function applyDisplaySettings(ds) {
   var mode = ds.viewMode || 'auto';
 
   // Remove all mode classes
-  grid.classList.remove('session-grid--fit', 'session-grid--compact');
+  grid.classList.remove('session-grid--fit');
 
   // Reset any inline styles from previous fit calculation
   grid.style.removeProperty('grid-template-rows');
@@ -1195,11 +1192,6 @@ function applyDisplaySettings(ds) {
   } else if (mode === 'fit') {
     grid.classList.add('session-grid--fit');
     applyFitLayout(grid);
-
-  } else if (mode === 'compact') {
-    grid.classList.add('session-grid--compact');
-    // Use auto-fill but with smaller minmax for higher density
-    grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(200px, 1fr))';
   }
 }
 

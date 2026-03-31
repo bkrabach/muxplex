@@ -2121,12 +2121,15 @@ test('bindStaticEventListeners wires delete template reset button', () => {
 
 // --- View mode cycling (Auto / Fit / Compact) ---
 
-test('app.js has VIEW_MODES array with auto, fit, compact', () => {
+test('app.js has VIEW_MODES array with auto and fit only (no compact)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(source.includes("'auto'"), "must include 'auto' mode");
   assert.ok(source.includes("'fit'"), "must include 'fit' mode");
-  assert.ok(source.includes("'compact'"), "must include 'compact' mode");
   assert.ok(source.includes('VIEW_MODES'), 'must define VIEW_MODES');
+  // Compact mode was removed — VIEW_MODES must only have two entries
+  const viewModesMatch = source.match(/var VIEW_MODES\s*=\s*\[([^\]]+)\]/);
+  assert.ok(viewModesMatch, 'VIEW_MODES array must be defined');
+  assert.ok(!viewModesMatch[1].includes("'compact'"), "VIEW_MODES must NOT include 'compact'");
 });
 
 test('app.js exports cycleViewMode function', () => {
@@ -2161,19 +2164,19 @@ test('applyDisplaySettings handles fit mode by adding session-grid--fit class', 
   );
 });
 
-test('applyDisplaySettings handles compact mode by adding session-grid--compact class', () => {
+test('applyDisplaySettings does NOT handle compact mode (compact was removed)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('function applyDisplaySettings(');
   assert.ok(fnStart !== -1, 'applyDisplaySettings must exist');
   const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
   const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 2000);
   assert.ok(
-    fnBody.includes('session-grid--compact'),
-    'applyDisplaySettings must apply session-grid--compact class for compact mode'
+    !fnBody.includes("'compact'"),
+    "applyDisplaySettings must NOT reference 'compact' mode — compact was removed"
   );
 });
 
-test('cycleViewMode cycles through auto -> fit -> compact -> auto', () => {
+test('cycleViewMode cycles through auto -> fit -> auto (two modes, compact removed)', () => {
   // Reset display settings to auto
   const ds = app.loadDisplaySettings();
   ds.viewMode = 'auto';
@@ -2184,15 +2187,10 @@ test('cycleViewMode cycles through auto -> fit -> compact -> auto', () => {
   const ds1 = app.loadDisplaySettings();
   assert.strictEqual(ds1.viewMode, 'fit', 'first cycle should go auto -> fit');
 
-  // Second cycle: fit -> compact
+  // Second cycle: fit -> auto (wraps, compact is gone)
   app.cycleViewMode();
   const ds2 = app.loadDisplaySettings();
-  assert.strictEqual(ds2.viewMode, 'compact', 'second cycle should go fit -> compact');
-
-  // Third cycle: compact -> auto
-  app.cycleViewMode();
-  const ds3 = app.loadDisplaySettings();
-  assert.strictEqual(ds3.viewMode, 'auto', 'third cycle should wrap compact -> auto');
+  assert.strictEqual(ds2.viewMode, 'auto', 'second cycle should wrap fit -> auto (only two modes)');
 });
 
 test('bindStaticEventListeners wires view-mode-btn click to cycleViewMode', () => {

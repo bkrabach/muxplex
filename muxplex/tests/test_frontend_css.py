@@ -1683,21 +1683,25 @@ def test_css_sidebar_footer() -> None:
         assert cls in css, f"Missing CSS selector '{cls}'"
 
 
-def test_css_compact_view_exists() -> None:
-    """.session-grid--compact CSS modifier must exist for compact view mode."""
+def test_css_no_compact_view() -> None:
+    """.session-grid--compact CSS modifier must NOT exist — compact view was removed."""
     css = read_css()
-    assert ".session-grid--compact" in css, "Missing .session-grid--compact CSS selector for compact view mode"
+    assert ".session-grid--compact" not in css, (
+        ".session-grid--compact must be removed — compact view mode was removed, only Auto and Fit remain"
+    )
 
 
 def test_css_fit_view_exists() -> None:
     """.session-grid--fit CSS modifier must exist for fit view mode."""
     css = read_css()
-    assert ".session-grid--fit" in css, "Missing .session-grid--fit CSS selector for fit view mode"
+    assert ".session-grid--fit" in css, (
+        "Missing .session-grid--fit CSS selector for fit view mode"
+    )
 
 
-def test_css_compact_tile_height() -> None:
-    """.session-grid--compact .session-tile must set a compact height."""
+def test_css_no_compact_tile_height() -> None:
+    """.session-grid--compact .session-tile must NOT exist — compact view was removed."""
     css = read_css()
-    assert ".session-grid--compact .session-tile" in css, (
-        "Missing .session-grid--compact .session-tile height override"
+    assert ".session-grid--compact .session-tile" not in css, (
+        ".session-grid--compact .session-tile must be removed — compact view mode was removed"
     )
