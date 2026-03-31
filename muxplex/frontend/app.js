@@ -1595,7 +1595,13 @@ function bindStaticEventListeners() {
   on($('settings-close-btn'), 'click', closeSettings);
   on($('settings-backdrop'), 'click', closeSettings);
   const settingsDialog = $('settings-dialog');
-  if (settingsDialog) settingsDialog.addEventListener('cancel', closeSettings);
+  if (settingsDialog) {
+    settingsDialog.addEventListener('cancel', closeSettings);
+    // Click on the ::backdrop area (outside dialog content) dismisses settings
+    settingsDialog.addEventListener('click', function(e) {
+      if (e.target === settingsDialog) closeSettings();
+    });
+  }
   document.querySelectorAll('.settings-tab').forEach(function(tab) {
     on(tab, 'click', function() { switchSettingsTab(tab.dataset.tab); });
   });
