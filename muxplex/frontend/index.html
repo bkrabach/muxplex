@@ -164,6 +164,15 @@
             <label class="settings-label" for="setting-auto-open">Auto-open created sessions</label>
             <input type="checkbox" id="setting-auto-open" class="settings-checkbox" checked />
           </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-device-name">Device Name</label>
+            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Remote Instances</label>
+            <div id="setting-remote-instances" class="settings-remote-list"></div>
+            <button id="add-remote-instance-btn" class="settings-action-btn">+ Add Remote</button>
+          </div>
         </div>
         <div class="settings-panel hidden" data-tab="notifications">
           <div class="settings-field">

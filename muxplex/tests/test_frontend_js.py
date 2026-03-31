@@ -2296,3 +2296,123 @@ def test_dom_content_loaded_calls_load_server_settings() -> None:
         "DOMContentLoaded handler must call loadServerSettings() "
         "after startPolling() in the restoreState().then() chain"
     )
+
+
+# ─── Remote Instances UI (task-15) ────────────────────────────────────────────
+
+
+def test_save_remote_instances_function_exists() -> None:
+    """_saveRemoteInstances function must exist in app.js."""
+    assert "_saveRemoteInstances" in _JS, (
+        "_saveRemoteInstances function must be defined in app.js"
+    )
+
+
+def test_save_remote_instances_calls_patch_server_setting() -> None:
+    """_saveRemoteInstances must call patchServerSetting('remote_instances', ...)."""
+    match = re.search(
+        r"function _saveRemoteInstances\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.)|\n})",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_saveRemoteInstances function not found in app.js"
+    body = match.group(1)
+    assert "patchServerSetting" in body, (
+        "_saveRemoteInstances must call patchServerSetting"
+    )
+    assert "remote_instances" in body, (
+        "_saveRemoteInstances must pass 'remote_instances' to patchServerSetting"
+    )
+
+
+def test_save_remote_instances_rebuilds_sources() -> None:
+    """_saveRemoteInstances must rebuild _sources after saving."""
+    match = re.search(
+        r"function _saveRemoteInstances\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.)|\n})",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_saveRemoteInstances function not found in app.js"
+    body = match.group(1)
+    assert "_sources" in body or "buildSources" in body, (
+        "_saveRemoteInstances must rebuild _sources after saving remote_instances"
+    )
+
+
+def test_open_settings_populates_device_name() -> None:
+    """openSettings must populate setting-device-name from server settings."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//\s*─))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found in app.js"
+    body = match.group(1)
+    assert "setting-device-name" in body, (
+        "openSettings must populate #setting-device-name input from server settings"
+    )
+    assert "device_name" in body, (
+        "openSettings must reference device_name from server settings"
+    )
+
+
+def test_open_settings_renders_remote_instances() -> None:
+    """openSettings must render remote instances rows from server settings."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//\s*─))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found in app.js"
+    body = match.group(1)
+    assert "setting-remote-instances" in body, (
+        "openSettings must populate #setting-remote-instances from server settings"
+    )
+    assert "remote_instances" in body, (
+        "openSettings must reference remote_instances when rendering the instances list"
+    )
+
+
+def test_bind_static_event_listeners_device_name_debounce() -> None:
+    """bindStaticEventListeners must bind debounced save for setting-device-name."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//\s*─|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found in app.js"
+    body = match.group(1)
+    assert "setting-device-name" in body, (
+        "bindStaticEventListeners must bind an event listener for #setting-device-name"
+    )
+    assert "device_name" in body, (
+        "bindStaticEventListeners must save device_name via patchServerSetting"
+    )
+
+
+def test_bind_static_event_listeners_add_remote_instance_btn() -> None:
+    """bindStaticEventListeners must bind the add-remote-instance-btn click handler."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//\s*─|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found in app.js"
+    body = match.group(1)
+    assert "add-remote-instance-btn" in body, (
+        "bindStaticEventListeners must bind click handler for #add-remote-instance-btn"
+    )
+
+
+def test_bind_static_event_listeners_remote_instance_remove() -> None:
+    """bindStaticEventListeners must bind delegated handler for remote instance remove buttons."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//\s*─|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found in app.js"
+    body = match.group(1)
+    assert "settings-remote-remove" in body, (
+        "bindStaticEventListeners must handle delegated clicks on .settings-remote-remove buttons"
+    )

@@ -1184,6 +1184,57 @@ function buildSources(settings) {
   return sources;
 }
 
+/**
+ * Build a single remote instance row element with URL input, name input, and remove button.
+ * @param {string} url - remote instance URL
+ * @param {string} name - remote instance display name
+ * @returns {HTMLDivElement}
+ */
+function _buildRemoteInstanceRow(url, name) {
+  var row = document.createElement('div');
+  row.className = 'settings-remote-row';
+  var urlInput = document.createElement('input');
+  urlInput.type = 'text';
+  urlInput.className = 'settings-remote-url';
+  urlInput.placeholder = 'http://192.168.1.x:8000';
+  urlInput.value = url || '';
+  var nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'settings-remote-name';
+  nameInput.placeholder = 'Device name';
+  nameInput.value = name || '';
+  var removeBtn = document.createElement('button');
+  removeBtn.className = 'settings-remote-remove';
+  removeBtn.textContent = '\u00d7';
+  removeBtn.setAttribute('aria-label', 'Remove remote instance');
+  row.appendChild(urlInput);
+  row.appendChild(nameInput);
+  row.appendChild(removeBtn);
+  return row;
+}
+
+/**
+ * Read remote instance rows from the DOM and save to server settings.
+ * Rebuilds _sources after saving so polling updates immediately.
+ */
+function _saveRemoteInstances() {
+  var container = $('setting-remote-instances');
+  if (!container) return;
+  var instances = [];
+  container.querySelectorAll('.settings-remote-row').forEach(function(row) {
+    var urlEl = row.querySelector('.settings-remote-url');
+    var nameEl = row.querySelector('.settings-remote-name');
+    var url = (urlEl && urlEl.value) ? urlEl.value.trim() : '';
+    var name = (nameEl && nameEl.value) ? nameEl.value.trim() : '';
+    if (url) {
+      instances.push({ url: url, name: name });
+    }
+  });
+  patchServerSetting('remote_instances', instances).then(function() {
+    _sources = buildSources(_serverSettings);
+  });
+}
+
 // ─── Settings dialog ──────────────────────────────────────────────────────────
 
 /**
@@ -1401,6 +1452,22 @@ function openSettings() {
     const autoOpenEl = $('setting-auto-open');
     if (autoOpenEl) {
       autoOpenEl.checked = ss && ss.auto_open !== undefined ? !!ss.auto_open : true;
+    }
+
+    // Device name
+    const deviceNameEl = $('setting-device-name');
+    if (deviceNameEl) {
+      deviceNameEl.value = (ss && ss.device_name) || '';
+    }
+
+    // Remote instances
+    const remoteInstancesEl = $('setting-remote-instances');
+    if (remoteInstancesEl) {
+      remoteInstancesEl.innerHTML = '';
+      var remotes = (ss && ss.remote_instances) || [];
+      remotes.forEach(function(r) {
+        remoteInstancesEl.appendChild(_buildRemoteInstanceRow(r.url || '', r.name || ''));
+      });
     }
 
     // New Session tab - populate template textarea
@@ -1881,6 +1948,51 @@ function bindStaticEventListeners() {
     if (el) el.value = NEW_SESSION_DEFAULT_TEMPLATE;
     patchServerSetting('new_session_template', NEW_SESSION_DEFAULT_TEMPLATE);
   });
+
+  // Sessions tab — device name with 500ms debounce
+  var _deviceNameDebounceTimer;
+  on($('setting-device-name'), 'input', function() {
+    clearTimeout(_deviceNameDebounceTimer);
+    var val = this.value;
+    _deviceNameDebounceTimer = setTimeout(function() {
+      patchServerSetting('device_name', val).then(function() {
+        _sources = buildSources(_serverSettings);
+      });
+    }, 500);
+  });
+
+  // Sessions tab — add remote instance button
+  on($('add-remote-instance-btn'), 'click', function() {
+    var container = $('setting-remote-instances');
+    if (container) {
+      container.appendChild(_buildRemoteInstanceRow('', ''));
+    }
+  });
+
+  // Sessions tab — delegated remove handler on remote instances container
+  var remoteInstancesContainer = $('setting-remote-instances');
+  if (remoteInstancesContainer) {
+    remoteInstancesContainer.addEventListener('click', function(e) {
+      var removeBtn = e.target.closest && e.target.closest('.settings-remote-remove');
+      if (!removeBtn) return;
+      var row = removeBtn.closest('.settings-remote-row');
+      if (row) {
+        row.remove();
+        _saveRemoteInstances();
+      }
+    });
+
+    // Delegated input save with debounce for remote instance URL/name fields
+    var _remoteDebounceTimer;
+    remoteInstancesContainer.addEventListener('input', function(e) {
+      var input = e.target.closest && e.target.closest('.settings-remote-url, .settings-remote-name');
+      if (!input) return;
+      clearTimeout(_remoteDebounceTimer);
+      _remoteDebounceTimer = setTimeout(function() {
+        _saveRemoteInstances();
+      }, 500);
+    });
+  }
 
   // Filter bar — delegated click handler (pills are re-rendered each poll)
   var filterBarEl = $('filter-bar');

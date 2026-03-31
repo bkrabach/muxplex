@@ -1681,3 +1681,20 @@ def test_css_sidebar_footer() -> None:
     css = read_css()
     for cls in (".sidebar-footer", ".sidebar-new-btn"):
         assert cls in css, f"Missing CSS selector '{cls}'"
+
+
+# ─── Remote Instances UI (task-15) ────────────────────────────────────────────
+
+
+def test_css_remote_instances_classes() -> None:
+    """CSS classes for remote instances management must exist in style.css."""
+    css = read_css()
+    for cls in (
+        ".settings-remote-list",
+        ".settings-remote-row",
+        ".settings-remote-url",
+        ".settings-remote-name",
+        ".settings-remote-remove",
+        ".settings-input",
+    ):
+        assert cls in css, f"Missing CSS selector '{cls}' — required for Remote Instances UI"

@@ -1062,3 +1062,50 @@ def test_html_settings_close_btn_exists() -> None:
     assert dialog.find(id="settings-close-btn") is not None, (
         "#settings-close-btn must be a descendant of #settings-dialog"
     )
+
+
+# ============================================================
+# Remote Instances UI (task-15-remote-instances)
+# ============================================================
+
+
+def test_html_sessions_tab_device_name_input() -> None:
+    """Sessions tab must contain a #setting-device-name text input for the device name."""
+    soup = _SOUP
+    el = soup.find(id="setting-device-name")
+    assert el is not None, "Missing element with id='setting-device-name'"
+    # Must be inside the sessions panel
+    sessions_panel = soup.find("div", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions panel (data-tab='sessions')"
+    assert sessions_panel.find(id="setting-device-name") is not None, (
+        "#setting-device-name must be inside the sessions settings panel"
+    )
+
+
+def test_html_sessions_tab_remote_instances_container() -> None:
+    """Sessions tab must contain a #setting-remote-instances container for remote instance rows."""
+    soup = _SOUP
+    el = soup.find(id="setting-remote-instances")
+    assert el is not None, "Missing element with id='setting-remote-instances'"
+    # Must be inside the sessions panel
+    sessions_panel = soup.find("div", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions panel (data-tab='sessions')"
+    assert sessions_panel.find(id="setting-remote-instances") is not None, (
+        "#setting-remote-instances must be inside the sessions settings panel"
+    )
+
+
+def test_html_sessions_tab_add_remote_instance_btn() -> None:
+    """Sessions tab must contain an #add-remote-instance-btn button to add remote instances."""
+    soup = _SOUP
+    el = soup.find(id="add-remote-instance-btn")
+    assert el is not None, "Missing element with id='add-remote-instance-btn'"
+    assert el.name == "button", (
+        f"#add-remote-instance-btn must be a <button>, got: {el.name}"
+    )
+    # Must be inside the sessions panel
+    sessions_panel = soup.find("div", attrs={"data-tab": "sessions"})
+    assert sessions_panel is not None, "Missing sessions panel (data-tab='sessions')"
+    assert sessions_panel.find(id="add-remote-instance-btn") is not None, (
+        "#add-remote-instance-btn must be inside the sessions settings panel"
+    )

@@ -1451,3 +1451,86 @@ body {
     display: none;
   }
 }
+
+/* ============================================================
+   Remote Instances UI (task-15)
+   ============================================================ */
+
+.settings-input {
+  flex: 1;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-input:focus {
+  border-color: var(--accent);
+}
+
+.settings-remote-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.settings-remote-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.settings-remote-url {
+  flex: 2;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-remote-url:focus {
+  border-color: var(--accent);
+}
+
+.settings-remote-name {
+  flex: 1;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 5px 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.settings-remote-name:focus {
+  border-color: var(--accent);
+}
+
+.settings-remote-remove {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 8px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.settings-remote-remove:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
