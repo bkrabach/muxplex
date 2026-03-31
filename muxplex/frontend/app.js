@@ -561,14 +561,35 @@ function renderSidebar(sessions, currentSession) {
     return;
   }
 
-  list.innerHTML = visible.map((session) => buildSidebarHTML(session, currentSession)).join('');
+  let html = '';
 
-  // Bind click handlers on each sidebar item
+  if (_sources.length > 1) {
+    // Group sessions by deviceName when multiple sources configured
+    const groups = new Map();
+    for (const session of visible) {
+      const deviceName = session.deviceName || 'Unknown';
+      if (!groups.has(deviceName)) groups.set(deviceName, []);
+      groups.get(deviceName).push(session);
+    }
+
+    for (const [deviceName, deviceSessions] of groups) {
+      html += `<h4 class="sidebar-device-header">${escapeHtml(deviceName)}</h4>`;
+      html += deviceSessions.map((session) => buildSidebarHTML(session, currentSession)).join('');
+    }
+  } else {
+    // Single source: flat list with no device headers
+    html = visible.map((session) => buildSidebarHTML(session, currentSession)).join('');
+  }
+
+  list.innerHTML = html;
+
+  // Bind click handlers on each sidebar item, passing sourceUrl
   if (typeof list.querySelectorAll === 'function') {
     list.querySelectorAll('.sidebar-item').forEach((item) => {
       const name = item.dataset.session;
+      const sourceUrl = item.dataset.sourceUrl || '';
       on(item, 'click', () => {
-        if (name !== currentSession) openSession(name);
+        if (name !== currentSession) openSession(name, { sourceUrl });
       });
     });
   }

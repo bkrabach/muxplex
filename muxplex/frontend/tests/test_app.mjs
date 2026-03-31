@@ -2666,4 +2666,75 @@ test('saveGridViewMode stores to localStorage when scope is local', () => {
   app._setGridViewMode('flat');
 });
 
+// --- renderSidebar device grouping (task-16) ---
+
+test('renderSidebar groups sessions by device with sidebar-device-header when multiple sources configured', () => {
+  let capturedHTML = '';
+  const mockList = {
+    get innerHTML() { return capturedHTML; },
+    set innerHTML(v) { capturedHTML = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar-list') return mockList;
+    return null;
+  };
+
+  // Set up multiple sources
+  app._setSources([
+    { url: '', name: 'Laptop', type: 'local', status: 'authenticated', backoffMs: 2000 },
+    { url: 'https://remote.example.com', name: 'Server', type: 'remote', status: 'authenticated', backoffMs: 2000 },
+  ]);
+
+  app._setViewMode('fullscreen');
+  const sessions = [
+    { name: 'alpha', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::alpha', snapshot: '', bell: { unseen_count: 0 } },
+    { name: 'beta', deviceName: 'Server', sourceUrl: 'https://remote.example.com', sessionKey: 'https://remote.example.com::beta', snapshot: '', bell: { unseen_count: 0 } },
+  ];
+  app.renderSidebar(sessions, null);
+
+  assert.ok(capturedHTML.includes('sidebar-device-header'), 'sidebar HTML should contain sidebar-device-header elements when multiple sources');
+  assert.ok(capturedHTML.includes('Laptop'), 'sidebar HTML should contain device name "Laptop"');
+  assert.ok(capturedHTML.includes('Server'), 'sidebar HTML should contain device name "Server"');
+
+  // Cleanup
+  app._setSources([]);
+  globalThis.document.getElementById = origGetById;
+  app._setViewMode('grid');
+});
+
+test('renderSidebar does NOT group when only one source configured', () => {
+  let capturedHTML = '';
+  const mockList = {
+    get innerHTML() { return capturedHTML; },
+    set innerHTML(v) { capturedHTML = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar-list') return mockList;
+    return null;
+  };
+
+  // Set up single source
+  app._setSources([
+    { url: '', name: 'Laptop', type: 'local', status: 'authenticated', backoffMs: 2000 },
+  ]);
+
+  app._setViewMode('fullscreen');
+  const sessions = [
+    { name: 'alpha', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::alpha', snapshot: '', bell: { unseen_count: 0 } },
+    { name: 'beta', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::beta', snapshot: '', bell: { unseen_count: 0 } },
+  ];
+  app.renderSidebar(sessions, null);
+
+  assert.ok(!capturedHTML.includes('sidebar-device-header'), 'sidebar HTML should NOT contain sidebar-device-header when only one source');
+  assert.ok(capturedHTML.includes('sidebar-item'), 'sidebar HTML should still contain sidebar-item elements');
+
+  // Cleanup
+  app._setSources([]);
+  globalThis.document.getElementById = origGetById;
+  app._setViewMode('grid');
+});
 
