@@ -14,61 +14,61 @@ def test_cli_module_importable():
 
 
 def test_main_calls_serve_by_default():
-    """Calling main() with no args must invoke serve() with new defaults."""
+    """Calling main() with no args must invoke serve() with None defaults (settings layer resolves)."""
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
         with patch("sys.argv", ["muxplex"]):
             main()
         mock_serve.assert_called_once_with(
-            host="127.0.0.1", port=8088, auth="pam", session_ttl=604800
+            host=None, port=None, auth=None, session_ttl=None
         )
 
 
 def test_main_passes_custom_host_and_port():
-    """main() with --host/--port must forward them to serve()."""
+    """main() with --host/--port must forward them to serve(); unset flags are None."""
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
         with patch("sys.argv", ["muxplex", "--host", "192.168.1.1", "--port", "9000"]):
             main()
         mock_serve.assert_called_once_with(
-            host="192.168.1.1", port=9000, auth="pam", session_ttl=604800
+            host="192.168.1.1", port=9000, auth=None, session_ttl=None
         )
 
 
 def test_main_default_host_is_localhost():
-    """Default --host must be 127.0.0.1 (not 0.0.0.0)."""
+    """Default --host must be None (settings layer resolves to 127.0.0.1)."""
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
         with patch("sys.argv", ["muxplex"]):
             main()
         _, kwargs = mock_serve.call_args
-        assert kwargs["host"] == "127.0.0.1"
+        assert kwargs["host"] is None
 
 
 def test_main_passes_auth_flag():
-    """main() with --auth password must forward auth='password' to serve()."""
+    """main() with --auth password must forward auth='password'; unset flags are None."""
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
         with patch("sys.argv", ["muxplex", "--auth", "password"]):
             main()
         mock_serve.assert_called_once_with(
-            host="127.0.0.1", port=8088, auth="password", session_ttl=604800
+            host=None, port=None, auth="password", session_ttl=None
         )
 
 
 def test_main_passes_session_ttl_flag():
-    """main() with --session-ttl 3600 must forward session_ttl=3600 to serve()."""
+    """main() with --session-ttl 3600 must forward session_ttl=3600; unset flags are None."""
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
         with patch("sys.argv", ["muxplex", "--session-ttl", "3600"]):
             main()
         mock_serve.assert_called_once_with(
-            host="127.0.0.1", port=8088, auth="pam", session_ttl=3600
+            host=None, port=None, auth=None, session_ttl=3600
         )
 
 
@@ -923,3 +923,70 @@ def test_serve_session_ttl_zero_is_valid(tmp_path, monkeypatch):
             serve(session_ttl=0)
 
     assert os.environ.get("MUXPLEX_SESSION_TTL") == "0"
+
+
+# ---------------------------------------------------------------------------
+# argparse refactoring tests — None defaults, serve flags on both parsers,
+# upgrade alias, install-service deprecation warning
+# ---------------------------------------------------------------------------
+
+
+def test_main_passes_none_for_unset_flags():
+    """main() with no flags passes None for host/port/auth/session_ttl to serve()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch("sys.argv", ["muxplex"]):
+            main()
+        mock_serve.assert_called_once_with(
+            host=None, port=None, auth=None, session_ttl=None
+        )
+
+
+def test_main_passes_explicit_host_only():
+    """main() with --host 10.0.0.1 passes host='10.0.0.1', others as None."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch("sys.argv", ["muxplex", "--host", "10.0.0.1"]):
+            main()
+        mock_serve.assert_called_once_with(
+            host="10.0.0.1", port=None, auth=None, session_ttl=None
+        )
+
+
+def test_main_serve_subcommand_accepts_flags():
+    """'muxplex serve --host 10.0.0.1 --port 9000' passes values to serve()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch(
+            "sys.argv", ["muxplex", "serve", "--host", "10.0.0.1", "--port", "9000"]
+        ):
+            main()
+        mock_serve.assert_called_once_with(
+            host="10.0.0.1", port=9000, auth=None, session_ttl=None
+        )
+
+
+def test_help_shows_single_upgrade_line():
+    """Help output shows 'upgrade (update)' alias notation, not two separate subcommand entries."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue()
+    # With aliases=['update'], argparse renders: 'upgrade (update)   description'
+    # With separate parsers, 'upgrade' and 'update' each have their own help lines
+    assert "upgrade (update)" in help_text, (
+        "upgrade and update must appear as alias notation 'upgrade (update)', not two separate entries. "
+        f"Got help text:\n{help_text}"
+    )

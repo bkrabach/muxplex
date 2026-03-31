@@ -645,32 +645,50 @@ def upgrade(*, force: bool = False) -> None:
     doctor()
 
 
+def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
+    """Add --host, --port, --auth, --session-ttl flags to a parser.
+
+    All default to None so serve() can distinguish 'not passed' from
+    'passed the default value'.
+    """
+    parser.add_argument(
+        "--host",
+        default=None,
+        help="Bind host (default: from settings.json, then 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port (default: from settings.json, then 8088)",
+    )
+    parser.add_argument(
+        "--auth",
+        choices=["pam", "password"],
+        default=None,
+        help="Auth method: pam or password (default: from settings.json, then pam)",
+    )
+    parser.add_argument(
+        "--session-ttl",
+        type=int,
+        default=None,
+        dest="session_ttl",
+        help="Session TTL in seconds (default: from settings.json, then 604800; 0 = browser session)",
+    )
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="muxplex",
         description="muxplex — web-based tmux session dashboard",
     )
-    parser.add_argument(
-        "--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)"
-    )
-    parser.add_argument("--port", type=int, default=8088, help="Port (default: 8088)")
-    parser.add_argument(
-        "--auth",
-        choices=["pam", "password"],
-        default="pam",
-        help="Authentication method: pam or password (default: pam)",
-    )
-    parser.add_argument(
-        "--session-ttl",
-        type=int,
-        default=604800,
-        dest="session_ttl",
-        help="Session TTL in seconds (default: 604800 = 7 days; 0 = browser session)",
-    )
+    _add_serve_flags(parser)
 
     sub = parser.add_subparsers(dest="command")
-    sub.add_parser("serve", help="Start the server (default)")
+
+    serve_parser = sub.add_parser("serve", help="Start the server (default)")
+    _add_serve_flags(serve_parser)
 
     svc = sub.add_parser(
         "install-service",
@@ -689,15 +707,11 @@ def main() -> None:
     sub.add_parser("doctor", help="Check dependencies and system status")
 
     upgrade_parser = sub.add_parser(
-        "upgrade", help="Upgrade muxplex to latest version and restart service"
+        "upgrade",
+        aliases=["update"],
+        help="Upgrade muxplex to latest version and restart service",
     )
     upgrade_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force reinstall even if already up to date",
-    )
-    update_parser = sub.add_parser("update", help="Alias for upgrade")
-    update_parser.add_argument(
         "--force",
         action="store_true",
         help="Force reinstall even if already up to date",
@@ -706,6 +720,12 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "install-service":
+        import sys
+
+        print(
+            "Warning: 'install-service' is deprecated and will be removed in a future version.",
+            file=sys.stderr,
+        )
         install_service(system=args.system)
     elif args.command == "show-password":
         show_password()
