@@ -131,6 +131,7 @@ let _previewTimer = null;
 var _previewSessionName = null;  // track by NAME, not DOM element
 
 // ─── Settings state ───────────────────────────────────────────────────────────
+let _sources = [];
 let _settingsOpen = false;
 let _serverSettings = null;
 const DISPLAY_SETTINGS_KEY = 'muxplex.display';
@@ -985,6 +986,36 @@ async function patchServerSetting(key, value) {
   }
 }
 
+/**
+ * Build the list of session sources from server settings.
+ * Local source is always first with url: ''.
+ * Remote instances come from settings.remote_instances array.
+ * Trailing slashes are stripped from remote URLs.
+ * Default device name is 'This device' when device_name is empty.
+ * @param {object} settings - server settings object
+ * @returns {object[]} array of source objects with {url, name, type, status, backoffMs}
+ */
+function buildSources(settings) {
+  var localName = (settings && settings.device_name) || 'This device';
+  var sources = [
+    { url: '', name: localName, type: 'local', status: 'authenticated', backoffMs: 2000 },
+  ];
+  var remotes = (settings && settings.remote_instances) || [];
+  for (var i = 0; i < remotes.length; i++) {
+    var r = remotes[i];
+    if (r && r.url) {
+      sources.push({
+        url: r.url.replace(/\/+$/, ''),
+        name: r.name || r.url,
+        type: 'remote',
+        status: 'authenticated',
+        backoffMs: 2000,
+      });
+    }
+  }
+  return sources;
+}
+
 // ─── Settings dialog ──────────────────────────────────────────────────────────
 
 /**
@@ -1716,6 +1747,7 @@ if (typeof module !== 'undefined' && module.exports) {
     // Server settings
     loadServerSettings,
     patchServerSetting,
+    buildSources,
     // Fetch wrapper
     api,
     // Header + button with inline name input

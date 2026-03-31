@@ -2004,4 +2004,50 @@ test('createNewSession polls for session before auto-opening (not immediate setT
   );
 });
 
+// --- buildSources ---
+
+test('buildSources returns only local source when no remote_instances', () => {
+  const sources = app.buildSources({ device_name: 'Laptop' });
+  assert.strictEqual(sources.length, 1, 'should return exactly one source (local)');
+  assert.strictEqual(sources[0].url, '', 'local source url should be empty string');
+  assert.strictEqual(sources[0].name, 'Laptop', 'local source name should be device_name');
+  assert.strictEqual(sources[0].type, 'local', 'local source type should be local');
+  assert.strictEqual(sources[0].status, 'authenticated', 'local source status should be authenticated');
+});
+
+test('buildSources returns local + remote sources from remote_instances', () => {
+  const sources = app.buildSources({
+    device_name: 'Laptop',
+    remote_instances: [
+      { url: 'https://server1.example.com', name: 'Server 1' },
+      { url: 'https://server2.example.com', name: 'Server 2' },
+    ],
+  });
+  assert.strictEqual(sources.length, 3, 'should return 3 sources: 1 local + 2 remote');
+  assert.strictEqual(sources[0].type, 'local', 'first source should be local');
+  assert.strictEqual(sources[1].type, 'remote', 'second source should be remote');
+  assert.strictEqual(sources[1].url, 'https://server1.example.com', 'remote source url should match');
+  assert.strictEqual(sources[1].name, 'Server 1', 'remote source name should match');
+  assert.strictEqual(sources[2].type, 'remote', 'third source should be remote');
+  assert.strictEqual(sources[2].url, 'https://server2.example.com', 'remote source url should match');
+});
+
+test('buildSources uses hostname fallback when device_name is empty', () => {
+  const sources = app.buildSources({});
+  assert.strictEqual(sources.length, 1, 'should return one source');
+  assert.strictEqual(sources[0].name, 'This device', 'local source name should fall back to This device');
+});
+
+test('buildSources strips trailing slash from remote URLs', () => {
+  const sources = app.buildSources({
+    device_name: 'Laptop',
+    remote_instances: [
+      { url: 'https://server1.example.com/', name: 'Server 1' },
+      { url: 'https://server2.example.com///', name: 'Server 2' },
+    ],
+  });
+  assert.strictEqual(sources[1].url, 'https://server1.example.com', 'trailing slash should be stripped from remote URL');
+  assert.strictEqual(sources[2].url, 'https://server2.example.com', 'multiple trailing slashes should be stripped from remote URL');
+});
+
 
