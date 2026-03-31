@@ -463,6 +463,11 @@ function buildTileHTML(session, index, mobile) {
     bellHtml = `<span class="tile-bell">${countStr}</span>`;
   }
 
+  // Device badge (shown when multiple sources configured and session has a device name)
+  const badgeHtml = _sources.length > 1 && session.deviceName
+    ? `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`
+    : '';
+
   // Last 20 lines of snapshot
   const snapshot = session.snapshot || '';
   const lastLines = snapshot.split('\n').slice(-20).join('\n');
@@ -470,7 +475,7 @@ function buildTileHTML(session, index, mobile) {
   return (
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
-    `<span class="tile-name">${escapeHtml(name)}${_sources.length > 1 && session.deviceName ? '<span class="device-badge">' + escapeHtml(session.deviceName) + '</span>' : ''}</span>` +
+    `<span class="tile-name">${escapeHtml(name)}${badgeHtml}</span>` +
     `<span class="tile-meta">${bellHtml}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
     `</div>` +
     `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +

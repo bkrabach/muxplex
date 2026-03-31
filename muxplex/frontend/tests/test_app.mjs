@@ -2371,8 +2371,20 @@ test('buildTileHTML includes data-session-key and data-source-url attributes on 
     snapshot: '',
   };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('data-session-key='), 'article should have data-session-key attribute');
-  assert.ok(html.includes('data-source-url='), 'article should have data-source-url attribute');
+  assert.ok(html.includes('data-session-key="https://remote.example.com::work"'), 'article should have data-session-key with correct value');
+  assert.ok(html.includes('data-source-url="https://remote.example.com"'), 'article should have data-source-url with correct value');
+});
+
+test('buildTileHTML escapes HTML in deviceName within device-badge', () => {
+  app._setSources([
+    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
+    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
+  ]);
+  const session = { name: 'work', deviceName: '<script>alert(1)</script>', sourceUrl: '', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('<script>'), 'device-badge should not contain raw <script> tag');
+  assert.ok(html.includes('&lt;script&gt;'), 'device-badge should escape < and > in deviceName');
+  app._setSources([]);
 });
 
 test('pollSessions sets unreachable and applies exponential backoff on network error', async () => {
