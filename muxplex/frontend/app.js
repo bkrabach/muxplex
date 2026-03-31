@@ -134,6 +134,8 @@ var _previewSessionName = null;  // track by NAME, not DOM element
 let _sources = [];
 let _settingsOpen = false;
 let _serverSettings = null;
+let _gridViewMode = 'flat';
+let _activeFilterDevice = 'all';
 const DISPLAY_SETTINGS_KEY = 'muxplex.display';
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
@@ -1671,6 +1673,18 @@ function _setViewMode(mode) {
   _viewMode = mode;
 }
 
+/** Test-only: set _sources directly. */
+function _setSources(sources) { _sources = sources; }
+
+/** Test-only: set _serverSettings directly. */
+function _setServerSettings(settings) { _serverSettings = settings; }
+
+/** Test-only: get _gridViewMode. */
+function _getGridViewMode() { return _gridViewMode; }
+
+/** Test-only: get _sources. */
+function _getSources() { return _sources; }
+
 document.addEventListener('DOMContentLoaded', () => {
   initDeviceId();
   applyDisplaySettings(loadDisplaySettings());
@@ -1759,5 +1773,9 @@ if (typeof module !== 'undefined' && module.exports) {
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,
+    _setSources,
+    _setServerSettings,
+    _getGridViewMode,
+    _getSources,
   };
 }

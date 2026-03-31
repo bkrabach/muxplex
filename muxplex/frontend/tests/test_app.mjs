@@ -2004,6 +2004,28 @@ test('createNewSession polls for session before auto-opening (not immediate setT
   );
 });
 
+// --- federation state helpers (task-3) ---
+
+test('_setSources sets internal _sources array', () => {
+  assert.doesNotThrow(() => app._setSources([{ url: '', name: 'test' }]));
+});
+
+test('_setServerSettings sets internal _serverSettings', () => {
+  assert.doesNotThrow(() => app._setServerSettings({ sort_order: 'recent' }));
+});
+
+test('_getGridViewMode returns current _gridViewMode value', () => {
+  assert.strictEqual(typeof app._getGridViewMode(), 'string', '_getGridViewMode should return a string');
+  assert.strictEqual(app._getGridViewMode(), 'flat', '_gridViewMode should default to flat');
+});
+
+test('_getSources returns current _sources array', () => {
+  app._setSources([{ url: 'http://test', name: 'Test' }]);
+  const sources = app._getSources();
+  assert.ok(Array.isArray(sources), '_getSources should return an array');
+  assert.strictEqual(sources[0].url, 'http://test', '_getSources should return value set by _setSources');
+});
+
 // --- buildSources ---
 
 test('buildSources returns only local source when no remote_instances', () => {
