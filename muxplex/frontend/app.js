@@ -542,6 +542,37 @@ function buildAuthTileHTML(source) {
 }
 
 /**
+ * Format a millisecond timestamp into a relative 'last seen' string.
+ * @param {number|null} ms - Millisecond timestamp
+ * @returns {string}
+ */
+function formatLastSeen(ms) {
+  if (ms == null) return 'Never';
+  var diff = Math.floor((Date.now() - ms) / 1000);
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+/**
+ * Build the HTML string for an offline (unreachable) source tile.
+ * @param {{ name: string, url: string, lastSeenAt: number|null }} source
+ * @returns {string}
+ */
+function buildOfflineTileHTML(source) {
+  var escapedName = escapeHtml(source.name || '');
+  var lastSeen = formatLastSeen(source.lastSeenAt);
+  return (
+    '<article class="source-tile source-tile--offline">' +
+    '<span class="source-tile__name">' + escapedName + '</span>' +
+    '<span class="source-tile__badge">Offline</span>' +
+    '<span class="source-tile__last-seen">Last seen ' + escapeHtml(lastSeen) + '</span>' +
+    '</article>'
+  );
+}
+
+/**
  * Returns sessions with hidden session names removed.
  * Only hides LOCAL sessions (those with empty/absent sourceUrl) matching the
  * hidden_sessions list. Remote sessions with the same name remain visible.
@@ -2219,6 +2250,8 @@ if (typeof module !== 'undefined' && module.exports) {
     renderFilterBar,
     // Federation tiles
     buildAuthTileHTML,
+    buildOfflineTileHTML,
+    formatLastSeen,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,

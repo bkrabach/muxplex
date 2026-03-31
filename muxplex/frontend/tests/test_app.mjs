@@ -2864,3 +2864,43 @@ test('buildAuthTileHTML escapes HTML in device name', () => {
   assert.ok(html.includes('&lt;script&gt;'), 'escaped script tag should appear in html');
 });
 
+// --- buildOfflineTileHTML ---
+
+test('buildOfflineTileHTML is exported as a function', () => {
+  assert.strictEqual(typeof app.buildOfflineTileHTML, 'function');
+});
+
+test('buildOfflineTileHTML returns article with source-tile--offline class', () => {
+  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: null });
+  assert.ok(html.startsWith('<article'), 'html should start with <article');
+  assert.ok(html.includes('source-tile--offline'), 'html should include source-tile--offline class');
+});
+
+test('buildOfflineTileHTML includes device name', () => {
+  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: null });
+  assert.ok(html.includes('Dev Server'), 'html should include the device name');
+});
+
+test('buildOfflineTileHTML includes Offline badge', () => {
+  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: null });
+  assert.ok(html.includes('Offline'), 'html should include Offline text');
+  assert.ok(html.includes('source-tile__badge'), 'html should include source-tile__badge class');
+});
+
+test('buildOfflineTileHTML shows relative last-seen time', () => {
+  const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: fiveMinAgo });
+  assert.ok(html.includes('Last seen'), 'html should include Last seen text');
+});
+
+test('buildOfflineTileHTML escapes device name', () => {
+  const html = app.buildOfflineTileHTML({ name: '<b>bad</b>', url: '', lastSeenAt: null });
+  assert.ok(!html.includes('<b>bad</b>'), 'raw <b>bad</b> must not appear in html');
+  assert.ok(html.includes('&lt;b&gt;bad&lt;/b&gt;'), 'device name should be HTML-escaped');
+});
+
+test('buildOfflineTileHTML shows "Never" when lastSeenAt is null', () => {
+  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: '', lastSeenAt: null });
+  assert.ok(html.includes('Never'), 'html should include Never when lastSeenAt is null');
+});
+
