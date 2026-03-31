@@ -1744,41 +1744,35 @@ def test_view_uses_dvh_fallback() -> None:
     )
 
 
-def test_fit_view_tile_body_uses_flex_end() -> None:
-    """Fit mode tile-body must use flex + justify-content: flex-end for bottom anchoring.
+def test_fit_view_no_tile_body_flex_override() -> None:
+    """Bug fix: .session-grid--fit .tile-body must NOT have a flex override.
 
-    Bug: .tile-body pre had position:absolute + scrollTop=scrollHeight hack.
-    The scrollTop hack resets every 2s when innerHTML is rebuilt by the poll cycle,
-    and has no effect when content doesn't overflow.
-    Fix: make tile-body a flex container with justify-content:flex-end so the pre
-    naturally anchors to the bottom without JS.
+    The flex + justify-content:flex-end approach failed because the <pre> with
+    max-height:100% fills the parent entirely, making flex-end a no-op. Content
+    started at the top and excess was clipped at the bottom — the opposite of what
+    we want.
+
+    Fix: delete the .session-grid--fit .tile-body rule entirely. The base CSS
+    position:absolute + bottom:0 on the <pre> anchors content to the bottom.
     """
     css = read_css()
-    assert ".session-grid--fit .tile-body" in css, (
-        "Missing .session-grid--fit .tile-body rule — needed for flex-end bottom anchoring"
-    )
-    block = _extract_rule_block(css, ".session-grid--fit .tile-body {")
-    assert "display: flex" in block or "display:flex" in block, (
-        ".session-grid--fit .tile-body must use display: flex"
-    )
-    assert "justify-content: flex-end" in block or "justify-content:flex-end" in block, (
-        ".session-grid--fit .tile-body must use justify-content: flex-end to anchor content to bottom"
+    assert ".session-grid--fit .tile-body {" not in css, (
+        ".session-grid--fit .tile-body must be removed — flex-end approach does not work "
+        "when <pre> fills 100% of the parent. Use base position:absolute + bottom:0."
     )
 
 
-def test_fit_view_pre_is_static() -> None:
-    """Fit mode pre must use position:static (not absolute) for flex layout.
+def test_fit_view_no_pre_static_override() -> None:
+    """Bug fix: .session-grid--fit .tile-body pre must NOT override position to static.
 
-    Bug: .tile-body pre uses position:absolute which takes it out of flex flow.
-    In fit mode, we need position:static so flex layout controls the pre's position.
-    The parent .tile-body is a flex column with justify-content:flex-end, so the
-    pre will naturally sit at the bottom.
+    The position:static override removed the pre from absolute positioning, breaking
+    the bottom anchoring. Base CSS already has position:absolute + bottom:0 which
+    anchors content to the bottom of the tile.
+
+    Fix: delete the .session-grid--fit .tile-body pre rule entirely.
     """
     css = read_css()
-    assert ".session-grid--fit .tile-body pre" in css, (
-        "Missing .session-grid--fit .tile-body pre rule"
-    )
-    block = _extract_rule_block(css, ".session-grid--fit .tile-body pre {")
-    assert "position: static" in block or "position:static" in block, (
-        ".session-grid--fit .tile-body pre must have position: static to participate in flex layout"
+    assert ".session-grid--fit .tile-body pre {" not in css, (
+        ".session-grid--fit .tile-body pre override must be removed — revert to base "
+        "position:absolute + bottom:0 for correct bottom anchoring."
     )

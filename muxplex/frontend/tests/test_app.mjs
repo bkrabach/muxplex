@@ -2234,17 +2234,70 @@ test('buildTileHTML shows up to 80 lines in fit mode', () => {
   );
 });
 
-test('CSS style.css uses flex layout (not scrollbar hack) for fit mode content anchoring', () => {
+test('CSS style.css uses base position:absolute bottom:0 for fit mode content anchoring (no flex override)', () => {
   const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  // New approach: flex + justify-content:flex-end anchors content to bottom without JS scrollTop hacks
+  // Reverted approach: base CSS position:absolute + bottom:0 anchors content to bottom.
+  // The flex + justify-content:flex-end approach failed because <pre> filled 100% of parent,
+  // making flex-end a no-op (content started at top, excess clipped at bottom).
+  // The fit-mode tile-body flex override must be REMOVED.
   assert.ok(
-    source.includes('.session-grid--fit .tile-body'),
-    'style.css must have .session-grid--fit .tile-body rule for flex layout'
+    !source.includes('.session-grid--fit .tile-body {'),
+    'style.css must NOT have .session-grid--fit .tile-body flex override — base position:absolute handles anchoring'
+  );
+  // The pre static-positioning override must also be removed
+  assert.ok(
+    !source.includes('.session-grid--fit .tile-body pre {'),
+    'style.css must NOT have .session-grid--fit .tile-body pre override — base position:absolute + bottom:0 is correct'
+  );
+  // Base .tile-body pre must still use position:absolute + bottom:0
+  assert.ok(
+    source.includes('position: absolute') && source.includes('bottom: 0'),
+    'base .tile-body pre must retain position:absolute and bottom:0 for content anchoring'
+  );
+});
+
+// --- Fit view Bug 1: applyFitLayout clears stale layout before recalculating ---
+
+test('applyFitLayout clears stale grid-template-rows and tile heights before recalculating', () => {
+  const removedGridProps = [];
+  const removedTileProps = [];
+
+  const mockTile = {
+    style: { removeProperty: (prop) => removedTileProps.push(prop) },
+  };
+
+  const mockGrid = {
+    style: {
+      removeProperty: (prop) => removedGridProps.push(prop),
+      gridTemplateColumns: '',
+      gridTemplateRows: 'repeat(2, 1fr)',  // stale value from previous call
+    },
+    querySelectorAll: (sel) => {
+      if (sel === '.session-tile') return [mockTile];
+      return [];
+    },
+    clientWidth: 800,
+    parentElement: { clientHeight: 600 },
+  };
+
+  const origGetComputedStyle = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => ({
+    paddingTop: '16px', paddingBottom: '16px',
+    paddingLeft: '16px', paddingRight: '16px',
+    gap: '8px',
+  });
+
+  app.applyFitLayout(mockGrid);
+
+  assert.ok(
+    removedGridProps.includes('grid-template-rows'),
+    'applyFitLayout must removeProperty("grid-template-rows") before recalculating to prevent stale layout interference'
   );
   assert.ok(
-    source.includes('justify-content: flex-end') || source.includes('justify-content:flex-end'),
-    'style.css must use justify-content: flex-end to anchor fit mode content at bottom'
+    removedTileProps.includes('height'),
+    'applyFitLayout must removeProperty("height") from each tile before recalculating'
   );
-  // Old scrollbar-hiding hack is no longer needed with flex approach
-  // (scrollbar-width: none was only needed when overflow-y:scroll was used for scrollTop positioning)
+
+  if (origGetComputedStyle) globalThis.getComputedStyle = origGetComputedStyle;
+  else delete globalThis.getComputedStyle;
 });

@@ -1103,6 +1103,13 @@ function saveDisplaySettings(settings) {
  * @param {Element} grid - The session grid element
  */
 function applyFitLayout(grid) {
+  // Clear stale layout from previous calls (prevents interference on page reload and
+  // when returning from a session where the grid was display:none during measurement)
+  grid.style.removeProperty('grid-template-rows');
+  grid.querySelectorAll('.session-tile').forEach(function(t) {
+    t.style.removeProperty('height');
+  });
+
   var count = grid.querySelectorAll('.session-tile').length;
   if (count === 0) return;
 

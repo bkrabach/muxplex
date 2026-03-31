@@ -1382,19 +1382,12 @@ body {
   overflow: hidden;
 }
 
-/* In fit mode, tile body uses flex to anchor content at the bottom (like a real terminal) */
-.session-grid--fit .tile-body {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;   /* content anchored to bottom */
-}
-
-/* In fit mode, pre participates in flex layout (not absolute-positioned) */
-.session-grid--fit .tile-body pre {
-  position: static;            /* remove absolute positioning — flex layout controls position */
-  max-height: 100%;            /* don't overflow the tile body */
-  overflow: hidden;            /* clip excess content at the top */
-}
+/* In fit mode, tile body and pre use the base CSS:
+   .tile-body { position: relative; overflow: hidden; }
+   .tile-body pre { position: absolute; bottom: 0; left: 0; right: 0; }
+   The pre's natural height from 80 lines of content exceeds the tile height, so it
+   overflows from bottom:0 upward, and tile-body clips excess at the top — showing
+   the bottom-most content (the prompt area) just like a real terminal. */
 
 /* ============================================================
    Responsive overlay sidebar at <960px
