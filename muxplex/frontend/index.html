@@ -88,6 +88,7 @@
       <nav class="settings-tabs">
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
+        <button class="settings-tab" data-tab="notifications">Notifications</button>
         <button class="settings-tab" data-tab="new-session">Commands</button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
       </nav>
@@ -123,10 +124,6 @@
               <option value="4">4</option>
             </select>
           </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-device-name">Device Name</label>
-            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
-          </div>
         </div>
         <div class="settings-panel hidden" data-tab="sessions">
           <div class="settings-field">
@@ -155,6 +152,8 @@
             <label class="settings-label" for="setting-auto-open">Auto-open created sessions</label>
             <input type="checkbox" id="setting-auto-open" class="settings-checkbox" checked />
           </div>
+        </div>
+        <div class="settings-panel hidden" data-tab="notifications">
           <div class="settings-field">
             <label class="settings-label" for="setting-bell-sound">Bell Sound</label>
             <input type="checkbox" id="setting-bell-sound" class="settings-checkbox" />
@@ -183,6 +182,10 @@
         </div>
         <div class="settings-panel hidden" data-tab="devices">
           <div class="settings-field">
+            <label class="settings-label" for="setting-device-name">Device Name</label>
+            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+          </div>
+          <div class="settings-field">
             <label class="settings-label" for="setting-multi-device-enabled">Enable multi-device support</label>
             <input type="checkbox" id="setting-multi-device-enabled" class="settings-checkbox" />
           </div>
@@ -193,6 +196,13 @@
                 <option value="flat">Flat</option>
                 <option value="grouped">Grouped</option>
                 <option value="filtered">Filtered</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label" for="setting-view-scope">View Scope</label>
+              <select id="setting-view-scope" class="settings-select">
+                <option value="all">All Devices</option>
+                <option value="local">Local Only</option>
               </select>
             </div>
             <div class="settings-field settings-field--column">
