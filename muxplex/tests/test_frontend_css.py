@@ -1762,6 +1762,28 @@ def test_fit_view_no_tile_body_flex_override() -> None:
     )
 
 
+def test_fit_view_session_tile_has_height_auto() -> None:
+    """Pure CSS fit layout: .session-grid--fit .session-tile must use height: auto.
+
+    JS was measuring clientHeight and setting tile.style.height = tileH + 'px'.
+    This failed when the grid was display:none (clientHeight = 0) and after
+    innerHTML rebuilds destroyed inline styles every 2s.
+
+    Pure CSS fix: the grid has a definite height (flex:1 inside 100dvh).
+    grid-template-rows: repeat(rows, 1fr) divides that height equally.
+    height: auto on tiles lets them fill their grid cells without JS measurement.
+    """
+    css = read_css()
+    assert ".session-grid--fit .session-tile {" in css, (
+        ".session-grid--fit .session-tile rule must exist for pure CSS fit layout"
+    )
+    block = _extract_rule_block(css, ".session-grid--fit .session-tile {")
+    assert "height: auto" in block or "height:auto" in block, (
+        ".session-grid--fit .session-tile must use height: auto — "
+        "JS inline height setting was unreliable (lost on innerHTML rebuild every 2s)"
+    )
+
+
 def test_fit_view_no_pre_static_override() -> None:
     """Bug fix: .session-grid--fit .tile-body pre must NOT override position to static.
 

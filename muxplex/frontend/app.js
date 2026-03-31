@@ -654,10 +654,7 @@ function renderGrid(sessions) {
   var currentMode = currentDs.viewMode || 'auto';
   if (currentMode === 'fit' && grid) {
     grid.classList.add('session-grid--fit');
-    requestAnimationFrame(function() {
-      applyFitLayout(grid);
-      // No scrollTop hack needed — CSS flex + justify-content:flex-end anchors content to bottom
-    });
+    applyFitLayout(grid);
   }
 
 }
@@ -1014,7 +1011,7 @@ function closeSession() {
     var _closGrid = document.getElementById('session-grid');
     if (_closGrid) {
       _closGrid.classList.add('session-grid--fit');
-      requestAnimationFrame(function() { applyFitLayout(_closGrid); });
+      applyFitLayout(_closGrid);
     }
   }
 
@@ -1098,36 +1095,24 @@ function saveDisplaySettings(settings) {
 }
 
 /**
- * Calculate and apply grid layout to fill the viewport exactly (Fit mode).
- * Determines optimal cols × rows based on tile count and available space.
+ * Set grid template for fit mode based on tile count.
+ * Pure arithmetic — no DOM measurement, no getComputedStyle, no clientHeight.
+ * Safe to call at any time regardless of display state or layout phase.
+ *
+ * The grid already has a definite height from CSS (flex: 1 inside height: 100dvh).
+ * Setting grid-template-rows: repeat(rows, 1fr) lets the browser divide that height
+ * equally without JS needing to know the pixel dimensions.  Tiles use height: auto
+ * (set in CSS) so they fill their grid cells without inline style overrides.
+ *
  * @param {Element} grid - The session grid element
  */
 function applyFitLayout(grid) {
-  // Clear stale layout from previous calls (prevents interference on page reload and
-  // when returning from a session where the grid was display:none during measurement)
-  grid.style.removeProperty('grid-template-rows');
-  grid.querySelectorAll('.session-tile').forEach(function(t) {
-    t.style.removeProperty('height');
-  });
-
   var count = grid.querySelectorAll('.session-tile').length;
-  if (count === 0) return;
-
-  // Available space — use grid's parent container
-  var parent = grid.parentElement;
-  var availH = parent ? parent.clientHeight : window.innerHeight;
-  var availW = grid.clientWidth;
-
-  // Subtract padding and gap
-  var style = getComputedStyle(grid);
-  var padT = parseFloat(style.paddingTop) || 0;
-  var padB = parseFloat(style.paddingBottom) || 0;
-  var padL = parseFloat(style.paddingLeft) || 0;
-  var padR = parseFloat(style.paddingRight) || 0;
-  var gap = parseFloat(style.gap) || 8;
-
-  var innerW = availW - padL - padR;
-  var innerH = availH - padT - padB;
+  if (count === 0) {
+    grid.style.removeProperty('grid-template-columns');
+    grid.style.removeProperty('grid-template-rows');
+    return;
+  }
 
   // Calculate optimal cols/rows — start with square root
   var cols = Math.ceil(Math.sqrt(count));
@@ -1143,16 +1128,8 @@ function applyFitLayout(grid) {
     }
   }
 
-  // Tile height from available space
-  var tileH = (innerH - gap * (rows - 1)) / rows;
-
   grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
   grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
-
-  // Override tile height so tiles fill the grid rows
-  grid.querySelectorAll('.session-tile').forEach(function(t) {
-    t.style.height = tileH + 'px';
-  });
 }
 
 /**
@@ -1199,9 +1176,7 @@ function applyDisplaySettings(ds) {
 
   // Reset any inline styles from previous fit calculation
   grid.style.removeProperty('grid-template-rows');
-  grid.querySelectorAll('.session-tile').forEach(function(t) {
-    t.style.removeProperty('height');
-  });
+  grid.style.removeProperty('grid-template-columns');
 
   if (mode === 'auto') {
     // Restore grid columns setting
@@ -1213,7 +1188,7 @@ function applyDisplaySettings(ds) {
 
   } else if (mode === 'fit') {
     grid.classList.add('session-grid--fit');
-    requestAnimationFrame(function() { applyFitLayout(grid); });
+    applyFitLayout(grid);
   }
 }
 
@@ -1880,7 +1855,7 @@ window.addEventListener('resize', function() {
   var ds = loadDisplaySettings();
   if ((ds.viewMode || 'auto') === 'fit') {
     var grid = document.getElementById('session-grid');
-    if (grid) requestAnimationFrame(function() { applyFitLayout(grid); });
+    if (grid) applyFitLayout(grid);
   }
 });
 

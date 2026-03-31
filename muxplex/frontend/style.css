@@ -1380,6 +1380,15 @@ body {
 /* Fit view — tiles fill viewport, no scroll */
 .session-grid--fit {
   overflow: hidden;
+  align-content: stretch;   /* let 1fr rows fill container height */
+}
+
+/* In fit mode, tiles must use height:auto so the CSS grid 1fr rows control sizing.
+   The base .session-tile uses var(--tile-height) which is a fixed pixel value —
+   overriding with height:auto lets the grid cell (from grid-template-rows: repeat(n,1fr))
+   determine the tile height instead. JS sets only grid-template-columns/rows, not inline heights. */
+.session-grid--fit .session-tile {
+  height: auto;
 }
 
 /* In fit mode, tile body and pre use the base CSS:
