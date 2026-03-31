@@ -468,9 +468,9 @@ function buildTileHTML(session, index, mobile) {
   const lastLines = snapshot.split('\n').slice(-20).join('\n');
 
   return (
-    `<article class="${classes}" data-session="${escapedName}" tabindex="0" role="listitem" aria-label="${escapedName}">` +
+    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
-    `<span class="tile-name">${escapeHtml(name)}</span>` +
+    `<span class="tile-name">${escapeHtml(name)}${_sources.length > 1 && session.deviceName ? '<span class="device-badge">' + escapeHtml(session.deviceName) + '</span>' : ''}</span>` +
     `<span class="tile-meta">${bellHtml}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
     `</div>` +
     `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +

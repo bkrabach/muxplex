@@ -2338,6 +2338,43 @@ test('getVisibleSessions hides local sessions by name but not remote sessions wi
   app._setServerSettings(null);
 });
 
+// --- buildTileHTML device badge (task-9) ---
+
+test('buildTileHTML shows device-badge when session has deviceName and multiple sources', () => {
+  app._setSources([
+    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
+    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
+  ]);
+  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('device-badge'), 'should show device-badge when _sources.length > 1 and session has deviceName');
+  assert.ok(html.includes('Laptop'), 'device-badge should contain the deviceName');
+  app._setSources([]);
+});
+
+test('buildTileHTML omits device-badge when only one source configured', () => {
+  app._setSources([
+    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
+  ]);
+  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when _sources.length is 1');
+  app._setSources([]);
+});
+
+test('buildTileHTML includes data-session-key and data-source-url attributes on article element', () => {
+  const session = {
+    name: 'work',
+    deviceName: 'Laptop',
+    sourceUrl: 'https://remote.example.com',
+    sessionKey: 'https://remote.example.com::work',
+    snapshot: '',
+  };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('data-session-key='), 'article should have data-session-key attribute');
+  assert.ok(html.includes('data-source-url='), 'article should have data-source-url attribute');
+});
+
 test('pollSessions sets unreachable and applies exponential backoff on network error', async () => {
   const mockStatusEl = { textContent: '', className: '' };
   const mockGrid = { innerHTML: '' };
