@@ -2977,3 +2977,49 @@ test('formatLastSeen returns days ago for diff >= 86400', () => {
   assert.match(app.formatLastSeen(twoDaysAgo), /^\d+d ago$/, 'should return Xd ago for diff >= 86400s');
 });
 
+// --- openLoginPopup (task-5-login-popup-flow) ---
+
+test('openLoginPopup is exported as a function', () => {
+  assert.strictEqual(typeof app.openLoginPopup, 'function', 'openLoginPopup should be exported as a function');
+});
+
+test('openLoginPopup calls window.open with correct URL and dimensions', () => {
+  const openCalls = [];
+  const origOpen = globalThis.window.open;
+  globalThis.window.open = (url, target, features) => { openCalls.push({ url, target, features }); };
+
+  app.openLoginPopup('http://work:8088');
+
+  globalThis.window.open = origOpen;
+
+  assert.strictEqual(openCalls.length, 1, 'window.open should be called exactly once');
+  assert.strictEqual(openCalls[0].url, 'http://work:8088/login', 'url should be remoteUrl + /login');
+  assert.strictEqual(openCalls[0].target, '_blank', 'target should be _blank');
+  assert.ok(openCalls[0].features.includes('width=500'), 'features should include width=500');
+  assert.ok(openCalls[0].features.includes('height=600'), 'features should include height=600');
+});
+
+test('openLoginPopup appends /login to URL without trailing slash', () => {
+  const openCalls = [];
+  const origOpen = globalThis.window.open;
+  globalThis.window.open = (url) => { openCalls.push(url); };
+
+  app.openLoginPopup('http://work:8088');
+
+  globalThis.window.open = origOpen;
+
+  assert.strictEqual(openCalls[0], 'http://work:8088/login', 'should append /login when no trailing slash');
+});
+
+test('openLoginPopup handles URL with trailing slash', () => {
+  const openCalls = [];
+  const origOpen = globalThis.window.open;
+  globalThis.window.open = (url) => { openCalls.push(url); };
+
+  app.openLoginPopup('http://work:8088/');
+
+  globalThis.window.open = origOpen;
+
+  assert.strictEqual(openCalls[0], 'http://work:8088/login', 'should strip trailing slash then append /login');
+});
+

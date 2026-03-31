@@ -573,6 +573,16 @@ function buildOfflineTileHTML(source) {
 }
 
 /**
+ * Open a login popup window for a remote muxplex instance.
+ * Strips trailing slashes from remoteUrl before appending /login.
+ * @param {string} remoteUrl - The base URL of the remote instance
+ */
+function openLoginPopup(remoteUrl) {
+  var baseUrl = remoteUrl.replace(/\/+$/, '');
+  window.open(baseUrl + '/login', '_blank', 'width=500,height=600');
+}
+
+/**
  * Returns sessions with hidden session names removed.
  * Only hides LOCAL sessions (those with empty/absent sourceUrl) matching the
  * hidden_sessions list. Remote sessions with the same name remain visible.
@@ -1874,6 +1884,14 @@ function bindStaticEventListeners() {
     if (name) killSession(name);
   });
 
+  document.addEventListener('click', function(e) {
+    var loginBtn = e.target.closest && e.target.closest('.source-tile__login-btn');
+    if (!loginBtn) return;
+    e.stopPropagation();
+    var url = loginBtn.dataset.url;
+    if (url) openLoginPopup(url);
+  });
+
   on($('back-btn'), 'click', closeSession);
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
@@ -2262,6 +2280,7 @@ if (typeof module !== 'undefined' && module.exports) {
     // Federation tiles
     buildAuthTileHTML,
     buildOfflineTileHTML,
+    openLoginPopup,
     formatLastSeen,
     // Test-only helpers
     _setCurrentSessions,
