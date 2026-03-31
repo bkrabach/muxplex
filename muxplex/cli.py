@@ -630,7 +630,7 @@ def upgrade(*, force: bool = False) -> None:
                 subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
                 print("  Service started (legacy)")
         else:
-            print("  Service file not found — run: muxplex install-service")
+            print("  Service file not found — run: muxplex service install")
     else:
         result = subprocess.run(
             ["systemctl", "--user", "is-enabled", "muxplex"],
@@ -647,7 +647,7 @@ def upgrade(*, force: bool = False) -> None:
             )
             print("  Service started")
         else:
-            print("  Service not enabled — run: muxplex install-service")
+            print("  Service not enabled — run: muxplex service install")
 
     # 5. Doctor check
     print("\n  Verifying...")
@@ -729,8 +729,6 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "install-service":
-        import sys
-
         print(
             "Warning: 'install-service' is deprecated and will be removed in a future version."
             " Use 'muxplex service install' instead.",
