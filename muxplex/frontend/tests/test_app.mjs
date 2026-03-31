@@ -1046,6 +1046,76 @@ test('openSession shows toast and calls closeSession on connect failure', async 
   globalThis.setTimeout = origSetTimeout;
 });
 
+test('openSession with sourceUrl POSTs connect to remote instance URL', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('work-project', { sourceUrl: 'http://work:8088' });
+
+  const connectCall = fetchCalls.find((c) => c.url === 'http://work:8088/api/sessions/work-project/connect');
+  assert.ok(connectCall, 'should POST to http://work:8088/api/sessions/work-project/connect');
+  assert.strictEqual(connectCall.opts.method, 'POST');
+  assert.strictEqual(connectCall.opts.credentials, 'include');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('openSession with sourceUrl passes sourceUrl to window._openTerminal', async () => {
+  let openTerminalArgs = null;
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async () => ({ ok: true });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (...args) => { openTerminalArgs = args; };
+
+  await app.openSession('my-session', { sourceUrl: 'http://work:8088' });
+
+  assert.ok(openTerminalArgs !== null, '_openTerminal should have been called');
+  assert.strictEqual(openTerminalArgs[0], 'my-session', '_openTerminal first arg should be session name');
+  assert.strictEqual(openTerminalArgs[1], 'http://work:8088', '_openTerminal second arg should be sourceUrl');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('openSession without sourceUrl still POSTs to local /api/sessions/{name}/connect', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('local-session', {});
+
+  const connectCall = fetchCalls.find((c) => c.url === '/api/sessions/local-session/connect');
+  assert.ok(connectCall, 'should POST to /api/sessions/local-session/connect');
+  assert.strictEqual(connectCall.opts.method, 'POST');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
 // --- closeSession ---
 
 test('closeSession is exported', () => {
@@ -1643,7 +1713,7 @@ test('openSession mounts terminal AFTER connect POST, not inside animation timer
 
   // Find the openSession function body
   const fnStart = source.indexOf('async function openSession');
-  const fnBody = source.substring(fnStart, fnStart + 3000);
+  const fnBody = source.substring(fnStart, fnStart + 4000);
 
   // _openTerminal must NOT appear inside setTimeout
   const setTimeoutIdx = fnBody.indexOf('setTimeout');

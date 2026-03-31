@@ -120,6 +120,7 @@ const MOBILE_THRESHOLD = 600;
 let _deviceId = '';
 let _currentSessions = [];
 let _viewingSession = null;
+let _viewingSourceUrl = '';
 let _viewMode = 'grid';
 let _lastInteractionAt = Date.now() / 1000;
 let _pollingTimer;
@@ -1091,6 +1092,7 @@ function updatePillBell() {
 async function openSession(name, opts = {}) {
   hidePreview();
   _viewingSession = name;
+  _viewingSourceUrl = opts.sourceUrl || '';
   _viewMode = 'fullscreen';
 
   // Pre-render sidebar with current sessions before first poll tick
@@ -1156,11 +1158,14 @@ async function openSession(name, opts = {}) {
   if (fab) fab.classList.add('hidden');
 
   // Connect to session (kill old ttyd, spawn new one for this session)
-  var sourceUrl = opts.sourceUrl || '';
+  var _sourceUrl = opts.sourceUrl || '';
   try {
     if (!opts.skipConnect) {
-      if (!sourceUrl) {
-        await api('POST', `/api/sessions/${name}/connect`);
+      if (_sourceUrl) {
+        var remoteConnectUrl = _sourceUrl.replace(/\/+$/, '') + '/api/sessions/' + encodeURIComponent(name) + '/connect';
+        await fetch(remoteConnectUrl, { method: 'POST', credentials: 'include' });
+      } else {
+        await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/connect');
       }
     }
   } catch (err) {
@@ -1172,7 +1177,7 @@ async function openSession(name, opts = {}) {
   await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (!sourceUrl && window._openTerminal) window._openTerminal(name);
+  if (window._openTerminal) window._openTerminal(name, _sourceUrl);
 }
 
 /**
