@@ -272,6 +272,7 @@ def test_delete_session_template_patchable():
     assert loaded["delete_session_template"] == custom
 
 
+
 # ============================================================
 # Multi-device enabled flag (task: settings UI reorganization)
 # ============================================================
@@ -306,3 +307,98 @@ def test_multi_device_enabled_patchable():
     )
     loaded = load_settings()
     assert loaded["multi_device_enabled"] is True
+
+
+
+# ============================================================
+# Serve keys (task: add host, port, auth, session_ttl)
+# ============================================================
+
+
+def test_default_settings_include_serve_keys():
+    """DEFAULT_SETTINGS must include host, port, auth, session_ttl with correct defaults."""
+    assert "host" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'host'"
+    assert DEFAULT_SETTINGS["host"] == "127.0.0.1", (
+        f"host default must be '127.0.0.1', got: {DEFAULT_SETTINGS['host']!r}"
+    )
+    assert "port" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'port'"
+    assert DEFAULT_SETTINGS["port"] == 8088, (
+        f"port default must be 8088, got: {DEFAULT_SETTINGS['port']!r}"
+    )
+    assert "auth" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'auth'"
+    assert DEFAULT_SETTINGS["auth"] == "pam", (
+        f"auth default must be 'pam', got: {DEFAULT_SETTINGS['auth']!r}"
+    )
+    assert "session_ttl" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'session_ttl'"
+    assert DEFAULT_SETTINGS["session_ttl"] == 604800, (
+        f"session_ttl default must be 604800, got: {DEFAULT_SETTINGS['session_ttl']!r}"
+    )
+
+
+def test_load_settings_returns_serve_keys_when_file_missing():
+    """load_settings() returns serve keys with correct defaults when file is missing."""
+    result = load_settings()
+    assert result["host"] == "127.0.0.1", (
+        f"load_settings() host must default to '127.0.0.1', got: {result['host']!r}"
+    )
+    assert result["port"] == 8088, (
+        f"load_settings() port must default to 8088, got: {result['port']!r}"
+    )
+    assert result["auth"] == "pam", (
+        f"load_settings() auth must default to 'pam', got: {result['auth']!r}"
+    )
+    assert result["session_ttl"] == 604800, (
+        f"load_settings() session_ttl must default to 604800, got: {result['session_ttl']!r}"
+    )
+
+
+def test_serve_keys_patchable():
+    """patch_settings() must accept and persist serve config keys."""
+    result = patch_settings({"host": "0.0.0.0", "port": 9000, "auth": "none", "session_ttl": 3600})
+    assert result["host"] == "0.0.0.0", f"patch_settings() must accept host, got: {result['host']!r}"
+    assert result["port"] == 9000, f"patch_settings() must accept port, got: {result['port']!r}"
+    assert result["auth"] == "none", f"patch_settings() must accept auth, got: {result['auth']!r}"
+    assert result["session_ttl"] == 3600, (
+        f"patch_settings() must accept session_ttl, got: {result['session_ttl']!r}"
+    )
+    # Verify persistence via load_settings()
+    loaded = load_settings()
+    assert loaded["host"] == "0.0.0.0"
+    assert loaded["port"] == 9000
+    assert loaded["auth"] == "none"
+    assert loaded["session_ttl"] == 3600
+
+
+def test_old_settings_file_without_serve_keys_loads_correctly(redirect_settings_path):
+    """Old settings.json without serve keys loads correctly with defaults filled in."""
+    # Write an old-style settings file that has no serve keys
+    old_settings = {
+        "default_session": "my_session",
+        "sort_order": "alpha",
+        "hidden_sessions": [],
+        "window_size_largest": False,
+        "auto_open_created": True,
+        "new_session_template": "tmux new-session -d -s {name}",
+        "delete_session_template": "tmux kill-session -t {name}",
+    }
+    redirect_settings_path.write_text(json.dumps(old_settings))
+
+    result = load_settings()
+
+    # Old values are preserved
+    assert result["default_session"] == "my_session"
+    assert result["sort_order"] == "alpha"
+    # New serve keys must be filled in with defaults
+    assert result["host"] == "127.0.0.1", (
+        f"host must default to '127.0.0.1' for old settings files, got: {result['host']!r}"
+    )
+    assert result["port"] == 8088, (
+        f"port must default to 8088 for old settings files, got: {result['port']!r}"
+    )
+    assert result["auth"] == "pam", (
+        f"auth must default to 'pam' for old settings files, got: {result['auth']!r}"
+    )
+    assert result["session_ttl"] == 604800, (
+        f"session_ttl must default to 604800 for old settings files, got: {result['session_ttl']!r}"
+    )
+

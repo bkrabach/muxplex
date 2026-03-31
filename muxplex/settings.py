@@ -12,6 +12,10 @@ from pathlib import Path
 SETTINGS_PATH = Path.home() / ".config" / "muxplex" / "settings.json"
 
 DEFAULT_SETTINGS: dict = {
+    "host": "127.0.0.1",
+    "port": 8088,
+    "auth": "pam",
+    "session_ttl": 604800,
     "default_session": None,
     "sort_order": "manual",
     "hidden_sessions": [],
