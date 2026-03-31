@@ -1971,21 +1971,91 @@ def test_css_no_compact_tile_height() -> None:
 # ============================================================
 
 
-def test_fit_view_pre_has_top_zero() -> None:
-    """In fit mode, .tile-body pre must have top:0 to fill the full tile height.
+# ============================================================
+# Mobile viewport + fit view content anchoring fixes
+# ============================================================
 
-    Bug: .tile-body pre uses position:absolute with bottom:0 but no top:0.
-    In fit mode where tiles are taller than auto mode, the pre is anchored
-    to the bottom but only takes natural content height, leaving a black gap above.
-    Fix: .session-grid--fit .tile-body pre { top: 0 } stretches it to fill the tile.
+
+def test_view_uses_dvh_fallback() -> None:
+    """Bug fix: .view must use 100dvh (dynamic viewport height) for mobile.
+
+    On mobile browsers, 100vh includes the browser chrome (address bar + bottom nav),
+    causing the bottom row of tiles to be cut off under overflow:hidden.
+    Fix: height: 100dvh with 100vh fallback (progressive enhancement).
+    The 100vh MUST appear before 100dvh (browsers ignore unknown values, so
+    100dvh overrides 100vh for browsers that support it).
     """
     css = read_css()
-    assert ".session-grid--fit .tile-body pre" in css, (
-        "Missing .session-grid--fit .tile-body pre rule — needed to fix pre height in fit mode"
+    # .view block must contain 100dvh
+    block = _extract_rule_block(css, ".view {")
+    assert "100dvh" in block, (
+        ".view must use height: 100dvh for mobile — 100vh includes browser chrome, "
+        "causing the bottom row to be cut off on mobile devices"
     )
-    block = _extract_rule_block(css, ".session-grid--fit .tile-body pre {")
-    assert "top: 0" in block or "top:0" in block, (
-        ".session-grid--fit .tile-body pre must have top: 0 to fill full tile body height"
+    # 100vh must still be present as fallback (appears before 100dvh in file)
+    assert "100vh" in block, (
+        ".view must keep height: 100vh as fallback for browsers without dvh support"
+    )
+    # Verify order: 100vh must come before 100dvh in the block (fallback first)
+    assert block.index("100vh") < block.index("100dvh"), (
+        "height: 100vh (fallback) must appear BEFORE height: 100dvh in .view rule — "
+        "browsers that don't support dvh will use the last valid value"
+    )
+
+
+def test_fit_view_no_tile_body_flex_override() -> None:
+    """Bug fix: .session-grid--fit .tile-body must NOT have a flex override.
+
+    The flex + justify-content:flex-end approach failed because the <pre> with
+    max-height:100% fills the parent entirely, making flex-end a no-op. Content
+    started at the top and excess was clipped at the bottom — the opposite of what
+    we want.
+
+    Fix: delete the .session-grid--fit .tile-body rule entirely. The base CSS
+    position:absolute + bottom:0 on the <pre> anchors content to the bottom.
+    """
+    css = read_css()
+    assert ".session-grid--fit .tile-body {" not in css, (
+        ".session-grid--fit .tile-body must be removed — flex-end approach does not work "
+        "when <pre> fills 100% of the parent. Use base position:absolute + bottom:0."
+    )
+
+
+def test_fit_view_session_tile_has_height_auto() -> None:
+    """Pure CSS fit layout: .session-grid--fit .session-tile must use height: auto.
+
+    JS was measuring clientHeight and setting tile.style.height = tileH + 'px'.
+    This failed when the grid was display:none (clientHeight = 0) and after
+    innerHTML rebuilds destroyed inline styles every 2s.
+
+    Pure CSS fix: the grid has a definite height (flex:1 inside 100dvh).
+    grid-template-rows: repeat(rows, 1fr) divides that height equally.
+    height: auto on tiles lets them fill their grid cells without JS measurement.
+    """
+    css = read_css()
+    assert ".session-grid--fit .session-tile {" in css, (
+        ".session-grid--fit .session-tile rule must exist for pure CSS fit layout"
+    )
+    block = _extract_rule_block(css, ".session-grid--fit .session-tile {")
+    assert "height: auto" in block or "height:auto" in block, (
+        ".session-grid--fit .session-tile must use height: auto — "
+        "JS inline height setting was unreliable (lost on innerHTML rebuild every 2s)"
+    )
+
+
+def test_fit_view_no_pre_static_override() -> None:
+    """Bug fix: .session-grid--fit .tile-body pre must NOT override position to static.
+
+    The position:static override removed the pre from absolute positioning, breaking
+    the bottom anchoring. Base CSS already has position:absolute + bottom:0 which
+    anchors content to the bottom of the tile.
+
+    Fix: delete the .session-grid--fit .tile-body pre rule entirely.
+    """
+    css = read_css()
+    assert ".session-grid--fit .tile-body pre {" not in css, (
+        ".session-grid--fit .tile-body pre override must be removed — revert to base "
+        "position:absolute + bottom:0 for correct bottom anchoring."
     )
 
 

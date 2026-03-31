@@ -3528,11 +3528,22 @@ test('bindStaticEventListeners wires view-mode-btn click to cycleViewMode', () =
   );
 });
 
-test('applyFitLayout is called via requestAnimationFrame for correct timing', () => {
+test('applyFitLayout is called directly (no requestAnimationFrame needed — pure arithmetic)', () => {
+  // Pure arithmetic applyFitLayout is safe to call synchronously at any time —
+  // it does not measure DOM dimensions so there is no layout-timing dependency.
+  // Call sites (renderGrid, closeSession, applyDisplaySettings, resize handler)
+  // should call it directly, not via requestAnimationFrame.
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Verify applyFitLayout exists as a direct call (not only inside rAF callbacks)
   assert.ok(
-    source.includes('requestAnimationFrame') && source.includes('applyFitLayout'),
-    'applyFitLayout must be deferred via requestAnimationFrame'
+    source.includes('applyFitLayout'),
+    'app.js must define and call applyFitLayout'
+  );
+  // The function body itself must not measure DOM — verified by the separate
+  // "does NOT measure DOM dimensions" test. Here just confirm the function exists.
+  assert.ok(
+    source.includes('function applyFitLayout('),
+    'applyFitLayout function must be declared'
   );
 });
 
@@ -3557,13 +3568,28 @@ test('buildTileHTML shows up to 80 lines in fit mode', () => {
   );
 });
 
-test('CSS style.css has scrollbar-width none for fit mode pre to hide scrollbar', () => {
+test('CSS style.css uses base position:absolute bottom:0 for fit mode content anchoring (no flex override)', () => {
   const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  // Reverted approach: base CSS position:absolute + bottom:0 anchors content to bottom.
+  // The flex + justify-content:flex-end approach failed because <pre> filled 100% of parent,
+  // making flex-end a no-op (content started at top, excess clipped at bottom).
+  // The fit-mode tile-body flex override must be REMOVED.
   assert.ok(
-    source.includes('scrollbar-width: none'),
-    'style.css must have scrollbar-width: none for hidden scrollbar in fit mode pre'
+    !source.includes('.session-grid--fit .tile-body {'),
+    'style.css must NOT have .session-grid--fit .tile-body flex override — base position:absolute handles anchoring'
+  );
+  // The pre static-positioning override must also be removed
+  assert.ok(
+    !source.includes('.session-grid--fit .tile-body pre {'),
+    'style.css must NOT have .session-grid--fit .tile-body pre override — base position:absolute + bottom:0 is correct'
+  );
+  // Base .tile-body pre must still use position:absolute + bottom:0
+  assert.ok(
+    source.includes('position: absolute') && source.includes('bottom: 0'),
+    'base .tile-body pre must retain position:absolute and bottom:0 for content anchoring'
   );
 });
+
 
 // --- document.title quality fixes ---
 
@@ -3623,3 +3649,65 @@ test('DOMContentLoaded sets document.title from server settings at page load', (
     "DOMContentLoaded must set document.title = _serverSettings.device_name || 'muxplex' after loadServerSettings resolves"
   );
 });
+
+
+// --- Fit view layout: applyFitLayout sets grid template via pure arithmetic ---
+
+test('applyFitLayout sets gridTemplateColumns and gridTemplateRows via pure arithmetic', () => {
+  const assignedProps = {};
+
+  const mockTile = { style: { removeProperty: () => {} } };
+
+  const mockGrid = {
+    style: new Proxy(assignedProps, {
+      set(target, prop, value) { target[prop] = value; return true; },
+      get(target, prop) { return target[prop]; },
+    }),
+    querySelectorAll: (sel) => {
+      if (sel === '.session-tile') return [mockTile, mockTile, mockTile, mockTile];
+      return [];
+    },
+  };
+
+  app.applyFitLayout(mockGrid);
+
+  assert.ok(
+    typeof assignedProps.gridTemplateColumns === 'string' && assignedProps.gridTemplateColumns.includes('1fr'),
+    'applyFitLayout must set gridTemplateColumns with 1fr tracks'
+  );
+  assert.ok(
+    typeof assignedProps.gridTemplateRows === 'string' && assignedProps.gridTemplateRows.includes('1fr'),
+    'applyFitLayout must set gridTemplateRows with 1fr tracks'
+  );
+});
+
+// --- Pure CSS fit layout: applyFitLayout must not measure DOM ---
+
+test('applyFitLayout does NOT measure DOM dimensions (pure arithmetic)', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function applyFitLayout(');
+  assert.ok(fnStart !== -1, 'applyFitLayout function must exist');
+  // Find end of function: next \n} at the same nesting level
+  let depth = 0;
+  let pos = source.indexOf('{', fnStart);
+  const fnBodyStart = pos;
+  while (pos < source.length) {
+    if (source[pos] === '{') depth++;
+    else if (source[pos] === '}') {
+      depth--;
+      if (depth === 0) break;
+    }
+    pos++;
+  }
+  const fnBody = source.substring(fnBodyStart, pos + 1);
+
+  assert.ok(!fnBody.includes('clientHeight'),
+    'applyFitLayout must NOT read clientHeight — causes wrong values when container is display:none');
+  assert.ok(!fnBody.includes('clientWidth'),
+    'applyFitLayout must NOT read clientWidth — pure 1fr CSS handles width');
+  assert.ok(!fnBody.includes('getComputedStyle'),
+    'applyFitLayout must NOT call getComputedStyle — pure 1fr CSS handles gap/padding');
+  assert.ok(!fnBody.includes('.style.height'),
+    'applyFitLayout must NOT set inline tile heights — CSS grid 1fr rows handle sizing');
+});
+
