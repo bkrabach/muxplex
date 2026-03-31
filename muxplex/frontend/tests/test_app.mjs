@@ -3181,3 +3181,33 @@ test('openLoginPopup handles URL with trailing slash', () => {
   assert.strictEqual(openCalls[0], 'http://work:8088/login', 'should strip trailing slash then append /login');
 });
 
+// --- formatLastSeen (auto-recovery detection) ---
+
+test('formatLastSeen returns seconds for recent timestamps', () => {
+  const thirtySecondsAgo = Date.now() - 30000;
+  assert.match(app.formatLastSeen(thirtySecondsAgo), /^\d+s ago$/);
+});
+
+test('formatLastSeen returns minutes for older timestamps', () => {
+  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+  assert.match(app.formatLastSeen(fiveMinutesAgo), /^\d+m ago$/);
+});
+
+test('formatLastSeen returns hours for much older timestamps', () => {
+  const threeHoursAgo = Date.now() - 3 * 3600 * 1000;
+  assert.match(app.formatLastSeen(threeHoursAgo), /^\d+h ago$/);
+});
+
+test('formatLastSeen returns days for very old timestamps', () => {
+  const twoDaysAgo = Date.now() - 2 * 86400 * 1000;
+  assert.match(app.formatLastSeen(twoDaysAgo), /^\d+d ago$/);
+});
+
+test('formatLastSeen returns Never for null', () => {
+  assert.strictEqual(app.formatLastSeen(null), 'Never');
+});
+
+test('formatLastSeen returns Never for undefined', () => {
+  assert.strictEqual(app.formatLastSeen(undefined), 'Never');
+});
+
