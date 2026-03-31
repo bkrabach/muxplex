@@ -1168,6 +1168,82 @@ test('closeSession fires DELETE /api/sessions/current', async () => {
   globalThis.document.getElementById = origGetById;
 });
 
+test('closeSession does NOT fire DELETE for remote session (non-empty _viewingSourceUrl)', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+
+  // Setup to call openSession with remote sourceUrl
+  globalThis.fetch = async () => ({ ok: true });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+  globalThis.window._closeTerminal = () => {};
+
+  // Open a remote session - this sets _viewingSourceUrl = 'http://work:8088'
+  await app.openSession('remote-sess', { sourceUrl: 'http://work:8088' });
+
+  // Restore setTimeout so Promise-based yielding works
+  globalThis.setTimeout = origSetTimeout;
+
+  // Reset fetch tracking
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+
+  // Close session
+  await app.closeSession();
+  // yield microtask queue for any fire-and-forget calls
+  await new Promise((r) => setTimeout(r, 0));
+
+  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  assert.ok(!deleteCall, 'closeSession should NOT fire DELETE for remote session');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('closeSession still fires DELETE /api/sessions/current for local session', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+
+  // Setup to call openSession without sourceUrl (local session)
+  globalThis.fetch = async () => ({ ok: true });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+  globalThis.window._closeTerminal = () => {};
+
+  // Open a local session - this sets _viewingSourceUrl = ''
+  await app.openSession('local-sess', {});
+
+  // Restore setTimeout so Promise-based yielding works
+  globalThis.setTimeout = origSetTimeout;
+
+  // Reset fetch tracking
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+
+  // Close session
+  await app.closeSession();
+  // yield microtask queue for fire-and-forget DELETE
+  await new Promise((r) => setTimeout(r, 0));
+
+  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  assert.ok(deleteCall, 'closeSession should fire DELETE /api/sessions/current for local session');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
 // ─── Command Palette ─────────────────────────────────────────────────────────
 
 

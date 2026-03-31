@@ -1190,8 +1190,11 @@ function closeSession() {
 
   if (window._closeTerminal) window._closeTerminal();
 
-  // Fire-and-forget DELETE
-  api('DELETE', '/api/sessions/current').catch(() => {});
+  // Fire-and-forget DELETE — skip for remote sessions (they don't need to know we stopped watching)
+  if (!_viewingSourceUrl) {
+    api('DELETE', '/api/sessions/current').catch(function() {});
+  }
+  _viewingSourceUrl = '';
 
   const expanded = $('view-expanded');
   const overview = $('view-overview');
