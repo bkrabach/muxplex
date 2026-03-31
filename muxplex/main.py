@@ -498,6 +498,17 @@ async def update_settings(request: Request) -> dict:
     return patch_settings(body)
 
 
+@app.get("/api/instance-info")
+async def instance_info() -> dict:
+    """Return this instance's display name and version.
+
+    Public endpoint (no auth required) — used by remote instances to
+    discover peer names and verify reachability.
+    """
+    settings = load_settings()
+    return {"name": settings["device_name"], "version": app.version}
+
+
 # ---------------------------------------------------------------------------
 # WebSocket proxy — bridges browser to ttyd (eliminates Caddy dependency)
 # ---------------------------------------------------------------------------

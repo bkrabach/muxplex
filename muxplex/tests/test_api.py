@@ -969,6 +969,67 @@ def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/instance-info
+# ---------------------------------------------------------------------------
+
+
+def test_instance_info_returns_200(client):
+    """GET /api/instance-info returns 200 with name and version keys."""
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    assert "name" in response.json()
+
+
+def test_instance_info_returns_name_and_version(client, tmp_path, monkeypatch):
+    """GET /api/instance-info returns name='test-host' and version='0.1.0' when hostname is mocked."""
+    import socket
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(socket, "gethostname", lambda: "test-host")
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "test-host"
+    assert data["version"] == "0.1.0"
+
+
+def test_instance_info_uses_explicit_device_name(client, tmp_path, monkeypatch):
+    """GET /api/instance-info uses explicit device_name from settings when set."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"device_name": "My Workstation"}))
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "My Workstation"
+    assert data["version"] == "0.1.0"
+
+
+def test_instance_info_no_auth_required(tmp_path, monkeypatch):
+    """GET /api/instance-info returns 200 even without an auth cookie."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    with TestClient(app) as c:
+        # No auth cookie set — endpoint must be accessible without one
+        response = c.get("/api/instance-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert "name" in data
+    assert "version" in data
+
+
+# ---------------------------------------------------------------------------
 # POST /api/sessions (create new session)
 # ---------------------------------------------------------------------------
 
