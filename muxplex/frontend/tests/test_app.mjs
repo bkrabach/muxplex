@@ -2904,3 +2904,20 @@ test('buildOfflineTileHTML shows "Never" when lastSeenAt is null', () => {
   assert.ok(html.includes('Never'), 'html should include Never when lastSeenAt is null');
 });
 
+// --- formatLastSeen branch coverage ---
+
+test('formatLastSeen returns seconds ago for diff < 60', () => {
+  const thirtySecondsAgo = Date.now() - 30 * 1000;
+  assert.match(app.formatLastSeen(thirtySecondsAgo), /^\d+s ago$/, 'should return Xs ago for diff < 60s');
+});
+
+test('formatLastSeen returns hours ago for diff >= 3600 and < 86400', () => {
+  const twoHoursAgo = Date.now() - 2 * 3600 * 1000;
+  assert.match(app.formatLastSeen(twoHoursAgo), /^\d+h ago$/, 'should return Xh ago for diff in range [3600, 86400)');
+});
+
+test('formatLastSeen returns days ago for diff >= 86400', () => {
+  const twoDaysAgo = Date.now() - 2 * 86400 * 1000;
+  assert.match(app.formatLastSeen(twoDaysAgo), /^\d+d ago$/, 'should return Xd ago for diff >= 86400s');
+});
+
