@@ -1332,6 +1332,10 @@ function openSettings() {
   if (hoverDelayEl) hoverDelayEl.value = String(settings.hoverPreviewDelay);
   const gridColumnsEl = $('setting-grid-columns');
   if (gridColumnsEl) gridColumnsEl.value = String(settings.gridColumns);
+  const viewModeEl = $('setting-view-mode');
+  if (viewModeEl) viewModeEl.value = loadGridViewMode();
+  const viewScopeEl = $('setting-view-scope');
+  if (viewScopeEl) viewScopeEl.value = settings.viewPreferenceScope || 'local';
 
   // Populate Notifications tab from display settings
   const bellSoundEl = $('setting-bell-sound');
@@ -1784,6 +1788,24 @@ function bindStaticEventListeners() {
   on($('setting-font-size'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
   on($('setting-grid-columns'), 'change', onDisplaySettingChange);
+  on($('setting-view-mode'), 'change', function() {
+    var el = $('setting-view-mode');
+    if (el) {
+      saveGridViewMode(el.value);
+      renderGrid(_currentSessions || []);
+    }
+  });
+  on($('setting-view-scope'), 'change', function() {
+    var el = $('setting-view-scope');
+    if (!el) return;
+    var newScope = el.value;
+    var currentMode = _gridViewMode;
+    var ds = loadDisplaySettings();
+    ds.viewPreferenceScope = newScope;
+    saveDisplaySettings(ds);
+    // Migrate current mode to new scope
+    saveGridViewMode(currentMode);
+  });
 
   // Sessions settings — bind change events for server-side persistence
   on($('setting-default-session'), 'change', function() {
