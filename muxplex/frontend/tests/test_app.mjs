@@ -3564,3 +3564,62 @@ test('CSS style.css has scrollbar-width none for fit mode pre to hide scrollbar'
     'style.css must have scrollbar-width: none for hidden scrollbar in fit mode pre'
   );
 });
+
+// --- document.title quality fixes ---
+
+test('device name input handler restores default title when value is cleared', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Must use fallback form, not the conditional-only form
+  assert.ok(
+    source.includes("document.title = val || 'muxplex'"),
+    "device name input handler must set document.title = val || 'muxplex' to restore default when cleared"
+  );
+  assert.ok(
+    !source.includes("if (val) document.title = val"),
+    "device name input handler must NOT use conditional 'if (val) document.title = val' (skips restore)"
+  );
+});
+
+test('openSettings restores default title unconditionally when device_name is absent', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes("document.title = (ss && ss.device_name) || 'muxplex'"),
+    "openSettings must set document.title = (ss && ss.device_name) || 'muxplex' unconditionally"
+  );
+  assert.ok(
+    !source.includes("if (ss && ss.device_name) {\n      document.title = ss.device_name;\n    }"),
+    "openSettings must NOT use conditional block that skips restore when device_name is absent"
+  );
+});
+
+test('remote instance event listener comments say Multi-Device tab not Sessions tab', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    !source.includes('// Sessions tab \u2014 add remote instance button'),
+    "comment for add-remote-instance-btn must say 'Multi-Device tab', not 'Sessions tab'"
+  );
+  assert.ok(
+    !source.includes('// Sessions tab \u2014 delegated remove handler'),
+    "comment for delegated remove handler must say 'Multi-Device tab', not 'Sessions tab'"
+  );
+  assert.ok(
+    source.includes('// Multi-Device tab \u2014 add remote instance button'),
+    "add-remote-instance-btn comment must say '// Multi-Device tab \u2014 add remote instance button'"
+  );
+  assert.ok(
+    source.includes('// Multi-Device tab \u2014 delegated remove handler'),
+    "delegated remove handler comment must say '// Multi-Device tab \u2014 delegated remove handler'"
+  );
+});
+
+test('DOMContentLoaded sets document.title from server settings at page load', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Find the DOMContentLoaded block
+  const domIdx = source.indexOf("document.addEventListener('DOMContentLoaded'");
+  assert.ok(domIdx !== -1, 'DOMContentLoaded handler must exist');
+  const domBlock = source.substring(domIdx, domIdx + 800);
+  assert.ok(
+    domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),
+    "DOMContentLoaded must set document.title = _serverSettings.device_name || 'muxplex' after loadServerSettings resolves"
+  );
+});

@@ -1792,9 +1792,7 @@ function openSettings() {
     }
 
     // Update document.title from device_name setting
-    if (ss && ss.device_name) {
-      document.title = ss.device_name;
-    }
+    document.title = (ss && ss.device_name) || 'muxplex';
 
     // Multi-device enabled checkbox (with smart default: checked if remote_instances non-empty)
     const multiDeviceEnabledEl = $('setting-multi-device-enabled');
@@ -2351,7 +2349,7 @@ function bindStaticEventListeners() {
   on($('setting-device-name'), 'input', function() {
     clearTimeout(_deviceNameDebounceTimer);
     var val = this.value;
-    if (val) document.title = val;
+    document.title = val || 'muxplex';
     _deviceNameDebounceTimer = setTimeout(function() {
       patchServerSetting('device_name', val).then(function() {
         _sources = buildSources(_serverSettings);
@@ -2359,7 +2357,7 @@ function bindStaticEventListeners() {
     }, 500);
   });
 
-  // Sessions tab — add remote instance button
+  // Multi-Device tab — add remote instance button
   on($('add-remote-instance-btn'), 'click', function() {
     var container = $('setting-remote-instances');
     if (container) {
@@ -2367,7 +2365,7 @@ function bindStaticEventListeners() {
     }
   });
 
-  // Sessions tab — delegated remove handler on remote instances container
+  // Multi-Device tab — delegated remove handler on remote instances container
   var remoteInstancesContainer = $('setting-remote-instances');
   if (remoteInstancesContainer) {
     remoteInstancesContainer.addEventListener('click', function(e) {
@@ -2519,7 +2517,9 @@ document.addEventListener('DOMContentLoaded', () => {
   restoreState()
     .then(() => {
       startPolling();
-      loadServerSettings();
+      loadServerSettings().then(function() {
+        document.title = _serverSettings.device_name || 'muxplex';
+      });
       startHeartbeat();
       bindStaticEventListeners();
     })
