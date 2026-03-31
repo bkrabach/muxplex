@@ -1027,6 +1027,7 @@ async function loadServerSettings() {
     console.warn('[loadServerSettings] failed:', err);
     if (!_serverSettings) _serverSettings = {};
   }
+  _sources = buildSources(_serverSettings);
   return _serverSettings;
 }
 
