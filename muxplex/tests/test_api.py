@@ -1030,6 +1030,60 @@ def test_instance_info_no_auth_required(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# CORS middleware
+# ---------------------------------------------------------------------------
+
+
+def test_cors_preflight_returns_200(tmp_path, monkeypatch):
+    """OPTIONS /api/sessions with CORS preflight headers returns 200 with access-control-allow-origin header.
+
+    NOTE — Spec discrepancy: the acceptance criteria states `access-control-allow-origin: *`,
+    but the middleware is configured with `allow_credentials=True`.  The CORS specification
+    (RFC 6454 / Fetch standard) forbids the wildcard value when credentials are included;
+    Starlette therefore reflects the request Origin instead of emitting "*".  Keeping
+    `allow_credentials=True` is intentional for cross-origin federation with session cookies,
+    so the assertion uses the reflected origin rather than a literal "*".
+    """
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    origin = "http://other-muxplex.local:8088"
+    with TestClient(app) as c:
+        response = c.options(
+            "/api/sessions",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == origin
+
+
+def test_cors_allows_any_origin(client):
+    """GET /api/sessions with Origin header gets access-control-allow-origin header in response.
+
+    NOTE — Spec discrepancy: the acceptance criteria states `access-control-allow-origin: *`,
+    but this is incompatible with `allow_credentials=True` (CORS spec forbids the two together).
+    Starlette reflects the request Origin instead.  This provides equivalent permissiveness
+    (any origin is allowed) while remaining spec-compliant.
+    """
+    origin = "http://other-muxplex.local:8088"
+    response = client.get(
+        "/api/sessions",
+        headers={"Origin": origin},
+    )
+    assert response.headers.get("access-control-allow-origin") == origin
+
+
+def test_cors_allows_credentials(client):
+    """GET /api/sessions with Origin header includes access-control-allow-credentials: true."""
+    response = client.get(
+        "/api/sessions",
+        headers={"Origin": "http://other-muxplex.local:8088"},
+    )
+    assert response.headers.get("access-control-allow-credentials") == "true"
+
+
+# ---------------------------------------------------------------------------
 # POST /api/sessions (create new session)
 # ---------------------------------------------------------------------------
 

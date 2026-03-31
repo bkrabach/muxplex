@@ -28,6 +28,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse
+from starlette.middleware.cors import CORSMiddleware
 
 from muxplex.auth import (
     AuthMiddleware,
@@ -249,6 +250,14 @@ app.add_middleware(
     secret=_auth_secret,
     ttl_seconds=_auth_ttl,
     password=_auth_password,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
