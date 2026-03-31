@@ -795,6 +795,86 @@ body {
   color: var(--bell);
 }
 
+
+/* ============================================================
+   Source tile states — offline and auth-required (Phase 3)
+   ============================================================ */
+
+.source-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  height: var(--tile-height);
+  background: var(--bg-tile);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.source-tile--offline {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.source-tile--offline .source-tile__name {
+  color: var(--text-dim);
+}
+
+.source-tile--offline .source-tile__badge {
+  background: var(--err);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: bold;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+}
+
+.source-tile--offline .source-tile__last-seen {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.source-tile--auth {
+  border-color: var(--warn);
+  border-style: dashed;
+}
+
+.source-tile__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.source-tile__login-btn {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 4px;
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 1;
+  transition: opacity var(--t-fast);
+}
+
+.source-tile__login-btn:hover {
+  opacity: 0.85;
+}
+
+.source-tile__login-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.source-tile__hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* ─── Reduced Motion ──────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
