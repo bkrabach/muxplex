@@ -14,6 +14,7 @@ import logging
 import os
 import pathlib
 import pwd
+import socket
 import subprocess
 import sys
 import time
@@ -296,10 +297,14 @@ class CreateSessionPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Frontend directory
+# Frontend directory + hostname
 # ---------------------------------------------------------------------------
 
 _FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
+
+# Short hostname (no domain) injected into page titles so browser tabs show
+# which machine each muxplex instance is running on.
+_HOSTNAME = socket.gethostname().split(".")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -420,9 +425,13 @@ async def delete_current_session() -> dict:
 
 @app.delete("/api/sessions/{name}")
 async def delete_session(name: str) -> dict:
-    """Kill a tmux session by name.
+    """Kill/destroy a tmux session using the delete_session_template from settings.
 
-    Runs `tmux kill-session -t {name}`. Returns {ok: True, name: name}.
+    Reads delete_session_template, substitutes {name}, and runs it synchronously
+    (30s timeout) so the caller can rely on the session being gone on return.
+
+    Returns {ok: True, name: name}. Errors are logged as warnings — the endpoint
+    always returns 200 so the UI can refresh and reflect the gone session.
     404 if session is not in the known session list (when non-empty).
     Must be declared after DELETE /api/sessions/current so "current" routes correctly.
     """
@@ -430,10 +439,29 @@ async def delete_session(name: str) -> dict:
     if known and name not in known:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
+    settings = load_settings()
+    command = settings.get(
+        "delete_session_template", "tmux kill-session -t {name}"
+    ).replace("{name}", name)
+
     try:
-        await run_tmux("kill-session", "-t", name)
-    except RuntimeError:
-        raise HTTPException(status_code=500, detail=f"Failed to kill session '{name}'")
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            _log.warning(
+                "Delete command failed (rc=%d): %s",
+                result.returncode,
+                result.stderr.strip(),
+            )
+    except subprocess.TimeoutExpired:
+        _log.warning("Delete command timed out after 30s: %r", command)
+    except Exception:
+        _log.warning("Delete command failed: %r", command)
 
     return {"ok": True, "name": name}
 
@@ -589,6 +617,18 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
 # ---------------------------------------------------------------------------
 
 
+@app.get("/", response_class=HTMLResponse)
+@app.get("/index.html", response_class=HTMLResponse)
+async def index_page():
+    """Serve index.html with hostname injected into the page title."""
+    html = (_FRONTEND_DIR / "index.html").read_text()
+    html = html.replace(
+        "<title>muxplex</title>",
+        f"<title>{_HOSTNAME} \u2014 muxplex</title>",
+    )
+    return HTMLResponse(html)
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
     """Serve branded login.html with injected window.MUXPLEX_AUTH containing auth mode and username."""
@@ -597,6 +637,10 @@ async def login_page():
     mode_data = json.dumps({"mode": _auth_mode, "user": username})
     html = html.replace(
         "</head>", f"<script>window.MUXPLEX_AUTH = {mode_data};</script></head>"
+    )
+    html = html.replace(
+        "<title>Sign in \u2014 muxplex</title>",
+        f"<title>Sign in \u2014 {_HOSTNAME} \u2014 muxplex</title>",
     )
     return HTMLResponse(html)
 

@@ -20,6 +20,7 @@ DEFAULT_SETTINGS: dict = {
     "new_session_template": "tmux new-session -d -s {name}",
     "remote_instances": [],
     "device_name": "",
+    "delete_session_template": "tmux kill-session -t {name}",
 }
 
 

@@ -21,6 +21,110 @@ from muxplex.auth import (
 _system_service_path = Path("/etc/systemd/system/muxplex.service")
 
 
+def _get_install_info() -> dict:
+    """Detect how muxplex was installed using PEP 610 direct_url.json.
+
+    Returns dict with keys:
+      source: 'git' | 'editable' | 'pypi' | 'unknown'
+      version: installed version string
+      commit: installed commit sha (git only)
+      url: git repo URL (git only)
+    """
+    import json
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    info: dict = {
+        "source": "unknown",
+        "version": "0.0.0",
+        "commit": None,
+        "url": None,
+    }
+
+    try:
+        dist = distribution("muxplex")
+        info["version"] = dist.metadata["Version"]
+
+        du_text = dist.read_text("direct_url.json")
+        if du_text:
+            du = json.loads(du_text)
+
+            if "vcs_info" in du:
+                info["source"] = "git"
+                info["commit"] = du["vcs_info"].get("commit_id", "")
+                info["url"] = du.get("url", "")
+            elif "dir_info" in du and du["dir_info"].get("editable"):
+                info["source"] = "editable"
+            else:
+                info["source"] = "unknown"
+        else:
+            # No direct_url.json → probably PyPI
+            info["source"] = "pypi"
+    except PackageNotFoundError:
+        pass
+
+    return info
+
+
+def _check_for_update(info: dict) -> tuple[bool, str]:
+    """Check if an update is available. Returns (update_available, message).
+
+    For git: compares installed commit_id against remote HEAD sha.
+    For pypi: compares installed version against latest PyPI version.
+    For editable: always returns (False, "editable install").
+    For unknown: always returns (True, "unknown install source").
+    """
+    import json
+    import urllib.request
+
+    if info["source"] == "editable":
+        return False, "editable install — manage updates manually"
+
+    if info["source"] == "git":
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", info["url"], "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return True, "could not check remote — upgrading to be safe"
+
+            remote_sha = (
+                result.stdout.strip().split()[0] if result.stdout.strip() else ""
+            )
+            local_sha = info["commit"] or ""
+
+            if not remote_sha:
+                return True, "could not read remote sha — upgrading to be safe"
+
+            if local_sha == remote_sha:
+                return False, f"up to date (commit {local_sha[:8]})"
+            else:
+                return True, f"update available ({local_sha[:8]} → {remote_sha[:8]})"
+        except Exception:
+            return True, "check failed — upgrading to be safe"
+
+    if info["source"] == "pypi":
+        try:
+            req = urllib.request.Request(
+                "https://pypi.org/pypi/muxplex/json",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                latest = data["info"]["version"]
+                if latest == info["version"]:
+                    return False, f"up to date (v{info['version']})"
+                else:
+                    return True, f"update available (v{info['version']} → v{latest})"
+        except Exception:
+            return True, "could not check PyPI — upgrading to be safe"
+
+    # Unknown source
+    return True, "unknown install source — upgrading to be safe"
+
+
 def reset_secret() -> None:
     """Regenerate the signing secret and warn that all sessions are now invalid."""
     path = get_secret_path()
@@ -116,14 +220,26 @@ def doctor() -> None:
         else:
             print("    Install: sudo apt install ttyd")
 
-    # muxplex version
+    # muxplex version + install source + update check
     try:
         from importlib.metadata import version as pkg_version  # noqa: PLC0415
 
         muxplex_version = pkg_version("muxplex")
     except Exception:
         muxplex_version = "dev"
-    print(f"  {ok_mark} muxplex {muxplex_version}")
+
+    info = _get_install_info()
+    source_label = info["source"]
+    if info["commit"]:
+        source_label += f" @ {info['commit'][:8]}"
+    print(f"  {ok_mark} muxplex {muxplex_version} (installed via {source_label})")
+
+    update_available, update_msg = _check_for_update(info)
+    if update_available:
+        print(f"  {warn_mark} Update: {update_msg}")
+        print("    Run: muxplex upgrade")
+    else:
+        print(f"  {ok_mark} {update_msg}")
 
     # Settings file
     from muxplex.settings import SETTINGS_PATH  # noqa: PLC0415
@@ -171,7 +287,18 @@ def doctor() -> None:
     if sys.platform == "darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
         if plist.exists():
-            print(f"  {ok_mark} Service: launchd agent installed ({plist})")
+            uid = os.getuid()
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{uid}/com.muxplex"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print(f"  {ok_mark} Service: launchd agent running")
+            else:
+                print(
+                    f"  {warn_mark} Service: launchd agent installed but not running ({plist})"
+                )
         else:
             print(
                 f"  {warn_mark} Service: not installed (run: muxplex install-service)"
@@ -220,21 +347,39 @@ def _install_launchd(executable: str) -> None:
     import shutil
 
     # Prefer the entry point script ('muxplex') so macOS shows the correct
-    # process name in Activity Monitor, launchctl list, and login items.
-    # Fall back to 'python -m muxplex' if the entry point isn't on PATH.
+    # process name in Activity Monitor and launchctl list.
     muxplex_bin = shutil.which("muxplex")
     if muxplex_bin:
         program_args = f"""    <array>
         <string>{muxplex_bin}</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
     </array>"""
     else:
         program_args = f"""    <array>
         <string>{executable}</string>
         <string>-m</string>
         <string>muxplex</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
     </array>"""
 
+    # Build PATH that includes Homebrew and common tool locations.
+    # launchd agents run with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin).
+    # Homebrew binaries (tmux, ttyd, uv, git) won't be found without this.
+    _homebrew_paths = [
+        "/opt/homebrew/bin",  # Apple Silicon Homebrew
+        "/usr/local/bin",  # Intel Homebrew + system extras
+        "/opt/homebrew/sbin",
+        "/usr/local/sbin",
+    ]
+    _user_local = str(Path.home() / ".local" / "bin")  # uv/pip tool installs
+    _extra = [_user_local] + _homebrew_paths
+    _base = "/usr/bin:/bin:/usr/sbin:/sbin"
+    _service_path = ":".join(_extra) + ":" + _base
+
     label = "com.muxplex"
+    uid = os.getuid()
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -243,6 +388,11 @@ def _install_launchd(executable: str) -> None:
     <string>{label}</string>
     <key>ProgramArguments</key>
 {program_args}
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{_service_path}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -256,12 +406,44 @@ def _install_launchd(executable: str) -> None:
 """
     path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Unload existing service first (ignore errors if not loaded)
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{uid}/{label}"],
+        capture_output=True,
+    )
+
     path.write_text(plist)
     print(f"Launch agent written to {path}")
-    print("Enable with:")
-    print(f"  launchctl load {path}")
-    print("Disable with:")
-    print(f"  launchctl unload {path}")
+    print()
+
+    # Load the service using the modern bootstrap API
+    result = subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"  Service started (launchctl bootstrap gui/{uid})")
+    else:
+        # Fallback to legacy load for older macOS
+        result2 = subprocess.run(
+            ["launchctl", "load", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        if result2.returncode == 0:
+            print("  Service started (launchctl load)")
+        else:
+            print("  Could not auto-start. Try manually:")
+            print(f"    launchctl bootstrap gui/{uid} {path}")
+
+    print()
+    print("Management commands:")
+    print(f"  Stop:    launchctl bootout gui/{uid}/{label}")
+    print(f"  Start:   launchctl bootstrap gui/{uid} {path}")
+    print(f"  Status:  launchctl print gui/{uid}/{label}")
+    print("  Logs:    tail -f /tmp/muxplex.log")
 
 
 def _install_systemd(executable: str, *, system: bool = False) -> None:
@@ -313,6 +495,143 @@ def install_service(*, system: bool = False) -> None:
         _install_systemd(executable, system=system)
 
 
+def upgrade(*, force: bool = False) -> None:
+    """Upgrade muxplex to the latest version and restart the service."""
+    print("\nmuxplex upgrade\n")
+
+    # Show current install info
+    info = _get_install_info()
+    commit_suffix = f" (commit {info['commit'][:8]})" if info["commit"] else ""
+    print(f"  Installed: v{info['version']}{commit_suffix} via {info['source']}")
+
+    if not force:
+        update_available, message = _check_for_update(info)
+        print(f"  Status: {message}")
+
+        if not update_available:
+            print(
+                "\n  Already up to date."
+                " Use 'muxplex upgrade --force' to reinstall anyway.\n"
+            )
+            return
+    else:
+        print("  Status: --force specified — skipping version check")
+
+    # 1. Detect platform and stop service
+    if sys.platform == "darwin":
+        label = "com.muxplex"
+        uid = os.getuid()
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        if plist.exists():
+            print("  Stopping launchd service...")
+            subprocess.run(
+                ["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True
+            )
+        else:
+            print("  No launchd service found (skipping stop)")
+    else:
+        # Linux/WSL — check systemd
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", "muxplex"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print("  Stopping systemd service...")
+            subprocess.run(
+                ["systemctl", "--user", "stop", "muxplex"], capture_output=True
+            )
+        else:
+            print("  No active systemd service found (skipping stop)")
+
+    # 2. Reinstall via uv tool install
+    print("  Installing latest version...")
+    uv_path = shutil.which("uv")
+    if uv_path:
+        result = subprocess.run(
+            [
+                uv_path,
+                "tool",
+                "install",
+                "git+https://github.com/bkrabach/muxplex",
+                "--force",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"  ERROR: uv tool install failed:\n{result.stderr}")
+            return
+        print("  Installed successfully")
+    else:
+        # Fallback: pip
+        pip_path = shutil.which("pip") or shutil.which("pip3")
+        if pip_path:
+            result = subprocess.run(
+                [
+                    pip_path,
+                    "install",
+                    "--upgrade",
+                    "git+https://github.com/bkrabach/muxplex",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                print(f"  ERROR: pip install failed:\n{result.stderr}")
+                return
+            print("  Installed successfully")
+        else:
+            print("  ERROR: neither uv nor pip found — cannot upgrade")
+            return
+
+    # 3. Regenerate service file (picks up any plist/unit changes)
+    print("  Regenerating service file...")
+    install_service(system=False)
+
+    # 4. Restart service
+    if sys.platform == "darwin":
+        label = "com.muxplex"
+        uid = os.getuid()
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        if plist.exists():
+            print("  Starting launchd service...")
+            result = subprocess.run(
+                ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print("  Service started")
+            else:
+                # Fallback to legacy load for older macOS
+                subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
+                print("  Service started (legacy)")
+        else:
+            print("  Service file not found — run: muxplex install-service")
+    else:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-enabled", "muxplex"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print("  Restarting systemd service...")
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"], capture_output=True
+            )
+            subprocess.run(
+                ["systemctl", "--user", "start", "muxplex"], capture_output=True
+            )
+            print("  Service started")
+        else:
+            print("  Service not enabled — run: muxplex install-service")
+
+    # 5. Doctor check
+    print("\n  Verifying...")
+    doctor()
+
+
 def main() -> None:
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -356,6 +675,21 @@ def main() -> None:
 
     sub.add_parser("doctor", help="Check dependencies and system status")
 
+    upgrade_parser = sub.add_parser(
+        "upgrade", help="Upgrade muxplex to latest version and restart service"
+    )
+    upgrade_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force reinstall even if already up to date",
+    )
+    update_parser = sub.add_parser("update", help="Alias for upgrade")
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force reinstall even if already up to date",
+    )
+
     args = parser.parse_args()
 
     if args.command == "install-service":
@@ -366,6 +700,8 @@ def main() -> None:
         reset_secret()
     elif args.command == "doctor":
         doctor()
+    elif args.command in ("upgrade", "update"):
+        upgrade(force=getattr(args, "force", False))
     else:
         _check_dependencies()
         serve(

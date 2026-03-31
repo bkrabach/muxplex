@@ -22,6 +22,7 @@
       <h1 class="app-wordmark"><img src="/wordmark-on-dark.svg" alt="muxplex" height="24" /></h1>
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
+        <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
         <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;</button>
         <span id="connection-status"></span>
       </div>
@@ -88,7 +89,7 @@
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
         <button class="settings-tab" data-tab="notifications">Notifications</button>
-        <button class="settings-tab" data-tab="new-session">New Session</button>
+        <button class="settings-tab" data-tab="new-session">Commands</button>
       </nav>
       <div class="settings-content">
         <div class="settings-panel" data-tab="display">
@@ -100,6 +101,7 @@
               <option value="13">13</option>
               <option value="14" selected>14</option>
               <option value="16">16</option>
+              <option value="18">18</option>
             </select>
           </div>
           <div class="settings-field">
@@ -193,6 +195,12 @@
             <textarea id="setting-template" class="settings-textarea" rows="3" placeholder="tmux new-session -d -s {name}"></textarea>
             <span class="settings-helper">{name} is replaced with the session name</span>
             <button id="setting-template-reset" class="settings-action-btn">Reset to default</button>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label" for="setting-delete-template">Delete session command</label>
+            <textarea id="setting-delete-template" class="settings-textarea" rows="3" placeholder="tmux kill-session -t {name}"></textarea>
+            <span class="settings-helper">{name} is replaced with the session name</span>
+            <button id="setting-delete-template-reset" class="settings-action-btn">Reset to default</button>
           </div>
         </div>
       </div>

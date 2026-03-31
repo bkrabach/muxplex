@@ -145,8 +145,12 @@ const DISPLAY_DEFAULTS = {
   gridColumns: 'auto',
   bellSound: false,
   notificationPermission: 'default',
+  viewMode: 'auto',
 };
+
+var VIEW_MODES = ['auto', 'fit'];
 const NEW_SESSION_DEFAULT_TEMPLATE = 'tmux new-session -d -s {name}';
+const DELETE_SESSION_DEFAULT_TEMPLATE = 'tmux kill-session -t {name}';
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -207,8 +211,8 @@ function trackInteraction() {
 // ─── State restoration ───────────────────────────────────────────────────────
 /**
  * Restore application state from the server on page load.
- * Calls GET /api/state and, if an active session exists, re-opens it
- * without POSTing to /connect (ttyd is already running).
+ * Calls GET /api/state and, if an active session exists, re-opens it,
+ * skipping only the zoom animation (ttyd is re-spawned to handle service restarts).
  * Always resolves — errors are logged as warnings so the app can start normally.
  * @returns {Promise<void>}
  */
@@ -217,7 +221,7 @@ async function restoreState() {
     const res = await api('GET', '/api/state');
     const state = await res.json();
     if (state.active_session) {
-      await openSession(state.active_session, { skipConnect: true });
+      await openSession(state.active_session, { skipAnimation: true });
     }
   } catch (err) {
     console.warn('[restoreState] could not restore previous session:', err);
@@ -322,6 +326,7 @@ async function pollSessions() {
   renderSidebar(merged, _viewingSession);
   handleBellTransitions(prev, merged);
   updateSessionPill(merged);
+  updateFaviconBadge();
 }
 
 /**
@@ -470,9 +475,11 @@ function buildTileHTML(session, index, mobile) {
     ? `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`
     : '';
 
-  // Last 20 lines of snapshot
+  // Last N lines of snapshot — show more in fit mode so tall tiles fill
   const snapshot = session.snapshot || '';
-  const lastLines = snapshot.split('\n').slice(-20).join('\n');
+  var _tileDs = loadDisplaySettings();
+  var _lineCount = (_tileDs.viewMode === 'fit') ? -80 : -20;
+  const lastLines = snapshot.split('\n').slice(_lineCount).join('\n');
 
   const sourceUrlAttr = session.sourceUrl ? ` data-source-url="${escapeHtml(session.sourceUrl)}"` : '';
   return (
@@ -920,6 +927,20 @@ function renderGrid(sessions) {
     updatePillBell();
   }
 
+  // Reapply view mode layout after grid HTML is rebuilt
+  var currentDs = loadDisplaySettings();
+  var currentMode = currentDs.viewMode || 'auto';
+  if (currentMode === 'fit' && grid) {
+    grid.classList.add('session-grid--fit');
+    requestAnimationFrame(function() {
+      applyFitLayout(grid);
+      // Scroll each tile's pre to the bottom so content anchors at the bottom (like a real terminal)
+      grid.querySelectorAll('.tile-body pre').forEach(function(pre) {
+        pre.scrollTop = pre.scrollHeight;
+      });
+    });
+  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,7 +1064,14 @@ function handleBellTransitions(prevSessions, nextSessions) {
  */
 async function sendHeartbeat() {
   try {
-    const payload = buildHeartbeatPayload(_deviceId, _viewingSession, _viewMode, _lastInteractionAt);
+    // When the browser tab is hidden (user switched tabs or minimized), report
+    // viewing_session as null.  This prevents the server from clearing bells on
+    // the session — the user isn't actually looking at it, so activity should
+    // accumulate and show in the favicon badge / tab indicators.
+    var effectiveSession = (typeof document !== 'undefined' && document.hidden)
+      ? null
+      : _viewingSession;
+    const payload = buildHeartbeatPayload(_deviceId, effectiveSession, _viewMode, _lastInteractionAt);
     await api('POST', '/api/heartbeat', payload);
   } catch (err) {
     console.warn('[sendHeartbeat] heartbeat failed:', err);
@@ -1096,13 +1124,68 @@ function updatePillBell() {
   if (hasBell) el.classList.remove('hidden'); else el.classList.add('hidden');
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic favicon — activity dot overlay
+// ---------------------------------------------------------------------------
+
+var _originalFavicon = null; // cached original favicon href
+
+/**
+ * Update the favicon with an activity dot if any session has unseen bells.
+ * Uses a 32x32 canvas to draw the original favicon + a colored circle overlay.
+ * Restores the original favicon when there are no unseen bells.
+ */
+function updateFaviconBadge() {
+  var hasActivity = _currentSessions && _currentSessions.some(function (s) {
+    return s.bell && s.bell.unseen_count > 0;
+  });
+
+  var link = document.querySelector('link[rel="icon"][sizes="32x32"]') ||
+             document.querySelector('link[rel="icon"]');
+  if (!link) return;
+
+  // Cache the original favicon on first call
+  if (!_originalFavicon) _originalFavicon = link.href;
+
+  if (!hasActivity) {
+    // Restore original favicon when no activity
+    if (link.href !== _originalFavicon) link.href = _originalFavicon;
+    return;
+  }
+
+  // Draw favicon + activity dot on canvas
+  var canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 32;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  var img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = function () {
+    ctx.drawImage(img, 0, 0, 32, 32);
+
+    // Activity dot — brand amber (same as bell indicator)
+    ctx.beginPath();
+    ctx.arc(24, 8, 7, 0, 2 * Math.PI); // top-right area
+    ctx.fillStyle = '#F1A640';           // var(--bell-color)
+    ctx.fill();
+    ctx.strokeStyle = '#0D1117';         // var(--bg) — border for contrast
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    link.href = canvas.toDataURL('image/png');
+  };
+  img.src = _originalFavicon;
+}
+
 // ─── Session open / close ────────────────────────────────────────────────────
 
 /**
  * Open a session in fullscreen view with a zoom transition.
  * @param {string} name - session name
  * @param {object} [opts]
- * @param {boolean} [opts.skipConnect] - if true, skip the /connect POST (ttyd already running)
+ * @param {boolean} [opts.skipAnimation] - if true, skip the zoom animation (e.g. on page restore)
  * @returns {Promise<void>}
  */
 async function openSession(name, opts = {}) {
@@ -1120,7 +1203,8 @@ async function openSession(name, opts = {}) {
   if (nameEl) nameEl.textContent = name;
 
   // Zoom animation: pin tile at current position, then animate to full viewport
-  const tile = document.querySelector(`[data-session="${name}"]`);
+  // Skipped on restore (skipAnimation:true) — no tile DOM element to zoom from
+  const tile = opts.skipAnimation ? null : document.querySelector(`[data-session="${name}"]`);
   if (tile) {
     const rect = tile.getBoundingClientRect();
     tile.style.position = 'fixed';
@@ -1152,7 +1236,7 @@ async function openSession(name, opts = {}) {
       initSidebar();
       renderSidebar(_currentSessions, name);
       resolve();
-    }, 260);
+    }, opts.skipAnimation ? 0 : 260);
     // If setTimeout is stubbed (e.g. in test env), resolve immediately so we don't hang
     if (timerId == null) resolve();
   });
@@ -1173,7 +1257,7 @@ async function openSession(name, opts = {}) {
   const fab = $('new-session-fab');
   if (fab) fab.classList.add('hidden');
 
-  // Connect to session (kill old ttyd, spawn new one for this session)
+  // Always spawn ttyd for this session — ensures correct session after service restart or page restore
   var _sourceUrl = opts.sourceUrl || '';
   try {
     if (!opts.skipConnect) {
@@ -1219,6 +1303,16 @@ function closeSession() {
     expanded.classList.remove('view--active');
   }
   if (overview) overview.style.display = '';  // overview uses view--active (no !important), style.display clears fine
+
+  // Reapply fit layout after overview becomes visible again
+  var _closDs = loadDisplaySettings();
+  if ((_closDs.viewMode || 'auto') === 'fit') {
+    var _closGrid = document.getElementById('session-grid');
+    if (_closGrid) {
+      _closGrid.classList.add('session-grid--fit');
+      requestAnimationFrame(function() { applyFitLayout(_closGrid); });
+    }
+  }
 
   const pill = $('session-pill');
   if (pill) pill.classList.add('hidden');
@@ -1384,23 +1478,115 @@ function saveDisplaySettings(settings) {
 }
 
 /**
+ * Calculate and apply grid layout to fill the viewport exactly (Fit mode).
+ * Determines optimal cols × rows based on tile count and available space.
+ * @param {Element} grid - The session grid element
+ */
+function applyFitLayout(grid) {
+  var count = grid.querySelectorAll('.session-tile').length;
+  if (count === 0) return;
+
+  // Available space — use grid's parent container
+  var parent = grid.parentElement;
+  var availH = parent ? parent.clientHeight : window.innerHeight;
+  var availW = grid.clientWidth;
+
+  // Subtract padding and gap
+  var style = getComputedStyle(grid);
+  var padT = parseFloat(style.paddingTop) || 0;
+  var padB = parseFloat(style.paddingBottom) || 0;
+  var padL = parseFloat(style.paddingLeft) || 0;
+  var padR = parseFloat(style.paddingRight) || 0;
+  var gap = parseFloat(style.gap) || 8;
+
+  var innerW = availW - padL - padR;
+  var innerH = availH - padT - padB;
+
+  // Calculate optimal cols/rows — start with square root
+  var cols = Math.ceil(Math.sqrt(count));
+  var rows = Math.ceil(count / cols);
+
+  // Prefer wider layouts (more cols, fewer rows) since tiles are landscape
+  if (rows > 1 && cols < count) {
+    var altCols = cols + 1;
+    var altRows = Math.ceil(count / altCols);
+    if (altRows < rows) {
+      cols = altCols;
+      rows = altRows;
+    }
+  }
+
+  // Tile height from available space
+  var tileH = (innerH - gap * (rows - 1)) / rows;
+
+  grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+  grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+
+  // Override tile height so tiles fill the grid rows
+  grid.querySelectorAll('.session-tile').forEach(function(t) {
+    t.style.height = tileH + 'px';
+  });
+}
+
+/**
+ * Cycle the dashboard view mode: auto → fit → auto.
+ * Persists to localStorage and reapplies display settings.
+ */
+function cycleViewMode() {
+  var ds = loadDisplaySettings();
+  var idx = VIEW_MODES.indexOf(ds.viewMode || 'auto');
+  ds.viewMode = VIEW_MODES[(idx + 1) % VIEW_MODES.length];
+  saveDisplaySettings(ds);
+  applyDisplaySettings(ds);
+
+  // Update button label
+  var btn = document.getElementById('view-mode-btn');
+  if (btn) btn.title = 'View: ' + ds.viewMode;
+}
+
+/**
  * Apply display settings to the live DOM.
  * Sets --preview-font-size CSS custom property and updates #session-grid
- * grid-template-columns based on the gridColumns setting.
+ * grid-template-columns based on the gridColumns setting and viewMode.
  * @param {object} ds - display settings object
  */
 function applyDisplaySettings(ds) {
-  // Apply font size as CSS custom property
-  document.documentElement.style.setProperty('--preview-font-size', ds.fontSize + 'px');
+  // Apply font size as CSS custom property (tile previews)
+  if (document.documentElement) {
+    document.documentElement.style.setProperty('--preview-font-size', ds.fontSize + 'px');
+  }
 
-  // Apply grid columns
+  // Apply font size to the live xterm.js terminal without reconnecting
+  if (window._setTerminalFontSize) {
+    window._setTerminalFontSize(ds.fontSize);
+  }
+
+  // Apply view mode to grid
   var grid = document.getElementById('session-grid');
-  if (grid) {
-    if (ds.gridColumns === 'auto') {
+  if (!grid) return;
+
+  var mode = ds.viewMode || 'auto';
+
+  // Remove all mode classes
+  grid.classList.remove('session-grid--fit');
+
+  // Reset any inline styles from previous fit calculation
+  grid.style.removeProperty('grid-template-rows');
+  grid.querySelectorAll('.session-tile').forEach(function(t) {
+    t.style.removeProperty('height');
+  });
+
+  if (mode === 'auto') {
+    // Restore grid columns setting
+    if (ds.gridColumns === 'auto' || !ds.gridColumns) {
       grid.style.removeProperty('grid-template-columns');
     } else {
       grid.style.gridTemplateColumns = 'repeat(' + ds.gridColumns + ', 1fr)';
     }
+
+  } else if (mode === 'fit') {
+    grid.classList.add('session-grid--fit');
+    requestAnimationFrame(function() { applyFitLayout(grid); });
   }
 }
 
@@ -1590,10 +1776,16 @@ function openSettings() {
       });
     }
 
-    // New Session tab - populate template textarea
+    // Commands tab - populate create template textarea
     const templateEl = $('setting-template');
     if (templateEl) {
       templateEl.value = (ss && ss.new_session_template) || NEW_SESSION_DEFAULT_TEMPLATE;
+    }
+
+    // Commands tab - populate delete template textarea
+    const deleteTemplateEl = $('setting-delete-template');
+    if (deleteTemplateEl) {
+      deleteTemplateEl.value = (ss && ss.delete_session_template) || DELETE_SESSION_DEFAULT_TEMPLATE;
     }
   });
 }
@@ -1847,10 +2039,30 @@ async function createNewSession(name) {
     const sessionName = data.name || name;
     showToast('Creating session \'' + sessionName + '\'…');
 
+    // Inject a loading placeholder tile so the user sees feedback immediately
+    var loadingTile = null;
+    var grid = document.getElementById('session-grid');
+    if (grid) {
+      loadingTile = document.createElement('div');
+      loadingTile.className = 'session-tile tile--loading';
+      loadingTile.id = 'loading-tile-' + sessionName;
+      loadingTile.innerHTML =
+        '<div class="tile-header"><span class="tile-name">' + escapeHtml(sessionName) + '</span>' +
+        '<span class="tile-meta">Creating...</span></div>' +
+        '<div class="tile-body"><pre class="loading-pulse"></pre></div>';
+      grid.appendChild(loadingTile);
+    }
+
+    function removeLoadingTile() {
+      var tile = document.getElementById('loading-tile-' + sessionName);
+      if (tile) tile.remove();
+    }
+
     const ss = _serverSettings || {};
     if (ss.auto_open_created === false) {
       // Auto-open disabled — just do one refresh
       await pollSessions();
+      removeLoadingTile();
       return;
     }
 
@@ -1865,10 +2077,12 @@ async function createNewSession(name) {
       });
       if (found) {
         clearInterval(pollForSession);
+        removeLoadingTile();
         showToast('Session \'' + sessionName + '\' ready');
         openSession(sessionName);
       } else if (attempts >= maxAttempts) {
         clearInterval(pollForSession);
+        removeLoadingTile();
         showToast('Session \'' + sessionName + '\' is taking longer than expected');
       }
     }, 2000);
@@ -1931,12 +2145,19 @@ function bindStaticEventListeners() {
   on($('sheet-backdrop'), 'click', closeBottomSheet);
 
   // Settings dialog bindings
+  on($('view-mode-btn'), 'click', cycleViewMode);
   on($('settings-btn'), 'click', openSettings);
   on($('settings-btn-expanded'), 'click', openSettings);
   on($('settings-close-btn'), 'click', closeSettings);
   on($('settings-backdrop'), 'click', closeSettings);
   const settingsDialog = $('settings-dialog');
-  if (settingsDialog) settingsDialog.addEventListener('cancel', closeSettings);
+  if (settingsDialog) {
+    settingsDialog.addEventListener('cancel', closeSettings);
+    // Click on the ::backdrop area (outside dialog content) dismisses settings
+    settingsDialog.addEventListener('click', function(e) {
+      if (e.target === settingsDialog) closeSettings();
+    });
+  }
   document.querySelectorAll('.settings-tab').forEach(function(tab) {
     on(tab, 'click', function() { switchSettingsTab(tab.dataset.tab); });
   });
@@ -2060,7 +2281,7 @@ function bindStaticEventListeners() {
     });
   });
 
-  // New Session tab — template textarea with 500ms debounce
+  // Commands tab — create template textarea with 500ms debounce
   var _templateDebounceTimer;
   on($('setting-template'), 'input', function() {
     clearTimeout(_templateDebounceTimer);
@@ -2070,7 +2291,7 @@ function bindStaticEventListeners() {
     }, 500);
   });
 
-  // New Session tab — reset button restores default template
+  // Commands tab — create template reset button restores default
   on($('setting-template-reset'), 'click', function() {
     var el = $('setting-template');
     if (el) el.value = NEW_SESSION_DEFAULT_TEMPLATE;
@@ -2132,6 +2353,23 @@ function bindStaticEventListeners() {
       renderGrid(_currentSessions || []);
     });
   }
+
+  // Commands tab — delete template textarea with 500ms debounce
+  var _deleteTemplateDebounceTimer;
+  on($('setting-delete-template'), 'input', function() {
+    clearTimeout(_deleteTemplateDebounceTimer);
+    var val = this.value;
+    _deleteTemplateDebounceTimer = setTimeout(function() {
+      patchServerSetting('delete_session_template', val);
+    }, 500);
+  });
+
+  // Commands tab — delete template reset button restores default
+  on($('setting-delete-template-reset'), 'click', function() {
+    var el = $('setting-delete-template');
+    if (el) el.value = DELETE_SESSION_DEFAULT_TEMPLATE;
+    patchServerSetting('delete_session_template', DELETE_SESSION_DEFAULT_TEMPLATE);
+  });
 }
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────
@@ -2206,10 +2444,25 @@ function _setActiveFilterDevice(device) {
   _activeFilterDevice = device;
 }
 
+// Recalculate fit layout on window resize
+window.addEventListener('resize', function() {
+  var ds = loadDisplaySettings();
+  if ((ds.viewMode || 'auto') === 'fit') {
+    var grid = document.getElementById('session-grid');
+    if (grid) requestAnimationFrame(function() { applyFitLayout(grid); });
+  }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
   initDeviceId();
-  applyDisplaySettings(loadDisplaySettings());
+  var _initDs = loadDisplaySettings();
+  applyDisplaySettings(_initDs);
   _gridViewMode = loadGridViewMode();
+
+  // Initialize view mode button title
+  var vmBtn = document.getElementById('view-mode-btn');
+  if (vmBtn) vmBtn.title = 'View: ' + (_initDs.viewMode || 'auto');
+
   document.addEventListener('keydown', trackInteraction);
   document.addEventListener('click', trackInteraction);
   document.addEventListener('touchstart', trackInteraction);
@@ -2219,7 +2472,6 @@ document.addEventListener('DOMContentLoaded', () => {
       startPolling();
       loadServerSettings();
       startHeartbeat();
-      requestNotificationPermission();
       bindStaticEventListeners();
     })
     .catch((err) => {
@@ -2280,6 +2532,8 @@ if (typeof module !== 'undefined' && module.exports) {
     applyDisplaySettings,
     loadGridViewMode,
     saveGridViewMode,
+    applyFitLayout,
+    cycleViewMode,
     onDisplaySettingChange,
     openSettings,
     closeSettings,
@@ -2306,6 +2560,9 @@ if (typeof module !== 'undefined' && module.exports) {
     buildOfflineTileHTML,
     openLoginPopup,
     formatLastSeen,
+    // Constants
+    NEW_SESSION_DEFAULT_TEMPLATE,
+    DELETE_SESSION_DEFAULT_TEMPLATE,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,

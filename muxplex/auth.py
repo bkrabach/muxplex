@@ -136,6 +136,20 @@ def authenticate_pam(username: str, password: str) -> bool:
 # Paths that bypass auth (login page itself, static assets it needs)
 _AUTH_EXEMPT_PATHS = {"/login", "/auth/mode", "/auth/logout", "/api/instance-info"}
 
+# File extensions that are always served without auth — the login page needs
+# its own CSS, JS, images, and fonts before the user has a session cookie.
+_STATIC_EXTENSIONS = {
+    ".css",
+    ".js",
+    ".svg",
+    ".png",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".map",
+}
+
 # Socket-level localhost addresses — cannot be forged via HTTP headers
 _LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
 
@@ -168,12 +182,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
-        # 3. Valid session cookie
+        # 3. Static assets — login page needs its CSS/JS/images before auth
+        path = request.url.path
+        if any(path.endswith(ext) for ext in _STATIC_EXTENSIONS):
+            return await call_next(request)
+
+        # 4. Valid session cookie
         cookie = request.cookies.get("muxplex_session")
         if cookie and verify_session_cookie(self.secret, cookie, self.ttl_seconds):
             return await call_next(request)
 
-        # 4. Authorization: Basic header
+        # 5. Authorization: Basic header
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("basic "):
             try:
@@ -186,7 +205,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 pass
             return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
 
-        # 5. No auth — redirect browsers, 401 for API clients
+        # 6. No auth — redirect browsers, 401 for API clients
         accept = request.headers.get("accept", "")
         if "application/json" in accept:
             return JSONResponse({"detail": "Authentication required"}, status_code=401)

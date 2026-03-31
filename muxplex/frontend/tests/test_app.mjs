@@ -1049,20 +1049,24 @@ test('openSession returns a Promise', () => {
   globalThis.setTimeout = origSetTimeout;
 });
 
-test('openSession with skipConnect calls window._openTerminal inside setTimeout callback', async () => {
+test('openSession with skipAnimation calls window._openTerminal after connect POST', async () => {
+  // After the fix: skipAnimation only skips the zoom animation, connect always fires.
   let openTerminalCalledWith = null;
+  const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => ({ ok: true });
   globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
   globalThis.document.querySelector = () => null;
-  // Use a synchronous mock so setTimeout callbacks run immediately — _openTerminal is now called inside setTimeout
+  // Use a synchronous mock so setTimeout callbacks run immediately
   globalThis.setTimeout = (fn) => { fn(); };
   globalThis.window._openTerminal = (name) => { openTerminalCalledWith = name; };
 
-  await app.openSession('my-session', { skipConnect: true });
+  await app.openSession('my-session', { skipAnimation: true });
 
   assert.strictEqual(openTerminalCalledWith, 'my-session', '_openTerminal should be called with session name');
+  globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
   globalThis.setTimeout = origSetTimeout;
@@ -3273,4 +3277,288 @@ test('formatLastSeen returns Never for null', () => {
 test('formatLastSeen returns Never for undefined', () => {
   assert.strictEqual(app.formatLastSeen(undefined), 'Never');
 });
+// --- Issue 1: Loading placeholder tile ---
 
+test('createNewSession injects tile--loading placeholder after POST succeeds', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function createNewSession(');
+  assert.ok(start !== -1, 'createNewSession must exist');
+  const snippet = source.slice(start, start + 2500);
+  assert.ok(snippet.includes('tile--loading'), 'createNewSession must inject tile--loading placeholder class');
+  assert.ok(snippet.includes('loading-tile-'), 'createNewSession must use loading-tile- id prefix for the placeholder');
+});
+
+test('createNewSession removes loading placeholder when session is found', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function createNewSession(');
+  const snippet = source.slice(start, start + 2500);
+  assert.ok(
+    snippet.includes('loadingTile') && snippet.includes('.remove()'),
+    'createNewSession must remove the loading tile (loadingTile.remove()) when session is found'
+  );
+});
+
+test('CSS style.css has tile--loading and shimmer animation', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('tile--loading'), 'style.css must have .tile--loading rule');
+  assert.ok(source.includes('shimmer'), 'style.css must have shimmer animation');
+});
+
+// --- Issue 2: Always call connect on restore ---
+
+test('openSession always POSTs to connect even when skipConnect option is passed', async () => {
+  // Before the fix, skipConnect:true skipped the connect POST entirely.
+  // After the fix, connect is always called; the option is renamed to skipAnimation.
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('work', { skipConnect: true });
+
+  const connectCall = fetchCalls.find((c) => c.url === '/api/sessions/work/connect');
+  assert.ok(connectCall, 'skipConnect:true must NOT prevent connect POST — connect always fires after fix');
+  assert.strictEqual(connectCall.opts.method, 'POST');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+// --- Issue 3: Notification permission on user click only ---
+
+test('DOMContentLoaded handler does NOT call requestNotificationPermission at startup', () => {
+  // Browsers require notification permission to be requested in response to a user gesture.
+  // Auto-calling at startup is silently blocked, leaving the permission in a broken state.
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const domContentLoadedIdx = source.indexOf("document.addEventListener('DOMContentLoaded'");
+  assert.ok(domContentLoadedIdx !== -1, 'DOMContentLoaded handler must exist');
+  // Extract the DOMContentLoaded handler body (next ~600 chars covers the entire handler)
+  const handlerBody = source.substring(domContentLoadedIdx, domContentLoadedIdx + 600);
+  assert.ok(
+    !handlerBody.includes('requestNotificationPermission'),
+    'requestNotificationPermission must NOT be called automatically in DOMContentLoaded — only on user click'
+  );
+});
+
+// --- Issue 4: Apply font size to live terminal without reconnecting ---
+
+test('applyDisplaySettings calls window._setTerminalFontSize when available', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function applyDisplaySettings(');
+  assert.ok(fnStart !== -1, 'applyDisplaySettings must exist');
+  const fnBody = source.substring(fnStart, fnStart + 600);
+  assert.ok(
+    fnBody.includes('_setTerminalFontSize'),
+    'applyDisplaySettings must call window._setTerminalFontSize to update live terminal font size'
+  );
+});
+
+
+
+// --- Issue: Dynamic favicon badge with activity dot ---
+
+test('updateFaviconBadge function exists in app.js', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('function updateFaviconBadge'),
+    'app.js must define updateFaviconBadge function'
+  );
+});
+
+test('pollSessions calls updateFaviconBadge', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const pollStart = source.indexOf('async function pollSessions()');
+  assert.ok(pollStart !== -1, 'pollSessions must exist');
+  // Find the closing brace of pollSessions (next line starting with "}")
+  const pollEnd = source.indexOf('\n}', pollStart);
+  const pollBody = source.substring(pollStart, pollEnd + 2);
+  assert.ok(
+    pollBody.includes('updateFaviconBadge'),
+    'pollSessions must call updateFaviconBadge — update favicon on every poll cycle'
+  );
+});
+
+
+// --- Delete session template (task: customizable delete command) ---
+
+test('app.js defines DELETE_SESSION_DEFAULT_TEMPLATE constant', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('DELETE_SESSION_DEFAULT_TEMPLATE'),
+    'app.js must define DELETE_SESSION_DEFAULT_TEMPLATE constant'
+  );
+});
+
+test('DELETE_SESSION_DEFAULT_TEMPLATE value is tmux kill-session -t {name}', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes("'tmux kill-session -t {name}'") || source.includes('"tmux kill-session -t {name}"'),
+    "DELETE_SESSION_DEFAULT_TEMPLATE must be set to 'tmux kill-session -t {name}'"
+  );
+});
+
+test('openSettings loads delete_session_template from server settings', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function openSettings(');
+  assert.ok(fnStart !== -1, 'openSettings must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 3000);
+  assert.ok(
+    fnBody.includes('setting-delete-template'),
+    'openSettings must populate #setting-delete-template from server settings'
+  );
+});
+
+test('bindStaticEventListeners wires delete template input to save', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
+  assert.ok(
+    fnBody.includes('setting-delete-template'),
+    'bindStaticEventListeners must wire #setting-delete-template input event to save'
+  );
+});
+
+test('bindStaticEventListeners wires delete template reset button', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
+  assert.ok(
+    fnBody.includes('setting-delete-template-reset'),
+    'bindStaticEventListeners must wire #setting-delete-template-reset click handler'
+  );
+});
+
+// --- View mode cycling (Auto / Fit / Compact) ---
+
+test('app.js has VIEW_MODES array with auto and fit only (no compact)', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes("'auto'"), "must include 'auto' mode");
+  assert.ok(source.includes("'fit'"), "must include 'fit' mode");
+  assert.ok(source.includes('VIEW_MODES'), 'must define VIEW_MODES');
+  // Compact mode was removed — VIEW_MODES must only have two entries
+  const viewModesMatch = source.match(/var VIEW_MODES\s*=\s*\[([^\]]+)\]/);
+  assert.ok(viewModesMatch, 'VIEW_MODES array must be defined');
+  assert.ok(!viewModesMatch[1].includes("'compact'"), "VIEW_MODES must NOT include 'compact'");
+});
+
+test('app.js exports cycleViewMode function', () => {
+  assert.ok('cycleViewMode' in app, 'app.js must export cycleViewMode');
+  assert.strictEqual(typeof app.cycleViewMode, 'function', 'cycleViewMode must be a function');
+});
+
+test('app.js exports applyFitLayout function', () => {
+  assert.ok('applyFitLayout' in app, 'app.js must export applyFitLayout');
+  assert.strictEqual(typeof app.applyFitLayout, 'function', 'applyFitLayout must be a function');
+});
+
+test('DISPLAY_DEFAULTS includes viewMode: auto', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // DISPLAY_DEFAULTS should define viewMode
+  const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
+  assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('viewMode'), 'DISPLAY_DEFAULTS must include viewMode');
+});
+
+test('applyDisplaySettings handles fit mode by adding session-grid--fit class', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function applyDisplaySettings(');
+  assert.ok(fnStart !== -1, 'applyDisplaySettings must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 2000);
+  assert.ok(
+    fnBody.includes('session-grid--fit'),
+    'applyDisplaySettings must apply session-grid--fit class for fit mode'
+  );
+});
+
+test('applyDisplaySettings does NOT handle compact mode (compact was removed)', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function applyDisplaySettings(');
+  assert.ok(fnStart !== -1, 'applyDisplaySettings must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 2000);
+  assert.ok(
+    !fnBody.includes("'compact'"),
+    "applyDisplaySettings must NOT reference 'compact' mode — compact was removed"
+  );
+});
+
+test('cycleViewMode cycles through auto -> fit -> auto (two modes, compact removed)', () => {
+  // Reset display settings to auto
+  const ds = app.loadDisplaySettings();
+  ds.viewMode = 'auto';
+  app.saveDisplaySettings(ds);
+
+  // First cycle: auto -> fit
+  app.cycleViewMode();
+  const ds1 = app.loadDisplaySettings();
+  assert.strictEqual(ds1.viewMode, 'fit', 'first cycle should go auto -> fit');
+
+  // Second cycle: fit -> auto (wraps, compact is gone)
+  app.cycleViewMode();
+  const ds2 = app.loadDisplaySettings();
+  assert.strictEqual(ds2.viewMode, 'auto', 'second cycle should wrap fit -> auto (only two modes)');
+});
+
+test('bindStaticEventListeners wires view-mode-btn click to cycleViewMode', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
+  assert.ok(
+    fnBody.includes('view-mode-btn'),
+    'bindStaticEventListeners must wire #view-mode-btn click handler'
+  );
+});
+
+test('applyFitLayout is called via requestAnimationFrame for correct timing', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('requestAnimationFrame') && source.includes('applyFitLayout'),
+    'applyFitLayout must be deferred via requestAnimationFrame'
+  );
+});
+
+// --- Fit view bug fixes: closeSession reapply, more lines, bottom-anchor ---
+
+test('closeSession reapplies fit layout when returning to dashboard', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function closeSession');
+  assert.ok(fnStart !== -1, 'closeSession function must exist');
+  const fnBody = source.substring(fnStart, fnStart + 1500);
+  assert.ok(
+    fnBody.includes('applyFitLayout'),
+    'closeSession must call applyFitLayout for fit mode when returning to dashboard'
+  );
+});
+
+test('buildTileHTML shows up to 80 lines in fit mode', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('-80') || source.includes('(-80)'),
+    'app.js must use -80 slice for fit mode to show up to 80 lines'
+  );
+});
+
+test('CSS style.css has scrollbar-width none for fit mode pre to hide scrollbar', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('scrollbar-width: none'),
+    'style.css must have scrollbar-width: none for hidden scrollbar in fit mode pre'
+  );
+});

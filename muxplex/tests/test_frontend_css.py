@@ -1940,3 +1940,50 @@ def test_css_no_unclosed_braces() -> None:
     assert open_count == close_count, (
         f"CSS file has unbalanced braces: {open_count} open vs {close_count} close"
     )
+
+
+def test_css_no_compact_view() -> None:
+    """.session-grid--compact CSS modifier must NOT exist — compact view was removed."""
+    css = read_css()
+    assert ".session-grid--compact" not in css, (
+        ".session-grid--compact must be removed — compact view mode was removed, only Auto and Fit remain"
+    )
+
+
+def test_css_fit_view_exists() -> None:
+    """.session-grid--fit CSS modifier must exist for fit view mode."""
+    css = read_css()
+    assert ".session-grid--fit" in css, (
+        "Missing .session-grid--fit CSS selector for fit view mode"
+    )
+
+
+def test_css_no_compact_tile_height() -> None:
+    """.session-grid--compact .session-tile must NOT exist — compact view was removed."""
+    css = read_css()
+    assert ".session-grid--compact .session-tile" not in css, (
+        ".session-grid--compact .session-tile must be removed — compact view mode was removed"
+    )
+
+
+# ============================================================
+# Fit view bug fixes
+# ============================================================
+
+
+def test_fit_view_pre_has_top_zero() -> None:
+    """In fit mode, .tile-body pre must have top:0 to fill the full tile height.
+
+    Bug: .tile-body pre uses position:absolute with bottom:0 but no top:0.
+    In fit mode where tiles are taller than auto mode, the pre is anchored
+    to the bottom but only takes natural content height, leaving a black gap above.
+    Fix: .session-grid--fit .tile-body pre { top: 0 } stretches it to fill the tile.
+    """
+    css = read_css()
+    assert ".session-grid--fit .tile-body pre" in css, (
+        "Missing .session-grid--fit .tile-body pre rule — needed to fix pre height in fit mode"
+    )
+    block = _extract_rule_block(css, ".session-grid--fit .tile-body pre {")
+    assert "top: 0" in block or "top:0" in block, (
+        ".session-grid--fit .tile-body pre must have top: 0 to fill full tile body height"
+    )

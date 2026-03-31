@@ -269,6 +269,26 @@ window._openTerminal = openTerminal;
 window._closeTerminal = closeTerminal;
 
 // ---------------------------------------------------------------------------
+// setTerminalFontSize — live font-size update without reconnecting
+// ---------------------------------------------------------------------------
+
+/**
+ * Update the terminal font size at runtime without reconnecting.
+ * Modifies _term.options.fontSize and refits the terminal to recalculate dimensions.
+ * No-op when no terminal is open.
+ * @param {number} size - font size in pixels
+ */
+function setTerminalFontSize(size) {
+  if (!_term) return;
+  _term.options.fontSize = size;
+  if (_fitAddon) {
+    try { _fitAddon.fit(); } catch (_) {}
+  }
+}
+
+window._setTerminalFontSize = setTerminalFontSize;
+
+// ---------------------------------------------------------------------------
 // Android touch scroll — rAF-batched WheelEvent dispatch
 // Android batches touchmove events irregularly; dispatching one WheelEvent
 // per frame (via requestAnimationFrame) smooths over burst delivery.
