@@ -264,6 +264,15 @@ def doctor() -> None:
             f"  {warn_mark} Settings: {SETTINGS_PATH} (not yet created — will use defaults)"
         )
 
+    # Serve config
+    from muxplex.settings import load_settings  # noqa: PLC0415
+
+    cfg = load_settings()
+    print(
+        f"  {ok_mark} Serve config: {cfg['host']}:{cfg['port']}"
+        f" (auth={cfg['auth']}, ttl={cfg['session_ttl']}s)"
+    )
+
     # Auth status
     pw_path = get_password_path()
     if pam_available():
@@ -314,7 +323,7 @@ def doctor() -> None:
                 )
         else:
             print(
-                f"  {warn_mark} Service: not installed (run: muxplex install-service)"
+                f"  {warn_mark} Service: not installed (run: muxplex service install)"
             )
     else:
         systemd_user = Path.home() / ".config" / "systemd" / "user" / "muxplex.service"
@@ -326,7 +335,7 @@ def doctor() -> None:
             )
         else:
             print(
-                f"  {warn_mark} Service: not installed (run: muxplex install-service)"
+                f"  {warn_mark} Service: not installed (run: muxplex service install)"
             )
 
     print()  # trailing newline

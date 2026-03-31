@@ -1003,3 +1003,25 @@ def test_help_shows_single_upgrade_line():
         "upgrade and update must appear as alias notation 'upgrade (update)', not two separate entries. "
         f"Got help text:\n{help_text}"
     )
+
+
+def test_doctor_shows_serve_config(tmp_path, monkeypatch, capsys):
+    """doctor() must show the current serve config (host, port, auth)."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"host": "0.0.0.0", "port": 9999, "auth": "password"})
+    )
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import doctor
+
+    doctor()
+
+    out = capsys.readouterr().out
+    assert "0.0.0.0" in out
+    assert "9999" in out
+    assert "password" in out
