@@ -1153,3 +1153,16 @@ def test_html_new_session_tab_controls_with_delete() -> None:
         "setting-delete-template-reset",
     ):
         assert soup.find(id=id_), f"Missing element with id='{id_}'"
+
+
+def test_html_view_mode_button_exists() -> None:
+    """#view-mode-btn must exist in the overview header for cycling view modes."""
+    soup = _SOUP
+    btn = soup.find(id="view-mode-btn")
+    assert btn is not None, "Missing element with id='view-mode-btn' (view mode toggle button)"
+    # Must be inside the overview header area
+    overview = soup.find(id="view-overview")
+    assert overview is not None, "Missing #view-overview"
+    assert overview.find(id="view-mode-btn") is not None, (
+        "#view-mode-btn must be inside #view-overview header"
+    )

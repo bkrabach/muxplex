@@ -1372,6 +1372,24 @@ body {
 }
 
 /* ============================================================
+   Dashboard view modes — Compact and Fit
+   ============================================================ */
+
+/* Compact view — small tiles, high density */
+.session-grid--compact .session-tile {
+  height: 80px;
+}
+
+.session-grid--compact .tile-body {
+  height: 40px;
+}
+
+/* Fit view — tiles fill viewport, no scroll */
+.session-grid--fit {
+  overflow: hidden;
+}
+
+/* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */
 

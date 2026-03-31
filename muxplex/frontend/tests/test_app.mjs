@@ -2118,3 +2118,91 @@ test('bindStaticEventListeners wires delete template reset button', () => {
     'bindStaticEventListeners must wire #setting-delete-template-reset click handler'
   );
 });
+
+// --- View mode cycling (Auto / Fit / Compact) ---
+
+test('app.js has VIEW_MODES array with auto, fit, compact', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes("'auto'"), "must include 'auto' mode");
+  assert.ok(source.includes("'fit'"), "must include 'fit' mode");
+  assert.ok(source.includes("'compact'"), "must include 'compact' mode");
+  assert.ok(source.includes('VIEW_MODES'), 'must define VIEW_MODES');
+});
+
+test('app.js exports cycleViewMode function', () => {
+  assert.ok('cycleViewMode' in app, 'app.js must export cycleViewMode');
+  assert.strictEqual(typeof app.cycleViewMode, 'function', 'cycleViewMode must be a function');
+});
+
+test('app.js exports applyFitLayout function', () => {
+  assert.ok('applyFitLayout' in app, 'app.js must export applyFitLayout');
+  assert.strictEqual(typeof app.applyFitLayout, 'function', 'applyFitLayout must be a function');
+});
+
+test('DISPLAY_DEFAULTS includes viewMode: auto', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // DISPLAY_DEFAULTS should define viewMode
+  const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
+  assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('viewMode'), 'DISPLAY_DEFAULTS must include viewMode');
+});
+
+test('applyDisplaySettings handles fit mode by adding session-grid--fit class', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function applyDisplaySettings(');
+  assert.ok(fnStart !== -1, 'applyDisplaySettings must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 2000);
+  assert.ok(
+    fnBody.includes('session-grid--fit'),
+    'applyDisplaySettings must apply session-grid--fit class for fit mode'
+  );
+});
+
+test('applyDisplaySettings handles compact mode by adding session-grid--compact class', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function applyDisplaySettings(');
+  assert.ok(fnStart !== -1, 'applyDisplaySettings must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 2000);
+  assert.ok(
+    fnBody.includes('session-grid--compact'),
+    'applyDisplaySettings must apply session-grid--compact class for compact mode'
+  );
+});
+
+test('cycleViewMode cycles through auto -> fit -> compact -> auto', () => {
+  // Reset display settings to auto
+  const ds = app.loadDisplaySettings();
+  ds.viewMode = 'auto';
+  app.saveDisplaySettings(ds);
+
+  // First cycle: auto -> fit
+  app.cycleViewMode();
+  const ds1 = app.loadDisplaySettings();
+  assert.strictEqual(ds1.viewMode, 'fit', 'first cycle should go auto -> fit');
+
+  // Second cycle: fit -> compact
+  app.cycleViewMode();
+  const ds2 = app.loadDisplaySettings();
+  assert.strictEqual(ds2.viewMode, 'compact', 'second cycle should go fit -> compact');
+
+  // Third cycle: compact -> auto
+  app.cycleViewMode();
+  const ds3 = app.loadDisplaySettings();
+  assert.strictEqual(ds3.viewMode, 'auto', 'third cycle should wrap compact -> auto');
+});
+
+test('bindStaticEventListeners wires view-mode-btn click to cycleViewMode', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
+  assert.ok(
+    fnBody.includes('view-mode-btn'),
+    'bindStaticEventListeners must wire #view-mode-btn click handler'
+  );
+});

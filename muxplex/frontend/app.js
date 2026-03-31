@@ -140,7 +140,10 @@ const DISPLAY_DEFAULTS = {
   gridColumns: 'auto',
   bellSound: false,
   notificationPermission: 'default',
+  viewMode: 'auto',
 };
+
+var VIEW_MODES = ['auto', 'fit', 'compact'];
 const NEW_SESSION_DEFAULT_TEMPLATE = 'tmux new-session -d -s {name}';
 const DELETE_SESSION_DEFAULT_TEMPLATE = 'tmux kill-session -t {name}';
 
@@ -644,6 +647,17 @@ function renderGrid(sessions) {
     updatePillBell();
   }
 
+  // Reapply view mode layout after grid HTML is rebuilt
+  var currentDs = loadDisplaySettings();
+  var currentMode = currentDs.viewMode || 'auto';
+  if (currentMode === 'fit' && grid) {
+    grid.classList.add('session-grid--fit');
+    applyFitLayout(grid);
+  } else if (currentMode === 'compact' && grid) {
+    grid.classList.add('session-grid--compact');
+    grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(200px, 1fr))';
+  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -1072,28 +1086,120 @@ function saveDisplaySettings(settings) {
 }
 
 /**
+ * Calculate and apply grid layout to fill the viewport exactly (Fit mode).
+ * Determines optimal cols × rows based on tile count and available space.
+ * @param {Element} grid - The session grid element
+ */
+function applyFitLayout(grid) {
+  var count = grid.querySelectorAll('.session-tile').length;
+  if (count === 0) return;
+
+  // Available space — use grid's parent container
+  var parent = grid.parentElement;
+  var availH = parent ? parent.clientHeight : window.innerHeight;
+  var availW = grid.clientWidth;
+
+  // Subtract padding and gap
+  var style = getComputedStyle(grid);
+  var padT = parseFloat(style.paddingTop) || 0;
+  var padB = parseFloat(style.paddingBottom) || 0;
+  var padL = parseFloat(style.paddingLeft) || 0;
+  var padR = parseFloat(style.paddingRight) || 0;
+  var gap = parseFloat(style.gap) || 8;
+
+  var innerW = availW - padL - padR;
+  var innerH = availH - padT - padB;
+
+  // Calculate optimal cols/rows — start with square root
+  var cols = Math.ceil(Math.sqrt(count));
+  var rows = Math.ceil(count / cols);
+
+  // Prefer wider layouts (more cols, fewer rows) since tiles are landscape
+  if (rows > 1 && cols < count) {
+    var altCols = cols + 1;
+    var altRows = Math.ceil(count / altCols);
+    if (altRows < rows) {
+      cols = altCols;
+      rows = altRows;
+    }
+  }
+
+  // Tile height from available space
+  var tileH = (innerH - gap * (rows - 1)) / rows;
+
+  grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+  grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+
+  // Override tile height so tiles fill the grid rows
+  grid.querySelectorAll('.session-tile').forEach(function(t) {
+    t.style.height = tileH + 'px';
+  });
+}
+
+/**
+ * Cycle the dashboard view mode: auto → fit → compact → auto.
+ * Persists to localStorage and reapplies display settings.
+ */
+function cycleViewMode() {
+  var ds = loadDisplaySettings();
+  var idx = VIEW_MODES.indexOf(ds.viewMode || 'auto');
+  ds.viewMode = VIEW_MODES[(idx + 1) % VIEW_MODES.length];
+  saveDisplaySettings(ds);
+  applyDisplaySettings(ds);
+
+  // Update button label
+  var btn = document.getElementById('view-mode-btn');
+  if (btn) btn.title = 'View: ' + ds.viewMode;
+}
+
+/**
  * Apply display settings to the live DOM.
  * Sets --preview-font-size CSS custom property and updates #session-grid
- * grid-template-columns based on the gridColumns setting.
+ * grid-template-columns based on the gridColumns setting and viewMode.
  * @param {object} ds - display settings object
  */
 function applyDisplaySettings(ds) {
   // Apply font size as CSS custom property (tile previews)
-  document.documentElement.style.setProperty('--preview-font-size', ds.fontSize + 'px');
+  if (document.documentElement) {
+    document.documentElement.style.setProperty('--preview-font-size', ds.fontSize + 'px');
+  }
 
   // Apply font size to the live xterm.js terminal without reconnecting
   if (window._setTerminalFontSize) {
     window._setTerminalFontSize(ds.fontSize);
   }
 
-  // Apply grid columns
+  // Apply view mode to grid
   var grid = document.getElementById('session-grid');
-  if (grid) {
-    if (ds.gridColumns === 'auto') {
+  if (!grid) return;
+
+  var mode = ds.viewMode || 'auto';
+
+  // Remove all mode classes
+  grid.classList.remove('session-grid--fit', 'session-grid--compact');
+
+  // Reset any inline styles from previous fit calculation
+  grid.style.removeProperty('grid-template-rows');
+  grid.querySelectorAll('.session-tile').forEach(function(t) {
+    t.style.removeProperty('height');
+  });
+
+  if (mode === 'auto') {
+    // Restore grid columns setting
+    if (ds.gridColumns === 'auto' || !ds.gridColumns) {
       grid.style.removeProperty('grid-template-columns');
     } else {
       grid.style.gridTemplateColumns = 'repeat(' + ds.gridColumns + ', 1fr)';
     }
+
+  } else if (mode === 'fit') {
+    grid.classList.add('session-grid--fit');
+    applyFitLayout(grid);
+
+  } else if (mode === 'compact') {
+    grid.classList.add('session-grid--compact');
+    // Use auto-fill but with smaller minmax for higher density
+    grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(200px, 1fr))';
   }
 }
 
@@ -1590,6 +1696,7 @@ function bindStaticEventListeners() {
   on($('sheet-backdrop'), 'click', closeBottomSheet);
 
   // Settings dialog bindings
+  on($('view-mode-btn'), 'click', cycleViewMode);
   on($('settings-btn'), 'click', openSettings);
   on($('settings-btn-expanded'), 'click', openSettings);
   on($('settings-close-btn'), 'click', closeSettings);
@@ -1754,9 +1861,24 @@ function _setViewMode(mode) {
   _viewMode = mode;
 }
 
+// Recalculate fit layout on window resize
+window.addEventListener('resize', function() {
+  var ds = loadDisplaySettings();
+  if ((ds.viewMode || 'auto') === 'fit') {
+    var grid = document.getElementById('session-grid');
+    if (grid) applyFitLayout(grid);
+  }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
   initDeviceId();
-  applyDisplaySettings(loadDisplaySettings());
+  var _initDs = loadDisplaySettings();
+  applyDisplaySettings(_initDs);
+
+  // Initialize view mode button title
+  var vmBtn = document.getElementById('view-mode-btn');
+  if (vmBtn) vmBtn.title = 'View: ' + (_initDs.viewMode || 'auto');
+
   document.addEventListener('keydown', trackInteraction);
   document.addEventListener('click', trackInteraction);
   document.addEventListener('touchstart', trackInteraction);
@@ -1822,6 +1944,8 @@ if (typeof module !== 'undefined' && module.exports) {
     loadDisplaySettings,
     saveDisplaySettings,
     applyDisplaySettings,
+    applyFitLayout,
+    cycleViewMode,
     onDisplaySettingChange,
     openSettings,
     closeSettings,

@@ -1681,3 +1681,23 @@ def test_css_sidebar_footer() -> None:
     css = read_css()
     for cls in (".sidebar-footer", ".sidebar-new-btn"):
         assert cls in css, f"Missing CSS selector '{cls}'"
+
+
+def test_css_compact_view_exists() -> None:
+    """.session-grid--compact CSS modifier must exist for compact view mode."""
+    css = read_css()
+    assert ".session-grid--compact" in css, "Missing .session-grid--compact CSS selector for compact view mode"
+
+
+def test_css_fit_view_exists() -> None:
+    """.session-grid--fit CSS modifier must exist for fit view mode."""
+    css = read_css()
+    assert ".session-grid--fit" in css, "Missing .session-grid--fit CSS selector for fit view mode"
+
+
+def test_css_compact_tile_height() -> None:
+    """.session-grid--compact .session-tile must set a compact height."""
+    css = read_css()
+    assert ".session-grid--compact .session-tile" in css, (
+        "Missing .session-grid--compact .session-tile height override"
+    )
