@@ -1158,9 +1158,13 @@ def test_delete_session_success(client, monkeypatch):
     assert data["name"] == "my-session"
 
 
-def test_delete_session_calls_kill_session(client, monkeypatch):
+def test_delete_session_calls_kill_session(client, monkeypatch, tmp_path):
     """DELETE /api/sessions/{name} runs 'tmux kill-session -t {name}' via subprocess (default template)."""
+    import muxplex.settings as settings_mod
     from unittest.mock import MagicMock, patch
+
+    # Redirect settings to a non-existent path so the default template is used
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
 
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["my-session"])
 

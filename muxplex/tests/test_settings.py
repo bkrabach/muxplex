@@ -329,7 +329,9 @@ def test_default_settings_include_serve_keys():
     assert DEFAULT_SETTINGS["auth"] == "pam", (
         f"auth default must be 'pam', got: {DEFAULT_SETTINGS['auth']!r}"
     )
-    assert "session_ttl" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'session_ttl'"
+    assert "session_ttl" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'session_ttl'"
+    )
     assert DEFAULT_SETTINGS["session_ttl"] == 604800, (
         f"session_ttl default must be 604800, got: {DEFAULT_SETTINGS['session_ttl']!r}"
     )
@@ -354,10 +356,18 @@ def test_load_settings_returns_serve_keys_when_file_missing():
 
 def test_serve_keys_patchable():
     """patch_settings() must accept and persist serve config keys."""
-    result = patch_settings({"host": "0.0.0.0", "port": 9000, "auth": "none", "session_ttl": 3600})
-    assert result["host"] == "0.0.0.0", f"patch_settings() must accept host, got: {result['host']!r}"
-    assert result["port"] == 9000, f"patch_settings() must accept port, got: {result['port']!r}"
-    assert result["auth"] == "none", f"patch_settings() must accept auth, got: {result['auth']!r}"
+    result = patch_settings(
+        {"host": "0.0.0.0", "port": 9000, "auth": "none", "session_ttl": 3600}
+    )
+    assert result["host"] == "0.0.0.0", (
+        f"patch_settings() must accept host, got: {result['host']!r}"
+    )
+    assert result["port"] == 9000, (
+        f"patch_settings() must accept port, got: {result['port']!r}"
+    )
+    assert result["auth"] == "none", (
+        f"patch_settings() must accept auth, got: {result['auth']!r}"
+    )
     assert result["session_ttl"] == 3600, (
         f"patch_settings() must accept session_ttl, got: {result['session_ttl']!r}"
     )
