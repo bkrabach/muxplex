@@ -606,6 +606,69 @@ test('renderGrid includes offline tile HTML when a source is unreachable', () =>
   app._setSources([]);
 });
 
+test('renderGrid shows auth tile and hides empty-state when no sessions but source is auth_required', () => {
+  const addedClasses = [];
+  const removedClasses = [];
+  const mockGrid = { innerHTML: '' };
+  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: (c) => removedClasses.push(c) } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+
+  app._setSources([
+    { url: 'http://workstation:8088', name: 'Workstation', status: 'auth_required' },
+  ]);
+
+  // No sessions — early-return path
+  app.renderGrid([]);
+
+  assert.ok(mockGrid.innerHTML.includes('source-tile--auth'), 'grid should show auth tile even when sessions list is empty');
+  assert.ok(addedClasses.includes('hidden'), 'empty-state should be hidden when status tiles are present');
+  assert.ok(!removedClasses.includes('hidden'), 'empty-state hidden class should NOT be removed when status tiles are present');
+
+  globalThis.document.getElementById = origGetById;
+  app._setSources([]);
+});
+
+test('renderGrid shows offline tile and hides empty-state when no sessions but source is unreachable', () => {
+  const addedClasses = [];
+  const mockGrid = { innerHTML: '' };
+  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+
+  app._setSources([
+    { url: 'http://devbox:8088', name: 'Dev Box', status: 'unreachable', lastSeenAt: Date.now() - 120000 },
+  ]);
+
+  // No sessions — early-return path
+  app.renderGrid([]);
+
+  assert.ok(mockGrid.innerHTML.includes('source-tile--offline'), 'grid should show offline tile even when sessions list is empty');
+  assert.ok(addedClasses.includes('hidden'), 'empty-state should be hidden when status tiles are present');
+
+  globalThis.document.getElementById = origGetById;
+  app._setSources([]);
+});
+
+test('_previewClickHandler looks up sourceUrl from _currentSessions before calling openSession', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const handlerIdx = source.indexOf('function _previewClickHandler');
+  assert.ok(handlerIdx >= 0, '_previewClickHandler must exist');
+  // Extract from function declaration to its closing brace
+  const handlerEnd = source.indexOf('\n}', handlerIdx) + 2;
+  const handlerBody = source.slice(handlerIdx, handlerEnd);
+  assert.ok(handlerBody.includes('_currentSessions'), '_previewClickHandler must look up session from _currentSessions to recover sourceUrl');
+  assert.ok(handlerBody.includes('sourceUrl'), '_previewClickHandler must forward sourceUrl when calling openSession');
+});
+
 // --- requestNotificationPermission ---
 
 test('requestNotificationPermission is exported', () => {

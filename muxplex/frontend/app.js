@@ -839,8 +839,20 @@ function renderGrid(sessions) {
   }
 
   if (visible.length === 0) {
-    if (grid) grid.innerHTML = '';
-    if (emptyState) emptyState.classList.remove('hidden');
+    // Build status tiles for non-authenticated sources even when no sessions exist
+    var statusTilesHtml = '';
+    if (typeof _sources !== 'undefined' && _sources) {
+      _sources.forEach(function(source) {
+        if (source.status === 'auth_required') statusTilesHtml += buildAuthTileHTML(source);
+        else if (source.status === 'unreachable') statusTilesHtml += buildOfflineTileHTML(source);
+      });
+    }
+    if (grid) grid.innerHTML = statusTilesHtml;
+    // Only show empty-state when there are truly no tiles at all
+    if (emptyState) {
+      if (statusTilesHtml) emptyState.classList.add('hidden');
+      else emptyState.classList.remove('hidden');
+    }
     // Show filter bar even when filtered to empty (so user can switch back)
     if (filterBar) {
       if (_gridViewMode === 'filtered') {
@@ -920,7 +932,10 @@ function _previewClickHandler(e) {
   e.stopPropagation();
   var name = _previewSessionName;
   hidePreview();
-  if (name) openSession(name);
+  if (name) {
+    var session = _currentSessions && _currentSessions.find(function(s) { return s.name === name; });
+    openSession(name, { sourceUrl: session && session.sourceUrl || '' });
+  }
 }
 
 function showPreview(name) {
