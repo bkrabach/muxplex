@@ -15,6 +15,27 @@ from muxplex.main import app, terminal_ws_proxy
 
 
 # ---------------------------------------------------------------------------
+# Polling helper — deterministic alternative to time.sleep() for async relay
+# ---------------------------------------------------------------------------
+
+
+def _wait_for(condition, timeout: float = 2.0, interval: float = 0.01) -> bool:
+    """Poll *condition()* until it returns True or *timeout* seconds elapses.
+
+    Returns True if the condition was met, False on timeout.
+    Using a polling loop instead of a fixed sleep makes relay tests deterministic:
+    on fast machines the loop exits as soon as the relay completes; on slow machines
+    it waits up to *timeout* seconds rather than racing against a fixed 200ms budget.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(interval)
+    return False  # pragma: no cover — timeout branch only on pathological machines
+
+
+# ---------------------------------------------------------------------------
 # autouse fixture — redirect state/PID files to tmp_path, mock startup side-effects
 # ---------------------------------------------------------------------------
 
@@ -163,7 +184,7 @@ def test_browser_text_relayed_to_ttyd(monkeypatch):
     with _make_authed_client() as c:
         with c.websocket_connect("/terminal/ws") as ws:
             ws.send_text("hello from browser")
-            time.sleep(0.2)  # wait for async relay
+            _wait_for(lambda: "hello from browser" in fake_ws.sent)
 
     assert "hello from browser" in fake_ws.sent
 
@@ -176,7 +197,7 @@ def test_browser_bytes_relayed_to_ttyd(monkeypatch):
     with _make_authed_client() as c:
         with c.websocket_connect("/terminal/ws") as ws:
             ws.send_bytes(b"\x00\x01\x02 binary data")
-            time.sleep(0.2)  # wait for async relay
+            _wait_for(lambda: b"\x00\x01\x02 binary data" in fake_ws.sent)
 
     assert b"\x00\x01\x02 binary data" in fake_ws.sent
 
@@ -220,10 +241,11 @@ def test_ttyd_close_propagates_to_browser(monkeypatch):
 
     with _make_authed_client() as c:
         with c.websocket_connect("/terminal/ws") as _:
-            time.sleep(0.2)  # give ttyd_to_client time to exhaust
-            # exit the context manager — this closes the browser-side WS,
-            # which causes client_to_ttyd to complete, then gather finishes
-            # and the proxy finally-block closes the WS
+            # FakeTtydWs has no responses so ttyd_to_client exhausts immediately.
+            # Exiting the context manager closes the browser WS, which causes
+            # client_to_ttyd to complete, gather finishes, and the proxy
+            # finally-block calls fake_ws.close().
+            pass
 
     # fake_ws should have been closed when the async-with block exited
     assert fake_ws._closed
@@ -283,7 +305,7 @@ def test_concurrent_ws_sessions(monkeypatch):
             try:
                 with c.websocket_connect("/terminal/ws") as ws:
                     ws.send_text(text)
-                    time.sleep(0.2)
+                    _wait_for(lambda: text in ws_pool[0].sent + ws_pool[1].sent)
             except Exception as exc:
                 errors.append(exc)
 

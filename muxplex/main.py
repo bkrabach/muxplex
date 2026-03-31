@@ -252,6 +252,11 @@ app.add_middleware(
     password=_auth_password,
 )
 
+# CORS: allow_origins=["*"] with allow_credentials=True is intentional for
+# self-hosted federation. Starlette reflects the actual Origin header (rather
+# than "*") when credentials are requested, so credentialed cross-origin
+# requests work correctly. Do not restrict to a fixed origin list without
+# first understanding how remote muxplex peers discover and reach each other.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
