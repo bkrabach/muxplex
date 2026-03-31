@@ -512,9 +512,9 @@ function buildSidebarHTML(session, currentSession) {
   const lastLines = snapshot.split('\n').slice(-20).join('\n');
 
   return (
-    `<article class="${classes}" data-session="${escapedName}" tabindex="0" role="listitem">` +
+    `<article class="${classes}" data-session="${escapedName}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
-    `<span class="sidebar-item-name">${escapedName}</span>` +
+    `<span class="sidebar-item-name">${escapedName}${_sources.length > 1 && session.deviceName ? '<span class="device-badge">' + escapeHtml(session.deviceName) + '</span>' : ''}</span>` +
     `${bellHtml}` +
     `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
     `</div>` +

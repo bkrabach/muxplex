@@ -2338,6 +2338,72 @@ test('getVisibleSessions hides local sessions by name but not remote sessions wi
   app._setServerSettings(null);
 });
 
+// --- buildSidebarHTML device badge (task-10) ---
+
+test('buildSidebarHTML shows device-badge when multiple sources configured', () => {
+  app._setSources([
+    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
+    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
+  ]);
+  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(html.includes('device-badge'), 'should show device-badge when _sources.length > 1 and session has deviceName');
+  assert.ok(html.includes('Laptop'), 'device-badge should contain the deviceName');
+  app._setSources([]);
+});
+
+test('buildSidebarHTML omits device-badge when only one source configured', () => {
+  app._setSources([
+    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
+  ]);
+  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when _sources.length is 1');
+  app._setSources([]);
+});
+
+test('buildSidebarHTML omits device-badge when session has no deviceName', () => {
+  app._setSources([
+    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
+    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
+  ]);
+  const session = { name: 'work', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when session has no deviceName');
+  app._setSources([]);
+});
+
+test('buildSidebarHTML includes data-source-url attribute on article element', () => {
+  const session = {
+    name: 'work',
+    deviceName: 'Laptop',
+    sourceUrl: 'https://remote.example.com',
+    sessionKey: 'https://remote.example.com::work',
+    snapshot: '',
+    bell: { unseen_count: 0 },
+  };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(html.includes('data-source-url="https://remote.example.com"'), 'article should have data-source-url with correct value');
+});
+
+test('buildSidebarHTML data-source-url is empty string when session has no sourceUrl', () => {
+  const session = { name: 'work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(html.includes('data-source-url=""'), 'article should have data-source-url as empty string when no sourceUrl');
+});
+
+test('buildSidebarHTML escapes HTML in deviceName within device-badge', () => {
+  app._setSources([
+    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
+    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
+  ]);
+  const session = { name: 'work', deviceName: '<script>alert(1)</script>', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(!html.includes('<script>'), 'device-badge should not contain raw <script> tag');
+  assert.ok(html.includes('&lt;script&gt;'), 'device-badge should escape < and > in deviceName');
+  app._setSources([]);
+});
+
 // --- buildTileHTML device badge (task-9) ---
 
 test('buildTileHTML shows device-badge when session has deviceName and multiple sources', () => {
