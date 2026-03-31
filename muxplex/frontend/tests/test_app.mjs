@@ -2212,3 +2212,32 @@ test('applyFitLayout is called via requestAnimationFrame for correct timing', ()
     'applyFitLayout must be deferred via requestAnimationFrame'
   );
 });
+
+// --- Fit view bug fixes: closeSession reapply, more lines, bottom-anchor ---
+
+test('closeSession reapplies fit layout when returning to dashboard', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function closeSession');
+  assert.ok(fnStart !== -1, 'closeSession function must exist');
+  const fnBody = source.substring(fnStart, fnStart + 1500);
+  assert.ok(
+    fnBody.includes('applyFitLayout'),
+    'closeSession must call applyFitLayout for fit mode when returning to dashboard'
+  );
+});
+
+test('buildTileHTML shows up to 80 lines in fit mode', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('-80') || source.includes('(-80)'),
+    'app.js must use -80 slice for fit mode to show up to 80 lines'
+  );
+});
+
+test('CSS style.css has scrollbar-width none for fit mode pre to hide scrollbar', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('scrollbar-width: none'),
+    'style.css must have scrollbar-width: none for hidden scrollbar in fit mode pre'
+  );
+});

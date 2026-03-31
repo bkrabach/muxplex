@@ -400,9 +400,11 @@ function buildTileHTML(session, index, mobile) {
     bellHtml = `<span class="tile-bell">${countStr}</span>`;
   }
 
-  // Last 20 lines of snapshot
+  // Last N lines of snapshot — show more in fit mode so tall tiles fill
   const snapshot = session.snapshot || '';
-  const lastLines = snapshot.split('\n').slice(-20).join('\n');
+  var _tileDs = loadDisplaySettings();
+  var _lineCount = (_tileDs.viewMode === 'fit') ? -80 : -20;
+  const lastLines = snapshot.split('\n').slice(_lineCount).join('\n');
 
   return (
     `<article class="${classes}" data-session="${escapedName}" tabindex="0" role="listitem" aria-label="${escapedName}">` +
@@ -652,7 +654,13 @@ function renderGrid(sessions) {
   var currentMode = currentDs.viewMode || 'auto';
   if (currentMode === 'fit' && grid) {
     grid.classList.add('session-grid--fit');
-    requestAnimationFrame(function() { applyFitLayout(grid); });
+    requestAnimationFrame(function() {
+      applyFitLayout(grid);
+      // Scroll each tile's pre to the bottom so content anchors at the bottom (like a real terminal)
+      grid.querySelectorAll('.tile-body pre').forEach(function(pre) {
+        pre.scrollTop = pre.scrollHeight;
+      });
+    });
   }
 
 }
@@ -1002,6 +1010,16 @@ function closeSession() {
     expanded.classList.remove('view--active');
   }
   if (overview) overview.style.display = '';  // overview uses view--active (no !important), style.display clears fine
+
+  // Reapply fit layout after overview becomes visible again
+  var _closDs = loadDisplaySettings();
+  if ((_closDs.viewMode || 'auto') === 'fit') {
+    var _closGrid = document.getElementById('session-grid');
+    if (_closGrid) {
+      _closGrid.classList.add('session-grid--fit');
+      requestAnimationFrame(function() { applyFitLayout(_closGrid); });
+    }
+  }
 
   const pill = $('session-pill');
   if (pill) pill.classList.add('hidden');

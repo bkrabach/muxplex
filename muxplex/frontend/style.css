@@ -1380,10 +1380,16 @@ body {
   overflow: hidden;
 }
 
-/* In fit mode, stretch pre to fill the full tile body height (not just bottom-anchor) */
+/* In fit mode, stretch pre to fill the full tile body height and anchor content to bottom */
 .session-grid--fit .tile-body pre {
-  top: 0;           /* stretch to fill full tile body height in fit mode */
-  overflow-y: auto; /* scroll if content exceeds the tile */
+  top: 0;                   /* stretch to fill full tile body height in fit mode */
+  overflow-y: scroll;       /* enable scrollTop positioning (content anchored via JS scrollTop=scrollHeight) */
+  scrollbar-width: none;    /* Firefox: hide scrollbar */
+  -ms-overflow-style: none; /* IE/Edge: hide scrollbar */
+}
+
+.session-grid--fit .tile-body pre::-webkit-scrollbar {
+  display: none;            /* Chrome/Safari: hide scrollbar */
 }
 
 /* ============================================================
