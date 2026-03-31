@@ -496,6 +496,18 @@ test('buildTileHTML wraps snapshot in .tile-body with <pre> as direct child', ()
   );
 });
 
+test('buildTileHTML includes data-source-url attribute when session has sourceUrl', () => {
+  const session = { name: 'work-project', sourceUrl: 'http://work:8088', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('data-source-url="http://work:8088"'), 'article should have data-source-url with the session sourceUrl');
+});
+
+test('buildTileHTML does not include data-source-url for local sessions (empty sourceUrl)', () => {
+  const session = { name: 'local-session', sourceUrl: '', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('data-source-url'), 'local sessions should not have data-source-url attribute');
+});
+
 // --- renderGrid ---
 
 test('renderGrid clears grid and shows empty-state when sessions array is empty', () => {

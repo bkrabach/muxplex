@@ -474,8 +474,9 @@ function buildTileHTML(session, index, mobile) {
   const snapshot = session.snapshot || '';
   const lastLines = snapshot.split('\n').slice(-20).join('\n');
 
+  const sourceUrlAttr = session.sourceUrl ? ` data-source-url="${escapeHtml(session.sourceUrl)}"` : '';
   return (
-    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem" aria-label="${escapedName}">` +
+    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${sourceUrlAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
     `<span class="tile-name">${escapeHtml(name)}${badgeHtml}</span>` +
     `<span class="tile-meta">${bellHtml}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
@@ -895,10 +896,10 @@ function renderGrid(sessions) {
 
   // Bind interaction handlers on each tile
   document.querySelectorAll('.session-tile').forEach(function(tile) {
-    on(tile, 'click', function() { openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl }); });
-    on(tile, 'keydown', function(e) {
+    on(tile, 'click', () => openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl || '' }));
+    on(tile, 'keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
-        openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl });
+        openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl || '' });
       }
     });
   });
