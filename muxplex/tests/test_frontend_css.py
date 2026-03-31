@@ -2,6 +2,7 @@
 
 import pathlib
 import re
+import subprocess
 
 CSS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "style.css"
 
@@ -900,7 +901,6 @@ def test_css_settings_field_column() -> None:
         ".settings-field--column class must be defined in style.css"
     )
     # Find the rule and check flex-direction
-    import re
 
     match = re.search(
         r"\.settings-field--column\s*\{([^}]*)\}",
@@ -945,7 +945,6 @@ def test_css_settings_checkbox() -> None:
 
 def test_css_settings_notification_status_exists() -> None:
     """.settings-notification-status must exist with flex column, align-items flex-end."""
-    import re
 
     css = read_css()
     assert ".settings-notification-status" in css, (
@@ -968,7 +967,6 @@ def test_css_settings_notification_status_exists() -> None:
 
 def test_css_settings_status_text_exists() -> None:
     """.settings-status-text must exist with 12px font-size and text-muted color."""
-    import re
 
     css = read_css()
     assert ".settings-status-text" in css, (
@@ -992,7 +990,6 @@ def test_css_settings_status_text_exists() -> None:
 
 def test_css_settings_action_btn_exists() -> None:
     """.settings-action-btn must exist with background, border, 12px font-size."""
-    import re
 
     css = read_css()
     assert ".settings-action-btn" in css, (
@@ -1014,7 +1011,6 @@ def test_css_settings_action_btn_exists() -> None:
 
 def test_css_settings_action_btn_hover_exists() -> None:
     """.settings-action-btn:hover must exist with border-color accent."""
-    import re
 
     css = read_css()
     assert ".settings-action-btn:hover" in css, (
@@ -1034,7 +1030,6 @@ def test_css_settings_action_btn_hover_exists() -> None:
 
 def test_css_settings_action_btn_disabled_opacity() -> None:
     """.settings-action-btn:disabled must have opacity 0.5."""
-    import re
 
     css = read_css()
     assert ".settings-action-btn:disabled" in css, (
@@ -1067,7 +1062,6 @@ def test_css_settings_textarea_exists() -> None:
 
 def test_css_settings_textarea_full_width() -> None:
     """.settings-textarea must have width: 100%."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1084,7 +1078,6 @@ def test_css_settings_textarea_full_width() -> None:
 
 def test_css_settings_textarea_background() -> None:
     """.settings-textarea must use var(--bg-secondary) background."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1101,7 +1094,6 @@ def test_css_settings_textarea_background() -> None:
 
 def test_css_settings_textarea_border_and_radius() -> None:
     """.settings-textarea must have border and border-radius: 4px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1121,7 +1113,6 @@ def test_css_settings_textarea_border_and_radius() -> None:
 
 def test_css_settings_textarea_font_mono_13px() -> None:
     """.settings-textarea must use font-family var(--font-mono) and font-size 13px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1141,7 +1132,6 @@ def test_css_settings_textarea_font_mono_13px() -> None:
 
 def test_css_settings_textarea_padding_and_resize() -> None:
     """.settings-textarea must have padding: 10px and resize: vertical."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1161,7 +1151,6 @@ def test_css_settings_textarea_padding_and_resize() -> None:
 
 def test_css_settings_textarea_min_height() -> None:
     """.settings-textarea must have min-height: 60px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1178,7 +1167,6 @@ def test_css_settings_textarea_min_height() -> None:
 
 def test_css_settings_textarea_focus_accent_border() -> None:
     """.settings-textarea:focus must use border-color: var(--accent)."""
-    import re
 
     css = read_css()
     assert ".settings-textarea:focus" in css, (
@@ -1206,7 +1194,6 @@ def test_css_settings_helper_exists() -> None:
 
 def test_css_settings_helper_font_size() -> None:
     """.settings-helper must have font-size: 12px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1223,7 +1210,6 @@ def test_css_settings_helper_font_size() -> None:
 
 def test_css_settings_helper_text_muted_color() -> None:
     """.settings-helper must use var(--text-muted) color."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1240,7 +1226,6 @@ def test_css_settings_helper_text_muted_color() -> None:
 
 def test_css_settings_helper_italic() -> None:
     """.settings-helper must have font-style: italic."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1268,7 +1253,6 @@ def test_css_new_session_input_rule_exists() -> None:
 
 def test_css_new_session_input_has_border() -> None:
     """.new-session-input must have a border (1px solid accent)."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1286,7 +1270,6 @@ def test_css_new_session_input_has_border() -> None:
 
 def test_css_new_session_input_has_border_radius() -> None:
     """.new-session-input must have border-radius: 4px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1302,7 +1285,6 @@ def test_css_new_session_input_has_border_radius() -> None:
 
 def test_css_new_session_input_has_font_size() -> None:
     """.new-session-input must have font-size: 13px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1318,7 +1300,6 @@ def test_css_new_session_input_has_font_size() -> None:
 
 def test_css_new_session_input_has_padding() -> None:
     """.new-session-input must have padding: 4px 10px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1336,7 +1317,6 @@ def test_css_new_session_input_has_padding() -> None:
 
 def test_css_new_session_input_has_width() -> None:
     """.new-session-input must have width: 180px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1352,7 +1332,6 @@ def test_css_new_session_input_has_width() -> None:
 
 def test_css_new_session_input_has_outline_none() -> None:
     """.new-session-input must have outline: none."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1378,7 +1357,6 @@ def test_css_new_session_input_placeholder_rule_exists() -> None:
 
 def test_css_new_session_input_placeholder_color() -> None:
     """.new-session-input::placeholder must have color: var(--text-dim)."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1406,7 +1384,6 @@ def test_css_sidebar_footer_rule_exists() -> None:
 
 def test_css_sidebar_footer_padding() -> None:
     """.sidebar-footer must have padding: 8px."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1422,7 +1399,6 @@ def test_css_sidebar_footer_padding() -> None:
 
 def test_css_sidebar_footer_border_top() -> None:
     """.sidebar-footer must have border-top."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1437,7 +1413,6 @@ def test_css_sidebar_footer_border_top() -> None:
 
 def test_css_sidebar_footer_flex_shrink_0() -> None:
     """.sidebar-footer must have flex-shrink: 0."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1459,7 +1434,6 @@ def test_css_sidebar_new_btn_rule_exists() -> None:
 
 def test_css_sidebar_new_btn_width_100() -> None:
     """.sidebar-new-btn must have width: 100%."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1475,7 +1449,6 @@ def test_css_sidebar_new_btn_width_100() -> None:
 
 def test_css_sidebar_new_btn_dashed_border() -> None:
     """.sidebar-new-btn must have a dashed border."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1509,7 +1482,6 @@ def test_css_fab_class_exists() -> None:
 
 def test_css_fab_display_none_by_default() -> None:
     """.new-session-fab must have display:none as default (hidden on desktop)."""
-    import re
 
     css = read_css()
     # Find the .new-session-fab block (non-media-query context)
@@ -1526,7 +1498,6 @@ def test_css_fab_display_none_by_default() -> None:
 
 def test_css_fab_position_fixed() -> None:
     """.new-session-fab must be position:fixed."""
-    import re
 
     css = read_css()
     match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", css)
@@ -1539,7 +1510,6 @@ def test_css_fab_position_fixed() -> None:
 
 def test_css_fab_size_56px() -> None:
     """.new-session-fab must be 56px width and height."""
-    import re
 
     css = read_css()
     match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", css)
@@ -1552,7 +1522,6 @@ def test_css_fab_size_56px() -> None:
 
 def test_css_fab_border_radius_50_percent() -> None:
     """.new-session-fab must have border-radius:50% for circular shape."""
-    import re
 
     css = read_css()
     match = re.search(r"\.new-session-fab\s*\{([^}]*)\}", css)
@@ -1563,7 +1532,6 @@ def test_css_fab_border_radius_50_percent() -> None:
 
 def test_css_fab_mobile_media_query_shows_flex() -> None:
     """At max-width: 959px, .new-session-fab must be shown as display:flex."""
-    import re
 
     css = read_css()
     # Find the 959px media query and check that .new-session-fab uses display:flex
@@ -1586,7 +1554,6 @@ def test_css_fab_mobile_media_query_shows_flex() -> None:
 
 def test_css_fab_mobile_media_query_hides_new_session_btn() -> None:
     """At max-width: 959px, #new-session-btn must be hidden."""
-    import re
 
     css = read_css()
     match = re.search(
@@ -1717,7 +1684,6 @@ def test_css_source_tile_base_exists() -> None:
 
 def test_css_source_tile_base_layout() -> None:
     """.source-tile must have flex column layout with centered content, gap, padding."""
-    import re
 
     css = read_css()
     match = re.search(r"\.source-tile\s*\{([^}]*)\}", css, re.DOTALL)
@@ -1726,14 +1692,20 @@ def test_css_source_tile_base_layout() -> None:
     assert "display: flex" in body or "display:flex" in body.replace(" ", ""), (
         ".source-tile must use display: flex"
     )
-    assert "flex-direction: column" in body, ".source-tile must use flex-direction: column"
+    assert "flex-direction: column" in body, (
+        ".source-tile must use flex-direction: column"
+    )
     assert "align-items: center" in body, ".source-tile must use align-items: center"
-    assert "justify-content: center" in body, ".source-tile must use justify-content: center"
+    assert "justify-content: center" in body, (
+        ".source-tile must use justify-content: center"
+    )
     assert "gap: 12px" in body, ".source-tile must have gap: 12px"
     assert "padding: 24px" in body, ".source-tile must have padding: 24px"
     assert "var(--tile-height)" in body, ".source-tile must use var(--tile-height)"
     assert "var(--bg-tile)" in body, ".source-tile must use var(--bg-tile) background"
-    assert "1px solid var(--border)" in body, ".source-tile must have 1px solid var(--border) border"
+    assert "1px solid var(--border)" in body, (
+        ".source-tile must have 1px solid var(--border) border"
+    )
     assert "border-radius: 4px" in body, ".source-tile must have border-radius: 4px"
 
 
@@ -1745,7 +1717,6 @@ def test_css_source_tile_offline_exists() -> None:
 
 def test_css_source_tile_offline_opacity_and_border() -> None:
     """.source-tile--offline must have opacity 0.45 and dashed border."""
-    import re
 
     css = read_css()
     match = re.search(r"\.source-tile--offline\s*\{([^}]*)\}", css, re.DOTALL)
@@ -1759,7 +1730,6 @@ def test_css_source_tile_offline_opacity_and_border() -> None:
 
 def test_css_source_tile_offline_name_color() -> None:
     """.source-tile--offline .source-tile__name must use var(--text-dim) color."""
-    import re
 
     css = read_css()
     assert ".source-tile--offline .source-tile__name" in css, (
@@ -1777,7 +1747,6 @@ def test_css_source_tile_offline_name_color() -> None:
 
 def test_css_source_tile_offline_badge_exists() -> None:
     """.source-tile--offline .source-tile__badge must exist with err background."""
-    import re
 
     css = read_css()
     assert ".source-tile--offline .source-tile__badge" in css, (
@@ -1807,14 +1776,15 @@ def test_css_source_tile_offline_badge_exists() -> None:
 
 def test_css_source_tile_offline_last_seen_exists() -> None:
     """.source-tile--offline .source-tile__last-seen must exist with 11px font."""
-    import re
 
     css = read_css()
     assert ".source-tile--offline .source-tile__last-seen" in css, (
         "Missing .source-tile--offline .source-tile__last-seen rule"
     )
     match = re.search(
-        r"\.source-tile--offline\s+\.source-tile__last-seen\s*\{([^}]*)\}", css, re.DOTALL
+        r"\.source-tile--offline\s+\.source-tile__last-seen\s*\{([^}]*)\}",
+        css,
+        re.DOTALL,
     )
     assert match, ".source-tile--offline .source-tile__last-seen rule not found"
     body = match.group(1)
@@ -1828,7 +1798,6 @@ def test_css_source_tile_offline_last_seen_exists() -> None:
 
 def test_css_source_tile_auth_exists() -> None:
     """.source-tile--auth modifier must exist with warn border-color and dashed style."""
-    import re
 
     css = read_css()
     assert ".source-tile--auth" in css, "Missing .source-tile--auth CSS rule"
@@ -1841,7 +1810,6 @@ def test_css_source_tile_auth_exists() -> None:
 
 def test_css_source_tile_name_exists() -> None:
     """.source-tile__name must exist with 15px font, weight 600, var(--text) color."""
-    import re
 
     css = read_css()
     assert ".source-tile__name" in css, "Missing .source-tile__name CSS rule"
@@ -1862,26 +1830,32 @@ def test_css_source_tile_name_exists() -> None:
 
 def test_css_source_tile_login_btn_exists() -> None:
     """.source-tile__login-btn must exist with accent bg, border-radius, padding, 13px/600 font."""
-    import re
 
     css = read_css()
     assert ".source-tile__login-btn" in css, "Missing .source-tile__login-btn CSS rule"
     match = re.search(r"\.source-tile__login-btn\s*\{([^}]*)\}", css, re.DOTALL)
     assert match, ".source-tile__login-btn rule not found"
     body = match.group(1)
-    assert "var(--accent)" in body, ".source-tile__login-btn must use var(--accent) background"
+    assert "var(--accent)" in body, (
+        ".source-tile__login-btn must use var(--accent) background"
+    )
     assert "var(--bg)" in body, ".source-tile__login-btn must use var(--bg) text color"
-    assert "border-radius: 4px" in body, ".source-tile__login-btn must have border-radius: 4px"
-    assert "padding: 8px 20px" in body, ".source-tile__login-btn must have padding: 8px 20px"
+    assert "border-radius: 4px" in body, (
+        ".source-tile__login-btn must have border-radius: 4px"
+    )
+    assert "padding: 8px 20px" in body, (
+        ".source-tile__login-btn must have padding: 8px 20px"
+    )
     assert "font-size: 13px" in body or "13px" in body, (
         ".source-tile__login-btn must have 13px font"
     )
-    assert "cursor: pointer" in body, ".source-tile__login-btn must have cursor: pointer"
+    assert "cursor: pointer" in body, (
+        ".source-tile__login-btn must have cursor: pointer"
+    )
 
 
 def test_css_source_tile_login_btn_hover_exists() -> None:
     """.source-tile__login-btn:hover must have opacity: 0.85."""
-    import re
 
     css = read_css()
     assert ".source-tile__login-btn:hover" in css, (
@@ -1895,13 +1869,14 @@ def test_css_source_tile_login_btn_hover_exists() -> None:
 
 def test_css_source_tile_login_btn_focus_visible_exists() -> None:
     """.source-tile__login-btn:focus-visible must have a 2px accent outline."""
-    import re
 
     css = read_css()
     assert ".source-tile__login-btn:focus-visible" in css, (
         "Missing .source-tile__login-btn:focus-visible CSS rule"
     )
-    match = re.search(r"\.source-tile__login-btn:focus-visible\s*\{([^}]*)\}", css, re.DOTALL)
+    match = re.search(
+        r"\.source-tile__login-btn:focus-visible\s*\{([^}]*)\}", css, re.DOTALL
+    )
     assert match, ".source-tile__login-btn:focus-visible rule not found"
     body = match.group(1)
     assert "var(--accent)" in body, (
@@ -1912,7 +1887,6 @@ def test_css_source_tile_login_btn_focus_visible_exists() -> None:
 
 def test_css_source_tile_hint_exists() -> None:
     """.source-tile__hint must exist with 11px font and var(--text-muted) color."""
-    import re
 
     css = read_css()
     assert ".source-tile__hint" in css, "Missing .source-tile__hint CSS rule"
@@ -1922,7 +1896,9 @@ def test_css_source_tile_hint_exists() -> None:
     assert "font-size: 11px" in body or "11px" in body, (
         ".source-tile__hint must have 11px font"
     )
-    assert "var(--text-muted)" in body, ".source-tile__hint must use var(--text-muted) color"
+    assert "var(--text-muted)" in body, (
+        ".source-tile__hint must use var(--text-muted) color"
+    )
 
 
 def test_css_source_tile_before_reduced_motion() -> None:
@@ -1943,7 +1919,6 @@ def test_css_source_tile_match_count() -> None:
     are present by checking that grep-c style line count is >= 10, matching the
     11 selector lines produced by the full implementation.
     """
-    import subprocess
 
     css_path = CSS_PATH
     result = subprocess.run(
