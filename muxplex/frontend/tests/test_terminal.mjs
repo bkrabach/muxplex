@@ -719,6 +719,80 @@ test('terminal is auto-focused when WebSocket opens', () => {
     '_term.focus() should be called exactly once when the WebSocket open event fires');
 });
 
+// --- sourceUrl / remote WebSocket tests ------------------------------------
+
+test('connectWebSocket uses remote origin when sourceUrl is provided', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('remote-session', 'http://work:8088');
+
+  globalThis.setTimeout = orig;
+
+  assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
+  assert.ok(
+    t.capturedWsUrl.startsWith('ws://work:8088/'),
+    `WebSocket URL should start with ws://work:8088/, got: ${t.capturedWsUrl}`,
+  );
+  assert.ok(
+    t.capturedWsUrl.endsWith('/terminal/ws'),
+    `WebSocket URL should end with /terminal/ws, got: ${t.capturedWsUrl}`,
+  );
+});
+
+test('connectWebSocket uses local origin when sourceUrl is empty string', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('local-session', '');
+
+  globalThis.setTimeout = orig;
+
+  assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
+  assert.ok(
+    t.capturedWsUrl.includes('localhost'),
+    `WebSocket URL should include localhost for empty sourceUrl, got: ${t.capturedWsUrl}`,
+  );
+});
+
+test('connectWebSocket uses local origin when sourceUrl is undefined', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('local-session');
+
+  globalThis.setTimeout = orig;
+
+  assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
+  assert.ok(
+    t.capturedWsUrl.includes('localhost'),
+    `WebSocket URL should include localhost when sourceUrl is undefined, got: ${t.capturedWsUrl}`,
+  );
+});
+
+test('connectWebSocket converts https sourceUrl to wss protocol', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('secure-session', 'https://devserver:8088');
+
+  globalThis.setTimeout = orig;
+
+  assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
+  assert.ok(
+    t.capturedWsUrl.startsWith('wss://devserver:8088/'),
+    `WebSocket URL should start with wss://devserver:8088/, got: ${t.capturedWsUrl}`,
+  );
+});
+
 // --- Android touch scroll ---------------------------------------------------
 
 test('terminal.js Android touch scroll is UA-gated', () => {

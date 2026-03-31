@@ -11,9 +11,16 @@ let _vpHandler = null;
 
 // ─── Forward declarations ─────────────────────────────────────────────────────
 
-function connectWebSocket(name) {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${proto}//${location.host}/terminal/ws`;
+function connectWebSocket(name, sourceUrl) {
+  var url;
+  if (sourceUrl) {
+    // Remote session: derive WS URL from the source's HTTP URL
+    url = sourceUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + '/terminal/ws';
+  } else {
+    // Local session: same origin
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    url = proto + '//' + location.host + '/terminal/ws';
+  }
   const reconnectOverlay = document.getElementById('reconnect-overlay');
   const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 
@@ -175,8 +182,11 @@ function createTerminal() {
 /**
  * Open a terminal session inside #terminal-container.
  * @param {string} sessionName
+ * @param {string} [sourceUrl]  Optional HTTP URL of the remote muxplex instance.
+ *   When provided, the WebSocket connects to that remote host instead of the
+ *   current page origin.
  */
-function openTerminal(sessionName) {
+function openTerminal(sessionName, sourceUrl) {
   // Null _currentSession first so any in-flight close handler on the old WS won't
   // schedule a reconnect (it checks `if (!_currentSession) return;`).
   _currentSession = null;
@@ -222,7 +232,7 @@ function openTerminal(sessionName) {
     });
   }
 
-  connectWebSocket(sessionName);
+  connectWebSocket(sessionName, sourceUrl);
   initVisualViewport(); /* defined in Task 14 */
 }
 
