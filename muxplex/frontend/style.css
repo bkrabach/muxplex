@@ -1348,6 +1348,71 @@ body {
 }
 
 /* ============================================================
+   Device badge, group header, filter bar, sidebar device header
+   ============================================================ */
+
+.device-badge {
+  display: inline-block;
+  font-size: 9px;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.device-group-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  grid-column: 1 / -1;
+  padding: 8px 0 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.filter-pill {
+  font-size: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: border-color 150ms ease, color 150ms ease;
+  line-height: 1.4;
+}
+
+.filter-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-pill--active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sidebar-device-header {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  padding: 8px 12px 4px;
+}
+
+/* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */
 
