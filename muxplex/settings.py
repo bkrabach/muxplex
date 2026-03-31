@@ -21,6 +21,7 @@ DEFAULT_SETTINGS: dict = {
     "remote_instances": [],
     "device_name": "",
     "delete_session_template": "tmux kill-session -t {name}",
+    "multi_device_enabled": False,
 }
 
 

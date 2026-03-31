@@ -1380,17 +1380,23 @@ function buildSources(settings) {
   var sources = [
     { url: '', name: localName, type: 'local', status: 'authenticated', backoffMs: 2000 },
   ];
+  // Only add remote sources when multi-device is enabled.
+  // Smart default: treat as enabled if remote_instances is non-empty (backward compat).
   var remotes = (settings && settings.remote_instances) || [];
-  for (var i = 0; i < remotes.length; i++) {
-    var r = remotes[i];
-    if (r && r.url) {
-      sources.push({
-        url: r.url.replace(/\/+$/, ''),
-        name: r.name || r.url,
-        type: 'remote',
-        status: 'authenticated',
-        backoffMs: 2000,
-      });
+  var multiDeviceEnabled = (settings && settings.multi_device_enabled) ||
+    (remotes.length > 0);
+  if (multiDeviceEnabled) {
+    for (var i = 0; i < remotes.length; i++) {
+      var r = remotes[i];
+      if (r && r.url) {
+        sources.push({
+          url: r.url.replace(/\/+$/, ''),
+          name: r.name || r.url,
+          type: 'remote',
+          status: 'authenticated',
+          backoffMs: 2000,
+        });
+      }
     }
   }
   return sources;
@@ -1448,6 +1454,25 @@ function _saveRemoteInstances() {
     _sources = buildSources(_serverSettings);
   });
 }
+
+// ─── Multi-Device helper ──────────────────────────────────────────────────────────
+
+/**
+ * Enable or disable all Multi-Device tab fields (except the enable toggle itself).
+ * When disabled, the fields container gets opacity: 0.5 and inputs/selects/buttons
+ * are disabled so users cannot interact with them.
+ * @param {boolean} enabled
+ */
+function _updateMultiDeviceFieldsState(enabled) {
+  var fieldsContainer = $('multi-device-fields');
+  if (!fieldsContainer) return;
+  var controls = fieldsContainer.querySelectorAll('input, select, button');
+  controls.forEach(function(ctrl) {
+    ctrl.disabled = !enabled;
+  });
+  fieldsContainer.style.opacity = enabled ? '' : '0.5';
+}
+
 
 // ─── Settings dialog ──────────────────────────────────────────────────────────
 
@@ -1764,6 +1789,20 @@ function openSettings() {
     const deviceNameEl = $('setting-device-name');
     if (deviceNameEl) {
       deviceNameEl.value = (ss && ss.device_name) || '';
+    }
+
+    // Update document.title from device_name setting
+    if (ss && ss.device_name) {
+      document.title = ss.device_name;
+    }
+
+    // Multi-device enabled checkbox (with smart default: checked if remote_instances non-empty)
+    const multiDeviceEnabledEl = $('setting-multi-device-enabled');
+    if (multiDeviceEnabledEl) {
+      var remoteList = (ss && ss.remote_instances) || [];
+      multiDeviceEnabledEl.checked = !!(ss && ss.multi_device_enabled) ||
+        remoteList.length > 0;
+      _updateMultiDeviceFieldsState(multiDeviceEnabledEl.checked);
     }
 
     // Remote instances
@@ -2298,11 +2337,21 @@ function bindStaticEventListeners() {
     patchServerSetting('new_session_template', NEW_SESSION_DEFAULT_TEMPLATE);
   });
 
-  // Sessions tab — device name with 500ms debounce
+  // Multi-Device tab — enable/disable toggle
+  on($('setting-multi-device-enabled'), 'change', function() {
+    var enabled = this.checked;
+    _updateMultiDeviceFieldsState(enabled);
+    patchServerSetting('multi_device_enabled', enabled).then(function() {
+      _sources = buildSources(_serverSettings);
+    });
+  });
+
+  // Multi-Device tab — device name with 500ms debounce; updates document.title immediately
   var _deviceNameDebounceTimer;
   on($('setting-device-name'), 'input', function() {
     clearTimeout(_deviceNameDebounceTimer);
     var val = this.value;
+    if (val) document.title = val;
     _deviceNameDebounceTimer = setTimeout(function() {
       patchServerSetting('device_name', val).then(function() {
         _sources = buildSources(_serverSettings);

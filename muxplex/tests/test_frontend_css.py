@@ -1987,3 +1987,23 @@ def test_fit_view_pre_has_top_zero() -> None:
     assert "top: 0" in block or "top:0" in block, (
         ".session-grid--fit .tile-body pre must have top: 0 to fill full tile body height"
     )
+
+
+# ============================================================
+# Multi-Device tab CSS (settings UI reorganization)
+# ============================================================
+
+
+def test_css_multi_device_fields_transition() -> None:
+    """#multi-device-fields must have a CSS transition for smooth enable/disable animation."""
+    css = read_css()
+    assert "#multi-device-fields" in css, (
+        "Missing #multi-device-fields CSS rule — needed for smooth enable/disable opacity transition"
+    )
+    match = re.search(r"#multi-device-fields\s*\{([^}]*)\}", css, re.DOTALL)
+    assert match, "#multi-device-fields CSS rule not found"
+    body = match.group(1)
+    assert "transition" in body, (
+        "#multi-device-fields must have a transition property for smooth enable/disable animation"
+    )
+    assert "opacity" in body, "#multi-device-fields transition must include opacity"

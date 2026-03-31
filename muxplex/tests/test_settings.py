@@ -270,3 +270,39 @@ def test_delete_session_template_patchable():
     # Verify it was persisted
     loaded = load_settings()
     assert loaded["delete_session_template"] == custom
+
+
+# ============================================================
+# Multi-device enabled flag (task: settings UI reorganization)
+# ============================================================
+
+
+def test_defaults_include_multi_device_enabled():
+    """DEFAULT_SETTINGS must include 'multi_device_enabled' key initialised to False."""
+    assert "multi_device_enabled" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'multi_device_enabled'"
+    )
+    assert DEFAULT_SETTINGS["multi_device_enabled"] is False, (
+        f"multi_device_enabled default must be False, got: {DEFAULT_SETTINGS['multi_device_enabled']!r}"
+    )
+
+
+def test_load_returns_multi_device_enabled_default():
+    """load_settings() must return multi_device_enabled with default value of False."""
+    result = load_settings()
+    assert "multi_device_enabled" in result, (
+        "load_settings() must include 'multi_device_enabled'"
+    )
+    assert result["multi_device_enabled"] is False, (
+        f"load_settings() multi_device_enabled must default to False, got: {result['multi_device_enabled']!r}"
+    )
+
+
+def test_multi_device_enabled_patchable():
+    """patch_settings() must accept and persist multi_device_enabled."""
+    result = patch_settings({"multi_device_enabled": True})
+    assert result["multi_device_enabled"] is True, (
+        f"patch_settings() must accept multi_device_enabled=True, got: {result['multi_device_enabled']!r}"
+    )
+    loaded = load_settings()
+    assert loaded["multi_device_enabled"] is True

@@ -434,7 +434,7 @@ def test_html_settings_dialog() -> None:
 
 
 def test_html_settings_tabs() -> None:
-    """settings-dialog must contain 4 tab buttons with correct data-tab values."""
+    """settings-dialog must contain 5 tab buttons with correct data-tab values."""
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
@@ -442,7 +442,7 @@ def test_html_settings_tabs() -> None:
     assert tabs_container is not None, (
         "Missing nav.settings-tabs inside #settings-dialog"
     )
-    expected_tabs = ["display", "sessions", "notifications", "new-session"]
+    expected_tabs = ["display", "sessions", "notifications", "new-session", "devices"]
     for tab_value in expected_tabs:
         tab = tabs_container.find("button", attrs={"data-tab": tab_value})
         assert tab is not None, (
@@ -540,8 +540,8 @@ def test_html_settings_panels_use_data_tab() -> None:
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
     panels = dialog.find_all(class_="settings-panel")
-    assert len(panels) == 4, (
-        f"Expected 4 .settings-panel elements, found: {len(panels)}"
+    assert len(panels) == 5, (
+        f"Expected 5 .settings-panel elements, found: {len(panels)}"
     )
     for panel in panels:
         assert panel.get("data-tab") is not None, (
@@ -1070,44 +1070,44 @@ def test_html_settings_close_btn_exists() -> None:
 
 
 def test_html_sessions_tab_device_name_input() -> None:
-    """Sessions tab must contain a #setting-device-name text input for the device name."""
+    """Multi-Device tab must contain a #setting-device-name text input for the device name."""
     soup = _SOUP
     el = soup.find(id="setting-device-name")
     assert el is not None, "Missing element with id='setting-device-name'"
-    # Must be inside the sessions panel
-    sessions_panel = soup.find("div", attrs={"data-tab": "sessions"})
-    assert sessions_panel is not None, "Missing sessions panel (data-tab='sessions')"
-    assert sessions_panel.find(id="setting-device-name") is not None, (
-        "#setting-device-name must be inside the sessions settings panel"
+    # Must be inside the devices panel (not sessions)
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    assert devices_panel.find(id="setting-device-name") is not None, (
+        "#setting-device-name must be inside the devices (Multi-Device) settings panel"
     )
 
 
 def test_html_sessions_tab_remote_instances_container() -> None:
-    """Sessions tab must contain a #setting-remote-instances container for remote instance rows."""
+    """Multi-Device tab must contain a #setting-remote-instances container for remote instance rows."""
     soup = _SOUP
     el = soup.find(id="setting-remote-instances")
     assert el is not None, "Missing element with id='setting-remote-instances'"
-    # Must be inside the sessions panel
-    sessions_panel = soup.find("div", attrs={"data-tab": "sessions"})
-    assert sessions_panel is not None, "Missing sessions panel (data-tab='sessions')"
-    assert sessions_panel.find(id="setting-remote-instances") is not None, (
-        "#setting-remote-instances must be inside the sessions settings panel"
+    # Must be inside the devices panel
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    assert devices_panel.find(id="setting-remote-instances") is not None, (
+        "#setting-remote-instances must be inside the devices (Multi-Device) settings panel"
     )
 
 
 def test_html_sessions_tab_add_remote_instance_btn() -> None:
-    """Sessions tab must contain an #add-remote-instance-btn button to add remote instances."""
+    """Multi-Device tab must contain an #add-remote-instance-btn button to add remote instances."""
     soup = _SOUP
     el = soup.find(id="add-remote-instance-btn")
     assert el is not None, "Missing element with id='add-remote-instance-btn'"
     assert el.name == "button", (
         f"#add-remote-instance-btn must be a <button>, got: {el.name}"
     )
-    # Must be inside the sessions panel
-    sessions_panel = soup.find("div", attrs={"data-tab": "sessions"})
-    assert sessions_panel is not None, "Missing sessions panel (data-tab='sessions')"
-    assert sessions_panel.find(id="add-remote-instance-btn") is not None, (
-        "#add-remote-instance-btn must be inside the sessions settings panel"
+    # Must be inside the devices panel
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    assert devices_panel.find(id="add-remote-instance-btn") is not None, (
+        "#add-remote-instance-btn must be inside the devices (Multi-Device) settings panel"
     )
 
 
@@ -1206,10 +1206,134 @@ def test_html_view_mode_button_exists() -> None:
     """#view-mode-btn must exist in the overview header for cycling view modes."""
     soup = _SOUP
     btn = soup.find(id="view-mode-btn")
-    assert btn is not None, "Missing element with id='view-mode-btn' (view mode toggle button)"
+    assert btn is not None, (
+        "Missing element with id='view-mode-btn' (view mode toggle button)"
+    )
     # Must be inside the overview header area
     overview = soup.find(id="view-overview")
     assert overview is not None, "Missing #view-overview"
     assert overview.find(id="view-mode-btn") is not None, (
         "#view-mode-btn must be inside #view-overview header"
+    )
+
+
+# ============================================================
+# Multi-Device tab (settings UI reorganization)
+# ============================================================
+
+
+def test_html_devices_tab_button_exists() -> None:
+    """Settings dialog must contain a tab button with data-tab='devices' labeled 'Multi-Device'."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    tabs_container = dialog.find("nav", class_="settings-tabs")
+    assert tabs_container is not None, "Missing nav.settings-tabs"
+    tab = tabs_container.find("button", attrs={"data-tab": "devices"})
+    assert tab is not None, (
+        "Missing tab button with data-tab='devices' in settings-tabs"
+    )
+    tab_classes = tab.get("class") or []
+    assert "settings-tab" in tab_classes, (
+        f"devices tab button must have class 'settings-tab', has: {tab_classes}"
+    )
+
+
+def test_html_devices_panel_exists() -> None:
+    """A settings-panel with data-tab='devices' must exist inside #settings-dialog."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    panel = dialog.find(class_="settings-panel", attrs={"data-tab": "devices"})
+    assert panel is not None, (
+        "Missing settings-panel[data-tab='devices'] (Multi-Device tab panel)"
+    )
+
+
+def test_html_devices_panel_has_enable_checkbox() -> None:
+    """Multi-Device tab panel must contain #setting-multi-device-enabled checkbox."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    el = devices_panel.find(id="setting-multi-device-enabled")
+    assert el is not None, "Missing #setting-multi-device-enabled inside devices panel"
+    assert el.name == "input", (
+        f"#setting-multi-device-enabled must be an <input>, got: {el.name}"
+    )
+    assert el.get("type") == "checkbox", (
+        f"#setting-multi-device-enabled must be type='checkbox', got: {el.get('type')}"
+    )
+
+
+def test_html_devices_panel_has_device_name() -> None:
+    """Multi-Device tab panel must contain #setting-device-name text input."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    el = devices_panel.find(id="setting-device-name")
+    assert el is not None, "Missing #setting-device-name inside devices panel"
+
+
+def test_html_devices_panel_has_remote_instances() -> None:
+    """Multi-Device tab panel must contain #setting-remote-instances container."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    el = devices_panel.find(id="setting-remote-instances")
+    assert el is not None, "Missing #setting-remote-instances inside devices panel"
+
+
+def test_html_devices_panel_has_add_remote_btn() -> None:
+    """Multi-Device tab panel must contain #add-remote-instance-btn button."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    btn = devices_panel.find(id="add-remote-instance-btn")
+    assert btn is not None, "Missing #add-remote-instance-btn inside devices panel"
+    assert btn.name == "button", (
+        f"#add-remote-instance-btn must be a <button>, got: {btn.name}"
+    )
+
+
+def test_html_devices_panel_has_view_mode() -> None:
+    """Multi-Device tab panel must contain #setting-view-mode select."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    el = devices_panel.find(id="setting-view-mode")
+    assert el is not None, "Missing #setting-view-mode inside devices panel"
+    assert el.name == "select", f"#setting-view-mode must be a <select>, got: {el.name}"
+
+
+def test_html_devices_panel_has_view_scope() -> None:
+    """Multi-Device tab panel must contain #setting-view-scope select."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    el = devices_panel.find(id="setting-view-scope")
+    assert el is not None, "Missing #setting-view-scope inside devices panel"
+    assert el.name == "select", (
+        f"#setting-view-scope must be a <select>, got: {el.name}"
+    )
+
+
+def test_html_display_panel_no_view_mode() -> None:
+    """Display panel must NOT contain #setting-view-mode (moved to Multi-Device tab)."""
+    soup = _SOUP
+    display_panel = soup.find("div", attrs={"data-tab": "display"})
+    assert display_panel is not None, "Missing display panel"
+    el = display_panel.find(id="setting-view-mode")
+    assert el is None, (
+        "#setting-view-mode must NOT be in the display panel (moved to Multi-Device tab)"
+    )
+
+
+def test_html_display_panel_no_view_scope() -> None:
+    """Display panel must NOT contain #setting-view-scope (moved to Multi-Device tab)."""
+    soup = _SOUP
+    display_panel = soup.find("div", attrs={"data-tab": "display"})
+    assert display_panel is not None, "Missing display panel"
+    el = display_panel.find(id="setting-view-scope")
+    assert el is None, (
+        "#setting-view-scope must NOT be in the display panel (moved to Multi-Device tab)"
     )

@@ -90,6 +90,7 @@
         <button class="settings-tab" data-tab="sessions">Sessions</button>
         <button class="settings-tab" data-tab="notifications">Notifications</button>
         <button class="settings-tab" data-tab="new-session">Commands</button>
+        <button class="settings-tab" data-tab="devices">Multi-Device</button>
       </nav>
       <div class="settings-content">
         <div class="settings-panel" data-tab="display">
@@ -123,21 +124,6 @@
               <option value="4">4</option>
             </select>
           </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-view-mode">View Mode</label>
-            <select id="setting-view-mode" class="settings-select">
-              <option value="flat">Flat</option>
-              <option value="grouped">Grouped</option>
-              <option value="filtered">Filtered</option>
-            </select>
-          </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-view-scope">View Scope</label>
-            <select id="setting-view-scope" class="settings-select">
-              <option value="local">Local</option>
-              <option value="server">Server</option>
-            </select>
-          </div>
         </div>
         <div class="settings-panel hidden" data-tab="sessions">
           <div class="settings-field">
@@ -166,15 +152,6 @@
             <label class="settings-label" for="setting-auto-open">Auto-open created sessions</label>
             <input type="checkbox" id="setting-auto-open" class="settings-checkbox" checked />
           </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-device-name">Device Name</label>
-            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
-          </div>
-          <div class="settings-field settings-field--column">
-            <label class="settings-label">Remote Instances</label>
-            <div id="setting-remote-instances" class="settings-remote-list"></div>
-            <button id="add-remote-instance-btn" class="settings-action-btn">+ Add Remote</button>
-          </div>
         </div>
         <div class="settings-panel hidden" data-tab="notifications">
           <div class="settings-field">
@@ -201,6 +178,38 @@
             <textarea id="setting-delete-template" class="settings-textarea" rows="3" placeholder="tmux kill-session -t {name}"></textarea>
             <span class="settings-helper">{name} is replaced with the session name</span>
             <button id="setting-delete-template-reset" class="settings-action-btn">Reset to default</button>
+          </div>
+        </div>
+        <div class="settings-panel hidden" data-tab="devices">
+          <div class="settings-field">
+            <label class="settings-label" for="setting-multi-device-enabled">Enable multi-device support</label>
+            <input type="checkbox" id="setting-multi-device-enabled" class="settings-checkbox" />
+          </div>
+          <div id="multi-device-fields">
+            <div class="settings-field">
+              <label class="settings-label" for="setting-device-name">Device Name</label>
+              <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+            </div>
+            <div class="settings-field">
+              <label class="settings-label" for="setting-view-mode">View Mode</label>
+              <select id="setting-view-mode" class="settings-select">
+                <option value="flat">Flat</option>
+                <option value="grouped">Grouped</option>
+                <option value="filtered">Filtered</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label" for="setting-view-scope">View Scope</label>
+              <select id="setting-view-scope" class="settings-select">
+                <option value="local">Local</option>
+                <option value="server">Server</option>
+              </select>
+            </div>
+            <div class="settings-field settings-field--column">
+              <label class="settings-label">Remote Instances</label>
+              <div id="setting-remote-instances" class="settings-remote-list"></div>
+              <button id="add-remote-instance-btn" class="settings-action-btn">+ Add Remote</button>
+            </div>
           </div>
         </div>
       </div>

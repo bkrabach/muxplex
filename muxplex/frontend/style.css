@@ -1653,3 +1653,8 @@ body {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.1);
 }
+
+/* Multi-Device tab — smooth enable/disable opacity transition */
+#multi-device-fields {
+  transition: opacity 0.2s ease;
+}

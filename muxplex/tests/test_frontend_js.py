@@ -2444,3 +2444,81 @@ def test_build_remote_instance_row_name_input_aria_label() -> None:
     assert "Remote instance display name" in body, (
         "nameInput must have aria-label='Remote instance display name' for screen-reader accessibility"
     )
+
+
+# ============================================================
+# Multi-Device tab — settings UI reorganization
+# ============================================================
+
+
+def test_open_settings_populates_multi_device_enabled() -> None:
+    """openSettings must populate #setting-multi-device-enabled from server settings."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found in app.js"
+    body = match.group(1)
+    assert "setting-multi-device-enabled" in body, (
+        "openSettings must populate #setting-multi-device-enabled checkbox"
+    )
+    assert "multi_device_enabled" in body, (
+        "openSettings must reference multi_device_enabled from server settings"
+    )
+
+
+def test_open_settings_updates_document_title() -> None:
+    """openSettings must update document.title from the device_name setting."""
+    match = re.search(
+        r"function openSettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "openSettings function not found in app.js"
+    body = match.group(1)
+    assert "document.title" in body, (
+        "openSettings must update document.title from device_name"
+    )
+
+
+def test_bind_static_event_listeners_binds_multi_device_enabled() -> None:
+    """bindStaticEventListeners must bind change on #setting-multi-device-enabled."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "setting-multi-device-enabled" in body, (
+        "bindStaticEventListeners must bind #setting-multi-device-enabled change event"
+    )
+
+
+def test_build_sources_checks_multi_device_enabled() -> None:
+    """buildSources must check multi_device_enabled before adding remote sources."""
+    match = re.search(
+        r"function buildSources\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "buildSources function not found in app.js"
+    body = match.group(1)
+    assert "multi_device_enabled" in body, (
+        "buildSources must check multi_device_enabled to gate remote sources"
+    )
+
+
+def test_device_name_change_updates_document_title() -> None:
+    """device name change handler in bindStaticEventListeners must update document.title."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "document.title" in body, (
+        "bindStaticEventListeners device-name handler must update document.title"
+    )
