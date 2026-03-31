@@ -2204,3 +2204,11 @@ test('bindStaticEventListeners wires view-mode-btn click to cycleViewMode', () =
     'bindStaticEventListeners must wire #view-mode-btn click handler'
   );
 });
+
+test('applyFitLayout is called via requestAnimationFrame for correct timing', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('requestAnimationFrame') && source.includes('applyFitLayout'),
+    'applyFitLayout must be deferred via requestAnimationFrame'
+  );
+});

@@ -1380,6 +1380,12 @@ body {
   overflow: hidden;
 }
 
+/* In fit mode, stretch pre to fill the full tile body height (not just bottom-anchor) */
+.session-grid--fit .tile-body pre {
+  top: 0;           /* stretch to fill full tile body height in fit mode */
+  overflow-y: auto; /* scroll if content exceeds the tile */
+}
+
 /* ============================================================
    Responsive overlay sidebar at <960px
    ============================================================ */

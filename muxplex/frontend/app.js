@@ -652,7 +652,7 @@ function renderGrid(sessions) {
   var currentMode = currentDs.viewMode || 'auto';
   if (currentMode === 'fit' && grid) {
     grid.classList.add('session-grid--fit');
-    applyFitLayout(grid);
+    requestAnimationFrame(function() { applyFitLayout(grid); });
   }
 
 }
@@ -1191,7 +1191,7 @@ function applyDisplaySettings(ds) {
 
   } else if (mode === 'fit') {
     grid.classList.add('session-grid--fit');
-    applyFitLayout(grid);
+    requestAnimationFrame(function() { applyFitLayout(grid); });
   }
 }
 
@@ -1858,7 +1858,7 @@ window.addEventListener('resize', function() {
   var ds = loadDisplaySettings();
   if ((ds.viewMode || 'auto') === 'fit') {
     var grid = document.getElementById('session-grid');
-    if (grid) applyFitLayout(grid);
+    if (grid) requestAnimationFrame(function() { applyFitLayout(grid); });
   }
 });
 

@@ -1705,3 +1705,26 @@ def test_css_no_compact_tile_height() -> None:
     assert ".session-grid--compact .session-tile" not in css, (
         ".session-grid--compact .session-tile must be removed — compact view mode was removed"
     )
+
+
+# ============================================================
+# Fit view bug fixes
+# ============================================================
+
+
+def test_fit_view_pre_has_top_zero() -> None:
+    """In fit mode, .tile-body pre must have top:0 to fill the full tile height.
+
+    Bug: .tile-body pre uses position:absolute with bottom:0 but no top:0.
+    In fit mode where tiles are taller than auto mode, the pre is anchored
+    to the bottom but only takes natural content height, leaving a black gap above.
+    Fix: .session-grid--fit .tile-body pre { top: 0 } stretches it to fill the tile.
+    """
+    css = read_css()
+    assert ".session-grid--fit .tile-body pre" in css, (
+        "Missing .session-grid--fit .tile-body pre rule — needed to fix pre height in fit mode"
+    )
+    block = _extract_rule_block(css, ".session-grid--fit .tile-body pre {")
+    assert "top: 0" in block or "top:0" in block, (
+        ".session-grid--fit .tile-body pre must have top: 0 to fill full tile body height"
+    )
