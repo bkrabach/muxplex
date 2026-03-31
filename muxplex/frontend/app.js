@@ -1663,6 +1663,44 @@ function bindStaticEventListeners() {
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────
 
+// ─── Multi-source parallel polling ─────────────────────────────────────────
+
+/**
+ * Tag each session in the array with deviceName, sourceUrl, and sessionKey.
+ * Returns new session objects; does NOT mutate originals.
+ * sessionKey format: sourceUrl + '::' + name
+ * @param {object[]} sessions
+ * @param {string} deviceName
+ * @param {string} sourceUrl
+ * @returns {object[]}
+ */
+function tagSessions(sessions, deviceName, sourceUrl) {
+  return (sessions || []).map(function(s) {
+    return Object.assign({}, s, {
+      deviceName: deviceName,
+      sourceUrl: sourceUrl,
+      sessionKey: sourceUrl + '::' + (s.name || ''),
+    });
+  });
+}
+
+/**
+ * Merge sessions from multiple sources into a single flat array.
+ * Each result is an object with {source, sessions}.
+ * Tags each source's sessions with deviceName/sourceUrl/sessionKey.
+ * @param {Array<{source: {name: string, url: string}, sessions: object[]}>} results
+ * @returns {object[]}
+ */
+function mergeSources(results) {
+  var all = [];
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var tagged = tagSessions(r.sessions, r.source.name, r.source.url);
+    for (var j = 0; j < tagged.length; j++) { all.push(tagged[j]); }
+  }
+  return all;
+}
+
 /** Test-only: set _currentSessions directly. */
 function _setCurrentSessions(sessions) {
   _currentSessions = sessions;
@@ -1778,6 +1816,9 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
+    // Multi-source parallel polling
+    tagSessions,
+    mergeSources,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,

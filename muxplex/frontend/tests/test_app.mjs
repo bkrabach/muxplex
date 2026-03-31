@@ -2072,4 +2072,65 @@ test('buildSources strips trailing slash from remote URLs', () => {
   assert.strictEqual(sources[2].url, 'https://server2.example.com', 'multiple trailing slashes should be stripped from remote URL');
 });
 
+// --- tagSessions ---
+
+test('tagSessions adds deviceName and sourceUrl to each session', () => {
+  const sessions = [{ name: 'work' }, { name: 'play' }];
+  const result = app.tagSessions(sessions, 'Laptop', 'https://host.example.com');
+  assert.strictEqual(result[0].deviceName, 'Laptop', 'first session should have deviceName set');
+  assert.strictEqual(result[0].sourceUrl, 'https://host.example.com', 'first session should have sourceUrl set');
+  assert.strictEqual(result[1].deviceName, 'Laptop', 'second session should have deviceName set');
+  assert.strictEqual(result[1].sourceUrl, 'https://host.example.com', 'second session should have sourceUrl set');
+});
+
+test('tagSessions adds sessionKey formatted as sourceUrl::name', () => {
+  const sessions = [{ name: 'my-session' }];
+  const result = app.tagSessions(sessions, 'Laptop', 'https://host.example.com');
+  assert.strictEqual(result[0].sessionKey, 'https://host.example.com::my-session', 'sessionKey should be sourceUrl::name');
+});
+
+test('tagSessions handles empty sessions input (returns empty array)', () => {
+  const result = app.tagSessions([], 'Laptop', 'https://host.example.com');
+  assert.deepStrictEqual(result, [], 'tagSessions should return empty array for empty input');
+});
+
+test('tagSessions does not mutate the original session objects', () => {
+  const original = { name: 'work' };
+  const sessions = [original];
+  const result = app.tagSessions(sessions, 'Laptop', 'https://host.example.com');
+  assert.ok(!('deviceName' in original), 'original session should not be mutated');
+  assert.ok(!('sourceUrl' in original), 'original session should not have sourceUrl added');
+  assert.ok(!('sessionKey' in original), 'original session should not have sessionKey added');
+  assert.notStrictEqual(result[0], original, 'returned session should be a new object, not the original');
+});
+
+// --- mergeSources ---
+
+test('mergeSources combines sessions from multiple sources with correct sessionKeys', () => {
+  const results = [
+    {
+      source: { name: 'Laptop', url: '' },
+      sessions: [{ name: 'local-session' }],
+    },
+    {
+      source: { name: 'Server', url: 'https://server.example.com' },
+      sessions: [{ name: 'remote-session' }],
+    },
+  ];
+  const merged = app.mergeSources(results);
+  assert.strictEqual(merged.length, 2, 'merged array should have 2 sessions total');
+  const local = merged.find((s) => s.name === 'local-session');
+  const remote = merged.find((s) => s.name === 'remote-session');
+  assert.ok(local, 'local-session should be present');
+  assert.ok(remote, 'remote-session should be present');
+  assert.strictEqual(local.sessionKey, '::local-session', 'local session key should be ::local-session');
+  assert.strictEqual(remote.sessionKey, 'https://server.example.com::remote-session', 'remote session key should include url');
+  assert.strictEqual(remote.deviceName, 'Server', 'remote session should have correct deviceName');
+});
+
+test('mergeSources returns empty array for empty input', () => {
+  const result = app.mergeSources([]);
+  assert.deepStrictEqual(result, [], 'mergeSources should return empty array for empty input');
+});
+
 
