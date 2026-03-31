@@ -1712,19 +1712,73 @@ def test_css_no_compact_tile_height() -> None:
 # ============================================================
 
 
-def test_fit_view_pre_has_top_zero() -> None:
-    """In fit mode, .tile-body pre must have top:0 to fill the full tile height.
+# ============================================================
+# Mobile viewport + fit view content anchoring fixes
+# ============================================================
 
-    Bug: .tile-body pre uses position:absolute with bottom:0 but no top:0.
-    In fit mode where tiles are taller than auto mode, the pre is anchored
-    to the bottom but only takes natural content height, leaving a black gap above.
-    Fix: .session-grid--fit .tile-body pre { top: 0 } stretches it to fill the tile.
+
+def test_view_uses_dvh_fallback() -> None:
+    """Bug fix: .view must use 100dvh (dynamic viewport height) for mobile.
+
+    On mobile browsers, 100vh includes the browser chrome (address bar + bottom nav),
+    causing the bottom row of tiles to be cut off under overflow:hidden.
+    Fix: height: 100dvh with 100vh fallback (progressive enhancement).
+    The 100vh MUST appear before 100dvh (browsers ignore unknown values, so
+    100dvh overrides 100vh for browsers that support it).
+    """
+    css = read_css()
+    # .view block must contain 100dvh
+    block = _extract_rule_block(css, ".view {")
+    assert "100dvh" in block, (
+        ".view must use height: 100dvh for mobile — 100vh includes browser chrome, "
+        "causing the bottom row to be cut off on mobile devices"
+    )
+    # 100vh must still be present as fallback (appears before 100dvh in file)
+    assert "100vh" in block, (
+        ".view must keep height: 100vh as fallback for browsers without dvh support"
+    )
+    # Verify order: 100vh must come before 100dvh in the block (fallback first)
+    assert block.index("100vh") < block.index("100dvh"), (
+        "height: 100vh (fallback) must appear BEFORE height: 100dvh in .view rule — "
+        "browsers that don't support dvh will use the last valid value"
+    )
+
+
+def test_fit_view_tile_body_uses_flex_end() -> None:
+    """Fit mode tile-body must use flex + justify-content: flex-end for bottom anchoring.
+
+    Bug: .tile-body pre had position:absolute + scrollTop=scrollHeight hack.
+    The scrollTop hack resets every 2s when innerHTML is rebuilt by the poll cycle,
+    and has no effect when content doesn't overflow.
+    Fix: make tile-body a flex container with justify-content:flex-end so the pre
+    naturally anchors to the bottom without JS.
+    """
+    css = read_css()
+    assert ".session-grid--fit .tile-body" in css, (
+        "Missing .session-grid--fit .tile-body rule — needed for flex-end bottom anchoring"
+    )
+    block = _extract_rule_block(css, ".session-grid--fit .tile-body {")
+    assert "display: flex" in block or "display:flex" in block, (
+        ".session-grid--fit .tile-body must use display: flex"
+    )
+    assert "justify-content: flex-end" in block or "justify-content:flex-end" in block, (
+        ".session-grid--fit .tile-body must use justify-content: flex-end to anchor content to bottom"
+    )
+
+
+def test_fit_view_pre_is_static() -> None:
+    """Fit mode pre must use position:static (not absolute) for flex layout.
+
+    Bug: .tile-body pre uses position:absolute which takes it out of flex flow.
+    In fit mode, we need position:static so flex layout controls the pre's position.
+    The parent .tile-body is a flex column with justify-content:flex-end, so the
+    pre will naturally sit at the bottom.
     """
     css = read_css()
     assert ".session-grid--fit .tile-body pre" in css, (
-        "Missing .session-grid--fit .tile-body pre rule — needed to fix pre height in fit mode"
+        "Missing .session-grid--fit .tile-body pre rule"
     )
     block = _extract_rule_block(css, ".session-grid--fit .tile-body pre {")
-    assert "top: 0" in block or "top:0" in block, (
-        ".session-grid--fit .tile-body pre must have top: 0 to fill full tile body height"
+    assert "position: static" in block or "position:static" in block, (
+        ".session-grid--fit .tile-body pre must have position: static to participate in flex layout"
     )

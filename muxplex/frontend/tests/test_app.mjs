@@ -2234,10 +2234,17 @@ test('buildTileHTML shows up to 80 lines in fit mode', () => {
   );
 });
 
-test('CSS style.css has scrollbar-width none for fit mode pre to hide scrollbar', () => {
+test('CSS style.css uses flex layout (not scrollbar hack) for fit mode content anchoring', () => {
   const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  // New approach: flex + justify-content:flex-end anchors content to bottom without JS scrollTop hacks
   assert.ok(
-    source.includes('scrollbar-width: none'),
-    'style.css must have scrollbar-width: none for hidden scrollbar in fit mode pre'
+    source.includes('.session-grid--fit .tile-body'),
+    'style.css must have .session-grid--fit .tile-body rule for flex layout'
   );
+  assert.ok(
+    source.includes('justify-content: flex-end') || source.includes('justify-content:flex-end'),
+    'style.css must use justify-content: flex-end to anchor fit mode content at bottom'
+  );
+  // Old scrollbar-hiding hack is no longer needed with flex approach
+  // (scrollbar-width: none was only needed when overflow-y:scroll was used for scrollTop positioning)
 });

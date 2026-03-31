@@ -656,10 +656,7 @@ function renderGrid(sessions) {
     grid.classList.add('session-grid--fit');
     requestAnimationFrame(function() {
       applyFitLayout(grid);
-      // Scroll each tile's pre to the bottom so content anchors at the bottom (like a real terminal)
-      grid.querySelectorAll('.tile-body pre').forEach(function(pre) {
-        pre.scrollTop = pre.scrollHeight;
-      });
+      // No scrollTop hack needed — CSS flex + justify-content:flex-end anchors content to bottom
     });
   }
 

@@ -83,7 +83,8 @@ body {
    ============================================================ */
 
 .view {
-  height: 100vh;
+  height: 100vh;           /* fallback for browsers without dvh support */
+  height: 100dvh;          /* dynamic viewport height — adjusts for mobile browser chrome */
   overflow: hidden;
 }
 
@@ -593,7 +594,8 @@ body {
   top: 0 !important;
   left: 0 !important;
   width: 100vw !important;
-  height: 100vh !important;
+  height: 100vh !important;    /* fallback for browsers without dvh support */
+  height: 100dvh !important;   /* dynamic viewport height — adjusts for mobile browser chrome */
   border-radius: 0;
 }
 
@@ -1380,16 +1382,18 @@ body {
   overflow: hidden;
 }
 
-/* In fit mode, stretch pre to fill the full tile body height and anchor content to bottom */
-.session-grid--fit .tile-body pre {
-  top: 0;                   /* stretch to fill full tile body height in fit mode */
-  overflow-y: scroll;       /* enable scrollTop positioning (content anchored via JS scrollTop=scrollHeight) */
-  scrollbar-width: none;    /* Firefox: hide scrollbar */
-  -ms-overflow-style: none; /* IE/Edge: hide scrollbar */
+/* In fit mode, tile body uses flex to anchor content at the bottom (like a real terminal) */
+.session-grid--fit .tile-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;   /* content anchored to bottom */
 }
 
-.session-grid--fit .tile-body pre::-webkit-scrollbar {
-  display: none;            /* Chrome/Safari: hide scrollbar */
+/* In fit mode, pre participates in flex layout (not absolute-positioned) */
+.session-grid--fit .tile-body pre {
+  position: static;            /* remove absolute positioning — flex layout controls position */
+  max-height: 100%;            /* don't overflow the tile body */
+  overflow: hidden;            /* clip excess content at the top */
 }
 
 /* ============================================================
