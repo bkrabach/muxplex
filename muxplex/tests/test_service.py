@@ -265,3 +265,51 @@ def test_launchd_logs_tails_log_file(monkeypatch):
     assert ["tail", "-f", "/tmp/muxplex.log"] in calls, (
         f"Expected ['tail', '-f', '/tmp/muxplex.log'], got: {calls}"
     )
+
+
+def test_launchd_restart_calls_stop_then_start(monkeypatch):
+    """_launchd_restart calls bootout (stop) followed by bootstrap (start)."""
+    import os
+
+    import muxplex.service as svc
+
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    svc._launchd_restart()
+
+    # Must have both bootout and bootstrap calls
+    bootout_calls = [c for c in calls if "bootout" in c]
+    bootstrap_calls = [c for c in calls if "bootstrap" in c]
+    assert bootout_calls, "launchctl bootout (stop) not called during restart"
+    assert bootstrap_calls, "launchctl bootstrap (start) not called during restart"
+
+    # bootout must come before bootstrap
+    bootout_index = next(i for i, c in enumerate(calls) if "bootout" in c)
+    bootstrap_index = next(i for i, c in enumerate(calls) if "bootstrap" in c)
+    assert bootout_index < bootstrap_index, (
+        "bootout (stop) must be called before bootstrap (start) in restart"
+    )
+
+
+def test_launchd_status_runs_print_command(monkeypatch):
+    """_launchd_status runs launchctl print gui/{uid}/com.muxplex."""
+    import os
+
+    import muxplex.service as svc
+
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    svc._launchd_status()
+
+    print_calls = [c for c in calls if "print" in c]
+    assert print_calls, "launchctl print not called"
+    print_cmd = print_calls[0]
+    assert "gui/501/com.muxplex" in " ".join(print_cmd), (
+        f"print must reference gui/501/com.muxplex, got: {print_cmd}"
+    )

@@ -39,7 +39,7 @@ _LAUNCHD_PLIST_TEMPLATE = """\
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.muxplex</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{muxplex_bin}</string>
@@ -160,7 +160,7 @@ def _launchd_install() -> None:
     base_path = os.environ.get("PATH", "/usr/bin:/bin")
     safe_path = f"/opt/homebrew/bin:/usr/local/bin:{base_path}"
     plist_content = _LAUNCHD_PLIST_TEMPLATE.format(
-        muxplex_bin=muxplex_bin, safe_path=safe_path
+        label=_LAUNCHD_LABEL, muxplex_bin=muxplex_bin, safe_path=safe_path
     )
     _LAUNCHD_PLIST_DIR.mkdir(parents=True, exist_ok=True)
     _LAUNCHD_PLIST_PATH.write_text(plist_content)
