@@ -189,6 +189,27 @@ test('detectBellTransitions does not fire when unseen_count decreases', () => {
   assert.deepStrictEqual(app.detectBellTransitions(prev, next), []);
 });
 
+test('detectBellTransitions uses sessionKey to distinguish same-name sessions across devices', () => {
+  // Two sessions both named 'main' but from different devices, identified by sessionKey
+  const prev = [
+    { name: 'main', sessionKey: 'device-A::main', bell: { unseen_count: 3 } },
+    { name: 'main', sessionKey: 'device-B::main', bell: { unseen_count: 0 } },
+  ];
+  const next = [
+    { name: 'main', sessionKey: 'device-A::main', bell: { unseen_count: 3 } }, // no change
+    { name: 'main', sessionKey: 'device-B::main', bell: { unseen_count: 2 } }, // increased
+  ];
+  // Only the device-B 'main' session should trigger (its count increased from 0 to 2)
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), ['main']);
+});
+
+test('detectBellTransitions falls back to s.name when no sessionKey present', () => {
+  // Sessions without sessionKey should still work using name as fallback
+  const prev = [{ name: 'work', bell: { unseen_count: 0 } }];
+  const next = [{ name: 'work', bell: { unseen_count: 1 } }];
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), ['work']);
+});
+
 // --- generateDeviceId ---
 
 test('generateDeviceId returns a string matching /^d-[a-z0-9]+$/', () => {

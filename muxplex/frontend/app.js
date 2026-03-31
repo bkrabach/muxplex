@@ -66,17 +66,20 @@ function filterByQuery(sessions, query) {
  * @returns {string[]} names of sessions that newly have or increased bell count
  */
 function detectBellTransitions(prev, next) {
-  const prevMap = new Map(
-    (prev || []).map((s) => [s.name, (s.bell && s.bell.unseen_count) || 0]),
+  var prevMap = new Map(
+    (prev || []).map(function(s) {
+      return [s.sessionKey || s.name, (s.bell && s.bell.unseen_count) || 0];
+    }),
   );
   return (next || [])
-    .filter((s) => {
-      const unseen = s.bell && s.bell.unseen_count;
+    .filter(function(s) {
+      var unseen = s.bell && s.bell.unseen_count;
       if (!unseen || unseen <= 0) return false;
-      const prevCount = prevMap.has(s.name) ? prevMap.get(s.name) : 0;
+      var key = s.sessionKey || s.name;
+      var prevCount = prevMap.has(key) ? prevMap.get(key) : 0;
       return unseen > prevCount;
     })
-    .map((s) => s.name);
+    .map(function(s) { return s.name; });
 }
 
 /**
