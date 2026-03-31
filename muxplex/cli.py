@@ -723,7 +723,8 @@ def main() -> None:
         import sys
 
         print(
-            "Warning: 'install-service' is deprecated and will be removed in a future version.",
+            "Warning: 'install-service' is deprecated and will be removed in a future version."
+            " Use 'muxplex service install' instead.",
             file=sys.stderr,
         )
         install_service(system=args.system)

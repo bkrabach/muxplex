@@ -969,6 +969,19 @@ def test_main_serve_subcommand_accepts_flags():
         )
 
 
+def test_install_service_subcommand_prints_deprecation_warning(capsys):
+    """'muxplex install-service' must print a deprecation warning to stderr."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.install_service"):
+        with patch("sys.argv", ["muxplex", "install-service"]):
+            main()
+
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err.lower()
+    assert "muxplex service install" in captured.err
+
+
 def test_help_shows_single_upgrade_line():
     """Help output shows 'upgrade (update)' alias notation, not two separate subcommand entries."""
     import io
