@@ -157,13 +157,18 @@ function isMobile() {
 }
 
 // ─── Fetch wrapper ────────────────────────────────────────────────────────────
-async function api(method, path, body) {
+async function api(method, path, body, baseUrl) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(path, opts);
+  let url = path;
+  if (baseUrl) {
+    url = baseUrl.replace(/\/+$/, '') + path;
+    opts.credentials = 'include';
+  }
+  const res = await fetch(url, opts);
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${res.statusText}`);
   }
@@ -1711,6 +1716,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // Server settings
     loadServerSettings,
     patchServerSetting,
+    // Fetch wrapper
+    api,
     // Header + button with inline name input
     showNewSessionInput,
     showFabSessionInput,

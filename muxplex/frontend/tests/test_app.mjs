@@ -1928,6 +1928,58 @@ test('buildSidebarHTML includes sidebar-delete button with data-session attribut
   assert.ok(html.includes('data-session="my-session"'), 'sidebar-delete button must have data-session attribute');
 });
 
+// --- api ---
+
+test('api with no baseUrl uses relative path', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true };
+  };
+
+  await app.api('GET', '/api/sessions');
+
+  assert.strictEqual(calls.length, 1, 'should call fetch once');
+  assert.strictEqual(calls[0].url, '/api/sessions', 'url should be relative path');
+  assert.ok(!calls[0].opts.credentials, 'credentials should not be set without baseUrl');
+
+  globalThis.fetch = origFetch;
+});
+
+test('api with baseUrl prepends it to path and sets credentials include', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true };
+  };
+
+  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com');
+
+  assert.strictEqual(calls.length, 1, 'should call fetch once');
+  assert.strictEqual(calls[0].url, 'https://remote.example.com/api/sessions', 'url should prepend baseUrl');
+  assert.strictEqual(calls[0].opts.credentials, 'include', 'credentials should be include for cross-origin');
+
+  globalThis.fetch = origFetch;
+});
+
+test('api with baseUrl and trailing slash does not double-slash', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true };
+  };
+
+  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com/');
+
+  assert.strictEqual(calls.length, 1, 'should call fetch once');
+  assert.strictEqual(calls[0].url, 'https://remote.example.com/api/sessions', 'trailing slash on baseUrl should not create double-slash');
+
+  globalThis.fetch = origFetch;
+});
+
 test('createNewSession polls for session before auto-opening (not immediate setTimeout openSession)', () => {
   // The old behavior was: setTimeout(() => openSession(...), 500) immediately after POST.
   // The new behavior must use a polling interval to wait for the session to appear in
