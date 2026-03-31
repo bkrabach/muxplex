@@ -764,7 +764,14 @@ function handleBellTransitions(prevSessions, nextSessions) {
  */
 async function sendHeartbeat() {
   try {
-    const payload = buildHeartbeatPayload(_deviceId, _viewingSession, _viewMode, _lastInteractionAt);
+    // When the browser tab is hidden (user switched tabs or minimized), report
+    // viewing_session as null.  This prevents the server from clearing bells on
+    // the session — the user isn't actually looking at it, so activity should
+    // accumulate and show in the favicon badge / tab indicators.
+    var effectiveSession = (typeof document !== 'undefined' && document.hidden)
+      ? null
+      : _viewingSession;
+    const payload = buildHeartbeatPayload(_deviceId, effectiveSession, _viewMode, _lastInteractionAt);
     await api('POST', '/api/heartbeat', payload);
   } catch (err) {
     console.warn('[sendHeartbeat] heartbeat failed:', err);
