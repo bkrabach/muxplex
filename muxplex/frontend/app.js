@@ -59,27 +59,25 @@ function filterByQuery(sessions, query) {
 
 /**
  * Detect which sessions have transitioned to a new or increased bell/alert state.
- * Builds a Map of previous session names to their unseen_count, then returns
+ * Builds a Map of previous session keys (sessionKey || name) to their unseen_count, then returns
  * the names of next sessions whose bell.unseen_count > 0 AND > the previous count.
  * @param {object[]} prev - previous sessions array
  * @param {object[]} next - updated sessions array
  * @returns {string[]} names of sessions that newly have or increased bell count
  */
 function detectBellTransitions(prev, next) {
-  var prevMap = new Map(
-    (prev || []).map(function(s) {
-      return [s.sessionKey || s.name, (s.bell && s.bell.unseen_count) || 0];
-    }),
+  const prevMap = new Map(
+    (prev || []).map((s) => [s.sessionKey || s.name, (s.bell && s.bell.unseen_count) || 0]),
   );
   return (next || [])
-    .filter(function(s) {
-      var unseen = s.bell && s.bell.unseen_count;
+    .filter((s) => {
+      const unseen = s.bell && s.bell.unseen_count;
       if (!unseen || unseen <= 0) return false;
-      var key = s.sessionKey || s.name;
-      var prevCount = prevMap.has(key) ? prevMap.get(key) : 0;
+      const key = s.sessionKey || s.name;
+      const prevCount = prevMap.has(key) ? prevMap.get(key) : 0;
       return unseen > prevCount;
     })
-    .map(function(s) { return s.name; });
+    .map((s) => s.name);
 }
 
 /**
