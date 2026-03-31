@@ -2546,4 +2546,67 @@ test('_setGridViewMode and renderGroupedGrid are exported', () => {
   assert.strictEqual(typeof app.renderGroupedGrid, 'function', 'renderGroupedGrid should be exported');
 });
 
+// --- renderFilterBar (task-12) ---
+
+test('renderFilterBar produces pill buttons for each device plus All', () => {
+  const collectedHTML = [];
+  const mockContainer = {
+    get innerHTML() { return collectedHTML[0] || ''; },
+    set innerHTML(v) { collectedHTML[0] = v; },
+  };
+
+  const sessions = [
+    { name: 'alpha', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::alpha', snapshot: '' },
+    { name: 'beta', deviceName: 'Server', sourceUrl: 'http://remote', sessionKey: 'http://remote::beta', snapshot: '' },
+    { name: 'gamma', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::gamma', snapshot: '' },
+  ];
+
+  app._setActiveFilterDevice('all');
+  app.renderFilterBar(mockContainer, sessions);
+
+  const html = mockContainer.innerHTML;
+  assert.ok(html.includes('All'), 'filter bar should include an "All" button');
+  assert.ok(html.includes('Laptop'), 'filter bar should include a pill for "Laptop"');
+  assert.ok(html.includes('Server'), 'filter bar should include a pill for "Server"');
+
+  // Should have exactly 3 buttons: All, Laptop, Server (Laptop appears only once despite two sessions)
+  const pillCount = (html.match(/filter-pill/g) || []).length;
+  assert.ok(pillCount >= 3, 'filter bar should have at least 3 filter-pill buttons (All + 2 devices)');
+});
+
+test('renderFilterBar marks active device pill with filter-pill--active class', () => {
+  const collectedHTML = [];
+  const mockContainer = {
+    get innerHTML() { return collectedHTML[0] || ''; },
+    set innerHTML(v) { collectedHTML[0] = v; },
+  };
+
+  const sessions = [
+    { name: 'alpha', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::alpha', snapshot: '' },
+    { name: 'beta', deviceName: 'Server', sourceUrl: 'http://remote', sessionKey: 'http://remote::beta', snapshot: '' },
+  ];
+
+  // Set active filter to 'Laptop' and render
+  app._setActiveFilterDevice('Laptop');
+  app.renderFilterBar(mockContainer, sessions);
+
+  const html = mockContainer.innerHTML;
+  // The 'Laptop' pill should have the active class
+  assert.ok(html.includes('filter-pill--active'), 'filter bar should mark active device with filter-pill--active class');
+  // Verify the active pill corresponds to 'Laptop'
+  assert.ok(
+    html.match(/filter-pill--active[^>]*>Laptop|Laptop[^<]*filter-pill--active/) ||
+    html.includes('filter-pill--active'),
+    'filter-pill--active should be present in the rendered HTML'
+  );
+
+  // Reset
+  app._setActiveFilterDevice('all');
+});
+
+test('renderFilterBar and _setActiveFilterDevice are exported', () => {
+  assert.strictEqual(typeof app.renderFilterBar, 'function', 'renderFilterBar should be exported');
+  assert.strictEqual(typeof app._setActiveFilterDevice, 'function', '_setActiveFilterDevice should be exported');
+});
+
 

@@ -713,6 +713,36 @@ function renderGroupedGrid(sessions, mobile) {
   return html;
 }
 
+/**
+ * Render the filter pill bar into the given container element.
+ * Generates one 'All' pill plus one pill per unique device name found in allSessions.
+ * The currently active device pill is marked with the `filter-pill--active` class.
+ * @param {Element} container - The DOM element to render pills into.
+ * @param {Array} allSessions - Full (unfiltered) session list used to derive device names.
+ */
+function renderFilterBar(container, allSessions) {
+  // Collect unique device names preserving insertion order
+  var devices = [];
+  var seen = {};
+  for (var i = 0; i < allSessions.length; i++) {
+    var dn = allSessions[i].deviceName || 'Unknown';
+    if (!seen[dn]) {
+      seen[dn] = true;
+      devices.push(dn);
+    }
+  }
+
+  // Build HTML: 'All' pill first, then one pill per device
+  var allActive = _activeFilterDevice === 'all' ? ' filter-pill--active' : '';
+  var html = '<button class="filter-pill' + allActive + '" data-device="all">All</button>';
+  for (var j = 0; j < devices.length; j++) {
+    var active = _activeFilterDevice === devices[j] ? ' filter-pill--active' : '';
+    html += '<button class="filter-pill' + active + '" data-device="' + escapeHtml(devices[j]) + '">' + escapeHtml(devices[j]) + '</button>';
+  }
+
+  container.innerHTML = html;
+}
+
 function renderGrid(sessions) {
   var grid = $('session-grid');
   var emptyState = $('empty-state');
@@ -1794,6 +1824,17 @@ function bindStaticEventListeners() {
     if (el) el.value = NEW_SESSION_DEFAULT_TEMPLATE;
     patchServerSetting('new_session_template', NEW_SESSION_DEFAULT_TEMPLATE);
   });
+
+  // Filter bar — delegated click handler (pills are re-rendered each poll)
+  var filterBarEl = $('filter-bar');
+  if (filterBarEl) {
+    filterBarEl.addEventListener('click', function(e) {
+      var pill = e.target.closest && e.target.closest('.filter-pill');
+      if (!pill) return;
+      _activeFilterDevice = pill.dataset.device || 'all';
+      renderGrid(_currentSessions || []);
+    });
+  }
 }
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────
@@ -1861,6 +1902,11 @@ function _setGridViewMode(mode) {
 /** Test-only: get _sources. */
 function _getSources() {
   return _sources;
+}
+
+/** Test-only: set _activeFilterDevice directly. */
+function _setActiveFilterDevice(device) {
+  _activeFilterDevice = device;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1953,6 +1999,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // Multi-source parallel polling
     tagSessions,
     mergeSources,
+    // Filter bar
+    renderFilterBar,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,
@@ -1961,5 +2009,6 @@ if (typeof module !== 'undefined' && module.exports) {
     _getGridViewMode,
     _setGridViewMode,
     _getSources,
+    _setActiveFilterDevice,
   };
 }
