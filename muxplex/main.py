@@ -28,7 +28,7 @@ from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from muxplex.auth import (
@@ -731,6 +731,19 @@ async def logout() -> RedirectResponse:
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie("muxplex_session")
     return response
+
+
+@app.get("/api/auth/token")
+async def get_auth_token(request: Request):
+    """Return the current session token for federation relay.
+
+    Only accessible when already authenticated (via cookie or localhost bypass).
+    Used by the login popup to relay the token back to the opener window via postMessage.
+    """
+    cookie = request.cookies.get("muxplex_session")
+    if cookie and verify_session_cookie(_auth_secret, cookie, _auth_ttl):
+        return {"token": cookie}
+    return JSONResponse({"error": "not authenticated"}, status_code=401)
 
 
 @app.get("/auth/mode")

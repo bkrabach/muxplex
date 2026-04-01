@@ -460,3 +460,27 @@ def test_middleware_instance_info_path_excluded():
     client = TestClient(app, base_url="http://192.168.1.1")
     response = client.get("/api/instance-info")
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# X-Muxplex-Token header auth (cross-origin federation)
+# ---------------------------------------------------------------------------
+
+
+def test_middleware_valid_token_header_passes():
+    """Non-localhost request with a valid X-Muxplex-Token header passes through."""
+    app = _make_test_app()
+    token = create_session_cookie("test-secret", ttl_seconds=3600)
+    client = TestClient(app, base_url="http://192.168.1.1")
+    response = client.get("/protected", headers={"X-Muxplex-Token": token})
+    assert response.status_code == 200
+    assert response.text == "OK"
+
+
+def test_middleware_invalid_token_header_falls_through_to_redirect():
+    """Non-localhost request with an invalid X-Muxplex-Token header falls through to redirect."""
+    app = _make_test_app()
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get("/protected", headers={"X-Muxplex-Token": "bad.token.value"})
+    # Invalid token: should NOT pass auth, falls through to redirect or 401
+    assert response.status_code in (307, 401)

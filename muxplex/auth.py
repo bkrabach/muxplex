@@ -192,6 +192,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if cookie and verify_session_cookie(self.secret, cookie, self.ttl_seconds):
             return await call_next(request)
 
+        # 4b. X-Muxplex-Token header (for cross-origin federation)
+        token_header = request.headers.get("x-muxplex-token")
+        if token_header:
+            if verify_session_cookie(self.secret, token_header, self.ttl_seconds):
+                return await call_next(request)
+
         # 5. Authorization: Basic header
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("basic "):

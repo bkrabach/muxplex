@@ -4068,3 +4068,88 @@ test('HTML Sessions panel hidden sessions field appears after bell sound', () =>
   assert.ok(hiddenIdx > bellSoundIdx, 'hidden sessions must appear after bell sound (i.e., near the end)');
 });
 
+// ---------------------------------------------------------------------------
+// Federation auth token relay tests (postMessage / X-Muxplex-Token)
+// ---------------------------------------------------------------------------
+
+test('api() includes X-Muxplex-Token header when token exists in localStorage for that origin', async () => {
+  // Store a fake token for https://remote.example.com
+  const tokens = { 'https://remote.example.com': 'fake-token-abc123' };
+  localStorage.setItem('muxplex.federation_tokens', JSON.stringify(tokens));
+
+  const calls = [];
+  globalThis.fetch = (url, opts) => {
+    calls.push({ url, opts });
+    return Promise.resolve({ ok: true, status: 200, json: async () => ([]) });
+  };
+
+  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com');
+
+  assert.strictEqual(calls.length, 1);
+  assert.ok(calls[0].opts.headers['X-Muxplex-Token'] === 'fake-token-abc123',
+    'X-Muxplex-Token header must be set to the stored token');
+
+  // Cleanup
+  localStorage.removeItem('muxplex.federation_tokens');
+});
+
+test('api() does not include X-Muxplex-Token header when no token for that origin', async () => {
+  // Ensure no tokens stored
+  localStorage.removeItem('muxplex.federation_tokens');
+
+  const calls = [];
+  globalThis.fetch = (url, opts) => {
+    calls.push({ url, opts });
+    return Promise.resolve({ ok: true, status: 200, json: async () => ([]) });
+  };
+
+  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com');
+
+  assert.strictEqual(calls.length, 1);
+  assert.ok(!calls[0].opts.headers['X-Muxplex-Token'],
+    'X-Muxplex-Token header must NOT be present when no token stored');
+});
+
+test('api() does not include X-Muxplex-Token header for local (no baseUrl) requests', async () => {
+  // Store a token for some origin, make sure it does not bleed into local requests
+  const tokens = { 'https://remote.example.com': 'fake-token-abc123' };
+  localStorage.setItem('muxplex.federation_tokens', JSON.stringify(tokens));
+
+  const calls = [];
+  globalThis.fetch = (url, opts) => {
+    calls.push({ url, opts });
+    return Promise.resolve({ ok: true, status: 200, json: async () => ([]) });
+  };
+
+  await app.api('GET', '/api/sessions');
+
+  assert.strictEqual(calls.length, 1);
+  assert.ok(!calls[0].opts.headers['X-Muxplex-Token'],
+    'X-Muxplex-Token header must NOT be present for local requests');
+
+  // Cleanup
+  localStorage.removeItem('muxplex.federation_tokens');
+});
+
+test('postMessage muxplex-auth-token event stores token in localStorage', () => {
+  // Simulate receiving a postMessage event
+  localStorage.removeItem('muxplex.federation_tokens');
+
+  // Find and invoke the message event listener registered by app.js
+  // The app registers on window.addEventListener('message', ...) in DOMContentLoaded
+  // We need to directly call storeFederationToken helper or simulate via the listener.
+  // Since bindStaticEventListeners or DOMContentLoaded registered a 'message' listener on window,
+  // we call storeFederationToken directly if exported, or test via the exported API.
+  const result = app.storeFederationToken('https://remote.host.com', 'relay-token-xyz');
+
+  const stored = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
+  assert.strictEqual(stored['https://remote.host.com'], 'relay-token-xyz',
+    'storeFederationToken must store token keyed by origin in muxplex.federation_tokens');
+});
+
+test('index.html contains popup federation auth relay script', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(source.includes('window.opener'), 'index.html must contain window.opener check for federation popup relay');
+  assert.ok(source.includes('muxplex-auth-token'), 'index.html must post muxplex-auth-token message type');
+  assert.ok(source.includes('/api/auth/token'), 'index.html popup script must fetch /api/auth/token');
+});

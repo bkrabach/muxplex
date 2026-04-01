@@ -1363,3 +1363,27 @@ def test_delete_session_default_template_is_tmux_kill(client, monkeypatch, tmp_p
     assert "kill-session" in executed_cmd, (
         f"Default template must contain 'kill-session', got: {executed_cmd!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/auth/token  (cross-origin federation token relay)
+# ---------------------------------------------------------------------------
+
+
+def test_get_auth_token_returns_token_when_authenticated(client):
+    """GET /api/auth/token returns {token: <value>} when request has a valid session cookie."""
+    response = client.get("/api/auth/token")
+    assert response.status_code == 200
+    data = response.json()
+    assert "token" in data
+    assert isinstance(data["token"], str)
+    assert len(data["token"]) > 0
+
+
+def test_get_auth_token_returns_401_when_not_authenticated(monkeypatch):
+    """GET /api/auth/token returns 401 when request has no valid session cookie."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    with TestClient(app, base_url="http://192.168.1.1") as c:
+        # No cookie set — endpoint must return 401 with application/json accept
+        response = c.get("/api/auth/token", headers={"Accept": "application/json"})
+    assert response.status_code == 401

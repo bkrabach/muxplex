@@ -179,6 +179,20 @@ async function api(method, path, body, baseUrl) {
   if (baseUrl) {
     url = baseUrl.replace(/\/+$/, '') + path;
     opts.credentials = 'include';
+    // Tell the remote auth middleware this is a JSON API client, not a browser
+    // navigation. Without this header the middleware returns a 307 redirect to
+    // /login (HTML) instead of a 401 JSON response, causing res.json() to throw
+    // a SyntaxError that is misclassified as "unreachable" instead of
+    // "auth_required".
+    opts.headers['Accept'] = 'application/json';
+    // Check for stored federation token (X-Muxplex-Token for cross-origin auth)
+    try {
+      var _origin = new URL(url).origin;
+      var _tokens = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
+      if (_tokens[_origin]) {
+        opts.headers['X-Muxplex-Token'] = _tokens[_origin];
+      }
+    } catch (_) { /* ignore — URL parse or localStorage errors */ }
   }
   const res = await fetch(url, opts);
   if (!res.ok) {
@@ -190,6 +204,37 @@ async function api(method, path, body, baseUrl) {
 }
 
 // ─── Device ID ────────────────────────────────────────────────────────────────
+// ─── Federation token relay ──────────────────────────────────────────────────
+
+/**
+ * Store a federation auth token for a remote origin in localStorage.
+ * Keyed by origin URL in muxplex.federation_tokens.
+ * Called by the postMessage listener when a login popup relays a token back.
+ * @param {string} origin - The remote muxplex origin URL (e.g. 'https://host:8088')
+ * @param {string} token - The session token to store
+ */
+function storeFederationToken(origin, token) {
+  try {
+    var _ftokens = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
+    _ftokens[origin] = token;
+    localStorage.setItem('muxplex.federation_tokens', JSON.stringify(_ftokens));
+  } catch (_) { /* blocked — ok */ }
+}
+
+// Listen for federation auth tokens relayed from login popups via postMessage.
+// When the user logs in via a popup, the popup fetches /api/auth/token and sends
+// it here, letting subsequent cross-origin API calls use X-Muxplex-Token header.
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'muxplex-auth-token') {
+    storeFederationToken(event.data.origin, event.data.token);
+    // Immediately trigger a poll so the source transitions from auth_required
+    // to authenticated on the next cycle (uses the newly stored token).
+    if (_pollingTimer) {
+      pollSessions();
+    }
+  }
+});
+
 function initDeviceId() {
   const STORAGE_KEY = 'tmux-web-device-id';
   try {
@@ -1489,6 +1534,23 @@ function _saveRemoteInstances() {
   });
   patchServerSetting('remote_instances', instances).then(function() {
     _sources = buildSources(_serverSettings);
+    // Prune federation tokens for URLs no longer in the remote instances list
+    try {
+      var activeOrigins = instances.map(function(r) {
+        try { return new URL(r.url).origin; } catch (_) { return null; }
+      }).filter(Boolean);
+      var ftokens = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
+      var pruned = false;
+      Object.keys(ftokens).forEach(function(origin) {
+        if (!activeOrigins.includes(origin)) {
+          delete ftokens[origin];
+          pruned = true;
+        }
+      });
+      if (pruned) {
+        localStorage.setItem('muxplex.federation_tokens', JSON.stringify(ftokens));
+      }
+    } catch (_) { /* blocked — ok */ }
   });
 }
 
@@ -2626,6 +2688,8 @@ if (typeof module !== 'undefined' && module.exports) {
     buildOfflineTileHTML,
     openLoginPopup,
     formatLastSeen,
+    // Federation auth token relay
+    storeFederationToken,
     // Constants
     NEW_SESSION_DEFAULT_TEMPLATE,
     DELETE_SESSION_DEFAULT_TEMPLATE,
