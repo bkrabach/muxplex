@@ -501,24 +501,20 @@ function ansi256Color(n) {
 function buildTileHTML(session, index, mobile) {
   const priority = sessionPriority(session);
   const isBell = priority === 'bell';
-  const unseen = session.bell && session.bell.unseen_count;
 
   var ds = loadDisplaySettings();
   var actIndicator = ds.activityIndicator !== undefined ? ds.activityIndicator : 'both';
 
   let classes = 'session-tile';
+  // Glow (full border + inner glow): applied when actIndicator is 'glow' or 'both'
   if (isBell && (actIndicator === 'glow' || actIndicator === 'both')) classes += ' session-tile--bell';
+  // Edge bar only (left border amber, no glow): applied when actIndicator is 'dot' or 'both'
+  if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) classes += ' session-tile--edge-bell';
   if (mobile) classes += ` session-tile--tier-${priority}`;
 
   const name = session.name || '';
   const escapedName = escapeHtml(name);
   const timeStr = formatTimestamp(session.last_activity_at || null);
-
-  // Activity dot — absolute positioned in lower-right corner of tile (no count text)
-  let bellDotHtml = '';
-  if (unseen && unseen > 0 && (actIndicator === 'dot' || actIndicator === 'both')) {
-    bellDotHtml = '<span class="tile-bell-dot"></span>';
-  }
 
   // Device badge — right-aligned in header, separate from name span
   // Shown when multiple sources configured AND session has a device name
@@ -535,7 +531,6 @@ function buildTileHTML(session, index, mobile) {
   const sourceUrlAttr = session.sourceUrl ? ` data-source-url="${escapeHtml(session.sourceUrl)}"` : '';
   return (
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${sourceUrlAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
-    bellDotHtml +
     `<div class="tile-header">` +
     `<span class="tile-name">${escapeHtml(name)}</span>` +
     badgeHtml +
@@ -566,19 +561,19 @@ function buildSidebarHTML(session, currentSession) {
 
   let classes = 'sidebar-item';
   if (isActive) classes += ' sidebar-item--active';
+  // Glow (full border + inner glow): applied when actIndicator is 'glow' or 'both'
   if (isBell && (actIndicator === 'glow' || actIndicator === 'both')) classes += ' sidebar-item--bell';
+  // Edge bar only (left border amber, no glow): applied when actIndicator is 'dot' or 'both'
+  if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) classes += ' sidebar-item--edge-bell';
 
-  // Activity dot — inline in sidebar header (not absolute, since items are smaller)
-  let bellDotHtml = '';
-  if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) {
-    bellDotHtml = '<span class="tile-bell-dot sidebar-bell-dot"></span>';
-  }
-
-  // Device badge — between name and bell/delete, pushed right via flex
+  // Device badge — shown in meta line when multiple sources configured
   let badgeHtml = '';
   if (_sources.length > 1 && session.deviceName && ds.showDeviceBadges !== false) {
     badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
   }
+
+  // Timestamp for meta line
+  const timeStr = formatTimestamp(session.last_activity_at || null);
 
   // Last 20 lines of snapshot
   const snapshot = session.snapshot || '';
@@ -588,9 +583,12 @@ function buildSidebarHTML(session, currentSession) {
     `<article class="${classes}" data-session="${escapedName}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
-    badgeHtml +
-    bellDotHtml +
     `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
+    `</div>` +
+    `<div class="sidebar-item-meta">` +
+    badgeHtml +
+    `<span class="sidebar-meta-sep">\xb7</span>` +
+    `<span class="sidebar-item-time">${escapeHtml(timeStr)}</span>` +
     `</div>` +
     `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `</article>`

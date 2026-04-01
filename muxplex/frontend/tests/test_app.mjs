@@ -451,26 +451,26 @@ test('buildTileHTML sets data-session attribute with escaped session name', () =
   assert.ok(html.includes('data-session="my&lt;session&gt;"'), 'data-session should be escaped');
 });
 
-test('buildTileHTML shows tile-bell-dot (not count) when unseen_count exceeds 9', () => {
+test('buildTileHTML shows edge-bell class (not count text) when unseen_count exceeds 9', () => {
   const session = {
     name: 's',
     bell: { unseen_count: 10, seen_at: null, last_fired_at: 100 },
     snapshot: '',
   };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('tile-bell-dot'), 'should show tile-bell-dot for count > 9');
-  assert.ok(!html.includes('9+'), 'should NOT show 9+ count text (dot only)');
+  assert.ok(html.includes('session-tile--edge-bell'), 'should have edge-bell class for count > 9');
+  assert.ok(!html.includes('9+'), 'should NOT show 9+ count text (edge bar only)');
 });
 
-test('buildTileHTML shows tile-bell-dot (not count) when unseen_count is <= 9', () => {
+test('buildTileHTML shows edge-bell class (not count text) when unseen_count is <= 9', () => {
   const session = {
     name: 's',
     bell: { unseen_count: 5, seen_at: null, last_fired_at: 100 },
     snapshot: '',
   };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('tile-bell-dot'), 'should show tile-bell-dot for count > 0');
-  assert.ok(!html.includes('>5<'), 'should NOT show exact count 5 (dot only)');
+  assert.ok(html.includes('session-tile--edge-bell'), 'should have edge-bell class for count > 0');
+  assert.ok(!html.includes('>5<'), 'should NOT show exact count 5 (edge bar only)');
 });
 
 test('buildTileHTML includes only last 20 lines of snapshot', () => {
@@ -1546,17 +1546,19 @@ test('buildSidebarHTML does not add sidebar-item--active class for inactive sess
   assert.ok(!html.includes('sidebar-item--active'), 'inactive session should not have sidebar-item--active class');
 });
 
-test('buildSidebarHTML renders bell dot indicator when unseen_count > 0', () => {
+test('buildSidebarHTML shows bell indicator class when unseen_count > 0', () => {
   const session = { name: 's', snapshot: '', bell: { unseen_count: 3 } };
   const html = app.buildSidebarHTML(session, '');
-  assert.ok(html.includes('tile-bell-dot'), 'should contain tile-bell-dot class when unseen_count > 0');
-  assert.ok(!html.includes('>3<'), 'should NOT contain unseen count text (dot only)');
+  // activityIndicator defaults to 'both' so sidebar-item--bell and sidebar-item--edge-bell should appear
+  assert.ok(html.includes('sidebar-item--bell'), 'should have sidebar-item--bell class when unseen_count > 0');
+  assert.ok(!html.includes('>3<'), 'should NOT contain unseen count text (edge bar only)');
 });
 
-test('buildSidebarHTML omits bell dot when unseen_count is 0', () => {
+test('buildSidebarHTML omits bell indicator classes when unseen_count is 0', () => {
   const session = { name: 's', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, '');
-  assert.ok(!html.includes('tile-bell-dot'), 'should not contain tile-bell-dot when unseen_count is 0');
+  assert.ok(!html.includes('sidebar-item--bell'), 'should not have sidebar-item--bell when unseen_count is 0');
+  assert.ok(!html.includes('sidebar-item--edge-bell'), 'should not have sidebar-item--edge-bell when unseen_count is 0');
 });
 
 test('buildSidebarHTML HTML-escapes session name to prevent XSS', () => {
@@ -3831,23 +3833,26 @@ test('bindStaticEventListeners does NOT bind change event to setting-view-scope'
 
 // ─── Activity dot / sidebar glow / config toggles (UI/UX improvements) ───────
 
-test('buildTileHTML bell dot is positioned before tile-header (absolute overlay)', () => {
+test('buildTileHTML edge-bar: session-tile--edge-bell class on article element (not a separate DOM element)', () => {
   const session = {
     name: 's',
     bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 },
     snapshot: '',
   };
   const html = app.buildTileHTML(session, 0, false);
-  const dotIdx = html.indexOf('tile-bell-dot');
-  const headerIdx = html.indexOf('tile-header');
-  assert.ok(dotIdx !== -1, 'tile-bell-dot must be present');
-  assert.ok(dotIdx < headerIdx, 'tile-bell-dot must appear before tile-header in HTML');
+  // Edge bar is CSS-only (border-left-color on the article element), no separate DOM element
+  assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must be on the article element');
+  assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT be present — replaced by edge bar CSS');
+  // The class must appear on the opening article tag, not buried in content
+  const articleTag = html.substring(0, html.indexOf('>'));
+  assert.ok(articleTag.includes('session-tile--edge-bell'), 'edge-bell class must be on the article element');
 });
 
-test('buildTileHTML omits tile-bell-dot when unseen_count is 0', () => {
+test('buildTileHTML omits bell indicator classes when unseen_count is 0', () => {
   const session = { name: 's', bell: { unseen_count: 0 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('tile-bell-dot'), 'no tile-bell-dot when unseen_count is 0');
+  assert.ok(!html.includes('session-tile--edge-bell'), 'no session-tile--edge-bell when unseen_count is 0');
 });
 
 test('buildSidebarHTML adds sidebar-item--bell class for bell sessions', () => {
@@ -3969,35 +3974,39 @@ test('HTML index.html has setting-activity-indicator select element', () => {
   assert.ok(source.includes('value="none"'), 'must have None option');
 });
 
-test('buildTileHTML shows tile-bell-dot when activityIndicator is dot', () => {
+test('buildTileHTML shows session-tile--edge-bell class when activityIndicator is dot (legacy test updated)', () => {
   _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'dot' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('tile-bell-dot'), 'tile-bell-dot must appear when activityIndicator is dot');
+  assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is dot');
+  assert.ok(!html.includes('session-tile--bell'), 'session-tile--bell (glow) must NOT appear when activityIndicator is dot only');
   _localStorageStore = {};
 });
 
-test('buildTileHTML shows tile-bell-dot when activityIndicator is both', () => {
+test('buildTileHTML shows both session-tile--bell and session-tile--edge-bell when activityIndicator is both (legacy test updated)', () => {
   _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('tile-bell-dot'), 'tile-bell-dot must appear when activityIndicator is both');
+  assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is both');
+  assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is both');
   _localStorageStore = {};
 });
 
-test('buildTileHTML omits tile-bell-dot when activityIndicator is none', () => {
+test('buildTileHTML omits all bell indicator classes when activityIndicator is none', () => {
   _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'none' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear when activityIndicator is none');
+  assert.ok(!html.includes('session-tile--bell'), 'session-tile--bell must NOT appear when activityIndicator is none');
+  assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is none');
   _localStorageStore = {};
 });
 
-test('buildTileHTML omits tile-bell-dot when activityIndicator is glow', () => {
+test('buildTileHTML omits session-tile--edge-bell when activityIndicator is glow (glow only, no edge bar)', () => {
   _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear when activityIndicator is glow');
+  assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is glow');
+  assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is glow');
   _localStorageStore = {};
 });
 
@@ -4031,15 +4040,15 @@ test('CSS style.css has #setting-device-name max-width rule', () => {
   assert.ok(source.includes('max-width'), 'style.css #setting-device-name rule must include max-width');
 });
 
-test('CSS style.css .tile-bell-dot uses bottom positioning not top', () => {
+test('CSS style.css .session-tile--edge-bell sets border-left-color to var(--bell)', () => {
   const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  // Find the .tile-bell-dot rule block
-  const ruleStart = source.indexOf('.tile-bell-dot {');
-  assert.ok(ruleStart !== -1, '.tile-bell-dot rule must exist');
+  // Find the .session-tile--edge-bell rule block
+  const ruleStart = source.indexOf('.session-tile--edge-bell {');
+  assert.ok(ruleStart !== -1, '.session-tile--edge-bell rule must exist');
   const ruleEnd = source.indexOf('}', ruleStart);
   const ruleBody = source.substring(ruleStart, ruleEnd + 1);
-  assert.ok(ruleBody.includes('bottom:') || ruleBody.includes('bottom :'), '.tile-bell-dot must use bottom positioning');
-  assert.ok(!ruleBody.includes('top: 6px'), '.tile-bell-dot must NOT use top: 6px');
+  assert.ok(ruleBody.includes('border-left-color') || ruleBody.includes('border-left'), '.session-tile--edge-bell must set border-left-color');
+  assert.ok(ruleBody.includes('var(--bell)'), '.session-tile--edge-bell must use var(--bell) color');
 });
 
 test('HTML Display panel device name field appears before font size field', () => {
@@ -4152,4 +4161,129 @@ test('index.html contains popup federation auth relay script', () => {
   assert.ok(source.includes('window.opener'), 'index.html must contain window.opener check for federation popup relay');
   assert.ok(source.includes('muxplex-auth-token'), 'index.html must post muxplex-auth-token message type');
   assert.ok(source.includes('/api/auth/token'), 'index.html popup script must fetch /api/auth/token');
+});
+
+// ─── Edge-bar design: failing tests added before implementation ───
+
+test('buildTileHTML does NOT include tile-bell-dot in HTML (edge bar replaces dot)', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear in HTML — edge bar replaces it');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML adds session-tile--edge-bell class when activityIndicator is dot', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'dot' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is dot');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML adds session-tile--edge-bell class when activityIndicator is both', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is both');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML does NOT add session-tile--edge-bell when activityIndicator is glow', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is glow');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML does NOT add session-tile--edge-bell when activityIndicator is none', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'none' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is none');
+  _localStorageStore = {};
+});
+
+test('buildSidebarHTML has sidebar-item-meta line (two-line header)', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 }, last_activity_at: null };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('sidebar-item-meta'), 'sidebar-item-meta element must exist in sidebar HTML');
+});
+
+test('buildSidebarHTML sidebar-item-meta contains sidebar-meta-sep dot separator', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 }, last_activity_at: null };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('sidebar-meta-sep'), 'sidebar-meta-sep must be present in sidebar HTML');
+});
+
+test('buildSidebarHTML sidebar-item-meta contains sidebar-item-time', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 }, last_activity_at: null };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('sidebar-item-time'), 'sidebar-item-time must be present in sidebar HTML');
+});
+
+test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is dot', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'dot' });
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must appear when activityIndicator is dot');
+  _localStorageStore = {};
+});
+
+test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is both', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must appear when activityIndicator is both');
+  _localStorageStore = {};
+});
+
+test('buildSidebarHTML does NOT add sidebar-item--edge-bell when activityIndicator is glow', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(!html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must NOT appear when activityIndicator is glow');
+  _localStorageStore = {};
+});
+
+test('buildSidebarHTML does NOT include tile-bell-dot in HTML', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear in sidebar HTML — edge bar replaces it');
+  _localStorageStore = {};
+});
+
+test('CSS style.css has .session-tile--edge-bell rule', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.session-tile--edge-bell'), 'style.css must have .session-tile--edge-bell rule');
+});
+
+test('CSS style.css has .sidebar-item--edge-bell rule', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.sidebar-item--edge-bell'), 'style.css must have .sidebar-item--edge-bell rule');
+});
+
+test('CSS style.css .session-tile has border-left for edge bar', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const tileStart = source.indexOf('.session-tile {');
+  assert.ok(tileStart !== -1, '.session-tile rule must exist');
+  const tileEnd = source.indexOf('}', tileStart);
+  const tileBody = source.substring(tileStart, tileEnd + 1);
+  assert.ok(tileBody.includes('border-left'), '.session-tile must have border-left for edge bar');
+});
+
+test('CSS style.css has .sidebar-item-meta rule', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.sidebar-item-meta'), 'style.css must have .sidebar-item-meta rule');
+});
+
+test('CSS style.css .tile-time has opacity transition for crossfade', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.tile-time'), 'style.css must have .tile-time rule');
+  assert.ok(
+    source.includes("session-tile:hover .tile-time"),
+    'style.css must have session-tile:hover .tile-time for crossfade'
+  );
 });
