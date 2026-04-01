@@ -1032,7 +1032,8 @@ async def federation_connect(
             status_code=502,
             detail=f"Remote returned {exc.response.status_code}",
         )
-    except Exception:
+    except Exception as exc:
+        _log.warning("federation_connect: remote %s unreachable: %s", remote_url, exc)
         raise HTTPException(
             status_code=503,
             detail=f"Remote unreachable: {remote_url}",

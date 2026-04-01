@@ -1866,49 +1866,6 @@ def test_federation_connect_returns_503_when_remote_unreachable(
     assert response.status_code == 503
 
 
-# ---------------------------------------------------------------------------
-# POST /api/federation/generate-key (task-13)
-# ---------------------------------------------------------------------------
-
-
-def test_federation_generate_key_creates_file(client, tmp_path, monkeypatch):
-    """POST /api/federation/generate-key creates a key file and returns the key in the response.
-
-    - Endpoint returns 200 with {"key": <str>, "path": <str>}
-    - Returned key length > 20
-    - The key file is created at the redirected FEDERATION_KEY_PATH
-    - The file contents match the returned key (with trailing newline stripped)
-    """
-    import muxplex.settings as settings_mod
-
-    key_path = tmp_path / "federation_key"
-    monkeypatch.setattr(settings_mod, "FEDERATION_KEY_PATH", key_path)
-
-    response = client.post("/api/federation/generate-key")
-    assert response.status_code == 200, (
-        f"Expected 200, got {response.status_code}: {response.text}"
-    )
-
-    data = response.json()
-    assert "key" in data, f"Response must include 'key' field, got: {data}"
-    assert "path" in data, f"Response must include 'path' field, got: {data}"
-
-    returned_key = data["key"]
-    assert len(returned_key) > 20, (
-        f"Key must be longer than 20 chars, got length {len(returned_key)}"
-    )
-
-    # Verify file was created
-    assert key_path.exists(), f"Key file must be created at {key_path}"
-
-    # Verify file contents match returned key
-    file_contents = key_path.read_text().strip()
-    assert file_contents == returned_key, (
-        f"File contents must match returned key. "
-        f"File: {file_contents!r}, key: {returned_key!r}"
-    )
-
-
 def test_federation_connect_returns_502_when_remote_returns_error_status(
     client, monkeypatch, tmp_path
 ):
@@ -1956,3 +1913,46 @@ def test_federation_connect_returns_502_when_remote_returns_error_status(
 
     response = client.post("/api/federation/0/connect/my-session")
     assert response.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# POST /api/federation/generate-key (task-13)
+# ---------------------------------------------------------------------------
+
+
+def test_federation_generate_key_creates_file(client, tmp_path, monkeypatch):
+    """POST /api/federation/generate-key creates a key file and returns the key in the response.
+
+    - Endpoint returns 200 with {"key": <str>, "path": <str>}
+    - Returned key length > 20
+    - The key file is created at the redirected FEDERATION_KEY_PATH
+    - The file contents match the returned key (with trailing newline stripped)
+    """
+    import muxplex.settings as settings_mod
+
+    key_path = tmp_path / "federation_key"
+    monkeypatch.setattr(settings_mod, "FEDERATION_KEY_PATH", key_path)
+
+    response = client.post("/api/federation/generate-key")
+    assert response.status_code == 200, (
+        f"Expected 200, got {response.status_code}: {response.text}"
+    )
+
+    data = response.json()
+    assert "key" in data, f"Response must include 'key' field, got: {data}"
+    assert "path" in data, f"Response must include 'path' field, got: {data}"
+
+    returned_key = data["key"]
+    assert len(returned_key) > 20, (
+        f"Key must be longer than 20 chars, got length {len(returned_key)}"
+    )
+
+    # Verify file was created
+    assert key_path.exists(), f"Key file must be created at {key_path}"
+
+    # Verify file contents match returned key
+    file_contents = key_path.read_text().strip()
+    assert file_contents == returned_key, (
+        f"File contents must match returned key. "
+        f"File: {file_contents!r}, key: {returned_key!r}"
+    )
