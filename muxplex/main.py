@@ -182,6 +182,8 @@ async def lifespan(app: FastAPI):
 
     try:
         await app.state.federation_client.aclose()
+    except Exception:
+        _log.exception("federation_client aclose error")
     finally:
         # Shutdown: cancel the poll loop task and wait for it to finish.
         if _poll_task is not None:
