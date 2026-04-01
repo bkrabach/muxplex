@@ -558,6 +558,7 @@ async def instance_info() -> dict:
     discover peer names and verify reachability.
     """
     settings = load_settings()
+    # Read fresh so the UI reflects key-file changes without requiring a restart.
     fed_key = load_federation_key()
     return {
         "name": settings["device_name"],
@@ -819,7 +820,13 @@ async def federation_sessions(request: Request) -> list[dict]:
                 headers={"Authorization": f"Bearer {key}"},
             )
             if resp.status_code in (401, 403):
-                return [{"status": "auth_failed", "remoteId": remote_id, "deviceName": remote_name}]
+                return [
+                    {
+                        "status": "auth_failed",
+                        "remoteId": remote_id,
+                        "deviceName": remote_name,
+                    }
+                ]
             resp.raise_for_status()
             sessions = resp.json()
             # Tag each session with deviceName and remoteId
@@ -828,9 +835,21 @@ async def federation_sessions(request: Request) -> list[dict]:
                 for s in sessions
             ]
         except httpx.HTTPStatusError:
-            return [{"status": "auth_failed", "remoteId": remote_id, "deviceName": remote_name}]
+            return [
+                {
+                    "status": "auth_failed",
+                    "remoteId": remote_id,
+                    "deviceName": remote_name,
+                }
+            ]
         except Exception:
-            return [{"status": "unreachable", "remoteId": remote_id, "deviceName": remote_name}]
+            return [
+                {
+                    "status": "unreachable",
+                    "remoteId": remote_id,
+                    "deviceName": remote_name,
+                }
+            ]
 
     remote_results: list[list[dict]] = await asyncio.gather(
         *(fetch_remote(remote) for remote in remote_instances)
