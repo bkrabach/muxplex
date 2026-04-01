@@ -470,3 +470,21 @@ def test_load_federation_key_uses_env_var_override(tmp_path, monkeypatch):
     result = load_federation_key()
 
     assert result == "env-override-key"
+
+
+# ============================================================
+# remote_instances key field (task-6)
+# ============================================================
+
+
+def test_remote_instances_with_key_round_trip(tmp_path, monkeypatch):
+    """remote_instances with key fields survive a save/load cycle unchanged."""
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+    instances = [
+        {"url": "http://host1:8088", "name": "Host 1", "key": "secret-key-1"},
+        {"url": "http://host2:8088", "name": "Host 2", "key": "secret-key-2"},
+    ]
+    save_settings({"remote_instances": instances})
+    result = load_settings()
+    assert result["remote_instances"] == instances
