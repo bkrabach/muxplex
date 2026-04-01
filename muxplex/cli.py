@@ -178,7 +178,7 @@ def serve(
     from muxplex.main import app  # noqa: PLC0415
 
     print(f"  muxplex → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 def doctor() -> None:
