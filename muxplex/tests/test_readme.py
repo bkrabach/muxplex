@@ -24,7 +24,9 @@ def test_readme_service_management_has_all_7_subcommands():
         "muxplex service logs",
     ]
     for cmd in subcommands:
-        assert cmd in README, f"README must mention '{cmd}' in Service management section"
+        assert cmd in README, (
+            f"README must mention '{cmd}' in Service management section"
+        )
 
 
 def test_readme_explains_settings_json_no_flags():
@@ -58,6 +60,6 @@ def test_readme_no_plain_install_service_in_install_sections():
             if not stripped.startswith("#"):
                 # This is an active command — it should NOT be 'muxplex install-service'
                 assert "muxplex install-service" not in stripped, (
-                    f"Line {i+1} has active 'muxplex install-service' command in code block: {line!r}. "
+                    f"Line {i + 1} has active 'muxplex install-service' command in code block: {line!r}. "
                     "Update to use 'muxplex service install' instead."
                 )
