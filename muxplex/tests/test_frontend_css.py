@@ -20,19 +20,19 @@ def test_css_design_tokens():
     assert "--t-zoom:" in css
 
 
-def test_css_session_grid(css=None):
+def test_css_session_grid():
     css = read_css()
     assert "auto-fill" in css
     assert "minmax" in css
 
 
-def test_css_tile_height(css=None):
+def test_css_tile_height():
     css = read_css()
     assert ".session-tile" in css
     assert "var(--tile-height)" in css
 
 
-def test_css_bell_indicator(css=None):
+def test_css_bell_indicator():
     css = read_css()
     assert "bell-pulse" in css
     assert ".session-tile--bell" in css
