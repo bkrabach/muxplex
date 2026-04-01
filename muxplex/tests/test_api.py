@@ -1387,3 +1387,51 @@ def test_get_auth_token_returns_401_when_not_authenticated(monkeypatch):
         # No cookie set — endpoint must return 401 with application/json accept
         response = c.get("/api/auth/token", headers={"Accept": "application/json"})
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Federation Bearer token auth
+# ---------------------------------------------------------------------------
+
+
+def test_federation_bearer_auth_accepted(monkeypatch):
+    """Request with valid Bearer token gets 200 on /api/sessions when federation key is set.
+
+    Patches the federation key on the AuthMiddleware instance (since the key is
+    loaded once at module startup) and verifies that a Bearer-authenticated
+    request reaches /api/sessions with HTTP 200.
+
+    Before implementation: fails with ImportError — _federation_key not in main.py.
+    After implementation: _federation_key exists, middleware is found and patched,
+    Bearer request is accepted.
+    """
+    from muxplex.main import _federation_key  # ImportError before implementation
+    from muxplex.auth import AuthMiddleware
+    import muxplex.main as main_module
+
+    federation_key = "test-federation-key-abc123"
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+
+    with TestClient(main_module.app) as c:
+        # Traverse the compiled middleware stack to find the AuthMiddleware instance
+        stack = main_module.app.middleware_stack
+        auth_mw = None
+        for _ in range(20):
+            if isinstance(stack, AuthMiddleware):
+                auth_mw = stack
+                break
+            stack = getattr(stack, "app", None)
+            if stack is None:
+                break
+
+        assert auth_mw is not None, "AuthMiddleware not found in middleware stack"
+        # Patch the federation key so Bearer token auth is enabled
+        auth_mw.federation_key = federation_key
+
+        # A request with a matching Bearer token must pass auth and get 200
+        response = c.get(
+            "/api/sessions",
+            headers={"Authorization": f"Bearer {federation_key}"},
+        )
+
+    assert response.status_code == 200

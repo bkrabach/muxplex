@@ -60,7 +60,7 @@ from muxplex.state import (
     save_state,
     state_lock,
 )
-from muxplex.settings import load_settings, patch_settings
+from muxplex.settings import load_federation_key, load_settings, patch_settings
 from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
 # ---------------------------------------------------------------------------
@@ -244,6 +244,7 @@ def _resolve_auth() -> tuple[str, str]:
 _auth_mode, _auth_password = _resolve_auth()
 _auth_secret = load_or_create_secret()
 _auth_ttl = int(os.environ.get("MUXPLEX_SESSION_TTL", "604800"))
+_federation_key = load_federation_key()
 
 app.add_middleware(
     AuthMiddleware,
@@ -251,6 +252,7 @@ app.add_middleware(
     secret=_auth_secret,
     ttl_seconds=_auth_ttl,
     password=_auth_password,
+    federation_key=_federation_key,
 )
 
 # CORS: allow_origins=["*"] with allow_credentials=True is intentional for
