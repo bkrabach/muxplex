@@ -297,8 +297,9 @@ function setConnectionStatus(level) {
 
 // ─── Session polling ─────────────────────────────────────────────────────────────────────────────
 /**
- * Fetch sessions from all configured _sources in parallel and update the UI.
- * Falls back to local-only polling when _sources is empty.
+ * Fetch sessions from the appropriate endpoint and update the UI.
+ * Uses /api/federation/sessions when multi_device_enabled is true,
+ * /api/sessions otherwise.
  * Called by startPolling.
  * @returns {Promise<void>}
  */

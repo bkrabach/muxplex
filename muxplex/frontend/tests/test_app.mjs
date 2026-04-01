@@ -2505,56 +2505,6 @@ test('mergeSources returns empty array for empty input', () => {
   assert.deepStrictEqual(result, [], 'mergeSources should return empty array for empty input');
 });
 
-// --- pollSessions multi-source (task-5) ---
-
-test('pollSessions skips sources with nextRetryAt in the future', async () => {
-  const mockStatusEl = { textContent: '', className: '' };
-  const mockGrid = { innerHTML: '' };
-  const mockEmptyState = { style: {}, classList: { add: () => {}, remove: () => {} } };
-
-  const origGetById = globalThis.document.getElementById;
-  const origQSA = globalThis.document.querySelectorAll;
-  globalThis.document.getElementById = (id) => {
-    if (id === 'connection-status') return mockStatusEl;
-    if (id === 'session-grid') return mockGrid;
-    if (id === 'empty-state') return mockEmptyState;
-    return null;
-  };
-  globalThis.document.querySelectorAll = () => [];
-
-  const futureRetry = Date.now() + 60000; // 60s in the future
-  app._setSources([
-    { url: '', name: 'Local', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    {
-      url: 'https://remote.example.com',
-      name: 'Remote',
-      type: 'remote',
-      status: 'unreachable',
-      backoffMs: 4000,
-      nextRetryAt: futureRetry,
-    },
-  ]);
-
-  const fetchCalls = [];
-  globalThis.fetch = async (url) => {
-    fetchCalls.push(url);
-    return { ok: true, json: async () => [{ name: 'local-session' }] };
-  };
-
-  await app.pollSessions();
-
-  assert.ok(fetchCalls.some((url) => url === '/api/sessions'), 'should fetch local sessions');
-  assert.ok(
-    !fetchCalls.some((url) => url === 'https://remote.example.com/api/sessions'),
-    'should skip remote source still in backoff',
-  );
-
-  globalThis.document.getElementById = origGetById;
-  globalThis.document.querySelectorAll = origQSA;
-  globalThis.fetch = undefined;
-  app._setSources([]);
-});
-
 
 
 // --- getVisibleSessions (task-7) ---
