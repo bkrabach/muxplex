@@ -6,10 +6,12 @@ Settings are stored at ~/.config/muxplex/settings.json.
 
 import copy
 import json
+import os
 import socket
 from pathlib import Path
 
 SETTINGS_PATH = Path.home() / ".config" / "muxplex" / "settings.json"
+FEDERATION_KEY_PATH = Path.home() / ".config" / "muxplex" / "federation_key"
 
 DEFAULT_SETTINGS: dict = {
     "host": "127.0.0.1",
@@ -75,3 +77,12 @@ def patch_settings(patch: dict) -> dict:
             current[key] = patch[key]
     save_settings(current)
     return current
+
+
+def load_federation_key() -> str:
+    env_path = os.environ.get("MUXPLEX_FEDERATION_KEY_FILE")
+    path = Path(env_path) if env_path else FEDERATION_KEY_PATH
+    try:
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return ""

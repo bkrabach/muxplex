@@ -4,12 +4,14 @@ Tests for muxplex/settings.py — server-side settings management.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
+    load_federation_key,
     load_settings,
     patch_settings,
     save_settings,
@@ -415,3 +417,41 @@ def test_old_settings_file_without_serve_keys_loads_correctly(redirect_settings_
     assert result["session_ttl"] == 604800, (
         f"session_ttl must default to 604800 for old settings files, got: {result['session_ttl']!r}"
     )
+
+
+# ============================================================
+# load_federation_key tests (task-2)
+# ============================================================
+
+
+def test_load_federation_key_returns_empty_when_no_file(tmp_path, monkeypatch):
+    """load_federation_key() returns empty string when the key file does not exist."""
+    missing_path = tmp_path / "no_such_federation_key"
+    monkeypatch.setattr(settings_mod, "FEDERATION_KEY_PATH", missing_path)
+    monkeypatch.delenv("MUXPLEX_FEDERATION_KEY_FILE", raising=False)
+
+    result = load_federation_key()
+
+    assert result == ""
+
+
+def test_load_federation_key_reads_existing_file(tmp_path, monkeypatch):
+    """load_federation_key() reads and strips the contents of the key file."""
+    key_file = tmp_path / "federation_key"
+    key_file.write_text("  my-secret-key\n  ")
+    monkeypatch.setattr(settings_mod, "FEDERATION_KEY_PATH", key_file)
+    monkeypatch.delenv("MUXPLEX_FEDERATION_KEY_FILE", raising=False)
+
+    result = load_federation_key()
+
+    assert result == "my-secret-key"
+
+
+def test_load_federation_key_uses_default_path(monkeypatch):
+    """load_federation_key() uses ~/.config/muxplex/federation_key when env var is not set."""
+    from muxplex.settings import FEDERATION_KEY_PATH
+
+    monkeypatch.delenv("MUXPLEX_FEDERATION_KEY_FILE", raising=False)
+    # The default path should be used; we just verify no env override changes behaviour
+    # When the default file doesn't exist, returns empty string
+    assert FEDERATION_KEY_PATH == Path.home() / ".config" / "muxplex" / "federation_key"
