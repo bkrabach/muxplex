@@ -680,6 +680,95 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Federation WebSocket proxy — bridges browser to a remote instance's ttyd
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/federation/{remote_id}/terminal/ws")
+async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> None:
+    """Proxy WebSocket frames between the browser and a remote muxplex ttyd.
+
+    *remote_id* is the integer index into the ``remote_instances`` list in
+    settings.  Authenticates to the remote instance using the configured
+    ``key`` field via a Bearer header.
+
+    Auth check uses the same cookie + bearer pattern as terminal_ws_proxy.
+    Closes with code 4004 if remote_id is out of range.
+    """
+    # Auth check before accepting — same pattern as terminal_ws_proxy
+    host = websocket.client.host if websocket.client else ""
+    if host not in ("127.0.0.1", "::1"):
+        session_cookie = websocket.cookies.get("muxplex_session")
+        cookie_ok = session_cookie and verify_session_cookie(
+            _auth_secret, session_cookie, _auth_ttl
+        )
+        bearer_ok = False
+        if _federation_key:
+            auth_header = websocket.headers.get("authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
+        if not cookie_ok and not bearer_ok:
+            await websocket.close(code=4001)
+            return
+
+    # Look up remote instance by index
+    settings = load_settings()
+    remote_instances: list[dict] = settings.get("remote_instances", [])
+    if remote_id < 0 or remote_id >= len(remote_instances):
+        await websocket.close(code=4004)
+        return
+
+    remote = remote_instances[remote_id]
+    remote_url: str = remote.get("url", "").rstrip("/")
+    remote_key: str = remote.get("key", "")
+
+    # Convert http(s) URL to ws(s)
+    if remote_url.startswith("https://"):
+        ws_url = "wss://" + remote_url[len("https://") :] + "/terminal/ws"
+    else:
+        ws_url = "ws://" + remote_url[len("http://") :] + "/terminal/ws"
+
+    await websocket.accept(subprotocol="tty")
+
+    try:
+        async with websockets.connect(
+            ws_url,
+            subprotocols=[Subprotocol("tty")],
+            additional_headers={"Authorization": f"Bearer {remote_key}"},
+        ) as remote_ws:
+
+            async def client_to_remote() -> None:
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg.get("bytes"):
+                            await remote_ws.send(msg["bytes"])
+                        elif msg.get("text"):
+                            await remote_ws.send(msg["text"])
+                except Exception:
+                    pass
+
+            async def remote_to_client() -> None:
+                try:
+                    async for message in remote_ws:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+                except Exception:
+                    pass
+
+            await asyncio.gather(client_to_remote(), remote_to_client())
+    except Exception:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Auth routes
 # ---------------------------------------------------------------------------
 

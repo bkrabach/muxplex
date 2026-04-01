@@ -426,3 +426,19 @@ def test_concurrent_ws_sessions(monkeypatch):
     all_sent = ws_pool[0].sent + ws_pool[1].sent
     assert "session_one_msg" in all_sent
     assert "session_two_msg" in all_sent
+
+
+# ---------------------------------------------------------------------------
+# Task-11: federation WebSocket proxy route
+# ---------------------------------------------------------------------------
+
+
+def test_federation_ws_proxy_route_exists():
+    """App must have a WebSocket route at /federation/{remote_id}/terminal/ws."""
+    from starlette.routing import WebSocketRoute
+
+    ws_routes = [r for r in app.routes if isinstance(r, WebSocketRoute)]
+    paths = [r.path for r in ws_routes]
+    assert "/federation/{remote_id}/terminal/ws" in paths, (
+        "App must have a WebSocket route at /federation/{remote_id}/terminal/ws"
+    )
