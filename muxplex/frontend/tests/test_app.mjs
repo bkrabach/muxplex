@@ -2843,6 +2843,31 @@ test('buildOfflineTileHTML shows "Never" when lastSeenAt is null', () => {
   assert.ok(html.includes('Never'), 'html should include Never when lastSeenAt is null');
 });
 
+// --- buildStatusTileHTML ---
+
+test('buildStatusTileHTML is exported as a function', () => {
+  assert.strictEqual(typeof app.buildStatusTileHTML, 'function');
+});
+
+test('buildStatusTileHTML returns article element with correct statusClass', () => {
+  const html = app.buildStatusTileHTML('My Device', 'Offline', 'offline');
+  assert.ok(html.startsWith('<article'), 'html should start with <article');
+  assert.ok(html.includes('source-tile--offline'), 'html should include the statusClass');
+});
+
+test('buildStatusTileHTML escapes XSS in deviceName', () => {
+  const html = app.buildStatusTileHTML('<script>alert(1)</script>', 'Offline', 'offline');
+  assert.ok(!html.includes('<script>alert(1)</script>'), 'raw script tag should not appear in html');
+  assert.ok(html.includes('&lt;script&gt;'), 'escaped script tag should appear in html');
+});
+
+test('buildStatusTileHTML renders statusText in badge span', () => {
+  const html = app.buildStatusTileHTML('My Device', 'Auth required', 'auth');
+  assert.ok(html.includes('source-tile--auth'), 'html should include source-tile--auth class');
+  assert.ok(html.includes('Auth required'), 'html should include the statusText');
+  assert.ok(html.includes('source-tile__badge'), 'html should include source-tile__badge class');
+});
+
 // --- formatLastSeen branch coverage ---
 
 test('formatLastSeen returns seconds ago for diff < 60', () => {
