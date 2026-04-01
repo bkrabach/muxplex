@@ -80,6 +80,12 @@ def patch_settings(patch: dict) -> dict:
 
 
 def load_federation_key() -> str:
+    """Load the federation key from disk or env-overridden path.
+
+    Reads from FEDERATION_KEY_PATH by default; override via
+    MUXPLEX_FEDERATION_KEY_FILE env var. Returns empty string when
+    the file does not exist.
+    """
     env_path = os.environ.get("MUXPLEX_FEDERATION_KEY_FILE")
     path = Path(env_path) if env_path else FEDERATION_KEY_PATH
     try:

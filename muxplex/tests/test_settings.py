@@ -447,11 +447,26 @@ def test_load_federation_key_reads_existing_file(tmp_path, monkeypatch):
     assert result == "my-secret-key"
 
 
-def test_load_federation_key_uses_default_path(monkeypatch):
+def test_load_federation_key_uses_default_path(tmp_path, monkeypatch):
     """load_federation_key() uses ~/.config/muxplex/federation_key when env var is not set."""
     from muxplex.settings import FEDERATION_KEY_PATH
 
     monkeypatch.delenv("MUXPLEX_FEDERATION_KEY_FILE", raising=False)
-    # The default path should be used; we just verify no env override changes behaviour
-    # When the default file doesn't exist, returns empty string
     assert FEDERATION_KEY_PATH == Path.home() / ".config" / "muxplex" / "federation_key"
+    # Redirect the constant so the function uses a guaranteed-absent path in tmp_path
+    monkeypatch.setattr(settings_mod, "FEDERATION_KEY_PATH", tmp_path / "absent_key")
+    # Also verify the function runs without error (returns "" when file absent)
+    result = load_federation_key()
+    assert isinstance(result, str)
+    assert result == ""
+
+
+def test_load_federation_key_uses_env_var_override(tmp_path, monkeypatch):
+    """load_federation_key() reads from MUXPLEX_FEDERATION_KEY_FILE when set."""
+    key_file = tmp_path / "custom_key"
+    key_file.write_text("env-override-key\n")
+    monkeypatch.setenv("MUXPLEX_FEDERATION_KEY_FILE", str(key_file))
+
+    result = load_federation_key()
+
+    assert result == "env-override-key"
