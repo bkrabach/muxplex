@@ -191,21 +191,20 @@ def test_reset_secret_prints_warning(tmp_path, monkeypatch, capsys):
     )
 
 
-def test_install_service_help_text_mentions_background_service():
-    """install-service help must mention 'service', not just 'systemd'."""
-    import io
+def test_install_service_deprecated_alias_prints_warning(capsys):
+    """install-service must print deprecation warning and forward to service install."""
     from muxplex.cli import main
 
-    buf = io.StringIO()
-    with patch("sys.argv", ["muxplex", "install-service", "--help"]):
-        try:
-            with patch("sys.stdout", buf):
-                main()
-        except SystemExit:
-            pass
+    with (
+        patch("sys.argv", ["muxplex", "install-service"]),
+        patch("muxplex.service.service_install") as mock_install,
+    ):
+        main()
 
-    help_text = buf.getvalue().lower()
-    assert "service" in help_text
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err.lower()
+    assert "service install" in captured.err.lower()
+    mock_install.assert_called_once()
 
 
 def test_check_dependencies_exits_when_ttyd_missing(monkeypatch):

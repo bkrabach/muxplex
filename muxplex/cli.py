@@ -548,14 +548,6 @@ def main() -> None:
     serve_parser = sub.add_parser("serve", help="Start the server (default)")
     _add_serve_flags(serve_parser)
 
-    svc = sub.add_parser(
-        "install-service",
-        help="Install as a background service (systemd on Linux, launchd on macOS)",
-    )
-    svc.add_argument(
-        "--system", action="store_true", help="System-wide (requires sudo)"
-    )
-
     service_parser = sub.add_parser(
         "service", help="Manage the muxplex background service"
     )
@@ -587,9 +579,8 @@ def main() -> None:
         help="Force reinstall even if already up to date",
     )
 
-    args = parser.parse_args()
-
-    if args.command == "install-service":
+    # Intercept deprecated 'install-service' before argparse sees it
+    if len(sys.argv) > 1 and sys.argv[1] == "install-service":
         print(
             "\u26a0 'muxplex install-service' is deprecated."
             " Use 'muxplex service install' instead.",
@@ -598,7 +589,11 @@ def main() -> None:
         from muxplex.service import service_install  # noqa: PLC0415
 
         service_install()
-    elif args.command == "show-password":
+        return
+
+    args = parser.parse_args()
+
+    if args.command == "show-password":
         show_password()
     elif args.command == "reset-secret":
         reset_secret()
