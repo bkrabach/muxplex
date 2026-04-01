@@ -43,23 +43,3 @@ def test_readme_shows_restart_workflow():
     assert "muxplex service restart" in README, (
         "README must include 'muxplex service restart' in the example"
     )
-
-
-def test_readme_no_plain_install_service_in_install_sections():
-    """README install/setup sections must not use plain 'muxplex install-service' as active command."""
-    lines = README.splitlines()
-    # Find lines that are in bash code blocks and contain install-service without being
-    # marked deprecated or commented out
-    in_code_block = False
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
-        if in_code_block and "install-service" in stripped:
-            # Allow lines that are comments (# deprecated) or explicitly deprecated
-            if not stripped.startswith("#"):
-                # This is an active command — it should NOT be 'muxplex install-service'
-                assert "muxplex install-service" not in stripped, (
-                    f"Line {i + 1} has active 'muxplex install-service' command in code block: {line!r}. "
-                    "Update to use 'muxplex service install' instead."
-                )

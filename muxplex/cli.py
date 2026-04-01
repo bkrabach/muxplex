@@ -579,18 +579,6 @@ def main() -> None:
         help="Force reinstall even if already up to date",
     )
 
-    # Intercept deprecated 'install-service' before argparse sees it
-    if len(sys.argv) > 1 and sys.argv[1] == "install-service":
-        print(
-            "\u26a0 'muxplex install-service' is deprecated."
-            " Use 'muxplex service install' instead.",
-            file=sys.stderr,
-        )
-        from muxplex.service import service_install  # noqa: PLC0415
-
-        service_install()
-        return
-
     args = parser.parse_args()
 
     if args.command == "show-password":

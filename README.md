@@ -104,7 +104,6 @@ All serve options read from `~/.config/muxplex/settings.json` by default. CLI fl
 | `muxplex upgrade` | Upgrade to latest version and restart service |
 | `muxplex show-password` | Show the current muxplex password |
 | `muxplex reset-secret` | Regenerate signing secret (invalidates sessions) |
-| `muxplex install-service` | *(deprecated — use `muxplex service install`)* |
 
 ### Service management
 
@@ -196,7 +195,7 @@ muxplex/
 └── muxplex/                # Python package
     ├── __init__.py
     ├── __main__.py         # `python -m muxplex` entry point
-    ├── cli.py              # CLI argument parsing and `install-service` subcommand
+    ├── cli.py              # CLI entry point and subcommand dispatch
     ├── main.py             # FastAPI app: session API, bell hooks, WebSocket proxy to ttyd, static frontend
     ├── sessions.py         # tmux session discovery and snapshot capture
     ├── bells.py            # Bell/activity notification tracking
