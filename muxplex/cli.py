@@ -125,6 +125,19 @@ def _check_for_update(info: dict) -> tuple[bool, str]:
     return True, "unknown install source — upgrading to be safe"
 
 
+def generate_federation_key() -> None:
+    """Generate a random federation key and write it to FEDERATION_KEY_PATH."""
+    import muxplex.settings as settings_mod
+
+    path = settings_mod.FEDERATION_KEY_PATH
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    key = _secrets.token_urlsafe(32)
+    path.write_text(key + "\n")
+    path.chmod(0o600)
+    print(f"Federation key written to {path}")
+    print(f"Key: {key}")
+
+
 def reset_secret() -> None:
     """Regenerate the signing secret and warn that all sessions are now invalid."""
     path = get_secret_path()
@@ -675,6 +688,11 @@ def main() -> None:
         "reset-secret", help="Regenerate signing secret (invalidates sessions)"
     )
 
+    sub.add_parser(
+        "generate-federation-key",
+        help="Generate a random federation key and write it to disk",
+    )
+
     sub.add_parser("doctor", help="Check dependencies and system status")
 
     upgrade_parser = sub.add_parser(
@@ -707,6 +725,8 @@ def main() -> None:
         show_password()
     elif args.command == "reset-secret":
         reset_secret()
+    elif args.command == "generate-federation-key":
+        generate_federation_key()
     elif args.command == "doctor":
         doctor()
     elif args.command in ("upgrade", "update"):

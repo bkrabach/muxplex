@@ -1021,6 +1021,42 @@ def test_config_subcommand_registered():
     assert "reset" in result.stdout
 
 
+# ---------------------------------------------------------------------------
+# task-3: generate-federation-key subcommand tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_federation_key_creates_file(tmp_path, monkeypatch, capsys):
+    """generate_federation_key() creates key file with mode 0600 and prints key info."""
+    import muxplex.settings as settings_mod
+
+    key_file = tmp_path / ".config" / "muxplex" / "federation_key"
+    monkeypatch.setattr(settings_mod, "FEDERATION_KEY_PATH", key_file)
+
+    from muxplex.cli import generate_federation_key
+
+    generate_federation_key()
+
+    # File must exist
+    assert key_file.exists(), "Federation key file must be created"
+
+    # Content must be longer than 20 chars (stripping the trailing newline)
+    content = key_file.read_text().strip()
+    assert len(content) > 20, f"Key must be > 20 chars, got {len(content)}"
+
+    # File mode must be 0600
+    file_mode = stat.S_IMODE(key_file.stat().st_mode)
+    assert file_mode == 0o600, f"Expected 0o600, got {oct(file_mode)}"
+
+    # Output must include key info
+    captured = capsys.readouterr()
+    assert "federation" in captured.out.lower() or "key" in captured.out.lower(), (
+        f"Output must mention key info, got: {captured.out!r}"
+    )
+    # The actual key value must appear in output
+    assert content in captured.out, "Key value must appear in output"
+
+
 def test_upgrade_uses_service_module_install(monkeypatch, capsys):
     """upgrade() must call muxplex.service.service_install."""
     import subprocess
