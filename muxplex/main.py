@@ -1008,6 +1008,8 @@ async def federation_connect(
     remotes = settings.get("remote_instances", [])
     try:
         idx = int(remote_id)
+        if idx < 0 or idx >= len(remotes):
+            raise IndexError
         remote = remotes[idx]
     except (ValueError, IndexError):
         raise HTTPException(

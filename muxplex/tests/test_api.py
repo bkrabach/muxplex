@@ -1915,6 +1915,42 @@ def test_federation_connect_returns_502_when_remote_returns_error_status(
     assert response.status_code == 502
 
 
+def test_federation_connect_returns_404_for_negative_remote_id(
+    client, monkeypatch, tmp_path
+):
+    """POST /api/federation/{remote_id}/connect/{session_name} returns 404 for negative remote_id.
+
+    Negative indices are valid Python list indices ("from the end"), so without an
+    explicit guard a value like -1 would silently proxy to the last configured remote
+    instead of returning 404.  The endpoint must treat negatives as out-of-range.
+    """
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # One remote configured — without the guard, remote_id=-1 would return it
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    response = client.post("/api/federation/-1/connect/my-session")
+    assert response.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # POST /api/federation/generate-key (task-13)
 # ---------------------------------------------------------------------------
