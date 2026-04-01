@@ -108,15 +108,12 @@
       <nav class="settings-tabs">
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
+        <button class="settings-tab" data-tab="notifications">Notifications</button>
         <button class="settings-tab" data-tab="new-session">Commands</button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
       </nav>
       <div class="settings-content">
         <div class="settings-panel" data-tab="display">
-          <div class="settings-field">
-            <label class="settings-label" for="setting-device-name">Device Name</label>
-            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
-          </div>
           <div class="settings-field">
             <label class="settings-label" for="setting-font-size">Font Size</label>
             <select id="setting-font-size" class="settings-select">
@@ -188,6 +185,12 @@
             <label class="settings-label" for="setting-auto-open">Auto-open created sessions</label>
             <input type="checkbox" id="setting-auto-open" class="settings-checkbox" checked />
           </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Hidden Sessions</label>
+            <div id="setting-hidden-sessions" class="settings-checkbox-list"></div>
+          </div>
+        </div>
+        <div class="settings-panel hidden" data-tab="notifications">
           <div class="settings-field">
             <label class="settings-label" for="setting-bell-sound">Bell Sound</label>
             <input type="checkbox" id="setting-bell-sound" class="settings-checkbox" />
@@ -198,10 +201,6 @@
               <span id="notification-status-text" class="settings-status-text">Not requested</span>
               <button id="notification-request-btn" class="settings-action-btn">Request Permission</button>
             </div>
-          </div>
-          <div class="settings-field settings-field--column">
-            <label class="settings-label">Hidden Sessions</label>
-            <div id="setting-hidden-sessions" class="settings-checkbox-list"></div>
           </div>
         </div>
         <div class="settings-panel hidden" data-tab="new-session">
@@ -220,6 +219,10 @@
         </div>
         <div class="settings-panel hidden" data-tab="devices">
           <div class="settings-field">
+            <label class="settings-label" for="setting-device-name">Device Name</label>
+            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+          </div>
+          <div class="settings-field">
             <label class="settings-label" for="setting-multi-device-enabled">Enable multi-device support</label>
             <input type="checkbox" id="setting-multi-device-enabled" class="settings-checkbox" />
           </div>
@@ -230,6 +233,13 @@
                 <option value="flat">Flat</option>
                 <option value="grouped">Grouped</option>
                 <option value="filtered">Filtered</option>
+              </select>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label" for="setting-view-scope">View Scope</label>
+              <select id="setting-view-scope" class="settings-select">
+                <option value="all">All Instances</option>
+                <option value="local">Local Only</option>
               </select>
             </div>
             <div class="settings-field settings-field--column">

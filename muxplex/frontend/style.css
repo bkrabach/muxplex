@@ -256,6 +256,14 @@ body {
   animation: bell-pulse 1.4s ease-in-out infinite;
 }
 
+/* Bell count number inside the badge */
+.tile-bell-count {
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: inherit;
+}
+
 @keyframes bell-pulse {
   0%, 100% {
     opacity: 1;

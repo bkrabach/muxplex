@@ -45,3 +45,8 @@ addopts = "--import-mode=importlib -m 'not integration'"
 markers = [
     "integration: marks tests as integration tests requiring real tmux (deselect with '-m not integration')",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-timeout>=2.4.0",
+]
