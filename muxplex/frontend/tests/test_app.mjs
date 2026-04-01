@@ -562,10 +562,10 @@ test('buildTileHTML wraps snapshot in .tile-body with <pre> as direct child', ()
   );
 });
 
-test('buildTileHTML includes data-source-url attribute when session has sourceUrl', () => {
-  const session = { name: 'work-project', sourceUrl: 'http://work:8088', snapshot: '' };
+test('buildTileHTML includes data-remote-id attribute when session has remoteId', () => {
+  const session = { name: 'work-project', remoteId: 'fed-abc123', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('data-source-url="http://work:8088"'), 'article should have data-source-url with the session sourceUrl');
+  assert.ok(html.includes('data-remote-id="fed-abc123"'), 'article should have data-remote-id with the session remoteId');
 });
 
 test('buildTileHTML does not include data-source-url for local sessions (empty sourceUrl)', () => {
@@ -724,15 +724,15 @@ test('renderGrid shows offline tile and hides empty-state when no sessions but s
   app._setSources([]);
 });
 
-test('_previewClickHandler looks up sourceUrl from _currentSessions before calling openSession', () => {
+test('_previewClickHandler looks up remoteId from _currentSessions before calling openSession', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const handlerIdx = source.indexOf('function _previewClickHandler');
   assert.ok(handlerIdx >= 0, '_previewClickHandler must exist');
   // Extract from function declaration to its closing brace
   const handlerEnd = source.indexOf('\n}', handlerIdx) + 2;
   const handlerBody = source.slice(handlerIdx, handlerEnd);
-  assert.ok(handlerBody.includes('_currentSessions'), '_previewClickHandler must look up session from _currentSessions to recover sourceUrl');
-  assert.ok(handlerBody.includes('sourceUrl'), '_previewClickHandler must forward sourceUrl when calling openSession');
+  assert.ok(handlerBody.includes('_currentSessions'), '_previewClickHandler must look up session from _currentSessions to recover remoteId');
+  assert.ok(handlerBody.includes('remoteId'), '_previewClickHandler must forward remoteId when calling openSession');
 });
 
 // --- requestNotificationPermission ---
@@ -1191,7 +1191,7 @@ test('openSession shows toast and calls closeSession on connect failure', async 
   globalThis.setTimeout = origSetTimeout;
 });
 
-test('openSession with sourceUrl POSTs connect to remote instance URL', async () => {
+test('openSession with remoteId POSTs connect to federation proxy URL', async () => {
   const fetchCalls = [];
   const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
@@ -1203,19 +1203,18 @@ test('openSession with sourceUrl POSTs connect to remote instance URL', async ()
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
 
-  await app.openSession('work-project', { sourceUrl: 'http://work:8088' });
+  await app.openSession('work-project', { remoteId: 'fed-abc123' });
 
-  const connectCall = fetchCalls.find((c) => c.url === 'http://work:8088/api/sessions/work-project/connect');
-  assert.ok(connectCall, 'should POST to http://work:8088/api/sessions/work-project/connect');
+  const connectCall = fetchCalls.find((c) => c.url === '/api/federation/fed-abc123/connect/work-project');
+  assert.ok(connectCall, 'should POST to /api/federation/fed-abc123/connect/work-project');
   assert.strictEqual(connectCall.opts.method, 'POST');
-  assert.strictEqual(connectCall.opts.credentials, 'include');
   globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
   globalThis.setTimeout = origSetTimeout;
 });
 
-test('openSession with sourceUrl passes sourceUrl to window._openTerminal', async () => {
+test('openSession with remoteId passes remoteId to window._openTerminal', async () => {
   let openTerminalArgs = null;
   const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
@@ -1227,11 +1226,11 @@ test('openSession with sourceUrl passes sourceUrl to window._openTerminal', asyn
   globalThis.setTimeout = (fn) => { fn(); };
   globalThis.window._openTerminal = (...args) => { openTerminalArgs = args; };
 
-  await app.openSession('my-session', { sourceUrl: 'http://work:8088' });
+  await app.openSession('my-session', { remoteId: 'fed-abc123' });
 
   assert.ok(openTerminalArgs !== null, '_openTerminal should have been called');
   assert.strictEqual(openTerminalArgs[0], 'my-session', '_openTerminal first arg should be session name');
-  assert.strictEqual(openTerminalArgs[1], 'http://work:8088', '_openTerminal second arg should be sourceUrl');
+  assert.strictEqual(openTerminalArgs[1], 'fed-abc123', '_openTerminal second arg should be remoteId');
   globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
@@ -1313,13 +1312,13 @@ test('closeSession fires DELETE /api/sessions/current', async () => {
   globalThis.document.getElementById = origGetById;
 });
 
-test('closeSession does NOT fire DELETE for remote session (non-empty _viewingSourceUrl)', async () => {
+test('closeSession does NOT fire DELETE for remote session (non-empty _viewingRemoteId)', async () => {
   const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
 
-  // Setup to call openSession with remote sourceUrl
+  // Setup to call openSession with remote remoteId
   globalThis.fetch = async () => ({ ok: true });
   globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
   globalThis.document.querySelector = () => null;
@@ -1327,8 +1326,8 @@ test('closeSession does NOT fire DELETE for remote session (non-empty _viewingSo
   globalThis.window._openTerminal = () => {};
   globalThis.window._closeTerminal = () => {};
 
-  // Open a remote session - this sets _viewingSourceUrl = 'http://work:8088'
-  await app.openSession('remote-sess', { sourceUrl: 'http://work:8088' });
+  // Open a remote session - this sets _viewingRemoteId = 'fed-abc123'
+  await app.openSession('remote-sess', { remoteId: 'fed-abc123' });
 
   // Restore setTimeout so Promise-based yielding works
   globalThis.setTimeout = origSetTimeout;
@@ -1365,7 +1364,7 @@ test('closeSession still fires DELETE /api/sessions/current for local session', 
   globalThis.window._openTerminal = () => {};
   globalThis.window._closeTerminal = () => {};
 
-  // Open a local session - this sets _viewingSourceUrl = ''
+  // Open a local session - this sets _viewingRemoteId = ''
   await app.openSession('local-sess', {});
 
   // Restore setTimeout so Promise-based yielding works
@@ -2595,23 +2594,23 @@ test('buildSidebarHTML omits device-badge when session has no deviceName', () =>
   app._setSources([]);
 });
 
-test('buildSidebarHTML includes data-source-url attribute on article element', () => {
+test('buildSidebarHTML includes data-remote-id attribute on article element', () => {
   const session = {
     name: 'work',
     deviceName: 'Laptop',
-    sourceUrl: 'https://remote.example.com',
-    sessionKey: 'https://remote.example.com::work',
+    remoteId: 'fed-abc123',
+    sessionKey: 'fed-abc123::work',
     snapshot: '',
     bell: { unseen_count: 0 },
   };
   const html = app.buildSidebarHTML(session, null);
-  assert.ok(html.includes('data-source-url="https://remote.example.com"'), 'article should have data-source-url with correct value');
+  assert.ok(html.includes('data-remote-id="fed-abc123"'), 'article should have data-remote-id with correct value');
 });
 
-test('buildSidebarHTML data-source-url is empty string when session has no sourceUrl', () => {
+test('buildSidebarHTML data-remote-id is empty string when session has no remoteId', () => {
   const session = { name: 'work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
-  assert.ok(html.includes('data-source-url=""'), 'article should have data-source-url as empty string when no sourceUrl');
+  assert.ok(html.includes('data-remote-id=""'), 'article should have data-remote-id as empty string when no remoteId');
 });
 
 test('buildSidebarHTML escapes HTML in deviceName within device-badge', () => {
@@ -2650,17 +2649,17 @@ test('buildTileHTML omits device-badge when only one source configured', () => {
   app._setSources([]);
 });
 
-test('buildTileHTML includes data-session-key and data-source-url attributes on article element', () => {
+test('buildTileHTML includes data-session-key and data-remote-id attributes on article element', () => {
   const session = {
     name: 'work',
     deviceName: 'Laptop',
-    sourceUrl: 'https://remote.example.com',
-    sessionKey: 'https://remote.example.com::work',
+    remoteId: 'fed-abc123',
+    sessionKey: 'fed-abc123::work',
     snapshot: '',
   };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('data-session-key="https://remote.example.com::work"'), 'article should have data-session-key with correct value');
-  assert.ok(html.includes('data-source-url="https://remote.example.com"'), 'article should have data-source-url with correct value');
+  assert.ok(html.includes('data-session-key="fed-abc123::work"'), 'article should have data-session-key with correct value');
+  assert.ok(html.includes('data-remote-id="fed-abc123"'), 'article should have data-remote-id with correct value');
 });
 
 test('buildTileHTML escapes HTML in deviceName within device-badge', () => {
