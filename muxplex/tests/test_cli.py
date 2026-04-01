@@ -636,7 +636,7 @@ def test_serve_session_ttl_zero_is_valid(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # argparse refactoring tests — None defaults, serve flags on both parsers,
-# upgrade alias, install-service deprecation warning
+# upgrade alias
 # ---------------------------------------------------------------------------
 
 def test_main_passes_none_for_unset_flags():
@@ -802,7 +802,7 @@ def test_service_subcommand_in_help():
     assert "service" in help_text
 
 # ---------------------------------------------------------------------------
-# task-6: Verify old install_service/launchd/systemd removed from cli.py
+# task-6: Verify old launchd/systemd helpers removed from cli.py
 # ---------------------------------------------------------------------------
 
 def test_old_install_launchd_removed_from_cli():
@@ -822,7 +822,7 @@ def test_old_install_systemd_removed_from_cli():
     )
 
 def test_upgrade_uses_service_module_install(monkeypatch, capsys):
-    """upgrade() must call muxplex.service.service_install instead of cli.install_service."""
+    """upgrade() must call muxplex.service.service_install."""
     import subprocess
 
     import muxplex.cli as cli_mod
