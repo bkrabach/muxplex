@@ -733,7 +733,9 @@ function renderSidebar(sessions, currentSession) {
     list.querySelectorAll('.sidebar-item').forEach((item) => {
       const name = item.dataset.session;
       const sourceUrl = item.dataset.sourceUrl || '';
-      on(item, 'click', () => {
+      on(item, 'click', (e) => {
+        // Don't navigate when clicking the delete button inside the item
+        if (e.target.closest && e.target.closest('.sidebar-delete')) return;
         if (name !== currentSession) openSession(name, { sourceUrl });
       });
     });
@@ -992,7 +994,11 @@ function renderGrid(sessions) {
 
   // Bind interaction handlers on each tile
   document.querySelectorAll('.session-tile').forEach(function(tile) {
-    on(tile, 'click', () => openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl || '' }));
+    on(tile, 'click', (e) => {
+      // Don't navigate when clicking the delete button inside the tile
+      if (e.target.closest && e.target.closest('.tile-delete')) return;
+      openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl || '' });
+    });
     on(tile, 'keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl || '' });
@@ -2237,6 +2243,10 @@ function killSession(name) {
   api('DELETE', '/api/sessions/' + name)
     .then(function() {
       showToast('Session \'' + name + '\' killed');
+      // If we deleted the session we're currently viewing, return to dashboard
+      if (_viewingSession === name) {
+        closeSession();
+      }
       pollSessions();
     })
     .catch(function(err) {
