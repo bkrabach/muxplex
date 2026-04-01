@@ -946,12 +946,13 @@ async def federation_sessions(request: Request) -> list[dict]:
         except httpx.HTTPStatusError:
             return [
                 {
-                    "status": "auth_failed",
+                    "status": "unreachable",
                     "remoteId": remote_id,
                     "deviceName": remote_name,
                 }
             ]
-        except Exception:
+        except Exception as exc:
+            _log.warning("Unexpected error fetching remote %s: %s", url, exc)
             return [
                 {
                     "status": "unreachable",

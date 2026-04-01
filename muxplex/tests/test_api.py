@@ -1602,7 +1602,7 @@ def test_federation_client_exists_on_app_state(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/federation/sessions (task-8)
+# GET /api/federation/sessions (task-5)
 # ---------------------------------------------------------------------------
 
 
