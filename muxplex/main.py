@@ -607,9 +607,16 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
     host = websocket.client.host if websocket.client else ""
     if host not in ("127.0.0.1", "::1"):
         session_cookie = websocket.cookies.get("muxplex_session")
-        if not session_cookie or not verify_session_cookie(
+        cookie_ok = session_cookie and verify_session_cookie(
             _auth_secret, session_cookie, _auth_ttl
-        ):
+        )
+        bearer_ok = False
+        if _federation_key:
+            auth_header = websocket.headers.get("authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                import hmac
+                bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
+        if not cookie_ok and not bearer_ok:
             await websocket.close(code=4001)
             return
 

@@ -248,6 +248,34 @@ def test_ws_auth_rejection_invalid_cookie():
 
 
 # ---------------------------------------------------------------------------
+# Test: Bearer token auth accepted
+# ---------------------------------------------------------------------------
+
+
+def test_ws_bearer_auth_accepted(monkeypatch):
+    """WebSocket from non-localhost with valid Bearer federation key is NOT rejected with 4001.
+
+    When a valid federation key is provided as 'Authorization: Bearer <key>',
+    the WebSocket connection must be accepted (not closed with code 4001).
+    """
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+
+    fake_ws = FakeTtydWs(responses=[])
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    # Connect without a session cookie but with a valid Bearer token.
+    # Should NOT raise WebSocketDisconnect with code 4001.
+    with TestClient(app) as c:
+        # If Bearer auth is not implemented, this raises WebSocketDisconnect(code=4001)
+        with c.websocket_connect(
+            "/terminal/ws",
+            headers={"Authorization": f"Bearer {fed_key}"},
+        ) as _ws:
+            pass  # Successfully connected — auth was accepted
+
+
+# ---------------------------------------------------------------------------
 # Tests 4–5: browser → ttyd relay
 # ---------------------------------------------------------------------------
 
