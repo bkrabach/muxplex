@@ -104,6 +104,11 @@ All serve options read from `~/.config/muxplex/settings.json` by default. CLI fl
 | `muxplex upgrade` | Upgrade to latest version and restart service |
 | `muxplex show-password` | Show the current muxplex password |
 | `muxplex reset-secret` | Regenerate signing secret (invalidates sessions) |
+| `muxplex config` | Show all settings with current values |
+| `muxplex config list` | Show all settings with current values |
+| `muxplex config get <key>` | Show one setting |
+| `muxplex config set <key> <value>` | Set a setting (auto-detects type) |
+| `muxplex config reset [key]` | Reset one or all settings to defaults |
 
 ### Service management
 

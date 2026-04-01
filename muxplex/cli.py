@@ -503,6 +503,115 @@ def upgrade(*, force: bool = False) -> None:
     doctor()
 
 
+def config_list() -> None:
+    """Show all settings with current values."""
+    from muxplex.settings import DEFAULT_SETTINGS, SETTINGS_PATH, load_settings  # noqa: PLC0415
+
+    settings = load_settings()
+    print(f"\nmuxplex config ({SETTINGS_PATH})\n")
+
+    for key in DEFAULT_SETTINGS:
+        value = settings.get(key)
+        default = DEFAULT_SETTINGS[key]
+        is_default = value == default
+        marker = "" if is_default else " (modified)"
+        if isinstance(value, str):
+            display = f'"{value}"'
+        elif value is None:
+            display = "null"
+        elif isinstance(value, bool):
+            display = "true" if value else "false"
+        elif isinstance(value, list):
+            display = str(value) if value else "[]"
+        else:
+            display = str(value)
+        print(f"  {key}: {display}{marker}")
+    print()
+
+
+def config_get(key: str) -> None:
+    """Show one setting value."""
+    from muxplex.settings import DEFAULT_SETTINGS, load_settings  # noqa: PLC0415
+
+    if key not in DEFAULT_SETTINGS:
+        print(f"Unknown setting: {key}", file=sys.stderr)
+        print(
+            f"Valid keys: {', '.join(sorted(DEFAULT_SETTINGS.keys()))}", file=sys.stderr
+        )
+        sys.exit(1)
+
+    settings = load_settings()
+    value = settings.get(key)
+    if isinstance(value, str):
+        print(value)
+    elif value is None:
+        print("null")
+    elif isinstance(value, bool):
+        print("true" if value else "false")
+    else:
+        print(value)
+
+
+def config_set(key: str, raw_value: str) -> None:
+    """Set a setting value. Auto-detects type from the default."""
+    import json  # noqa: PLC0415
+
+    from muxplex.settings import DEFAULT_SETTINGS, patch_settings  # noqa: PLC0415
+
+    if key not in DEFAULT_SETTINGS:
+        print(f"Unknown setting: {key}", file=sys.stderr)
+        print(
+            f"Valid keys: {', '.join(sorted(DEFAULT_SETTINGS.keys()))}", file=sys.stderr
+        )
+        sys.exit(1)
+
+    default = DEFAULT_SETTINGS[key]
+
+    try:
+        if isinstance(default, bool):
+            value: object = raw_value.lower() in ("true", "1", "yes", "on")
+        elif isinstance(default, int):
+            value = int(raw_value)
+        elif default is None:
+            value = None if raw_value.lower() in ("null", "none", "") else raw_value
+        elif isinstance(default, list):
+            value = json.loads(raw_value) if raw_value else []
+        else:
+            value = raw_value
+    except (ValueError, json.JSONDecodeError) as e:
+        print(f"Invalid value for {key}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    patch_settings({key: value})
+    print(f"  {key}: {value}")
+
+
+def config_reset(key: str | None = None) -> None:
+    """Reset one or all settings to defaults."""
+    import copy  # noqa: PLC0415
+
+    from muxplex.settings import (  # noqa: PLC0415
+        DEFAULT_SETTINGS,
+        SETTINGS_PATH,
+        patch_settings,
+        save_settings,
+    )
+
+    if key is not None:
+        if key not in DEFAULT_SETTINGS:
+            print(f"Unknown setting: {key}", file=sys.stderr)
+            print(
+                f"Valid keys: {', '.join(sorted(DEFAULT_SETTINGS.keys()))}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        patch_settings({key: DEFAULT_SETTINGS[key]})
+        print(f"  {key} reset to: {DEFAULT_SETTINGS[key]}")
+    else:
+        save_settings(copy.deepcopy(DEFAULT_SETTINGS))
+        print(f"  All settings reset to defaults ({SETTINGS_PATH})")
+
+
 def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
     """Add --host, --port, --auth, --session-ttl flags to a parser.
 
@@ -579,6 +688,19 @@ def main() -> None:
         help="Force reinstall even if already up to date",
     )
 
+    config_parser = sub.add_parser("config", help="View and manage settings")
+    config_sub = config_parser.add_subparsers(dest="config_command")
+    config_sub.add_parser("list", help="Show all settings (default)")
+    config_get_parser = config_sub.add_parser("get", help="Show one setting")
+    config_get_parser.add_argument("key", help="Setting key")
+    config_set_parser = config_sub.add_parser("set", help="Set a setting value")
+    config_set_parser.add_argument("key", help="Setting key")
+    config_set_parser.add_argument("value", help="New value")
+    config_reset_parser = config_sub.add_parser("reset", help="Reset to defaults")
+    config_reset_parser.add_argument(
+        "key", nargs="?", help="Setting key (omit to reset all)"
+    )
+
     args = parser.parse_args()
 
     if args.command == "show-password":
@@ -589,6 +711,17 @@ def main() -> None:
         doctor()
     elif args.command in ("upgrade", "update"):
         upgrade(force=getattr(args, "force", False))
+    elif args.command == "config":
+        cmd = getattr(args, "config_command", None)
+        if cmd == "get":
+            config_get(args.key)
+        elif cmd == "set":
+            config_set(args.key, args.value)
+        elif cmd == "reset":
+            config_reset(getattr(args, "key", None))
+        else:
+            # Default: list (no subcommand or explicit "list")
+            config_list()
     elif args.command == "service":
         from muxplex.service import (  # noqa: PLC0415
             service_install,
