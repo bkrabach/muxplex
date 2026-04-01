@@ -9,6 +9,7 @@ Background poll loop reconciles tmux session state every POLL_INTERVAL seconds.
 
 import asyncio
 import contextlib
+import copy
 import hmac
 import json
 import logging
@@ -540,8 +541,14 @@ async def setup_hooks() -> dict:
 
 @app.get("/api/settings")
 async def get_settings() -> dict:
-    """Return the current settings."""
-    return load_settings()
+    """Return the current settings with sensitive keys redacted."""
+    settings = load_settings()
+    result = copy.deepcopy(settings)
+    result["federation_key"] = ""
+    for inst in result.get("remote_instances", []):
+        if "key" in inst:
+            inst["key"] = ""
+    return result
 
 
 @app.patch("/api/settings")

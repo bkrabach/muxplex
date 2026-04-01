@@ -938,6 +938,87 @@ def test_get_settings_returns_saved_values(client, tmp_path, monkeypatch):
     assert data["sort_order"] == "alphabetical"
 
 
+def test_get_settings_redacts_federation_key(client, tmp_path, monkeypatch):
+    """GET /api/settings must NOT return the federation_key value — it must be empty string."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Save a settings file that includes a non-empty federation_key
+    settings_path.write_text(json.dumps({"federation_key": "secret-should-not-appear"}))
+
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    data = response.json()
+
+    # The federation_key key may be present but its value must be empty
+    assert data.get("federation_key") == "", (
+        f"federation_key must be redacted (empty string), got: {data.get('federation_key')!r}"
+    )
+    # The secret must not appear anywhere in the response
+    assert "secret-should-not-appear" not in str(data), (
+        "federation_key secret value must not appear anywhere in the response"
+    )
+
+
+def test_get_settings_redacts_remote_instance_keys(client, tmp_path, monkeypatch):
+    """GET /api/settings must redact the 'key' field from each item in remote_instances."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Save settings with remote_instances containing secret key fields
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-a:8088",
+                        "key": "remote-secret-key-a",
+                        "name": "Remote A",
+                        "id": "remote-a",
+                    },
+                    {
+                        "url": "http://remote-b:8088",
+                        "key": "remote-secret-key-b",
+                        "name": "Remote B",
+                        "id": "remote-b",
+                    },
+                ]
+            }
+        )
+    )
+
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    data = response.json()
+
+    remote_instances = data.get("remote_instances", [])
+    assert len(remote_instances) == 2, (
+        f"Expected 2 remote_instances, got {len(remote_instances)}"
+    )
+
+    for i, inst in enumerate(remote_instances):
+        assert inst.get("key") == "", (
+            f"remote_instances[{i}]['key'] must be redacted (empty string), "
+            f"got: {inst.get('key')!r}"
+        )
+
+    # The secrets must not appear anywhere in the response
+    assert "remote-secret-key-a" not in str(data), (
+        "remote-secret-key-a must not appear anywhere in the response"
+    )
+    assert "remote-secret-key-b" not in str(data), (
+        "remote-secret-key-b must not appear anywhere in the response"
+    )
+
+
 # ---------------------------------------------------------------------------
 # PATCH /api/settings
 # ---------------------------------------------------------------------------
