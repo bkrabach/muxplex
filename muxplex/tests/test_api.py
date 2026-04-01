@@ -1435,3 +1435,32 @@ def test_federation_bearer_auth_accepted(monkeypatch):
         )
 
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# httpx.AsyncClient federation client on app.state (task-7)
+# ---------------------------------------------------------------------------
+
+
+def test_federation_client_exists_on_app_state(monkeypatch):
+    """app.state.federation_client is set during lifespan and is not None.
+
+    Verifies that the lifespan creates an httpx.AsyncClient and attaches it to
+    app.state.federation_client before the application begins serving requests.
+    """
+    import httpx
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+
+    with TestClient(app) as c:
+        # Inside the context manager the lifespan has completed startup,
+        # so app.state.federation_client must be set.
+        assert hasattr(app.state, "federation_client"), (
+            "app.state.federation_client must be set during lifespan startup"
+        )
+        assert app.state.federation_client is not None, (
+            "app.state.federation_client must not be None"
+        )
+        assert isinstance(app.state.federation_client, httpx.AsyncClient), (
+            "app.state.federation_client must be an httpx.AsyncClient instance"
+        )

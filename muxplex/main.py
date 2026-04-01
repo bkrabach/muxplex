@@ -20,6 +20,7 @@ import sys
 import time
 from typing import Literal
 
+import httpx
 import websockets
 import websockets.exceptions
 from websockets.typing import Subprotocol
@@ -175,7 +176,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # tmux not running at startup is OK; hook will be set on first poll
 
+    app.state.federation_client = httpx.AsyncClient(timeout=5.0, follow_redirects=False)
+
     yield
+
+    await app.state.federation_client.aclose()
 
     # Shutdown: cancel the poll loop task and wait for it to finish.
     if _poll_task is not None:
