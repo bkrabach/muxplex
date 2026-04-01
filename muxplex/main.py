@@ -590,6 +590,32 @@ def _ttyd_is_listening() -> bool:
         return False
 
 
+async def _ws_auth_check(websocket: WebSocket) -> bool:
+    """Return True if the WebSocket caller is authorized.
+
+    Closes the WebSocket with code 4001 and returns False if the caller
+    is not authorized.  Localhost connections (127.0.0.1 / ::1) are
+    unconditionally trusted.  Remote callers must present a valid
+    ``muxplex_session`` cookie OR a Bearer token matching ``_federation_key``.
+    """
+    host = websocket.client.host if websocket.client else ""
+    if host in ("127.0.0.1", "::1"):
+        return True
+    session_cookie = websocket.cookies.get("muxplex_session")
+    cookie_ok = session_cookie and verify_session_cookie(
+        _auth_secret, session_cookie, _auth_ttl
+    )
+    bearer_ok = False
+    if _federation_key:
+        auth_header = websocket.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
+    if not cookie_ok and not bearer_ok:
+        await websocket.close(code=4001)
+        return False
+    return True
+
+
 @app.websocket("/terminal/ws")
 async def terminal_ws_proxy(websocket: WebSocket) -> None:
     """Proxy WebSocket frames between the browser and ttyd.
@@ -605,20 +631,8 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
     then closed as soon as it couldn't reach the dead ttyd.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
-    host = websocket.client.host if websocket.client else ""
-    if host not in ("127.0.0.1", "::1"):
-        session_cookie = websocket.cookies.get("muxplex_session")
-        cookie_ok = session_cookie and verify_session_cookie(
-            _auth_secret, session_cookie, _auth_ttl
-        )
-        bearer_ok = False
-        if _federation_key:
-            auth_header = websocket.headers.get("authorization", "")
-            if auth_header.lower().startswith("bearer "):
-                bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
-        if not cookie_ok and not bearer_ok:
-            await websocket.close(code=4001)
-            return
+    if not await _ws_auth_check(websocket):
+        return
 
     # Ensure ttyd is reachable BEFORE accepting the browser WS.
     # After a service restart ttyd is dead but clients reconnect immediately.
@@ -696,20 +710,8 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
     Closes with code 4004 if remote_id is out of range.
     """
     # Auth check before accepting — same pattern as terminal_ws_proxy
-    host = websocket.client.host if websocket.client else ""
-    if host not in ("127.0.0.1", "::1"):
-        session_cookie = websocket.cookies.get("muxplex_session")
-        cookie_ok = session_cookie and verify_session_cookie(
-            _auth_secret, session_cookie, _auth_ttl
-        )
-        bearer_ok = False
-        if _federation_key:
-            auth_header = websocket.headers.get("authorization", "")
-            if auth_header.lower().startswith("bearer "):
-                bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
-        if not cookie_ok and not bearer_ok:
-            await websocket.close(code=4001)
-            return
+    if not await _ws_auth_check(websocket):
+        return
 
     # Look up remote instance by index
     settings = load_settings()
@@ -724,9 +726,11 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
 
     # Convert http(s) URL to ws(s)
     if remote_url.startswith("https://"):
-        ws_url = "wss://" + remote_url[len("https://") :] + "/terminal/ws"
+        ws_url = "wss://" + remote_url[8:] + "/terminal/ws"
+    elif remote_url.startswith("http://"):
+        ws_url = "ws://" + remote_url[7:] + "/terminal/ws"
     else:
-        ws_url = "ws://" + remote_url[len("http://") :] + "/terminal/ws"
+        ws_url = remote_url + "/terminal/ws"  # assume already ws:// or wss://
 
     await websocket.accept(subprotocol="tty")
 
