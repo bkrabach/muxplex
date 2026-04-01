@@ -2515,6 +2515,40 @@ test('buildTileHTML escapes HTML in deviceName within device-badge', () => {
   app._setServerSettings(null);
 });
 
+// --- buildTileHTML device badge placement (task-3) ---
+
+test('buildTileHTML places device-badge inside tile-meta span', () => {
+  app._setServerSettings({ multi_device_enabled: true });
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  const tileMetaStart = html.indexOf('<span class="tile-meta">');
+  const tileMetaEnd = html.indexOf('</span>', tileMetaStart);
+  assert.ok(tileMetaStart !== -1, 'tile-meta span should exist');
+  const deviceBadgePos = html.indexOf('device-badge');
+  assert.ok(
+    deviceBadgePos > tileMetaStart && deviceBadgePos < tileMetaEnd,
+    `device-badge should be inside tile-meta span (tile-meta starts at ${tileMetaStart}, device-badge at ${deviceBadgePos}, tile-meta closes at ${tileMetaEnd})`
+  );
+  app._setServerSettings(null);
+});
+
+test('buildTileHTML includes tile-meta-sep with middle dot when badge present', () => {
+  app._setServerSettings({ multi_device_enabled: true });
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('tile-meta-sep'), 'should include tile-meta-sep element when badge is present');
+  assert.ok(html.includes('\u00b7'), 'should include middle dot separator (\u00b7)');
+  app._setServerSettings(null);
+});
+
+test('buildTileHTML does not include tile-meta-sep when no badge', () => {
+  app._setServerSettings({ multi_device_enabled: false });
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('tile-meta-sep'), 'should NOT include tile-meta-sep when no badge');
+  app._setServerSettings(null);
+});
+
 
 
 // --- renderGrid grouped mode (task-11) ---
@@ -3951,13 +3985,21 @@ test('CSS style.css has .sidebar-item-meta rule', () => {
   assert.ok(source.includes('.sidebar-item-meta'), 'style.css must have .sidebar-item-meta rule');
 });
 
-test('CSS style.css .tile-time has opacity transition for crossfade', () => {
+test('CSS style.css .tile-meta has opacity transition for crossfade (badge + timestamp together)', () => {
   const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  assert.ok(source.includes('.tile-time'), 'style.css must have .tile-time rule');
   assert.ok(
-    source.includes("session-tile:hover .tile-time"),
-    'style.css must have session-tile:hover .tile-time for crossfade'
+    source.includes("session-tile:hover .tile-meta"),
+    'style.css must have session-tile:hover .tile-meta for crossfade'
   );
+  assert.ok(
+    source.includes("session-tile:focus-within .tile-meta"),
+    'style.css must have session-tile:focus-within .tile-meta for crossfade'
+  );
+});
+
+test('CSS style.css has .tile-meta-sep style', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.tile-meta-sep'), 'style.css must have .tile-meta-sep rule');
 });
 
 // --- Trailing blank line trimming in snapshot previews ---

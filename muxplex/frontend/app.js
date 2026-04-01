@@ -488,8 +488,7 @@ function buildTileHTML(session, index, mobile) {
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
     `<span class="tile-name">${escapeHtml(name)}</span>` +
-    badgeHtml +
-    `<span class="tile-meta"><span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
+    `<span class="tile-meta">${badgeHtml}${badgeHtml ? `<span class="tile-meta-sep">\xb7</span>` : ''}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
     `</div>` +
     `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `<button class="tile-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +

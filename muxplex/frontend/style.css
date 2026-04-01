@@ -227,13 +227,17 @@ body {
   margin-left: 8px;
 }
 
-/* × crossfade with timestamp on hover */
-.tile-time {
+.tile-meta-sep {
+  margin: 0 2px;
+}
+
+/* × crossfade with badge + timestamp on hover */
+.tile-meta {
   transition: opacity 150ms ease;
 }
 
-.session-tile:hover .tile-time,
-.session-tile:focus-within .tile-time {
+.session-tile:hover .tile-meta,
+.session-tile:focus-within .tile-meta {
   opacity: 0;
 }
 
