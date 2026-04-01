@@ -719,30 +719,48 @@ test('terminal is auto-focused when WebSocket opens', () => {
     '_term.focus() should be called exactly once when the WebSocket open event fires');
 });
 
-// --- sourceUrl / remote WebSocket tests ------------------------------------
+// --- remoteId / federation proxy WebSocket tests ----------------------------
 
-test('connectWebSocket uses remote origin when sourceUrl is provided', () => {
+test('connectWebSocket uses federation proxy path when remoteId is provided', () => {
   const t = loadTerminal();
 
   const orig = globalThis.setTimeout;
   globalThis.setTimeout = (_fn, _ms) => 0;
 
-  t.openTerminal('remote-session', 'http://work:8088');
+  t.openTerminal('remote-session', 'fed-abc123');
+
+  globalThis.setTimeout = orig;
+
+  assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
+  assert.strictEqual(
+    t.capturedWsUrl,
+    'ws://localhost/federation/fed-abc123/terminal/ws',
+    `WebSocket URL should be ws://localhost/federation/fed-abc123/terminal/ws, got: ${t.capturedWsUrl}`,
+  );
+});
+
+test('connectWebSocket uses same-origin for remote sessions (no cross-origin WS)', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('remote-session', 'remote-device-1');
 
   globalThis.setTimeout = orig;
 
   assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
   assert.ok(
-    t.capturedWsUrl.startsWith('ws://work:8088/'),
-    `WebSocket URL should start with ws://work:8088/, got: ${t.capturedWsUrl}`,
+    t.capturedWsUrl.startsWith('ws://localhost/'),
+    `WebSocket URL for remote session must stay on same origin (ws://localhost/), got: ${t.capturedWsUrl}`,
   );
   assert.ok(
-    t.capturedWsUrl.endsWith('/terminal/ws'),
-    `WebSocket URL should end with /terminal/ws, got: ${t.capturedWsUrl}`,
+    t.capturedWsUrl.includes('/federation/remote-device-1/terminal/ws'),
+    `WebSocket URL must include federation path, got: ${t.capturedWsUrl}`,
   );
 });
 
-test('connectWebSocket uses local origin when sourceUrl is empty string', () => {
+test('connectWebSocket uses local origin when remoteId is empty string', () => {
   const t = loadTerminal();
 
   const orig = globalThis.setTimeout;
@@ -755,11 +773,15 @@ test('connectWebSocket uses local origin when sourceUrl is empty string', () => 
   assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
   assert.ok(
     t.capturedWsUrl.includes('localhost'),
-    `WebSocket URL should include localhost for empty sourceUrl, got: ${t.capturedWsUrl}`,
+    `WebSocket URL should include localhost for empty remoteId, got: ${t.capturedWsUrl}`,
+  );
+  assert.ok(
+    !t.capturedWsUrl.includes('/federation/'),
+    `WebSocket URL must NOT include /federation/ for empty remoteId, got: ${t.capturedWsUrl}`,
   );
 });
 
-test('connectWebSocket uses local origin when sourceUrl is undefined', () => {
+test('connectWebSocket uses local origin when remoteId is undefined', () => {
   const t = loadTerminal();
 
   const orig = globalThis.setTimeout;
@@ -772,24 +794,11 @@ test('connectWebSocket uses local origin when sourceUrl is undefined', () => {
   assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
   assert.ok(
     t.capturedWsUrl.includes('localhost'),
-    `WebSocket URL should include localhost when sourceUrl is undefined, got: ${t.capturedWsUrl}`,
+    `WebSocket URL should include localhost when remoteId is undefined, got: ${t.capturedWsUrl}`,
   );
-});
-
-test('connectWebSocket converts https sourceUrl to wss protocol', () => {
-  const t = loadTerminal();
-
-  const orig = globalThis.setTimeout;
-  globalThis.setTimeout = (_fn, _ms) => 0;
-
-  t.openTerminal('secure-session', 'https://devserver:8088');
-
-  globalThis.setTimeout = orig;
-
-  assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
   assert.ok(
-    t.capturedWsUrl.startsWith('wss://devserver:8088/'),
-    `WebSocket URL should start with wss://devserver:8088/, got: ${t.capturedWsUrl}`,
+    !t.capturedWsUrl.includes('/federation/'),
+    `WebSocket URL must NOT include /federation/ when remoteId is undefined, got: ${t.capturedWsUrl}`,
   );
 });
 

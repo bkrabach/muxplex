@@ -12,14 +12,17 @@ let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for 
 
 // ─── Forward declarations ─────────────────────────────────────────────────────
 
-function connectWebSocket(name, sourceUrl) {
+function connectWebSocket(name, remoteId) {
+  // Always connect to the same origin — remote sessions route through the
+  // federation proxy (ws://host/federation/{remoteId}/terminal/ws) so that
+  // no cross-origin WebSocket connections are made from the browser.
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var url;
-  if (sourceUrl) {
-    // Remote session: derive WS URL from the source's HTTP URL
-    url = sourceUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + '/terminal/ws';
+  if (remoteId) {
+    // Remote session via federation proxy — same origin, different path
+    url = proto + '//' + location.host + '/federation/' + remoteId + '/terminal/ws';
   } else {
     // Local session: same origin
-    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     url = proto + '//' + location.host + '/terminal/ws';
   }
   const reconnectOverlay = document.getElementById('reconnect-overlay');
@@ -225,11 +228,11 @@ function createTerminal() {
 /**
  * Open a terminal session inside #terminal-container.
  * @param {string} sessionName
- * @param {string} [sourceUrl]  Optional HTTP URL of the remote muxplex instance.
- *   When provided, the WebSocket connects to that remote host instead of the
- *   current page origin.
+ * @param {string} [remoteId]  Optional federation remote ID.
+ *   When provided, the WebSocket connects via the federation proxy path
+ *   ws://host/federation/{remoteId}/terminal/ws (same origin, no cross-origin).
  */
-function openTerminal(sessionName, sourceUrl) {
+function openTerminal(sessionName, remoteId) {
   // Null _currentSession first so any in-flight close handler on the old WS won't
   // schedule a reconnect (it checks `if (!_currentSession) return;`).
   _currentSession = null;
@@ -276,7 +279,7 @@ function openTerminal(sessionName, sourceUrl) {
     });
   }
 
-  connectWebSocket(sessionName, sourceUrl);
+  connectWebSocket(sessionName, remoteId);
   initVisualViewport(); /* defined in Task 14 */
 }
 

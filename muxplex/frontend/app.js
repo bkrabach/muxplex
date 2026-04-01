@@ -120,7 +120,7 @@ const MOBILE_THRESHOLD = 600;
 let _deviceId = '';
 let _currentSessions = [];
 let _viewingSession = null;
-let _viewingSourceUrl = '';
+let _viewingRemoteId = '';
 let _viewMode = 'grid';
 let _lastInteractionAt = Date.now() / 1000;
 let _pollingTimer;
@@ -484,9 +484,9 @@ function buildTileHTML(session, index, mobile) {
   }
   const lastLines = allLines.slice(_lineCount).join('\n');
 
-  const sourceUrlAttr = session.sourceUrl ? ` data-source-url="${escapeHtml(session.sourceUrl)}"` : '';
+  const remoteIdAttr = session.remoteId ? ` data-remote-id="${escapeHtml(session.remoteId)}"` : '';
   return (
-    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${sourceUrlAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
+    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
     `<span class="tile-name">${escapeHtml(name)}</span>` +
     badgeHtml +
@@ -543,7 +543,7 @@ function buildSidebarHTML(session, currentSession) {
   const lastLines = allLines.slice(-20).join('\n');
 
   return (
-    `<article class="${classes}" data-session="${escapedName}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem">` +
+    `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(session.remoteId || '')}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
     `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
@@ -676,13 +676,13 @@ function renderSidebar(sessions, currentSession) {
 
   list.innerHTML = html;
 
-  // Bind click handlers on each sidebar item, passing sourceUrl
+  // Bind click handlers on each sidebar item, passing remoteId
   if (typeof list.querySelectorAll === 'function') {
     list.querySelectorAll('.sidebar-item').forEach((item) => {
       const name = item.dataset.session;
-      const sourceUrl = item.dataset.sourceUrl || '';
+      const remoteId = item.dataset.remoteId || '';
       on(item, 'click', () => {
-        if (name !== currentSession) openSession(name, { sourceUrl });
+        if (name !== currentSession) openSession(name, { remoteId });
       });
     });
   }
@@ -940,10 +940,10 @@ function renderGrid(sessions) {
 
   // Bind interaction handlers on each tile
   document.querySelectorAll('.session-tile').forEach(function(tile) {
-    on(tile, 'click', () => openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl || '' }));
+    on(tile, 'click', () => openSession(tile.dataset.session, { remoteId: tile.dataset.remoteId || '' }));
     on(tile, 'keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
-        openSession(tile.dataset.session, { sourceUrl: tile.dataset.sourceUrl || '' });
+        openSession(tile.dataset.session, { remoteId: tile.dataset.remoteId || '' });
       }
     });
   });
@@ -974,7 +974,7 @@ function _previewClickHandler(e) {
   hidePreview();
   if (name) {
     var session = _currentSessions && _currentSessions.find(function(s) { return s.name === name; });
-    openSession(name, { sourceUrl: session && session.sourceUrl || '' });
+    openSession(name, { remoteId: session && session.remoteId || '' });
   }
 }
 
@@ -1236,7 +1236,7 @@ function updateFaviconBadge() {
 async function openSession(name, opts = {}) {
   hidePreview();
   _viewingSession = name;
-  _viewingSourceUrl = opts.sourceUrl || '';
+  _viewingRemoteId = opts.remoteId || '';
   _viewMode = 'fullscreen';
 
   // Pre-render sidebar with current sessions before first poll tick
@@ -1303,11 +1303,11 @@ async function openSession(name, opts = {}) {
   if (fab) fab.classList.add('hidden');
 
   // Always spawn ttyd for this session — ensures correct session after service restart or page restore
-  var _sourceUrl = opts.sourceUrl || '';
+  var _remoteId = opts.remoteId || '';
   try {
-    if (_sourceUrl) {
-      var remoteConnectUrl = _sourceUrl.replace(/\/+$/, '') + '/api/sessions/' + encodeURIComponent(name) + '/connect';
-      await fetch(remoteConnectUrl, { method: 'POST', credentials: 'include' });
+    if (_remoteId) {
+      // Remote session: route connect POST through same-origin federation proxy
+      await api('POST', '/api/federation/' + encodeURIComponent(_remoteId) + '/connect/' + encodeURIComponent(name));
     } else {
       await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/connect');
     }
@@ -1320,7 +1320,7 @@ async function openSession(name, opts = {}) {
   await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (window._openTerminal) window._openTerminal(name, _sourceUrl);
+  if (window._openTerminal) window._openTerminal(name, _remoteId);
 }
 
 /**
@@ -1334,10 +1334,10 @@ function closeSession() {
   if (window._closeTerminal) window._closeTerminal();
 
   // Fire-and-forget DELETE — skip for remote sessions (they don't need to know we stopped watching)
-  if (!_viewingSourceUrl) {
+  if (!_viewingRemoteId) {
     api('DELETE', '/api/sessions/current').catch(function() {});
   }
-  _viewingSourceUrl = '';
+  _viewingRemoteId = '';
 
   const expanded = $('view-expanded');
   const overview = $('view-overview');
