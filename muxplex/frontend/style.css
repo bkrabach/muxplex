@@ -225,15 +225,11 @@ body {
   color: var(--text-muted);
   white-space: nowrap;
   margin-left: 8px;
+  transition: opacity 150ms ease; /* × crossfade with badge + timestamp on hover */
 }
 
 .tile-meta-sep {
   margin: 0 2px;
-}
-
-/* × crossfade with badge + timestamp on hover */
-.tile-meta {
-  transition: opacity 150ms ease;
 }
 
 .session-tile:hover .tile-meta,

@@ -2522,6 +2522,9 @@ test('buildTileHTML places device-badge inside tile-meta span', () => {
   const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   const tileMetaStart = html.indexOf('<span class="tile-meta">');
+  // Note: finds the first </span> after tileMetaStart, which is device-badge's closing tag
+  // (not tile-meta's own close), but the assertion still holds because device-badge
+  // opens and closes before tile-time within the tile-meta container.
   const tileMetaEnd = html.indexOf('</span>', tileMetaStart);
   assert.ok(tileMetaStart !== -1, 'tile-meta span should exist');
   const deviceBadgePos = html.indexOf('device-badge');

@@ -463,7 +463,7 @@ function buildTileHTML(session, index, mobile) {
   const escapedName = escapeHtml(name);
   const timeStr = formatTimestamp(session.last_activity_at || null);
 
-  // Device badge — right-aligned in header, separate from name span
+  // Device badge — shown inside tile-meta, before timestamp with · separator
   // Shown when multiple sources configured AND session has a device name
   let badgeHtml = '';
   if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
