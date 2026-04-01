@@ -312,6 +312,36 @@ function openTerminal(sessionName, sourceUrl) {
     return true;  // let xterm handle all other keys normally
   });
 
+  // Auto-copy: when mouse selection ends, copy to system clipboard.
+  // Matches terminal emulator conventions (iTerm2, WezTerm, ttyd native).
+  // onSelectionChange fires whenever selection changes — copy if text is selected.
+  // When selection is cleared (empty string), we skip the clipboard write.
+  _term.onSelectionChange(function() {
+    var sel = _term.getSelection();
+    if (sel) {
+      _copyToClipboard(sel);
+    }
+  });
+
+  // OSC 52 clipboard integration — bridges tmux clipboard to the browser.
+  // When tmux copies text (with `set-clipboard on` in .tmux.conf), it sends
+  // an OSC 52 escape sequence to the terminal. xterm.js surfaces this via the
+  // parser API. We intercept and write the decoded text to the system clipboard
+  // so that: Ctrl+B [ → select → Enter (tmux copy) → system clipboard receives it.
+  _term.parser.registerOscHandler(52, function(data) {
+    // OSC 52 format: Pc ; Pd — Pc = selection target (c/p/q/s/0-7), Pd = base64 text
+    var parts = data.split(';');
+    if (parts.length >= 2) {
+      try {
+        var text = atob(parts[1]);
+        _copyToClipboard(text);
+      } catch (e) {
+        // Invalid base64 or unsupported — silently ignore
+      }
+    }
+    return true;  // Handled — don't pass to xterm's default handler
+  });
+
   if (_fitAddon) {
     // requestAnimationFrame guarantees one full browser layout pass after the flex
     // container becomes visible before fit() measures dimensions.

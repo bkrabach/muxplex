@@ -49,6 +49,8 @@ function loadTerminal() {
     focus: () => { focusCallCount++; },
     attachCustomKeyEventHandler: () => {},
     getSelection: () => '',
+    onSelectionChange: () => {},
+    parser: { registerOscHandler: () => {} },
   };
 
   // Capture all messages sent via WebSocket.send()
@@ -335,6 +337,8 @@ function createMultiSessionEnv() {
       focus: () => {},
       attachCustomKeyEventHandler: () => {},
       getSelection: () => '',
+      onSelectionChange: () => {},
+      parser: { registerOscHandler: () => {} },
       writeMessages: [],
     };
     t.write = (data) => t.writeMessages.push(data);
@@ -918,6 +922,30 @@ test('_setTerminalFontSize sets _term.options.fontSize and calls _fitAddon.fit()
   assert.ok(
     source.includes('_fitAddon.fit()'),
     '_setTerminalFontSize must call _fitAddon.fit() to reflow the terminal'
+  );
+});
+
+// --- Clipboard Issue 1: auto-copy mouse selection via onSelectionChange ---
+
+test('terminal.js auto-copies mouse selection to clipboard via onSelectionChange', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('onSelectionChange'),
+    'must register onSelectionChange handler to auto-copy mouse selection to clipboard',
+  );
+});
+
+// --- Clipboard Issue 2: OSC 52 handler bridges tmux clipboard to browser ---
+
+test('terminal.js registers OSC 52 handler for tmux clipboard bridge', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('registerOscHandler'),
+    'must call parser.registerOscHandler to intercept tmux OSC 52 clipboard sequences',
+  );
+  assert.ok(
+    source.includes('atob'),
+    'must decode base64 OSC 52 clipboard payload with atob()',
   );
 });
 
