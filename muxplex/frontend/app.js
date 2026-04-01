@@ -146,6 +146,10 @@ const DISPLAY_DEFAULTS = {
   bellSound: false,
   notificationPermission: 'default',
   viewMode: 'auto',
+  showDeviceBadges: true,      // show device name labels on tiles/sidebar
+  showActivityGlow: true,       // show amber border/glow on tiles/sidebar with bells
+  showHoverPreview: true,       // show hover preview popover on tile hover
+  showActivityDot: true,        // show activity dot on tiles/sidebar
 };
 
 var VIEW_MODES = ['auto', 'fit'];
@@ -455,38 +459,42 @@ function buildTileHTML(session, index, mobile) {
   const isBell = priority === 'bell';
   const unseen = session.bell && session.bell.unseen_count;
 
+  var ds = loadDisplaySettings();
+
   let classes = 'session-tile';
-  if (isBell) classes += ' session-tile--bell';
+  if (isBell && ds.showActivityGlow !== false) classes += ' session-tile--bell';
   if (mobile) classes += ` session-tile--tier-${priority}`;
 
   const name = session.name || '';
   const escapedName = escapeHtml(name);
   const timeStr = formatTimestamp(session.last_activity_at || null);
 
-  // Bell indicator
-  let bellHtml = '';
-  if (unseen && unseen > 0) {
-    const countStr = unseen > 9 ? '9+' : String(unseen);
-    bellHtml = `<span class="tile-bell">${countStr}</span>`;
+  // Activity dot — absolute positioned in upper-right corner of tile (no count text)
+  let bellDotHtml = '';
+  if (unseen && unseen > 0 && ds.showActivityDot !== false) {
+    bellDotHtml = '<span class="tile-bell-dot"></span>';
   }
 
-  // Device badge (shown when multiple sources configured and session has a device name)
-  const badgeHtml = _sources.length > 1 && session.deviceName
-    ? `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`
-    : '';
+  // Device badge — right-aligned in header, separate from name span
+  // Shown when multiple sources configured AND session has a device name
+  let badgeHtml = '';
+  if (_sources.length > 1 && session.deviceName && ds.showDeviceBadges !== false) {
+    badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
+  }
 
   // Last N lines of snapshot — show more in fit mode so tall tiles fill
   const snapshot = session.snapshot || '';
-  var _tileDs = loadDisplaySettings();
-  var _lineCount = (_tileDs.viewMode === 'fit') ? -80 : -20;
+  var _lineCount = (ds.viewMode === 'fit') ? -80 : -20;
   const lastLines = snapshot.split('\n').slice(_lineCount).join('\n');
 
   const sourceUrlAttr = session.sourceUrl ? ` data-source-url="${escapeHtml(session.sourceUrl)}"` : '';
   return (
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${sourceUrlAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
+    bellDotHtml +
     `<div class="tile-header">` +
-    `<span class="tile-name">${escapeHtml(name)}${badgeHtml}</span>` +
-    `<span class="tile-meta">${bellHtml}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
+    `<span class="tile-name">${escapeHtml(name)}</span>` +
+    badgeHtml +
+    `<span class="tile-meta"><span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
     `</div>` +
     `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `<button class="tile-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
@@ -505,16 +513,25 @@ function buildSidebarHTML(session, currentSession) {
   const escapedName = escapeHtml(name);
   const isActive = name === currentSession;
 
-  let classes = 'sidebar-item';
-  if (isActive) classes += ' sidebar-item--active';
+  var ds = loadDisplaySettings();
 
   const unseen = session.bell && session.bell.unseen_count;
+  const isBell = unseen && unseen > 0;
 
-  // Bell indicator
-  let bellHtml = '';
-  if (unseen && unseen > 0) {
-    const countStr = unseen > 9 ? '9+' : String(unseen);
-    bellHtml = `<span class="tile-bell">${countStr}</span>`;
+  let classes = 'sidebar-item';
+  if (isActive) classes += ' sidebar-item--active';
+  if (isBell && ds.showActivityGlow !== false) classes += ' sidebar-item--bell';
+
+  // Activity dot — inline in sidebar header (not absolute, since items are smaller)
+  let bellDotHtml = '';
+  if (isBell && ds.showActivityDot !== false) {
+    bellDotHtml = '<span class="tile-bell-dot sidebar-bell-dot"></span>';
+  }
+
+  // Device badge — between name and bell/delete, pushed right via flex
+  let badgeHtml = '';
+  if (_sources.length > 1 && session.deviceName && ds.showDeviceBadges !== false) {
+    badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
   }
 
   // Last 20 lines of snapshot
@@ -524,8 +541,9 @@ function buildSidebarHTML(session, currentSession) {
   return (
     `<article class="${classes}" data-session="${escapedName}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
-    `<span class="sidebar-item-name">${escapedName}${_sources.length > 1 && session.deviceName ? '<span class="device-badge">' + escapeHtml(session.deviceName) + '</span>' : ''}</span>` +
-    `${bellHtml}` +
+    `<span class="sidebar-item-name">${escapedName}</span>` +
+    badgeHtml +
+    bellDotHtml +
     `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
     `</div>` +
     `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
@@ -955,6 +973,8 @@ function _previewClickHandler(e) {
 
 function showPreview(name) {
   if (!name || !_currentSessions) return;
+  var _previewDs = loadDisplaySettings();
+  if (_previewDs.showHoverPreview === false) return;
   var session = _currentSessions.find(function (s) { return s.name === name; });
   if (!session || !session.snapshot) return;
 
@@ -1657,6 +1677,18 @@ function onDisplaySettingChange() {
     ds.gridColumns = raw === 'auto' ? 'auto' : parseInt(raw, 10);
   }
 
+  var showDeviceBadgesEl = document.getElementById('setting-show-device-badges');
+  if (showDeviceBadgesEl) ds.showDeviceBadges = showDeviceBadgesEl.checked;
+
+  var showActivityGlowEl = document.getElementById('setting-show-activity-glow');
+  if (showActivityGlowEl) ds.showActivityGlow = showActivityGlowEl.checked;
+
+  var showHoverPreviewEl = document.getElementById('setting-show-hover-preview');
+  if (showHoverPreviewEl) ds.showHoverPreview = showHoverPreviewEl.checked;
+
+  var showActivityDotEl = document.getElementById('setting-show-activity-dot');
+  if (showActivityDotEl) ds.showActivityDot = showActivityDotEl.checked;
+
   saveDisplaySettings(ds);
   applyDisplaySettings(ds);
 }
@@ -1705,7 +1737,17 @@ function openSettings() {
   const viewModeEl = $('setting-view-mode');
   if (viewModeEl) viewModeEl.value = loadGridViewMode();
 
-  // Populate Notifications tab from display settings
+  // Populate new display toggle checkboxes
+  const showDeviceBadgesEl = $('setting-show-device-badges');
+  if (showDeviceBadgesEl) showDeviceBadgesEl.checked = settings.showDeviceBadges !== false;
+  const showActivityGlowEl = $('setting-show-activity-glow');
+  if (showActivityGlowEl) showActivityGlowEl.checked = settings.showActivityGlow !== false;
+  const showHoverPreviewEl = $('setting-show-hover-preview');
+  if (showHoverPreviewEl) showHoverPreviewEl.checked = settings.showHoverPreview !== false;
+  const showActivityDotEl = $('setting-show-activity-dot');
+  if (showActivityDotEl) showActivityDotEl.checked = settings.showActivityDot !== false;
+
+  // Populate Sessions tab / bell sound from display settings
   const bellSoundEl = $('setting-bell-sound');
   if (bellSoundEl) bellSoundEl.checked = !!settings.bellSound;
 
@@ -2227,6 +2269,10 @@ function bindStaticEventListeners() {
   on($('setting-font-size'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
   on($('setting-grid-columns'), 'change', onDisplaySettingChange);
+  on($('setting-show-device-badges'), 'change', onDisplaySettingChange);
+  on($('setting-show-activity-glow'), 'change', onDisplaySettingChange);
+  on($('setting-show-hover-preview'), 'change', onDisplaySettingChange);
+  on($('setting-show-activity-dot'), 'change', onDisplaySettingChange);
   on($('setting-view-mode'), 'change', function() {
     var el = $('setting-view-mode');
     if (el) {

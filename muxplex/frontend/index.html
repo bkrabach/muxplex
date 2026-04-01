@@ -16,7 +16,7 @@
 </head>
 <body>
 
-  <!-- ── Overview view ─────────────────────────────────────────────────────── -->
+  <!-- ── Overview view ──────────────────────────────────────────────────── -->
   <div id="view-overview" class="view view--active">
     <header class="app-header">
       <h1 class="app-wordmark"><img src="/wordmark-on-dark.svg" alt="muxplex" height="24" /></h1>
@@ -32,7 +32,7 @@
     <div id="empty-state" class="empty-state hidden">No active tmux sessions</div>
   </div>
 
-  <!-- ── Expanded (terminal) view ──────────────────────────────────────────── -->
+  <!-- ── Expanded (terminal) view ──────────────────────────────────────── -->
   <div id="view-expanded" class="view hidden">
     <header class="expanded-header">
       <button id="back-btn" class="back-btn" aria-label="Back">&#8592;</button>
@@ -56,7 +56,7 @@
     <div id="reconnect-overlay" class="reconnect-overlay hidden" aria-live="polite">Reconnecting&hellip;</div>
   </div>
 
-  <!-- ── Bottom sheet (session switcher) ───────────────────────────────────── -->
+  <!-- ── Bottom sheet (session switcher) ────────────────────────────────── -->
   <div id="bottom-sheet" class="bottom-sheet hidden" role="dialog" aria-modal="true" aria-label="Switch session">
     <div class="bottom-sheet__backdrop" id="sheet-backdrop"></div>
     <div class="bottom-sheet__panel">
@@ -65,19 +65,19 @@
     </div>
   </div>
 
-  <!-- ── Session pill (persistent overlay button) ──────────────────────────── -->
+  <!-- ── Session pill (persistent overlay button) ────────────────────────── -->
   <button id="session-pill" class="session-pill hidden" aria-label="Switch session">
     <span id="session-pill-label" class="session-pill__label"></span>
     <span id="session-pill-bell" class="session-pill__bell hidden" aria-hidden="true">&#128276;</span>
   </button>
 
-  <!-- ── Mobile FAB (new session) ───────────────────────────────────────────── -->
+  <!-- ── Mobile FAB (new session) ──────────────────────────────────────────── -->
   <button id="new-session-fab" class="new-session-fab" aria-label="New session">+</button>
 
-  <!-- ── Toast notification ─────────────────────────────────────────────────── -->
+  <!-- ── Toast notification ──────────────────────────────────────────────── -->
   <div id="toast" class="toast hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- ── Settings ─────────────────────────────────────────────────────────────────────── -->
+  <!-- ── Settings ──────────────────────────────────────────────────────────── -->
   <div id="settings-backdrop" class="settings-backdrop hidden"></div>
   <dialog id="settings-dialog" class="settings-dialog">
     <div class="settings-dialog-header">
@@ -88,7 +88,6 @@
       <nav class="settings-tabs">
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
-        <button class="settings-tab" data-tab="notifications">Notifications</button>
         <button class="settings-tab" data-tab="new-session">Commands</button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
       </nav>
@@ -124,6 +123,26 @@
               <option value="4">4</option>
             </select>
           </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-show-device-badges">Show device badges</label>
+            <input type="checkbox" id="setting-show-device-badges" class="settings-checkbox" checked />
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-show-activity-glow">Show activity glow</label>
+            <input type="checkbox" id="setting-show-activity-glow" class="settings-checkbox" checked />
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-show-hover-preview">Show hover preview</label>
+            <input type="checkbox" id="setting-show-hover-preview" class="settings-checkbox" checked />
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-show-activity-dot">Show activity dot</label>
+            <input type="checkbox" id="setting-show-activity-dot" class="settings-checkbox" checked />
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-device-name">Device Name</label>
+            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+          </div>
         </div>
         <div class="settings-panel hidden" data-tab="sessions">
           <div class="settings-field">
@@ -152,8 +171,6 @@
             <label class="settings-label" for="setting-auto-open">Auto-open created sessions</label>
             <input type="checkbox" id="setting-auto-open" class="settings-checkbox" checked />
           </div>
-        </div>
-        <div class="settings-panel hidden" data-tab="notifications">
           <div class="settings-field">
             <label class="settings-label" for="setting-bell-sound">Bell Sound</label>
             <input type="checkbox" id="setting-bell-sound" class="settings-checkbox" />
@@ -185,10 +202,6 @@
             <label class="settings-label" for="setting-multi-device-enabled">Enable multi-device support</label>
             <input type="checkbox" id="setting-multi-device-enabled" class="settings-checkbox" />
           </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-device-name">Device Name</label>
-            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
-          </div>
           <div id="multi-device-fields">
             <div class="settings-field">
               <label class="settings-label" for="setting-view-mode">View Mode</label>
@@ -196,13 +209,6 @@
                 <option value="flat">Flat</option>
                 <option value="grouped">Grouped</option>
                 <option value="filtered">Filtered</option>
-              </select>
-            </div>
-            <div class="settings-field">
-              <label class="settings-label" for="setting-view-scope">View Scope</label>
-              <select id="setting-view-scope" class="settings-select">
-                <option value="all">All Devices</option>
-                <option value="local">Local Only</option>
               </select>
             </div>
             <div class="settings-field settings-field--column">
@@ -216,7 +222,7 @@
     </div>
   </dialog>
 
-  <!-- ── Scripts ─────────────────────────────────────────────────────────────── -->
+  <!-- ── Scripts ──────────────────────────────────────────────────────────── -->
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
   <script src="/app.js" defer></script>

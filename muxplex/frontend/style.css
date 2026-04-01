@@ -499,6 +499,12 @@ body {
   border-left: 3px solid var(--accent);
 }
 
+/* Bell / activity glow — matches .session-tile--bell */
+.sidebar-item--bell {
+  border-color: var(--bell-border);
+  box-shadow: 0 0 0 1px var(--bell-border), inset 0 0 12px var(--bell-glow);
+}
+
 .sidebar-item-header {
   display: flex;
   flex-direction: row;
@@ -605,15 +611,29 @@ body {
 }
 
 /* ============================================================
-   Bell count badge
+   Activity dot — absolute positioned in upper-right corner of tile
    ============================================================ */
 
-.tile-bell-count {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--bell);
-  min-width: 16px;
-  text-align: right;
+.tile-bell-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bell);
+  animation: bell-pulse 1.4s ease-in-out infinite;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Sidebar variant: inline (not absolute), fits within header row */
+.sidebar-bell-dot {
+  position: static;
+  display: inline-block;
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
 }
 
 /* ============================================================

@@ -451,24 +451,26 @@ test('buildTileHTML sets data-session attribute with escaped session name', () =
   assert.ok(html.includes('data-session="my&lt;session&gt;"'), 'data-session should be escaped');
 });
 
-test('buildTileHTML shows 9+ when unseen_count exceeds 9', () => {
+test('buildTileHTML shows tile-bell-dot (not count) when unseen_count exceeds 9', () => {
   const session = {
     name: 's',
     bell: { unseen_count: 10, seen_at: null, last_fired_at: 100 },
     snapshot: '',
   };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('9+'), 'should show 9+ for count > 9');
+  assert.ok(html.includes('tile-bell-dot'), 'should show tile-bell-dot for count > 9');
+  assert.ok(!html.includes('9+'), 'should NOT show 9+ count text (dot only)');
 });
 
-test('buildTileHTML shows exact count when unseen_count is <= 9', () => {
+test('buildTileHTML shows tile-bell-dot (not count) when unseen_count is <= 9', () => {
   const session = {
     name: 's',
     bell: { unseen_count: 5, seen_at: null, last_fired_at: 100 },
     snapshot: '',
   };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('>5<'), 'should show exact count 5');
+  assert.ok(html.includes('tile-bell-dot'), 'should show tile-bell-dot for count > 0');
+  assert.ok(!html.includes('>5<'), 'should NOT show exact count 5 (dot only)');
 });
 
 test('buildTileHTML includes only last 20 lines of snapshot', () => {
@@ -1544,17 +1546,17 @@ test('buildSidebarHTML does not add sidebar-item--active class for inactive sess
   assert.ok(!html.includes('sidebar-item--active'), 'inactive session should not have sidebar-item--active class');
 });
 
-test('buildSidebarHTML renders bell badge with tile-bell class and count when unseen_count > 0', () => {
+test('buildSidebarHTML renders bell dot indicator when unseen_count > 0', () => {
   const session = { name: 's', snapshot: '', bell: { unseen_count: 3 } };
   const html = app.buildSidebarHTML(session, '');
-  assert.ok(html.includes('tile-bell'), 'should contain tile-bell class when unseen_count > 0');
-  assert.ok(html.includes('>3<'), 'should contain unseen count text');
+  assert.ok(html.includes('tile-bell-dot'), 'should contain tile-bell-dot class when unseen_count > 0');
+  assert.ok(!html.includes('>3<'), 'should NOT contain unseen count text (dot only)');
 });
 
-test('buildSidebarHTML omits bell badge when unseen_count is 0', () => {
+test('buildSidebarHTML omits bell dot when unseen_count is 0', () => {
   const session = { name: 's', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, '');
-  assert.ok(!html.includes('tile-bell'), 'should not contain tile-bell class when unseen_count is 0');
+  assert.ok(!html.includes('tile-bell-dot'), 'should not contain tile-bell-dot when unseen_count is 0');
 });
 
 test('buildSidebarHTML HTML-escapes session name to prevent XSS', () => {
@@ -3825,5 +3827,126 @@ test('bindStaticEventListeners does NOT bind change event to setting-view-scope'
     !fnBody.includes('setting-view-scope'),
     'bindStaticEventListeners must NOT reference setting-view-scope — view scope removed',
   );
+});
+
+// ─── Activity dot / sidebar glow / config toggles (UI/UX improvements) ───────
+
+test('buildTileHTML bell dot is positioned before tile-header (absolute overlay)', () => {
+  const session = {
+    name: 's',
+    bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 },
+    snapshot: '',
+  };
+  const html = app.buildTileHTML(session, 0, false);
+  const dotIdx = html.indexOf('tile-bell-dot');
+  const headerIdx = html.indexOf('tile-header');
+  assert.ok(dotIdx !== -1, 'tile-bell-dot must be present');
+  assert.ok(dotIdx < headerIdx, 'tile-bell-dot must appear before tile-header in HTML');
+});
+
+test('buildTileHTML omits tile-bell-dot when unseen_count is 0', () => {
+  const session = { name: 's', bell: { unseen_count: 0 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('tile-bell-dot'), 'no tile-bell-dot when unseen_count is 0');
+});
+
+test('buildSidebarHTML adds sidebar-item--bell class for bell sessions', () => {
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 3, seen_at: null, last_fired_at: 100 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('sidebar-item--bell'), 'sidebar item should have sidebar-item--bell class when bell is active');
+});
+
+test('buildSidebarHTML does not add sidebar-item--bell when no unseen', () => {
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(!html.includes('sidebar-item--bell'), 'should NOT have sidebar-item--bell when unseen_count is 0');
+});
+
+test('DISPLAY_DEFAULTS includes showDeviceBadges key', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('showDeviceBadges'), 'DISPLAY_DEFAULTS must include showDeviceBadges');
+});
+
+test('DISPLAY_DEFAULTS includes showActivityGlow key', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('showActivityGlow'), 'DISPLAY_DEFAULTS must include showActivityGlow');
+});
+
+test('DISPLAY_DEFAULTS includes showHoverPreview key', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('showHoverPreview'), 'DISPLAY_DEFAULTS must include showHoverPreview');
+});
+
+test('DISPLAY_DEFAULTS includes showActivityDot key', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('showActivityDot'), 'DISPLAY_DEFAULTS must include showActivityDot');
+});
+
+test('HTML index.html has setting-show-device-badges checkbox', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(source.includes('setting-show-device-badges'), 'Display panel must have setting-show-device-badges checkbox');
+});
+
+test('HTML index.html has setting-show-activity-glow checkbox', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(source.includes('setting-show-activity-glow'), 'Display panel must have setting-show-activity-glow checkbox');
+});
+
+test('HTML index.html has setting-show-hover-preview checkbox', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(source.includes('setting-show-hover-preview'), 'Display panel must have setting-show-hover-preview checkbox');
+});
+
+test('HTML index.html has setting-show-activity-dot checkbox', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(source.includes('setting-show-activity-dot'), 'Display panel must have setting-show-activity-dot checkbox');
+});
+
+test('CSS style.css has .tile-bell-dot rule', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.tile-bell-dot'), 'style.css must have .tile-bell-dot rule');
+});
+
+test('CSS style.css has .sidebar-item--bell rule', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.sidebar-item--bell'), 'style.css must have .sidebar-item--bell rule');
+});
+
+test('CSS style.css has .sidebar-bell-dot rule', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('.sidebar-bell-dot'), 'style.css must have .sidebar-bell-dot rule');
+});
+
+test('showPreview checks showHoverPreview setting before showing popover', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function showPreview(');
+  assert.ok(fnStart !== -1, 'showPreview must exist');
+  const fnEnd = source.indexOf('\n}', fnStart);
+  const fnBody = source.substring(fnStart, fnEnd + 2);
+  assert.ok(fnBody.includes('showHoverPreview'), 'showPreview must check showHoverPreview setting before showing popover');
+});
+
+test('bindStaticEventListeners binds change events for new display toggle checkboxes', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function bindStaticEventListeners(');
+  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 10000);
+  assert.ok(fnBody.includes('setting-show-device-badges'), 'must bind setting-show-device-badges');
+  assert.ok(fnBody.includes('setting-show-activity-glow'), 'must bind setting-show-activity-glow');
+  assert.ok(fnBody.includes('setting-show-hover-preview'), 'must bind setting-show-hover-preview');
+  assert.ok(fnBody.includes('setting-show-activity-dot'), 'must bind setting-show-activity-dot');
 });
 
