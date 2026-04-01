@@ -2089,4 +2089,6 @@ def test_custom_scrollbar_styles():
     css = read_css()
     assert "scrollbar-width: thin" in css, "Firefox scrollbar-width must be set"
     assert "::-webkit-scrollbar" in css, "WebKit scrollbar rules must exist"
-    assert "border-radius: 3px" in css or "border-radius:3px" in css, "scrollbar thumb must be rounded"
+    assert "border-radius: 3px" in css or "border-radius:3px" in css, (
+        "scrollbar thumb must be rounded"
+    )

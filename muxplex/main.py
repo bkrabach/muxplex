@@ -677,8 +677,8 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
                             await ttyd_ws.send(msg["bytes"])
                         elif msg.get("text"):
                             await ttyd_ws.send(msg["text"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("ws relay closed (client_to_ttyd): %s", exc)
 
             async def ttyd_to_client() -> None:
                 try:
@@ -687,12 +687,12 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
                             await websocket.send_bytes(message)
                         else:
                             await websocket.send_text(message)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("ws relay closed (ttyd_to_client): %s", exc)
 
             await asyncio.gather(client_to_ttyd(), ttyd_to_client())
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("ws proxy closed: %s", exc)
     finally:
         try:
             await websocket.close()
@@ -756,8 +756,8 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
                             await remote_ws.send(msg["bytes"])
                         elif msg.get("text"):
                             await remote_ws.send(msg["text"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("federation ws relay closed (client_to_remote): %s", exc)
 
             async def remote_to_client() -> None:
                 try:
@@ -766,12 +766,12 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
                             await websocket.send_bytes(message)
                         else:
                             await websocket.send_text(message)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.debug("federation ws relay closed (remote_to_client): %s", exc)
 
             await asyncio.gather(client_to_remote(), remote_to_client())
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("federation ws proxy closed: %s", exc)
     finally:
         try:
             await websocket.close()
