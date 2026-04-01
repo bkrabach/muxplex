@@ -1325,3 +1325,21 @@ def test_html_display_panel_no_view_scope() -> None:
     assert el is None, (
         "#setting-view-scope must NOT be in the display panel (moved to Multi-Device tab)"
     )
+
+
+# ============================================================
+# Clickable URLs — xterm-addon-web-links (task: clickable URLs)
+# ============================================================
+
+
+def read_html() -> str:
+    """Read raw HTML content of index.html."""
+    return HTML_PATH.read_text()
+
+
+def test_html_loads_web_links_addon() -> None:
+    """index.html must load the xterm-addon-web-links CDN script."""
+    html = read_html()
+    assert "web-links" in html.lower() or "weblinks" in html.lower(), (
+        "Must load xterm-addon-web-links from CDN"
+    )

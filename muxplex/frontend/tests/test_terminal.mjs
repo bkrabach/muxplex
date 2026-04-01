@@ -949,4 +949,16 @@ test('terminal.js registers OSC 52 handler for tmux clipboard bridge', () => {
   );
 });
 
+// --- Clickable URLs via xterm-addon-web-links ---
+
+test('terminal.js loads xterm-addon-web-links for clickable URLs', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('WebLinksAddon'), 'must reference WebLinksAddon');
+  assert.ok(
+    source.includes('ctrlKey') || source.includes('metaKey'),
+    'must check modifier key for link clicks',
+  );
+  assert.ok(source.includes('window.open'), 'must open URLs in new tab');
+});
+
 

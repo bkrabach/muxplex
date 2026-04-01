@@ -243,6 +243,18 @@ function createTerminal() {
 
   _fitAddon = new window.FitAddon.FitAddon();
   _term.loadAddon(_fitAddon);
+
+  // Clickable URLs — Ctrl+Click (Windows/Linux) or Cmd+Click (macOS) opens in new tab.
+  // xterm-addon-web-links auto-detects URLs and adds hover underlines.
+  // Plain click is preserved for normal terminal text selection.
+  var WebLinksAddon = window.WebLinksAddon && window.WebLinksAddon.WebLinksAddon;
+  if (WebLinksAddon) {
+    _term.loadAddon(new WebLinksAddon(function(event, uri) {
+      if (event.ctrlKey || event.metaKey) {
+        window.open(uri, '_blank');
+      }
+    }));
+  }
 }
 
 // ─── Open / close ─────────────────────────────────────────────────────────────
