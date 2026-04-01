@@ -526,7 +526,14 @@ function buildTileHTML(session, index, mobile) {
   // Last N lines of snapshot — show more in fit mode so tall tiles fill
   const snapshot = session.snapshot || '';
   var _lineCount = (ds.viewMode === 'fit') ? -80 : -20;
-  const lastLines = snapshot.split('\n').slice(_lineCount).join('\n');
+  var lines = snapshot.split('\n').slice(_lineCount);
+  // Trim trailing blank lines — sessions with cursor near the top have mostly empty
+  // lines at the bottom, making the preview appear blank. Removing them lets the
+  // CSS `position: absolute; bottom: 0` anchor the meaningful content correctly.
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
+  }
+  const lastLines = lines.join('\n');
 
   const sourceUrlAttr = session.sourceUrl ? ` data-source-url="${escapeHtml(session.sourceUrl)}"` : '';
   return (
@@ -577,7 +584,13 @@ function buildSidebarHTML(session, currentSession) {
 
   // Last 20 lines of snapshot
   const snapshot = session.snapshot || '';
-  const lastLines = snapshot.split('\n').slice(-20).join('\n');
+  var sidebarLines = snapshot.split('\n').slice(-20);
+  // Trim trailing blank lines — sessions with cursor near the top have mostly empty
+  // lines at the bottom, making the preview appear blank.
+  while (sidebarLines.length > 0 && sidebarLines[sidebarLines.length - 1].trim() === '') {
+    sidebarLines.pop();
+  }
+  const lastLines = sidebarLines.join('\n');
 
   return (
     `<article class="${classes}" data-session="${escapedName}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem">` +

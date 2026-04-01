@@ -4287,3 +4287,70 @@ test('CSS style.css .tile-time has opacity transition for crossfade', () => {
     'style.css must have session-tile:hover .tile-time for crossfade'
   );
 });
+
+// --- Trailing blank line trimming in snapshot previews ---
+
+test('buildTileHTML trims trailing blank lines so pre ends with last content line', () => {
+  // Simulates a session where cursor is near the top: 2 content lines, then 18 blank lines.
+  // slice(-20) grabs all 20 lines (2 content + 18 blanks).
+  // Without trimming, the <pre> ends with blank lines (last meaningful content is invisible).
+  // With trimming, the <pre> ends with the last non-blank line.
+  const contentLines = ['$ tunnel up', '  forwarding 8443...'];
+  const blankLines = new Array(18).fill('');
+  const snapshot = contentLines.concat(blankLines).join('\n');
+
+  const session = { name: 'tunnel', snapshot };
+  const html = app.buildTileHTML(session, 0, false);
+
+  // The pre element must contain the content lines
+  assert.ok(html.includes('tunnel up'), 'tile preview must include content line');
+  assert.ok(html.includes('forwarding 8443'), 'tile preview must include second content line');
+
+  // The pre should NOT end with blank lines (trailing whitespace trimmed)
+  const preMatch = html.match(/<pre>([\s\S]*?)<\/pre>/);
+  assert.ok(preMatch, '<pre> element must exist in tile HTML');
+  const preContent = preMatch[1];
+  const lastLine = preContent.split('\n').pop();
+  assert.ok(lastLine.trim() !== '',
+    'last line of pre content must not be blank after trimming trailing blank lines');
+});
+
+test('buildSidebarHTML trims trailing blank lines so pre ends with last content line', () => {
+  // Same scenario: 2 content lines at top, 18 blank lines below.
+  const contentLines = ['$ tunnel up', '  forwarding 8443...'];
+  const blankLines = new Array(18).fill('');
+  const snapshot = contentLines.concat(blankLines).join('\n');
+
+  const session = { name: 'tunnel', snapshot, bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+
+  assert.ok(html.includes('tunnel up'), 'sidebar preview must include content line');
+  assert.ok(html.includes('forwarding 8443'), 'sidebar preview must include second content line');
+
+  const preMatch = html.match(/<pre>([\s\S]*?)<\/pre>/);
+  assert.ok(preMatch, '<pre> element must exist in sidebar HTML');
+  const preContent = preMatch[1];
+  const lastLine = preContent.split('\n').pop();
+  assert.ok(lastLine.trim() !== '',
+    'last line of sidebar pre content must not be blank after trimming trailing blank lines');
+});
+
+test('buildTileHTML renders empty pre when snapshot is entirely blank lines', () => {
+  // Edge case: completely empty session — pre should be empty, not show garbage
+  const snapshot = new Array(30).fill('').join('\n');
+  const session = { name: 'empty-session', snapshot };
+  const html = app.buildTileHTML(session, 0, false);
+  const preMatch = html.match(/<pre>([\s\S]*?)<\/pre>/);
+  assert.ok(preMatch, '<pre> element must exist');
+  // pre content should be empty string (all blanks trimmed away)
+  assert.strictEqual(preMatch[1], '', 'pre should be empty when snapshot has only blank lines');
+});
+
+test('buildSidebarHTML renders empty pre when snapshot is entirely blank lines', () => {
+  const snapshot = new Array(25).fill('').join('\n');
+  const session = { name: 'empty-session', snapshot, bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  const preMatch = html.match(/<pre>([\s\S]*?)<\/pre>/);
+  assert.ok(preMatch, '<pre> element must exist');
+  assert.strictEqual(preMatch[1], '', 'sidebar pre should be empty when snapshot has only blank lines');
+});
