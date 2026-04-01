@@ -962,6 +962,41 @@ async def federation_sessions(request: Request) -> list[dict]:
     return all_sessions
 
 
+@app.post("/api/federation/{remote_id}/connect/{session_name}")
+async def federation_connect(
+    remote_id: str, session_name: str, request: Request
+) -> dict:
+    """Proxy a connect POST to a remote instance to spawn its ttyd.
+
+    Looks up the remote by integer index into ``remote_instances`` in settings,
+    sends ``POST {remote_url}/api/sessions/{session_name}/connect`` with a
+    Bearer auth header, and returns the remote's JSON response.
+
+    Raises HTTP 404 if ``remote_id`` is not a valid integer index.
+    """
+    settings = load_settings()
+    remotes = settings.get("remote_instances", [])
+    try:
+        idx = int(remote_id)
+        remote = remotes[idx]
+    except (ValueError, IndexError):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Remote instance '{remote_id}' not found",
+        )
+
+    remote_url: str = remote.get("url", "").rstrip("/")
+    remote_key: str = remote.get("key", "")
+    url = f"{remote_url}/api/sessions/{session_name}/connect"
+
+    http_client: httpx.AsyncClient = request.app.state.federation_client
+    resp = await http_client.post(
+        url,
+        headers={"Authorization": f"Bearer {remote_key}"},
+    )
+    return resp.json()
+
+
 # ---------------------------------------------------------------------------
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------

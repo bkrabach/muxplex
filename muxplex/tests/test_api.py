@@ -1633,3 +1633,103 @@ def test_federation_sessions_includes_remote_failure_status(
     entry = failure_entries[0]
     assert entry["status"] == "unreachable"
     assert entry.get("remoteId") == "remote-1"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/federation/{remote_id}/connect/{session_name} (task-12)
+# ---------------------------------------------------------------------------
+
+
+def test_federation_connect_proxies_to_remote(client, monkeypatch, tmp_path):
+    """POST /api/federation/{remote_id}/connect/{session_name} proxies POST to remote's connect endpoint.
+
+    Looks up remote by integer index, sends POST {remote_url}/api/sessions/{session_name}/connect
+    with Bearer auth header, and returns the remote's JSON response.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    # Track what POST was called with
+    post_calls = []
+
+    async def mock_post(url, **kwargs):
+        post_calls.append({"url": url, "kwargs": kwargs})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"active_session": "my-session", "ttyd_port": 7682}
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/0/connect/my-session")
+    assert response.status_code == 200
+
+    # Verify the POST was made to the correct URL with session name
+    assert len(post_calls) == 1, f"Expected exactly 1 POST call, got {len(post_calls)}"
+    call = post_calls[0]
+    assert call["url"] == "http://remote-host:8088/api/sessions/my-session/connect", (
+        f"Expected POST to remote connect URL, got: {call['url']}"
+    )
+
+    # Verify Bearer auth was included
+    headers = call["kwargs"].get("headers", {})
+    assert headers.get("Authorization") == "Bearer secret-key-123", (
+        f"Expected Bearer auth header, got: {headers}"
+    )
+
+    # Verify the response is the remote's JSON
+    data = response.json()
+    assert data["active_session"] == "my-session"
+    assert data["ttyd_port"] == 7682
+
+
+def test_federation_connect_returns_404_for_invalid_remote_id(client, monkeypatch, tmp_path):
+    """POST /api/federation/{remote_id}/connect/{session_name} returns 404 when remote_id is out of range."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # No remote instances configured
+    settings_path.write_text(json.dumps({"remote_instances": []}))
+
+    response = client.post("/api/federation/0/connect/my-session")
+    assert response.status_code == 404
+
+
+def test_federation_connect_returns_404_for_non_integer_remote_id(client, monkeypatch, tmp_path):
+    """POST /api/federation/{remote_id}/connect/{session_name} returns 404 when remote_id is not an integer."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"remote_instances": []}))
+
+    response = client.post("/api/federation/not-an-int/connect/my-session")
+    assert response.status_code == 404
