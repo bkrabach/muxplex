@@ -92,78 +92,6 @@ def test_main_install_service_system_flag():
         mock_install.assert_called_once()
 
 
-def test_install_service_user_mode_writes_unit_file(tmp_path, monkeypatch):
-    """install_service(system=False) writes a unit file to ~/.config/systemd/user/."""
-    from muxplex.cli import install_service
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-
-    install_service(system=False)
-
-    unit_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
-    assert unit_path.exists()
-    content = unit_path.read_text()
-    assert "[Unit]" in content
-    assert "[Service]" in content
-    assert "[Install]" in content
-    assert "muxplex" in content
-    assert "default.target" in content
-
-
-def test_install_service_system_mode_target(tmp_path, monkeypatch):
-    """install_service(system=True) targets multi-user.target in the unit file."""
-    from muxplex.cli import install_service
-
-    # Redirect the system path to tmp so we don't write to /etc
-    unit_path = tmp_path / "muxplex.service"
-    monkeypatch.setattr("muxplex.cli._system_service_path", unit_path)
-
-    install_service(system=True)
-
-    assert unit_path.exists()
-    content = unit_path.read_text()
-    assert "multi-user.target" in content
-
-
-def test_install_service_strips_wsl_mnt_paths_from_environment(tmp_path, monkeypatch):
-    """Fix 3: install_service() must strip /mnt/ paths from Environment=PATH.
-
-    WSL mounts Windows at /mnt/c/, /mnt/d/ etc.  Paths like
-    '/mnt/c/Program Files/dotnet/' contain spaces, causing systemd to
-    truncate and reject the Environment= line.
-    """
-    from muxplex.cli import install_service
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-
-    wsl_path = (
-        "/usr/local/bin:/usr/bin:/bin:/mnt/c/Program Files/dotnet:/mnt/d/tools/bin"
-    )
-    monkeypatch.setenv("PATH", wsl_path)
-
-    install_service(system=False)
-
-    unit_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
-    content = unit_path.read_text()
-
-    # Find the Environment=PATH line
-    env_line = next(
-        (line for line in content.splitlines() if line.startswith("Environment=PATH=")),
-        None,
-    )
-    assert env_line is not None, "Environment=PATH line must be present"
-    assert "/mnt/" not in env_line, (
-        f"WSL /mnt/ paths must be stripped from Environment=PATH; got: {env_line!r}"
-    )
-    # Safe paths must still be present
-    assert "/usr/local/bin" in env_line
-    assert "/usr/bin" in env_line
-
-
 def test_show_password_prints_password_from_file(tmp_path, monkeypatch, capsys):
     """show_password() prints the password when MUXPLEX_AUTH=password and file exists."""
     from muxplex.cli import show_password
@@ -261,130 +189,6 @@ def test_reset_secret_prints_warning(tmp_path, monkeypatch, capsys):
     assert "invalid" in output_lower or "warning" in output_lower, (
         f"Expected 'invalid' or 'warning' in output, got: {captured.out!r}"
     )
-
-
-def test_install_service_writes_launchd_plist_on_macos(tmp_path, monkeypatch):
-    """install_service() on macOS writes a launchd plist to ~/Library/LaunchAgents/."""
-    import subprocess
-    from muxplex.cli import install_service
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    monkeypatch.setattr("sys.platform", "darwin")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-    )
-
-    install_service(system=False)
-
-    plist_path = fake_home / "Library" / "LaunchAgents" / "com.muxplex.plist"
-    assert plist_path.exists(), "Plist file must be created on macOS"
-    content = plist_path.read_text()
-    assert "com.muxplex" in content
-    assert "RunAtLoad" in content
-    assert "ProgramArguments" in content
-    assert "LaunchAgents" in str(plist_path)
-
-
-def test_install_service_does_not_write_systemd_on_macos(tmp_path, monkeypatch):
-    """install_service() on macOS must NOT write a systemd unit file."""
-    import subprocess
-    from muxplex.cli import install_service
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    monkeypatch.setattr("sys.platform", "darwin")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-    )
-
-    install_service(system=False)
-
-    systemd_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
-    assert not systemd_path.exists(), "No systemd unit file should be written on macOS"
-
-
-def test_install_service_uses_modern_launchctl_on_macos(tmp_path, monkeypatch, capsys):
-    """install-service on macOS must use launchctl bootstrap (not load)."""
-    import subprocess
-    from muxplex.cli import install_service
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    monkeypatch.setattr("sys.platform", "darwin")
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
-
-    calls = []
-
-    def mock_run(cmd, **kwargs):
-        calls.append(cmd)
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-
-    install_service(system=False)
-
-    launchctl_cmds = [c for c in calls if isinstance(c, list) and "launchctl" in str(c)]
-    assert any("bootout" in str(c) for c in launchctl_cmds), (
-        "must bootout old service before loading"
-    )
-    assert any("bootstrap" in str(c) for c in launchctl_cmds), (
-        "must use launchctl bootstrap (modern API)"
-    )
-    # Must NOT use deprecated load
-    assert not any(
-        c == ["launchctl", "load"]
-        or (isinstance(c, list) and c[:2] == ["launchctl", "load"])
-        for c in launchctl_cmds
-    ), "must NOT use deprecated launchctl load"
-
-
-def test_install_service_plist_includes_host_flag(tmp_path, monkeypatch):
-    """The generated plist must include --host 0.0.0.0 for network access."""
-    import subprocess
-    from muxplex.cli import install_service
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    monkeypatch.setattr("sys.platform", "darwin")
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-    )
-
-    install_service(system=False)
-
-    plist_path = fake_home / "Library" / "LaunchAgents" / "com.muxplex.plist"
-    content = plist_path.read_text()
-    assert "0.0.0.0" in content, "plist must bind to 0.0.0.0 for network access"
-
-
-def test_install_service_writes_systemd_on_linux(tmp_path, monkeypatch):
-    """install_service() on Linux writes a systemd unit to ~/.config/systemd/user/."""
-    from muxplex.cli import install_service
-
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
-    monkeypatch.setattr("sys.platform", "linux")
-
-    install_service(system=False)
-
-    unit_path = fake_home / ".config" / "systemd" / "user" / "muxplex.service"
-    assert unit_path.exists(), "Systemd unit file must be created on Linux"
-    content = unit_path.read_text()
-    assert "[Unit]" in content
-    assert "[Service]" in content
 
 
 def test_install_service_help_text_mentions_background_service():
@@ -646,7 +450,6 @@ def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli_mod, "install_service", lambda system=False: None)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
     # Mock version check so upgrade proceeds regardless of local install type
     monkeypatch.setattr(
@@ -655,7 +458,8 @@ def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
         lambda info: (True, "update available (abc12345 → def67890)"),
     )
 
-    cli_mod.upgrade()
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
 
     # Should have called uv tool install
     uv_calls = [c for c in calls if isinstance(c, list) and "uv" in str(c)]
@@ -729,7 +533,6 @@ def test_upgrade_force_skips_version_check(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli_mod, "install_service", lambda system=False: None)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
     # With force=True the version check must be bypassed entirely
     check_calls = []
@@ -739,7 +542,8 @@ def test_upgrade_force_skips_version_check(monkeypatch, capsys):
         lambda info: check_calls.append(info) or (True, "should not be reached"),
     )
 
-    cli_mod.upgrade(force=True)
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade(force=True)
 
     # _check_for_update must NOT have been called when force=True
     assert len(check_calls) == 0, "Version check must be skipped when force=True"
@@ -762,7 +566,6 @@ def test_upgrade_already_up_to_date_skips_install(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli_mod, "install_service", lambda system=False: None)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
     monkeypatch.setattr(
         cli_mod,
@@ -770,7 +573,8 @@ def test_upgrade_already_up_to_date_skips_install(monkeypatch, capsys):
         lambda info: (False, "up to date (commit abcd1234)"),
     )
 
-    cli_mod.upgrade()
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
 
     out = capsys.readouterr().out
     assert "up to date" in out.lower() or "already" in out.lower()
@@ -1131,3 +935,67 @@ def test_service_subcommand_in_help():
 
     help_text = buf.getvalue().lower()
     assert "service" in help_text
+
+
+# ---------------------------------------------------------------------------
+# task-6: Verify old install_service/launchd/systemd removed from cli.py
+# ---------------------------------------------------------------------------
+
+
+def test_old_install_service_removed_from_cli():
+    """install_service must no longer exist in muxplex.cli (moved to muxplex.service)."""
+    import muxplex.cli as cli_mod
+
+    assert not hasattr(cli_mod, "install_service"), (
+        "install_service should be removed from cli.py; use muxplex.service.service_install"
+    )
+
+
+def test_old_install_launchd_removed_from_cli():
+    """_install_launchd must no longer exist in muxplex.cli (moved to muxplex.service)."""
+    import muxplex.cli as cli_mod
+
+    assert not hasattr(cli_mod, "_install_launchd"), (
+        "_install_launchd should be removed from cli.py; functionality is in muxplex.service"
+    )
+
+
+def test_old_install_systemd_removed_from_cli():
+    """_install_systemd must no longer exist in muxplex.cli (moved to muxplex.service)."""
+    import muxplex.cli as cli_mod
+
+    assert not hasattr(cli_mod, "_install_systemd"), (
+        "_install_systemd should be removed from cli.py; functionality is in muxplex.service"
+    )
+
+
+def test_upgrade_uses_service_module_install(monkeypatch, capsys):
+    """upgrade() must call muxplex.service.service_install instead of cli.install_service."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    calls = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (abc12345 \u2192 def67890)"),
+    )
+
+    service_install_calls = []
+    with patch(
+        "muxplex.service.service_install", lambda: service_install_calls.append(True)
+    ):
+        cli_mod.upgrade()
+
+    assert len(service_install_calls) > 0, (
+        "upgrade() must call muxplex.service.service_install() to regenerate the service file"
+    )
