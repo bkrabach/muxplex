@@ -64,38 +64,19 @@ muxplex
 
 ## Install as a Service
 
-### macOS (launchd)
-
 ```bash
-# Install and load the launchd agent (auto-starts on login)
-muxplex install-service   # deprecated — use 'muxplex service install'
-launchctl load ~/Library/LaunchAgents/com.muxplex.plist
+muxplex service install
 ```
+
+The service starts automatically on login (macOS) or at boot (Linux) and restarts on failure.
 
 To stop and remove:
-```bash
-launchctl unload ~/Library/LaunchAgents/com.muxplex.plist
-```
-
-### Linux / WSL — User service (no sudo required)
 
 ```bash
-# Install and enable the user systemd service
-muxplex install-service   # deprecated — use 'muxplex service install'
-systemctl --user daemon-reload
-systemctl --user enable --now muxplex
+muxplex service uninstall
 ```
 
-The service starts automatically when you log in and restarts on failure.
-
-### Linux — System-wide service (requires sudo)
-
-```bash
-# Install as a system service (runs at boot for all users)
-muxplex install-service --system   # deprecated — use 'muxplex service install --system'
-sudo systemctl daemon-reload
-sudo systemctl enable --now muxplex
-```
+> **Note:** All service commands use the `muxplex service` subcommand — see [Service management](#service-management) below.
 
 ---
 
@@ -124,6 +105,26 @@ All serve options read from `~/.config/muxplex/settings.json` by default. CLI fl
 | `muxplex show-password` | Show the current muxplex password |
 | `muxplex reset-secret` | Regenerate signing secret (invalidates sessions) |
 | `muxplex install-service` | *(deprecated — use `muxplex service install`)* |
+
+### Service management
+
+```bash
+muxplex service install     # Write service file + enable + start
+muxplex service uninstall   # Stop + disable + remove service file
+muxplex service start       # Start the service
+muxplex service stop        # Stop the service
+muxplex service restart     # Stop + start
+muxplex service status      # Show running/stopped + PID
+muxplex service logs        # Tail service logs
+```
+
+The service runs `muxplex serve` with no flags — it reads all options from `~/.config/muxplex/settings.json`. To change host/port, edit the config and restart:
+
+```bash
+# Edit settings to bind to all interfaces
+# (or use the Settings UI in the browser)
+muxplex service restart
+```
 
 ### Examples
 
