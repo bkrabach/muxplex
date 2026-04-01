@@ -962,6 +962,26 @@ async def federation_sessions(request: Request) -> list[dict]:
     return all_sessions
 
 
+@app.post("/api/federation/generate-key")
+async def federation_generate_key() -> dict:
+    """Generate a new federation key, write it to FEDERATION_KEY_PATH, and return it.
+
+    Creates the parent directory (mode 0700) if it doesn't exist.
+    Writes the key with a trailing newline and sets file mode to 0600.
+
+    Returns {key: str, path: str}.
+    """
+    import secrets as _secrets
+    from muxplex.settings import FEDERATION_KEY_PATH
+
+    key = _secrets.token_urlsafe(32)
+    path = FEDERATION_KEY_PATH
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(key + "\n")
+    path.chmod(0o600)
+    return {"key": key, "path": str(path)}
+
+
 @app.post("/api/federation/{remote_id}/connect/{session_name}")
 async def federation_connect(
     remote_id: str, session_name: str, request: Request
