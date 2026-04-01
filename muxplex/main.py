@@ -183,11 +183,13 @@ async def lifespan(app: FastAPI):
     yield
 
     try:
-        await app.state.federation_client.aclose()
+        client = getattr(app.state, "federation_client", None)
+        if client is not None:
+            await client.aclose()
     except Exception:
         _log.exception("federation_client aclose error")
     finally:
-        # Shutdown: cancel the poll loop task and wait for it to finish.
+        # Cleanup: cancel the poll loop task and wait for it to finish.
         if _poll_task is not None:
             _poll_task.cancel()
             try:
