@@ -617,19 +617,10 @@ body {
   margin: 0;
 }
 
-/* Sidebar meta line — device badge + separator + timestamp */
-.sidebar-item-meta {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 8px 4px;
-  font-size: 10px;
-  color: var(--text-muted);
+.sidebar-item-header .device-badge {
+  margin-left: auto;
+  margin-right: 4px;
   flex-shrink: 0;
-}
-
-.sidebar-meta-sep {
-  opacity: 0.4;
 }
 
 .sidebar-empty {

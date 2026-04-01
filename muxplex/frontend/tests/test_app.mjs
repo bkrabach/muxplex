@@ -3914,22 +3914,24 @@ test('buildTileHTML does NOT add session-tile--edge-bell when activityIndicator 
   _localStorageStore = {};
 });
 
-test('buildSidebarHTML has sidebar-item-meta line (two-line header)', () => {
-  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 }, last_activity_at: null };
+test('buildSidebarHTML has single-line header with name, badge, and delete button', () => {
+  app._setServerSettings({ multi_device_enabled: true });
+  const session = { name: 'my-session', deviceName: 'Laptop', remoteId: 'fed-abc', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, '');
-  assert.ok(html.includes('sidebar-item-meta'), 'sidebar-item-meta element must exist in sidebar HTML');
+  const headerStart = html.indexOf('sidebar-item-header');
+  const headerEnd = html.indexOf('</div>', headerStart);
+  const headerContent = html.substring(headerStart, headerEnd);
+  assert.ok(headerContent.includes('device-badge'), 'device-badge must be inside sidebar-item-header');
+  assert.ok(headerContent.includes('sidebar-delete'), 'sidebar-delete must be inside sidebar-item-header');
+  app._setServerSettings(null);
 });
 
-test('buildSidebarHTML sidebar-item-meta contains sidebar-meta-sep dot separator', () => {
+test('buildSidebarHTML does not have sidebar-item-meta element', () => {
   const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 }, last_activity_at: null };
   const html = app.buildSidebarHTML(session, '');
-  assert.ok(html.includes('sidebar-meta-sep'), 'sidebar-meta-sep must be present in sidebar HTML');
-});
-
-test('buildSidebarHTML sidebar-item-meta contains sidebar-item-time', () => {
-  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 }, last_activity_at: null };
-  const html = app.buildSidebarHTML(session, '');
-  assert.ok(html.includes('sidebar-item-time'), 'sidebar-item-time must be present in sidebar HTML');
+  assert.ok(!html.includes('sidebar-item-meta'), 'sidebar-item-meta must NOT exist in sidebar HTML');
+  assert.ok(!html.includes('sidebar-meta-sep'), 'sidebar-meta-sep must NOT exist in sidebar HTML');
+  assert.ok(!html.includes('sidebar-item-time'), 'sidebar-item-time must NOT exist in sidebar HTML');
 });
 
 test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is dot', () => {
@@ -3983,9 +3985,9 @@ test('CSS style.css .session-tile has border-left for edge bar', () => {
   assert.ok(tileBody.includes('border-left'), '.session-tile must have border-left for edge bar');
 });
 
-test('CSS style.css has .sidebar-item-meta rule', () => {
+test('CSS style.css has .sidebar-item-header .device-badge rule for badge right-alignment', () => {
   const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  assert.ok(source.includes('.sidebar-item-meta'), 'style.css must have .sidebar-item-meta rule');
+  assert.ok(source.includes('.sidebar-item-header .device-badge'), 'style.css must have .sidebar-item-header .device-badge rule for badge alignment in single-line header');
 });
 
 test('CSS style.css .tile-meta has opacity transition for crossfade (badge + timestamp together)', () => {

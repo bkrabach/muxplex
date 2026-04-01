@@ -520,14 +520,11 @@ function buildSidebarHTML(session, currentSession) {
   // Edge bar only (left border amber, no glow): applied when actIndicator is 'dot' or 'both'
   if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) classes += ' sidebar-item--edge-bell';
 
-  // Device badge — shown in meta line when multi_device_enabled
+  // Device badge — shown in header line when multi_device_enabled
   let badgeHtml = '';
   if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
     badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
   }
-
-  // Timestamp for meta line
-  const timeStr = formatTimestamp(session.last_activity_at || null);
 
   // Last 20 lines of snapshot — trim trailing blanks from the FULL snapshot FIRST,
   // then slice. Sessions with the cursor near the top have content at rows 1-2 and
@@ -544,12 +541,8 @@ function buildSidebarHTML(session, currentSession) {
     `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(session.remoteId || '')}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
-    `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
-    `</div>` +
-    `<div class="sidebar-item-meta">` +
     badgeHtml +
-    `<span class="sidebar-meta-sep">\xb7</span>` +
-    `<span class="sidebar-item-time">${escapeHtml(timeStr)}</span>` +
+    `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
     `</div>` +
     `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `</article>`
