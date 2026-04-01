@@ -146,10 +146,9 @@ const DISPLAY_DEFAULTS = {
   bellSound: false,
   notificationPermission: 'default',
   viewMode: 'auto',
-  showDeviceBadges: true,      // show device name labels on tiles/sidebar
-  showActivityGlow: true,       // show amber border/glow on tiles/sidebar with bells
-  showHoverPreview: true,       // show hover preview popover on tile hover
-  showActivityDot: true,        // show activity dot on tiles/sidebar
+  showDeviceBadges: true,        // show device name labels on tiles/sidebar
+  showHoverPreview: true,        // show hover preview popover on tile hover
+  activityIndicator: 'both',     // 'none' | 'glow' | 'dot' | 'both'
 };
 
 var VIEW_MODES = ['auto', 'fit'];
@@ -460,18 +459,19 @@ function buildTileHTML(session, index, mobile) {
   const unseen = session.bell && session.bell.unseen_count;
 
   var ds = loadDisplaySettings();
+  var actIndicator = ds.activityIndicator !== undefined ? ds.activityIndicator : 'both';
 
   let classes = 'session-tile';
-  if (isBell && ds.showActivityGlow !== false) classes += ' session-tile--bell';
+  if (isBell && (actIndicator === 'glow' || actIndicator === 'both')) classes += ' session-tile--bell';
   if (mobile) classes += ` session-tile--tier-${priority}`;
 
   const name = session.name || '';
   const escapedName = escapeHtml(name);
   const timeStr = formatTimestamp(session.last_activity_at || null);
 
-  // Activity dot — absolute positioned in upper-right corner of tile (no count text)
+  // Activity dot — absolute positioned in lower-right corner of tile (no count text)
   let bellDotHtml = '';
-  if (unseen && unseen > 0 && ds.showActivityDot !== false) {
+  if (unseen && unseen > 0 && (actIndicator === 'dot' || actIndicator === 'both')) {
     bellDotHtml = '<span class="tile-bell-dot"></span>';
   }
 
@@ -514,17 +514,18 @@ function buildSidebarHTML(session, currentSession) {
   const isActive = name === currentSession;
 
   var ds = loadDisplaySettings();
+  var actIndicator = ds.activityIndicator !== undefined ? ds.activityIndicator : 'both';
 
   const unseen = session.bell && session.bell.unseen_count;
   const isBell = unseen && unseen > 0;
 
   let classes = 'sidebar-item';
   if (isActive) classes += ' sidebar-item--active';
-  if (isBell && ds.showActivityGlow !== false) classes += ' sidebar-item--bell';
+  if (isBell && (actIndicator === 'glow' || actIndicator === 'both')) classes += ' sidebar-item--bell';
 
   // Activity dot — inline in sidebar header (not absolute, since items are smaller)
   let bellDotHtml = '';
-  if (isBell && ds.showActivityDot !== false) {
+  if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) {
     bellDotHtml = '<span class="tile-bell-dot sidebar-bell-dot"></span>';
   }
 
@@ -1680,14 +1681,11 @@ function onDisplaySettingChange() {
   var showDeviceBadgesEl = document.getElementById('setting-show-device-badges');
   if (showDeviceBadgesEl) ds.showDeviceBadges = showDeviceBadgesEl.checked;
 
-  var showActivityGlowEl = document.getElementById('setting-show-activity-glow');
-  if (showActivityGlowEl) ds.showActivityGlow = showActivityGlowEl.checked;
-
   var showHoverPreviewEl = document.getElementById('setting-show-hover-preview');
   if (showHoverPreviewEl) ds.showHoverPreview = showHoverPreviewEl.checked;
 
-  var showActivityDotEl = document.getElementById('setting-show-activity-dot');
-  if (showActivityDotEl) ds.showActivityDot = showActivityDotEl.checked;
+  var activityIndicatorEl = document.getElementById('setting-activity-indicator');
+  if (activityIndicatorEl) ds.activityIndicator = activityIndicatorEl.value;
 
   saveDisplaySettings(ds);
   applyDisplaySettings(ds);
@@ -1737,15 +1735,13 @@ function openSettings() {
   const viewModeEl = $('setting-view-mode');
   if (viewModeEl) viewModeEl.value = loadGridViewMode();
 
-  // Populate new display toggle checkboxes
+  // Populate display toggle controls
   const showDeviceBadgesEl = $('setting-show-device-badges');
   if (showDeviceBadgesEl) showDeviceBadgesEl.checked = settings.showDeviceBadges !== false;
-  const showActivityGlowEl = $('setting-show-activity-glow');
-  if (showActivityGlowEl) showActivityGlowEl.checked = settings.showActivityGlow !== false;
   const showHoverPreviewEl = $('setting-show-hover-preview');
   if (showHoverPreviewEl) showHoverPreviewEl.checked = settings.showHoverPreview !== false;
-  const showActivityDotEl = $('setting-show-activity-dot');
-  if (showActivityDotEl) showActivityDotEl.checked = settings.showActivityDot !== false;
+  const activityIndicatorEl = $('setting-activity-indicator');
+  if (activityIndicatorEl) activityIndicatorEl.value = settings.activityIndicator || 'both';
 
   // Populate Sessions tab / bell sound from display settings
   const bellSoundEl = $('setting-bell-sound');
@@ -2270,9 +2266,8 @@ function bindStaticEventListeners() {
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
   on($('setting-grid-columns'), 'change', onDisplaySettingChange);
   on($('setting-show-device-badges'), 'change', onDisplaySettingChange);
-  on($('setting-show-activity-glow'), 'change', onDisplaySettingChange);
   on($('setting-show-hover-preview'), 'change', onDisplaySettingChange);
-  on($('setting-show-activity-dot'), 'change', onDisplaySettingChange);
+  on($('setting-activity-indicator'), 'change', onDisplaySettingChange);
   on($('setting-view-mode'), 'change', function() {
     var el = $('setting-view-mode');
     if (el) {

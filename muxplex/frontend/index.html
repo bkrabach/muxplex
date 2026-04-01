@@ -94,6 +94,10 @@
       <div class="settings-content">
         <div class="settings-panel" data-tab="display">
           <div class="settings-field">
+            <label class="settings-label" for="setting-device-name">Device Name</label>
+            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+          </div>
+          <div class="settings-field">
             <label class="settings-label" for="setting-font-size">Font Size</label>
             <select id="setting-font-size" class="settings-select">
               <option value="11">11</option>
@@ -102,6 +106,15 @@
               <option value="14" selected>14</option>
               <option value="16">16</option>
               <option value="18">18</option>
+            </select>
+          </div>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-grid-columns">Grid Columns</label>
+            <select id="setting-grid-columns" class="settings-select">
+              <option value="auto" selected>Auto</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
             </select>
           </div>
           <div class="settings-field">
@@ -115,33 +128,21 @@
             </select>
           </div>
           <div class="settings-field">
-            <label class="settings-label" for="setting-grid-columns">Grid Columns</label>
-            <select id="setting-grid-columns" class="settings-select">
-              <option value="auto" selected>Auto</option>
-              <option value="2">2</option>
-              <option value="3">3</option>
-              <option value="4">4</option>
-            </select>
+            <label class="settings-label" for="setting-show-hover-preview">Show hover preview</label>
+            <input type="checkbox" id="setting-show-hover-preview" class="settings-checkbox" checked />
           </div>
           <div class="settings-field">
             <label class="settings-label" for="setting-show-device-badges">Show device badges</label>
             <input type="checkbox" id="setting-show-device-badges" class="settings-checkbox" checked />
           </div>
           <div class="settings-field">
-            <label class="settings-label" for="setting-show-activity-glow">Show activity glow</label>
-            <input type="checkbox" id="setting-show-activity-glow" class="settings-checkbox" checked />
-          </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-show-hover-preview">Show hover preview</label>
-            <input type="checkbox" id="setting-show-hover-preview" class="settings-checkbox" checked />
-          </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-show-activity-dot">Show activity dot</label>
-            <input type="checkbox" id="setting-show-activity-dot" class="settings-checkbox" checked />
-          </div>
-          <div class="settings-field">
-            <label class="settings-label" for="setting-device-name">Device Name</label>
-            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+            <label class="settings-label" for="setting-activity-indicator">Activity indicator</label>
+            <select id="setting-activity-indicator" class="settings-select">
+              <option value="both">Dot + Glow</option>
+              <option value="glow">Glow only</option>
+              <option value="dot">Dot only</option>
+              <option value="none">None</option>
+            </select>
           </div>
         </div>
         <div class="settings-panel hidden" data-tab="sessions">
@@ -158,10 +159,6 @@
               <option value="alphabetical">Alphabetical</option>
               <option value="recent">Recent</option>
             </select>
-          </div>
-          <div class="settings-field settings-field--column">
-            <label class="settings-label">Hidden Sessions</label>
-            <div id="setting-hidden-sessions" class="settings-checkbox-list"></div>
           </div>
           <div class="settings-field">
             <label class="settings-label" for="setting-window-size-largest">Auto-set window size (largest)</label>
@@ -181,6 +178,10 @@
               <span id="notification-status-text" class="settings-status-text">Not requested</span>
               <button id="notification-request-btn" class="settings-action-btn">Request Permission</button>
             </div>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Hidden Sessions</label>
+            <div id="setting-hidden-sessions" class="settings-checkbox-list"></div>
           </div>
         </div>
         <div class="settings-panel hidden" data-tab="new-session">

@@ -616,7 +616,7 @@ body {
 
 .tile-bell-dot {
   position: absolute;
-  top: 6px;
+  bottom: 6px;
   right: 6px;
   width: 8px;
   height: 8px;
@@ -1683,4 +1683,9 @@ body {
 /* Multi-Device tab — smooth enable/disable opacity transition */
 #multi-device-fields {
   transition: opacity 0.2s ease;
+}
+
+/* Constrain device name input width so it doesn't stretch the full settings panel */
+#setting-device-name {
+  max-width: 200px;
 }

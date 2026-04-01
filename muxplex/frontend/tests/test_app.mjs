@@ -3870,12 +3870,12 @@ test('DISPLAY_DEFAULTS includes showDeviceBadges key', () => {
   assert.ok(defaultsBody.includes('showDeviceBadges'), 'DISPLAY_DEFAULTS must include showDeviceBadges');
 });
 
-test('DISPLAY_DEFAULTS includes showActivityGlow key', () => {
+test('DISPLAY_DEFAULTS does not include showActivityGlow (replaced by activityIndicator)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
   const defaultsEnd = source.indexOf('};', defaultsStart);
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
-  assert.ok(defaultsBody.includes('showActivityGlow'), 'DISPLAY_DEFAULTS must include showActivityGlow');
+  assert.ok(!defaultsBody.includes('showActivityGlow'), 'DISPLAY_DEFAULTS must NOT include showActivityGlow — replaced by activityIndicator');
 });
 
 test('DISPLAY_DEFAULTS includes showHoverPreview key', () => {
@@ -3886,12 +3886,12 @@ test('DISPLAY_DEFAULTS includes showHoverPreview key', () => {
   assert.ok(defaultsBody.includes('showHoverPreview'), 'DISPLAY_DEFAULTS must include showHoverPreview');
 });
 
-test('DISPLAY_DEFAULTS includes showActivityDot key', () => {
+test('DISPLAY_DEFAULTS does not include showActivityDot (replaced by activityIndicator)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
   const defaultsEnd = source.indexOf('};', defaultsStart);
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
-  assert.ok(defaultsBody.includes('showActivityDot'), 'DISPLAY_DEFAULTS must include showActivityDot');
+  assert.ok(!defaultsBody.includes('showActivityDot'), 'DISPLAY_DEFAULTS must NOT include showActivityDot — replaced by activityIndicator');
 });
 
 test('HTML index.html has setting-show-device-badges checkbox', () => {
@@ -3899,9 +3899,9 @@ test('HTML index.html has setting-show-device-badges checkbox', () => {
   assert.ok(source.includes('setting-show-device-badges'), 'Display panel must have setting-show-device-badges checkbox');
 });
 
-test('HTML index.html has setting-show-activity-glow checkbox', () => {
+test('HTML index.html does not have setting-show-activity-glow checkbox (replaced by activity-indicator)', () => {
   const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.ok(source.includes('setting-show-activity-glow'), 'Display panel must have setting-show-activity-glow checkbox');
+  assert.ok(!source.includes('setting-show-activity-glow'), 'Display panel must NOT have setting-show-activity-glow — replaced by setting-activity-indicator');
 });
 
 test('HTML index.html has setting-show-hover-preview checkbox', () => {
@@ -3909,9 +3909,9 @@ test('HTML index.html has setting-show-hover-preview checkbox', () => {
   assert.ok(source.includes('setting-show-hover-preview'), 'Display panel must have setting-show-hover-preview checkbox');
 });
 
-test('HTML index.html has setting-show-activity-dot checkbox', () => {
+test('HTML index.html does not have setting-show-activity-dot checkbox (replaced by activity-indicator)', () => {
   const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.ok(source.includes('setting-show-activity-dot'), 'Display panel must have setting-show-activity-dot checkbox');
+  assert.ok(!source.includes('setting-show-activity-dot'), 'Display panel must NOT have setting-show-activity-dot — replaced by setting-activity-indicator');
 });
 
 test('CSS style.css has .tile-bell-dot rule', () => {
@@ -3938,15 +3938,133 @@ test('showPreview checks showHoverPreview setting before showing popover', () =>
   assert.ok(fnBody.includes('showHoverPreview'), 'showPreview must check showHoverPreview setting before showing popover');
 });
 
-test('bindStaticEventListeners binds change events for new display toggle checkboxes', () => {
+test('bindStaticEventListeners binds change events for display toggle controls', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('function bindStaticEventListeners(');
   assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
   const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
   const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 10000);
   assert.ok(fnBody.includes('setting-show-device-badges'), 'must bind setting-show-device-badges');
-  assert.ok(fnBody.includes('setting-show-activity-glow'), 'must bind setting-show-activity-glow');
   assert.ok(fnBody.includes('setting-show-hover-preview'), 'must bind setting-show-hover-preview');
-  assert.ok(fnBody.includes('setting-show-activity-dot'), 'must bind setting-show-activity-dot');
+  assert.ok(fnBody.includes('setting-activity-indicator'), 'must bind setting-activity-indicator');
+});
+
+// --- Activity indicator dropdown (replaces showActivityGlow + showActivityDot toggles) ---
+
+test('DISPLAY_DEFAULTS includes activityIndicator key with value both', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('activityIndicator'), 'DISPLAY_DEFAULTS must include activityIndicator');
+  assert.ok(defaultsBody.includes("'both'") || defaultsBody.includes('"both"'), "DISPLAY_DEFAULTS activityIndicator default must be 'both'");
+});
+
+test('HTML index.html has setting-activity-indicator select element', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(source.includes('setting-activity-indicator'), 'Display panel must have setting-activity-indicator select');
+  assert.ok(source.includes('value="both"'), 'must have Dot + Glow option with value both');
+  assert.ok(source.includes('value="glow"'), 'must have Glow only option');
+  assert.ok(source.includes('value="dot"'), 'must have Dot only option');
+  assert.ok(source.includes('value="none"'), 'must have None option');
+});
+
+test('buildTileHTML shows tile-bell-dot when activityIndicator is dot', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'dot' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('tile-bell-dot'), 'tile-bell-dot must appear when activityIndicator is dot');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML shows tile-bell-dot when activityIndicator is both', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('tile-bell-dot'), 'tile-bell-dot must appear when activityIndicator is both');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML omits tile-bell-dot when activityIndicator is none', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'none' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear when activityIndicator is none');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML omits tile-bell-dot when activityIndicator is glow', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear when activityIndicator is glow');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML adds session-tile--bell when activityIndicator is glow', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is glow');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML adds session-tile--bell when activityIndicator is both', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is both');
+  _localStorageStore = {};
+});
+
+test('buildTileHTML omits session-tile--bell when activityIndicator is none', () => {
+  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'none' });
+  const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('session-tile--bell'), 'session-tile--bell must NOT appear when activityIndicator is none');
+  _localStorageStore = {};
+});
+
+test('CSS style.css has #setting-device-name max-width rule', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(source.includes('#setting-device-name'), 'style.css must have #setting-device-name rule');
+  assert.ok(source.includes('max-width'), 'style.css #setting-device-name rule must include max-width');
+});
+
+test('CSS style.css .tile-bell-dot uses bottom positioning not top', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  // Find the .tile-bell-dot rule block
+  const ruleStart = source.indexOf('.tile-bell-dot {');
+  assert.ok(ruleStart !== -1, '.tile-bell-dot rule must exist');
+  const ruleEnd = source.indexOf('}', ruleStart);
+  const ruleBody = source.substring(ruleStart, ruleEnd + 1);
+  assert.ok(ruleBody.includes('bottom:') || ruleBody.includes('bottom :'), '.tile-bell-dot must use bottom positioning');
+  assert.ok(!ruleBody.includes('top: 6px'), '.tile-bell-dot must NOT use top: 6px');
+});
+
+test('HTML Display panel device name field appears before font size field', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const displayPanelStart = source.indexOf('<div class="settings-panel" data-tab="display"');
+  assert.ok(displayPanelStart !== -1, 'display panel must exist');
+  const nextPanel = source.indexOf('<div class="settings-panel', displayPanelStart + 1);
+  const displayPanelContent = source.substring(displayPanelStart, nextPanel !== -1 ? nextPanel : displayPanelStart + 3000);
+  const deviceNameIdx = displayPanelContent.indexOf('setting-device-name');
+  const fontSizeIdx = displayPanelContent.indexOf('setting-font-size');
+  assert.ok(deviceNameIdx !== -1, 'device name field must be in display panel');
+  assert.ok(fontSizeIdx !== -1, 'font size field must be in display panel');
+  assert.ok(deviceNameIdx < fontSizeIdx, 'device name must appear before font size in display panel');
+});
+
+test('HTML Sessions panel hidden sessions field appears after bell sound', () => {
+  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const sessionsPanelStart = source.indexOf('<div class="settings-panel hidden" data-tab="sessions"');
+  assert.ok(sessionsPanelStart !== -1, 'sessions panel must exist');
+  const nextPanel = source.indexOf('<div class="settings-panel', sessionsPanelStart + 1);
+  const sessionsPanelContent = source.substring(sessionsPanelStart, nextPanel !== -1 ? nextPanel : sessionsPanelStart + 4000);
+  const hiddenIdx = sessionsPanelContent.indexOf('setting-hidden-sessions');
+  const bellSoundIdx = sessionsPanelContent.indexOf('setting-bell-sound');
+  assert.ok(hiddenIdx !== -1, 'hidden sessions must be in sessions panel');
+  assert.ok(bellSoundIdx !== -1, 'bell sound must be in sessions panel');
+  assert.ok(hiddenIdx > bellSoundIdx, 'hidden sessions must appear after bell sound (i.e., near the end)');
 });
 
