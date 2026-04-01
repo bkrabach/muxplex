@@ -2348,16 +2348,18 @@ function bindStaticEventListeners() {
 
   // Multi-Device tab — federation generate key button
   on($('federation-generate-btn'), 'click', function() {
-    api('POST', '/api/federation/generate-key').then(function(data) {
-      var displayEl = $('federation-key-display');
-      if (displayEl && data && data.key) {
-        displayEl.textContent = data.key;
-        displayEl.classList.add('settings-key-display--visible');
-      }
-      showToast('Federation key generated');
-    }).catch(function() {
-      showToast('Failed to generate federation key');
-    });
+    api('POST', '/api/federation/generate-key')
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        var displayEl = $('federation-key-display');
+        if (displayEl && data && data.key) {
+          displayEl.textContent = data.key;
+          displayEl.classList.add('settings-key-display--visible');
+        }
+        showToast('Federation key generated');
+      }).catch(function() {
+        showToast('Failed to generate federation key');
+      });
   });
 
   // Multi-Device tab — add remote instance button
