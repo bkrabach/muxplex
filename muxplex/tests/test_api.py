@@ -1464,3 +1464,10 @@ def test_federation_client_exists_on_app_state(monkeypatch):
         assert isinstance(app.state.federation_client, httpx.AsyncClient), (
             "app.state.federation_client must be an httpx.AsyncClient instance"
         )
+        # Capture reference before lifespan shuts down
+        client_ref = app.state.federation_client
+
+    # After lifespan shutdown completes, the client must be closed
+    assert client_ref.is_closed, (
+        "app.state.federation_client must be closed after lifespan shutdown"
+    )

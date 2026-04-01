@@ -180,15 +180,16 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    await app.state.federation_client.aclose()
-
-    # Shutdown: cancel the poll loop task and wait for it to finish.
-    if _poll_task is not None:
-        _poll_task.cancel()
-        try:
-            await _poll_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    try:
+        await app.state.federation_client.aclose()
+    finally:
+        # Shutdown: cancel the poll loop task and wait for it to finish.
+        if _poll_task is not None:
+            _poll_task.cancel()
+            try:
+                await _poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 # ---------------------------------------------------------------------------
