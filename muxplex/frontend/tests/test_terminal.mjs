@@ -807,6 +807,15 @@ test('terminal.js Android touch scroll is UA-gated', () => {
   assert.ok(!source.includes('scrollLines'), 'must NOT use scrollLines (scrolls local buffer not PTY)');
 });
 
+// --- WebSocket reconnect + ttyd respawn ---
+
+test('terminal.js WebSocket reconnect calls /connect after 2 failed attempts', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('_reconnectAttempts'), 'must track reconnect attempts');
+  assert.ok(source.includes('/api/sessions/'), 'must call connect API to respawn ttyd');
+  assert.ok(source.includes('Math.pow'), 'must use exponential backoff');
+});
+
 // --- Issue 4: setTerminalFontSize ---
 
 test('terminal.js exposes window._setTerminalFontSize function', () => {

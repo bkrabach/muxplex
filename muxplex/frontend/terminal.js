@@ -8,6 +8,7 @@ let _ws = null;
 let _reconnectTimer = null;
 let _currentSession = null;
 let _vpHandler = null;
+let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 
 // ─── Forward declarations ─────────────────────────────────────────────────────
 
@@ -61,12 +62,25 @@ function connectWebSocket(name, sourceUrl) {
     // `if (ws !== _ws) return;` (stale guard). Without it, rapid reconnects or
     // session switches cause old handlers to fire on the new _ws while it is still
     // CONNECTING → send error → close → reconnect → infinite loop (Bug 2).
+
+    // After 2 failed WS attempts, ttyd is likely dead (e.g. after service restart).
+    // Fire-and-forget POST to /api/sessions/{name}/connect to respawn ttyd before
+    // attempting the next WebSocket connection. fetch() includes cookies automatically
+    // for same-origin requests so auth is handled transparently.
+    if (_reconnectAttempts >= 2 && _currentSession) {
+      fetch('/api/sessions/' + encodeURIComponent(_currentSession) + '/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }).catch(function() {}); // ignore errors — the WS retry will catch the result
+    }
+
     const ws = new WebSocket(url, ['tty']);
     _ws = ws;
     ws.binaryType = 'arraybuffer';
 
     ws.addEventListener('open', function() {
       if (ws !== _ws) return; // stale connection — superseded by a newer one, ignore
+      _reconnectAttempts = 0; // reset backoff counter on successful connection
       if (reconnectOverlay) reconnectOverlay.classList.add('hidden');
       // Step 1: TEXT frame auth handshake — ttyd checks AuthToken before starting PTY
       ws.send(JSON.stringify({ AuthToken: '' }));
@@ -99,7 +113,11 @@ function connectWebSocket(name, sourceUrl) {
       if (ws !== _ws) return; // stale connection — don't reconnect for old sockets
       if (!_currentSession) return; // intentional close — don't reconnect
       if (reconnectOverlay) reconnectOverlay.classList.remove('hidden');
-      _reconnectTimer = setTimeout(connect, 2000);
+      _reconnectAttempts++;
+      // Exponential backoff: 1s, 2s, 4s, 8s, cap at 15s. Add jitter to avoid thundering herd.
+      var delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 15000);
+      delay += Math.random() * 500; // jitter
+      _reconnectTimer = setTimeout(connect, delay);
     });
 
     ws.addEventListener('error', function() {
@@ -190,6 +208,7 @@ function openTerminal(sessionName, sourceUrl) {
   // Null _currentSession first so any in-flight close handler on the old WS won't
   // schedule a reconnect (it checks `if (!_currentSession) return;`).
   _currentSession = null;
+  _reconnectAttempts = 0; // reset backoff on new session open
 
   // Cancel any pending reconnect timer from the previous session.
   if (_reconnectTimer) {
@@ -262,6 +281,7 @@ function closeTerminal() {
   }
 
   _currentSession = null;
+  _reconnectAttempts = 0; // reset backoff on intentional close
 }
 
 // ─── Expose to app.js ─────────────────────────────────────────────────────────
