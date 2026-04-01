@@ -1746,3 +1746,36 @@ body {
 #setting-device-name {
   max-width: 200px;
 }
+
+/* Federation key display */
+.settings-federation-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-key-display {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-muted);
+  user-select: all;
+}
+
+.settings-key-display--visible {
+  color: var(--accent);
+  background: var(--accent-dim);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+/* Remote instance federation key input */
+.settings-remote-key {
+  flex: 1;
+  min-width: 100px;
+  font-size: 12px;
+  padding: 4px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+}

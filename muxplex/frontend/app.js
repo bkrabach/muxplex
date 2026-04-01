@@ -1409,12 +1409,13 @@ async function patchServerSetting(key, value) {
 }
 
 /**
- * Build a single remote instance row element with URL input, name input, and remove button.
+ * Build a single remote instance row element with URL input, name input, key input, and remove button.
  * @param {string} url - remote instance URL
  * @param {string} name - remote instance display name
+ * @param {string} key - federation key for the remote instance
  * @returns {HTMLDivElement}
  */
-function _buildRemoteInstanceRow(url, name) {
+function _buildRemoteInstanceRow(url, name, key) {
   var row = document.createElement('div');
   row.className = 'settings-remote-row';
   var urlInput = document.createElement('input');
@@ -1429,12 +1430,19 @@ function _buildRemoteInstanceRow(url, name) {
   nameInput.placeholder = 'Device name';
   nameInput.value = name || '';
   nameInput.setAttribute('aria-label', 'Remote instance display name');
+  var keyInput = document.createElement('input');
+  keyInput.type = 'password';
+  keyInput.className = 'settings-remote-key';
+  keyInput.placeholder = 'Federation key';
+  keyInput.value = key || '';
+  keyInput.setAttribute('aria-label', 'Federation key for remote instance');
   var removeBtn = document.createElement('button');
   removeBtn.className = 'settings-remote-remove';
   removeBtn.textContent = '\u00d7';
   removeBtn.setAttribute('aria-label', 'Remove remote instance');
   row.appendChild(urlInput);
   row.appendChild(nameInput);
+  row.appendChild(keyInput);
   row.appendChild(removeBtn);
   return row;
 }
@@ -1449,10 +1457,12 @@ function _saveRemoteInstances() {
   container.querySelectorAll('.settings-remote-row').forEach(function(row) {
     var urlEl = row.querySelector('.settings-remote-url');
     var nameEl = row.querySelector('.settings-remote-name');
+    var keyEl = row.querySelector('.settings-remote-key');
     var url = (urlEl && urlEl.value) ? urlEl.value.trim() : '';
     var name = (nameEl && nameEl.value) ? nameEl.value.trim() : '';
+    var key = (keyEl && keyEl.value) ? keyEl.value.trim() : '';
     if (url) {
-      instances.push({ url: url, name: name });
+      instances.push({ url: url, name: name, key: key });
     }
   });
   patchServerSetting('remote_instances', instances);
@@ -1799,7 +1809,7 @@ function openSettings() {
       remoteInstancesEl.innerHTML = '';
       var remotes = (ss && ss.remote_instances) || [];
       remotes.forEach(function(r) {
-        remoteInstancesEl.appendChild(_buildRemoteInstanceRow(r.url || '', r.name || ''));
+        remoteInstancesEl.appendChild(_buildRemoteInstanceRow(r.url || '', r.name || '', r.key || ''));
       });
     }
 
@@ -2336,11 +2346,25 @@ function bindStaticEventListeners() {
     }, 500);
   });
 
+  // Multi-Device tab — federation generate key button
+  on($('federation-generate-btn'), 'click', function() {
+    api('POST', '/api/federation/generate-key').then(function(data) {
+      var displayEl = $('federation-key-display');
+      if (displayEl && data && data.key) {
+        displayEl.textContent = data.key;
+        displayEl.classList.add('settings-key-display--visible');
+      }
+      showToast('Federation key generated');
+    }).catch(function() {
+      showToast('Failed to generate federation key');
+    });
+  });
+
   // Multi-Device tab — add remote instance button
   on($('add-remote-instance-btn'), 'click', function() {
     var container = $('setting-remote-instances');
     if (container) {
-      container.appendChild(_buildRemoteInstanceRow('', ''));
+      container.appendChild(_buildRemoteInstanceRow('', '', ''));
     }
   });
 

@@ -1337,3 +1337,37 @@ def test_html_display_panel_no_view_scope() -> None:
     assert el is None, (
         "#setting-view-scope must NOT be in the display panel (moved to Multi-Device tab)"
     )
+
+
+# ============================================================
+# Federation Key Management UI (task-6-federation-key-ui)
+# ============================================================
+
+
+def test_html_settings_federation_key_section() -> None:
+    """Multi-Device tab must contain federation-key-display and federation-generate-btn."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    key_display = devices_panel.find(id="federation-key-display")
+    assert key_display is not None, (
+        "Missing #federation-key-display inside devices panel"
+    )
+    generate_btn = devices_panel.find(id="federation-generate-btn")
+    assert generate_btn is not None, (
+        "Missing #federation-generate-btn inside devices panel"
+    )
+    assert generate_btn.name == "button", (
+        f"#federation-generate-btn must be a <button>, got: {generate_btn.name}"
+    )
+
+
+def test_html_settings_remote_instance_key_input() -> None:
+    """Multi-Device tab must contain #setting-remote-instances container."""
+    soup = _SOUP
+    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
+    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
+    el = devices_panel.find(id="setting-remote-instances")
+    assert el is not None, (
+        "Missing #setting-remote-instances inside devices panel"
+    )

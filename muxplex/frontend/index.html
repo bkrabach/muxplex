@@ -243,6 +243,14 @@
               </select>
             </div>
             <div class="settings-field settings-field--column">
+              <label class="settings-label">Federation Key</label>
+              <div class="settings-federation-key">
+                <span id="federation-key-display" class="settings-key-display">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
+                <button id="federation-generate-btn" class="settings-action-btn">Generate Key</button>
+              </div>
+              <span class="settings-helper">Share this key with remote instances to allow federation access</span>
+            </div>
+            <div class="settings-field settings-field--column">
               <label class="settings-label">Remote Instances</label>
               <div id="setting-remote-instances" class="settings-remote-list"></div>
               <button id="add-remote-instance-btn" class="settings-action-btn">+ Add Remote</button>
