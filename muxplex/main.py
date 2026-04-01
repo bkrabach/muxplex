@@ -990,11 +990,23 @@ async def federation_connect(
     url = f"{remote_url}/api/sessions/{session_name}/connect"
 
     http_client: httpx.AsyncClient = request.app.state.federation_client
-    resp = await http_client.post(
-        url,
-        headers={"Authorization": f"Bearer {remote_key}"},
-    )
-    return resp.json()
+    try:
+        resp = await http_client.post(
+            url,
+            headers={"Authorization": f"Bearer {remote_key}"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Remote returned {exc.response.status_code}",
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Remote unreachable: {remote_url}",
+        )
 
 
 # ---------------------------------------------------------------------------

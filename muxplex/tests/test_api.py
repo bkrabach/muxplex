@@ -1676,7 +1676,10 @@ def test_federation_connect_proxies_to_remote(client, monkeypatch, tmp_path):
         post_calls.append({"url": url, "kwargs": kwargs})
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"active_session": "my-session", "ttyd_port": 7682}
+        mock_resp.json.return_value = {
+            "active_session": "my-session",
+            "ttyd_port": 7682,
+        }
         return mock_resp
 
     mock_fed_client = MagicMock()
@@ -1705,7 +1708,9 @@ def test_federation_connect_proxies_to_remote(client, monkeypatch, tmp_path):
     assert data["ttyd_port"] == 7682
 
 
-def test_federation_connect_returns_404_for_invalid_remote_id(client, monkeypatch, tmp_path):
+def test_federation_connect_returns_404_for_invalid_remote_id(
+    client, monkeypatch, tmp_path
+):
     """POST /api/federation/{remote_id}/connect/{session_name} returns 404 when remote_id is out of range."""
     import json
 
@@ -1721,7 +1726,9 @@ def test_federation_connect_returns_404_for_invalid_remote_id(client, monkeypatc
     assert response.status_code == 404
 
 
-def test_federation_connect_returns_404_for_non_integer_remote_id(client, monkeypatch, tmp_path):
+def test_federation_connect_returns_404_for_non_integer_remote_id(
+    client, monkeypatch, tmp_path
+):
     """POST /api/federation/{remote_id}/connect/{session_name} returns 404 when remote_id is not an integer."""
     import json
 
@@ -1733,3 +1740,95 @@ def test_federation_connect_returns_404_for_non_integer_remote_id(client, monkey
 
     response = client.post("/api/federation/not-an-int/connect/my-session")
     assert response.status_code == 404
+
+
+def test_federation_connect_returns_503_when_remote_unreachable(
+    client, monkeypatch, tmp_path
+):
+    """POST /api/federation/{remote_id}/connect/{session_name} returns 503 when remote is unreachable.
+
+    If the outbound http_client.post() raises a network-level exception (e.g. ConnectError),
+    the endpoint must return 503 rather than propagating a raw 500.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    async def mock_post_unreachable(*args, **kwargs):
+        raise httpx.ConnectError("Connection refused")
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post_unreachable
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/0/connect/my-session")
+    assert response.status_code == 503
+
+
+def test_federation_connect_returns_502_when_remote_returns_error_status(
+    client, monkeypatch, tmp_path
+):
+    """POST /api/federation/{remote_id}/connect/{session_name} returns 502 when remote returns HTTP error.
+
+    If the outbound http_client.post() returns a non-2xx response that raises HTTPStatusError
+    (via raise_for_status), the endpoint must return 502 with the upstream status code in the detail.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    async def mock_post_error(*args, **kwargs):
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 502
+        raise httpx.HTTPStatusError(
+            "Bad Gateway",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post_error
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/0/connect/my-session")
+    assert response.status_code == 502
