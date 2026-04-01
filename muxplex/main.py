@@ -556,12 +556,36 @@ async def instance_info() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _ttyd_is_listening() -> bool:
+    """Return True if something is accepting TCP connections on TTYD_PORT.
+
+    Uses a raw socket connect (no WebSocket handshake, no PTY spawned).
+    Takes < 1 ms on localhost when ttyd is running; fails immediately with
+    ConnectionRefusedError when it's not.  OSError/TimeoutError are also
+    caught so the caller always gets a bool.
+    """
+    import socket as _sock
+
+    try:
+        with _sock.create_connection(("127.0.0.1", TTYD_PORT), timeout=0.5):
+            return True
+    except (ConnectionRefusedError, OSError, TimeoutError):
+        return False
+
+
 @app.websocket("/terminal/ws")
 async def terminal_ws_proxy(websocket: WebSocket) -> None:
     """Proxy WebSocket frames between the browser and ttyd.
 
-    Accepts with subprotocol 'tty' (required by ttyd), then opens a connection
-    to ws://localhost:{TTYD_PORT}/ws and relays frames bidirectionally.
+    Checks that ttyd is alive BEFORE accepting the browser WebSocket.  If ttyd
+    is not listening (e.g. after a service restart), auto-spawns it using the
+    active_session from state, then waits briefly for it to bind its port.
+
+    Only after ttyd is confirmed reachable does the function call
+    websocket.accept() — so the browser's 'open' event only fires once a real
+    relay is possible.  This prevents the reconnect-counter bounce bug where
+    the proxy accepted immediately (resetting _reconnectAttempts to 0) and
+    then closed as soon as it couldn't reach the dead ttyd.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
     host = websocket.client.host if websocket.client else ""
@@ -572,6 +596,26 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
         ):
             await websocket.close(code=4001)
             return
+
+    # Ensure ttyd is reachable BEFORE accepting the browser WS.
+    # After a service restart ttyd is dead but clients reconnect immediately.
+    # Auto-spawn from active_session so the browser's 'open' event only fires
+    # when a real relay is possible — eliminates the 0→1→0→1 counter bounce.
+    if not _ttyd_is_listening():
+        try:
+            async with state_lock:
+                state = load_state()
+            session_name = state.get("active_session")
+            if session_name:
+                _log.info(
+                    "WS proxy: ttyd not listening, auto-spawning for '%s'",
+                    session_name,
+                )
+                await kill_ttyd()
+                await spawn_ttyd(session_name)
+                await asyncio.sleep(0.8)  # wait for ttyd to bind its port
+        except Exception as exc:
+            _log.warning("WS proxy: failed to auto-spawn ttyd: %s", exc)
 
     await websocket.accept(subprotocol="tty")
 

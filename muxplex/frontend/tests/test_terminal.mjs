@@ -831,6 +831,57 @@ test('terminal.js WebSocket reconnect awaits /connect before creating WS', () =>
   assert.ok(connectFn.includes('return;'), 'connect() must return after fetch to prevent falling through to immediate WS creation');
 });
 
+// --- Reconnect counter: must reset on message, not on open ---
+
+test('terminal.js resets _reconnectAttempts on first message, not on open', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+
+  // Find the open handler body (between "addEventListener('open'" and its closing "})")
+  const openStart = source.indexOf("addEventListener('open'");
+  assert.ok(openStart !== -1, "must have an open handler");
+  // Find the matching closing "})" for the open handler — walk from openStart
+  let depth = 0;
+  let openBodyEnd = -1;
+  for (let i = openStart; i < source.length - 1; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) { openBodyEnd = i; break; }
+    }
+  }
+  assert.ok(openBodyEnd !== -1, "must find the end of the open handler");
+  const openBody = source.substring(openStart, openBodyEnd + 1);
+
+  // _reconnectAttempts = 0 must NOT appear in the open handler
+  // (the proxy accepts before ttyd is alive, so open doesn't prove ttyd is up)
+  assert.ok(
+    !openBody.includes('_reconnectAttempts = 0'),
+    '_reconnectAttempts must NOT be reset in the open handler — ' +
+    'the proxy accepts the WS before confirming ttyd is alive; ' +
+    'reset must happen on first message (proves ttyd is sending data)',
+  );
+
+  // _reconnectAttempts reset must appear in the message handler instead
+  const msgStart = source.indexOf("addEventListener('message'");
+  assert.ok(msgStart !== -1, "must have a message handler");
+  let msgDepth = 0;
+  let msgBodyEnd = -1;
+  for (let i = msgStart; i < source.length - 1; i++) {
+    if (source[i] === '{') msgDepth++;
+    else if (source[i] === '}') {
+      msgDepth--;
+      if (msgDepth === 0) { msgBodyEnd = i; break; }
+    }
+  }
+  assert.ok(msgBodyEnd !== -1, "must find the end of the message handler");
+  const msgBody = source.substring(msgStart, msgBodyEnd + 1);
+  assert.ok(
+    msgBody.includes('_reconnectAttempts'),
+    '_reconnectAttempts must be reset inside the message handler ' +
+    '(first data message proves ttyd is alive and relaying)',
+  );
+});
+
 // --- Issue 4: setTerminalFontSize ---
 
 test('terminal.js exposes window._setTerminalFontSize function', () => {

@@ -125,6 +125,82 @@ class FakeTtydWs:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Tests: ttyd liveness check before websocket.accept
+# ---------------------------------------------------------------------------
+
+
+def test_ttyd_is_listening_function_exists():
+    """_ttyd_is_listening() must exist in main.py (TCP probe helper)."""
+    # Import will fail if function doesn't exist — that IS the failing test
+    from muxplex.main import _ttyd_is_listening  # noqa: F401
+
+    assert callable(_ttyd_is_listening)
+
+
+def test_ws_proxy_checks_ttyd_before_accepting():
+    """terminal_ws_proxy must check _ttyd_is_listening BEFORE websocket.accept.
+
+    Root cause of the reconnect loop: the proxy called websocket.accept() before
+    checking if ttyd was alive. The browser's 'open' event fired immediately,
+    resetting _reconnectAttempts to 0. The counter bounced 0→1→0→1 forever so
+    the client-side /connect POST (at >= 2 attempts) never fired.
+
+    Fix: check _ttyd_is_listening() first. If not listening, auto-spawn ttyd
+    THEN accept — so the browser only gets 'open' when ttyd is actually ready.
+    """
+    source = inspect.getsource(terminal_ws_proxy)
+    # Use "await websocket.accept" to avoid matching the docstring mention
+    accept_idx = source.index("await websocket.accept")
+    ttyd_check_idx = source.index("_ttyd_is_listening")
+    assert ttyd_check_idx < accept_idx, (
+        "_ttyd_is_listening() must be checked BEFORE await websocket.accept() — "
+        "proxy must not accept the browser WS until ttyd is confirmed alive"
+    )
+
+
+def test_ws_proxy_auto_spawns_ttyd_when_dead(monkeypatch):
+    """WS proxy must call spawn_ttyd when _ttyd_is_listening returns False."""
+    import asyncio
+
+    spawn_calls = []
+
+    async def mock_spawn_ttyd(name: str):
+        spawn_calls.append(name)
+
+    async def mock_kill_ttyd():
+        pass
+
+    async def mock_sleep(_delay: float):
+        pass  # no-op so tests don't actually wait
+
+    # Patch _ttyd_is_listening to report ttyd as dead
+    monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: False)
+    # Patch spawn_ttyd / kill_ttyd so tests don't touch real processes
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", mock_spawn_ttyd)
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill_ttyd)
+    # asyncio.sleep is called after spawn — patch to be a no-op
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
+    # Provide a fake websockets.connect that immediately closes (no real ttyd)
+    fake_ws = FakeTtydWs(responses=[])
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    # Patch load_state to return state with active_session
+    monkeypatch.setattr(
+        "muxplex.main.load_state",
+        lambda: {"active_session": "test-session", "sessions": {}, "session_order": []},
+    )
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as _:
+            pass
+
+    assert spawn_calls == ["test-session"], (
+        "spawn_ttyd must be called with active_session when ttyd is not listening"
+    )
+
+
 def test_terminal_ws_proxy_does_not_use_receive_bytes():
     """Regression: receive_bytes() silently drops TEXT frames (like the ttyd auth token).
 

@@ -71,7 +71,11 @@ function connectWebSocket(name, sourceUrl) {
 
     ws.addEventListener('open', function() {
       if (ws !== _ws) return; // stale connection — superseded by a newer one, ignore
-      _reconnectAttempts = 0; // reset backoff counter on successful connection
+      // NOTE: do NOT reset _reconnectAttempts here. The server-side proxy accepts
+      // the WS before confirming ttyd is alive (auto-spawning if needed), but the
+      // browser 'open' event fires as soon as the proxy accepts — not when ttyd
+      // is actually ready. Resetting here caused the 0→1→0→1 bounce. Instead,
+      // reset on first data message (proves ttyd is alive and relaying).
       if (reconnectOverlay) reconnectOverlay.classList.add('hidden');
       // Step 1: TEXT frame auth handshake — ttyd checks AuthToken before starting PTY
       ws.send(JSON.stringify({ AuthToken: '' }));
@@ -86,6 +90,12 @@ function connectWebSocket(name, sourceUrl) {
     ws.addEventListener('message', function(e) {
       if (ws !== _ws) return; // stale connection — superseded by a newer one, ignore
       if (!_term) return;
+      // First data message proves ttyd is alive and relaying — safe to reset counter.
+      // We deliberately do NOT reset in the 'open' handler: the server-side proxy
+      // accepts the browser WS before ttyd is fully confirmed alive, so 'open'
+      // firing alone doesn't mean data will flow. Resetting here prevents the
+      // 0→1→0→1 bounce that kept the reconnect loop from escalating to /connect.
+      if (_reconnectAttempts > 0) _reconnectAttempts = 0;
       if (e.data instanceof ArrayBuffer) {
         var msg = new Uint8Array(e.data);
         if (msg.length < 1) return;
