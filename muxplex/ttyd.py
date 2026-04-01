@@ -213,6 +213,7 @@ async def spawn_ttyd(session_name: str) -> asyncio.subprocess.Process:
         session_name,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,  # detach from parent process group so ttyd survives independently
     )
 
     # Write PID file (create parent dirs if needed)
