@@ -133,7 +133,6 @@ let _previewTimer = null;
 var _previewSessionName = null;  // track by NAME, not DOM element
 
 // ─── Settings state ───────────────────────────────────────────────────────────
-let _sources = [];
 let _settingsOpen = false;
 let _serverSettings = null;
 let _gridViewMode = 'flat';
@@ -467,7 +466,7 @@ function buildTileHTML(session, index, mobile) {
   // Device badge — right-aligned in header, separate from name span
   // Shown when multiple sources configured AND session has a device name
   let badgeHtml = '';
-  if (_sources.length > 1 && session.deviceName && ds.showDeviceBadges !== false) {
+  if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
     badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
   }
 
@@ -522,9 +521,9 @@ function buildSidebarHTML(session, currentSession) {
   // Edge bar only (left border amber, no glow): applied when actIndicator is 'dot' or 'both'
   if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) classes += ' sidebar-item--edge-bell';
 
-  // Device badge — shown in meta line when multiple sources configured
+  // Device badge — shown in meta line when multi_device_enabled
   let badgeHtml = '';
-  if (_sources.length > 1 && session.deviceName && ds.showDeviceBadges !== false) {
+  if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
     badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
   }
 
@@ -607,6 +606,22 @@ function buildOfflineTileHTML(source) {
 }
 
 /**
+ * Build the HTML string for a generic status tile (auth_failed or unreachable).
+ * @param {string} deviceName
+ * @param {string} statusText
+ * @param {string} statusClass
+ * @returns {string}
+ */
+function buildStatusTileHTML(deviceName, statusText, statusClass) {
+  return (
+    '<article class="source-tile source-tile--' + statusClass + '">' +
+    '<span class="source-tile__name">' + escapeHtml(deviceName || '') + '</span>' +
+    '<span class="source-tile__badge">' + escapeHtml(statusText || '') + '</span>' +
+    '</article>'
+  );
+}
+
+/**
  * Open a login popup window for a remote muxplex instance.
  * Strips trailing slashes from remoteUrl before appending /login.
  * @param {string} remoteUrl - The base URL of the remote instance
@@ -656,8 +671,8 @@ function renderSidebar(sessions, currentSession) {
 
   let html = '';
 
-  if (_sources.length > 1) {
-    // Group sessions by deviceName when multiple sources configured
+  if (_serverSettings && _serverSettings.multi_device_enabled) {
+    // Group sessions by deviceName when multi_device_enabled
     const groups = new Map();
     for (const session of visible) {
       const deviceName = session.deviceName || 'Unknown';
@@ -871,14 +886,12 @@ function renderGrid(sessions) {
   }
 
   if (visible.length === 0) {
-    // Build status tiles for non-authenticated sources even when no sessions exist
+    // Build status tiles for auth_failed/unreachable sessions even when no regular sessions exist
     var statusTilesHtml = '';
-    if (typeof _sources !== 'undefined' && _sources) {
-      _sources.forEach(function(source) {
-        if (source.status === 'auth_required') statusTilesHtml += buildAuthTileHTML(source);
-        else if (source.status === 'unreachable') statusTilesHtml += buildOfflineTileHTML(source);
-      });
-    }
+    (sessions || []).forEach(function(session) {
+      if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.name, 'Auth required', 'auth');
+      else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.name, 'Offline', 'offline');
+    });
     if (grid) grid.innerHTML = statusTilesHtml;
     // Only show empty-state when there are truly no tiles at all
     if (emptyState) {
@@ -916,17 +929,12 @@ function renderGrid(sessions) {
     html = ordered.map(function(session, index) { return buildTileHTML(session, index, mobile); }).join('');
   }
 
-  // Append status tiles for auth_required and unreachable sources
+  // Append status tiles for auth_failed and unreachable sessions
   var statusTilesHtml = '';
-  if (typeof _sources !== 'undefined' && _sources) {
-    _sources.forEach(function(source) {
-      if (source.status === 'auth_required') {
-        statusTilesHtml += buildAuthTileHTML(source);
-      } else if (source.status === 'unreachable') {
-        statusTilesHtml += buildOfflineTileHTML(source);
-      }
-    });
-  }
+  (sessions || []).forEach(function(session) {
+    if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.name, 'Auth required', 'auth');
+    else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.name, 'Offline', 'offline');
+  });
   if (grid) grid.innerHTML = html + statusTilesHtml;
 
   // Render filter bar
@@ -1387,7 +1395,6 @@ async function loadServerSettings() {
     console.warn('[loadServerSettings] failed:', err);
     if (!_serverSettings) _serverSettings = {};
   }
-  _sources = buildSources(_serverSettings);
   return _serverSettings;
 }
 
@@ -1407,42 +1414,6 @@ async function patchServerSetting(key, value) {
     showToast('Failed to save setting');
     console.warn('[patchServerSetting] failed:', err);
   }
-}
-
-/**
- * Build the list of session sources from server settings.
- * Local source is always first with url: ''.
- * Remote instances come from settings.remote_instances array.
- * Trailing slashes are stripped from remote URLs.
- * Default device name is 'This device' when device_name is empty.
- * @param {object} settings - server settings object
- * @returns {object[]} array of source objects with {url, name, type, status, backoffMs}
- */
-function buildSources(settings) {
-  var localName = (settings && settings.device_name) || 'This device';
-  var sources = [
-    { url: '', name: localName, type: 'local', status: 'authenticated', backoffMs: 2000 },
-  ];
-  // Only add remote sources when multi-device is enabled.
-  // Smart default: treat as enabled if remote_instances is non-empty (backward compat).
-  var remotes = (settings && settings.remote_instances) || [];
-  var multiDeviceEnabled = (settings && settings.multi_device_enabled) ||
-    (remotes.length > 0);
-  if (multiDeviceEnabled) {
-    for (var i = 0; i < remotes.length; i++) {
-      var r = remotes[i];
-      if (r && r.url) {
-        sources.push({
-          url: r.url.replace(/\/+$/, ''),
-          name: r.name || r.url,
-          type: 'remote',
-          status: 'authenticated',
-          backoffMs: 2000,
-        });
-      }
-    }
-  }
-  return sources;
 }
 
 /**
@@ -1478,7 +1449,6 @@ function _buildRemoteInstanceRow(url, name) {
 
 /**
  * Read remote instance rows from the DOM and save to server settings.
- * Rebuilds _sources after saving so polling updates immediately.
  */
 function _saveRemoteInstances() {
   var container = $('setting-remote-instances');
@@ -1493,26 +1463,7 @@ function _saveRemoteInstances() {
       instances.push({ url: url, name: name });
     }
   });
-  patchServerSetting('remote_instances', instances).then(function() {
-    _sources = buildSources(_serverSettings);
-    // Prune federation tokens for URLs no longer in the remote instances list
-    try {
-      var activeOrigins = instances.map(function(r) {
-        try { return new URL(r.url).origin; } catch (_) { return null; }
-      }).filter(Boolean);
-      var ftokens = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
-      var pruned = false;
-      Object.keys(ftokens).forEach(function(origin) {
-        if (!activeOrigins.includes(origin)) {
-          delete ftokens[origin];
-          pruned = true;
-        }
-      });
-      if (pruned) {
-        localStorage.setItem('muxplex.federation_tokens', JSON.stringify(ftokens));
-      }
-    } catch (_) { /* blocked — ok */ }
-  });
+  patchServerSetting('remote_instances', instances);
 }
 
 // ─── Multi-Device helper ──────────────────────────────────────────────────────────
@@ -2379,9 +2330,7 @@ function bindStaticEventListeners() {
   on($('setting-multi-device-enabled'), 'change', function() {
     var enabled = this.checked;
     _updateMultiDeviceFieldsState(enabled);
-    patchServerSetting('multi_device_enabled', enabled).then(function() {
-      _sources = buildSources(_serverSettings);
-    });
+    patchServerSetting('multi_device_enabled', enabled);
   });
 
   // Multi-Device tab — device name with 500ms debounce; updates document.title immediately
@@ -2391,9 +2340,7 @@ function bindStaticEventListeners() {
     var val = this.value;
     document.title = val || 'muxplex';
     _deviceNameDebounceTimer = setTimeout(function() {
-      patchServerSetting('device_name', val).then(function() {
-        _sources = buildSources(_serverSettings);
-      });
+      patchServerSetting('device_name', val);
     }, 500);
   });
 
@@ -2461,36 +2408,6 @@ function bindStaticEventListeners() {
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────
 
-// ─── Multi-source parallel polling ─────────────────────────────────────────
-
-/**
- * Tag each session in the array with deviceName, sourceUrl, and sessionKey.
- * Returns new session objects; does NOT mutate originals.
- * sessionKey format: sourceUrl + '::' + name
- * @param {object[]} sessions
- * @param {string} deviceName
- * @param {string} sourceUrl
- * @returns {object[]}
- */
-function tagSessions(sessions, deviceName, sourceUrl) {
-  return (sessions || []).map((s) => Object.assign({}, s, {
-    deviceName,
-    sourceUrl,
-    sessionKey: sourceUrl + '::' + (s.name || ''),
-  }));
-}
-
-/**
- * Merge sessions from multiple sources into a single flat array.
- * Each result is an object with {source, sessions}.
- * Tags each source's sessions with deviceName/sourceUrl/sessionKey.
- * @param {Array<{source: {name: string, url: string}, sessions: object[]}>} results
- * @returns {object[]}
- */
-function mergeSources(results) {
-  return (results || []).reduce((all, r) => all.concat(tagSessions(r.sessions, r.source.name, r.source.url)), []);
-}
-
 /** Test-only: set _currentSessions directly. */
 function _setCurrentSessions(sessions) {
   _currentSessions = sessions;
@@ -2499,11 +2416,6 @@ function _setCurrentSessions(sessions) {
 /** Test-only: set _viewMode directly. */
 function _setViewMode(mode) {
   _viewMode = mode;
-}
-
-/** Test-only: set _sources directly. */
-function _setSources(sources) {
-  _sources = sources;
 }
 
 /** Test-only: set _serverSettings directly. */
@@ -2519,11 +2431,6 @@ function _getGridViewMode() {
 /** Test-only: set _gridViewMode directly. */
 function _setGridViewMode(mode) {
   _gridViewMode = mode;
-}
-
-/** Test-only: get _sources. */
-function _getSources() {
-  return _sources;
 }
 
 /** Test-only: set _activeFilterDevice directly. */
@@ -2630,7 +2537,6 @@ if (typeof module !== 'undefined' && module.exports) {
     // Server settings
     loadServerSettings,
     patchServerSetting,
-    buildSources,
     // Fetch wrapper
     api,
     // Header + button with inline name input
@@ -2639,14 +2545,12 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
-    // Multi-source parallel polling
-    tagSessions,
-    mergeSources,
     // Filter bar
     renderFilterBar,
     // Federation tiles
     buildAuthTileHTML,
     buildOfflineTileHTML,
+    buildStatusTileHTML,
     openLoginPopup,
     formatLastSeen,
     // Federation auth token relay
@@ -2657,11 +2561,9 @@ if (typeof module !== 'undefined' && module.exports) {
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,
-    _setSources,
     _setServerSettings,
     _getGridViewMode,
     _setGridViewMode,
-    _getSources,
     _setActiveFilterDevice,
   };
 }

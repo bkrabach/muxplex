@@ -616,7 +616,7 @@ test('renderGrid hides empty-state and populates grid when sessions exist', () =
   globalThis.document.querySelectorAll = origQSA;
 });
 
-test('renderGrid includes auth tile HTML when a source is auth_required', () => {
+test('renderGrid includes auth tile HTML when a session has auth_failed status', () => {
   const mockGrid = { innerHTML: '' };
   const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
   const origGetById = globalThis.document.getElementById;
@@ -628,12 +628,10 @@ test('renderGrid includes auth tile HTML when a source is auth_required', () => 
   };
   globalThis.document.querySelectorAll = () => [];
 
-  app._setSources([
-    { url: 'http://local:8088', name: 'Local', status: 'authenticated' },
-    { url: 'http://workstation:8088', name: 'Workstation', status: 'auth_required' },
-  ]);
-
-  const sessions = [{ name: 'my-session', snapshot: 'hello' }];
+  const sessions = [
+    { name: 'my-session', snapshot: 'hello' },
+    { name: 'Workstation', status: 'auth_failed' },
+  ];
   app.renderGrid(sessions);
 
   assert.ok(mockGrid.innerHTML.includes('source-tile--auth'), 'grid should include auth tile class');
@@ -641,10 +639,9 @@ test('renderGrid includes auth tile HTML when a source is auth_required', () => 
 
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelectorAll = origQSA;
-  app._setSources([]);
 });
 
-test('renderGrid includes offline tile HTML when a source is unreachable', () => {
+test('renderGrid includes offline tile HTML when a session has unreachable status', () => {
   const mockGrid = { innerHTML: '' };
   const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
   const origGetById = globalThis.document.getElementById;
@@ -656,12 +653,10 @@ test('renderGrid includes offline tile HTML when a source is unreachable', () =>
   };
   globalThis.document.querySelectorAll = () => [];
 
-  app._setSources([
-    { url: 'http://local:8088', name: 'Local', status: 'authenticated' },
-    { url: 'http://devserver:8088', name: 'Dev Server', status: 'unreachable', lastSeenAt: Date.now() - 300000 },
-  ]);
-
-  const sessions = [{ name: 'my-session', snapshot: 'hello' }];
+  const sessions = [
+    { name: 'my-session', snapshot: 'hello' },
+    { name: 'Dev Server', status: 'unreachable' },
+  ];
   app.renderGrid(sessions);
 
   assert.ok(mockGrid.innerHTML.includes('source-tile--offline'), 'grid should include offline tile class');
@@ -669,10 +664,9 @@ test('renderGrid includes offline tile HTML when a source is unreachable', () =>
 
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelectorAll = origQSA;
-  app._setSources([]);
 });
 
-test('renderGrid shows auth tile and hides empty-state when no sessions but source is auth_required', () => {
+test('renderGrid shows auth tile and hides empty-state when session has auth_failed status', () => {
   const addedClasses = [];
   const removedClasses = [];
   const mockGrid = { innerHTML: '' };
@@ -684,22 +678,17 @@ test('renderGrid shows auth tile and hides empty-state when no sessions but sour
     return null;
   };
 
-  app._setSources([
-    { url: 'http://workstation:8088', name: 'Workstation', status: 'auth_required' },
-  ]);
+  // Pass status entry as a session — early-return path (no regular sessions)
+  app.renderGrid([{ name: 'Workstation', status: 'auth_failed' }]);
 
-  // No sessions — early-return path
-  app.renderGrid([]);
-
-  assert.ok(mockGrid.innerHTML.includes('source-tile--auth'), 'grid should show auth tile even when sessions list is empty');
+  assert.ok(mockGrid.innerHTML.includes('source-tile--auth'), 'grid should show auth tile even when no regular sessions');
   assert.ok(addedClasses.includes('hidden'), 'empty-state should be hidden when status tiles are present');
   assert.ok(!removedClasses.includes('hidden'), 'empty-state hidden class should NOT be removed when status tiles are present');
 
   globalThis.document.getElementById = origGetById;
-  app._setSources([]);
 });
 
-test('renderGrid shows offline tile and hides empty-state when no sessions but source is unreachable', () => {
+test('renderGrid shows offline tile and hides empty-state when session has unreachable status', () => {
   const addedClasses = [];
   const mockGrid = { innerHTML: '' };
   const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} } };
@@ -710,18 +699,13 @@ test('renderGrid shows offline tile and hides empty-state when no sessions but s
     return null;
   };
 
-  app._setSources([
-    { url: 'http://devbox:8088', name: 'Dev Box', status: 'unreachable', lastSeenAt: Date.now() - 120000 },
-  ]);
+  // Pass status entry as a session — early-return path
+  app.renderGrid([{ name: 'Dev Box', status: 'unreachable' }]);
 
-  // No sessions — early-return path
-  app.renderGrid([]);
-
-  assert.ok(mockGrid.innerHTML.includes('source-tile--offline'), 'grid should show offline tile even when sessions list is empty');
+  assert.ok(mockGrid.innerHTML.includes('source-tile--offline'), 'grid should show offline tile even when no regular sessions');
   assert.ok(addedClasses.includes('hidden'), 'empty-state should be hidden when status tiles are present');
 
   globalThis.document.getElementById = origGetById;
-  app._setSources([]);
 });
 
 test('_previewClickHandler looks up remoteId from _currentSessions before calling openSession', () => {
@@ -2377,10 +2361,6 @@ test('createNewSession polls for session before auto-opening (not immediate setT
 
 // --- federation state helpers (task-3) ---
 
-test('_setSources sets internal _sources array', () => {
-  assert.doesNotThrow(() => app._setSources([{ url: '', name: 'test' }]));
-});
-
 test('_setServerSettings sets internal _serverSettings', () => {
   assert.doesNotThrow(() => app._setServerSettings({ sort_order: 'recent' }));
 });
@@ -2389,122 +2369,6 @@ test('_getGridViewMode returns current _gridViewMode value', () => {
   assert.strictEqual(typeof app._getGridViewMode(), 'string', '_getGridViewMode should return a string');
   assert.strictEqual(app._getGridViewMode(), 'flat', '_gridViewMode should default to flat');
 });
-
-test('_getSources returns current _sources array', () => {
-  app._setSources([{ url: 'http://test', name: 'Test' }]);
-  const sources = app._getSources();
-  assert.ok(Array.isArray(sources), '_getSources should return an array');
-  assert.strictEqual(sources[0].url, 'http://test', '_getSources should return value set by _setSources');
-});
-
-// --- buildSources ---
-
-test('buildSources returns only local source when no remote_instances', () => {
-  const sources = app.buildSources({ device_name: 'Laptop' });
-  assert.strictEqual(sources.length, 1, 'should return exactly one source (local)');
-  assert.strictEqual(sources[0].url, '', 'local source url should be empty string');
-  assert.strictEqual(sources[0].name, 'Laptop', 'local source name should be device_name');
-  assert.strictEqual(sources[0].type, 'local', 'local source type should be local');
-  assert.strictEqual(sources[0].status, 'authenticated', 'local source status should be authenticated');
-});
-
-test('buildSources returns local + remote sources from remote_instances', () => {
-  const sources = app.buildSources({
-    device_name: 'Laptop',
-    remote_instances: [
-      { url: 'https://server1.example.com', name: 'Server 1' },
-      { url: 'https://server2.example.com', name: 'Server 2' },
-    ],
-  });
-  assert.strictEqual(sources.length, 3, 'should return 3 sources: 1 local + 2 remote');
-  assert.strictEqual(sources[0].type, 'local', 'first source should be local');
-  assert.strictEqual(sources[1].type, 'remote', 'second source should be remote');
-  assert.strictEqual(sources[1].url, 'https://server1.example.com', 'remote source url should match');
-  assert.strictEqual(sources[1].name, 'Server 1', 'remote source name should match');
-  assert.strictEqual(sources[2].type, 'remote', 'third source should be remote');
-  assert.strictEqual(sources[2].url, 'https://server2.example.com', 'remote source url should match');
-});
-
-test('buildSources uses hostname fallback when device_name is empty', () => {
-  const sources = app.buildSources({});
-  assert.strictEqual(sources.length, 1, 'should return one source');
-  assert.strictEqual(sources[0].name, 'This device', 'local source name should fall back to This device');
-});
-
-test('buildSources strips trailing slash from remote URLs', () => {
-  const sources = app.buildSources({
-    device_name: 'Laptop',
-    remote_instances: [
-      { url: 'https://server1.example.com/', name: 'Server 1' },
-      { url: 'https://server2.example.com///', name: 'Server 2' },
-    ],
-  });
-  assert.strictEqual(sources[1].url, 'https://server1.example.com', 'trailing slash should be stripped from remote URL');
-  assert.strictEqual(sources[2].url, 'https://server2.example.com', 'multiple trailing slashes should be stripped from remote URL');
-});
-
-// --- tagSessions ---
-
-test('tagSessions adds deviceName and sourceUrl to each session', () => {
-  const sessions = [{ name: 'work' }, { name: 'play' }];
-  const result = app.tagSessions(sessions, 'Laptop', 'https://host.example.com');
-  assert.strictEqual(result[0].deviceName, 'Laptop', 'first session should have deviceName set');
-  assert.strictEqual(result[0].sourceUrl, 'https://host.example.com', 'first session should have sourceUrl set');
-  assert.strictEqual(result[1].deviceName, 'Laptop', 'second session should have deviceName set');
-  assert.strictEqual(result[1].sourceUrl, 'https://host.example.com', 'second session should have sourceUrl set');
-});
-
-test('tagSessions adds sessionKey formatted as sourceUrl::name', () => {
-  const sessions = [{ name: 'my-session' }];
-  const result = app.tagSessions(sessions, 'Laptop', 'https://host.example.com');
-  assert.strictEqual(result[0].sessionKey, 'https://host.example.com::my-session', 'sessionKey should be sourceUrl::name');
-});
-
-test('tagSessions handles empty sessions input (returns empty array)', () => {
-  const result = app.tagSessions([], 'Laptop', 'https://host.example.com');
-  assert.deepStrictEqual(result, [], 'tagSessions should return empty array for empty input');
-});
-
-test('tagSessions does not mutate the original session objects', () => {
-  const original = { name: 'work' };
-  const sessions = [original];
-  const result = app.tagSessions(sessions, 'Laptop', 'https://host.example.com');
-  assert.ok(!('deviceName' in original), 'original session should not be mutated');
-  assert.ok(!('sourceUrl' in original), 'original session should not have sourceUrl added');
-  assert.ok(!('sessionKey' in original), 'original session should not have sessionKey added');
-  assert.notStrictEqual(result[0], original, 'returned session should be a new object, not the original');
-});
-
-// --- mergeSources ---
-
-test('mergeSources combines sessions from multiple sources with correct sessionKeys', () => {
-  const results = [
-    {
-      source: { name: 'Laptop', url: '' },
-      sessions: [{ name: 'local-session' }],
-    },
-    {
-      source: { name: 'Server', url: 'https://server.example.com' },
-      sessions: [{ name: 'remote-session' }],
-    },
-  ];
-  const merged = app.mergeSources(results);
-  assert.strictEqual(merged.length, 2, 'merged array should have 2 sessions total');
-  const local = merged.find((s) => s.name === 'local-session');
-  const remote = merged.find((s) => s.name === 'remote-session');
-  assert.ok(local, 'local-session should be present');
-  assert.ok(remote, 'remote-session should be present');
-  assert.strictEqual(local.sessionKey, '::local-session', 'local session key should be ::local-session');
-  assert.strictEqual(remote.sessionKey, 'https://server.example.com::remote-session', 'remote session key should include url');
-  assert.strictEqual(remote.deviceName, 'Server', 'remote session should have correct deviceName');
-});
-
-test('mergeSources returns empty array for empty input', () => {
-  const result = app.mergeSources([]);
-  assert.deepStrictEqual(result, [], 'mergeSources should return empty array for empty input');
-});
-
-
 
 // --- getVisibleSessions (task-7) ---
 
@@ -2561,37 +2425,29 @@ test('getVisibleSessions hides local sessions by name but not remote sessions wi
 
 // --- buildSidebarHTML device badge (task-10) ---
 
-test('buildSidebarHTML shows device-badge when multiple sources configured', () => {
-  app._setSources([
-    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
-  ]);
+test('buildSidebarHTML shows device-badge when multi_device_enabled', () => {
+  app._setServerSettings({ multi_device_enabled: true });
   const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
-  assert.ok(html.includes('device-badge'), 'should show device-badge when _sources.length > 1 and session has deviceName');
+  assert.ok(html.includes('device-badge'), 'should show device-badge when multi_device_enabled and session has deviceName');
   assert.ok(html.includes('Laptop'), 'device-badge should contain the deviceName');
-  app._setSources([]);
+  app._setServerSettings(null);
 });
 
-test('buildSidebarHTML omits device-badge when only one source configured', () => {
-  app._setSources([
-    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
-  ]);
+test('buildSidebarHTML omits device-badge when multi_device_enabled is false', () => {
+  app._setServerSettings({ multi_device_enabled: false });
   const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
-  assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when _sources.length is 1');
-  app._setSources([]);
+  assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when multi_device_enabled is false');
+  app._setServerSettings(null);
 });
 
 test('buildSidebarHTML omits device-badge when session has no deviceName', () => {
-  app._setSources([
-    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
-  ]);
+  app._setServerSettings({ multi_device_enabled: true });
   const session = { name: 'work', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
   assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when session has no deviceName');
-  app._setSources([]);
+  app._setServerSettings(null);
 });
 
 test('buildSidebarHTML includes data-remote-id attribute on article element', () => {
@@ -2614,39 +2470,31 @@ test('buildSidebarHTML data-remote-id is empty string when session has no remote
 });
 
 test('buildSidebarHTML escapes HTML in deviceName within device-badge', () => {
-  app._setSources([
-    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
-  ]);
+  app._setServerSettings({ multi_device_enabled: true });
   const session = { name: 'work', deviceName: '<script>alert(1)</script>', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
   assert.ok(!html.includes('<script>'), 'device-badge should not contain raw <script> tag');
   assert.ok(html.includes('&lt;script&gt;'), 'device-badge should escape < and > in deviceName');
-  app._setSources([]);
+  app._setServerSettings(null);
 });
 
 // --- buildTileHTML device badge (task-9) ---
 
-test('buildTileHTML shows device-badge when session has deviceName and multiple sources', () => {
-  app._setSources([
-    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
-  ]);
+test('buildTileHTML shows device-badge when session has deviceName and multi_device_enabled', () => {
+  app._setServerSettings({ multi_device_enabled: true });
   const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('device-badge'), 'should show device-badge when _sources.length > 1 and session has deviceName');
+  assert.ok(html.includes('device-badge'), 'should show device-badge when multi_device_enabled and session has deviceName');
   assert.ok(html.includes('Laptop'), 'device-badge should contain the deviceName');
-  app._setSources([]);
+  app._setServerSettings(null);
 });
 
-test('buildTileHTML omits device-badge when only one source configured', () => {
-  app._setSources([
-    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
-  ]);
+test('buildTileHTML omits device-badge when multi_device_enabled is false', () => {
+  app._setServerSettings({ multi_device_enabled: false });
   const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when _sources.length is 1');
-  app._setSources([]);
+  assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when multi_device_enabled is false');
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML includes data-session-key and data-remote-id attributes on article element', () => {
@@ -2663,15 +2511,12 @@ test('buildTileHTML includes data-session-key and data-remote-id attributes on a
 });
 
 test('buildTileHTML escapes HTML in deviceName within device-badge', () => {
-  app._setSources([
-    { url: '', name: 'This device', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
-  ]);
+  app._setServerSettings({ multi_device_enabled: true });
   const session = { name: 'work', deviceName: '<script>alert(1)</script>', sourceUrl: '', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('<script>'), 'device-badge should not contain raw <script> tag');
   assert.ok(html.includes('&lt;script&gt;'), 'device-badge should escape < and > in deviceName');
-  app._setSources([]);
+  app._setServerSettings(null);
 });
 
 
@@ -2855,11 +2700,8 @@ test('renderSidebar groups sessions by device with sidebar-device-header when mu
     return null;
   };
 
-  // Set up multiple sources
-  app._setSources([
-    { url: '', name: 'Laptop', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    { url: 'https://remote.example.com', name: 'Server', type: 'remote', status: 'authenticated', backoffMs: 2000 },
-  ]);
+  // Set up multi-device enabled
+  app._setServerSettings({ multi_device_enabled: true });
 
   app._setViewMode('fullscreen');
   const sessions = [
@@ -2873,7 +2715,7 @@ test('renderSidebar groups sessions by device with sidebar-device-header when mu
   assert.ok(capturedHTML.includes('Server'), 'sidebar HTML should contain device name "Server"');
 
   // Cleanup
-  app._setSources([]);
+  app._setServerSettings(null);
   globalThis.document.getElementById = origGetById;
   app._setViewMode('grid');
 });
@@ -2891,10 +2733,8 @@ test('renderSidebar does NOT group when only one source configured', () => {
     return null;
   };
 
-  // Set up single source
-  app._setSources([
-    { url: '', name: 'Laptop', type: 'local', status: 'authenticated', backoffMs: 2000 },
-  ]);
+  // Multi-device disabled
+  app._setServerSettings(null);
 
   app._setViewMode('fullscreen');
   const sessions = [
@@ -2907,7 +2747,6 @@ test('renderSidebar does NOT group when only one source configured', () => {
   assert.ok(capturedHTML.includes('sidebar-item'), 'sidebar HTML should still contain sidebar-item elements');
 
   // Cleanup
-  app._setSources([]);
   globalThis.document.getElementById = origGetById;
   app._setViewMode('grid');
 });
@@ -2917,16 +2756,12 @@ test('renderSidebar does NOT group when only one source configured', () => {
 test('app.js exports all Phase 2 federation functions', () => {
   const expectedFunctions = [
     'api',
-    'buildSources',
-    'tagSessions',
-    'mergeSources',
+    'buildStatusTileHTML',
     'getVisibleSessions',
     'renderGroupedGrid',
     'renderFilterBar',
     'loadGridViewMode',
     'saveGridViewMode',
-    '_setSources',
-    '_getSources',
     '_setServerSettings',
     '_getGridViewMode',
     '_setGridViewMode',
@@ -2937,55 +2772,6 @@ test('app.js exports all Phase 2 federation functions', () => {
     assert.ok(fn in app, `app.js should export "${fn}"`);
     assert.strictEqual(typeof app[fn], 'function', `"${fn}" should be a function`);
   }
-});
-
-test('Phase 2 end-to-end: buildSources → tagSessions → mergeSources produces valid merged list', () => {
-  // Step 1: buildSources — build the federation source list from server settings
-  const sources = app.buildSources({
-    device_name: 'Laptop',
-    remote_instances: [
-      { url: 'https://server.example.com', name: 'Server' },
-    ],
-  });
-  assert.strictEqual(sources.length, 2, 'buildSources should produce 2 sources (local + 1 remote)');
-  assert.strictEqual(sources[0].url, '', 'first source should be local (empty url)');
-  assert.strictEqual(sources[1].url, 'https://server.example.com', 'second source should be remote');
-
-  // Step 2: tagSessions — tag sessions from each source with device/URL metadata.
-  // Both sources have a session named "main" — the classic multi-device naming conflict.
-  const rawLocal = [{ name: 'main', bell: { unseen_count: 0 } }];
-  const rawRemote = [{ name: 'main', bell: { unseen_count: 0 } }];
-  const taggedLocal = app.tagSessions(rawLocal, sources[0].name, sources[0].url);
-  const taggedRemote = app.tagSessions(rawRemote, sources[1].name, sources[1].url);
-
-  assert.strictEqual(taggedLocal[0].sessionKey, '::main', 'local session key should be ::main');
-  assert.strictEqual(
-    taggedRemote[0].sessionKey,
-    'https://server.example.com::main',
-    'remote session key should include source URL',
-  );
-
-  // Step 3: mergeSources — merge all source results into a flat tagged list.
-  // mergeSources internally calls tagSessions, so we pass raw (untagged) sessions.
-  const merged = app.mergeSources([
-    { source: sources[0], sessions: rawLocal },
-    { source: sources[1], sessions: rawRemote },
-  ]);
-
-  assert.strictEqual(merged.length, 2, 'merged list should contain 2 sessions total');
-
-  // Same-named sessions from different devices must have different sessionKeys.
-  const sessionKeys = merged.map((s) => s.sessionKey);
-  assert.strictEqual(
-    new Set(sessionKeys).size,
-    2,
-    'same-named sessions from different devices should have different sessionKeys',
-  );
-  assert.ok(sessionKeys.includes('::main'), 'local session key "::main" should be present in merged list');
-  assert.ok(
-    sessionKeys.includes('https://server.example.com::main'),
-    'remote session key "https://server.example.com::main" should be present in merged list',
-  );
 });
 
 // --- buildAuthTileHTML ---
