@@ -1471,3 +1471,100 @@ def test_federation_client_exists_on_app_state(monkeypatch):
     assert client_ref.is_closed, (
         "app.state.federation_client must be closed after lifespan shutdown"
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/federation/sessions (task-8)
+# ---------------------------------------------------------------------------
+
+
+def test_federation_sessions_returns_local_sessions(client, monkeypatch, tmp_path):
+    """GET /api/federation/sessions returns local sessions tagged with deviceName and remoteId=None.
+
+    Local sessions must have:
+    - deviceName from settings device_name
+    - remoteId set to None
+    - The session fields (name, snapshot, bell) from local /api/sessions
+    """
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Write settings with a known device_name and no remote instances
+    import json
+    settings_path.write_text(json.dumps({"device_name": "my-workstation", "remote_instances": []}))
+
+    # Mock local session data
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["session-one"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"session-one": "pane text"})
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Must return a list
+    assert isinstance(data, list)
+
+    # Find local sessions (remoteId=None)
+    local_sessions = [s for s in data if s.get("remoteId") is None]
+    assert len(local_sessions) == 1, f"Expected 1 local session, got: {local_sessions}"
+
+    local = local_sessions[0]
+    assert local["name"] == "session-one"
+    assert local["deviceName"] == "my-workstation"
+    assert local["remoteId"] is None
+
+
+def test_federation_sessions_includes_remote_failure_status(client, monkeypatch, tmp_path):
+    """GET /api/federation/sessions includes a status entry for unreachable remotes.
+
+    When a remote instance cannot be reached (connection error), the result must
+    include a status entry with status='unreachable' for that remote.
+    """
+    import json
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Configure one remote instance that will fail
+    settings_path.write_text(json.dumps({
+        "device_name": "local-host",
+        "remote_instances": [
+            {"url": "http://remote-host:8088", "key": "abc123", "name": "remote-host", "id": "remote-1"}
+        ],
+    }))
+
+    # Mock local sessions (empty for simplicity)
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    # Patch the federation_client to raise a ConnectError (unreachable)
+    from unittest.mock import AsyncMock, MagicMock
+
+    async def mock_get(url, **kwargs):
+        raise httpx.ConnectError("Connection refused")
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Must return a list
+    assert isinstance(data, list)
+
+    # Find the failure status entry for the remote
+    failure_entries = [s for s in data if s.get("status") in ("unreachable", "auth_failed")]
+    assert len(failure_entries) == 1, (
+        f"Expected 1 failure status entry, got: {failure_entries}. Full data: {data}"
+    )
+    entry = failure_entries[0]
+    assert entry["status"] == "unreachable"
+    assert entry.get("remoteId") == "remote-1"

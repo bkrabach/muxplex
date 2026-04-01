@@ -765,6 +765,79 @@ async def auth_mode_endpoint():
     return {"mode": _auth_mode, "user": username}
 
 
+@app.get("/api/federation/sessions")
+async def federation_sessions(request: Request) -> list[dict]:
+    """Fetch sessions from all instances (local + remotes) and merge.
+
+    Local sessions are tagged with deviceName (from settings) and remoteId=None.
+    Remote sessions are fetched concurrently via asyncio.gather with Bearer auth
+    headers. Failed remotes produce a status entry with status='unreachable' or
+    status='auth_failed'.
+    """
+    settings = load_settings()
+    local_device_name: str = settings.get("device_name", "")
+    remote_instances: list[dict] = settings.get("remote_instances", [])
+
+    # Build local sessions with deviceName/remoteId tags
+    names = get_session_list()
+    snapshots = get_snapshots()
+    state = await read_state()
+    local_sessions: list[dict] = []
+    for name in names:
+        session_state = state.get("sessions", {}).get(name, {})
+        bell = session_state.get("bell", empty_bell())
+        local_sessions.append(
+            {
+                "name": name,
+                "snapshot": snapshots.get(name, ""),
+                "bell": bell,
+                "deviceName": local_device_name,
+                "remoteId": None,
+            }
+        )
+
+    if not remote_instances:
+        return local_sessions
+
+    # Fetch remote sessions concurrently
+    http_client: httpx.AsyncClient = request.app.state.federation_client
+
+    async def fetch_remote(remote: dict) -> list[dict]:
+        """Fetch /api/sessions from a remote instance, returning session dicts or a status entry."""
+        url: str = remote.get("url", "")
+        key: str = remote.get("key", "")
+        remote_name: str = remote.get("name", url)
+        remote_id: str = remote.get("id", url)
+        try:
+            resp = await http_client.get(
+                f"{url.rstrip('/')}/api/sessions",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            if resp.status_code in (401, 403):
+                return [{"status": "auth_failed", "remoteId": remote_id, "deviceName": remote_name}]
+            resp.raise_for_status()
+            sessions = resp.json()
+            # Tag each session with deviceName and remoteId
+            return [
+                {**s, "deviceName": remote_name, "remoteId": remote_id}
+                for s in sessions
+            ]
+        except httpx.HTTPStatusError:
+            return [{"status": "auth_failed", "remoteId": remote_id, "deviceName": remote_name}]
+        except Exception:
+            return [{"status": "unreachable", "remoteId": remote_id, "deviceName": remote_name}]
+
+    remote_results: list[list[dict]] = await asyncio.gather(
+        *(fetch_remote(remote) for remote in remote_instances)
+    )
+
+    all_sessions: list[dict] = list(local_sessions)
+    for result in remote_results:
+        all_sessions.extend(result)
+
+    return all_sessions
+
+
 # ---------------------------------------------------------------------------
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------
