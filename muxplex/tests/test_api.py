@@ -1029,6 +1029,28 @@ def test_instance_info_no_auth_required(tmp_path, monkeypatch):
     assert "version" in data
 
 
+def test_instance_info_includes_federation_enabled(client, tmp_path, monkeypatch):
+    """GET /api/instance-info includes federation_enabled=False when no key file exists."""
+    import muxplex.settings as settings_mod
+
+    # Redirect settings path so defaults are used
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    # Redirect federation key path to a nonexistent file
+    monkeypatch.setattr(
+        settings_mod, "FEDERATION_KEY_PATH", tmp_path / "nonexistent_federation_key"
+    )
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert "federation_enabled" in data, (
+        f"Response must include 'federation_enabled' key, got: {data}"
+    )
+    assert data["federation_enabled"] is False, (
+        f"federation_enabled must be False when no key file exists, got: {data['federation_enabled']}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------

@@ -558,7 +558,12 @@ async def instance_info() -> dict:
     discover peer names and verify reachability.
     """
     settings = load_settings()
-    return {"name": settings["device_name"], "version": app.version}
+    fed_key = load_federation_key()
+    return {
+        "name": settings["device_name"],
+        "version": app.version,
+        "federation_enabled": bool(fed_key),
+    }
 
 
 # ---------------------------------------------------------------------------
