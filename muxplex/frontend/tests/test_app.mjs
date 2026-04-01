@@ -375,6 +375,70 @@ test('pollSessions calls renderSidebar when viewMode is fullscreen', async () =>
   app._setViewMode('grid');
 });
 
+// --- pollSessions federation endpoint ---
+
+test('pollSessions source includes /api/federation/sessions', () => {
+  assert.ok(
+    app.pollSessions.toString().includes('/api/federation/sessions'),
+    'pollSessions must reference /api/federation/sessions endpoint',
+  );
+});
+
+test('pollSessions source includes multi_device_enabled check', () => {
+  assert.ok(
+    app.pollSessions.toString().includes('multi_device_enabled'),
+    'pollSessions must check multi_device_enabled flag',
+  );
+});
+
+test('pollSessions uses /api/federation/sessions when multi_device_enabled is true', async () => {
+  const fetchedUrls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.fetch = async (url) => {
+    fetchedUrls.push(url);
+    return { ok: true, json: async () => [] };
+  };
+
+  app._setServerSettings({ multi_device_enabled: true });
+  await app.pollSessions();
+  app._setServerSettings(null);
+
+  assert.ok(
+    fetchedUrls.some((u) => u === '/api/federation/sessions'),
+    'should fetch /api/federation/sessions when multi_device_enabled is true',
+  );
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('pollSessions uses /api/sessions when multi_device_enabled is false', async () => {
+  const fetchedUrls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.fetch = async (url) => {
+    fetchedUrls.push(url);
+    return { ok: true, json: async () => [] };
+  };
+
+  app._setServerSettings({ multi_device_enabled: false });
+  await app.pollSessions();
+  app._setServerSettings(null);
+
+  assert.ok(
+    fetchedUrls.some((u) => u === '/api/sessions'),
+    'should fetch /api/sessions when multi_device_enabled is false',
+  );
+  assert.ok(
+    !fetchedUrls.some((u) => u === '/api/federation/sessions'),
+    'should NOT fetch /api/federation/sessions when multi_device_enabled is false',
+  );
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
 // --- startPolling ---
 
 test('startPolling guards against double-start (only creates one interval)', () => {
