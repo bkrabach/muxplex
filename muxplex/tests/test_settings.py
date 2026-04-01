@@ -377,6 +377,12 @@ def test_serve_keys_patchable():
     assert loaded["session_ttl"] == 3600
 
 
+def test_defaults_include_federation_key():
+    """DEFAULT_SETTINGS must have 'federation_key' key initialised to empty string."""
+    assert "federation_key" in DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["federation_key"] == ""
+
+
 def test_old_settings_file_without_serve_keys_loads_correctly(redirect_settings_path):
     """Old settings.json without serve keys loads correctly with defaults filled in."""
     # Write an old-style settings file that has no serve keys
