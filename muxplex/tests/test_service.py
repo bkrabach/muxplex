@@ -522,3 +522,32 @@ def test_prompt_host_missing_host_key_no_keyerror(monkeypatch):
 
     # Must not raise KeyError
     svc._prompt_host_if_localhost()
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: Ctrl+C handling in logs functions (clean exit on KeyboardInterrupt)
+# ---------------------------------------------------------------------------
+
+
+def test_systemd_logs_handles_keyboard_interrupt(monkeypatch):
+    """service logs must exit cleanly on Ctrl+C."""
+    import muxplex.service as svc
+
+    def mock_run(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    # Should not raise
+    svc._systemd_logs()
+
+
+def test_launchd_logs_handles_keyboard_interrupt(monkeypatch):
+    """service logs must exit cleanly on Ctrl+C on macOS."""
+    import muxplex.service as svc
+
+    def mock_run(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    # Should not raise
+    svc._launchd_logs()
