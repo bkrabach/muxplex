@@ -171,7 +171,7 @@ body {
   height: var(--tile-height);
   background: var(--bg-tile);
   border: 1px solid var(--border);
-  border-left: 3px solid transparent;  /* edge bar — always present, transparent by default */
+  border-left: 3px solid var(--border);  /* edge bar — always present, matches other 3 borders */
   border-radius: 4px;
   display: flex;
   flex-direction: column;
@@ -545,7 +545,7 @@ body {
   flex-direction: column;
   position: relative;
   border: 1px solid var(--border);
-  border-left: 3px solid transparent;  /* edge bar — always present, transparent by default */
+  border-left: 3px solid var(--border);  /* edge bar — always present, matches other 3 borders */
   border-radius: 4px;
   transition: border-color var(--t-fast), border-left-color var(--t-fast), box-shadow var(--t-fast);
 }

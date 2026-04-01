@@ -2092,3 +2092,48 @@ def test_custom_scrollbar_styles():
     assert "border-radius: 3px" in css or "border-radius:3px" in css, (
         "scrollbar thumb must be rounded"
     )
+
+
+# ============================================================
+# Fix: default left border on tiles and sidebar items (task-4-fix-left-border)
+# ============================================================
+
+
+def test_css_session_tile_default_left_border() -> None:
+    """.session-tile default border-left must use var(--border), not transparent.
+
+    On the dark background, transparent makes the left border invisible —
+    it looks like only 3 sides have a border. Fix: change to 3px solid var(--border)
+    to match the other 3 borders. Bell and active states already override border-left-color.
+    """
+    css = read_css()
+    block = _extract_rule_block(css, ".session-tile {")
+    assert "border-left: 3px solid var(--border)" in block, (
+        ".session-tile default border-left must use var(--border) — "
+        "transparent is invisible on dark backgrounds"
+    )
+    # Verify transparent is not used as the default left border value
+    assert "transparent" not in block, (
+        ".session-tile must not use transparent for default border-left — "
+        "it makes the left edge invisible on dark backgrounds"
+    )
+
+
+def test_css_sidebar_item_default_left_border() -> None:
+    """.sidebar-item default border-left must use var(--border), not transparent.
+
+    On the dark background, transparent makes the left border invisible —
+    it looks like only 3 sides have a border. Fix: change to 3px solid var(--border)
+    to match the other 3 borders. Active state already overrides border-left-color.
+    """
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-item {")
+    assert "border-left: 3px solid var(--border)" in block, (
+        ".sidebar-item default border-left must use var(--border) — "
+        "transparent is invisible on dark backgrounds"
+    )
+    # Verify transparent is not used as the default left border value
+    assert "transparent" not in block, (
+        ".sidebar-item must not use transparent for default border-left — "
+        "it makes the left edge invisible on dark backgrounds"
+    )
