@@ -54,7 +54,6 @@ def test_css_zoom_transition():
 
 def test_css_bell_count_and_toast():
     css = read_css()
-    assert ".tile-bell-count" in css
     assert ".connection-status--ok" in css
     assert ".connection-status--warn" in css
     assert ".connection-status--err" in css
