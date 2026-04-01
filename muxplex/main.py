@@ -9,6 +9,7 @@ Background poll loop reconciles tmux session state every POLL_INTERVAL seconds.
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 import os
@@ -614,7 +615,6 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
         if _federation_key:
             auth_header = websocket.headers.get("authorization", "")
             if auth_header.lower().startswith("bearer "):
-                import hmac
                 bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
         if not cookie_ok and not bearer_ok:
             await websocket.close(code=4001)
