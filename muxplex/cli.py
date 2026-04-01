@@ -742,11 +742,13 @@ def main() -> None:
 
     if args.command == "install-service":
         print(
-            "Warning: 'install-service' is deprecated and will be removed in a future version."
+            "\u26a0 'muxplex install-service' is deprecated."
             " Use 'muxplex service install' instead.",
             file=sys.stderr,
         )
-        install_service(system=args.system)
+        from muxplex.service import service_install  # noqa: PLC0415
+
+        service_install()
     elif args.command == "show-password":
         show_password()
     elif args.command == "reset-secret":

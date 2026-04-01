@@ -73,23 +73,23 @@ def test_main_passes_session_ttl_flag():
 
 
 def test_main_install_service_subcommand():
-    """main() with 'install-service' must invoke install_service()."""
+    """main() with 'install-service' must invoke service_install() (new module)."""
     from muxplex.cli import main
 
-    with patch("muxplex.cli.install_service") as mock_install:
+    with patch("muxplex.service.service_install") as mock_install:
         with patch("sys.argv", ["muxplex", "install-service"]):
             main()
-        mock_install.assert_called_once_with(system=False)
+        mock_install.assert_called_once()
 
 
 def test_main_install_service_system_flag():
-    """main() with 'install-service --system' passes system=True."""
+    """main() with 'install-service --system' still calls service_install() (--system ignored; new module auto-detects)."""
     from muxplex.cli import main
 
-    with patch("muxplex.cli.install_service") as mock_install:
+    with patch("muxplex.service.service_install") as mock_install:
         with patch("sys.argv", ["muxplex", "install-service", "--system"]):
             main()
-        mock_install.assert_called_once_with(system=True)
+        mock_install.assert_called_once()
 
 
 def test_install_service_user_mode_writes_unit_file(tmp_path, monkeypatch):
@@ -476,7 +476,7 @@ def test_main_check_dependencies_not_called_for_install_service(monkeypatch):
     calls = []
     monkeypatch.setattr("muxplex.cli._check_dependencies", lambda: calls.append(True))
 
-    with patch("muxplex.cli.install_service"):
+    with patch("muxplex.service.service_install"):
         with patch("sys.argv", ["muxplex", "install-service"]):
             main()
 
@@ -973,7 +973,7 @@ def test_install_service_subcommand_prints_deprecation_warning(capsys):
     """'muxplex install-service' must print a deprecation warning to stderr."""
     from muxplex.cli import main
 
-    with patch("muxplex.cli.install_service"):
+    with patch("muxplex.service.service_install"):
         with patch("sys.argv", ["muxplex", "install-service"]):
             main()
 
@@ -1100,6 +1100,19 @@ def test_service_logs_dispatches():
         with patch("sys.argv", ["muxplex", "service", "logs"]):
             main()
     mock_fn.assert_called_once()
+
+
+def test_install_service_deprecated_calls_service_install(capsys):
+    """'muxplex install-service' deprecated alias must call service_install() and print deprecation warning."""
+    from muxplex.cli import main
+
+    with patch("muxplex.service.service_install") as mock_service_install:
+        with patch("sys.argv", ["muxplex", "install-service"]):
+            main()
+
+    mock_service_install.assert_called_once()
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err.lower()
 
 
 def test_service_subcommand_in_help():
