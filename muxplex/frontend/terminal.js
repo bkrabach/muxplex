@@ -9,6 +9,7 @@ let _reconnectTimer = null;
 let _currentSession = null;
 let _vpHandler = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
+let _searchAddon = null;
 
 // ─── Module-level encoding helpers ──────────────────────────────────────────
 // Hoisted here so the clipboard key handler (in openTerminal) can also use them.
@@ -255,6 +256,55 @@ function createTerminal() {
       }
     }));
   }
+
+  // Search addon — Ctrl+F to find text in terminal buffer
+  var SearchAddon = window.SearchAddon && window.SearchAddon.SearchAddon;
+  if (SearchAddon) {
+    _searchAddon = new SearchAddon();
+    _term.loadAddon(_searchAddon);
+  }
+
+  // Image addon — inline image rendering (Sixel, iTerm2 IIP, Kitty graphics)
+  // Needed for tools like yazi file manager that use graphic protocols
+  var ImageAddon = window.ImageAddon && window.ImageAddon.ImageAddon;
+  if (ImageAddon) {
+    _term.loadAddon(new ImageAddon());
+  }
+}
+
+// ─── Search helpers ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+function _openSearch() {
+  var bar = document.getElementById('terminal-search-bar');
+  var input = document.getElementById('terminal-search-input');
+  if (bar) {
+    bar.classList.remove('hidden');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+}
+
+function _closeSearch() {
+  var bar = document.getElementById('terminal-search-bar');
+  if (bar) bar.classList.add('hidden');
+  if (_searchAddon) _searchAddon.clearDecorations();
+  if (_term) _term.focus();
+}
+
+function _searchNext() {
+  var input = document.getElementById('terminal-search-input');
+  if (input && input.value && _searchAddon) {
+    _searchAddon.findNext(input.value);
+  }
+}
+
+function _searchPrev() {
+  var input = document.getElementById('terminal-search-input');
+  if (input && input.value && _searchAddon) {
+    _searchAddon.findPrevious(input.value);
+  }
 }
 
 // ─── Open / close ─────────────────────────────────────────────────────────────
@@ -321,6 +371,12 @@ function openTerminal(sessionName, sourceUrl) {
       return false;  // prevent xterm from processing
     }
 
+    // Ctrl+F → open search bar
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'f' || e.key === 'F' || e.code === 'KeyF')) {
+      _openSearch();
+      return false;
+    }
+
     return true;  // let xterm handle all other keys normally
   });
 
@@ -371,6 +427,51 @@ function openTerminal(sessionName, sourceUrl) {
     });
   }
 
+  // Wire search bar buttons + keyboard handlers (idempotent — elements are static)
+  var searchInput = document.getElementById('terminal-search-input');
+  var searchClose = document.getElementById('terminal-search-close');
+  var searchNextBtn = document.getElementById('terminal-search-next');
+  var searchPrevBtn = document.getElementById('terminal-search-prev');
+
+  if (searchInput) {
+    // Remove old listeners by replacing with cloned element (avoids duplicate handlers on reconnect)
+    var newInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newInput, searchInput);
+    searchInput = newInput;
+    searchInput.addEventListener('input', function() {
+      if (_searchAddon && searchInput.value) {
+        _searchAddon.findNext(searchInput.value);
+      } else if (_searchAddon) {
+        _searchAddon.clearDecorations();
+      }
+    });
+    searchInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) _searchPrev(); else _searchNext();
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        _closeSearch();
+      }
+    });
+  }
+  if (searchClose) {
+    var newClose = searchClose.cloneNode(true);
+    searchClose.parentNode.replaceChild(newClose, searchClose);
+    newClose.addEventListener('click', _closeSearch);
+  }
+  if (searchNextBtn) {
+    var newNext = searchNextBtn.cloneNode(true);
+    searchNextBtn.parentNode.replaceChild(newNext, searchNextBtn);
+    newNext.addEventListener('click', _searchNext);
+  }
+  if (searchPrevBtn) {
+    var newPrev = searchPrevBtn.cloneNode(true);
+    searchPrevBtn.parentNode.replaceChild(newPrev, searchPrevBtn);
+    newPrev.addEventListener('click', _searchPrev);
+  }
+
   connectWebSocket(sessionName, sourceUrl);
   initVisualViewport(); /* defined in Task 14 */
 }
@@ -398,8 +499,10 @@ function closeTerminal() {
     _term.dispose();
     _term = null;
     _fitAddon = null;
+    _searchAddon = null;
   }
 
+  _closeSearch();
   _currentSession = null;
   _reconnectAttempts = 0; // reset backoff on intentional close
 }
@@ -407,6 +510,8 @@ function closeTerminal() {
 // ─── Expose to app.js ─────────────────────────────────────────────────────────
 window._openTerminal = openTerminal;
 window._closeTerminal = closeTerminal;
+window._openSearch = _openSearch;
+window._closeSearch = _closeSearch;
 
 // ---------------------------------------------------------------------------
 // setTerminalFontSize — live font-size update without reconnecting

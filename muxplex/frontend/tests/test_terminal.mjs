@@ -961,4 +961,25 @@ test('terminal.js loads xterm-addon-web-links for clickable URLs', () => {
   assert.ok(source.includes('window.open'), 'must open URLs in new tab');
 });
 
+// --- Search addon (xterm-addon-search) ---
+
+test('terminal.js loads xterm-addon-search', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('SearchAddon'), 'must reference SearchAddon');
+  assert.ok(source.includes('findNext') || source.includes('findPrevious'), 'must have search functions');
+});
+
+test('terminal.js has Ctrl+F search shortcut', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('_openSearch'), 'must have search open function');
+  assert.ok(source.includes('_closeSearch'), 'must have search close function');
+});
+
+// --- Image addon (xterm-addon-image) ---
+
+test('terminal.js loads xterm-addon-image for inline graphics', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('ImageAddon'), 'must reference ImageAddon');
+});
+
 
