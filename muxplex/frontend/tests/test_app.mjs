@@ -4354,3 +4354,55 @@ test('buildSidebarHTML renders empty pre when snapshot is entirely blank lines',
   assert.ok(preMatch, '<pre> element must exist');
   assert.strictEqual(preMatch[1], '', 'sidebar pre should be empty when snapshot has only blank lines');
 });
+
+// --- Trim BEFORE slice: 40-row terminal with content at top ---
+// The real bug: a 40-row terminal with content at rows 1-2 and rows 3-40 blank.
+// slice(-20) grabs the LAST 20 rows → all blank. Then trim-after-slice removes
+// everything → empty pre. Fix: trim trailing blanks from the full snapshot FIRST,
+// then slice the last 20 of what remains.
+
+test('buildTileHTML shows content from top of 40-row terminal (trim BEFORE slice)', () => {
+  // 40 lines: 2 content lines + 38 trailing blank lines (realistic 40-row terminal,
+  // cursor near top — e.g. a fresh ssh tunnel session)
+  const snapshot = 'TUNNEL_CONTENT_LINE\nstatus: connected\n' + '\n'.repeat(38);
+  const session = { name: 'tunnel', snapshot };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(
+    html.includes('TUNNEL_CONTENT_LINE'),
+    'tile must show content from top of terminal even with 38 trailing blank lines — trim full snapshot BEFORE slice(-20)',
+  );
+});
+
+test('buildSidebarHTML shows content from top of 40-row terminal (trim BEFORE slice)', () => {
+  const snapshot = 'TUNNEL_CONTENT_LINE\nstatus: connected\n' + '\n'.repeat(38);
+  const session = { name: 'tunnel', snapshot, bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(
+    html.includes('TUNNEL_CONTENT_LINE'),
+    'sidebar must show content from top of terminal even with 38 trailing blank lines — trim full snapshot BEFORE slice(-20)',
+  );
+});
+
+test('buildTileHTML trim happens BEFORE slice in source (structural order check)', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function buildTileHTML');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  const trimIdx = fnBody.indexOf('.pop()');
+  const sliceIdx = fnBody.indexOf('.slice(');
+  assert.ok(
+    trimIdx < sliceIdx,
+    'trailing blank trim (.pop()) must appear BEFORE .slice() in buildTileHTML — trim the full snapshot first, then slice the last N lines',
+  );
+});
+
+test('buildSidebarHTML trim happens BEFORE slice in source (structural order check)', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function buildSidebarHTML');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  const trimIdx = fnBody.indexOf('.pop()');
+  const sliceIdx = fnBody.indexOf('.slice(');
+  assert.ok(
+    trimIdx < sliceIdx,
+    'trailing blank trim (.pop()) must appear BEFORE .slice() in buildSidebarHTML — trim the full snapshot first, then slice the last 20 lines',
+  );
+});

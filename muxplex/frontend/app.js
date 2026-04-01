@@ -526,14 +526,15 @@ function buildTileHTML(session, index, mobile) {
   // Last N lines of snapshot — show more in fit mode so tall tiles fill
   const snapshot = session.snapshot || '';
   var _lineCount = (ds.viewMode === 'fit') ? -80 : -20;
-  var lines = snapshot.split('\n').slice(_lineCount);
-  // Trim trailing blank lines — sessions with cursor near the top have mostly empty
-  // lines at the bottom, making the preview appear blank. Removing them lets the
-  // CSS `position: absolute; bottom: 0` anchor the meaningful content correctly.
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
-    lines.pop();
+  // Trim trailing blank lines from the FULL snapshot FIRST — sessions with the cursor
+  // near the top (e.g. fresh tunnel/ssh session) have content at rows 1-2 and rows 3-40
+  // blank. slice(-20) would grab the last 20 rows (all blank); trimming after slice
+  // then removes everything → empty preview. Trim first so slice sees only content rows.
+  var allLines = snapshot.split('\n');
+  while (allLines.length > 0 && allLines[allLines.length - 1].trim() === '') {
+    allLines.pop();
   }
-  const lastLines = lines.join('\n');
+  const lastLines = allLines.slice(_lineCount).join('\n');
 
   const sourceUrlAttr = session.sourceUrl ? ` data-source-url="${escapeHtml(session.sourceUrl)}"` : '';
   return (
@@ -582,15 +583,16 @@ function buildSidebarHTML(session, currentSession) {
   // Timestamp for meta line
   const timeStr = formatTimestamp(session.last_activity_at || null);
 
-  // Last 20 lines of snapshot
+  // Last 20 lines of snapshot — trim trailing blanks from the FULL snapshot FIRST,
+  // then slice. Sessions with the cursor near the top have content at rows 1-2 and
+  // rows 3-40 blank; slice(-20) would return only blank rows, then trim-after-slice
+  // removes everything → empty preview. Trim first to keep meaningful content.
   const snapshot = session.snapshot || '';
-  var sidebarLines = snapshot.split('\n').slice(-20);
-  // Trim trailing blank lines — sessions with cursor near the top have mostly empty
-  // lines at the bottom, making the preview appear blank.
-  while (sidebarLines.length > 0 && sidebarLines[sidebarLines.length - 1].trim() === '') {
-    sidebarLines.pop();
+  var allLines = snapshot.split('\n');
+  while (allLines.length > 0 && allLines[allLines.length - 1].trim() === '') {
+    allLines.pop();
   }
-  const lastLines = sidebarLines.join('\n');
+  const lastLines = allLines.slice(-20).join('\n');
 
   return (
     `<article class="${classes}" data-session="${escapedName}" data-source-url="${escapeHtml(session.sourceUrl || '')}" tabindex="0" role="listitem">` +
