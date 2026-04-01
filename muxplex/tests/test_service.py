@@ -313,3 +313,212 @@ def test_launchd_status_runs_print_command(monkeypatch):
     assert "gui/501/com.muxplex" in " ".join(print_cmd), (
         f"print must reference gui/501/com.muxplex, got: {print_cmd}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C1 regression tests — check=True must NOT be set on idempotent/informational
+# operations: status, stop, uninstall (stop+disable for systemd, bootout for launchd)
+# ---------------------------------------------------------------------------
+
+
+def _make_kwargs_capture():
+    """Return (calls_with_kw, monkeypatch_fn) for capturing subprocess.run kwargs."""
+    calls_with_kw: list[tuple[list[str], dict]] = []
+
+    def fake_run(cmd, **kw):
+        calls_with_kw.append((list(cmd), dict(kw)))
+
+    return calls_with_kw, fake_run
+
+
+def test_systemd_status_no_check_true(monkeypatch):
+    """_systemd_status must NOT pass check=True — a stopped service yields exit code 3."""
+    import subprocess
+
+    import muxplex.service as svc
+
+    calls_with_kw, fake_run = _make_kwargs_capture()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    svc._systemd_status()
+
+    assert calls_with_kw, "subprocess.run was not called"
+    for cmd, kw in calls_with_kw:
+        assert kw.get("check") is not True, (
+            f"check=True must not be set on status command {cmd}"
+        )
+
+
+def test_systemd_stop_no_check_true(monkeypatch):
+    """_systemd_stop must NOT pass check=True — stopping an already-stopped service is ok."""
+    import subprocess
+
+    import muxplex.service as svc
+
+    calls_with_kw, fake_run = _make_kwargs_capture()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    svc._systemd_stop()
+
+    assert calls_with_kw, "subprocess.run was not called"
+    for cmd, kw in calls_with_kw:
+        assert kw.get("check") is not True, (
+            f"check=True must not be set on stop command {cmd}"
+        )
+
+
+def test_systemd_uninstall_stop_and_disable_no_check_true(monkeypatch, tmp_path):
+    """_systemd_uninstall's stop and disable calls must NOT pass check=True."""
+    import subprocess
+
+    import muxplex.service as svc
+
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    unit_path = unit_dir / "muxplex.service"
+    unit_path.write_text("[Unit]\n")
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+
+    calls_with_kw, fake_run = _make_kwargs_capture()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    svc._systemd_uninstall()
+
+    # stop and disable must not have check=True
+    for cmd, kw in calls_with_kw:
+        if "stop" in cmd or "disable" in cmd:
+            assert kw.get("check") is not True, (
+                f"check=True must not be set on uninstall subcommand {cmd}"
+            )
+
+
+def test_launchd_status_no_check_true(monkeypatch):
+    """_launchd_status must NOT pass check=True — service may not be loaded."""
+    import os
+    import subprocess
+
+    import muxplex.service as svc
+
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+    calls_with_kw, fake_run = _make_kwargs_capture()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    svc._launchd_status()
+
+    assert calls_with_kw, "subprocess.run was not called"
+    for cmd, kw in calls_with_kw:
+        assert kw.get("check") is not True, (
+            f"check=True must not be set on launchd status command {cmd}"
+        )
+
+
+def test_launchd_stop_no_check_true(monkeypatch):
+    """_launchd_stop must NOT pass check=True — bootout on unloaded service is ok."""
+    import os
+    import subprocess
+
+    import muxplex.service as svc
+
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+    calls_with_kw, fake_run = _make_kwargs_capture()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    svc._launchd_stop()
+
+    assert calls_with_kw, "subprocess.run was not called"
+    for cmd, kw in calls_with_kw:
+        assert kw.get("check") is not True, (
+            f"check=True must not be set on launchd stop command {cmd}"
+        )
+
+
+def test_launchd_uninstall_no_check_true(monkeypatch, tmp_path):
+    """_launchd_uninstall's bootout must NOT pass check=True."""
+    import os
+    import subprocess
+
+    import muxplex.service as svc
+
+    plist_dir = tmp_path / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    plist_path = plist_dir / "com.muxplex.plist"
+    plist_path.write_text("<plist/>")
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+
+    calls_with_kw, fake_run = _make_kwargs_capture()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    svc._launchd_uninstall()
+
+    for cmd, kw in calls_with_kw:
+        assert kw.get("check") is not True, (
+            f"check=True must not be set on launchd uninstall command {cmd}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# C2 regression tests — _prompt_host_if_localhost must be resilient
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_host_eoferror_defaults_to_no_change(monkeypatch):
+    """_prompt_host_if_localhost must not crash on EOFError (CI/piped stdin)."""
+    import muxplex.service as svc
+
+    patched: list[dict] = []
+
+    def fake_load():
+        return {"host": "127.0.0.1"}
+
+    def fake_patch(settings):
+        patched.append(settings)
+
+    def fake_input(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("muxplex.settings.load_settings", fake_load)
+    monkeypatch.setattr("muxplex.settings.patch_settings", fake_patch)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    # Must not raise, and must NOT patch settings (default to "n")
+    svc._prompt_host_if_localhost()
+    assert patched == [], "patch_settings must not be called when EOFError occurs"
+
+
+def test_prompt_host_keyboard_interrupt_defaults_to_no_change(monkeypatch):
+    """_prompt_host_if_localhost must not crash on KeyboardInterrupt."""
+    import muxplex.service as svc
+
+    patched: list[dict] = []
+
+    def fake_load():
+        return {"host": "127.0.0.1"}
+
+    def fake_patch(settings):
+        patched.append(settings)
+
+    def fake_input(_prompt):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("muxplex.settings.load_settings", fake_load)
+    monkeypatch.setattr("muxplex.settings.patch_settings", fake_patch)
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    svc._prompt_host_if_localhost()
+    assert patched == [], (
+        "patch_settings must not be called when KeyboardInterrupt occurs"
+    )
+
+
+def test_prompt_host_missing_host_key_no_keyerror(monkeypatch):
+    """_prompt_host_if_localhost must not raise KeyError when 'host' key is absent."""
+    import muxplex.service as svc
+
+    def fake_load():
+        return {}  # no 'host' key
+
+    def fake_patch(settings):
+        pass  # should never be called
+
+    monkeypatch.setattr("muxplex.settings.load_settings", fake_load)
+    monkeypatch.setattr("muxplex.settings.patch_settings", fake_patch)
+
+    # Must not raise KeyError
+    svc._prompt_host_if_localhost()

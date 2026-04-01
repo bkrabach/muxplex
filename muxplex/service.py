@@ -94,11 +94,18 @@ def _prompt_host_if_localhost() -> None:
     from muxplex.settings import load_settings, patch_settings
 
     settings = load_settings()
-    if settings["host"] == "127.0.0.1":
-        answer = input(
-            "Host is 127.0.0.1 — change to 0.0.0.0 so the service is reachable? [Y/n] "
-        )
-        if answer.strip().lower() in ("y", ""):
+    if settings.get("host") == "127.0.0.1":
+        try:
+            answer = (
+                input(
+                    "Host is 127.0.0.1 — change to 0.0.0.0 so the service is reachable? [Y/n] "
+                )
+                .strip()
+                .lower()
+            )
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer in ("y", ""):
             patch_settings({"host": "0.0.0.0"})
 
 
@@ -122,8 +129,8 @@ def _systemd_install() -> None:
 
 
 def _systemd_uninstall() -> None:
-    subprocess.run(["systemctl", "--user", "stop", "muxplex"], check=True)
-    subprocess.run(["systemctl", "--user", "disable", "muxplex"], check=True)
+    subprocess.run(["systemctl", "--user", "stop", "muxplex"])
+    subprocess.run(["systemctl", "--user", "disable", "muxplex"])
     _SYSTEMD_UNIT_PATH.unlink(missing_ok=True)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
 
@@ -133,7 +140,7 @@ def _systemd_start() -> None:
 
 
 def _systemd_stop() -> None:
-    subprocess.run(["systemctl", "--user", "stop", "muxplex"], check=True)
+    subprocess.run(["systemctl", "--user", "stop", "muxplex"])
 
 
 def _systemd_restart() -> None:
@@ -141,9 +148,7 @@ def _systemd_restart() -> None:
 
 
 def _systemd_status() -> None:
-    subprocess.run(
-        ["systemctl", "--user", "status", "muxplex", "--no-pager"], check=True
-    )
+    subprocess.run(["systemctl", "--user", "status", "muxplex", "--no-pager"])
 
 
 def _systemd_logs() -> None:
@@ -173,7 +178,7 @@ def _launchd_install() -> None:
 
 def _launchd_uninstall() -> None:
     uid = os.getuid()
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"], check=True)
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"])
     _LAUNCHD_PLIST_PATH.unlink(missing_ok=True)
 
 
@@ -186,7 +191,7 @@ def _launchd_start() -> None:
 
 def _launchd_stop() -> None:
     uid = os.getuid()
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"], check=True)
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"])
 
 
 def _launchd_restart() -> None:
@@ -196,7 +201,7 @@ def _launchd_restart() -> None:
 
 def _launchd_status() -> None:
     uid = os.getuid()
-    subprocess.run(["launchctl", "print", f"gui/{uid}/{_LAUNCHD_LABEL}"], check=True)
+    subprocess.run(["launchctl", "print", f"gui/{uid}/{_LAUNCHD_LABEL}"])
 
 
 def _launchd_logs() -> None:
