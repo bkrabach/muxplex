@@ -816,6 +816,21 @@ test('terminal.js WebSocket reconnect calls /connect after 2 failed attempts', (
   assert.ok(source.includes('Math.pow'), 'must use exponential backoff');
 });
 
+test('terminal.js WebSocket reconnect awaits /connect before creating WS', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('_reconnectAttempts'), 'must track reconnect attempts');
+  // WS creation must be extracted into a separate helper — not inlined in connect()
+  assert.ok(source.includes('_connectWebSocket'), 'must extract WS creation into _connectWebSocket helper');
+  // The /connect fetch must use .then() to chain WS creation — not fire-and-forget
+  assert.ok(source.includes('.then('), '/connect fetch must chain via .then() before WS creation');
+  // connect() must return after scheduling the fetch chain, to prevent falling through to immediate WS creation
+  const connectFn = source.substring(
+    source.indexOf('function connect()'),
+    source.indexOf('function _connectWebSocket'),
+  );
+  assert.ok(connectFn.includes('return;'), 'connect() must return after fetch to prevent falling through to immediate WS creation');
+});
+
 // --- Issue 4: setTerminalFontSize ---
 
 test('terminal.js exposes window._setTerminalFontSize function', () => {

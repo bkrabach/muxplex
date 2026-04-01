@@ -53,27 +53,18 @@ function connectWebSocket(name, sourceUrl) {
     });
   }
 
-  function connect() {
+  // _connectWebSocket — creates the WebSocket instance and registers all event handlers.
+  // Called directly for normal reconnects (ttyd still alive), or after a brief delay
+  // following the /connect POST (ttyd was dead and needed respawning).
+  //
+  // Local const `ws` captures this specific instance so each handler can check
+  // `if (ws !== _ws) return;` (stale guard). Without it, rapid reconnects or
+  // session switches cause old handlers to fire on the new _ws while it is still
+  // CONNECTING → send error → close → reconnect → infinite loop (Bug 2).
+  function _connectWebSocket() {
     // 'tty' subprotocol is REQUIRED — without it ttyd never starts the PTY.
     // Confirmed via raw Python WebSocket tests: ttyd accepts the TCP upgrade but
     // sits completely silent (no child process spawned) when subprotocol is omitted.
-    //
-    // Local const `ws` captures this specific instance so each handler can check
-    // `if (ws !== _ws) return;` (stale guard). Without it, rapid reconnects or
-    // session switches cause old handlers to fire on the new _ws while it is still
-    // CONNECTING → send error → close → reconnect → infinite loop (Bug 2).
-
-    // After 2 failed WS attempts, ttyd is likely dead (e.g. after service restart).
-    // Fire-and-forget POST to /api/sessions/{name}/connect to respawn ttyd before
-    // attempting the next WebSocket connection. fetch() includes cookies automatically
-    // for same-origin requests so auth is handled transparently.
-    if (_reconnectAttempts >= 2 && _currentSession) {
-      fetch('/api/sessions/' + encodeURIComponent(_currentSession) + '/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      }).catch(function() {}); // ignore errors — the WS retry will catch the result
-    }
-
     const ws = new WebSocket(url, ['tty']);
     _ws = ws;
     ws.binaryType = 'arraybuffer';
@@ -124,6 +115,30 @@ function connectWebSocket(name, sourceUrl) {
       if (ws !== _ws) return; // stale connection — ignore
       console.warn('tmux-web: WebSocket error on', url);
     });
+  }
+
+  function connect() {
+    // After 2 failed WS attempts, ttyd is likely dead (e.g. after service restart).
+    // AWAIT the /connect POST before opening the WebSocket — ttyd must be alive first.
+    // fetch() includes cookies automatically for same-origin requests so auth is transparent.
+    //
+    // Critical: this path uses .then() so _connectWebSocket() runs only AFTER the POST
+    // response (plus an 800ms settle delay for ttyd to bind its port). The early return
+    // prevents falling through to the direct _connectWebSocket() call below.
+    if (_reconnectAttempts >= 2 && _currentSession) {
+      fetch('/api/sessions/' + encodeURIComponent(_currentSession) + '/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+        .catch(function() { return null; })
+        .then(function() {
+          // Brief delay for ttyd to bind its port after /connect spawns it
+          setTimeout(_connectWebSocket, 800);
+        });
+      return; // Don't fall through — .then() handles the WebSocket creation
+    }
+
+    _connectWebSocket();
   }
 
   connect();
