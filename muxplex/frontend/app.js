@@ -1123,11 +1123,58 @@ function updatePillBell() {
 // ---------------------------------------------------------------------------
 
 var _originalFavicon = null; // cached original favicon href
+var _faviconImage = null;    // cached Image object for favicon badge compositing — avoids re-fetching every poll
+
+/**
+ * Draw the favicon activity badge onto the <link> element.
+ * Owns the _faviconImage lifecycle: lazily creates it once (caching it in the module-level
+ * variable) and reuses it on all subsequent calls. This avoids re-fetching favicon-32.png
+ * on every poll cycle (previously new Image() was created inside updateFaviconBadge every 2s).
+ * If the image is not yet loaded, registers an onload callback to retry automatically.
+ */
+function _drawFaviconBadge() {
+  // Lazy-init: create the Image object once and cache it — subsequent calls reuse it
+  if (!_faviconImage) {
+    _faviconImage = new Image();
+    _faviconImage.crossOrigin = 'anonymous';
+    _faviconImage.src = _originalFavicon;
+  }
+
+  // If image is not yet loaded, wait for it (onload will call us back)
+  if (!_faviconImage.complete || _faviconImage.naturalWidth === 0) {
+    _faviconImage.onload = function() { _drawFaviconBadge(); };
+    return;
+  }
+
+  var link = document.querySelector('link[rel="icon"][sizes="32x32"]') ||
+             document.querySelector('link[rel="icon"]');
+  if (!link) return;
+
+  var canvas = document.createElement('canvas');
+  canvas.width = 32;
+  canvas.height = 32;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.drawImage(_faviconImage, 0, 0, 32, 32);
+
+  // Activity dot — brand amber (same as bell indicator)
+  ctx.beginPath();
+  ctx.arc(24, 8, 7, 0, 2 * Math.PI); // top-right area
+  ctx.fillStyle = '#F1A640';           // var(--bell-color)
+  ctx.fill();
+  ctx.strokeStyle = '#0D1117';         // var(--bg) — border for contrast
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  link.href = canvas.toDataURL('image/png');
+}
 
 /**
  * Update the favicon with an activity dot if any session has unseen bells.
  * Uses a 32x32 canvas to draw the original favicon + a colored circle overlay.
  * Restores the original favicon when there are no unseen bells.
+ * Delegates drawing to _drawFaviconBadge which manages the cached Image object.
  */
 function updateFaviconBadge() {
   var hasActivity = _currentSessions && _currentSessions.some(function (s) {
@@ -1138,7 +1185,7 @@ function updateFaviconBadge() {
              document.querySelector('link[rel="icon"]');
   if (!link) return;
 
-  // Cache the original favicon on first call
+  // Cache the original favicon href on first call
   if (!_originalFavicon) _originalFavicon = link.href;
 
   if (!hasActivity) {
@@ -1147,30 +1194,7 @@ function updateFaviconBadge() {
     return;
   }
 
-  // Draw favicon + activity dot on canvas
-  var canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
-  var ctx = canvas.getContext('2d');
-  if (!ctx) return;
-
-  var img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.onload = function () {
-    ctx.drawImage(img, 0, 0, 32, 32);
-
-    // Activity dot — brand amber (same as bell indicator)
-    ctx.beginPath();
-    ctx.arc(24, 8, 7, 0, 2 * Math.PI); // top-right area
-    ctx.fillStyle = '#F1A640';           // var(--bell-color)
-    ctx.fill();
-    ctx.strokeStyle = '#0D1117';         // var(--bg) — border for contrast
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    link.href = canvas.toDataURL('image/png');
-  };
-  img.src = _originalFavicon;
+  _drawFaviconBadge();
 }
 
 // ─── Session open / close ────────────────────────────────────────────────────

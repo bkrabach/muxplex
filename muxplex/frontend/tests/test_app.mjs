@@ -3388,6 +3388,16 @@ test('pollSessions calls updateFaviconBadge', () => {
   );
 });
 
+test('updateFaviconBadge caches Image object instead of fetching every call', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('_faviconImage'), 'must cache favicon Image object');
+  assert.ok(source.includes('_drawFaviconBadge'), 'must use extracted draw helper');
+  // The old pattern: new Image() inside updateFaviconBadge should be gone
+  const fnStart = source.indexOf('function updateFaviconBadge');
+  const fnBody = source.substring(fnStart, fnStart + 1000);
+  assert.ok(!fnBody.includes('new Image()'), 'must NOT create new Image on every call');
+});
+
 
 // --- Delete session template (task: customizable delete command) ---
 
