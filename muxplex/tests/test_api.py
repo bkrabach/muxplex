@@ -606,8 +606,8 @@ def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
     mock_run_tmux = AsyncMock(return_value="")
     monkeypatch.setattr("muxplex.main.run_tmux", mock_run_tmux)
 
-    # Trigger lifespan by creating a TestClient
-    with TestClient(app) as _:
+    # Trigger lifespan by entering/exiting TestClient context
+    with TestClient(app):
         pass
 
     # Verify run_tmux was called during lifespan startup
@@ -1048,6 +1048,32 @@ def test_instance_info_includes_federation_enabled(client, tmp_path, monkeypatch
     )
     assert data["federation_enabled"] is False, (
         f"federation_enabled must be False when no key file exists, got: {data['federation_enabled']}"
+    )
+
+
+def test_instance_info_federation_enabled_true_when_key_exists(
+    client, tmp_path, monkeypatch
+):
+    """GET /api/instance-info returns federation_enabled=True when a key file is present."""
+    import muxplex.settings as settings_mod
+
+    # Write a federation key file to tmp_path
+    key_file = tmp_path / "federation_key"
+    key_file.write_text("test-federation-secret")
+
+    # Redirect settings path so defaults are used
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    # Redirect federation key path to the file we just wrote
+    monkeypatch.setattr(settings_mod, "FEDERATION_KEY_PATH", key_file)
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert "federation_enabled" in data, (
+        f"Response must include 'federation_enabled' key, got: {data}"
+    )
+    assert data["federation_enabled"] is True, (
+        f"federation_enabled must be True when a key file exists, got: {data['federation_enabled']}"
     )
 
 
