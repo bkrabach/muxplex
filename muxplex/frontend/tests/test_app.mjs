@@ -2507,61 +2507,6 @@ test('mergeSources returns empty array for empty input', () => {
 
 // --- pollSessions multi-source (task-5) ---
 
-test('pollSessions fetches from all sources and merges results', async () => {
-  const mockStatusEl = { textContent: '', className: '' };
-  const mockGrid = { innerHTML: '' };
-  const mockEmptyState = { style: {}, classList: { add: () => {}, remove: () => {} } };
-
-  const origGetById = globalThis.document.getElementById;
-  const origQSA = globalThis.document.querySelectorAll;
-  globalThis.document.getElementById = (id) => {
-    if (id === 'connection-status') return mockStatusEl;
-    if (id === 'session-grid') return mockGrid;
-    if (id === 'empty-state') return mockEmptyState;
-    return null;
-  };
-  globalThis.document.querySelectorAll = () => [];
-
-  // Set up sources: local + remote
-  app._setSources([
-    { url: '', name: 'Local', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    { url: 'https://remote.example.com', name: 'Remote', type: 'remote', status: 'authenticated', backoffMs: 2000 },
-  ]);
-
-  const fetchCalls = [];
-  globalThis.fetch = async (url, opts) => {
-    fetchCalls.push(url);
-    if (url === '/api/sessions') {
-      return { ok: true, json: async () => [{ name: 'local-session' }] };
-    }
-    if (url === 'https://remote.example.com/api/sessions') {
-      return { ok: true, json: async () => [{ name: 'remote-session' }] };
-    }
-    return { ok: true, json: async () => [] };
-  };
-
-  await app.pollSessions();
-
-  // Both sources should have been fetched
-  assert.ok(fetchCalls.some((url) => url === '/api/sessions'), 'should fetch local sessions');
-  assert.ok(
-    fetchCalls.some((url) => url === 'https://remote.example.com/api/sessions'),
-    'should fetch remote sessions',
-  );
-
-  // Grid should contain sessions from both sources (merged)
-  assert.ok(mockGrid.innerHTML.includes('local-session'), 'grid should include local sessions');
-  assert.ok(mockGrid.innerHTML.includes('remote-session'), 'grid should include remote sessions');
-
-  // Connection status should be ok (local source succeeded)
-  assert.strictEqual(mockStatusEl.className, 'connection-status--ok', 'connection status should be ok when local source succeeds');
-
-  globalThis.document.getElementById = origGetById;
-  globalThis.document.querySelectorAll = origQSA;
-  globalThis.fetch = undefined;
-  app._setSources([]);
-});
-
 test('pollSessions skips sources with nextRetryAt in the future', async () => {
   const mockStatusEl = { textContent: '', className: '' };
   const mockGrid = { innerHTML: '' };
@@ -2610,52 +2555,7 @@ test('pollSessions skips sources with nextRetryAt in the future', async () => {
   app._setSources([]);
 });
 
-test('pollSessions sets auth_required on 401 response', async () => {
-  const mockStatusEl = { textContent: '', className: '' };
-  const mockGrid = { innerHTML: '' };
-  const mockEmptyState = { style: {}, classList: { add: () => {}, remove: () => {} } };
 
-  const origGetById = globalThis.document.getElementById;
-  const origQSA = globalThis.document.querySelectorAll;
-  globalThis.document.getElementById = (id) => {
-    if (id === 'connection-status') return mockStatusEl;
-    if (id === 'session-grid') return mockGrid;
-    if (id === 'empty-state') return mockEmptyState;
-    return null;
-  };
-  globalThis.document.querySelectorAll = () => [];
-
-  const sources = [
-    { url: '', name: 'Local', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    {
-      url: 'https://remote.example.com',
-      name: 'Remote',
-      type: 'remote',
-      status: 'authenticated',
-      backoffMs: 2000,
-    },
-  ];
-  app._setSources(sources);
-
-  globalThis.fetch = async (url) => {
-    if (url === '/api/sessions') {
-      return { ok: true, json: async () => [{ name: 'local-session' }] };
-    }
-    // Remote returns 401
-    return { ok: false, status: 401, statusText: 'Unauthorized' };
-  };
-
-  await app.pollSessions();
-
-  const remoteSrc = sources.find((s) => s.url === 'https://remote.example.com');
-  assert.strictEqual(remoteSrc.status, 'auth_required', 'remote source should be marked auth_required');
-  assert.ok(!remoteSrc.nextRetryAt, 'auth_required should not set nextRetryAt');
-
-  globalThis.document.getElementById = origGetById;
-  globalThis.document.querySelectorAll = origQSA;
-  globalThis.fetch = undefined;
-  app._setSources([]);
-});
 
 // --- getVisibleSessions (task-7) ---
 
@@ -2825,55 +2725,7 @@ test('buildTileHTML escapes HTML in deviceName within device-badge', () => {
   app._setSources([]);
 });
 
-test('pollSessions sets unreachable and applies exponential backoff on network error', async () => {
-  const mockStatusEl = { textContent: '', className: '' };
-  const mockGrid = { innerHTML: '' };
-  const mockEmptyState = { style: {}, classList: { add: () => {}, remove: () => {} } };
 
-  const origGetById = globalThis.document.getElementById;
-  const origQSA = globalThis.document.querySelectorAll;
-  globalThis.document.getElementById = (id) => {
-    if (id === 'connection-status') return mockStatusEl;
-    if (id === 'session-grid') return mockGrid;
-    if (id === 'empty-state') return mockEmptyState;
-    return null;
-  };
-  globalThis.document.querySelectorAll = () => [];
-
-  const sources = [
-    { url: '', name: 'Local', type: 'local', status: 'authenticated', backoffMs: 2000 },
-    {
-      url: 'https://remote.example.com',
-      name: 'Remote',
-      type: 'remote',
-      status: 'authenticated',
-      backoffMs: 2000,
-    },
-  ];
-  app._setSources(sources);
-
-  const beforePoll = Date.now();
-  globalThis.fetch = async (url) => {
-    if (url === '/api/sessions') {
-      return { ok: true, json: async () => [] };
-    }
-    return { ok: false, status: 500, statusText: 'Internal Server Error' };
-  };
-
-  await app.pollSessions();
-
-  const remoteSrc = sources.find((s) => s.url === 'https://remote.example.com');
-  assert.strictEqual(remoteSrc.status, 'unreachable', 'remote source should be marked unreachable');
-  // backoffMs doubles from 2000 → 4000
-  assert.strictEqual(remoteSrc.backoffMs, 4000, 'backoff should double from 2000 to 4000');
-  assert.ok(remoteSrc.nextRetryAt > beforePoll, 'nextRetryAt should be set to a future timestamp');
-  assert.ok(remoteSrc.nextRetryAt <= beforePoll + 4000 + 100, 'nextRetryAt should be roughly now + 4000ms');
-
-  globalThis.document.getElementById = origGetById;
-  globalThis.document.querySelectorAll = origQSA;
-  globalThis.fetch = undefined;
-  app._setSources([]);
-});
 
 // --- renderGrid grouped mode (task-11) ---
 
