@@ -10,6 +10,39 @@ let _currentSession = null;
 let _vpHandler = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 
+// ─── Module-level encoding helpers ──────────────────────────────────────────
+// Hoisted here so the clipboard key handler (in openTerminal) can also use them.
+const _encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+
+function _encodePayload(typeChar, str) {
+  // Returns Uint8Array: [typeCharCode, ...utf8bytes]
+  var strBytes = _encoder ? _encoder.encode(str) : new Uint8Array(Array.from(str).map(function(c) { return c.charCodeAt(0); }));
+  var payload = new Uint8Array(1 + strBytes.length);
+  payload[0] = typeChar;
+  payload.set(strBytes, 1);
+  return payload;
+}
+
+// ─── Clipboard helpers ───────────────────────────────────────────────────────
+// Ctrl+Shift+C: copy terminal selection to system clipboard
+// Ctrl+Shift+V: paste from system clipboard into terminal
+
+function _copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(function() {});
+  } else {
+    // Fallback for non-HTTPS contexts (HTTP over LAN)
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
+    document.body.removeChild(ta);
+  }
+}
+
 // ─── Forward declarations ─────────────────────────────────────────────────────
 
 function connectWebSocket(name, sourceUrl) {
@@ -23,16 +56,8 @@ function connectWebSocket(name, sourceUrl) {
     url = proto + '//' + location.host + '/terminal/ws';
   }
   const reconnectOverlay = document.getElementById('reconnect-overlay');
-  const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
-
-  function encodePayload(typeChar, str) {
-    // Returns Uint8Array: [typeCharCode, ...utf8bytes]
-    var strBytes = encoder ? encoder.encode(str) : new Uint8Array(Array.from(str).map(function(c) { return c.charCodeAt(0); }));
-    var payload = new Uint8Array(1 + strBytes.length);
-    payload[0] = typeChar;
-    payload.set(strBytes, 1);
-    return payload;
-  }
+  // Use module-level _encodePayload (hoisted above connectWebSocket)
+  var encodePayload = _encodePayload;
 
   // Register terminal event handlers once on this _term instance.
   // These handlers read the module-level _ws at call time (not a captured reference),
@@ -258,6 +283,34 @@ function openTerminal(sessionName, sourceUrl) {
   createTerminal();
 
   _term.open(container);
+
+  // --- Clipboard integration ---
+  // Ctrl+Shift+C: copy selection to system clipboard (Ctrl+C still sends SIGINT)
+  // Ctrl+Shift+V: paste from system clipboard (Ctrl+V still sends literal bytes)
+  _term.attachCustomKeyEventHandler(function(e) {
+    if (e.type !== 'keydown') return true;
+
+    // Ctrl+Shift+C → copy selection to clipboard
+    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.code === 'KeyC')) {
+      var sel = _term.getSelection();
+      if (sel) _copyToClipboard(sel);
+      return false;  // prevent xterm from processing
+    }
+
+    // Ctrl+Shift+V → paste from clipboard into terminal
+    if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function(text) {
+          if (text && _ws && _ws.readyState === WebSocket.OPEN) {
+            _ws.send(_encodePayload(0x30, text));
+          }
+        }).catch(function() {});
+      }
+      return false;  // prevent xterm from processing
+    }
+
+    return true;  // let xterm handle all other keys normally
+  });
 
   if (_fitAddon) {
     // requestAnimationFrame guarantees one full browser layout pass after the flex

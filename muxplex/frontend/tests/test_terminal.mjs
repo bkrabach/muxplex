@@ -47,6 +47,8 @@ function loadTerminal() {
     dispose: () => {},
     write: (data) => { termWriteMessages.push(data); },
     focus: () => { focusCallCount++; },
+    attachCustomKeyEventHandler: () => {},
+    getSelection: () => '',
   };
 
   // Capture all messages sent via WebSocket.send()
@@ -331,6 +333,8 @@ function createMultiSessionEnv() {
       loadAddon: () => {},
       dispose: () => {},
       focus: () => {},
+      attachCustomKeyEventHandler: () => {},
+      getSelection: () => '',
       writeMessages: [],
     };
     t.write = (data) => t.writeMessages.push(data);
@@ -880,6 +884,17 @@ test('terminal.js resets _reconnectAttempts on first message, not on open', () =
     '_reconnectAttempts must be reset inside the message handler ' +
     '(first data message proves ttyd is alive and relaying)',
   );
+});
+
+// --- Clipboard integration ---
+
+test('terminal.js has clipboard integration with Ctrl+Shift+C and Ctrl+Shift+V', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('attachCustomKeyEventHandler'), 'must register custom key handler');
+  assert.ok(source.includes('getSelection'), 'must use getSelection() for copy');
+  assert.ok(source.includes('clipboard'), 'must interact with clipboard API');
+  assert.ok(source.includes('Shift'), 'must use Shift modifier to avoid conflict with terminal Ctrl+C/V');
+  assert.ok(source.includes('_copyToClipboard') || source.includes('writeText'), 'must have copy mechanism');
 });
 
 // --- Issue 4: setTerminalFontSize ---
