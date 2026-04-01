@@ -568,11 +568,7 @@ test('buildTileHTML includes data-remote-id attribute when session has remoteId'
   assert.ok(html.includes('data-remote-id="fed-abc123"'), 'article should have data-remote-id with the session remoteId');
 });
 
-test('buildTileHTML does not include data-source-url for local sessions (empty sourceUrl)', () => {
-  const session = { name: 'local-session', sourceUrl: '', snapshot: '' };
-  const html = app.buildTileHTML(session, 0, false);
-  assert.ok(!html.includes('data-source-url'), 'local sessions should not have data-source-url attribute');
-});
+
 
 // --- renderGrid ---
 
@@ -1221,7 +1217,7 @@ test('openSession with remoteId passes remoteId to window._openTerminal', async 
   globalThis.setTimeout = origSetTimeout;
 });
 
-test('openSession without sourceUrl still POSTs to local /api/sessions/{name}/connect', async () => {
+test('openSession for local session still POSTs to local /api/sessions/{name}/connect', async () => {
   const fetchCalls = [];
   const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
@@ -1340,7 +1336,7 @@ test('closeSession still fires DELETE /api/sessions/current for local session', 
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
 
-  // Setup to call openSession without sourceUrl (local session)
+  // Setup to call openSession for a local session (no remoteId)
   globalThis.fetch = async () => ({ ok: true });
   globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
   globalThis.document.querySelector = () => null;
@@ -2379,12 +2375,12 @@ test('getVisibleSessions exported and filters hidden sessions', () => {
   // Set up server settings with hidden_sessions
   app._setServerSettings({ hidden_sessions: ['secret', 'hidden-local'] });
 
-  // Local sessions (no sourceUrl) matching hidden list should be filtered
+  // Local sessions (no remoteId) matching hidden list should be filtered
   const sessions = [
-    { name: 'visible', sourceUrl: '' },
-    { name: 'secret', sourceUrl: '' },          // local, should be hidden
-    { name: 'hidden-local', sourceUrl: '' },    // local, should be hidden
-    { name: 'other', sourceUrl: '' },
+    { name: 'visible' },
+    { name: 'secret' },          // local, should be hidden
+    { name: 'hidden-local' },    // local, should be hidden
+    { name: 'other' },
   ];
 
   const result = app.getVisibleSessions(sessions);
@@ -2403,19 +2399,19 @@ test('getVisibleSessions hides local sessions by name but not remote sessions wi
   app._setServerSettings({ hidden_sessions: ['shared-name'] });
 
   const sessions = [
-    { name: 'shared-name', sourceUrl: '' },                         // local — should be hidden
-    { name: 'shared-name', sourceUrl: 'https://remote.example.com' }, // remote — should remain visible
-    { name: 'another', sourceUrl: '' },                             // local, not in hidden list — should remain
+    { name: 'shared-name' },                         // local (no remoteId) — should be hidden
+    { name: 'shared-name', remoteId: 1 },            // remote — should remain visible
+    { name: 'another' },                             // local, not in hidden list — should remain
   ];
 
   const result = app.getVisibleSessions(sessions);
   assert.strictEqual(result.length, 2, 'should show 2 sessions (remote + another)');
   // The remote one should survive
-  const remote = result.find((s) => s.sourceUrl === 'https://remote.example.com');
+  const remote = result.find((s) => s.remoteId === 1);
   assert.ok(remote, 'remote session with same name should not be hidden');
   assert.strictEqual(remote.name, 'shared-name', 'remote session name should be shared-name');
   // The local one should be hidden
-  assert.ok(!result.some((s) => s.sourceUrl === '' && s.name === 'shared-name'), 'local session with hidden name should be removed');
+  assert.ok(!result.some((s) => !s.remoteId && s.name === 'shared-name'), 'local session with hidden name should be removed');
   // another should remain
   assert.ok(result.some((s) => s.name === 'another'), 'another should remain visible');
 
@@ -2427,7 +2423,7 @@ test('getVisibleSessions hides local sessions by name but not remote sessions wi
 
 test('buildSidebarHTML shows device-badge when multi_device_enabled', () => {
   app._setServerSettings({ multi_device_enabled: true });
-  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
   assert.ok(html.includes('device-badge'), 'should show device-badge when multi_device_enabled and session has deviceName');
   assert.ok(html.includes('Laptop'), 'device-badge should contain the deviceName');
@@ -2436,7 +2432,7 @@ test('buildSidebarHTML shows device-badge when multi_device_enabled', () => {
 
 test('buildSidebarHTML omits device-badge when multi_device_enabled is false', () => {
   app._setServerSettings({ multi_device_enabled: false });
-  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
   assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when multi_device_enabled is false');
   app._setServerSettings(null);
@@ -2444,7 +2440,7 @@ test('buildSidebarHTML omits device-badge when multi_device_enabled is false', (
 
 test('buildSidebarHTML omits device-badge when session has no deviceName', () => {
   app._setServerSettings({ multi_device_enabled: true });
-  const session = { name: 'work', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const session = { name: 'work', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
   assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when session has no deviceName');
   app._setServerSettings(null);
@@ -2471,7 +2467,7 @@ test('buildSidebarHTML data-remote-id is empty string when session has no remote
 
 test('buildSidebarHTML escapes HTML in deviceName within device-badge', () => {
   app._setServerSettings({ multi_device_enabled: true });
-  const session = { name: 'work', deviceName: '<script>alert(1)</script>', sourceUrl: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const session = { name: 'work', deviceName: '<script>alert(1)</script>', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
   const html = app.buildSidebarHTML(session, null);
   assert.ok(!html.includes('<script>'), 'device-badge should not contain raw <script> tag');
   assert.ok(html.includes('&lt;script&gt;'), 'device-badge should escape < and > in deviceName');
@@ -2482,7 +2478,7 @@ test('buildSidebarHTML escapes HTML in deviceName within device-badge', () => {
 
 test('buildTileHTML shows device-badge when session has deviceName and multi_device_enabled', () => {
   app._setServerSettings({ multi_device_enabled: true });
-  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '' };
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('device-badge'), 'should show device-badge when multi_device_enabled and session has deviceName');
   assert.ok(html.includes('Laptop'), 'device-badge should contain the deviceName');
@@ -2491,7 +2487,7 @@ test('buildTileHTML shows device-badge when session has deviceName and multi_dev
 
 test('buildTileHTML omits device-badge when multi_device_enabled is false', () => {
   app._setServerSettings({ multi_device_enabled: false });
-  const session = { name: 'work', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::work', snapshot: '' };
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('device-badge'), 'should NOT show device-badge when multi_device_enabled is false');
   app._setServerSettings(null);
@@ -2512,7 +2508,7 @@ test('buildTileHTML includes data-session-key and data-remote-id attributes on a
 
 test('buildTileHTML escapes HTML in deviceName within device-badge', () => {
   app._setServerSettings({ multi_device_enabled: true });
-  const session = { name: 'work', deviceName: '<script>alert(1)</script>', sourceUrl: '', sessionKey: '::work', snapshot: '' };
+  const session = { name: 'work', deviceName: '<script>alert(1)</script>', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('<script>'), 'device-badge should not contain raw <script> tag');
   assert.ok(html.includes('&lt;script&gt;'), 'device-badge should escape < and > in deviceName');
@@ -2541,8 +2537,8 @@ test('renderGrid in grouped mode produces device-group-header elements', () => {
 
   // Set up sessions from two different devices
   const sessions = [
-    { name: 'alpha', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::alpha', snapshot: '' },
-    { name: 'beta', deviceName: 'Server', sourceUrl: 'http://remote', sessionKey: 'http://remote::beta', snapshot: '' },
+    { name: 'alpha', deviceName: 'Laptop', sessionKey: 'http://local::alpha', snapshot: '' },
+    { name: 'beta', deviceName: 'Server', sessionKey: 'http://remote::beta', snapshot: '' },
   ];
 
   app._setGridViewMode('grouped');
@@ -2574,9 +2570,9 @@ test('renderFilterBar produces pill buttons for each device plus All', () => {
   };
 
   const sessions = [
-    { name: 'alpha', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::alpha', snapshot: '' },
-    { name: 'beta', deviceName: 'Server', sourceUrl: 'http://remote', sessionKey: 'http://remote::beta', snapshot: '' },
-    { name: 'gamma', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::gamma', snapshot: '' },
+    { name: 'alpha', deviceName: 'Laptop', sessionKey: 'http://local::alpha', snapshot: '' },
+    { name: 'beta', deviceName: 'Server', sessionKey: 'http://remote::beta', snapshot: '' },
+    { name: 'gamma', deviceName: 'Laptop', sessionKey: 'http://local::gamma', snapshot: '' },
   ];
 
   app._setActiveFilterDevice('all');
@@ -2600,8 +2596,8 @@ test('renderFilterBar marks active device pill with filter-pill--active class', 
   };
 
   const sessions = [
-    { name: 'alpha', deviceName: 'Laptop', sourceUrl: 'http://local', sessionKey: 'http://local::alpha', snapshot: '' },
-    { name: 'beta', deviceName: 'Server', sourceUrl: 'http://remote', sessionKey: 'http://remote::beta', snapshot: '' },
+    { name: 'alpha', deviceName: 'Laptop', sessionKey: 'http://local::alpha', snapshot: '' },
+    { name: 'beta', deviceName: 'Server', sessionKey: 'http://remote::beta', snapshot: '' },
   ];
 
   // Set active filter to 'Laptop' and render
@@ -2705,8 +2701,8 @@ test('renderSidebar groups sessions by device with sidebar-device-header when mu
 
   app._setViewMode('fullscreen');
   const sessions = [
-    { name: 'alpha', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::alpha', snapshot: '', bell: { unseen_count: 0 } },
-    { name: 'beta', deviceName: 'Server', sourceUrl: 'https://remote.example.com', sessionKey: 'https://remote.example.com::beta', snapshot: '', bell: { unseen_count: 0 } },
+    { name: 'alpha', deviceName: 'Laptop', sessionKey: '::alpha', snapshot: '', bell: { unseen_count: 0 } },
+    { name: 'beta', deviceName: 'Server', remoteId: 1, sessionKey: 'https://remote.example.com::beta', snapshot: '', bell: { unseen_count: 0 } },
   ];
   app.renderSidebar(sessions, null);
 
@@ -2738,8 +2734,8 @@ test('renderSidebar does NOT group when only one source configured', () => {
 
   app._setViewMode('fullscreen');
   const sessions = [
-    { name: 'alpha', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::alpha', snapshot: '', bell: { unseen_count: 0 } },
-    { name: 'beta', deviceName: 'Laptop', sourceUrl: '', sessionKey: '::beta', snapshot: '', bell: { unseen_count: 0 } },
+    { name: 'alpha', deviceName: 'Laptop', sessionKey: '::alpha', snapshot: '', bell: { unseen_count: 0 } },
+    { name: 'beta', deviceName: 'Laptop', sessionKey: '::beta', snapshot: '', bell: { unseen_count: 0 } },
   ];
   app.renderSidebar(sessions, null);
 
