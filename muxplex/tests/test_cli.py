@@ -1057,6 +1057,19 @@ def test_generate_federation_key_creates_file(tmp_path, monkeypatch, capsys):
     assert content in captured.out, "Key value must appear in output"
 
 
+def test_main_dispatches_to_generate_federation_key(monkeypatch):
+    """main() with 'generate-federation-key' subcommand must invoke generate_federation_key()."""
+    import muxplex.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod, "generate_federation_key", lambda: calls.append(True))
+    with patch("sys.argv", ["muxplex", "generate-federation-key"]):
+        cli_mod.main()
+    assert calls, (
+        "generate_federation_key() must be called once for 'generate-federation-key' subcommand"
+    )
+
+
 def test_upgrade_uses_service_module_install(monkeypatch, capsys):
     """upgrade() must call muxplex.service.service_install."""
     import subprocess
