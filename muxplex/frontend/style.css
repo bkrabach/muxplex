@@ -60,6 +60,43 @@
   box-sizing: border-box;
 }
 
+/* ============================================================
+   Custom scrollbar — thin, dark, matches theme
+   ============================================================ */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(48, 54, 61, 0.6) transparent;
+}
+
+/* WebKit (Chrome, Edge, Safari) */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(48, 54, 61, 0.6);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 200, 200, 0.35);  /* --accent at 35% */
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(0, 200, 200, 0.55);  /* --accent at 55% */
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Base */
 html,
 body {

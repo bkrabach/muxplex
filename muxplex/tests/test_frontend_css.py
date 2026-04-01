@@ -2077,3 +2077,16 @@ def test_css_multi_device_fields_transition() -> None:
         "#multi-device-fields must have a transition property for smooth enable/disable animation"
     )
     assert "opacity" in body, "#multi-device-fields transition must include opacity"
+
+
+# ============================================================
+# Custom scrollbar styling (thin, dark, brand cyan hover)
+# ============================================================
+
+
+def test_custom_scrollbar_styles():
+    """Custom scrollbar styling must exist for both WebKit and Firefox."""
+    css = read_css()
+    assert "scrollbar-width: thin" in css, "Firefox scrollbar-width must be set"
+    assert "::-webkit-scrollbar" in css, "WebKit scrollbar rules must exist"
+    assert "border-radius: 3px" in css or "border-radius:3px" in css, "scrollbar thumb must be rounded"
