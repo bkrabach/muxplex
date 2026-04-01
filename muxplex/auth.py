@@ -3,6 +3,8 @@ muxplex authentication — password and signing secret file management.
 """
 
 import base64
+import hmac
+import logging
 import secrets
 from pathlib import Path
 
@@ -10,6 +12,8 @@ from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +168,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         secret: str,
         ttl_seconds: int,
         password: str = "",
+        federation_key: str = "",
     ):
         super().__init__(app)
         self.auth_mode = auth_mode
         self.secret = secret
         self.ttl_seconds = ttl_seconds
         self.password = password
+        self.federation_key = federation_key
 
     async def dispatch(self, request: Request, call_next) -> Response:
         # 1. Localhost bypass — client.host is the socket-level IP and cannot
@@ -191,6 +197,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         cookie = request.cookies.get("muxplex_session")
         if cookie and verify_session_cookie(self.secret, cookie, self.ttl_seconds):
             return await call_next(request)
+
+        # 4a. Bearer token (server-to-server federation)
+        auth_header = request.headers.get("authorization", "")
+        if self.federation_key and auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+            if hmac.compare_digest(token, self.federation_key):
+                return await call_next(request)
+            _log.warning("federation: rejected Bearer from %s", client_host)
 
         # 4b. X-Muxplex-Token header (for cross-origin federation)
         token_header = request.headers.get("x-muxplex-token")

@@ -484,3 +484,68 @@ def test_middleware_invalid_token_header_falls_through_to_redirect():
     response = client.get("/protected", headers={"X-Muxplex-Token": "bad.token.value"})
     # Invalid token: should NOT pass auth, falls through to redirect or 401
     assert response.status_code in (307, 401)
+
+
+# ---------------------------------------------------------------------------
+# Bearer token auth (server-to-server federation)
+# ---------------------------------------------------------------------------
+
+
+def _make_federation_app(federation_key: str = "fed-key") -> FastAPI:
+    """Create a minimal FastAPI app with AuthMiddleware configured with a federation_key."""
+    test_app = FastAPI()
+
+    test_app.add_middleware(
+        AuthMiddleware,
+        auth_mode="password",
+        secret="test-secret",
+        ttl_seconds=3600,
+        password="test-pw",
+        federation_key=federation_key,
+    )
+
+    @test_app.get("/protected")
+    async def protected():
+        return PlainTextResponse("OK")
+
+    return test_app
+
+
+def test_middleware_valid_bearer_token_passes():
+    """Non-localhost with valid Bearer token and federation_key configured passes through (200)."""
+    app = _make_federation_app(federation_key="my-federation-secret")
+    client = TestClient(app, base_url="http://192.168.1.1")
+    response = client.get(
+        "/protected", headers={"Authorization": "Bearer my-federation-secret"}
+    )
+    assert response.status_code == 200
+    assert response.text == "OK"
+
+
+def test_middleware_invalid_bearer_token_falls_through():
+    """Non-localhost with wrong Bearer token falls through to 401 (not accepted)."""
+    app = _make_federation_app(federation_key="my-federation-secret")
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get(
+        "/protected",
+        headers={
+            "Authorization": "Bearer wrong-token",
+            "Accept": "application/json",
+        },
+    )
+    assert response.status_code == 401
+
+
+def test_middleware_bearer_skipped_when_no_federation_key():
+    """Empty federation_key means Bearer tokens are never accepted (falls through to 401)."""
+    app = _make_federation_app(federation_key="")
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get(
+        "/protected",
+        headers={
+            "Authorization": "Bearer any-token-value",
+            "Accept": "application/json",
+        },
+    )
+    # Bearer should be skipped when federation_key is empty, falls through to 401
+    assert response.status_code == 401
