@@ -1571,6 +1571,98 @@ def test_federation_sessions_returns_local_sessions(client, monkeypatch, tmp_pat
     assert local["remoteId"] is None
 
 
+def test_federation_sessions_remote_id_is_integer_index(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/sessions returns integer remoteId (index) for remote sessions.
+
+    remoteId must be the enumerate index (0, 1, 2...) of the remote in
+    remote_instances -- NOT the URL string and NOT any 'id' field from the
+    remote config dict.
+    """
+    import json
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Two remote instances -- first will succeed, second will fail
+    settings_path.write_text(
+        json.dumps(
+            {
+                "device_name": "local-host",
+                "remote_instances": [
+                    {
+                        "url": "http://spark-2:8088",
+                        "key": "abc123",
+                        "name": "spark-2",
+                    },
+                    {
+                        "url": "http://spark-3:8088",
+                        "key": "def456",
+                        "name": "spark-3",
+                    },
+                ],
+            }
+        )
+    )
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    from unittest.mock import MagicMock
+
+    # First remote returns one session; second is unreachable
+    async def mock_get(url, **kwargs):
+        if "spark-2" in url:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.raise_for_status = lambda: None
+            mock_resp.json = lambda: [{"name": "work", "snapshot": "", "bell": {}}]
+            return mock_resp
+        raise httpx.ConnectError("refused")
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    # The successful remote session (spark-2, index 0) must have remoteId == 0
+    remote_entries = [s for s in data if s.get("remoteId") is not None]
+    assert len(remote_entries) == 2, (
+        f"Expected 2 remote entries (1 session + 1 unreachable), got: {remote_entries}"
+    )
+
+    spark2_session = next(
+        (s for s in remote_entries if s.get("deviceName") == "spark-2"), None
+    )
+    assert spark2_session is not None, "Expected a session entry from spark-2"
+    assert spark2_session["remoteId"] == 0, (
+        f"remoteId for first remote (index 0) must be integer 0, "
+        f"got: {spark2_session['remoteId']!r}"
+    )
+    assert isinstance(spark2_session["remoteId"], int), (
+        f"remoteId must be an int, got {type(spark2_session['remoteId'])}"
+    )
+
+    # The unreachable remote (spark-3, index 1) must have remoteId == 1
+    spark3_entry = next(
+        (s for s in remote_entries if s.get("deviceName") == "spark-3"), None
+    )
+    assert spark3_entry is not None, "Expected a status entry from spark-3"
+    assert spark3_entry["remoteId"] == 1, (
+        f"remoteId for second remote (index 1) must be integer 1, "
+        f"got: {spark3_entry['remoteId']!r}"
+    )
+
+
+
 def test_federation_sessions_includes_remote_failure_status(
     client, monkeypatch, tmp_path
 ):
@@ -1635,7 +1727,7 @@ def test_federation_sessions_includes_remote_failure_status(
     )
     entry = failure_entries[0]
     assert entry["status"] == "unreachable"
-    assert entry.get("remoteId") == "remote-1"
+    assert entry.get("remoteId") == 0  # integer index, not the "id" field string
 
 
 # ---------------------------------------------------------------------------
@@ -1732,7 +1824,11 @@ def test_federation_connect_returns_404_for_invalid_remote_id(
 def test_federation_connect_returns_404_for_non_integer_remote_id(
     client, monkeypatch, tmp_path
 ):
-    """POST /api/federation/{remote_id}/connect/{session_name} returns 404 when remote_id is not an integer."""
+    """POST /api/federation/{remote_id}/connect/{session_name} returns 422 when remote_id is not an integer.
+
+    With remote_id typed as int, FastAPI validates the path parameter at the
+    framework level and returns 422 Unprocessable Entity for non-integer values.
+    """
     import json
 
     import muxplex.settings as settings_mod
@@ -1742,7 +1838,7 @@ def test_federation_connect_returns_404_for_non_integer_remote_id(
     settings_path.write_text(json.dumps({"remote_instances": []}))
 
     response = client.post("/api/federation/not-an-int/connect/my-session")
-    assert response.status_code == 404
+    assert response.status_code == 422  # FastAPI rejects non-integer path param
 
 
 def test_federation_connect_returns_503_when_remote_unreachable(

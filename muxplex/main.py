@@ -892,12 +892,12 @@ async def federation_sessions(request: Request) -> list[dict]:
     # Fetch remote sessions concurrently
     http_client: httpx.AsyncClient = request.app.state.federation_client
 
-    async def fetch_remote(remote: dict) -> list[dict]:
+    async def fetch_remote(i: int, remote: dict) -> list[dict]:
         """Fetch /api/sessions from a remote instance, returning session dicts or a status entry."""
         url: str = remote.get("url", "")
         key: str = remote.get("key", "")
         remote_name: str = remote.get("name", url)
-        remote_id: str = remote.get("id", url)
+        remote_id: int = i
         try:
             resp = await http_client.get(
                 f"{url.rstrip('/')}/api/sessions",
@@ -937,7 +937,7 @@ async def federation_sessions(request: Request) -> list[dict]:
             ]
 
     remote_results: list[list[dict]] = await asyncio.gather(
-        *(fetch_remote(remote) for remote in remote_instances)
+        *(fetch_remote(i, remote) for i, remote in enumerate(remote_instances))
     )
 
     all_sessions: list[dict] = list(local_sessions)
@@ -969,7 +969,7 @@ async def federation_generate_key() -> dict:
 
 @app.post("/api/federation/{remote_id}/connect/{session_name}")
 async def federation_connect(
-    remote_id: str, session_name: str, request: Request
+    remote_id: int, session_name: str, request: Request
 ) -> dict:
     """Proxy a connect POST to a remote instance to spawn its ttyd.
 
@@ -981,16 +981,12 @@ async def federation_connect(
     """
     settings = load_settings()
     remotes = settings.get("remote_instances", [])
-    try:
-        idx = int(remote_id)
-        if idx < 0 or idx >= len(remotes):
-            raise IndexError
-        remote = remotes[idx]
-    except (ValueError, IndexError):
+    if remote_id < 0 or remote_id >= len(remotes):
         raise HTTPException(
             status_code=404,
             detail=f"Remote instance '{remote_id}' not found",
         )
+    remote = remotes[remote_id]
 
     remote_url: str = remote.get("url", "").rstrip("/")
     remote_key: str = remote.get("key", "")
