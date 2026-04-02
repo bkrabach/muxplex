@@ -4125,3 +4125,13 @@ test('buildSidebarHTML trim happens BEFORE slice in source (structural order che
     'trailing blank trim (.pop()) must appear BEFORE .slice() in buildSidebarHTML — trim the full snapshot first, then slice the last 20 lines',
   );
 });
+
+// --- federation key: remote instance input listener includes .settings-remote-key ---
+
+test('remote instance debounced input listener selector includes .settings-remote-key', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes(".settings-remote-url, .settings-remote-name, .settings-remote-key"),
+    'debounced input listener on #setting-remote-instances must include .settings-remote-key so key-only edits trigger _saveRemoteInstances()',
+  );
+});

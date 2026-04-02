@@ -2386,7 +2386,7 @@ function bindStaticEventListeners() {
     // Delegated input save with debounce for remote instance URL/name fields
     var _remoteDebounceTimer;
     remoteInstancesContainer.addEventListener('input', function(e) {
-      var input = e.target.closest && e.target.closest('.settings-remote-url, .settings-remote-name');
+      var input = e.target.closest && e.target.closest('.settings-remote-url, .settings-remote-name, .settings-remote-key');
       if (!input) return;
       clearTimeout(_remoteDebounceTimer);
       _remoteDebounceTimer = setTimeout(function() {
