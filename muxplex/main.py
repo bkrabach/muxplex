@@ -31,7 +31,7 @@ from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 from muxplex.auth import (
     AuthMiddleware,
