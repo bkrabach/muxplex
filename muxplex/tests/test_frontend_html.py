@@ -434,7 +434,7 @@ def test_html_settings_dialog() -> None:
 
 
 def test_html_settings_tabs() -> None:
-    """settings-dialog must contain 5 tab buttons with correct data-tab values."""
+    """settings-dialog must contain 4 tab buttons with correct data-tab values."""
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
@@ -442,12 +442,17 @@ def test_html_settings_tabs() -> None:
     assert tabs_container is not None, (
         "Missing nav.settings-tabs inside #settings-dialog"
     )
-    expected_tabs = ["display", "sessions", "notifications", "new-session", "devices"]
+    expected_tabs = ["display", "sessions", "new-session", "devices"]
     for tab_value in expected_tabs:
         tab = tabs_container.find("button", attrs={"data-tab": tab_value})
         assert tab is not None, (
             f"Missing tab button with data-tab='{tab_value}' in settings-tabs"
         )
+    # Notifications tab must NOT exist (merged into Sessions)
+    notif_tab = tabs_container.find("button", attrs={"data-tab": "notifications"})
+    assert notif_tab is None, (
+        "Notifications tab button must not exist (content merged into Sessions tab)"
+    )
     # Display tab must be active by default
     display_tab = tabs_container.find("button", attrs={"data-tab": "display"})
     assert display_tab is not None
@@ -540,8 +545,8 @@ def test_html_settings_panels_use_data_tab() -> None:
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
     panels = dialog.find_all(class_="settings-panel")
-    assert len(panels) == 5, (
-        f"Expected 5 .settings-panel elements, found: {len(panels)}"
+    assert len(panels) == 4, (
+        f"Expected 4 .settings-panel elements, found: {len(panels)}"
     )
     for panel in panels:
         assert panel.get("data-tab") is not None, (
@@ -683,16 +688,16 @@ def test_html_sessions_panel_has_auto_open_checkbox_default_checked() -> None:
 
 
 def test_html_notifications_panel_has_bell_sound_checkbox() -> None:
-    """Notifications panel must contain a #setting-bell-sound checkbox."""
+    """Sessions panel must contain a #setting-bell-sound checkbox (notifications merged into sessions)."""
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    notif_panel = dialog.find(
-        class_="settings-panel", attrs={"data-tab": "notifications"}
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
     )
-    assert notif_panel is not None, "Missing notifications settings-panel"
-    el = notif_panel.find(id="setting-bell-sound")
-    assert el is not None, "Missing #setting-bell-sound inside notifications panel"
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="setting-bell-sound")
+    assert el is not None, "Missing #setting-bell-sound inside sessions panel"
     assert el.name == "input", f"#setting-bell-sound must be an <input>, got: {el.name}"
     assert el.get("type") == "checkbox", (
         f"#setting-bell-sound must be type='checkbox', got: {el.get('type')}"
@@ -704,17 +709,17 @@ def test_html_notifications_panel_has_bell_sound_checkbox() -> None:
 
 
 def test_html_notifications_panel_has_notification_status_text() -> None:
-    """Notifications panel must contain #notification-status-text with class settings-status-text."""
+    """Sessions panel must contain #notification-status-text with class settings-status-text (merged from notifications)."""
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    notif_panel = dialog.find(
-        class_="settings-panel", attrs={"data-tab": "notifications"}
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
     )
-    assert notif_panel is not None, "Missing notifications settings-panel"
-    el = notif_panel.find(id="notification-status-text")
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="notification-status-text")
     assert el is not None, (
-        "Missing #notification-status-text inside notifications panel"
+        "Missing #notification-status-text inside sessions panel"
     )
     classes = el.get("class") or []
     assert "settings-status-text" in classes, (
@@ -723,17 +728,17 @@ def test_html_notifications_panel_has_notification_status_text() -> None:
 
 
 def test_html_notifications_panel_has_request_btn() -> None:
-    """Notifications panel must contain #notification-request-btn with class settings-action-btn."""
+    """Sessions panel must contain #notification-request-btn with class settings-action-btn (merged from notifications)."""
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
-    notif_panel = dialog.find(
-        class_="settings-panel", attrs={"data-tab": "notifications"}
+    sessions_panel = dialog.find(
+        class_="settings-panel", attrs={"data-tab": "sessions"}
     )
-    assert notif_panel is not None, "Missing notifications settings-panel"
-    el = notif_panel.find(id="notification-request-btn")
+    assert sessions_panel is not None, "Missing sessions settings-panel"
+    el = sessions_panel.find(id="notification-request-btn")
     assert el is not None, (
-        "Missing #notification-request-btn inside notifications panel"
+        "Missing #notification-request-btn inside sessions panel"
     )
     classes = el.get("class") or []
     assert "settings-action-btn" in classes, (
@@ -1070,15 +1075,15 @@ def test_html_settings_close_btn_exists() -> None:
 
 
 def test_html_sessions_tab_device_name_input() -> None:
-    """Multi-Device tab must contain a #setting-device-name text input for the device name."""
+    """Display tab must contain a #setting-device-name text input for the device name."""
     soup = _SOUP
     el = soup.find(id="setting-device-name")
     assert el is not None, "Missing element with id='setting-device-name'"
-    # Must be inside the devices panel (not sessions)
-    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
-    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
-    assert devices_panel.find(id="setting-device-name") is not None, (
-        "#setting-device-name must be inside the devices (Multi-Device) settings panel"
+    # Must be inside the display panel (moved from devices)
+    display_panel = soup.find("div", attrs={"data-tab": "display"})
+    assert display_panel is not None, "Missing display panel (data-tab='display')"
+    assert display_panel.find(id="setting-device-name") is not None, (
+        "#setting-device-name must be inside the display settings panel"
     )
 
 
@@ -1266,12 +1271,12 @@ def test_html_devices_panel_has_enable_checkbox() -> None:
 
 
 def test_html_devices_panel_has_device_name() -> None:
-    """Multi-Device tab panel must contain #setting-device-name text input."""
+    """Display tab panel must contain #setting-device-name text input (moved from Multi-Device)."""
     soup = _SOUP
-    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
-    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
-    el = devices_panel.find(id="setting-device-name")
-    assert el is not None, "Missing #setting-device-name inside devices panel"
+    display_panel = soup.find("div", attrs={"data-tab": "display"})
+    assert display_panel is not None, "Missing display panel (data-tab='display')"
+    el = display_panel.find(id="setting-device-name")
+    assert el is not None, "Missing #setting-device-name inside display panel"
 
 
 def test_html_devices_panel_has_remote_instances() -> None:
@@ -1306,14 +1311,11 @@ def test_html_devices_panel_has_view_mode() -> None:
 
 
 def test_html_devices_panel_has_view_scope() -> None:
-    """Multi-Device tab panel must contain #setting-view-scope select."""
+    """#setting-view-scope must not exist (removed — view preference scope eliminated)."""
     soup = _SOUP
-    devices_panel = soup.find("div", attrs={"data-tab": "devices"})
-    assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
-    el = devices_panel.find(id="setting-view-scope")
-    assert el is not None, "Missing #setting-view-scope inside devices panel"
-    assert el.name == "select", (
-        f"#setting-view-scope must be a <select>, got: {el.name}"
+    el = soup.find(id="setting-view-scope")
+    assert el is None, (
+        "#setting-view-scope must be removed from the HTML (view preference scope feature removed)"
     )
 
 
