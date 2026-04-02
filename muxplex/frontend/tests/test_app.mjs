@@ -3921,3 +3921,38 @@ test('tile click handler ignores clicks on tile-delete button', () => {
     "tile click handler must guard against clicks on .tile-delete button"
   );
 });
+
+// --- index.html: self-hosted vendor libs (no CDN) ---
+
+test('index.html loads xterm.css from local /vendor/ path (not CDN)', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(
+    html.includes('href="/vendor/xterm.css"'),
+    'index.html must reference /vendor/xterm.css (not CDN)',
+  );
+  assert.ok(
+    !html.includes('cdn.jsdelivr.net'),
+    'index.html must NOT reference cdn.jsdelivr.net',
+  );
+});
+
+test('index.html loads all 5 xterm JS scripts from local /vendor/ paths (not CDN)', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const vendorScripts = [
+    '/vendor/xterm.js',
+    '/vendor/xterm-addon-fit.js',
+    '/vendor/xterm-addon-web-links.js',
+    '/vendor/xterm-addon-search.js',
+    '/vendor/addon-image.js',
+  ];
+  for (const script of vendorScripts) {
+    assert.ok(
+      html.includes(`src="${script}"`),
+      `index.html must include <script src="${script}">`,
+    );
+  }
+  assert.ok(
+    !html.includes('cdn.jsdelivr.net'),
+    'index.html must NOT reference cdn.jsdelivr.net',
+  );
+});
