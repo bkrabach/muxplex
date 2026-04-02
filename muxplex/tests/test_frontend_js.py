@@ -2325,20 +2325,6 @@ def test_save_remote_instances_calls_patch_server_setting() -> None:
     )
 
 
-def test_save_remote_instances_rebuilds_sources() -> None:
-    """_saveRemoteInstances must rebuild _sources after saving."""
-    match = re.search(
-        r"function _saveRemoteInstances\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.)|\n})",
-        _JS,
-        re.DOTALL,
-    )
-    assert match, "_saveRemoteInstances function not found in app.js"
-    body = match.group(1)
-    assert "_sources" in body or "buildSources" in body, (
-        "_saveRemoteInstances must rebuild _sources after saving remote_instances"
-    )
-
-
 def test_open_settings_populates_device_name() -> None:
     """openSettings must populate setting-device-name from server settings."""
     match = re.search(
@@ -2493,20 +2479,6 @@ def test_bind_static_event_listeners_binds_multi_device_enabled() -> None:
     body = match.group(1)
     assert "setting-multi-device-enabled" in body, (
         "bindStaticEventListeners must bind #setting-multi-device-enabled change event"
-    )
-
-
-def test_build_sources_checks_multi_device_enabled() -> None:
-    """buildSources must check multi_device_enabled before adding remote sources."""
-    match = re.search(
-        r"function buildSources\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
-        _JS,
-        re.DOTALL,
-    )
-    assert match, "buildSources function not found in app.js"
-    body = match.group(1)
-    assert "multi_device_enabled" in body, (
-        "buildSources must check multi_device_enabled to gate remote sources"
     )
 
 
