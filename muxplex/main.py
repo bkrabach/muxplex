@@ -24,7 +24,6 @@ from typing import Literal
 
 import httpx
 import websockets
-import websockets.exceptions
 from websockets.typing import Subprotocol
 
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
