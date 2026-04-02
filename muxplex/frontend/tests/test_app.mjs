@@ -2298,38 +2298,7 @@ test('api with no baseUrl uses relative path', async () => {
   globalThis.fetch = origFetch;
 });
 
-test('api with baseUrl prepends it to path and sets credentials include', async () => {
-  const calls = [];
-  const origFetch = globalThis.fetch;
-  globalThis.fetch = async (url, opts) => {
-    calls.push({ url, opts });
-    return { ok: true };
-  };
 
-  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com');
-
-  assert.strictEqual(calls.length, 1, 'should call fetch once');
-  assert.strictEqual(calls[0].url, 'https://remote.example.com/api/sessions', 'url should prepend baseUrl');
-  assert.strictEqual(calls[0].opts.credentials, 'include', 'credentials should be include for cross-origin');
-
-  globalThis.fetch = origFetch;
-});
-
-test('api with baseUrl and trailing slash does not double-slash', async () => {
-  const calls = [];
-  const origFetch = globalThis.fetch;
-  globalThis.fetch = async (url, opts) => {
-    calls.push({ url, opts });
-    return { ok: true };
-  };
-
-  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com/');
-
-  assert.strictEqual(calls.length, 1, 'should call fetch once');
-  assert.strictEqual(calls[0].url, 'https://remote.example.com/api/sessions', 'trailing slash on baseUrl should not create double-slash');
-
-  globalThis.fetch = origFetch;
-});
 
 test('createNewSession polls for session before auto-opening (not immediate setTimeout openSession)', () => {
   // The old behavior was: setTimeout(() => openSession(...), 500) immediately after POST.
@@ -2807,75 +2776,6 @@ test('app.js exports all Phase 2 federation functions', () => {
   }
 });
 
-// --- buildAuthTileHTML ---
-
-test('buildAuthTileHTML is exported as a function', () => {
-  assert.strictEqual(typeof app.buildAuthTileHTML, 'function');
-});
-
-test('buildAuthTileHTML returns article with source-tile--auth class', () => {
-  const html = app.buildAuthTileHTML({ name: 'Dev Server', url: 'http://dev:8088' });
-  assert.ok(html.startsWith('<article'), 'html should start with <article');
-  assert.ok(html.includes('source-tile--auth'), 'html should include source-tile--auth class');
-});
-
-test('buildAuthTileHTML includes device name', () => {
-  const html = app.buildAuthTileHTML({ name: 'Dev Server', url: 'http://dev:8088' });
-  assert.ok(html.includes('Dev Server'), 'html should include the device name');
-});
-
-test('buildAuthTileHTML includes login button with data-url attribute', () => {
-  const html = app.buildAuthTileHTML({ name: 'Dev Server', url: 'http://dev:8088' });
-  assert.ok(html.includes('source-tile__login-btn'), 'html should include source-tile__login-btn class');
-  assert.ok(html.includes('data-url="http://dev:8088"'), 'html should include data-url attribute with correct value');
-});
-
-test('buildAuthTileHTML escapes HTML in device name', () => {
-  const html = app.buildAuthTileHTML({ name: '<script>alert(1)</script>', url: '' });
-  assert.ok(!html.includes('<script>alert(1)</script>'), 'raw script tag should not appear in html');
-  assert.ok(html.includes('&lt;script&gt;'), 'escaped script tag should appear in html');
-});
-
-// --- buildOfflineTileHTML ---
-
-test('buildOfflineTileHTML is exported as a function', () => {
-  assert.strictEqual(typeof app.buildOfflineTileHTML, 'function');
-});
-
-test('buildOfflineTileHTML returns article with source-tile--offline class', () => {
-  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: null });
-  assert.ok(html.startsWith('<article'), 'html should start with <article');
-  assert.ok(html.includes('source-tile--offline'), 'html should include source-tile--offline class');
-});
-
-test('buildOfflineTileHTML includes device name', () => {
-  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: null });
-  assert.ok(html.includes('Dev Server'), 'html should include the device name');
-});
-
-test('buildOfflineTileHTML includes Offline badge', () => {
-  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: null });
-  assert.ok(html.includes('Offline'), 'html should include Offline text');
-  assert.ok(html.includes('source-tile__badge'), 'html should include source-tile__badge class');
-});
-
-test('buildOfflineTileHTML shows relative last-seen time', () => {
-  const fiveMinAgo = Date.now() - 5 * 60 * 1000;
-  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: 'http://dev:8088', lastSeenAt: fiveMinAgo });
-  assert.ok(html.includes('Last seen'), 'html should include Last seen text');
-});
-
-test('buildOfflineTileHTML escapes device name', () => {
-  const html = app.buildOfflineTileHTML({ name: '<b>bad</b>', url: '', lastSeenAt: null });
-  assert.ok(!html.includes('<b>bad</b>'), 'raw <b>bad</b> must not appear in html');
-  assert.ok(html.includes('&lt;b&gt;bad&lt;/b&gt;'), 'device name should be HTML-escaped');
-});
-
-test('buildOfflineTileHTML shows "Never" when lastSeenAt is null', () => {
-  const html = app.buildOfflineTileHTML({ name: 'Dev Server', url: '', lastSeenAt: null });
-  assert.ok(html.includes('Never'), 'html should include Never when lastSeenAt is null');
-});
-
 // --- buildStatusTileHTML ---
 
 test('buildStatusTileHTML is exported as a function', () => {
@@ -2901,98 +2801,6 @@ test('buildStatusTileHTML renders statusText in badge span', () => {
   assert.ok(html.includes('source-tile__badge'), 'html should include source-tile__badge class');
 });
 
-// --- formatLastSeen branch coverage ---
-
-test('formatLastSeen returns seconds ago for diff < 60', () => {
-  const thirtySecondsAgo = Date.now() - 30 * 1000;
-  assert.match(app.formatLastSeen(thirtySecondsAgo), /^\d+s ago$/, 'should return Xs ago for diff < 60s');
-});
-
-test('formatLastSeen returns hours ago for diff >= 3600 and < 86400', () => {
-  const twoHoursAgo = Date.now() - 2 * 3600 * 1000;
-  assert.match(app.formatLastSeen(twoHoursAgo), /^\d+h ago$/, 'should return Xh ago for diff in range [3600, 86400)');
-});
-
-test('formatLastSeen returns days ago for diff >= 86400', () => {
-  const twoDaysAgo = Date.now() - 2 * 86400 * 1000;
-  assert.match(app.formatLastSeen(twoDaysAgo), /^\d+d ago$/, 'should return Xd ago for diff >= 86400s');
-});
-
-// --- openLoginPopup (task-5-login-popup-flow) ---
-
-test('openLoginPopup is exported as a function', () => {
-  assert.strictEqual(typeof app.openLoginPopup, 'function', 'openLoginPopup should be exported as a function');
-});
-
-test('openLoginPopup calls window.open with correct URL and dimensions', () => {
-  const openCalls = [];
-  const origOpen = globalThis.window.open;
-  globalThis.window.open = (url, target, features) => { openCalls.push({ url, target, features }); };
-
-  app.openLoginPopup('http://work:8088');
-
-  globalThis.window.open = origOpen;
-
-  assert.strictEqual(openCalls.length, 1, 'window.open should be called exactly once');
-  assert.strictEqual(openCalls[0].url, 'http://work:8088/login', 'url should be remoteUrl + /login');
-  assert.strictEqual(openCalls[0].target, '_blank', 'target should be _blank');
-  assert.ok(openCalls[0].features.includes('width=500'), 'features should include width=500');
-  assert.ok(openCalls[0].features.includes('height=600'), 'features should include height=600');
-});
-
-test('openLoginPopup appends /login to URL without trailing slash', () => {
-  const openCalls = [];
-  const origOpen = globalThis.window.open;
-  globalThis.window.open = (url) => { openCalls.push(url); };
-
-  app.openLoginPopup('http://work:8088');
-
-  globalThis.window.open = origOpen;
-
-  assert.strictEqual(openCalls[0], 'http://work:8088/login', 'should append /login when no trailing slash');
-});
-
-test('openLoginPopup handles URL with trailing slash', () => {
-  const openCalls = [];
-  const origOpen = globalThis.window.open;
-  globalThis.window.open = (url) => { openCalls.push(url); };
-
-  app.openLoginPopup('http://work:8088/');
-
-  globalThis.window.open = origOpen;
-
-  assert.strictEqual(openCalls[0], 'http://work:8088/login', 'should strip trailing slash then append /login');
-});
-
-// --- formatLastSeen (auto-recovery detection) ---
-
-test('formatLastSeen returns seconds for recent timestamps', () => {
-  const thirtySecondsAgo = Date.now() - 30000;
-  assert.match(app.formatLastSeen(thirtySecondsAgo), /^\d+s ago$/);
-});
-
-test('formatLastSeen returns minutes for older timestamps', () => {
-  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-  assert.match(app.formatLastSeen(fiveMinutesAgo), /^\d+m ago$/);
-});
-
-test('formatLastSeen returns hours for much older timestamps', () => {
-  const threeHoursAgo = Date.now() - 3 * 3600 * 1000;
-  assert.match(app.formatLastSeen(threeHoursAgo), /^\d+h ago$/);
-});
-
-test('formatLastSeen returns days for very old timestamps', () => {
-  const twoDaysAgo = Date.now() - 2 * 86400 * 1000;
-  assert.match(app.formatLastSeen(twoDaysAgo), /^\d+d ago$/);
-});
-
-test('formatLastSeen returns Never for null', () => {
-  assert.strictEqual(app.formatLastSeen(null), 'Never');
-});
-
-test('formatLastSeen returns Never for undefined', () => {
-  assert.strictEqual(app.formatLastSeen(undefined), 'Never');
-});
 // --- Issue 1: Loading placeholder tile ---
 
 test('createNewSession injects tile--loading placeholder after POST succeeds', () => {
@@ -3786,90 +3594,41 @@ test('HTML Sessions panel hidden sessions field appears after bell sound', () =>
   assert.ok(hiddenIdx > bellSoundIdx, 'hidden sessions must appear after bell sound (i.e., near the end)');
 });
 
-// ---------------------------------------------------------------------------
-// Federation auth token relay tests (postMessage / X-Muxplex-Token)
-// ---------------------------------------------------------------------------
+// --- Verification: cross-origin code removed ---
 
-test('api() includes X-Muxplex-Token header when token exists in localStorage for that origin', async () => {
-  // Store a fake token for https://remote.example.com
-  const tokens = { 'https://remote.example.com': 'fake-token-abc123' };
-  localStorage.setItem('muxplex.federation_tokens', JSON.stringify(tokens));
-
-  const calls = [];
-  globalThis.fetch = (url, opts) => {
-    calls.push({ url, opts });
-    return Promise.resolve({ ok: true, status: 200, json: async () => ([]) });
-  };
-
-  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com');
-
-  assert.strictEqual(calls.length, 1);
-  assert.ok(calls[0].opts.headers['X-Muxplex-Token'] === 'fake-token-abc123',
-    'X-Muxplex-Token header must be set to the stored token');
-
-  // Cleanup
-  localStorage.removeItem('muxplex.federation_tokens');
+test('app.js does not export storeFederationToken', () => {
+  assert.strictEqual(app.storeFederationToken, undefined, 'storeFederationToken must not be exported');
 });
 
-test('api() does not include X-Muxplex-Token header when no token for that origin', async () => {
-  // Ensure no tokens stored
-  localStorage.removeItem('muxplex.federation_tokens');
-
-  const calls = [];
-  globalThis.fetch = (url, opts) => {
-    calls.push({ url, opts });
-    return Promise.resolve({ ok: true, status: 200, json: async () => ([]) });
-  };
-
-  await app.api('GET', '/api/sessions', undefined, 'https://remote.example.com');
-
-  assert.strictEqual(calls.length, 1);
-  assert.ok(!calls[0].opts.headers['X-Muxplex-Token'],
-    'X-Muxplex-Token header must NOT be present when no token stored');
+test('app.js does not export buildAuthTileHTML', () => {
+  assert.strictEqual(app.buildAuthTileHTML, undefined, 'buildAuthTileHTML must not be exported');
 });
 
-test('api() does not include X-Muxplex-Token header for local (no baseUrl) requests', async () => {
-  // Store a token for some origin, make sure it does not bleed into local requests
-  const tokens = { 'https://remote.example.com': 'fake-token-abc123' };
-  localStorage.setItem('muxplex.federation_tokens', JSON.stringify(tokens));
+test('app.js does not export buildOfflineTileHTML', () => {
+  assert.strictEqual(app.buildOfflineTileHTML, undefined, 'buildOfflineTileHTML must not be exported');
+});
 
+test('app.js does not export openLoginPopup', () => {
+  assert.strictEqual(app.openLoginPopup, undefined, 'openLoginPopup must not be exported');
+});
+
+test('app.js does not export formatLastSeen', () => {
+  assert.strictEqual(app.formatLastSeen, undefined, 'formatLastSeen must not be exported');
+});
+
+test('api() is same-origin only (no baseUrl parameter support)', async () => {
   const calls = [];
   globalThis.fetch = (url, opts) => {
     calls.push({ url, opts });
-    return Promise.resolve({ ok: true, status: 200, json: async () => ([]) });
+    return Promise.resolve({ ok: true, json: async () => ([]) });
   };
 
   await app.api('GET', '/api/sessions');
 
   assert.strictEqual(calls.length, 1);
-  assert.ok(!calls[0].opts.headers['X-Muxplex-Token'],
-    'X-Muxplex-Token header must NOT be present for local requests');
-
-  // Cleanup
-  localStorage.removeItem('muxplex.federation_tokens');
-});
-
-test('postMessage muxplex-auth-token event stores token in localStorage', () => {
-  // Simulate receiving a postMessage event
-  localStorage.removeItem('muxplex.federation_tokens');
-
-  // Find and invoke the message event listener registered by app.js
-  // The app registers on window.addEventListener('message', ...) in DOMContentLoaded
-  // We need to directly call storeFederationToken helper or simulate via the listener.
-  // Since bindStaticEventListeners or DOMContentLoaded registered a 'message' listener on window,
-  // we call storeFederationToken directly if exported, or test via the exported API.
-  const result = app.storeFederationToken('https://remote.host.com', 'relay-token-xyz');
-
-  const stored = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
-  assert.strictEqual(stored['https://remote.host.com'], 'relay-token-xyz',
-    'storeFederationToken must store token keyed by origin in muxplex.federation_tokens');
-});
-
-test('index.html contains popup federation auth relay script', () => {
-  const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.ok(source.includes('window.opener'), 'index.html must contain window.opener check for federation popup relay');
-  assert.ok(source.includes('muxplex-auth-token'), 'index.html must post muxplex-auth-token message type');
-  assert.ok(source.includes('/api/auth/token'), 'index.html popup script must fetch /api/auth/token');
+  assert.strictEqual(calls[0].url, '/api/sessions', 'should call local path directly');
+  assert.ok(!calls[0].opts.credentials, 'no credentials:include for same-origin');
+  globalThis.fetch = undefined;
 });
 
 // ─── Edge-bar design: failing tests added before implementation ───

@@ -168,32 +168,13 @@ function isMobile() {
 }
 
 // ─── Fetch wrapper ────────────────────────────────────────────────────────────
-async function api(method, path, body, baseUrl) {
+async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  let url = path;
-  if (baseUrl) {
-    url = baseUrl.replace(/\/+$/, '') + path;
-    opts.credentials = 'include';
-    // Tell the remote auth middleware this is a JSON API client, not a browser
-    // navigation. Without this header the middleware returns a 307 redirect to
-    // /login (HTML) instead of a 401 JSON response, causing res.json() to throw
-    // a SyntaxError that is misclassified as "unreachable" instead of
-    // "auth_required".
-    opts.headers['Accept'] = 'application/json';
-    // Check for stored federation token (X-Muxplex-Token for cross-origin auth)
-    try {
-      var _origin = new URL(url).origin;
-      var _tokens = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
-      if (_tokens[_origin]) {
-        opts.headers['X-Muxplex-Token'] = _tokens[_origin];
-      }
-    } catch (_) { /* ignore — URL parse or localStorage errors */ }
-  }
-  const res = await fetch(url, opts);
+  const res = await fetch(path, opts);
   if (!res.ok) {
     const err = new Error(`HTTP ${res.status}: ${res.statusText}`);
     err.status = res.status;
@@ -203,36 +184,6 @@ async function api(method, path, body, baseUrl) {
 }
 
 // ─── Device ID ────────────────────────────────────────────────────────────────
-// ─── Federation token relay ──────────────────────────────────────────────────
-
-/**
- * Store a federation auth token for a remote origin in localStorage.
- * Keyed by origin URL in muxplex.federation_tokens.
- * Called by the postMessage listener when a login popup relays a token back.
- * @param {string} origin - The remote muxplex origin URL (e.g. 'https://host:8088')
- * @param {string} token - The session token to store
- */
-function storeFederationToken(origin, token) {
-  try {
-    var _ftokens = JSON.parse(localStorage.getItem('muxplex.federation_tokens') || '{}');
-    _ftokens[origin] = token;
-    localStorage.setItem('muxplex.federation_tokens', JSON.stringify(_ftokens));
-  } catch (_) { /* blocked — ok */ }
-}
-
-// Listen for federation auth tokens relayed from login popups via postMessage.
-// When the user logs in via a popup, the popup fetches /api/auth/token and sends
-// it here, letting subsequent cross-origin API calls use X-Muxplex-Token header.
-window.addEventListener('message', function(event) {
-  if (event.data && event.data.type === 'muxplex-auth-token') {
-    storeFederationToken(event.data.origin, event.data.token);
-    // Immediately trigger a poll so the source transitions from auth_required
-    // to authenticated on the next cycle (uses the newly stored token).
-    if (_pollingTimer) {
-      pollSessions();
-    }
-  }
-});
 
 function initDeviceId() {
   const STORAGE_KEY = 'tmux-web-device-id';
@@ -550,54 +501,6 @@ function buildSidebarHTML(session, currentSession) {
 }
 
 /**
- * Build the HTML string for an auth-required source tile.
- * @param {{ name: string, url: string }} source
- * @returns {string}
- */
-function buildAuthTileHTML(source) {
-  const escapedName = escapeHtml(source.name || '');
-  const escapedUrl = escapeHtml(source.url || '');
-  return (
-    '<article class="source-tile source-tile--auth">' +
-    '<span class="source-tile__name">' + escapedName + '</span>' +
-    '<button class="source-tile__login-btn" data-url="' + escapedUrl + '">Log in</button>' +
-    '<span class="source-tile__hint">Authenticate to see sessions</span>' +
-    '</article>'
-  );
-}
-
-/**
- * Format a millisecond timestamp into a relative 'last seen' string.
- * @param {number|null} ms - Millisecond timestamp
- * @returns {string}
- */
-function formatLastSeen(ms) {
-  if (ms == null) return 'Never';
-  var diff = Math.floor((Date.now() - ms) / 1000);
-  if (diff < 60) return diff + 's ago';
-  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-  return Math.floor(diff / 86400) + 'd ago';
-}
-
-/**
- * Build the HTML string for an offline (unreachable) source tile.
- * @param {{ name: string, url: string, lastSeenAt: number|null }} source
- * @returns {string}
- */
-function buildOfflineTileHTML(source) {
-  var escapedName = escapeHtml(source.name || '');
-  var lastSeen = formatLastSeen(source.lastSeenAt);
-  return (
-    '<article class="source-tile source-tile--offline">' +
-    '<span class="source-tile__name">' + escapedName + '</span>' +
-    '<span class="source-tile__badge">Offline</span>' +
-    '<span class="source-tile__last-seen">Last seen ' + escapeHtml(lastSeen) + '</span>' +
-    '</article>'
-  );
-}
-
-/**
  * Build the HTML string for a generic status tile (auth_failed or unreachable).
  * @param {string} deviceName
  * @param {string} statusText
@@ -611,16 +514,6 @@ function buildStatusTileHTML(deviceName, statusText, statusClass) {
     '<span class="source-tile__badge">' + escapeHtml(statusText || '') + '</span>' +
     '</article>'
   );
-}
-
-/**
- * Open a login popup window for a remote muxplex instance.
- * Strips trailing slashes from remoteUrl before appending /login.
- * @param {string} remoteUrl - The base URL of the remote instance
- */
-function openLoginPopup(remoteUrl) {
-  var baseUrl = remoteUrl.replace(/\/+$/, '');
-  window.open(baseUrl + '/login', '_blank', 'width=500,height=600');
 }
 
 /**
@@ -2159,14 +2052,6 @@ function bindStaticEventListeners() {
     if (name) killSession(name);
   });
 
-  document.addEventListener('click', function(e) {
-    var loginBtn = e.target.closest && e.target.closest('.source-tile__login-btn');
-    if (!loginBtn) return;
-    e.stopPropagation();
-    var url = loginBtn.dataset.url;
-    if (url) openLoginPopup(url);
-  });
-
   on($('back-btn'), 'click', closeSession);
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
@@ -2566,13 +2451,7 @@ if (typeof module !== 'undefined' && module.exports) {
     // Filter bar
     renderFilterBar,
     // Federation tiles
-    buildAuthTileHTML,
-    buildOfflineTileHTML,
     buildStatusTileHTML,
-    openLoginPopup,
-    formatLastSeen,
-    // Federation auth token relay
-    storeFederationToken,
     // Constants
     NEW_SESSION_DEFAULT_TEMPLATE,
     DELETE_SESSION_DEFAULT_TEMPLATE,

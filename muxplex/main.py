@@ -32,7 +32,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import JSONResponse, RedirectResponse
-from starlette.middleware.cors import CORSMiddleware
 
 from muxplex.auth import (
     AuthMiddleware,
@@ -266,20 +265,6 @@ app.add_middleware(
     password=_auth_password,
     federation_key=_federation_key,
 )
-
-# CORS: allow_origins=["*"] with allow_credentials=True is intentional for
-# self-hosted federation. Starlette reflects the actual Origin header (rather
-# than "*") when credentials are requested, so credentialed cross-origin
-# requests work correctly. Do not restrict to a fixed origin list without
-# first understanding how remote muxplex peers discover and reach each other.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -856,19 +841,6 @@ async def logout() -> RedirectResponse:
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie("muxplex_session")
     return response
-
-
-@app.get("/api/auth/token")
-async def get_auth_token(request: Request):
-    """Return the current session token for federation relay.
-
-    Only accessible when already authenticated (via cookie or localhost bypass).
-    Used by the login popup to relay the token back to the opener window via postMessage.
-    """
-    cookie = request.cookies.get("muxplex_session")
-    if cookie and verify_session_cookie(_auth_secret, cookie, _auth_ttl):
-        return {"token": cookie}
-    return JSONResponse({"error": "not authenticated"}, status_code=401)
 
 
 @app.get("/auth/mode")

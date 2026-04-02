@@ -15,27 +15,6 @@
   <title>muxplex</title>
 </head>
 <body>
-<script>
-// Federation auth: if opened as a login popup by another muxplex instance,
-// relay the session token back to the opener window via postMessage.
-(function() {
-  if (!window.opener) return;
-  fetch('/api/auth/token')
-    .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(data) {
-      if (data && data.token) {
-        window.opener.postMessage({
-          type: 'muxplex-auth-token',
-          origin: window.location.origin,
-          token: data.token
-        }, '*');
-        setTimeout(function() { window.close(); }, 500);
-      }
-    })
-    .catch(function() {});
-})();
-</script>
-
   <!-- ── Overview view ──────────────────────────────────────────────────── -->
   <div id="view-overview" class="view view--active">
     <header class="app-header">
