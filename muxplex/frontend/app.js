@@ -434,7 +434,7 @@ function buildTileHTML(session, index, mobile) {
   }
   const lastLines = allLines.slice(_lineCount).join('\n');
 
-  const remoteIdAttr = session.remoteId ? ` data-remote-id="${escapeHtml(session.remoteId)}"` : '';
+  const remoteIdAttr = session.remoteId != null ? ` data-remote-id="${escapeHtml(session.remoteId)}"` : '';
   return (
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
@@ -489,7 +489,7 @@ function buildSidebarHTML(session, currentSession) {
   const lastLines = allLines.slice(-20).join('\n');
 
   return (
-    `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(session.remoteId || '')}" tabindex="0" role="listitem">` +
+    `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(session.remoteId != null ? session.remoteId : '')}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
     badgeHtml +
@@ -873,7 +873,7 @@ function _previewClickHandler(e) {
   hidePreview();
   if (name) {
     var session = _currentSessions && _currentSessions.find(function(s) { return s.name === name; });
-    openSession(name, { remoteId: session && session.remoteId || '' });
+    openSession(name, { remoteId: (session != null && session.remoteId != null) ? session.remoteId : '' });
   }
 }
 
@@ -1135,7 +1135,7 @@ function updateFaviconBadge() {
 async function openSession(name, opts = {}) {
   hidePreview();
   _viewingSession = name;
-  _viewingRemoteId = opts.remoteId || '';
+  _viewingRemoteId = opts.remoteId != null ? opts.remoteId : '';
   _viewMode = 'fullscreen';
 
   // Pre-render sidebar with current sessions before first poll tick
@@ -1202,9 +1202,9 @@ async function openSession(name, opts = {}) {
   if (fab) fab.classList.add('hidden');
 
   // Always spawn ttyd for this session — ensures correct session after service restart or page restore
-  var _remoteId = opts.remoteId || '';
+  var _remoteId = opts.remoteId != null ? opts.remoteId : '';
   try {
-    if (_remoteId) {
+    if (_remoteId !== '') {
       // Remote session: route connect POST through same-origin federation proxy
       await api('POST', '/api/federation/' + encodeURIComponent(_remoteId) + '/connect/' + encodeURIComponent(name));
     } else {
@@ -1233,7 +1233,7 @@ function closeSession() {
   if (window._closeTerminal) window._closeTerminal();
 
   // Fire-and-forget DELETE — skip for remote sessions (they don't need to know we stopped watching)
-  if (!_viewingRemoteId) {
+  if (_viewingRemoteId === '') {
     api('DELETE', '/api/sessions/current').catch(function() {});
   }
   _viewingRemoteId = '';

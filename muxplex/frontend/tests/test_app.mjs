@@ -3956,3 +3956,117 @@ test('index.html loads all 5 xterm JS scripts from local /vendor/ paths (not CDN
     'index.html must NOT reference cdn.jsdelivr.net',
   );
 });
+
+// --- remoteId=0 falsy-zero bug fixes ---
+// remoteId is an integer index (0, 1, 2...). When remoteId=0, all || '' patterns
+// evaluate to '' because 0 is falsy in JS — causing the first remote to be treated
+// as a local session (404 on connect).
+
+test('buildTileHTML with integer remoteId=0 includes data-remote-id="0" attribute', () => {
+  const session = { name: 'alienware-session', remoteId: 0, snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(
+    html.includes('data-remote-id="0"'),
+    'buildTileHTML must emit data-remote-id="0" when session.remoteId === 0 (not omit it)',
+  );
+});
+
+test('buildSidebarHTML with integer remoteId=0 includes data-remote-id="0" (not empty)', () => {
+  const session = { name: 'alienware-session', remoteId: 0, snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(
+    html.includes('data-remote-id="0"'),
+    'buildSidebarHTML must emit data-remote-id="0" when session.remoteId === 0',
+  );
+  assert.ok(
+    !html.includes('data-remote-id=""'),
+    'buildSidebarHTML must NOT emit data-remote-id="" when session.remoteId === 0',
+  );
+});
+
+test('openSession with integer remoteId=0 POSTs to federation proxy URL, not local', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  // remoteId is the integer 0 — as returned by /api/federation/sessions for the first remote
+  await app.openSession('muxplex-updates', { remoteId: 0 });
+
+  const federationCall = fetchCalls.find((c) => c.url === '/api/federation/0/connect/muxplex-updates');
+  const localCall = fetchCalls.find((c) => c.url === '/api/sessions/muxplex-updates/connect');
+
+  assert.ok(federationCall, 'should POST to /api/federation/0/connect/muxplex-updates (not local endpoint)');
+  assert.ok(!localCall, 'must NOT POST to /api/sessions/muxplex-updates/connect (local endpoint gives 404)');
+  assert.strictEqual(federationCall.opts.method, 'POST');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('openSession with integer remoteId=0 passes 0 to window._openTerminal as second arg', async () => {
+  let openTerminalArgs = null;
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async () => ({ ok: true });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (...args) => { openTerminalArgs = args; };
+
+  await app.openSession('muxplex-updates', { remoteId: 0 });
+
+  assert.ok(openTerminalArgs !== null, '_openTerminal should have been called');
+  assert.strictEqual(openTerminalArgs[0], 'muxplex-updates', '_openTerminal first arg should be session name');
+  assert.ok(openTerminalArgs[1] === 0 || openTerminalArgs[1] === '0', '_openTerminal second arg should be remoteId 0');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('closeSession after openSession with remoteId=0 does NOT fire DELETE /api/sessions/current', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+
+  // Open a remote session with remoteId=0 — sets _viewingRemoteId = 0
+  globalThis.fetch = async () => ({ ok: true });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+  globalThis.window._closeTerminal = () => {};
+
+  await app.openSession('muxplex-updates', { remoteId: 0 });
+
+  // Restore setTimeout so Promise-based yielding works
+  globalThis.setTimeout = origSetTimeout;
+
+  // Reset fetch tracking
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+
+  await app.closeSession();
+  await new Promise((r) => setTimeout(r, 0));
+
+  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  assert.ok(!deleteCall, 'closeSession must NOT fire DELETE for remoteId=0 session (it is a remote session)');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
