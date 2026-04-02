@@ -574,10 +574,8 @@ def _ttyd_is_listening() -> bool:
     ConnectionRefusedError when it's not.  OSError/TimeoutError are also
     caught so the caller always gets a bool.
     """
-    import socket as _sock
-
     try:
-        with _sock.create_connection(("127.0.0.1", TTYD_PORT), timeout=0.5):
+        with socket.create_connection(("127.0.0.1", TTYD_PORT), timeout=0.5):
             return True
     except (ConnectionRefusedError, OSError, TimeoutError):
         return False
