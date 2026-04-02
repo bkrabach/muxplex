@@ -27,6 +27,8 @@ Type=simple
 ExecStart={exec_start}
 Restart=on-failure
 RestartSec=5s
+TimeoutStopSec=10
+KillMode=mixed
 Environment=PATH={safe_path}
 
 [Install]

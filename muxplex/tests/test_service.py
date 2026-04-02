@@ -541,6 +541,41 @@ def test_systemd_logs_handles_keyboard_interrupt(monkeypatch):
     svc._systemd_logs()
 
 
+# ---------------------------------------------------------------------------
+# task: port-in-use crash-loop prevention — TimeoutStopSec in systemd unit
+# ---------------------------------------------------------------------------
+
+
+def test_systemd_unit_template_has_timeout_stop_sec():
+    """_SYSTEMD_UNIT_TEMPLATE must include TimeoutStopSec to SIGKILL stale process."""
+    import muxplex.service as svc
+
+    assert "TimeoutStopSec" in svc._SYSTEMD_UNIT_TEMPLATE, (
+        "_SYSTEMD_UNIT_TEMPLATE must include TimeoutStopSec so systemd sends SIGKILL "
+        "if the old process does not exit on SIGTERM within the configured time"
+    )
+
+
+def test_systemd_install_writes_timeout_stop_sec(monkeypatch, tmp_path):
+    """The written unit file must contain TimeoutStopSec."""
+    import muxplex.service as svc
+
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_path = unit_dir / "muxplex.service"
+
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._systemd_install()
+
+    content = unit_path.read_text()
+    assert "TimeoutStopSec" in content, "Written unit file must contain TimeoutStopSec"
+
+
 def test_launchd_logs_handles_keyboard_interrupt(monkeypatch):
     """service logs must exit cleanly on Ctrl+C on macOS."""
     import muxplex.service as svc

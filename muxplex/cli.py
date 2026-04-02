@@ -162,6 +162,43 @@ def show_password() -> None:
         print("No password file found. Start muxplex to auto-generate one.")
 
 
+def _kill_stale_port_holder(port: int) -> None:
+    """Kill any existing process on *port* to prevent EADDRINUSE crash-loops.
+
+    On service restart (``systemctl restart muxplex``), the old process may still
+    be holding the port in TIME_WAIT state or simply not have exited yet.  Without
+    this guard the new process fails to bind, exits with status=1, and systemd
+    restarts it in an infinite loop (observed: 2075+ restarts before manual
+    intervention).
+
+    Uses ``lsof -ti :<port>`` to find occupants, sends SIGTERM, then waits 1 s
+    for the port to free.  Silently swallows all errors so that a missing ``lsof``
+    or a permission error never prevents the server from starting.
+    """
+    import signal
+    import time
+
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            my_pid = os.getpid()
+            for pid_str in result.stdout.strip().split("\n"):
+                try:
+                    pid = int(pid_str.strip())
+                    if pid != my_pid:
+                        os.kill(pid, signal.SIGTERM)
+                except (ValueError, ProcessLookupError, PermissionError):
+                    pass
+            time.sleep(1)  # Brief wait for the port to be released
+    except Exception:
+        pass  # lsof not available or other error — proceed; uvicorn will fail naturally
+
+
 def serve(
     host: str | None = None,
     port: int | None = None,
@@ -187,6 +224,9 @@ def serve(
     os.environ["MUXPLEX_PORT"] = str(port)
     os.environ["MUXPLEX_AUTH"] = auth
     os.environ["MUXPLEX_SESSION_TTL"] = str(session_ttl)
+
+    # Prevent crash-loop on restart: kill any stale process holding the port
+    _kill_stale_port_holder(port)
 
     from muxplex.main import app  # noqa: PLC0415
 

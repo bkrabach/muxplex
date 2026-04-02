@@ -1070,6 +1070,133 @@ def test_main_dispatches_to_generate_federation_key(monkeypatch):
     )
 
 
+# ---------------------------------------------------------------------------
+# task: port-in-use crash-loop prevention — _kill_stale_port_holder
+# ---------------------------------------------------------------------------
+
+
+def test_kill_stale_port_holder_exists():
+    """_kill_stale_port_holder must be importable from muxplex.cli."""
+    from muxplex.cli import _kill_stale_port_holder  # noqa: F401
+
+
+def test_kill_stale_port_holder_runs_lsof(monkeypatch):
+    """_kill_stale_port_holder must invoke lsof -ti :<port> to find occupying PIDs."""
+    import subprocess
+    import muxplex.cli as cli_mod
+
+    lsof_calls = []
+
+    def fake_run(cmd, **kw):
+        lsof_calls.append(cmd)
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cli_mod._kill_stale_port_holder(8088)
+
+    assert any("lsof" in str(c) for c in lsof_calls), (
+        "_kill_stale_port_holder must call lsof to discover port occupants"
+    )
+    assert any("8088" in str(c) for c in lsof_calls), (
+        "_kill_stale_port_holder must include the port number in the lsof call"
+    )
+
+
+def test_kill_stale_port_holder_kills_foreign_pid(monkeypatch):
+    """_kill_stale_port_holder must send SIGTERM to PIDs that are not our own."""
+    import os
+    import signal
+    import subprocess
+    import muxplex.cli as cli_mod
+
+    foreign_pid = 99999
+    killed = []
+
+    def fake_run(cmd, **kw):
+        return type(
+            "R", (), {"returncode": 0, "stdout": f"{foreign_pid}\n", "stderr": ""}
+        )()
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(os, "kill", fake_kill)
+    monkeypatch.setattr(os, "getpid", lambda: 12345)  # not the same as foreign_pid
+
+    # Patch time.sleep so test doesn't actually sleep
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    cli_mod._kill_stale_port_holder(8088)
+
+    assert (foreign_pid, signal.SIGTERM) in killed, (
+        f"Expected SIGTERM sent to foreign PID {foreign_pid}, got: {killed}"
+    )
+
+
+def test_kill_stale_port_holder_skips_own_pid(monkeypatch):
+    """_kill_stale_port_holder must NOT kill its own PID."""
+    import os
+    import subprocess
+    import muxplex.cli as cli_mod
+
+    my_pid = 12345
+    killed = []
+
+    def fake_run(cmd, **kw):
+        return type("R", (), {"returncode": 0, "stdout": f"{my_pid}\n", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(os, "getpid", lambda: my_pid)
+
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+
+    cli_mod._kill_stale_port_holder(8088)
+
+    assert my_pid not in killed, "_kill_stale_port_holder must not kill its own PID"
+
+
+def test_kill_stale_port_holder_survives_lsof_not_available(monkeypatch):
+    """_kill_stale_port_holder must not raise when lsof is unavailable."""
+    import subprocess
+    import muxplex.cli as cli_mod
+
+    def fake_run(cmd, **kw):
+        raise FileNotFoundError("lsof not found")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    # Should not raise
+    cli_mod._kill_stale_port_holder(8088)
+
+
+def test_serve_calls_kill_stale_port_holder(tmp_path, monkeypatch):
+    """serve() must call _kill_stale_port_holder(port) before starting uvicorn."""
+    import muxplex.cli as cli_mod
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    killed_ports = []
+    monkeypatch.setattr(
+        cli_mod, "_kill_stale_port_holder", lambda port: killed_ports.append(port)
+    )
+
+    with patch("uvicorn.run"):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve(port=9876)
+
+    assert 9876 in killed_ports, (
+        "serve() must call _kill_stale_port_holder with the resolved port before uvicorn.run"
+    )
+
+
 def test_upgrade_uses_service_module_install(monkeypatch, capsys):
     """upgrade() must call muxplex.service.service_install."""
     import subprocess
