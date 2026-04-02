@@ -1914,3 +1914,140 @@ def test_federation_generate_key_creates_file(client, tmp_path, monkeypatch):
         f"File contents must match returned key. "
         f"File: {file_contents!r}, key: {returned_key!r}"
     )
+def test_get_auth_token_returns_401_when_not_authenticated(monkeypatch):
+    """GET /api/auth/token returns 401 when request has no valid session cookie."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    with TestClient(app, base_url="http://192.168.1.1") as c:
+        # No cookie set — endpoint must return 401 with application/json accept
+        response = c.get("/api/auth/token", headers={"Accept": "application/json"})
+    assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: delete_session must pass input="y\n" to subprocess.run
+# ---------------------------------------------------------------------------
+
+
+def test_delete_session_passes_stdin_y_to_subprocess(client, monkeypatch, tmp_path):
+    """DELETE /api/sessions/{name} must pass input='y\\n' to subprocess.run.
+
+    When delete_session_template uses an interactive command (e.g. amplifier-dev
+    --destroy), the confirmation prompt must be auto-answered via stdin.
+    Without input='y\\n', subprocess.run hangs until 30s timeout and the
+    session is never actually deleted.
+    """
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["my-session"])
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
+
+    captured_kwargs = []
+
+    def mock_run(cmd, **kwargs):
+        captured_kwargs.append(kwargs)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        response = client.delete("/api/sessions/my-session")
+
+    assert response.status_code == 200
+    assert len(captured_kwargs) == 1, "subprocess.run must be called once"
+    kwargs = captured_kwargs[0]
+    assert "input" in kwargs, (
+        "subprocess.run must receive input= kwarg to auto-answer interactive prompts"
+    )
+    assert kwargs["input"] == "y\n", (
+        f"input must be 'y\\n' to confirm deletion, got: {kwargs['input']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: request-level INFO logging for session operations
+# ---------------------------------------------------------------------------
+
+
+def test_delete_session_logs_command_at_info(client, monkeypatch, tmp_path, caplog):
+    """DELETE /api/sessions/{name} must log the command being run at INFO level."""
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["logged-session"])
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
+
+    def mock_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with caplog.at_level(logging.INFO, logger="muxplex.main"):
+        with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+            client.delete("/api/sessions/logged-session")
+
+    log_messages = "\n".join(caplog.messages)
+    assert "logged-session" in log_messages, (
+        f"delete_session must log the session name at INFO level, got logs:\n{log_messages}"
+    )
+
+
+def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
+    """POST /api/sessions must log the command being launched at INFO level."""
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
+
+    with caplog.at_level(logging.INFO, logger="muxplex.main"):
+        with patch("muxplex.main.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            client.post("/api/sessions", json={"name": "new-session"})
+
+    log_messages = "\n".join(caplog.messages)
+    assert "new-session" in log_messages, (
+        f"create_session must log session name at INFO level, got logs:\n{log_messages}"
+    )
+
+
+def test_connect_session_logs_session_name(client, monkeypatch, caplog):
+    """POST /api/sessions/{name}/connect must log the session name at INFO level."""
+    import logging
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["target-session"])
+
+    async def mock_kill_ttyd():
+        pass
+
+    async def mock_spawn_ttyd(name):
+        pass
+
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill_ttyd)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", mock_spawn_ttyd)
+
+    with caplog.at_level(logging.INFO, logger="muxplex.main"):
+        client.post("/api/sessions/target-session/connect")
+
+    log_messages = "\n".join(caplog.messages)
+    assert "target-session" in log_messages, (
+        f"connect_session must log session name at INFO level, got logs:\n{log_messages}"
+    )
+
+
+def test_cli_uvicorn_log_level_is_info():
+    """cli.py serve() must pass log_level='info' to uvicorn.run so logs appear in journalctl."""
+    import inspect
+    from muxplex import cli
+
+    source = inspect.getsource(cli.serve)
+    assert 'log_level="info"' in source or "log_level='info'" in source, (
+        "serve() must call uvicorn.run(..., log_level='info') so application "
+        "logs appear in journalctl; currently set to 'warning' which suppresses them"
+    )

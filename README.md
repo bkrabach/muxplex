@@ -1,6 +1,6 @@
 # muxplex
 
-**Web-based tmux session dashboard — access and manage all your tmux sessions from any browser or mobile device.**
+**Web-based tmux session dashboard — access, monitor, and manage all your tmux sessions from any browser on any device.**
 
 ![muxplex dashboard](assets/branding/og/og-dark.png)
 
@@ -8,12 +8,51 @@
 
 ## Features
 
-- **Live session grid** — thumbnail snapshots of every running tmux session, auto-refreshed
-- **Full interactive terminal** — click any session to open a real terminal (powered by ttyd + xterm.js)
-- **Collapsible session sidebar** — quick-switch between sessions without leaving the terminal view
-- **Bell & activity notifications** — visual alerts when any session rings a bell or has new output
-- **Mobile-friendly responsive layout** — works on phones and tablets; PWA-capable for home-screen install
-- **Works over Tailscale / private network** — serve to any device on your network without exposing to the internet
+### Dashboard
+
+- **Live session grid** — preview tiles with ANSI-colored terminal snapshots, auto-refreshed
+- **Two view modes** — Auto (scrollable grid) and Fit (all sessions fill the viewport)
+- **Hover preview** — full-size overlay of session content on tile hover
+- **Activity indicators** — bell notification badges, amber favicon dot for browser tab visibility
+- **Session creation** — `+` button with custom command template support
+- **Session deletion** — `×` button with custom command template support
+- **Mobile-friendly** — responsive layout, PWA-capable for home-screen install
+
+### Terminal
+
+- **Full interactive terminal** — powered by xterm.js + ttyd
+- **Native clipboard** — Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
+- **Mouse select auto-copy** — selecting text copies to system clipboard on release
+- **OSC 52 tmux clipboard bridge** — tmux copy mode selections go to system clipboard
+- **Sidebar session switcher** — quick-switch between sessions with live previews
+
+### Settings
+
+- **In-browser settings panel** — gear icon or `,` shortcut
+- **Display** — font size, grid columns, hover delay, view mode, device badges, activity indicator
+- **Sessions** — default session, sort order, hidden sessions, auto-open, bell sound, notifications
+- **Commands** — custom create/delete session templates
+- **Multi-Device** — remote instance federation
+- **CLI** — `muxplex config list/get/set/reset`
+
+### Service Management
+
+- `muxplex service install/start/stop/restart/status/logs/uninstall`
+- **Platform-aware** — systemd user service on Linux/WSL, launchd agent on macOS
+- **Config-driven** — service reads all options from `~/.config/muxplex/settings.json` (no flags in the service file)
+
+### Authentication
+
+- **PAM authentication** — Linux/macOS system credentials
+- **Password mode** — auto-generated or set via `MUXPLEX_PASSWORD` env var
+- **Localhost bypass** — no auth needed on 127.0.0.1
+- **Secure session cookies** — signed with configurable TTL
+
+### Developer Tools
+
+- `muxplex doctor` — dependency + config diagnostics with update check
+- `muxplex upgrade` — smart version check + auto-update + service restart
+- `muxplex config` — CLI settings management
 
 ---
 
@@ -28,7 +67,7 @@
   - Ubuntu/WSL: `sudo apt install ttyd` or `sudo snap install ttyd`
   - Other: https://github.com/tsl0922/ttyd#installation
 
-> **Tip:** muxplex checks for `tmux` and `ttyd` at startup and prints install instructions if either is missing.
+> **Tip:** Run `muxplex doctor` to check all dependencies and system status.
 
 ---
 
@@ -48,10 +87,9 @@ Then open **http://localhost:8088** in your browser.
 
 ## Install Permanently
 
-Install muxplex as a persistent CLI tool using `uv tool`:
-
 ```bash
 uv tool install git+https://github.com/bkrabach/muxplex
+muxplex doctor  # verify dependencies
 ```
 
 Then run it any time with:
@@ -66,9 +104,15 @@ muxplex
 
 ```bash
 muxplex service install
+# → prompts to set host to 0.0.0.0 for network access
 ```
 
 The service starts automatically on login (macOS) or at boot (Linux) and restarts on failure.
+
+```bash
+# Open in browser
+open http://localhost:8088
+```
 
 To stop and remove:
 
@@ -76,39 +120,27 @@ To stop and remove:
 muxplex service uninstall
 ```
 
-> **Note:** All service commands use the `muxplex service` subcommand — see [Service management](#service-management) below.
-
 ---
 
-## Usage
+## CLI Reference
 
-```bash
-muxplex [OPTIONS]
-muxplex serve [OPTIONS]     # explicit form
 ```
-
-All serve options read from `~/.config/muxplex/settings.json` by default. CLI flags override for that run only.
-
-| Option | settings.json key | Default | Description |
-|---|---|---|---|
-| `--host HOST` | `host` | `127.0.0.1` | Interface to bind (`0.0.0.0` for network access) |
-| `--port PORT` | `port` | `8088` | Port to listen on |
-| `--auth MODE` | `auth` | `pam` | Auth method: `pam` or `password` |
-| `--session-ttl SEC` | `session_ttl` | `604800` | Session TTL in seconds (7 days; 0 = browser session) |
-
-### Other commands
-
-| Command | Description |
-|---|---|
-| `muxplex doctor` | Check dependencies and system status |
-| `muxplex upgrade` | Upgrade to latest version and restart service |
-| `muxplex show-password` | Show the current muxplex password |
-| `muxplex reset-secret` | Regenerate signing secret (invalidates sessions) |
-| `muxplex config` | Show all settings with current values |
-| `muxplex config list` | Show all settings with current values |
-| `muxplex config get <key>` | Show one setting |
-| `muxplex config set <key> <value>` | Set a setting (auto-detects type) |
-| `muxplex config reset [key]` | Reset one or all settings to defaults |
+muxplex                              Start server (default)
+muxplex serve [flags]                Start with CLI flag overrides
+muxplex service install              Install + enable + start as OS service
+muxplex service uninstall            Stop + disable + remove
+muxplex service start|stop|restart   Manage running service
+muxplex service status               Show service status
+muxplex service logs                 Tail service logs
+muxplex config                       Show all settings
+muxplex config get <key>             Show one setting
+muxplex config set <key> <value>     Set a setting
+muxplex config reset [key]           Reset one or all to defaults
+muxplex upgrade [--force]            Smart update with version check
+muxplex doctor                       Check dependencies + config
+muxplex show-password                Show current auth password
+muxplex reset-secret                 Regenerate signing secret
+```
 
 ### Service management
 
@@ -122,11 +154,10 @@ muxplex service status      # Show running/stopped + PID
 muxplex service logs        # Tail service logs
 ```
 
-The service runs `muxplex serve` with no flags — it reads all options from `~/.config/muxplex/settings.json`. To change host/port, edit the config and restart:
+The service runs `muxplex serve` with no flags — it reads all options from `~/.config/muxplex/settings.json`. To change host/port, edit the config (or use the Settings UI in the browser) and restart:
 
 ```bash
-# Edit settings to bind to all interfaces
-# (or use the Settings UI in the browser)
+muxplex config set host 0.0.0.0
 muxplex service restart
 ```
 
@@ -141,6 +172,89 @@ muxplex --port 9000
 
 # Override host for this run only
 muxplex serve --host 0.0.0.0
+```
+
+---
+
+## Configuration
+
+All settings are stored in `~/.config/muxplex/settings.json`.
+
+| Key | Default | Description |
+|---|---|---|
+| `host` | `127.0.0.1` | Bind address (set to `0.0.0.0` for network access) |
+| `port` | `8088` | Server port |
+| `auth` | `pam` | Authentication mode: `pam` or `password` |
+| `session_ttl` | `604800` | Session cookie TTL in seconds (7 days; 0 = browser session) |
+| `default_session` | `null` | Session to auto-open on load |
+| `sort_order` | `manual` | Session ordering: `manual`, `alphabetical`, `recent` |
+| `hidden_sessions` | `[]` | Sessions hidden from the dashboard |
+| `window_size_largest` | `false` | Auto-set tmux `window-size largest` on connect |
+| `auto_open_created` | `true` | Auto-open newly created sessions |
+| `new_session_template` | `tmux new-session -d -s {name}` | Command template for creating sessions |
+| `delete_session_template` | `tmux kill-session -t {name}` | Command template for deleting sessions |
+| `device_name` | `""` (hostname) | Display name for this device |
+| `remote_instances` | `[]` | Remote muxplex instances to aggregate |
+| `multi_device_enabled` | `false` | Enable multi-instance federation |
+
+**Priority:** CLI flags > `settings.json` > defaults.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+Shift+C | Copy terminal selection to system clipboard |
+| Ctrl+Shift+V | Paste from system clipboard into terminal |
+| `,` (comma) | Open settings |
+| Escape | Close settings / return to dashboard |
+
+Mouse select in the terminal auto-copies to the system clipboard on release.
+
+---
+
+## Platform Support
+
+| Platform | Service | Auth |
+|---|---|---|
+| Linux (Ubuntu/Debian) | systemd user service | PAM |
+| macOS | launchd agent | PAM |
+| WSL | systemd user service | PAM |
+
+---
+
+## Project Structure
+
+```
+muxplex/
+├── muxplex/
+│   ├── __init__.py
+│   ├── __main__.py          # python -m muxplex entry
+│   ├── cli.py               # CLI entry point and subcommand dispatch
+│   ├── main.py              # FastAPI app, routes, WebSocket proxy
+│   ├── auth.py              # PAM/password auth middleware
+│   ├── sessions.py          # tmux session enumeration + snapshots
+│   ├── bells.py             # Bell flag detection + clear rules
+│   ├── state.py             # Persistent state (JSON)
+│   ├── settings.py          # User settings management
+│   ├── service.py           # Service install/start/stop (systemd + launchd)
+│   ├── ttyd.py              # ttyd process lifecycle
+│   ├── frontend/
+│   │   ├── index.html        # Main SPA
+│   │   ├── login.html        # Login page
+│   │   ├── app.js            # Dashboard, sidebar, settings, previews
+│   │   ├── terminal.js       # xterm.js terminal + clipboard
+│   │   ├── style.css         # All styles (dark theme)
+│   │   ├── manifest.json     # PWA manifest
+│   │   ├── wordmark-on-dark.svg
+│   │   └── tests/            # JavaScript unit tests
+│   └── tests/                # Python tests (pytest)
+├── assets/branding/          # Logos, icons, design system
+├── docs/plans/               # Historical design + implementation plans
+├── scripts/                  # Utility scripts (asset generation)
+├── pyproject.toml
+└── README.md
 ```
 
 ---
@@ -169,51 +283,11 @@ python -m muxplex
 
 ```bash
 # Python tests (pytest)
-pytest
+python -m pytest muxplex/tests/ --ignore=muxplex/tests/test_integration.py
 
 # JavaScript tests (node:test)
 node --test muxplex/frontend/tests/test_terminal.mjs
 node --test muxplex/frontend/tests/test_app.mjs
-```
-
----
-
-## Architecture
-
-```
-muxplex/
-├── pyproject.toml          # Package metadata, entry points, dependencies
-├── README.md               # This file
-├── scripts/                # Utility scripts (asset generation, etc.)
-│   └── render-brand-assets.py
-├── assets/
-│   └── branding/           # Brand design system and generated assets
-│       ├── DESIGN-SYSTEM.md
-│       ├── tokens.json / tokens.css
-│       ├── svg/            # Source SVG files
-│       ├── og/             # Open Graph images (og-dark.png, og-light.png)
-│       ├── icons/          # App icons
-│       ├── favicons/       # Favicon variants
-│       ├── pwa/            # PWA manifest icons
-│       ├── lockup/         # Wordmark + icon lockup
-│       └── wordmark/       # Text-only wordmark
-└── muxplex/                # Python package
-    ├── __init__.py
-    ├── __main__.py         # `python -m muxplex` entry point
-    ├── cli.py              # CLI entry point and subcommand dispatch
-    ├── main.py             # FastAPI app: session API, bell hooks, WebSocket proxy to ttyd, static frontend
-    ├── sessions.py         # tmux session discovery and snapshot capture
-    ├── bells.py            # Bell/activity notification tracking
-    ├── ttyd.py             # ttyd process lifecycle management (spawn, kill, PID tracking)
-    ├── state.py            # Shared in-process state (sessions, bells, ttyd)
-    ├── frontend/           # Static frontend assets (served as package data)
-    │   ├── index.html
-    │   ├── app.js
-    │   ├── terminal.js     # xterm.js + WebSocket terminal init
-    │   ├── style.css
-    │   ├── manifest.json   # PWA manifest
-    │   └── tests/          # JavaScript unit tests
-    └── tests/              # Python tests (pytest)
 ```
 
 ---
@@ -227,3 +301,9 @@ To regenerate PNG/favicon assets from SVG sources:
 ```bash
 python3 scripts/render-brand-assets.py
 ```
+
+---
+
+## License
+
+MIT

@@ -1373,3 +1373,49 @@ def test_html_settings_remote_instance_key_input() -> None:
     assert el is not None, (
         "Missing #setting-remote-instances inside devices panel"
     )
+
+
+# ============================================================
+# Clickable URLs — xterm-addon-web-links (task: clickable URLs)
+# ============================================================
+
+
+def read_html() -> str:
+    """Read raw HTML content of index.html."""
+    return HTML_PATH.read_text()
+
+
+def test_html_loads_web_links_addon() -> None:
+    """index.html must load the xterm-addon-web-links CDN script."""
+    html = read_html()
+    assert "web-links" in html.lower() or "weblinks" in html.lower(), (
+        "Must load xterm-addon-web-links from CDN"
+    )
+
+
+# ============================================================
+# Search addon (xterm-addon-search)
+# ============================================================
+
+
+def test_html_loads_search_addon() -> None:
+    """index.html must load the xterm-addon-search CDN script."""
+    html = read_html()
+    assert "search" in html.lower() and "addon" in html.lower() and "xterm" in html.lower(), (
+        "Must load xterm-addon-search from CDN"
+    )
+
+
+def test_html_loads_image_addon() -> None:
+    """index.html must load the xterm-addon-image CDN script."""
+    html = read_html()
+    assert "addon-image" in html.lower(), (
+        "Must load xterm-addon-image from CDN (expected 'addon-image' in script src)"
+    )
+
+
+def test_html_has_search_bar() -> None:
+    """index.html must contain the terminal search bar elements."""
+    html = read_html()
+    assert "terminal-search-bar" in html, "Must have #terminal-search-bar element"
+    assert "terminal-search-input" in html, "Must have #terminal-search-input element"

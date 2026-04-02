@@ -366,6 +366,7 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     name = payload.name
     settings = load_settings()
     command = settings["new_session_template"].replace("{name}", name)
+    _log.info("Creating session '%s' with command: %s", name, command)
     try:
         subprocess.Popen(
             command,
@@ -392,6 +393,7 @@ async def connect_session(name: str) -> dict:
     if known and name not in known:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
+    _log.info("Connecting to session '%s'", name)
     await kill_ttyd()
     await spawn_ttyd(name)
 
@@ -442,15 +444,19 @@ async def delete_session(name: str) -> dict:
         "delete_session_template", "tmux kill-session -t {name}"
     ).replace("{name}", name)
 
+    _log.info("Deleting session '%s' with command: %s", name, command)
     try:
         result = subprocess.run(
             command,
             shell=True,
+            input="y\n",  # auto-confirm interactive prompts (e.g. amplifier-dev --destroy)
             capture_output=True,
             text=True,
             timeout=30,
         )
-        if result.returncode != 0:
+        if result.returncode == 0:
+            _log.info("Session '%s' deleted successfully", name)
+        else:
             _log.warning(
                 "Delete command failed (rc=%d): %s",
                 result.returncode,

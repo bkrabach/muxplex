@@ -152,7 +152,10 @@ def _systemd_status() -> None:
 
 
 def _systemd_logs() -> None:
-    subprocess.run(["journalctl", "--user", "-u", "muxplex", "-f"], check=True)
+    try:
+        subprocess.run(["journalctl", "--user", "-u", "muxplex", "-f"])
+    except KeyboardInterrupt:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +208,10 @@ def _launchd_status() -> None:
 
 
 def _launchd_logs() -> None:
-    subprocess.run(["tail", "-f", "/tmp/muxplex.log"], check=True)
+    try:
+        subprocess.run(["tail", "-f", "/tmp/muxplex.log"])
+    except KeyboardInterrupt:
+        pass
 
 
 # ---------------------------------------------------------------------------

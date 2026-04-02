@@ -3894,3 +3894,30 @@ test('remote instance debounced input listener selector includes .settings-remot
     'debounced input listener on #setting-remote-instances must include .settings-remote-key so key-only edits trigger _saveRemoteInstances()',
   );
 });
+
+// --- Bug fixes: delete UX ---
+
+test('killSession closes active session and returns to dashboard', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Find killSession function body
+  const fnStart = source.indexOf('function killSession');
+  const fnBody = source.substring(fnStart, fnStart + 500);
+  assert.ok(fnBody.includes('_viewingSession'), 'killSession must check if deleted session is the active one');
+  assert.ok(fnBody.includes('closeSession'), 'killSession must call closeSession when deleting the active session');
+});
+
+test('sidebar click handler ignores clicks on delete button', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes("closest('.sidebar-delete')"),
+    "sidebar click handler must guard against clicks on .sidebar-delete button"
+  );
+});
+
+test('tile click handler ignores clicks on tile-delete button', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes("closest('.tile-delete')"),
+    "tile click handler must guard against clicks on .tile-delete button"
+  );
+});

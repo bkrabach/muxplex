@@ -50,7 +50,16 @@
           <button id="sidebar-new-session-btn" class="sidebar-new-btn">+ New</button>
         </div>
       </div>
-      <div id="terminal-container" class="terminal-container"></div>
+      <div class="terminal-wrapper">
+        <div id="terminal-search-bar" class="terminal-search-bar hidden">
+          <input id="terminal-search-input" type="text" class="terminal-search-input" placeholder="Find..." />
+          <span id="terminal-search-count" class="terminal-search-count"></span>
+          <button id="terminal-search-prev" class="terminal-search-btn" title="Previous (Shift+Enter)">&#9650;</button>
+          <button id="terminal-search-next" class="terminal-search-btn" title="Next (Enter)">&#9660;</button>
+          <button id="terminal-search-close" class="terminal-search-btn" title="Close (Escape)">&times;</button>
+        </div>
+        <div id="terminal-container" class="terminal-container"></div>
+      </div>
     </div>
     <div id="reconnect-overlay" class="reconnect-overlay hidden" aria-live="polite">Reconnecting&hellip;</div>
   </div>
@@ -233,6 +242,9 @@
   <!-- ── Scripts ──────────────────────────────────────────────────────────── -->
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-search@0.13.0/lib/xterm-addon-search.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-image@0.9.0/lib/addon-image.js"></script>
   <script src="/app.js" defer></script>
   <script src="/terminal.js" defer></script>
 </body>

@@ -9,6 +9,40 @@ let _reconnectTimer = null;
 let _currentSession = null;
 let _vpHandler = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
+let _searchAddon = null;
+
+// ─── Module-level encoding helpers ──────────────────────────────────────────
+// Hoisted here so the clipboard key handler (in openTerminal) can also use them.
+const _encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+
+function _encodePayload(typeChar, str) {
+  // Returns Uint8Array: [typeCharCode, ...utf8bytes]
+  var strBytes = _encoder ? _encoder.encode(str) : new Uint8Array(Array.from(str).map(function(c) { return c.charCodeAt(0); }));
+  var payload = new Uint8Array(1 + strBytes.length);
+  payload[0] = typeChar;
+  payload.set(strBytes, 1);
+  return payload;
+}
+
+// ─── Clipboard helpers ───────────────────────────────────────────────────────
+// Ctrl+Shift+C: copy terminal selection to system clipboard
+// Ctrl+Shift+V: paste from system clipboard into terminal
+
+function _copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(function() {});
+  } else {
+    // Fallback for non-HTTPS contexts (HTTP over LAN)
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
+    document.body.removeChild(ta);
+  }
+}
 
 // ─── Forward declarations ─────────────────────────────────────────────────────
 
@@ -26,16 +60,8 @@ function connectWebSocket(name, remoteId) {
     url = proto + '//' + location.host + '/terminal/ws';
   }
   const reconnectOverlay = document.getElementById('reconnect-overlay');
-  const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
-
-  function encodePayload(typeChar, str) {
-    // Returns Uint8Array: [typeCharCode, ...utf8bytes]
-    var strBytes = encoder ? encoder.encode(str) : new Uint8Array(Array.from(str).map(function(c) { return c.charCodeAt(0); }));
-    var payload = new Uint8Array(1 + strBytes.length);
-    payload[0] = typeChar;
-    payload.set(strBytes, 1);
-    return payload;
-  }
+  // Use module-level _encodePayload (hoisted above connectWebSocket)
+  var encodePayload = _encodePayload;
 
   // Register terminal event handlers once on this _term instance.
   // These handlers read the module-level _ws at call time (not a captured reference),
@@ -221,6 +247,67 @@ function createTerminal() {
 
   _fitAddon = new window.FitAddon.FitAddon();
   _term.loadAddon(_fitAddon);
+
+  // Clickable URLs — Ctrl+Click (Windows/Linux) or Cmd+Click (macOS) opens in new tab.
+  // xterm-addon-web-links auto-detects URLs and adds hover underlines.
+  // Plain click is preserved for normal terminal text selection.
+  var WebLinksAddon = window.WebLinksAddon && window.WebLinksAddon.WebLinksAddon;
+  if (WebLinksAddon) {
+    _term.loadAddon(new WebLinksAddon(function(event, uri) {
+      if (event.ctrlKey || event.metaKey) {
+        window.open(uri, '_blank');
+      }
+    }));
+  }
+
+  // Search addon — Ctrl+F to find text in terminal buffer
+  var SearchAddon = window.SearchAddon && window.SearchAddon.SearchAddon;
+  if (SearchAddon) {
+    _searchAddon = new SearchAddon();
+    _term.loadAddon(_searchAddon);
+  }
+
+  // Image addon — inline image rendering (Sixel, iTerm2 IIP, Kitty graphics)
+  // Needed for tools like yazi file manager that use graphic protocols
+  var ImageAddon = window.ImageAddon && window.ImageAddon.ImageAddon;
+  if (ImageAddon) {
+    _term.loadAddon(new ImageAddon());
+  }
+}
+
+// ─── Search helpers ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+function _openSearch() {
+  var bar = document.getElementById('terminal-search-bar');
+  var input = document.getElementById('terminal-search-input');
+  if (bar) {
+    bar.classList.remove('hidden');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+}
+
+function _closeSearch() {
+  var bar = document.getElementById('terminal-search-bar');
+  if (bar) bar.classList.add('hidden');
+  if (_searchAddon) _searchAddon.clearDecorations();
+  if (_term) _term.focus();
+}
+
+function _searchNext() {
+  var input = document.getElementById('terminal-search-input');
+  if (input && input.value && _searchAddon) {
+    _searchAddon.findNext(input.value);
+  }
+}
+
+function _searchPrev() {
+  var input = document.getElementById('terminal-search-input');
+  if (input && input.value && _searchAddon) {
+    _searchAddon.findPrevious(input.value);
+  }
 }
 
 // ─── Open / close ─────────────────────────────────────────────────────────────
@@ -262,6 +349,70 @@ function openTerminal(sessionName, remoteId) {
 
   _term.open(container);
 
+  // --- Clipboard integration ---
+  // Ctrl+Shift+C: copy selection to system clipboard (Ctrl+C still sends SIGINT)
+  // Ctrl+Shift+V: paste from system clipboard (Ctrl+V still sends literal bytes)
+  _term.attachCustomKeyEventHandler(function(e) {
+    if (e.type !== 'keydown') return true;
+
+    // Ctrl+Shift+C → copy selection to clipboard
+    if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.code === 'KeyC')) {
+      var sel = _term.getSelection();
+      if (sel) _copyToClipboard(sel);
+      return false;  // prevent xterm from processing
+    }
+
+    // Ctrl+Shift+V → paste from clipboard into terminal
+    if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText().then(function(text) {
+          if (text && _ws && _ws.readyState === WebSocket.OPEN) {
+            _ws.send(_encodePayload(0x30, text));
+          }
+        }).catch(function() {});
+      }
+      return false;  // prevent xterm from processing
+    }
+
+    // Ctrl+F → open search bar
+    if (e.ctrlKey && !e.shiftKey && (e.key === 'f' || e.key === 'F' || e.code === 'KeyF')) {
+      _openSearch();
+      return false;
+    }
+
+    return true;  // let xterm handle all other keys normally
+  });
+
+  // Auto-copy: when mouse selection ends, copy to system clipboard.
+  // Matches terminal emulator conventions (iTerm2, WezTerm, ttyd native).
+  // onSelectionChange fires whenever selection changes — copy if text is selected.
+  // When selection is cleared (empty string), we skip the clipboard write.
+  _term.onSelectionChange(function() {
+    var sel = _term.getSelection();
+    if (sel) {
+      _copyToClipboard(sel);
+    }
+  });
+
+  // OSC 52 clipboard integration — bridges tmux clipboard to the browser.
+  // When tmux copies text (with `set-clipboard on` in .tmux.conf), it sends
+  // an OSC 52 escape sequence to the terminal. xterm.js surfaces this via the
+  // parser API. We intercept and write the decoded text to the system clipboard
+  // so that: Ctrl+B [ → select → Enter (tmux copy) → system clipboard receives it.
+  _term.parser.registerOscHandler(52, function(data) {
+    // OSC 52 format: Pc ; Pd — Pc = selection target (c/p/q/s/0-7), Pd = base64 text
+    var parts = data.split(';');
+    if (parts.length >= 2) {
+      try {
+        var text = atob(parts[1]);
+        _copyToClipboard(text);
+      } catch (e) {
+        // Invalid base64 or unsupported — silently ignore
+      }
+    }
+    return true;  // Handled — don't pass to xterm's default handler
+  });
+
   if (_fitAddon) {
     // requestAnimationFrame guarantees one full browser layout pass after the flex
     // container becomes visible before fit() measures dimensions.
@@ -277,6 +428,51 @@ function openTerminal(sessionName, remoteId) {
         try { if (_fitAddon) _fitAddon.fit(); } catch (_) {}
       }, 500);
     });
+  }
+
+  // Wire search bar buttons + keyboard handlers (idempotent — elements are static)
+  var searchInput = document.getElementById('terminal-search-input');
+  var searchClose = document.getElementById('terminal-search-close');
+  var searchNextBtn = document.getElementById('terminal-search-next');
+  var searchPrevBtn = document.getElementById('terminal-search-prev');
+
+  if (searchInput) {
+    // Remove old listeners by replacing with cloned element (avoids duplicate handlers on reconnect)
+    var newInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newInput, searchInput);
+    searchInput = newInput;
+    searchInput.addEventListener('input', function() {
+      if (_searchAddon && searchInput.value) {
+        _searchAddon.findNext(searchInput.value);
+      } else if (_searchAddon) {
+        _searchAddon.clearDecorations();
+      }
+    });
+    searchInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) _searchPrev(); else _searchNext();
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        _closeSearch();
+      }
+    });
+  }
+  if (searchClose) {
+    var newClose = searchClose.cloneNode(true);
+    searchClose.parentNode.replaceChild(newClose, searchClose);
+    newClose.addEventListener('click', _closeSearch);
+  }
+  if (searchNextBtn) {
+    var newNext = searchNextBtn.cloneNode(true);
+    searchNextBtn.parentNode.replaceChild(newNext, searchNextBtn);
+    newNext.addEventListener('click', _searchNext);
+  }
+  if (searchPrevBtn) {
+    var newPrev = searchPrevBtn.cloneNode(true);
+    searchPrevBtn.parentNode.replaceChild(newPrev, searchPrevBtn);
+    newPrev.addEventListener('click', _searchPrev);
   }
 
   connectWebSocket(sessionName, remoteId);
@@ -306,8 +502,10 @@ function closeTerminal() {
     _term.dispose();
     _term = null;
     _fitAddon = null;
+    _searchAddon = null;
   }
 
+  _closeSearch();
   _currentSession = null;
   _reconnectAttempts = 0; // reset backoff on intentional close
 }
@@ -315,6 +513,8 @@ function closeTerminal() {
 // ─── Expose to app.js ─────────────────────────────────────────────────────────
 window._openTerminal = openTerminal;
 window._closeTerminal = closeTerminal;
+window._openSearch = _openSearch;
+window._closeSearch = _closeSearch;
 
 // ---------------------------------------------------------------------------
 // setTerminalFontSize — live font-size update without reconnecting

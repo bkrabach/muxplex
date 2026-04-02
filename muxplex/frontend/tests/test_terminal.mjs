@@ -47,6 +47,10 @@ function loadTerminal() {
     dispose: () => {},
     write: (data) => { termWriteMessages.push(data); },
     focus: () => { focusCallCount++; },
+    attachCustomKeyEventHandler: () => {},
+    getSelection: () => '',
+    onSelectionChange: () => {},
+    parser: { registerOscHandler: () => {} },
   };
 
   // Capture all messages sent via WebSocket.send()
@@ -331,6 +335,10 @@ function createMultiSessionEnv() {
       loadAddon: () => {},
       dispose: () => {},
       focus: () => {},
+      attachCustomKeyEventHandler: () => {},
+      getSelection: () => '',
+      onSelectionChange: () => {},
+      parser: { registerOscHandler: () => {} },
       writeMessages: [],
     };
     t.write = (data) => t.writeMessages.push(data);
@@ -891,6 +899,17 @@ test('terminal.js resets _reconnectAttempts on first message, not on open', () =
   );
 });
 
+// --- Clipboard integration ---
+
+test('terminal.js has clipboard integration with Ctrl+Shift+C and Ctrl+Shift+V', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('attachCustomKeyEventHandler'), 'must register custom key handler');
+  assert.ok(source.includes('getSelection'), 'must use getSelection() for copy');
+  assert.ok(source.includes('clipboard'), 'must interact with clipboard API');
+  assert.ok(source.includes('Shift'), 'must use Shift modifier to avoid conflict with terminal Ctrl+C/V');
+  assert.ok(source.includes('_copyToClipboard') || source.includes('writeText'), 'must have copy mechanism');
+});
+
 // --- Issue 4: setTerminalFontSize ---
 
 test('terminal.js exposes window._setTerminalFontSize function', () => {
@@ -913,6 +932,63 @@ test('_setTerminalFontSize sets _term.options.fontSize and calls _fitAddon.fit()
     source.includes('_fitAddon.fit()'),
     '_setTerminalFontSize must call _fitAddon.fit() to reflow the terminal'
   );
+});
+
+// --- Clipboard Issue 1: auto-copy mouse selection via onSelectionChange ---
+
+test('terminal.js auto-copies mouse selection to clipboard via onSelectionChange', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('onSelectionChange'),
+    'must register onSelectionChange handler to auto-copy mouse selection to clipboard',
+  );
+});
+
+// --- Clipboard Issue 2: OSC 52 handler bridges tmux clipboard to browser ---
+
+test('terminal.js registers OSC 52 handler for tmux clipboard bridge', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('registerOscHandler'),
+    'must call parser.registerOscHandler to intercept tmux OSC 52 clipboard sequences',
+  );
+  assert.ok(
+    source.includes('atob'),
+    'must decode base64 OSC 52 clipboard payload with atob()',
+  );
+});
+
+// --- Clickable URLs via xterm-addon-web-links ---
+
+test('terminal.js loads xterm-addon-web-links for clickable URLs', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('WebLinksAddon'), 'must reference WebLinksAddon');
+  assert.ok(
+    source.includes('ctrlKey') || source.includes('metaKey'),
+    'must check modifier key for link clicks',
+  );
+  assert.ok(source.includes('window.open'), 'must open URLs in new tab');
+});
+
+// --- Search addon (xterm-addon-search) ---
+
+test('terminal.js loads xterm-addon-search', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('SearchAddon'), 'must reference SearchAddon');
+  assert.ok(source.includes('findNext') || source.includes('findPrevious'), 'must have search functions');
+});
+
+test('terminal.js has Ctrl+F search shortcut', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('_openSearch'), 'must have search open function');
+  assert.ok(source.includes('_closeSearch'), 'must have search close function');
+});
+
+// --- Image addon (xterm-addon-image) ---
+
+test('terminal.js loads xterm-addon-image for inline graphics', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('ImageAddon'), 'must reference ImageAddon');
 });
 
 
