@@ -12,7 +12,7 @@ _SOUP: BeautifulSoup = BeautifulSoup(HTML_PATH.read_text(), "html.parser")
 
 
 def test_html_pwa_meta() -> None:
-    """apple-mobile-web-app-capable, rel=manifest, theme-color, apple-mobile-web-app-status-bar-style."""
+    """mobile-web-app-capable, rel=manifest, theme-color, apple-mobile-web-app-status-bar-style."""
     soup = _SOUP
     # rel=manifest
     assert soup.find("link", rel="manifest"), "Missing <link rel='manifest'>"
@@ -20,9 +20,9 @@ def test_html_pwa_meta() -> None:
     assert soup.find("meta", attrs={"name": "theme-color"}), (
         "Missing <meta name='theme-color'>"
     )
-    # apple-mobile-web-app-capable
-    assert soup.find("meta", attrs={"name": "apple-mobile-web-app-capable"}), (
-        "Missing <meta name='apple-mobile-web-app-capable'>"
+    # mobile-web-app-capable (modern replacement for deprecated apple-mobile-web-app-capable)
+    assert soup.find("meta", attrs={"name": "mobile-web-app-capable"}), (
+        "Missing <meta name='mobile-web-app-capable'>"
     )
     # apple-mobile-web-app-status-bar-style
     assert soup.find("meta", attrs={"name": "apple-mobile-web-app-status-bar-style"}), (
