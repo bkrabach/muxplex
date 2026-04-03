@@ -194,6 +194,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `new_session_template` | `tmux new-session -d -s {name}` | Command template for creating sessions |
 | `delete_session_template` | `tmux kill-session -t {name}` | Command template for deleting sessions |
 | `device_name` | `""` (hostname) | Display name for this device |
+| `federation_key` | `""` | Server-to-server authentication key for federation |
 | `remote_instances` | `[]` | Remote muxplex instances to aggregate |
 | `multi_device_enabled` | `false` | Enable multi-instance federation |
 
