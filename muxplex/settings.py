@@ -70,11 +70,36 @@ def patch_settings(patch: dict) -> dict:
     """Merge known keys from *patch* into the current settings, save, and return result.
 
     Unknown keys in *patch* are silently ignored.
+
+    Key-preservation rule: when ``remote_instances`` is included in the patch,
+    any remote whose ``key`` field is empty or absent in the patch retains its
+    existing key from the on-disk settings.  This prevents the redaction-wipe
+    bug where ``GET /api/settings`` returns ``key=""`` for security reasons and
+    a subsequent PATCH would silently overwrite real keys with empty strings.
+    Only a patch that supplies a *non-empty* key value is treated as an
+    intentional key rotation and actually written to disk.
     """
     current = load_settings()
+
+    # Snapshot existing remote keys by URL *before* applying the patch so we
+    # can restore them if the patch contains redacted (empty) key values.
+    existing_remote_keys: dict[str, str] = {
+        r["url"]: r.get("key", "")
+        for r in current.get("remote_instances", [])
+        if r.get("url")
+    }
+
     for key in DEFAULT_SETTINGS:
         if key in patch:
             current[key] = patch[key]
+
+    # Restore keys that were stripped by redaction.
+    if "remote_instances" in patch:
+        for remote in current["remote_instances"]:
+            url = remote.get("url", "")
+            if not remote.get("key") and url in existing_remote_keys:
+                remote["key"] = existing_remote_keys[url]
+
     save_settings(current)
     return current
 

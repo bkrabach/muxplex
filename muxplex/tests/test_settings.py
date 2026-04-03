@@ -488,3 +488,160 @@ def test_remote_instances_with_key_round_trip(tmp_path, monkeypatch):
     save_settings({"remote_instances": instances})
     result = load_settings()
     assert result["remote_instances"] == instances
+
+
+# ============================================================
+# Federation key preservation during PATCH (redaction bug fix)
+# ============================================================
+
+
+def test_patch_preserves_existing_key_when_patch_sends_empty_key():
+    """patch_settings() must NOT wipe a remote instance key when the patch sends empty string.
+
+    This is the core redaction bug: GET /api/settings returns key="" for remote
+    instances (security redaction).  When the frontend PATCHes any other field it
+    sends the redacted remote_instances array back, which should NOT overwrite the
+    real keys stored on disk.
+    """
+    # Step 1: save settings with a real key present on disk
+    save_settings(
+        {
+            "remote_instances": [
+                {"url": "http://spark-2:8088", "name": "spark-2", "key": "h0NtMnGt-real-key"},
+            ]
+        }
+    )
+
+    # Step 2: PATCH with the same remote but an empty key (simulating redacted GET response)
+    patch_settings(
+        {
+            "device_name": "new-name",
+            "remote_instances": [
+                {"url": "http://spark-2:8088", "name": "spark-2", "key": ""},
+            ],
+        }
+    )
+
+    # Step 3: verify the real key was preserved
+    loaded = load_settings()
+    assert loaded["remote_instances"][0]["key"] == "h0NtMnGt-real-key", (
+        "patch_settings() must preserve existing key when patch sends empty string; "
+        f"got: {loaded['remote_instances'][0]['key']!r}"
+    )
+    # Other field changes should still be applied
+    assert loaded["device_name"] == "new-name"
+
+
+def test_patch_overwrites_key_when_patch_sends_non_empty_key():
+    """patch_settings() must update a remote instance key when a new non-empty key is provided.
+
+    Intentional key rotation must still work — sending a real new key should
+    overwrite the old one.
+    """
+    # Save initial settings with an old key
+    save_settings(
+        {
+            "remote_instances": [
+                {"url": "http://spark-1:8088", "name": "spark-1", "key": "old-key-abc"},
+            ]
+        }
+    )
+
+    # PATCH with a brand-new non-empty key (intentional rotation)
+    patch_settings(
+        {
+            "remote_instances": [
+                {"url": "http://spark-1:8088", "name": "spark-1", "key": "new-key-xyz"},
+            ]
+        }
+    )
+
+    loaded = load_settings()
+    assert loaded["remote_instances"][0]["key"] == "new-key-xyz", (
+        "patch_settings() must accept new non-empty key; "
+        f"got: {loaded['remote_instances'][0]['key']!r}"
+    )
+
+
+def test_patch_preserves_key_when_key_field_absent_from_patch():
+    """patch_settings() must preserve a remote instance key when the patch omits the key field entirely."""
+    save_settings(
+        {
+            "remote_instances": [
+                {"url": "http://tower:8088", "name": "tower", "key": "tower-secret-key"},
+            ]
+        }
+    )
+
+    # PATCH with the remote missing the 'key' field entirely
+    patch_settings(
+        {
+            "remote_instances": [
+                {"url": "http://tower:8088", "name": "tower"},
+            ]
+        }
+    )
+
+    loaded = load_settings()
+    assert loaded["remote_instances"][0].get("key") == "tower-secret-key", (
+        "patch_settings() must preserve existing key when patch omits key field; "
+        f"got: {loaded['remote_instances'][0].get('key')!r}"
+    )
+
+
+def test_patch_preserves_keys_for_unchanged_remotes_in_multi_remote_list():
+    """Keys for all existing remotes are preserved when one unrelated remote is updated."""
+    save_settings(
+        {
+            "remote_instances": [
+                {"url": "http://spark-1:8088", "name": "spark-1", "key": "key-spark-1"},
+                {"url": "http://spark-2:8088", "name": "spark-2", "key": "key-spark-2"},
+                {"url": "http://cortex:8088", "name": "cortex", "key": "key-cortex"},
+            ]
+        }
+    )
+
+    # Frontend sends back all three remotes with redacted empty keys, just changing a name
+    patch_settings(
+        {
+            "remote_instances": [
+                {"url": "http://spark-1:8088", "name": "spark-1-renamed", "key": ""},
+                {"url": "http://spark-2:8088", "name": "spark-2", "key": ""},
+                {"url": "http://cortex:8088", "name": "cortex", "key": ""},
+            ]
+        }
+    )
+
+    loaded = load_settings()
+    remotes_by_url = {r["url"]: r for r in loaded["remote_instances"]}
+
+    assert remotes_by_url["http://spark-1:8088"]["key"] == "key-spark-1", (
+        f"spark-1 key must be preserved, got: {remotes_by_url['http://spark-1:8088']['key']!r}"
+    )
+    assert remotes_by_url["http://spark-2:8088"]["key"] == "key-spark-2", (
+        f"spark-2 key must be preserved, got: {remotes_by_url['http://spark-2:8088']['key']!r}"
+    )
+    assert remotes_by_url["http://cortex:8088"]["key"] == "key-cortex", (
+        f"cortex key must be preserved, got: {remotes_by_url['http://cortex:8088']['key']!r}"
+    )
+    # Non-key field change should still be applied
+    assert remotes_by_url["http://spark-1:8088"]["name"] == "spark-1-renamed"
+
+
+def test_patch_new_remote_with_key_is_saved():
+    """A newly added remote instance with a key is saved correctly."""
+    save_settings({"remote_instances": []})
+
+    patch_settings(
+        {
+            "remote_instances": [
+                {"url": "http://new-host:8088", "name": "new-host", "key": "brand-new-key"},
+            ]
+        }
+    )
+
+    loaded = load_settings()
+    assert len(loaded["remote_instances"]) == 1
+    assert loaded["remote_instances"][0]["key"] == "brand-new-key", (
+        f"New remote with key must be saved; got: {loaded['remote_instances'][0]['key']!r}"
+    )
