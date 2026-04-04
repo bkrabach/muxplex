@@ -91,7 +91,10 @@ def generate_self_signed(
         .sign(private_key, hashes.SHA256())
     )
 
-    expires = getattr(cert, "not_valid_after_utc", cert.not_valid_after)
+    try:
+        expires = cert.not_valid_after_utc  # type: ignore[attr-defined]
+    except AttributeError:
+        expires = cert.not_valid_after  # type: ignore[attr-defined]
 
     # Write key PEM — create file with restricted permissions before writing
     key_pem = private_key.private_bytes(
@@ -152,7 +155,8 @@ def detect_tailscale() -> dict | None:
     except json.JSONDecodeError:
         return None
 
-    dns_name = data.get("DNSName", "")
+    self_info = data.get("Self") or {}
+    dns_name = self_info.get("DNSName", "") or data.get("DNSName", "")
     cert_domains = data.get("CertDomains") or []
     ips = data.get("TailscaleIPs") or []
 
@@ -358,9 +362,19 @@ def get_cert_info(cert_path) -> dict | None:
     except ExtensionNotFound:
         pass
 
+    try:
+        expires = cert.not_valid_after_utc  # type: ignore[attr-defined]
+    except AttributeError:
+        expires = cert.not_valid_after  # type: ignore[attr-defined]
+
+    try:
+        not_before = cert.not_valid_before_utc  # type: ignore[attr-defined]
+    except AttributeError:
+        not_before = cert.not_valid_before  # type: ignore[attr-defined]
+
     return {
-        "expires": getattr(cert, "not_valid_after_utc", cert.not_valid_after),
-        "not_before": getattr(cert, "not_valid_before_utc", cert.not_valid_before),
+        "expires": expires,
+        "not_before": not_before,
         "hostnames": hostnames,
         "serial": cert.serial_number,
     }

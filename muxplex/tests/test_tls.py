@@ -511,3 +511,67 @@ def test_generate_mkcert_includes_tailscale_sans(monkeypatch, tmp_path):
     assert "spark-1.tail8f3c4e.ts.net" in gen_calls[0], (
         f"'spark-1.tail8f3c4e.ts.net' must appear in mkcert command args, got: {gen_calls[0]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 24-25. Bug-fix regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_detect_tailscale_reads_dns_name_from_self(monkeypatch):
+    """detect_tailscale() must read DNSName from Self nested object (actual Tailscale JSON structure)."""
+    import json
+    import shutil
+    import subprocess
+
+    import muxplex.tls as tls_mod
+
+    class MockResult:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "BackendState": "Running",
+                "TailscaleIPs": ["100.124.126.19"],
+                "CertDomains": ["spark-1.tail8f3c4e.ts.net"],
+                "Self": {
+                    "DNSName": "spark-1.tail8f3c4e.ts.net.",
+                    "HostName": "spark-1",
+                },
+            }
+        )
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: MockResult())
+    monkeypatch.setattr(shutil, "which", lambda x: "/usr/bin/tailscale")
+
+    result = tls_mod.detect_tailscale()
+    assert result is not None, (
+        "detect_tailscale() must not return None when DNSName is in Self"
+    )
+    assert result["hostname"] == "spark-1.tail8f3c4e.ts.net", (
+        f"hostname must be 'spark-1.tail8f3c4e.ts.net' (stripped from Self.DNSName), got: {result['hostname']!r}"
+    )
+
+
+def test_generate_self_signed_no_deprecation_warning(tmp_path):
+    """generate_self_signed() and get_cert_info() must not emit CryptographyDeprecationWarning."""
+    import warnings
+
+    from muxplex.tls import generate_self_signed, get_cert_info
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+        get_cert_info(cert_path)
+
+    deprecation_warnings = [
+        str(warning.message)
+        for warning in w
+        if issubclass(warning.category, (DeprecationWarning, PendingDeprecationWarning))
+        and "not_valid_after" in str(warning.message).lower()
+    ]
+    assert deprecation_warnings == [], (
+        f"CryptographyDeprecationWarning must not be raised, got: {deprecation_warnings}"
+    )
