@@ -3125,28 +3125,41 @@ test('CSS style.css uses base position:absolute bottom:0 for fit mode content an
 
 // --- document.title quality fixes ---
 
-test('device name input handler restores default title when value is cleared', () => {
+test('device name input handler updates title via updatePageTitle when value is cleared', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  // Must use fallback form, not the conditional-only form
+  // Handler now calls updatePageTitle() (which uses location.hostname fallback) instead of
+  // directly setting document.title. Verify the old direct-assignment is gone and the
+  // centralised helper is used.
   assert.ok(
-    source.includes("document.title = val || 'muxplex'"),
-    "device name input handler must set document.title = val || 'muxplex' to restore default when cleared"
+    !source.includes("document.title = val || 'muxplex'"),
+    "device name input handler must NOT directly set document.title = val || 'muxplex' (use updatePageTitle)"
   );
   assert.ok(
     !source.includes("if (val) document.title = val"),
     "device name input handler must NOT use conditional 'if (val) document.title = val' (skips restore)"
   );
+  // The handler must update _serverSettings.device_name before calling updatePageTitle()
+  assert.ok(
+    source.includes('_serverSettings.device_name = val'),
+    "device name input handler must update _serverSettings.device_name before calling updatePageTitle()"
+  );
 });
 
-test('openSettings restores default title unconditionally when device_name is absent', () => {
+test('openSettings updates title via updatePageTitle (not direct assignment)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // The old direct assignment is replaced by updatePageTitle() in the settings panel loader
   assert.ok(
-    source.includes("document.title = (ss && ss.device_name) || 'muxplex'"),
-    "openSettings must set document.title = (ss && ss.device_name) || 'muxplex' unconditionally"
+    !source.includes("document.title = (ss && ss.device_name) || 'muxplex'"),
+    "openSettings must NOT directly set document.title — use updatePageTitle() instead"
   );
   assert.ok(
     !source.includes("if (ss && ss.device_name) {\n      document.title = ss.device_name;\n    }"),
     "openSettings must NOT use conditional block that skips restore when device_name is absent"
+  );
+  // The settings loader area (where it updates device_name field) must call updatePageTitle
+  assert.ok(
+    source.includes('updatePageTitle'),
+    "app.js must define and use updatePageTitle for title management"
   );
 });
 
@@ -3170,15 +3183,20 @@ test('remote instance event listener comments say Multi-Device tab not Sessions 
   );
 });
 
-test('DOMContentLoaded sets document.title from server settings at page load', () => {
+test('DOMContentLoaded sets page title via updatePageTitle after loadServerSettings resolves', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   // Find the DOMContentLoaded block
   const domIdx = source.indexOf("document.addEventListener('DOMContentLoaded'");
   assert.ok(domIdx !== -1, 'DOMContentLoaded handler must exist');
   const domBlock = source.substring(domIdx, domIdx + 800);
+  // The old direct assignment is replaced by updatePageTitle()
   assert.ok(
-    domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),
-    "DOMContentLoaded must set document.title = _serverSettings.device_name || 'muxplex' after loadServerSettings resolves"
+    !domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),
+    "DOMContentLoaded must NOT directly set document.title — delegate to updatePageTitle()"
+  );
+  assert.ok(
+    domBlock.includes("updatePageTitle"),
+    "DOMContentLoaded must call updatePageTitle() after loadServerSettings resolves"
   );
 });
 
@@ -4069,4 +4087,19 @@ test('closeSession after openSession with remoteId=0 does NOT fire DELETE /api/s
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
   globalThis.setTimeout = origSetTimeout;
+});
+
+test('updatePageTitle function exists and uses activity count', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('function updatePageTitle'), 'must have updatePageTitle function');
+  assert.ok(source.includes('unseen_count'), 'must count unseen bells for title');
+  assert.ok(source.includes('document.title'), 'must set document.title');
+  assert.ok(source.includes('location.hostname'), 'must fall back to location.hostname');
+});
+
+test('updatePageTitle is called from pollSessions', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Use 700 chars — the call is ~562 chars into the function after comments/whitespace
+  const pollFn = source.substring(source.indexOf('async function pollSessions'), source.indexOf('async function pollSessions') + 700);
+  assert.ok(pollFn.includes('updatePageTitle'), 'pollSessions must call updatePageTitle');
 });

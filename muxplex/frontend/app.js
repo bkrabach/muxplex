@@ -269,6 +269,7 @@ async function pollSessions() {
     handleBellTransitions(prev, sessions);
     updateSessionPill(sessions);
     updateFaviconBadge();
+    updatePageTitle();
   } catch (err) {
     _pollFailCount++;
     setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
@@ -1062,7 +1063,8 @@ function _drawFaviconBadge() {
   // Lazy-init: create the Image object once and cache it — subsequent calls reuse it
   if (!_faviconImage) {
     _faviconImage = new Image();
-    _faviconImage.crossOrigin = 'anonymous';
+    // No crossOrigin: favicon is same-origin; crossOrigin on same-origin images can
+    // cause cache misses when the browser has the asset cached without CORS headers.
     _faviconImage.src = _originalFavicon;
   }
 
@@ -1121,6 +1123,24 @@ function updateFaviconBadge() {
   }
 
   _drawFaviconBadge();
+}
+
+/**
+ * Update the page title with an optional activity count prefix and the hostname.
+ * Format: "(N) hostname - muxplex" when N sessions have unseen bells, otherwise
+ * "hostname - muxplex". Hostname is device_name from server settings, falling back
+ * to location.hostname so even unconfigured installs show something useful.
+ * Call from pollSessions() on every tick, and whenever server settings change.
+ */
+function updatePageTitle() {
+  var hostname = (_serverSettings && _serverSettings.device_name) ||
+                 (typeof location !== 'undefined' ? location.hostname : null) ||
+                 'muxplex';
+  var count = (_currentSessions || []).filter(function(s) {
+    return s.bell && s.bell.unseen_count > 0;
+  }).length;
+  var prefix = count > 0 ? '(' + count + ') ' : '';
+  document.title = prefix + hostname + ' - muxplex';
 }
 
 // ─── Session open / close ────────────────────────────────────────────────────
@@ -1691,7 +1711,7 @@ function openSettings() {
     }
 
     // Update document.title from device_name setting
-    document.title = (ss && ss.device_name) || 'muxplex';
+    updatePageTitle();
 
     // Multi-device enabled checkbox (with smart default: checked if remote_instances non-empty)
     const multiDeviceEnabledEl = $('setting-multi-device-enabled');
@@ -2235,7 +2255,9 @@ function bindStaticEventListeners() {
   on($('setting-device-name'), 'input', function() {
     clearTimeout(_deviceNameDebounceTimer);
     var val = this.value;
-    document.title = val || 'muxplex';
+    // Update cached setting immediately so updatePageTitle() sees the new value
+    if (_serverSettings) _serverSettings.device_name = val;
+    updatePageTitle();
     _deviceNameDebounceTimer = setTimeout(function() {
       patchServerSetting('device_name', val);
     }, 500);
@@ -2378,7 +2400,7 @@ document.addEventListener('DOMContentLoaded', () => {
     .then(() => {
       startPolling();
       loadServerSettings().then(function() {
-        document.title = _serverSettings.device_name || 'muxplex';
+        updatePageTitle();
       });
       startHeartbeat();
       bindStaticEventListeners();
@@ -2428,6 +2450,7 @@ if (typeof module !== 'undefined' && module.exports) {
     closeBottomSheet,
     renderSheetList,
     updateSessionPill,
+    updatePageTitle,
     // ANSI color rendering
     ansiToHtml,
     ansiParamsToStyle,
