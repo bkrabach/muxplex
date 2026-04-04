@@ -681,6 +681,54 @@ def config_reset(key: str | None = None) -> None:
         print(f"  All settings reset to defaults ({SETTINGS_PATH})")
 
 
+def setup_tls(method: str = "auto") -> None:
+    """Generate TLS certificates and update settings.
+
+    For method 'auto' or 'selfsigned': generates a self-signed certificate
+    and private key in the muxplex config dir, then updates settings.json with
+    the paths.
+
+    For unknown method: prints an error to stderr and exits with code 1.
+    """
+    from muxplex.settings import SETTINGS_PATH, patch_settings  # noqa: PLC0415
+    from muxplex.tls import generate_self_signed  # noqa: PLC0415
+
+    if method not in ("auto", "selfsigned"):
+        print(
+            f"Error: unknown TLS method '{method}'. Valid: auto, selfsigned",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config_dir = SETTINGS_PATH.parent
+    cert_path = config_dir / "muxplex.crt"
+    key_path = config_dir / "muxplex.key"
+
+    info = generate_self_signed(cert_path, key_path)
+
+    patch_settings({"tls_cert": str(cert_path), "tls_key": str(key_path)})
+
+    hostnames_str = ", ".join(info["hostnames"])
+    expiry_str = (
+        info["expires"].strftime("%Y-%m-%d")
+        if hasattr(info["expires"], "strftime")
+        else str(info["expires"])
+    )
+
+    print("TLS setup complete")
+    print("  Method:    self-signed (selfsigned)")
+    print(f"  Cert:      {info['cert_path']}")
+    print(f"  Key:       {info['key_path']}")
+    print(f"  Hostnames: {hostnames_str}")
+    print(f"  Expires:   {expiry_str}")
+    print()
+    print("  Note: Browsers will show a security warning for self-signed certificates.")
+    print("  You can accept the warning or add the cert to your system trust store.")
+    print()
+    print("  Restart muxplex to apply TLS settings:")
+    print("    muxplex service restart")
+
+
 def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
     """Add --host, --port, --auth, --session-ttl, --tls-cert, --tls-key flags to a parser.
 
@@ -774,6 +822,16 @@ def main() -> None:
         help="Force reinstall even if already up to date",
     )
 
+    setup_tls_parser = sub.add_parser(
+        "setup-tls", help="Generate TLS certificate and configure HTTPS"
+    )
+    setup_tls_parser.add_argument(
+        "--method",
+        choices=["auto", "selfsigned"],
+        default="auto",
+        help="Certificate generation method (default: auto)",
+    )
+
     config_parser = sub.add_parser("config", help="View and manage settings")
     config_sub = config_parser.add_subparsers(dest="config_command")
     config_sub.add_parser("list", help="Show all settings (default)")
@@ -810,6 +868,8 @@ def main() -> None:
         else:
             # Default: list (no subcommand or explicit "list")
             config_list()
+    elif args.command == "setup-tls":
+        setup_tls(method=args.method)
     elif args.command == "service":
         from muxplex.service import (  # noqa: PLC0415
             service_install,

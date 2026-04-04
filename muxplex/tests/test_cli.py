@@ -1451,6 +1451,91 @@ def test_main_passes_none_for_unset_tls_flags():
         )
 
 
+# ---------------------------------------------------------------------------
+# task-5: setup-tls subcommand tests
+# ---------------------------------------------------------------------------
+
+
+def test_setup_tls_subcommand_registered():
+    """'setup-tls' must appear in muxplex --help output."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue()
+    assert "setup-tls" in help_text, (
+        f"'setup-tls' must appear in --help output, got:\n{help_text}"
+    )
+
+
+def test_main_dispatches_to_setup_tls(monkeypatch):
+    """main() with 'setup-tls' subcommand must invoke setup_tls(method='auto')."""
+    import muxplex.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(
+        cli_mod, "setup_tls", lambda method="auto": calls.append(method)
+    )
+
+    with patch("sys.argv", ["muxplex", "setup-tls"]):
+        cli_mod.main()
+
+    assert len(calls) == 1, "setup_tls() must be called once for 'setup-tls' subcommand"
+    assert calls[0] == "auto", (
+        f"setup_tls must be called with method='auto', got {calls[0]!r}"
+    )
+
+
+def test_setup_tls_selfsigned_creates_certs(tmp_path, monkeypatch, capsys):
+    """setup_tls(method='selfsigned') generates cert and key in config dir, updates settings,
+    prints summary mentioning 'self-signed'/'selfsigned' and 'restart'."""
+    import muxplex.settings as settings_mod
+    from muxplex.cli import setup_tls
+
+    # Redirect SETTINGS_PATH to tmp_path
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    setup_tls(method="selfsigned")
+
+    # Cert and key files must exist in the config dir (SETTINGS_PATH.parent = tmp_path)
+    cert_files = list(tmp_path.glob("*.crt")) + list(tmp_path.glob("*.pem"))
+    key_files = list(tmp_path.glob("*.key"))
+    assert cert_files, (
+        f"Cert file must exist in {tmp_path}, found: {list(tmp_path.iterdir())}"
+    )
+    assert key_files, (
+        f"Key file must exist in {tmp_path}, found: {list(tmp_path.iterdir())}"
+    )
+
+    # Settings must be updated with non-empty tls_cert and tls_key
+    settings = settings_mod.load_settings()
+    assert settings.get("tls_cert"), (
+        "tls_cert must be non-empty in settings after setup_tls"
+    )
+    assert settings.get("tls_key"), (
+        "tls_key must be non-empty in settings after setup_tls"
+    )
+
+    # Output must mention self-signed and restart
+    captured = capsys.readouterr()
+    out_lower = captured.out.lower()
+    assert "self-signed" in out_lower or "selfsigned" in out_lower, (
+        f"Output must mention 'self-signed' or 'selfsigned', got: {captured.out!r}"
+    )
+    assert "restart" in out_lower, (
+        f"Output must mention 'restart', got: {captured.out!r}"
+    )
+
+
 def test_serve_subcommand_accepts_tls_flags():
     """'muxplex serve --tls-cert ... --tls-key ...' must forward both paths to serve()."""
     from muxplex.cli import main
