@@ -2330,3 +2330,90 @@ def test_cli_uvicorn_log_level_is_info():
         "serve() must call uvicorn.run(..., log_level='info') so application "
         "logs appear in journalctl; currently set to 'warning' which suppresses them"
     )
+
+
+# ---------------------------------------------------------------------------
+# Federation bell/clear proxy (task-3-federation-bell-clear-proxy)
+# ---------------------------------------------------------------------------
+
+
+def test_federation_bell_clear_proxies_to_remote(client, monkeypatch, tmp_path):
+    """POST /api/federation/{remote_id}/sessions/{name}/bell/clear proxies POST to remote's bell/clear endpoint.
+
+    Looks up remote by integer index, sends POST {remote_url}/api/sessions/{session_name}/bell/clear
+    with Bearer auth header, and returns the remote's JSON response.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    # Track what POST was called with
+    post_calls = []
+
+    async def mock_post(url, **kwargs):
+        post_calls.append({"url": url, "kwargs": kwargs})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"cleared": True}
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/0/sessions/my-session/bell/clear")
+    assert response.status_code == 200
+
+    # Verify the POST was made to the correct URL with session name
+    assert len(post_calls) == 1, f"Expected exactly 1 POST call, got {len(post_calls)}"
+    call = post_calls[0]
+    assert (
+        call["url"] == "http://remote-host:8088/api/sessions/my-session/bell/clear"
+    ), f"Expected POST to remote bell/clear URL, got: {call['url']}"
+
+    # Verify Bearer auth was included
+    headers = call["kwargs"].get("headers", {})
+    assert headers.get("Authorization") == "Bearer secret-key-123", (
+        f"Expected Bearer auth header, got: {headers}"
+    )
+
+    # Verify the response is the remote's JSON
+    data = response.json()
+    assert data["cleared"] is True
+
+
+def test_federation_bell_clear_returns_404_for_invalid_remote(
+    client, monkeypatch, tmp_path
+):
+    """POST /api/federation/{remote_id}/sessions/{name}/bell/clear returns 404 when remote_id is out of range."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # No remote instances configured
+    settings_path.write_text(json.dumps({"remote_instances": []}))
+
+    response = client.post("/api/federation/0/sessions/my-session/bell/clear")
+    assert response.status_code == 404
