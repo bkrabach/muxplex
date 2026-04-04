@@ -21,7 +21,12 @@ def test_main_calls_serve_by_default():
         with patch("sys.argv", ["muxplex"]):
             main()
         mock_serve.assert_called_once_with(
-            host=None, port=None, auth=None, session_ttl=None
+            host=None,
+            port=None,
+            auth=None,
+            session_ttl=None,
+            tls_cert=None,
+            tls_key=None,
         )
 
 
@@ -33,7 +38,12 @@ def test_main_passes_custom_host_and_port():
         with patch("sys.argv", ["muxplex", "--host", "192.168.1.1", "--port", "9000"]):
             main()
         mock_serve.assert_called_once_with(
-            host="192.168.1.1", port=9000, auth=None, session_ttl=None
+            host="192.168.1.1",
+            port=9000,
+            auth=None,
+            session_ttl=None,
+            tls_cert=None,
+            tls_key=None,
         )
 
 
@@ -56,7 +66,12 @@ def test_main_passes_auth_flag():
         with patch("sys.argv", ["muxplex", "--auth", "password"]):
             main()
         mock_serve.assert_called_once_with(
-            host=None, port=None, auth="password", session_ttl=None
+            host=None,
+            port=None,
+            auth="password",
+            session_ttl=None,
+            tls_cert=None,
+            tls_key=None,
         )
 
 
@@ -68,7 +83,12 @@ def test_main_passes_session_ttl_flag():
         with patch("sys.argv", ["muxplex", "--session-ttl", "3600"]):
             main()
         mock_serve.assert_called_once_with(
-            host=None, port=None, auth=None, session_ttl=3600
+            host=None,
+            port=None,
+            auth=None,
+            session_ttl=3600,
+            tls_cert=None,
+            tls_key=None,
         )
 
 
@@ -685,14 +705,19 @@ def test_serve_session_ttl_zero_is_valid(tmp_path, monkeypatch):
 
 
 def test_main_passes_none_for_unset_flags():
-    """main() with no flags passes None for host/port/auth/session_ttl to serve()."""
+    """main() with no flags passes None for host/port/auth/session_ttl/tls_cert/tls_key to serve()."""
     from muxplex.cli import main
 
     with patch("muxplex.cli.serve") as mock_serve:
         with patch("sys.argv", ["muxplex"]):
             main()
         mock_serve.assert_called_once_with(
-            host=None, port=None, auth=None, session_ttl=None
+            host=None,
+            port=None,
+            auth=None,
+            session_ttl=None,
+            tls_cert=None,
+            tls_key=None,
         )
 
 
@@ -704,7 +729,12 @@ def test_main_passes_explicit_host_only():
         with patch("sys.argv", ["muxplex", "--host", "10.0.0.1"]):
             main()
         mock_serve.assert_called_once_with(
-            host="10.0.0.1", port=None, auth=None, session_ttl=None
+            host="10.0.0.1",
+            port=None,
+            auth=None,
+            session_ttl=None,
+            tls_cert=None,
+            tls_key=None,
         )
 
 
@@ -718,7 +748,12 @@ def test_main_serve_subcommand_accepts_flags():
         ):
             main()
         mock_serve.assert_called_once_with(
-            host="10.0.0.1", port=9000, auth=None, session_ttl=None
+            host="10.0.0.1",
+            port=9000,
+            auth=None,
+            session_ttl=None,
+            tls_cert=None,
+            tls_key=None,
         )
 
 
@@ -1226,4 +1261,149 @@ def test_upgrade_uses_service_module_install(monkeypatch, capsys):
 
     assert len(service_install_calls) > 0, (
         "upgrade() must call muxplex.service.service_install() to regenerate the service file"
+    )
+
+
+# ---------------------------------------------------------------------------
+# task-2-serve-ssl: serve() TLS / SSL parameter tests
+# ---------------------------------------------------------------------------
+
+
+def test_serve_passes_ssl_params_to_uvicorn(tmp_path, monkeypatch):
+    """serve() with valid tls_cert and tls_key paths must pass ssl_certfile/ssl_keyfile to uvicorn."""
+    import muxplex.cli as cli_mod
+
+    # Create real cert/key files
+    cert_file = tmp_path / "server.crt"
+    key_file = tmp_path / "server.key"
+    cert_file.write_text("fake cert content")
+    key_file.write_text("fake key content")
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    uvicorn_calls = []
+
+    def fake_run(*args, **kwargs):
+        uvicorn_calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve(tls_cert=str(cert_file), tls_key=str(key_file))
+
+    assert len(uvicorn_calls) == 1
+    kwargs = uvicorn_calls[0]
+    assert "ssl_certfile" in kwargs, (
+        "uvicorn.run must receive ssl_certfile when TLS paths are set"
+    )
+    assert "ssl_keyfile" in kwargs, (
+        "uvicorn.run must receive ssl_keyfile when TLS paths are set"
+    )
+    assert kwargs["ssl_certfile"] == str(cert_file)
+    assert kwargs["ssl_keyfile"] == str(key_file)
+
+
+def test_serve_no_ssl_when_tls_paths_empty(tmp_path, monkeypatch):
+    """serve() with no TLS paths (default) must NOT pass ssl_certfile/ssl_keyfile to uvicorn."""
+    import muxplex.cli as cli_mod
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    uvicorn_calls = []
+
+    def fake_run(*args, **kwargs):
+        uvicorn_calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve()  # Default: tls_cert=None, tls_key=None
+
+    assert len(uvicorn_calls) == 1
+    kwargs = uvicorn_calls[0]
+    assert "ssl_certfile" not in kwargs, (
+        "uvicorn.run must NOT receive ssl_certfile when no TLS"
+    )
+    assert "ssl_keyfile" not in kwargs, (
+        "uvicorn.run must NOT receive ssl_keyfile when no TLS"
+    )
+
+
+def test_serve_falls_back_to_http_when_cert_file_missing(tmp_path, monkeypatch, capsys):
+    """serve() prints a warning and skips SSL when tls_cert/tls_key paths don't exist on disk."""
+    import muxplex.cli as cli_mod
+
+    # Paths are set but the files do NOT exist
+    cert_file = tmp_path / "nonexistent.crt"
+    key_file = tmp_path / "nonexistent.key"
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    uvicorn_calls = []
+
+    def fake_run(*args, **kwargs):
+        uvicorn_calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve(tls_cert=str(cert_file), tls_key=str(key_file))
+
+    # Warning must be printed
+    captured = capsys.readouterr()
+    out_lower = captured.out.lower()
+    assert "not found" in out_lower or "falling back" in out_lower, (
+        f"Must print warning about missing TLS files, got: {captured.out!r}"
+    )
+
+    # SSL must NOT be passed to uvicorn
+    assert len(uvicorn_calls) == 1
+    kwargs = uvicorn_calls[0]
+    assert "ssl_certfile" not in kwargs, (
+        "Must not pass ssl_certfile when cert file missing"
+    )
+    assert "ssl_keyfile" not in kwargs, (
+        "Must not pass ssl_keyfile when cert file missing"
+    )
+
+
+def test_serve_prints_https_url_when_tls_active(tmp_path, monkeypatch, capsys):
+    """serve() must print 'https://' URL when TLS is active."""
+    import muxplex.cli as cli_mod
+
+    cert_file = tmp_path / "server.crt"
+    key_file = tmp_path / "server.key"
+    cert_file.write_text("fake cert")
+    key_file.write_text("fake key")
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    with patch("uvicorn.run"):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve(tls_cert=str(cert_file), tls_key=str(key_file))
+
+    captured = capsys.readouterr()
+    assert "https://" in captured.out, (
+        f"Must print 'https://' when TLS is active, got: {captured.out!r}"
+    )
+
+
+def test_serve_prints_http_url_when_no_tls(tmp_path, monkeypatch, capsys):
+    """serve() must print 'http://' URL when TLS is not configured."""
+    import muxplex.cli as cli_mod
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    with patch("uvicorn.run"):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve()  # No TLS
+
+    captured = capsys.readouterr()
+    assert "http://" in captured.out, (
+        f"Must print 'http://' when no TLS, got: {captured.out!r}"
+    )
+    assert "https://" not in captured.out, (
+        f"Must NOT print 'https://' when no TLS, got: {captured.out!r}"
     )

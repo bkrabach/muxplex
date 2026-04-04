@@ -204,6 +204,8 @@ def serve(
     port: int | None = None,
     auth: str | None = None,
     session_ttl: int | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
 ) -> None:
     """Start the muxplex server.
 
@@ -220,6 +222,8 @@ def serve(
     session_ttl = (
         session_ttl if session_ttl is not None else settings.get("session_ttl", 604800)
     )
+    tls_cert = tls_cert if tls_cert is not None else settings.get("tls_cert", "")
+    tls_key = tls_key if tls_key is not None else settings.get("tls_key", "")
 
     os.environ["MUXPLEX_PORT"] = str(port)
     os.environ["MUXPLEX_AUTH"] = auth
@@ -230,8 +234,20 @@ def serve(
 
     from muxplex.main import app  # noqa: PLC0415
 
-    print(f"  muxplex → http://{host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # Resolve SSL configuration
+    ssl_kwargs: dict = {}
+    if tls_cert and tls_key:
+        cert_path = Path(tls_cert)
+        key_path = Path(tls_key)
+        missing = [str(p) for p in (cert_path, key_path) if not p.exists()]
+        if missing:
+            print(f"  TLS {', '.join(missing)} not found, falling back to HTTP")
+        else:
+            ssl_kwargs = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
+
+    scheme = "https" if ssl_kwargs else "http"
+    print(f"  muxplex → {scheme}://{host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="info", **ssl_kwargs)
 
 
 def doctor() -> None:
@@ -666,7 +682,7 @@ def config_reset(key: str | None = None) -> None:
 
 
 def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
-    """Add --host, --port, --auth, --session-ttl flags to a parser.
+    """Add --host, --port, --auth, --session-ttl, --tls-cert, --tls-key flags to a parser.
 
     All default to None so serve() can distinguish 'not passed' from
     'passed the default value'.
@@ -694,6 +710,18 @@ def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="session_ttl",
         help="Session TTL in seconds (default: from settings.json, then 604800; 0 = browser session)",
+    )
+    parser.add_argument(
+        "--tls-cert",
+        default=None,
+        dest="tls_cert",
+        help="Path to TLS certificate file (default: from settings.json)",
+    )
+    parser.add_argument(
+        "--tls-key",
+        default=None,
+        dest="tls_key",
+        help="Path to TLS private key file (default: from settings.json)",
     )
 
 
@@ -813,5 +841,10 @@ def main() -> None:
     else:
         _check_dependencies()
         serve(
-            host=args.host, port=args.port, auth=args.auth, session_ttl=args.session_ttl
+            host=args.host,
+            port=args.port,
+            auth=args.auth,
+            session_ttl=args.session_ttl,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
         )
