@@ -156,3 +156,59 @@ def test_get_cert_info_returns_none_for_missing_file(tmp_path):
     assert result is None, (
         f"get_cert_info() must return None for missing file, got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 10–12. Edge case tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_self_signed_with_custom_hostnames(tmp_path):
+    """generate_self_signed() with custom hostnames must include all of them in result['hostnames']."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    custom_hostnames = ["mybox.local", "mybox.tailnet.ts.net"]
+
+    result = generate_self_signed(cert_path, key_path, hostnames=custom_hostnames)
+
+    assert isinstance(result, dict), "generate_self_signed() must return a dict"
+    assert isinstance(result.get("hostnames"), list), "result['hostnames'] must be a list"
+    assert "mybox.local" in result["hostnames"], (
+        f"'mybox.local' must be in result['hostnames'], got: {result['hostnames']!r}"
+    )
+    assert "mybox.tailnet.ts.net" in result["hostnames"], (
+        f"'mybox.tailnet.ts.net' must be in result['hostnames'], got: {result['hostnames']!r}"
+    )
+
+
+def test_get_cert_info_hostnames_include_ip(tmp_path):
+    """get_cert_info() must include '127.0.0.1' in hostnames (from IP SANs added by generate_self_signed)."""
+    from muxplex.tls import generate_self_signed, get_cert_info
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+
+    info = get_cert_info(cert_path)
+
+    assert info is not None, "get_cert_info() must not return None for a valid cert"
+    assert "hostnames" in info, "get_cert_info() result must have 'hostnames' key"
+    assert "127.0.0.1" in info["hostnames"], (
+        f"'127.0.0.1' must be in info['hostnames'] (IP SANs), got: {info['hostnames']!r}"
+    )
+
+
+def test_get_cert_info_returns_none_for_corrupt_file(tmp_path):
+    """get_cert_info() must return None for a file containing invalid PEM data."""
+    from muxplex.tls import get_cert_info
+
+    corrupt_pem = tmp_path / "corrupt.pem"
+    corrupt_pem.write_text("THIS IS NOT A CERTIFICATE")
+
+    result = get_cert_info(corrupt_pem)
+
+    assert result is None, (
+        f"get_cert_info() must return None for corrupt PEM file, got: {result!r}"
+    )

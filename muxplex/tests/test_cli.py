@@ -1634,3 +1634,36 @@ def test_doctor_shows_tls_clipboard_warning(tmp_path, monkeypatch, capsys):
     assert "clipboard" in out_lower or "https" in out_lower, (
         f"Expected 'clipboard' or 'https' in doctor TLS-disabled output, got: {out!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# task-7: Edge case tests for serve() TLS behavior
+# ---------------------------------------------------------------------------
+
+
+def test_serve_warns_when_only_cert_set(tmp_path, monkeypatch, capsys):
+    """serve() must NOT enable SSL when tls_cert is set but tls_key is empty string."""
+    import muxplex.cli as cli_mod
+
+    # Create a real cert file so tls_cert path check passes the "file exists" guard
+    cert_file = tmp_path / "server.crt"
+    cert_file.write_text("fake cert content")
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    uvicorn_calls = []
+
+    def fake_run(*args, **kwargs):
+        uvicorn_calls.append(kwargs)
+
+    with patch("uvicorn.run", fake_run):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve(tls_cert=str(cert_file), tls_key="")
+
+    assert len(uvicorn_calls) == 1
+    kwargs = uvicorn_calls[0]
+    assert "ssl_certfile" not in kwargs, (
+        "serve() must NOT pass ssl_certfile to uvicorn when tls_key is empty string — "
+        "SSL requires both cert and key"
+    )
