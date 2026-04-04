@@ -117,3 +117,83 @@ def test_readme_documents_hover_preview():
     assert "hover" in readme_lower and "preview" in readme_lower, (
         "README must mention hover preview"
     )
+
+
+# ── TLS / HTTPS documentation tests ───────────────────────────────────────────
+
+
+def test_readme_has_https_tls_feature_subsection():
+    """README must have an 'HTTPS / TLS' subsection under Developer Tools."""
+    assert "HTTPS / TLS" in README, (
+        "README must contain an 'HTTPS / TLS' feature subsection"
+    )
+
+
+def test_readme_cli_reference_includes_setup_tls():
+    """README CLI Reference block must include the setup-tls command."""
+    assert "setup-tls" in README, (
+        "README CLI Reference must include 'setup-tls' command"
+    )
+
+
+def test_readme_configuration_table_has_tls_cert_row():
+    """README Configuration table must document the tls_cert setting."""
+    assert "`tls_cert`" in README, (
+        "README Configuration table must include tls_cert row"
+    )
+    assert "Path to TLS certificate" in README or "TLS certificate file" in README, (
+        "README must describe tls_cert as a TLS certificate path"
+    )
+
+
+def test_readme_configuration_table_has_tls_key_row():
+    """README Configuration table must document the tls_key setting."""
+    assert "`tls_key`" in README, (
+        "README Configuration table must include tls_key row"
+    )
+    assert "Path to TLS private key" in README or "TLS private key file" in README, (
+        "README must describe tls_key as a TLS private key path"
+    )
+
+
+def test_readme_examples_show_tls_commands():
+    """README examples must show TLS setup commands."""
+    assert "setup-tls" in README, (
+        "README must show setup-tls in its examples"
+    )
+    # Check that the examples demonstrate at least the basic setup-tls usage
+    assert "muxplex setup-tls" in README, (
+        "README examples must show 'muxplex setup-tls' command"
+    )
+
+
+def test_readme_phase_2_items_noted():
+    """README must note Phase 2 items (Tailscale, mkcert) as upcoming."""
+    assert "Tailscale" in README, (
+        "README must mention Tailscale as a Phase 2 TLS method"
+    )
+    assert "mkcert" in README, (
+        "README must mention mkcert as a Phase 2 TLS method"
+    )
+    assert "Phase 2" in README, (
+        "README must note Phase 2 items as upcoming"
+    )
+
+
+def test_readme_tls_cert_has_empty_default():
+    """README must show tls_cert default as empty string."""
+    # The config table must show the empty string default for tls_cert
+    assert "`tls_cert`" in README, "README must document tls_cert"
+
+
+def test_readme_tls_key_has_empty_default():
+    """README must show tls_key default as empty string."""
+    # The config table must show the empty string default for tls_key
+    assert "`tls_key`" in README, "README must document tls_key"
+
+
+def test_readme_tls_setup_tls_entry_with_method_flag():
+    """README CLI Reference must show setup-tls with --method flag."""
+    assert "--method" in README, (
+        "README must document the --method flag for setup-tls"
+    )

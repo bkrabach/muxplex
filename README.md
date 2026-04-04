@@ -54,6 +54,14 @@
 - `muxplex upgrade` — smart version check + auto-update + service restart
 - `muxplex config` — CLI settings management
 
+### HTTPS / TLS
+
+- `muxplex setup-tls` — set up TLS certificates for HTTPS (auto-detects best method)
+- **Tailscale** *(Phase 2)* — automatic HTTPS via Tailscale funnel
+- **mkcert** *(Phase 2)* — locally-trusted development certificates via mkcert
+- **Self-signed fallback** — generates a self-signed cert when no other method is available
+- **Clipboard API** — HTTPS is required for clipboard access in most browsers
+
 ---
 
 ## Prerequisites
@@ -140,6 +148,7 @@ muxplex upgrade [--force]            Smart update with version check
 muxplex doctor                       Check dependencies + config
 muxplex show-password                Show current auth password
 muxplex reset-secret                 Regenerate signing secret
+muxplex setup-tls [--method auto]   Set up TLS certs for HTTPS
 ```
 
 ### Service management
@@ -174,6 +183,22 @@ muxplex --port 9000
 muxplex serve --host 0.0.0.0
 ```
 
+### HTTPS / TLS setup
+
+```bash
+# Auto-detect the best TLS method and set up certificates
+muxplex setup-tls
+
+# Use self-signed certificates explicitly
+muxplex setup-tls --method selfsigned
+
+# Override TLS cert/key for a single run (without saving to config)
+muxplex serve --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
+
+# Check TLS configuration and dependencies
+muxplex doctor
+```
+
 ---
 
 ## Configuration
@@ -197,6 +222,8 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `federation_key` | `""` | Server-to-server authentication key for federation |
 | `remote_instances` | `[]` | Remote muxplex instances to aggregate |
 | `multi_device_enabled` | `false` | Enable multi-instance federation |
+| `tls_cert` | `""` | Path to TLS certificate file (empty = HTTP) |
+| `tls_key` | `""` | Path to TLS private key file (empty = HTTP) |
 
 **Priority:** CLI flags > `settings.json` > defaults.
 
