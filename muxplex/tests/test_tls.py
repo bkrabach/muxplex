@@ -1,6 +1,6 @@
 """
 Tests for muxplex/tls.py — TLS certificate generation and inspection.
-9 tests covering generate_self_signed() and get_cert_info().
+12 tests covering generate_self_signed() and get_cert_info().
 """
 
 import stat
@@ -174,7 +174,9 @@ def test_generate_self_signed_with_custom_hostnames(tmp_path):
     result = generate_self_signed(cert_path, key_path, hostnames=custom_hostnames)
 
     assert isinstance(result, dict), "generate_self_signed() must return a dict"
-    assert isinstance(result.get("hostnames"), list), "result['hostnames'] must be a list"
+    assert isinstance(result.get("hostnames"), list), (
+        "result['hostnames'] must be a list"
+    )
     assert "mybox.local" in result["hostnames"], (
         f"'mybox.local' must be in result['hostnames'], got: {result['hostnames']!r}"
     )

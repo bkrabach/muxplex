@@ -1641,7 +1641,7 @@ def test_doctor_shows_tls_clipboard_warning(tmp_path, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_serve_warns_when_only_cert_set(tmp_path, monkeypatch, capsys):
+def test_serve_no_ssl_when_only_cert_set(tmp_path, monkeypatch, capsys):
     """serve() must NOT enable SSL when tls_cert is set but tls_key is empty string."""
     import muxplex.cli as cli_mod
 
