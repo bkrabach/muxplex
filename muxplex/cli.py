@@ -715,49 +715,105 @@ def config_reset(key: str | None = None) -> None:
 def setup_tls(method: str = "auto") -> None:
     """Generate TLS certificates and update settings.
 
-    For method 'auto' or 'selfsigned': generates a self-signed certificate
-    and private key in the muxplex config dir, then updates settings.json with
-    the paths.
-
-    For unknown method: prints an error to stderr and exits with code 1.
+    Auto-detection chain (method='auto'): Tailscale → mkcert → self-signed.
+    Use --method to force a specific certificate source.
     """
     from muxplex.settings import SETTINGS_PATH, patch_settings  # noqa: PLC0415
-    from muxplex.tls import generate_self_signed  # noqa: PLC0415
-
-    if method not in ("auto", "selfsigned"):
-        print(
-            f"Error: unknown TLS method '{method}'. Valid: auto, selfsigned",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    from muxplex.tls import (  # noqa: PLC0415
+        detect_mkcert,
+        detect_tailscale,
+        generate_mkcert,
+        generate_self_signed,
+        generate_tailscale,
+    )
 
     config_dir = SETTINGS_PATH.parent
     cert_path = config_dir / "muxplex.crt"
     key_path = config_dir / "muxplex.key"
 
-    info = generate_self_signed(cert_path, key_path)
+    result = None
+    tailscale_info = None
 
+    # Step 1: Try Tailscale
+    if method in ("auto", "tailscale"):
+        tailscale_info = detect_tailscale()
+        if tailscale_info:
+            hostname = tailscale_info["hostname"]
+            print(f"  Detected Tailscale: {hostname}")
+            result = generate_tailscale(cert_path, key_path, hostname)
+            if result:
+                print("  Tailscale certificate obtained")
+            else:
+                print("  Tailscale certificate generation failed")
+        if method == "tailscale" and result is None:
+            print(
+                "Error: Tailscale not available or certificate generation failed",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # Step 2: Try mkcert
+    if result is None and method in ("auto", "mkcert"):
+        if detect_mkcert():
+            print("  Detected mkcert, generating certificate...")
+            extra_hostnames = None
+            if tailscale_info:
+                extra_hostnames = tailscale_info.get("cert_domains") or None
+            result = generate_mkcert(
+                cert_path, key_path, extra_hostnames=extra_hostnames
+            )
+        else:
+            if method == "mkcert":
+                print(
+                    "Error: mkcert not found. Install from https://mkcert.dev",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    # Step 3: Try self-signed
+    if result is None and method in ("auto", "selfsigned"):
+        result = generate_self_signed(cert_path, key_path)
+
+    # Step 4: Final failure check
+    if result is None:
+        print(
+            "Error: TLS certificate generation failed with all methods",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Update settings with cert/key paths
     patch_settings({"tls_cert": str(cert_path), "tls_key": str(key_path)})
 
-    hostnames_str = ", ".join(info["hostnames"])
+    # Print cert info
+    hostnames_str = ", ".join(result["hostnames"])
     expiry_str = (
-        info["expires"].strftime("%Y-%m-%d")
-        if hasattr(info["expires"], "strftime")
-        else str(info["expires"])
+        result["expires"].strftime("%Y-%m-%d")
+        if hasattr(result["expires"], "strftime")
+        else str(result["expires"])
     )
 
     print("TLS setup complete")
-    print("  Method:    self-signed (selfsigned)")
-    print(f"  Cert:      {info['cert_path']}")
-    print(f"  Key:       {info['key_path']}")
-    print(f"  Hostnames: {hostnames_str}")
-    print(f"  Expires:   {expiry_str}")
+    print(f"  Certificate: {result['cert_path']}")
+    print(f"  Key:         {result['key_path']}")
+    print(f"  Hostnames:   {hostnames_str}")
+    print(f"  Expires:     {expiry_str}")
     print()
-    print("  Note: Browsers will show a security warning for self-signed certificates.")
-    print("  You can accept the warning or add the cert to your system trust store.")
-    print()
-    print("  Restart muxplex to apply TLS settings:")
-    print("    muxplex service restart")
+
+    # Method-specific warnings
+    method_used = result.get("method", "")
+    if method_used == "selfsigned":
+        print(
+            "  Note: Browsers will show a security warning for self-signed certificates."
+        )
+        print("  Consider using mkcert or Tailscale for a trusted certificate.")
+        print()
+    elif method_used == "tailscale":
+        print("  Note: Tailscale certificates expire after 90 days.")
+        print("  Run 'muxplex setup-tls' to renew.")
+        print()
+
+    print("  Restart service to apply: muxplex service restart")
 
 
 def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
@@ -858,7 +914,7 @@ def main() -> None:
     )
     setup_tls_parser.add_argument(
         "--method",
-        choices=["auto", "selfsigned"],
+        choices=["auto", "tailscale", "mkcert", "selfsigned"],
         default="auto",
         help="Certificate generation method (default: auto)",
     )

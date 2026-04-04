@@ -1667,3 +1667,142 @@ def test_serve_no_ssl_when_only_cert_set(tmp_path, monkeypatch, capsys):
         "serve() must NOT pass ssl_certfile to uvicorn when tls_key is empty string — "
         "SSL requires both cert and key"
     )
+
+
+# ---------------------------------------------------------------------------
+# task-4: Auto-detection chain tests for setup_tls()
+# ---------------------------------------------------------------------------
+
+
+def test_setup_tls_auto_uses_tailscale_when_available(tmp_path, monkeypatch, capsys):
+    """setup_tls(method='auto') uses Tailscale when detect_tailscale() returns info."""
+    from datetime import datetime, timezone
+
+    import muxplex.settings as settings_mod
+    import muxplex.tls as tls_mod
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    ts_hostname = "myhost.tailscale.net"
+    ts_info = {
+        "hostname": ts_hostname,
+        "ips": ["100.0.0.1"],
+        "cert_domains": [ts_hostname],
+    }
+    fake_expires = datetime(2025, 12, 31, tzinfo=timezone.utc)
+    ts_result = {
+        "method": "tailscale",
+        "cert_path": str(tmp_path / "muxplex.crt"),
+        "key_path": str(tmp_path / "muxplex.key"),
+        "hostnames": [ts_hostname],
+        "expires": fake_expires,
+    }
+
+    monkeypatch.setattr(tls_mod, "detect_tailscale", lambda: ts_info)
+    monkeypatch.setattr(tls_mod, "generate_tailscale", lambda cp, kp, h: ts_result)
+
+    from muxplex.cli import setup_tls
+
+    setup_tls(method="auto")
+
+    out = capsys.readouterr().out
+    assert "tailscale" in out.lower(), f"Expected 'tailscale' in output, got: {out!r}"
+
+
+def test_setup_tls_auto_falls_to_mkcert_when_no_tailscale(
+    tmp_path, monkeypatch, capsys
+):
+    """setup_tls(method='auto') falls back to mkcert when Tailscale not available."""
+    from datetime import datetime, timezone
+
+    import muxplex.settings as settings_mod
+    import muxplex.tls as tls_mod
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    fake_expires = datetime(2025, 12, 31, tzinfo=timezone.utc)
+    mkcert_result = {
+        "method": "mkcert",
+        "cert_path": str(tmp_path / "muxplex.crt"),
+        "key_path": str(tmp_path / "muxplex.key"),
+        "hostnames": ["localhost"],
+        "expires": fake_expires,
+    }
+
+    monkeypatch.setattr(tls_mod, "detect_tailscale", lambda: None)
+    monkeypatch.setattr(tls_mod, "detect_mkcert", lambda: True)
+    monkeypatch.setattr(
+        tls_mod,
+        "generate_mkcert",
+        lambda cp, kp, extra_hostnames=None: mkcert_result,
+    )
+
+    from muxplex.cli import setup_tls
+
+    setup_tls(method="auto")
+
+    out = capsys.readouterr().out
+    assert "mkcert" in out.lower(), f"Expected 'mkcert' in output, got: {out!r}"
+
+
+def test_setup_tls_auto_falls_to_selfsigned_when_nothing_available(
+    tmp_path, monkeypatch, capsys
+):
+    """setup_tls(method='auto') falls back to self-signed when nothing else is available."""
+    from datetime import datetime, timezone
+
+    import muxplex.settings as settings_mod
+    import muxplex.tls as tls_mod
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    fake_expires = datetime(2025, 12, 31, tzinfo=timezone.utc)
+    selfsigned_result = {
+        "method": "selfsigned",
+        "cert_path": str(tmp_path / "muxplex.crt"),
+        "key_path": str(tmp_path / "muxplex.key"),
+        "hostnames": ["localhost"],
+        "expires": fake_expires,
+    }
+
+    monkeypatch.setattr(tls_mod, "detect_tailscale", lambda: None)
+    monkeypatch.setattr(tls_mod, "detect_mkcert", lambda: False)
+    monkeypatch.setattr(
+        tls_mod, "generate_self_signed", lambda cp, kp: selfsigned_result
+    )
+
+    from muxplex.cli import setup_tls
+
+    setup_tls(method="auto")
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "self-signed" in out_lower or "selfsigned" in out_lower, (
+        f"Expected 'self-signed' or 'selfsigned' in output, got: {out!r}"
+    )
+
+
+def test_setup_tls_method_choices_expanded():
+    """setup-tls --help must show 'tailscale' and 'mkcert' as method choices."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "setup-tls", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue()
+    assert "tailscale" in help_text, (
+        f"Expected 'tailscale' in setup-tls --help output, got:\n{help_text}"
+    )
+    assert "mkcert" in help_text, (
+        f"Expected 'mkcert' in setup-tls --help output, got:\n{help_text}"
+    )
