@@ -1785,6 +1785,101 @@ def test_setup_tls_auto_falls_to_selfsigned_when_nothing_available(
     )
 
 
+# ---------------------------------------------------------------------------
+# task-5-status-display: setup-tls --status tests
+# ---------------------------------------------------------------------------
+
+
+def test_setup_tls_status_shows_disabled(tmp_path, monkeypatch, capsys):
+    """setup_tls_status() shows 'not configured' when no TLS certs are configured."""
+    import muxplex.settings as settings_mod
+
+    # Empty settings — no tls_cert or tls_key
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{}")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import setup_tls_status
+
+    setup_tls_status()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "not configured" in out_lower or "disabled" in out_lower, (
+        f"Expected 'not configured' or 'disabled' in output, got: {out!r}"
+    )
+
+
+def test_setup_tls_status_shows_enabled(tmp_path, monkeypatch, capsys):
+    """setup_tls_status() shows 'enabled' and 'expires' when valid certs are configured."""
+    import json
+
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_self_signed
+
+    # Generate real self-signed certs in tmp_path
+    cert_path = tmp_path / "muxplex.crt"
+    key_path = tmp_path / "muxplex.key"
+    generate_self_signed(cert_path, key_path)
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"tls_cert": str(cert_path), "tls_key": str(key_path)})
+    )
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import setup_tls_status
+
+    setup_tls_status()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "enabled" in out_lower or "certificate" in out_lower, (
+        f"Expected 'enabled' or 'certificate' in output, got: {out!r}"
+    )
+    assert "expires" in out_lower, f"Expected 'expires' in output, got: {out!r}"
+
+
+def test_setup_tls_status_flag_registered():
+    """setup-tls --status must be accepted by argparse."""
+    import io
+
+    from muxplex.cli import main
+
+    buf = io.StringIO()
+    with patch("sys.argv", ["muxplex", "setup-tls", "--help"]):
+        try:
+            with patch("sys.stdout", buf):
+                main()
+        except SystemExit:
+            pass
+
+    help_text = buf.getvalue()
+    assert "--status" in help_text, (
+        f"Expected '--status' in setup-tls --help output, got:\n{help_text}"
+    )
+
+
+def test_main_dispatches_status_flag_to_setup_tls_status(monkeypatch):
+    """main() with 'setup-tls --status' must invoke setup_tls_status(), not setup_tls()."""
+    import muxplex.cli as cli_mod
+
+    status_calls = []
+    setup_calls = []
+    monkeypatch.setattr(cli_mod, "setup_tls_status", lambda: status_calls.append(True))
+    monkeypatch.setattr(
+        cli_mod, "setup_tls", lambda method="auto": setup_calls.append(method)
+    )
+
+    with patch("sys.argv", ["muxplex", "setup-tls", "--status"]):
+        cli_mod.main()
+
+    assert len(status_calls) == 1, (
+        "setup_tls_status() must be called once for 'setup-tls --status'"
+    )
+    assert len(setup_calls) == 0, "setup_tls() must NOT be called when --status is used"
+
+
 def test_setup_tls_method_choices_expanded():
     """setup-tls --help must show 'tailscale' and 'mkcert' as method choices."""
     import io

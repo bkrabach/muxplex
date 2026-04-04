@@ -816,6 +816,41 @@ def setup_tls(method: str = "auto") -> None:
     print("  Restart service to apply: muxplex service restart")
 
 
+def setup_tls_status() -> None:
+    """Display the current TLS configuration status."""
+    from muxplex.settings import load_settings  # noqa: PLC0415
+    from muxplex.tls import get_cert_info  # noqa: PLC0415
+
+    settings = load_settings()
+    tls_cert = settings.get("tls_cert", "")
+    tls_key = settings.get("tls_key", "")
+
+    print("muxplex TLS status")
+    print()
+
+    if not tls_cert or not tls_key:
+        print("  TLS: not configured")
+        print("  Run: muxplex setup-tls")
+        return
+
+    print(f"  Certificate: {tls_cert}")
+    print(f"  Key:         {tls_key}")
+
+    cert_info = get_cert_info(tls_cert)
+    if cert_info is None:
+        print("  Status: configured but cert not readable")
+        return
+
+    hostnames_str = ", ".join(cert_info["hostnames"])
+    expires = cert_info["expires"]
+    expiry_str = (
+        expires.strftime("%Y-%m-%d") if hasattr(expires, "strftime") else str(expires)
+    )
+    print(f"  Hostnames:   {hostnames_str}")
+    print(f"  Expires:     {expiry_str}")
+    print("  Status: enabled")
+
+
 def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
     """Add --host, --port, --auth, --session-ttl, --tls-cert, --tls-key flags to a parser.
 
@@ -918,6 +953,11 @@ def main() -> None:
         default="auto",
         help="Certificate generation method (default: auto)",
     )
+    setup_tls_parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Show current TLS configuration status",
+    )
 
     config_parser = sub.add_parser("config", help="View and manage settings")
     config_sub = config_parser.add_subparsers(dest="config_command")
@@ -956,7 +996,10 @@ def main() -> None:
             # Default: list (no subcommand or explicit "list")
             config_list()
     elif args.command == "setup-tls":
-        setup_tls(method=args.method)
+        if args.status:
+            setup_tls_status()
+        else:
+            setup_tls(method=args.method)
     elif args.command == "service":
         from muxplex.service import (  # noqa: PLC0415
             service_install,
