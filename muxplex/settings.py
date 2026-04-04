@@ -29,6 +29,8 @@ DEFAULT_SETTINGS: dict = {
     "delete_session_template": "tmux kill-session -t {name}",
     "multi_device_enabled": False,
     "federation_key": "",
+    "tls_cert": "",
+    "tls_key": "",
 }
 
 

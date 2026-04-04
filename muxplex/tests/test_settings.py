@@ -645,3 +645,87 @@ def test_patch_new_remote_with_key_is_saved():
     assert loaded["remote_instances"][0]["key"] == "brand-new-key", (
         f"New remote with key must be saved; got: {loaded['remote_instances'][0]['key']!r}"
     )
+
+
+# ============================================================
+# TLS settings keys (task-1-tls-settings-keys)
+# ============================================================
+
+
+def test_defaults_include_tls_cert():
+    """DEFAULT_SETTINGS must have 'tls_cert' key initialised to empty string."""
+    assert "tls_cert" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'tls_cert'"
+    assert DEFAULT_SETTINGS["tls_cert"] == "", (
+        f"tls_cert default must be '', got: {DEFAULT_SETTINGS['tls_cert']!r}"
+    )
+
+
+def test_defaults_include_tls_key():
+    """DEFAULT_SETTINGS must have 'tls_key' key initialised to empty string."""
+    assert "tls_key" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'tls_key'"
+    assert DEFAULT_SETTINGS["tls_key"] == "", (
+        f"tls_key default must be '', got: {DEFAULT_SETTINGS['tls_key']!r}"
+    )
+
+
+def test_load_returns_tls_keys_when_file_missing():
+    """load_settings() returns tls_cert and tls_key with empty defaults when file is missing."""
+    result = load_settings()
+    assert "tls_cert" in result, "load_settings() must include 'tls_cert'"
+    assert result["tls_cert"] == "", (
+        f"load_settings() tls_cert must default to '', got: {result['tls_cert']!r}"
+    )
+    assert "tls_key" in result, "load_settings() must include 'tls_key'"
+    assert result["tls_key"] == "", (
+        f"load_settings() tls_key must default to '', got: {result['tls_key']!r}"
+    )
+
+
+def test_tls_keys_patchable():
+    """patch_settings() must accept and persist tls_cert and tls_key."""
+    result = patch_settings(
+        {"tls_cert": "/etc/ssl/cert.pem", "tls_key": "/etc/ssl/key.pem"}
+    )
+    assert result["tls_cert"] == "/etc/ssl/cert.pem", (
+        f"patch_settings() must accept tls_cert, got: {result['tls_cert']!r}"
+    )
+    assert result["tls_key"] == "/etc/ssl/key.pem", (
+        f"patch_settings() must accept tls_key, got: {result['tls_key']!r}"
+    )
+    # Verify persistence via load_settings()
+    loaded = load_settings()
+    assert loaded["tls_cert"] == "/etc/ssl/cert.pem"
+    assert loaded["tls_key"] == "/etc/ssl/key.pem"
+
+
+def test_old_settings_file_without_tls_keys_loads_correctly(redirect_settings_path):
+    """Old settings.json without TLS keys loads correctly with empty defaults filled in."""
+    # Write an old-style settings file that has no TLS keys
+    old_settings = {
+        "default_session": "my_session",
+        "sort_order": "alpha",
+        "hidden_sessions": [],
+        "window_size_largest": False,
+        "auto_open_created": True,
+        "new_session_template": "tmux new-session -d -s {name}",
+        "delete_session_template": "tmux kill-session -t {name}",
+        "host": "127.0.0.1",
+        "port": 8088,
+        "auth": "pam",
+        "session_ttl": 604800,
+        "federation_key": "",
+    }
+    redirect_settings_path.write_text(json.dumps(old_settings))
+
+    result = load_settings()
+
+    # Old values are preserved
+    assert result["default_session"] == "my_session"
+    assert result["sort_order"] == "alpha"
+    # New TLS keys must be filled in with empty defaults
+    assert result["tls_cert"] == "", (
+        f"tls_cert must default to '' for old settings files, got: {result['tls_cert']!r}"
+    )
+    assert result["tls_key"] == "", (
+        f"tls_key must default to '' for old settings files, got: {result['tls_key']!r}"
+    )
