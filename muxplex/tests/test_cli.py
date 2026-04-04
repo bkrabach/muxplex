@@ -7,13 +7,26 @@ import stat
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture
+def mock_check_deps(monkeypatch):
+    """No-op _check_dependencies so tests that call main() for serve work without ttyd installed.
+
+    ttyd is not available in standard Ubuntu repos (used by GitHub Actions CI runners).
+    Tests that exercise the serve path of main() should use this fixture to avoid
+    SystemExit(1) when ttyd is absent from the test environment.
+    """
+    monkeypatch.setattr("muxplex.cli._check_dependencies", lambda: None)
+
 
 def test_cli_module_importable():
     """muxplex.cli must be importable."""
     from muxplex.cli import main  # noqa: F401
 
 
-def test_main_calls_serve_by_default():
+def test_main_calls_serve_by_default(mock_check_deps):
     """Calling main() with no args must invoke serve() with None defaults (settings layer resolves)."""
     from muxplex.cli import main
 
@@ -30,7 +43,7 @@ def test_main_calls_serve_by_default():
         )
 
 
-def test_main_passes_custom_host_and_port():
+def test_main_passes_custom_host_and_port(mock_check_deps):
     """main() with --host/--port must forward them to serve(); unset flags are None."""
     from muxplex.cli import main
 
@@ -47,7 +60,7 @@ def test_main_passes_custom_host_and_port():
         )
 
 
-def test_main_default_host_is_localhost():
+def test_main_default_host_is_localhost(mock_check_deps):
     """Default --host must be None (settings layer resolves to 127.0.0.1)."""
     from muxplex.cli import main
 
@@ -58,7 +71,7 @@ def test_main_default_host_is_localhost():
         assert kwargs["host"] is None
 
 
-def test_main_passes_auth_flag():
+def test_main_passes_auth_flag(mock_check_deps):
     """main() with --auth password must forward auth='password'; unset flags are None."""
     from muxplex.cli import main
 
@@ -75,7 +88,7 @@ def test_main_passes_auth_flag():
         )
 
 
-def test_main_passes_session_ttl_flag():
+def test_main_passes_session_ttl_flag(mock_check_deps):
     """main() with --session-ttl 3600 must forward session_ttl=3600; unset flags are None."""
     from muxplex.cli import main
 
@@ -704,7 +717,7 @@ def test_serve_session_ttl_zero_is_valid(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_main_passes_none_for_unset_flags():
+def test_main_passes_none_for_unset_flags(mock_check_deps):
     """main() with no flags passes None for host/port/auth/session_ttl/tls_cert/tls_key to serve()."""
     from muxplex.cli import main
 
@@ -721,7 +734,7 @@ def test_main_passes_none_for_unset_flags():
         )
 
 
-def test_main_passes_explicit_host_only():
+def test_main_passes_explicit_host_only(mock_check_deps):
     """main() with --host 10.0.0.1 passes host='10.0.0.1', others as None."""
     from muxplex.cli import main
 
@@ -738,7 +751,7 @@ def test_main_passes_explicit_host_only():
         )
 
 
-def test_main_serve_subcommand_accepts_flags():
+def test_main_serve_subcommand_accepts_flags(mock_check_deps):
     """'muxplex serve --host 10.0.0.1 --port 9000' passes values to serve()."""
     from muxplex.cli import main
 
@@ -1414,7 +1427,7 @@ def test_serve_prints_http_url_when_no_tls(tmp_path, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_main_passes_tls_cert_and_key_flags():
+def test_main_passes_tls_cert_and_key_flags(mock_check_deps):
     """main() with --tls-cert and --tls-key must forward exact paths to serve()."""
     from muxplex.cli import main
 
@@ -1434,7 +1447,7 @@ def test_main_passes_tls_cert_and_key_flags():
         )
 
 
-def test_main_passes_none_for_unset_tls_flags():
+def test_main_passes_none_for_unset_tls_flags(mock_check_deps):
     """main() with no TLS flags must call serve() with tls_cert=None and tls_key=None."""
     from muxplex.cli import main
 
@@ -1536,7 +1549,7 @@ def test_setup_tls_selfsigned_creates_certs(tmp_path, monkeypatch, capsys):
     )
 
 
-def test_serve_subcommand_accepts_tls_flags():
+def test_serve_subcommand_accepts_tls_flags(mock_check_deps):
     """'muxplex serve --tls-cert ... --tls-key ...' must forward both paths to serve()."""
     from muxplex.cli import main
 
@@ -2015,14 +2028,18 @@ def test_setup_tls_regenerates_on_eof(tmp_path, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_tls_nudge_shows_run_command_on_network_host(capsys, tmp_path, monkeypatch):
+def test_doctor_tls_nudge_shows_run_command_on_network_host(
+    capsys, tmp_path, monkeypatch
+):
     """doctor must show 'Run: muxplex setup-tls' when host is network and TLS disabled."""
     import json
 
     import muxplex.settings as settings_mod
 
     settings_file = tmp_path / "settings.json"
-    settings_file.write_text(json.dumps({"host": "0.0.0.0", "tls_cert": "", "tls_key": ""}))
+    settings_file.write_text(
+        json.dumps({"host": "0.0.0.0", "tls_cert": "", "tls_key": ""})
+    )
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
 
     from muxplex.cli import doctor
@@ -2042,7 +2059,9 @@ def test_doctor_tls_nudge_hidden_on_localhost(capsys, tmp_path, monkeypatch):
     import muxplex.settings as settings_mod
 
     settings_file = tmp_path / "settings.json"
-    settings_file.write_text(json.dumps({"host": "127.0.0.1", "tls_cert": "", "tls_key": ""}))
+    settings_file.write_text(
+        json.dumps({"host": "127.0.0.1", "tls_cert": "", "tls_key": ""})
+    )
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
 
     from muxplex.cli import doctor
@@ -2063,6 +2082,7 @@ def test_doctor_tls_nudge_hidden_on_localhost(capsys, tmp_path, monkeypatch):
 def test_pyproject_has_authors():
     """pyproject.toml must declare at least one author with name and email."""
     import tomllib
+
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
     authors = data["project"].get("authors", [])
@@ -2074,6 +2094,7 @@ def test_pyproject_has_authors():
 def test_pyproject_has_classifiers():
     """pyproject.toml must declare at least 3 classifiers including License and Python version."""
     import tomllib
+
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
     classifiers = data["project"].get("classifiers", [])
@@ -2086,6 +2107,7 @@ def test_pyproject_has_classifiers():
 def test_pyproject_has_keywords():
     """pyproject.toml must declare at least 3 keywords for PyPI discoverability."""
     import tomllib
+
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
     keywords = data["project"].get("keywords", [])
@@ -2101,18 +2123,31 @@ def test_upgrade_pypi_install_uses_package_name(monkeypatch, capsys):
     """upgrade() for PyPI installs must use 'muxplex' not git+https URL."""
     import subprocess
     import muxplex.cli as cli_mod
+
     calls = []
+
     def mock_run(cmd, **kwargs):
         calls.append(cmd)
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
-    monkeypatch.setattr(cli_mod, "_get_install_info", lambda: {"source": "pypi", "version": "0.1.0", "commit": None, "url": None})
-    monkeypatch.setattr(cli_mod, "_check_for_update", lambda info: (True, "update available (v0.1.0 → v0.2.0)"))
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {"source": "pypi", "version": "0.1.0", "commit": None, "url": None},
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.1.0 → v0.2.0)"),
+    )
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
-    uv_calls = [c for c in calls if isinstance(c, list) and "tool" in c and "install" in c]
+    uv_calls = [
+        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+    ]
     assert len(uv_calls) > 0
     install_cmd = uv_calls[0]
     assert "muxplex" in install_cmd
@@ -2123,18 +2158,36 @@ def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
     """upgrade() for git installs must still use git+https URL."""
     import subprocess
     import muxplex.cli as cli_mod
+
     calls = []
+
     def mock_run(cmd, **kwargs):
         calls.append(cmd)
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
-    monkeypatch.setattr(cli_mod, "_get_install_info", lambda: {"source": "git", "version": "0.1.0", "commit": "abc12345", "url": "https://github.com/bkrabach/muxplex"})
-    monkeypatch.setattr(cli_mod, "_check_for_update", lambda info: (True, "update available (abc12345 → def67890)"))
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "git",
+            "version": "0.1.0",
+            "commit": "abc12345",
+            "url": "https://github.com/bkrabach/muxplex",
+        },
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (abc12345 → def67890)"),
+    )
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
-    uv_calls = [c for c in calls if isinstance(c, list) and "tool" in c and "install" in c]
+    uv_calls = [
+        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+    ]
     assert len(uv_calls) > 0
     install_cmd = uv_calls[0]
     assert any("git+" in str(arg) for arg in install_cmd)
