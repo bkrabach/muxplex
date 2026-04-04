@@ -321,3 +321,62 @@ def test_detect_tailscale_returns_none_when_no_cert_domains(monkeypatch):
     assert result is None, (
         f"detect_tailscale() must return None when CertDomains is empty, got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 17-18. generate_tailscale() tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_tailscale_calls_tailscale_cert(monkeypatch, tmp_path):
+    """generate_tailscale() must call 'tailscale cert' with --cert-file and --key-file flags."""
+    from muxplex.tls import generate_tailscale, generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    hostname = "myhost.tail1234.ts.net"
+
+    captured_args = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured_args["cmd"] = cmd
+        # Create cert/key files to simulate success
+        generate_self_signed(cert_path, key_path, hostnames=[hostname])
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = generate_tailscale(cert_path, key_path, hostname)
+
+    assert "--cert-file" in captured_args["cmd"], (
+        f"'--cert-file' must be in subprocess call, got: {captured_args['cmd']!r}"
+    )
+    assert "--key-file" in captured_args["cmd"], (
+        f"'--key-file' must be in subprocess call, got: {captured_args['cmd']!r}"
+    )
+    assert result is not None, "generate_tailscale() must return a dict on success"
+    assert result["method"] == "tailscale", (
+        f"result['method'] must be 'tailscale', got: {result.get('method')!r}"
+    )
+
+
+def test_generate_tailscale_returns_none_on_failure(monkeypatch, tmp_path):
+    """generate_tailscale() must return None when 'tailscale cert' exits with non-zero."""
+    from muxplex.tls import generate_tailscale
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    hostname = "myhost.tail1234.ts.net"
+
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "R", (), {"returncode": 1, "stdout": "", "stderr": "error"}
+        )(),
+    )
+
+    result = generate_tailscale(cert_path, key_path, hostname)
+
+    assert result is None, (
+        f"generate_tailscale() must return None on non-zero exit, got: {result!r}"
+    )

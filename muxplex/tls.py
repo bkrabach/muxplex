@@ -166,6 +166,65 @@ def detect_tailscale() -> dict | None:
     }
 
 
+def generate_tailscale(cert_path, key_path, hostname: str) -> dict | None:
+    """Obtain a Let's Encrypt certificate via Tailscale.
+
+    Args:
+        cert_path: Destination path for the certificate PEM file.
+        key_path:  Destination path for the private key PEM file.
+        hostname:  Tailscale hostname to request a certificate for.
+
+    Returns:
+        dict with keys: method, cert_path, key_path, hostnames, expires.
+        Returns None on failure (non-zero exit, timeout, OS error, or missing files).
+    """
+    import subprocess
+
+    cert_path = Path(cert_path)
+    key_path = Path(key_path)
+
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = subprocess.run(
+            [
+                "tailscale",
+                "cert",
+                "--cert-file",
+                str(cert_path),
+                "--key-file",
+                str(key_path),
+                hostname,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    if not cert_path.exists() or not key_path.exists():
+        return None
+
+    key_path.chmod(0o600)
+
+    info = get_cert_info(cert_path)
+    if info is None:
+        return None
+
+    return {
+        "method": "tailscale",
+        "cert_path": str(cert_path),
+        "key_path": str(key_path),
+        "hostnames": info["hostnames"],
+        "expires": info["expires"],
+    }
+
+
 def get_cert_info(cert_path) -> dict | None:
     """Inspect a PEM certificate and return metadata.
 
