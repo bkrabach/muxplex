@@ -1,0 +1,158 @@
+"""
+Tests for muxplex/tls.py — TLS certificate generation and inspection.
+9 tests covering generate_self_signed() and get_cert_info().
+"""
+
+import stat
+
+
+# ---------------------------------------------------------------------------
+# 1. Importability
+# ---------------------------------------------------------------------------
+
+
+def test_tls_module_importable():
+    """muxplex.tls must be importable."""
+    import muxplex.tls  # noqa: F401
+
+    assert hasattr(muxplex.tls, "generate_self_signed")
+    assert hasattr(muxplex.tls, "get_cert_info")
+
+
+# ---------------------------------------------------------------------------
+# 2–7. generate_self_signed() tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_self_signed_creates_cert_and_key(tmp_path):
+    """generate_self_signed() must create cert.pem and key.pem at the given paths."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+
+    assert cert_path.exists(), "cert.pem was not created"
+    assert key_path.exists(), "key.pem was not created"
+
+
+def test_generate_self_signed_cert_is_valid_pem(tmp_path):
+    """Generated cert must start with '-----BEGIN CERTIFICATE-----'."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+
+    content = cert_path.read_text()
+    assert content.startswith("-----BEGIN CERTIFICATE-----"), (
+        f"cert.pem must start with '-----BEGIN CERTIFICATE-----', got: {content[:50]!r}"
+    )
+
+
+def test_generate_self_signed_key_is_valid_pem(tmp_path):
+    """Generated key must start with '-----BEGIN'."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+
+    content = key_path.read_text()
+    assert content.startswith("-----BEGIN"), (
+        f"key.pem must start with '-----BEGIN', got: {content[:50]!r}"
+    )
+
+
+def test_generate_self_signed_key_permissions(tmp_path):
+    """Key file must have permissions 0o600 (owner read/write only)."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+
+    mode = stat.S_IMODE(key_path.stat().st_mode)
+    assert mode == 0o600, f"key.pem permissions must be 0o600, got: {oct(mode)}"
+
+
+def test_generate_self_signed_returns_metadata(tmp_path):
+    """generate_self_signed() must return a dict with method, cert_path, key_path, hostnames, expires."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    hostnames = ["myhost", "myhost.local", "localhost"]
+
+    result = generate_self_signed(cert_path, key_path, hostnames=hostnames)
+
+    assert isinstance(result, dict), "generate_self_signed() must return a dict"
+    assert result.get("method") == "selfsigned", (
+        f"method must be 'selfsigned', got: {result.get('method')!r}"
+    )
+    assert (
+        result.get("cert_path") == str(cert_path)
+        or result.get("cert_path") == cert_path
+    ), f"cert_path missing or wrong in result: {result.get('cert_path')!r}"
+    assert (
+        result.get("key_path") == str(key_path) or result.get("key_path") == key_path
+    ), f"key_path missing or wrong in result: {result.get('key_path')!r}"
+    assert isinstance(result.get("hostnames"), list) and len(result["hostnames"]) > 0, (
+        f"hostnames must be a non-empty list, got: {result.get('hostnames')!r}"
+    )
+    assert "expires" in result, "expires key must be in result"
+
+
+def test_generate_self_signed_creates_parent_dirs(tmp_path):
+    """generate_self_signed() must create parent directories if they don't exist."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "a" / "b" / "cert.pem"
+    key_path = tmp_path / "a" / "b" / "key.pem"
+
+    # Parent dirs do not exist yet
+    assert not cert_path.parent.exists()
+
+    generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+
+    assert cert_path.exists(), "cert.pem was not created (parent dirs not created)"
+    assert key_path.exists(), "key.pem was not created (parent dirs not created)"
+
+
+# ---------------------------------------------------------------------------
+# 8–9. get_cert_info() tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_cert_info_returns_expiry(tmp_path):
+    """get_cert_info() must return a dict with expires and hostnames for a valid cert."""
+    from muxplex.tls import generate_self_signed, get_cert_info
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    generate_self_signed(cert_path, key_path, hostnames=["testhost", "localhost"])
+
+    info = get_cert_info(cert_path)
+
+    assert info is not None, "get_cert_info() must not return None for a valid cert"
+    assert isinstance(info, dict), "get_cert_info() must return a dict"
+    assert "expires" in info, "get_cert_info() result must have 'expires' key"
+    assert "hostnames" in info, "get_cert_info() result must have 'hostnames' key"
+    assert isinstance(info["hostnames"], list), "hostnames must be a list"
+
+
+def test_get_cert_info_returns_none_for_missing_file(tmp_path):
+    """get_cert_info() must return None for a missing or unreadable file."""
+    from muxplex.tls import get_cert_info
+
+    missing_path = tmp_path / "nonexistent.pem"
+
+    result = get_cert_info(missing_path)
+
+    assert result is None, (
+        f"get_cert_info() must return None for missing file, got: {result!r}"
+    )
