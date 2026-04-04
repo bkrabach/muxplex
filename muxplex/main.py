@@ -913,9 +913,14 @@ async def federation_sessions(request: Request) -> list[dict]:
                 ]
             resp.raise_for_status()
             sessions = resp.json()
-            # Tag each session with deviceName and remoteId
+            # Tag each session with deviceName, remoteId, and unique sessionKey
             return [
-                {**s, "deviceName": remote_name, "remoteId": remote_id}
+                {
+                    **s,
+                    "deviceName": remote_name,
+                    "remoteId": remote_id,
+                    "sessionKey": f"{remote_id}:{s.get('name', '')}",
+                }
                 for s in sessions
             ]
         except httpx.HTTPStatusError:

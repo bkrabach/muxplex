@@ -1662,6 +1662,131 @@ def test_federation_sessions_remote_id_is_integer_index(
     )
 
 
+def test_federation_sessions_local_sessions_have_no_session_key(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/sessions: local sessions must NOT have a sessionKey field.
+
+    Local sessions use name as the unique key — no prefix needed since they
+    never collide with themselves.
+    """
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Write settings with no remote instances
+    settings_path.write_text(
+        json.dumps({"device_name": "my-local-machine", "remote_instances": []})
+    )
+
+    # Mock local session data
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
+    monkeypatch.setattr(
+        "muxplex.main.get_snapshots", lambda: {"alpha": "", "beta": ""}
+    )
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Find local sessions (remoteId=None)
+    local_sessions = [s for s in data if s.get("remoteId") is None]
+    assert len(local_sessions) == 2, f"Expected 2 local sessions, got: {local_sessions}"
+
+    for local in local_sessions:
+        assert "sessionKey" not in local, (
+            f"Local session must NOT have sessionKey field, but got: {local}"
+        )
+
+
+def test_federation_sessions_remote_sessions_have_session_key(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/sessions: remote sessions must have sessionKey = 'remoteId:name'.
+
+    The sessionKey format is '{remote_id}:{session_name}' to prevent collisions
+    between local and remote sessions with identical names.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx  # noqa: F401
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # One remote instance
+    settings_path.write_text(
+        json.dumps(
+            {
+                "device_name": "local-host",
+                "remote_instances": [
+                    {
+                        "url": "http://spark-2:8088",
+                        "key": "abc123",
+                        "name": "spark-2",
+                    }
+                ],
+            }
+        )
+    )
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    # Remote returns two sessions
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.json = lambda: [
+            {"name": "work", "snapshot": "", "bell": {}},
+            {"name": "dev", "snapshot": "", "bell": {}},
+        ]
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Find remote sessions (remoteId is not None) that are named sessions (not status entries)
+    named_remote_sessions = [
+        s for s in data if s.get("remoteId") is not None and "name" in s
+    ]
+    assert len(named_remote_sessions) == 2, (
+        f"Expected 2 named remote sessions, got: {named_remote_sessions}"
+    )
+
+    for session in named_remote_sessions:
+        assert "sessionKey" in session, (
+            f"Remote session must have sessionKey field, but got: {session}"
+        )
+        expected_key = f"{session['remoteId']}:{session['name']}"
+        assert session["sessionKey"] == expected_key, (
+            f"sessionKey must be 'remoteId:name' = {expected_key!r}, "
+            f"got: {session['sessionKey']!r}"
+        )
+
+    # Verify specific values
+    work_session = next(s for s in named_remote_sessions if s["name"] == "work")
+    assert work_session["sessionKey"] == "0:work", (
+        f"Expected sessionKey '0:work', got: {work_session['sessionKey']!r}"
+    )
+
+    dev_session = next(s for s in named_remote_sessions if s["name"] == "dev")
+    assert dev_session["sessionKey"] == "0:dev", (
+        f"Expected sessionKey '0:dev', got: {dev_session['sessionKey']!r}"
+    )
+
 
 def test_federation_sessions_includes_remote_failure_status(
     client, monkeypatch, tmp_path
