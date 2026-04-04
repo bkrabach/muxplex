@@ -1084,6 +1084,54 @@ async def federation_bell_clear(
         )
 
 
+@app.post("/api/federation/{remote_id}/sessions")
+async def federation_create_session(
+    remote_id: int, payload: CreateSessionPayload, request: Request
+) -> dict:
+    """Proxy a create-session POST to a remote instance.
+
+    Looks up the remote by integer index into ``remote_instances`` in settings,
+    sends ``POST {remote_url}/api/sessions`` with a Bearer auth header and JSON
+    body ``{name: ...}``, and returns the remote's JSON response.
+
+    Raises HTTP 404 if ``remote_id`` is not a valid integer index,
+    503 when remote is unreachable, 502 when remote returns HTTP error.
+    """
+    settings = load_settings()
+    remotes = settings.get("remote_instances", [])
+    if remote_id < 0 or remote_id >= len(remotes):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Remote instance '{remote_id}' not found",
+        )
+    remote = remotes[remote_id]
+    remote_url: str = remote.get("url", "").rstrip("/")
+    remote_key: str = remote.get("key", "")
+    url = f"{remote_url}/api/sessions"
+    http_client: httpx.AsyncClient = request.app.state.federation_client
+    try:
+        resp = await http_client.post(
+            url,
+            headers={"Authorization": f"Bearer {remote_key}"},
+            json={"name": payload.name},
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Remote returned {exc.response.status_code}",
+        )
+    except Exception as exc:
+        _log.warning(
+            "federation_create_session: remote %s unreachable: %s", remote_url, exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Remote unreachable: {remote_url}",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------

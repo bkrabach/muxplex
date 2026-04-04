@@ -2417,3 +2417,184 @@ def test_federation_bell_clear_returns_404_for_invalid_remote(
 
     response = client.post("/api/federation/0/sessions/my-session/bell/clear")
     assert response.status_code == 404
+
+
+def test_federation_create_session_proxies_to_remote(client, monkeypatch, tmp_path):
+    """POST /api/federation/{remote_id}/sessions proxies POST to remote's /api/sessions endpoint.
+
+    Looks up remote by integer index, sends POST {remote_url}/api/sessions with Bearer auth
+    header and JSON body {name: ...}, and returns the remote's JSON response.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    # Track what POST was called with
+    post_calls = []
+
+    async def mock_post(url, **kwargs):
+        post_calls.append({"url": url, "kwargs": kwargs})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"name": "new-session", "pid": 12345}
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/0/sessions", json={"name": "new-session"})
+    assert response.status_code == 200
+
+    # Verify the POST was made to the correct remote URL
+    assert len(post_calls) == 1, f"Expected exactly 1 POST call, got {len(post_calls)}"
+    call = post_calls[0]
+    assert call["url"] == "http://remote-host:8088/api/sessions", (
+        f"Expected POST to remote /api/sessions URL, got: {call['url']}"
+    )
+
+    # Verify Bearer auth was included
+    headers = call["kwargs"].get("headers", {})
+    assert headers.get("Authorization") == "Bearer secret-key-123", (
+        f"Expected Bearer auth header, got: {headers}"
+    )
+
+    # Verify JSON body was forwarded
+    json_body = call["kwargs"].get("json", {})
+    assert json_body.get("name") == "new-session", (
+        f"Expected JSON body with name='new-session', got: {json_body}"
+    )
+
+    # Verify the response is the remote's JSON
+    data = response.json()
+    assert data["name"] == "new-session"
+    assert data["pid"] == 12345
+
+
+def test_federation_create_session_returns_404_for_invalid_remote(
+    client, monkeypatch, tmp_path
+):
+    """POST /api/federation/{remote_id}/sessions returns 404 when remote_id is out of range."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # No remote instances configured
+    settings_path.write_text(json.dumps({"remote_instances": []}))
+
+    response = client.post("/api/federation/0/sessions", json={"name": "new-session"})
+    assert response.status_code == 404
+
+
+def test_federation_create_session_returns_503_when_remote_unreachable(
+    client, monkeypatch, tmp_path
+):
+    """POST /api/federation/{remote_id}/sessions returns 503 when remote is unreachable.
+
+    If the outbound http_client.post() raises a network-level exception (e.g. ConnectError),
+    the endpoint must return 503 rather than propagating a raw 500.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    async def mock_post_unreachable(*args, **kwargs):
+        raise httpx.ConnectError("Connection refused")
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post_unreachable
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/0/sessions", json={"name": "new-session"})
+    assert response.status_code == 503
+
+
+def test_federation_create_session_returns_502_when_remote_returns_error(
+    client, monkeypatch, tmp_path
+):
+    """POST /api/federation/{remote_id}/sessions returns 502 when remote returns HTTP error.
+
+    If the outbound http_client.post() returns a non-2xx response that raises HTTPStatusError
+    (via raise_for_status), the endpoint must return 502 with the upstream status code in detail.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "id": "remote-0",
+                    }
+                ],
+            }
+        )
+    )
+
+    async def mock_post_error(*args, **kwargs):
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 422
+        raise httpx.HTTPStatusError(
+            "Unprocessable Entity",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post_error
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/0/sessions", json={"name": "new-session"})
+    assert response.status_code == 502
