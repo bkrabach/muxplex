@@ -2061,6 +2061,7 @@ def test_doctor_tls_nudge_hidden_on_localhost(capsys, tmp_path, monkeypatch):
 
 
 def test_pyproject_has_authors():
+    """pyproject.toml must declare at least one author with name and email."""
     import tomllib
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
@@ -2071,6 +2072,7 @@ def test_pyproject_has_authors():
 
 
 def test_pyproject_has_classifiers():
+    """pyproject.toml must declare at least 3 classifiers including License and Python version."""
     import tomllib
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
@@ -2082,6 +2084,7 @@ def test_pyproject_has_classifiers():
 
 
 def test_pyproject_has_keywords():
+    """pyproject.toml must declare at least 3 keywords for PyPI discoverability."""
     import tomllib
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
