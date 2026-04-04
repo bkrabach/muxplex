@@ -586,3 +586,80 @@ def test_launchd_logs_handles_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(subprocess, "run", mock_run)
     # Should not raise
     svc._launchd_logs()
+
+
+# ---------------------------------------------------------------------------
+# task: TLS nudge hints in service install
+# ---------------------------------------------------------------------------
+
+
+def test_service_install_shows_tls_tip_on_network_host(capsys, tmp_path, monkeypatch):
+    """service install must show TLS tip when host is network and TLS disabled."""
+    import json
+
+    import muxplex.service as svc
+    import muxplex.settings as settings_mod
+
+    # Setup paths
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_path = unit_dir / "muxplex.service"
+    settings_file = tmp_path / "settings.json"
+
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    # Setup settings with network host and no TLS
+    settings_file.write_text(json.dumps({"host": "0.0.0.0", "tls_cert": "", "tls_key": ""}))
+
+    # Mock subprocess to avoid actual systemctl calls
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    # Mock the prompt function
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    from muxplex.service import service_install
+
+    service_install()
+
+    out = capsys.readouterr().out
+    assert "muxplex setup-tls" in out, (
+        f"Expected 'muxplex setup-tls' in service install output when host is 0.0.0.0 and TLS disabled, got: {out!r}"
+    )
+
+
+def test_service_install_hides_tls_tip_on_localhost(capsys, tmp_path, monkeypatch):
+    """service install must NOT show TLS tip when host is 127.0.0.1."""
+    import json
+
+    import muxplex.service as svc
+    import muxplex.settings as settings_mod
+
+    # Setup paths
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_path = unit_dir / "muxplex.service"
+    settings_file = tmp_path / "settings.json"
+
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    # Setup settings with localhost
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "tls_cert": "", "tls_key": ""}))
+
+    # Mock subprocess
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+    # Mock the prompt function
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    from muxplex.service import service_install
+
+    service_install()
+
+    out = capsys.readouterr().out
+    assert "muxplex setup-tls" not in out, (
+        f"TLS tip must NOT appear in service install output when host is 127.0.0.1, got: {out!r}"
+    )

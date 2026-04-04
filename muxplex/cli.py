@@ -369,9 +369,14 @@ def doctor() -> None:
         else:
             print(f"  {warn_mark} TLS: configured but cert not readable ({tls_cert})")
     else:
-        print(
-            f"  {warn_mark} TLS: disabled (clipboard requires HTTPS on non-localhost)"
-        )
+        # Only show TLS warning if host is not localhost
+        host = cfg.get("host", "127.0.0.1")
+        if host != "127.0.0.1":
+            # Network host without TLS: show nudge
+            print(
+                f"  {warn_mark} TLS: disabled — clipboard won't work on remote devices"
+            )
+            print("    Run: muxplex setup-tls")
 
     # Auth status
     pw_path = get_password_path()

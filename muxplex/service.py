@@ -116,6 +116,18 @@ def _prompt_host_if_localhost() -> None:
 # ---------------------------------------------------------------------------
 
 
+
+
+def _show_tls_nudge_if_needed() -> None:
+    """Show TLS setup nudge if host is network and TLS is not configured."""
+    from muxplex.settings import load_settings
+
+    settings = load_settings()
+    host = settings.get("host", "127.0.0.1")
+    tls_cert = settings.get("tls_cert", "")
+
+    if host != "127.0.0.1" and not tls_cert:
+        print("  Tip: Enable HTTPS for clipboard support: muxplex setup-tls")
 def _systemd_install() -> None:
     muxplex_bin = _resolve_muxplex_bin()
     safe_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -128,6 +140,7 @@ def _systemd_install() -> None:
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "--now", "muxplex"], check=True)
     _prompt_host_if_localhost()
+    _show_tls_nudge_if_needed()
 
 
 def _systemd_uninstall() -> None:
@@ -179,6 +192,7 @@ def _launchd_install() -> None:
         ["launchctl", "bootstrap", f"gui/{uid}", str(_LAUNCHD_PLIST_PATH)], check=True
     )
     _prompt_host_if_localhost()
+    _show_tls_nudge_if_needed()
 
 
 def _launchd_uninstall() -> None:

@@ -1618,11 +1618,14 @@ def test_doctor_shows_tls_enabled(tmp_path, monkeypatch, capsys):
 
 
 def test_doctor_shows_tls_clipboard_warning(tmp_path, monkeypatch, capsys):
-    """doctor() mentions clipboard or https when TLS is disabled."""
+    """doctor() mentions clipboard or https when TLS is disabled on network host."""
+    import json
+
     import muxplex.settings as settings_mod
 
     settings_file = tmp_path / "settings.json"
-    settings_file.write_text("{}")
+    # Set host to network to trigger the TLS warning (not localhost)
+    settings_file.write_text(json.dumps({"host": "0.0.0.0"}))
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
 
     from muxplex.cli import doctor
@@ -1632,7 +1635,7 @@ def test_doctor_shows_tls_clipboard_warning(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     out_lower = out.lower()
     assert "clipboard" in out_lower or "https" in out_lower, (
-        f"Expected 'clipboard' or 'https' in doctor TLS-disabled output, got: {out!r}"
+        f"Expected 'clipboard' or 'https' in doctor TLS-disabled output for network host, got: {out!r}"
     )
 
 
@@ -2004,4 +2007,49 @@ def test_setup_tls_regenerates_on_eof(tmp_path, monkeypatch, capsys):
     # EOFError → default 'n' → keep existing certs
     assert "keeping" in out_lower, (
         f"Expected 'keeping' in output after EOFError (default 'n'), got: {out!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# task: TLS nudge hints in doctor and service install
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_tls_nudge_shows_run_command_on_network_host(capsys, tmp_path, monkeypatch):
+    """doctor must show 'Run: muxplex setup-tls' when host is network and TLS disabled."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "0.0.0.0", "tls_cert": "", "tls_key": ""}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import doctor
+
+    doctor()
+
+    out = capsys.readouterr().out
+    assert "muxplex setup-tls" in out, (
+        f"Expected 'muxplex setup-tls' in doctor output when host is 0.0.0.0 and TLS disabled, got: {out!r}"
+    )
+
+
+def test_doctor_tls_nudge_hidden_on_localhost(capsys, tmp_path, monkeypatch):
+    """doctor must NOT show TLS nudge when host is 127.0.0.1."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "tls_cert": "", "tls_key": ""}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import doctor
+
+    doctor()
+
+    out = capsys.readouterr().out
+    assert "muxplex setup-tls" not in out, (
+        f"TLS nudge must NOT appear in doctor output when host is 127.0.0.1, got: {out!r}"
     )
