@@ -2543,3 +2543,47 @@ def test_update_session_pill_uses_session_key_or_name() -> None:
     assert "sessionKey" in body, (
         "updateSessionPill must compare using s.sessionKey || s.name (not just s.name)"
     )
+
+
+# ─── task-5-open-session-bell-clear ─────────────────────────────────────────
+
+
+def test_open_session_fires_bell_clear_for_remote() -> None:
+    """openSession must fire a bell/clear POST to the federation proxy for remote sessions."""
+    match = re.search(
+        r"async function openSession\s*\(.*?\)\s*\{(.*?)^\}",
+        _JS,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, "openSession function not found"
+    body = match.group(1)
+    # Must POST to federation bell/clear endpoint when _remoteId is not empty
+    assert "/bell/clear" in body, (
+        "openSession must POST to /api/federation/{remoteId}/sessions/{name}/bell/clear"
+    )
+    # Must guard bell-clear with a _remoteId !== '' check
+    assert "_remoteId !== ''" in body, (
+        "openSession must guard bell-clear POST with _remoteId !== '' check"
+    )
+
+
+def test_open_session_bell_clear_is_fire_and_forget() -> None:
+    """openSession bell-clear POST must be fire-and-forget using .catch() to swallow errors."""
+    match = re.search(
+        r"async function openSession\s*\(.*?\)\s*\{(.*?)^\}",
+        _JS,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, "openSession function not found"
+    body = match.group(1)
+    # Must use .catch(function() {}) to swallow errors — not awaited
+    assert ".catch(function() {})" in body, (
+        "openSession bell-clear POST must swallow errors with .catch(function() {})"
+    )
+    # Must NOT await the bell-clear call (it's fire-and-forget)
+    bell_clear_lines = [line for line in body.splitlines() if "/bell/clear" in line]
+    assert bell_clear_lines, "openSession must contain a bell/clear call"
+    for line in bell_clear_lines:
+        assert "await" not in line, (
+            f"openSession bell-clear POST must NOT be awaited (fire-and-forget): {line.strip()}"
+        )

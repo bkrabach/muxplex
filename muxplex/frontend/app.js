@@ -1236,6 +1236,11 @@ async function openSession(name, opts = {}) {
     return closeSession();
   }
 
+  // Fire-and-forget bell-clear for remote sessions — acknowledge bells on the remote server
+  if (_remoteId !== '') {
+    api('POST', '/api/federation/' + encodeURIComponent(_remoteId) + '/sessions/' + encodeURIComponent(name) + '/bell/clear').catch(function() {});
+  }
+
   // Wait for animation to finish (may already be done if /connect was slow)
   await animDone;
 
