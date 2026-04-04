@@ -4291,3 +4291,11 @@ test('createNewSession matches remote sessions by sessionKey in poll loop', () =
     'createNewSession must compute expected sessionKey for remote session matching',
   );
 });
+
+test('CSS has new-session-device-select styling', () => {
+  const source = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(
+    source.includes('.new-session-device-select'),
+    'style.css must have .new-session-device-select rule',
+  );
+});

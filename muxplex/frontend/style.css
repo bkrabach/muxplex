@@ -1522,6 +1522,26 @@ body {
   color: var(--text-dim);
 }
 
+.new-session-device-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 4px 6px;
+  color: var(--text);
+  outline: none;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.fab-input-overlay .new-session-device-select {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  margin-right: 0;
+}
+
 /* ============================================================
    Sidebar sticky footer (+ New button)
    ============================================================ */
