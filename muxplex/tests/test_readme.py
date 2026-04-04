@@ -261,3 +261,14 @@ def test_readme_tls_key_has_empty_default():
 def test_readme_tls_setup_tls_entry_with_method_flag():
     """README CLI Reference must show setup-tls with --method flag."""
     assert "--method" in README, "README must document the --method flag for setup-tls"
+
+
+def test_readme_images_use_absolute_urls():
+    import re
+    readme = Path(__file__).resolve().parents[2] / "README.md"
+    content = readme.read_text()
+    images = re.findall(r"!\[([^\]]*)\]\(([^)]+)\)", content)
+    for alt, url in images:
+        assert url.startswith("http"), (
+            f"Image '{alt}' uses relative path '{url}' — must use absolute URL for PyPI rendering"
+        )

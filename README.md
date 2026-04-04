@@ -2,7 +2,7 @@
 
 **Web-based tmux session dashboard — access, monitor, and manage all your tmux sessions from any browser on any device.**
 
-![muxplex dashboard](assets/branding/og/og-dark.png)
+![muxplex dashboard](https://raw.githubusercontent.com/bkrabach/muxplex/main/assets/branding/og/og-dark.png)
 
 ---
 
