@@ -544,6 +544,66 @@ def test_receive_bell_sets_last_fired_at(client):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/sessions/{name}/bell/clear
+# ---------------------------------------------------------------------------
+
+
+def test_bell_clear_returns_ok(client):
+    """POST /api/sessions/{name}/bell/clear returns {\"ok\": True, \"session\": name}."""
+    response = client.post("/api/sessions/web-tmux/bell/clear")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["session"] == "web-tmux"
+
+
+def test_bell_clear_resets_unseen_count(client):
+    """After clearing, unseen_count is 0."""
+    from muxplex.state import load_state
+
+    # First fire some bells to set unseen_count > 0
+    for _ in range(3):
+        client.post("/api/sessions/clear-test/bell")
+
+    state = load_state()
+    assert state["sessions"]["clear-test"]["bell"]["unseen_count"] == 3
+
+    # Now clear
+    client.post("/api/sessions/clear-test/bell/clear")
+
+    state = load_state()
+    assert state["sessions"]["clear-test"]["bell"]["unseen_count"] == 0
+
+
+def test_bell_clear_sets_seen_at(client):
+    """After clearing, seen_at is set to a recent timestamp."""
+    import time
+
+    from muxplex.state import load_state
+
+    # Fire a bell first to create the bell state
+    client.post("/api/sessions/seen-test/bell")
+
+    before = time.time()
+    client.post("/api/sessions/seen-test/bell/clear")
+    after = time.time()
+
+    state = load_state()
+    bell = state["sessions"]["seen-test"]["bell"]
+    assert bell["seen_at"] is not None
+    assert before <= bell["seen_at"] <= after
+
+
+def test_bell_clear_noop_when_no_session(client):
+    """No-op when session has no bell state (still returns 200 + ok)."""
+    response = client.post("/api/sessions/nonexistent-session/bell/clear")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["session"] == "nonexistent-session"
+
+
+# ---------------------------------------------------------------------------
 # POST /api/internal/setup-hooks
 # ---------------------------------------------------------------------------
 
@@ -1571,9 +1631,7 @@ def test_federation_sessions_returns_local_sessions(client, monkeypatch, tmp_pat
     assert local["remoteId"] is None
 
 
-def test_federation_sessions_remote_id_is_integer_index(
-    client, monkeypatch, tmp_path
-):
+def test_federation_sessions_remote_id_is_integer_index(client, monkeypatch, tmp_path):
     """GET /api/federation/sessions returns integer remoteId (index) for remote sessions.
 
     remoteId must be the enumerate index (0, 1, 2...) of the remote in
@@ -1684,9 +1742,7 @@ def test_federation_sessions_local_sessions_have_no_session_key(
 
     # Mock local session data
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
-    monkeypatch.setattr(
-        "muxplex.main.get_snapshots", lambda: {"alpha": "", "beta": ""}
-    )
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"alpha": "", "beta": ""})
 
     response = client.get("/api/federation/sessions")
     assert response.status_code == 200
@@ -2135,6 +2191,8 @@ def test_federation_generate_key_creates_file(client, tmp_path, monkeypatch):
         f"File contents must match returned key. "
         f"File: {file_contents!r}, key: {returned_key!r}"
     )
+
+
 def test_get_auth_token_returns_401_when_not_authenticated(monkeypatch):
     """GET /api/auth/token returns 401 when request has no valid session cookie."""
     monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")

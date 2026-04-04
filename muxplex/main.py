@@ -516,6 +516,24 @@ async def receive_bell(name: str) -> dict:
     return {"ok": True, "session": name}
 
 
+@app.post("/api/sessions/{name}/bell/clear")
+async def clear_bell(name: str) -> dict:
+    """Clear unseen bell count for session *name*.
+
+    Resets unseen_count to 0 and sets seen_at to now.
+    Called by the frontend when a user opens a session to acknowledge bells.
+    No-op if the session or bell sub-dict does not exist.
+    """
+    async with state_lock:
+        state = load_state()
+        session = state.get("sessions", {}).get(name)
+        if session and "bell" in session:
+            session["bell"]["unseen_count"] = 0
+            session["bell"]["seen_at"] = time.time()
+            save_state(state)
+    return {"ok": True, "session": name}
+
+
 @app.post("/api/internal/setup-hooks")
 async def setup_hooks() -> dict:
     """Re-register tmux hooks. Call after tmux server restarts."""
