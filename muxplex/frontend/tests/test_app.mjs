@@ -4231,3 +4231,63 @@ test('showFabSessionInput creates device select when multi_device_enabled with r
     'showFabSessionInput must call createNewSession with name and remoteId arguments',
   );
 });
+
+// --- createNewSession federation routing (task-4) ---
+
+test('createNewSession accepts remoteId parameter and routes to federation endpoint', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Extract createNewSession function body
+  const fnStart = source.indexOf('async function createNewSession(');
+  assert.ok(fnStart !== -1, 'createNewSession function must exist');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  // Must accept remoteId parameter
+  assert.ok(
+    fnBody.includes('remoteId'),
+    'createNewSession must accept remoteId parameter',
+  );
+  // Must include federation endpoint path
+  assert.ok(
+    fnBody.includes('/api/federation/'),
+    'createNewSession must include /api/federation/ endpoint path for remote routing',
+  );
+  // Must still have local /api/sessions endpoint
+  assert.ok(
+    fnBody.includes('/api/sessions'),
+    'createNewSession must still use /api/sessions for local sessions',
+  );
+});
+
+test('createNewSession passes remoteId through to openSession for auto-open', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('async function createNewSession(');
+  assert.ok(fnStart !== -1, 'createNewSession function must exist');
+  // Use 3000 chars to cover the full function including the polling interval callback
+  const fnBody = source.substring(fnStart, fnStart + 3000);
+  // Must call openSession with remoteId option
+  assert.ok(
+    fnBody.includes('openSession') && fnBody.includes('remoteId'),
+    'createNewSession must call openSession with remoteId option',
+  );
+  // Must pass remoteId as an option object to openSession
+  assert.ok(
+    fnBody.includes('{ remoteId') || fnBody.includes('{ remoteId:'),
+    'createNewSession must pass remoteId as option object to openSession',
+  );
+});
+
+test('createNewSession matches remote sessions by sessionKey in poll loop', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('async function createNewSession(');
+  assert.ok(fnStart !== -1, 'createNewSession function must exist');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  // Must use sessionKey in the match logic (with fallback to name)
+  assert.ok(
+    fnBody.includes('sessionKey'),
+    'createNewSession poll loop must match remote sessions by sessionKey',
+  );
+  // Must use expectedKey or similar computed key for comparison
+  assert.ok(
+    fnBody.includes('expectedKey') || (fnBody.includes('sessionKey') && fnBody.includes('remoteId')),
+    'createNewSession must compute expected sessionKey for remote session matching',
+  );
+});

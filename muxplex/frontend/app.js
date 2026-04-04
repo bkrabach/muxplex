@@ -2039,9 +2039,11 @@ function showFabSessionInput() {
  * @param {string} name - The session name to create.
  * @returns {Promise<void>}
  */
-async function createNewSession(name) {
+async function createNewSession(name, remoteId) {
+  remoteId = remoteId || '';
   try {
-    const res = await api('POST', '/api/sessions', { name });
+    var endpoint = remoteId ? '/api/federation/' + encodeURIComponent(remoteId) + '/sessions' : '/api/sessions';
+    const res = await api('POST', endpoint, { name });
     const data = await res.json();
     const sessionName = data.name || name;
     showToast('Creating session \'' + sessionName + '\'…');
@@ -2073,6 +2075,9 @@ async function createNewSession(name) {
       return;
     }
 
+    // Compute expectedKey: for remote sessions, use 'remoteId:sessionName' (sessionKey format)
+    var expectedKey = remoteId ? (remoteId + ':' + sessionName) : sessionName;
+
     // Poll until the session appears in _currentSessions (max 30s, every 2s)
     var attempts = 0;
     var maxAttempts = 15;
@@ -2080,13 +2085,13 @@ async function createNewSession(name) {
       attempts++;
       await pollSessions();
       var found = _currentSessions && _currentSessions.find(function(s) {
-        return s.name === sessionName;
+        return (s.sessionKey || s.name) === expectedKey;
       });
       if (found) {
         clearInterval(pollForSession);
         removeLoadingTile();
         showToast('Session \'' + sessionName + '\' ready');
-        openSession(sessionName);
+        openSession(sessionName, { remoteId: remoteId });
       } else if (attempts >= maxAttempts) {
         clearInterval(pollForSession);
         removeLoadingTile();
