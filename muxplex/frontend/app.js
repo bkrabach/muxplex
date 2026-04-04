@@ -1999,8 +1999,10 @@ function showFabSessionInput() {
   const overlay = document.createElement('div');
   overlay.className = 'fab-input-overlay';
 
+  const select = _createDeviceSelect();
   const input = _createSessionInput();
 
+  if (select) overlay.appendChild(select);
   overlay.appendChild(input);
 
   function cleanup() {
@@ -2011,8 +2013,9 @@ function showFabSessionInput() {
   input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
       const name = input.value.trim();
+      const remoteId = select ? select.value : '';
       cleanup();
-      if (name) createNewSession(name);
+      if (name) createNewSession(name, remoteId);
     } else if (e.key === 'Escape') {
       cleanup();
     }

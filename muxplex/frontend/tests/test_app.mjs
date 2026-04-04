@@ -4211,3 +4211,23 @@ test('showNewSessionInput passes remoteId from device select to createNewSession
     'showNewSessionInput must call createNewSession with name and remoteId arguments',
   );
 });
+
+test('showFabSessionInput creates device select when multi_device_enabled with remotes', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Extract showFabSessionInput function body
+  const fnStart = source.indexOf('function showFabSessionInput(');
+  assert.ok(fnStart !== -1, 'showFabSessionInput function must exist');
+  const fnBody = source.substring(fnStart, fnStart + 1200);
+  // Must call _createDeviceSelect
+  assert.ok(fnBody.includes('_createDeviceSelect'), 'showFabSessionInput must call _createDeviceSelect');
+  // Must read remoteId from select.value (or equivalent)
+  assert.ok(
+    fnBody.includes('remoteId') && (fnBody.includes('select.value') || fnBody.includes('sel.value')),
+    'showFabSessionInput Enter handler must read remoteId from select element value',
+  );
+  // Must call createNewSession with two arguments (name and remoteId)
+  assert.ok(
+    fnBody.includes('createNewSession(name') && fnBody.includes('remoteId'),
+    'showFabSessionInput must call createNewSession with name and remoteId arguments',
+  );
+});
