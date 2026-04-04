@@ -380,3 +380,96 @@ def test_generate_tailscale_returns_none_on_failure(monkeypatch, tmp_path):
     assert result is None, (
         f"generate_tailscale() must return None on non-zero exit, got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 19-22. detect_mkcert() and generate_mkcert() tests
+# ---------------------------------------------------------------------------
+
+
+def test_detect_mkcert_returns_true_when_installed(monkeypatch):
+    """detect_mkcert() must return True when mkcert is on PATH."""
+    from muxplex.tls import detect_mkcert
+
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/local/bin/mkcert" if name == "mkcert" else None,
+    )
+
+    result = detect_mkcert()
+
+    assert result is True, (
+        f"detect_mkcert() must return True when mkcert is installed, got: {result!r}"
+    )
+
+
+def test_detect_mkcert_returns_false_when_not_installed(monkeypatch):
+    """detect_mkcert() must return False when mkcert is not on PATH."""
+    from muxplex.tls import detect_mkcert
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    result = detect_mkcert()
+
+    assert result is False, (
+        f"detect_mkcert() must return False when mkcert is not installed, got: {result!r}"
+    )
+
+
+def test_generate_mkcert_calls_mkcert_install_and_generate(monkeypatch, tmp_path):
+    """generate_mkcert() must call 'mkcert -install' then 'mkcert -cert-file ...' and return result dict."""
+    from muxplex.tls import generate_mkcert, generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        # If '-cert-file' is in the command, create fake cert/key files
+        if "-cert-file" in cmd:
+            generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = generate_mkcert(cert_path, key_path)
+
+    # Verify '-install' was called
+    install_calls = [c for c in calls if "-install" in c]
+    assert len(install_calls) > 0, (
+        f"'mkcert -install' must have been called, got calls: {calls!r}"
+    )
+
+    # Verify '-cert-file' was called
+    cert_calls = [c for c in calls if "-cert-file" in c]
+    assert len(cert_calls) > 0, (
+        f"'mkcert -cert-file' must have been called, got calls: {calls!r}"
+    )
+
+    assert result is not None, "generate_mkcert() must return a dict on success"
+    assert result["method"] == "mkcert", (
+        f"result['method'] must be 'mkcert', got: {result.get('method')!r}"
+    )
+
+
+def test_generate_mkcert_falls_back_when_install_fails(monkeypatch, tmp_path):
+    """generate_mkcert() must return None when 'mkcert -install' exits with non-zero."""
+    from muxplex.tls import generate_mkcert
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    def fake_run(cmd, *args, **kwargs):
+        if "-install" in cmd:
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "error"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = generate_mkcert(cert_path, key_path)
+
+    assert result is None, (
+        f"generate_mkcert() must return None when mkcert -install fails, got: {result!r}"
+    )

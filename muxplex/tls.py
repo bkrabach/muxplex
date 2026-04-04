@@ -225,6 +225,102 @@ def generate_tailscale(cert_path, key_path, hostname: str) -> dict | None:
     }
 
 
+def detect_mkcert() -> bool:
+    """Return True if mkcert is available on PATH, False otherwise."""
+    import shutil
+
+    return shutil.which("mkcert") is not None
+
+
+def generate_mkcert(
+    cert_path,
+    key_path,
+    extra_hostnames: list[str] | None = None,
+) -> dict | None:
+    """Generate a locally-trusted certificate via mkcert.
+
+    Args:
+        cert_path: Destination path for the certificate PEM file.
+        key_path:  Destination path for the private key PEM file.
+        extra_hostnames: Additional hostnames to include in the certificate.
+
+    Returns:
+        dict with keys: method, cert_path, key_path, hostnames, expires.
+        Returns None on failure (mkcert not found, non-zero exit, timeout, or missing files).
+    """
+    import subprocess
+
+    cert_path = Path(cert_path)
+    key_path = Path(key_path)
+
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: install the local CA
+    try:
+        result = subprocess.run(
+            ["mkcert", "-install"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    # Step 2: build deduplicated hostname list (preserving order)
+    hostname = socket.gethostname()
+    base_hostnames = [hostname, f"{hostname}.local", "localhost", "127.0.0.1", "::1"]
+    if extra_hostnames:
+        base_hostnames.extend(extra_hostnames)
+
+    seen: set[str] = set()
+    unique_hostnames: list[str] = []
+    for h in base_hostnames:
+        if h not in seen:
+            seen.add(h)
+            unique_hostnames.append(h)
+
+    # Step 3: generate the certificate
+    try:
+        result = subprocess.run(
+            [
+                "mkcert",
+                "-cert-file",
+                str(cert_path),
+                "-key-file",
+                str(key_path),
+                *unique_hostnames,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    if not cert_path.exists() or not key_path.exists():
+        return None
+
+    key_path.chmod(0o600)
+
+    info = get_cert_info(cert_path)
+    expires = info["expires"] if info else None
+
+    return {
+        "method": "mkcert",
+        "cert_path": str(cert_path),
+        "key_path": str(key_path),
+        "hostnames": unique_hostnames,
+        "expires": expires,
+    }
+
+
 def get_cert_info(cert_path) -> dict | None:
     """Inspect a PEM certificate and return metadata.
 
