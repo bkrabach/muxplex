@@ -473,3 +473,41 @@ def test_generate_mkcert_falls_back_when_install_fails(monkeypatch, tmp_path):
     assert result is None, (
         f"generate_mkcert() must return None when mkcert -install fails, got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 23. Tailscale SAN integration test
+# ---------------------------------------------------------------------------
+
+
+def test_generate_mkcert_includes_tailscale_sans(monkeypatch, tmp_path):
+    """generate_mkcert() with extra_hostnames must include Tailscale hostname in mkcert args."""
+    from muxplex.tls import generate_mkcert, generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    gen_calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if "-cert-file" in cmd:
+            gen_calls.append(cmd)
+            # Create fake cert/key files to simulate mkcert success
+            generate_self_signed(cert_path, key_path, hostnames=["localhost"])
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = generate_mkcert(
+        cert_path,
+        key_path,
+        extra_hostnames=["spark-1.tail8f3c4e.ts.net", "100.64.0.1"],
+    )
+
+    assert result is not None, "generate_mkcert() must return a dict on success"
+    assert len(gen_calls) > 0, (
+        "generate_mkcert() must have called mkcert with -cert-file"
+    )
+    assert "spark-1.tail8f3c4e.ts.net" in gen_calls[0], (
+        f"'spark-1.tail8f3c4e.ts.net' must appear in mkcert command args, got: {gen_calls[0]!r}"
+    )
