@@ -2053,3 +2053,37 @@ def test_doctor_tls_nudge_hidden_on_localhost(capsys, tmp_path, monkeypatch):
     assert "muxplex setup-tls" not in out, (
         f"TLS nudge must NOT appear in doctor output when host is 127.0.0.1, got: {out!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# task-1-pypi-metadata: pyproject.toml metadata tests
+# ---------------------------------------------------------------------------
+
+
+def test_pyproject_has_authors():
+    import tomllib
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+    authors = data["project"].get("authors", [])
+    assert len(authors) >= 1
+    assert "name" in authors[0]
+    assert "email" in authors[0]
+
+
+def test_pyproject_has_classifiers():
+    import tomllib
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+    classifiers = data["project"].get("classifiers", [])
+    assert len(classifiers) >= 3
+    texts = " ".join(classifiers)
+    assert "License" in texts
+    assert "Python :: 3" in texts
+
+
+def test_pyproject_has_keywords():
+    import tomllib
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+    keywords = data["project"].get("keywords", [])
+    assert len(keywords) >= 3
