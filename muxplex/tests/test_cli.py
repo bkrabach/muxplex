@@ -2087,3 +2087,51 @@ def test_pyproject_has_keywords():
     data = tomllib.loads(pyproject.read_text())
     keywords = data["project"].get("keywords", [])
     assert len(keywords) >= 3
+
+
+# ---------------------------------------------------------------------------
+# task-4-upgrade-routing: upgrade routes based on install source
+# ---------------------------------------------------------------------------
+
+
+def test_upgrade_pypi_install_uses_package_name(monkeypatch, capsys):
+    """upgrade() for PyPI installs must use 'muxplex' not git+https URL."""
+    import subprocess
+    import muxplex.cli as cli_mod
+    calls = []
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(cli_mod, "_get_install_info", lambda: {"source": "pypi", "version": "0.1.0", "commit": None, "url": None})
+    monkeypatch.setattr(cli_mod, "_check_for_update", lambda info: (True, "update available (v0.1.0 → v0.2.0)"))
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+    uv_calls = [c for c in calls if isinstance(c, list) and "tool" in c and "install" in c]
+    assert len(uv_calls) > 0
+    install_cmd = uv_calls[0]
+    assert "muxplex" in install_cmd
+    assert not any("git+" in str(arg) for arg in install_cmd)
+
+
+def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
+    """upgrade() for git installs must still use git+https URL."""
+    import subprocess
+    import muxplex.cli as cli_mod
+    calls = []
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(cli_mod, "_get_install_info", lambda: {"source": "git", "version": "0.1.0", "commit": "abc12345", "url": "https://github.com/bkrabach/muxplex"})
+    monkeypatch.setattr(cli_mod, "_check_for_update", lambda info: (True, "update available (abc12345 → def67890)"))
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+    uv_calls = [c for c in calls if isinstance(c, list) and "tool" in c and "install" in c]
+    assert len(uv_calls) > 0
+    install_cmd = uv_calls[0]
+    assert any("git+" in str(arg) for arg in install_cmd)

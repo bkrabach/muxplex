@@ -520,6 +520,11 @@ def upgrade(*, force: bool = False) -> None:
 
     # 2. Reinstall via uv tool install
     print("  Installing latest version...")
+    install_target = (
+        "muxplex"
+        if info["source"] == "pypi"
+        else "git+https://github.com/bkrabach/muxplex"
+    )
     uv_path = shutil.which("uv")
     if uv_path:
         result = subprocess.run(
@@ -527,7 +532,7 @@ def upgrade(*, force: bool = False) -> None:
                 uv_path,
                 "tool",
                 "install",
-                "git+https://github.com/bkrabach/muxplex",
+                install_target,
                 "--force",
             ],
             capture_output=True,
@@ -546,7 +551,7 @@ def upgrade(*, force: bool = False) -> None:
                     pip_path,
                     "install",
                     "--upgrade",
-                    "git+https://github.com/bkrabach/muxplex",
+                    install_target,
                 ],
                 capture_output=True,
                 text=True,
