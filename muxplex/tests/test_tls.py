@@ -214,3 +214,110 @@ def test_get_cert_info_returns_none_for_corrupt_file(tmp_path):
     assert result is None, (
         f"get_cert_info() must return None for corrupt PEM file, got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 13–16. detect_tailscale() tests
+# ---------------------------------------------------------------------------
+
+
+def test_detect_tailscale_returns_info_when_available(monkeypatch):
+    """detect_tailscale() must return hostname, ips, cert_domains when Tailscale is available."""
+    import json
+
+    from muxplex.tls import detect_tailscale
+
+    status_data = {
+        "DNSName": "spark-1.tail8f3c4e.ts.net.",
+        "TailscaleIPs": ["100.64.0.1"],
+        "CertDomains": ["spark-1.tail8f3c4e.ts.net"],
+    }
+
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/tailscale" if name == "tailscale" else None,
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "R", (), {"returncode": 0, "stdout": json.dumps(status_data)}
+        )(),
+    )
+
+    result = detect_tailscale()
+
+    assert result is not None, (
+        "detect_tailscale() must not return None when Tailscale is available"
+    )
+    assert result["hostname"] == "spark-1.tail8f3c4e.ts.net", (
+        f"hostname must be 'spark-1.tail8f3c4e.ts.net' (trailing dot stripped), got: {result['hostname']!r}"
+    )
+    assert result["ips"] == ["100.64.0.1"], (
+        f"ips must be ['100.64.0.1'], got: {result['ips']!r}"
+    )
+    assert result["cert_domains"] == ["spark-1.tail8f3c4e.ts.net"], (
+        f"cert_domains must be ['spark-1.tail8f3c4e.ts.net'], got: {result['cert_domains']!r}"
+    )
+
+
+def test_detect_tailscale_returns_none_when_not_installed(monkeypatch):
+    """detect_tailscale() must return None when Tailscale CLI is not installed."""
+    from muxplex.tls import detect_tailscale
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    result = detect_tailscale()
+
+    assert result is None, (
+        f"detect_tailscale() must return None when not installed, got: {result!r}"
+    )
+
+
+def test_detect_tailscale_returns_none_when_not_connected(monkeypatch):
+    """detect_tailscale() must return None when Tailscale is not connected (non-zero exit)."""
+    from muxplex.tls import detect_tailscale
+
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/tailscale" if name == "tailscale" else None,
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 1, "stdout": ""})(),
+    )
+
+    result = detect_tailscale()
+
+    assert result is None, (
+        f"detect_tailscale() must return None when not connected (non-zero exit), got: {result!r}"
+    )
+
+
+def test_detect_tailscale_returns_none_when_no_cert_domains(monkeypatch):
+    """detect_tailscale() must return None when CertDomains is empty."""
+    import json
+
+    from muxplex.tls import detect_tailscale
+
+    status_data = {
+        "DNSName": "spark-1.tail8f3c4e.ts.net.",
+        "TailscaleIPs": ["100.64.0.1"],
+        "CertDomains": [],
+    }
+
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/bin/tailscale" if name == "tailscale" else None,
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "R", (), {"returncode": 0, "stdout": json.dumps(status_data)}
+        )(),
+    )
+
+    result = detect_tailscale()
+
+    assert result is None, (
+        f"detect_tailscale() must return None when CertDomains is empty, got: {result!r}"
+    )

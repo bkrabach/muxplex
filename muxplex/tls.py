@@ -116,6 +116,56 @@ def generate_self_signed(
     }
 
 
+def detect_tailscale() -> dict | None:
+    """Probe for Tailscale and return connection info if available.
+
+    Checks whether the Tailscale CLI is installed, verifies the node is
+    connected, and confirms HTTPS certificate domains are enabled.
+
+    Returns:
+        dict with keys: hostname (str), ips (list[str]), cert_domains (list[str])
+        if Tailscale is installed, connected, and cert domains are configured.
+        Returns None if any of these conditions are not met.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("tailscale"):
+        return None
+
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--self", "--json"],
+            timeout=10,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    dns_name = data.get("DNSName", "")
+    cert_domains = data.get("CertDomains") or []
+    ips = data.get("TailscaleIPs") or []
+
+    if not dns_name or not cert_domains:
+        return None
+
+    return {
+        "hostname": dns_name.rstrip("."),
+        "ips": ips,
+        "cert_domains": cert_domains,
+    }
+
+
 def get_cert_info(cert_path) -> dict | None:
     """Inspect a PEM certificate and return metadata.
 
