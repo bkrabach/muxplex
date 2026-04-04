@@ -91,7 +91,7 @@ def generate_self_signed(
         .sign(private_key, hashes.SHA256())
     )
 
-    expires = cert.not_valid_after_utc  # type: ignore[attr-defined]
+    expires = getattr(cert, "not_valid_after_utc", cert.not_valid_after)
 
     # Write key PEM — create file with restricted permissions before writing
     key_pem = private_key.private_bytes(
@@ -154,8 +154,8 @@ def get_cert_info(cert_path) -> dict | None:
         pass
 
     return {
-        "expires": cert.not_valid_after_utc,  # type: ignore[attr-defined]
-        "not_before": cert.not_valid_before_utc,  # type: ignore[attr-defined]
+        "expires": getattr(cert, "not_valid_after_utc", cert.not_valid_after),
+        "not_before": getattr(cert, "not_valid_before_utc", cert.not_valid_before),
         "hostnames": hostnames,
         "serial": cert.serial_number,
     }
