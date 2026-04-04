@@ -13,8 +13,8 @@
 - **Live session grid** — preview tiles with ANSI-colored terminal snapshots, auto-refreshed
 - **Two view modes** — Auto (scrollable grid) and Fit (all sessions fill the viewport)
 - **Hover preview** — full-size overlay of session content on tile hover
-- **Activity indicators** — bell notification badges, amber favicon dot for browser tab visibility
-- **Session creation** — `+` button with custom command template support
+- **Activity indicators** — bell notification badges on tiles; amber favicon dot + `(N)` count in browser tab title when sessions have unseen activity
+- **Session creation** — `+` button with device selector dropdown when multi-device is enabled; custom command template support
 - **Session deletion** — `×` button with custom command template support
 - **Mobile-friendly** — responsive layout, PWA-capable for home-screen install
 
@@ -34,6 +34,13 @@
 - **Commands** — custom create/delete session templates
 - **Multi-Device** — remote instance federation
 - **CLI** — `muxplex config list/get/set/reset`
+
+### Multi-Device
+
+- **Remote session aggregation** — federate multiple muxplex instances into a unified dashboard view
+- **Device selector in new session** — `+` button shows a device dropdown when multi-device is enabled; create sessions on any connected instance directly from the dashboard
+- **Remote bell-clear** — opening a session on a remote device automatically clears its activity notification via federation API (`POST /api/bell/clear`)
+- **Unique session keys** — sessions identified by `remoteId:name` across devices, preventing bell-state collisions for identically-named sessions on different machines
 
 ### Service Management
 
