@@ -52,6 +52,7 @@ Issues = "https://github.com/bkrabach/muxplex/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["muxplex"]
+exclude = ["muxplex/tests", "muxplex/frontend/tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["muxplex/tests"]
