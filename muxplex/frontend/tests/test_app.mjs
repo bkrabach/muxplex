@@ -4103,3 +4103,111 @@ test('updatePageTitle is called from pollSessions', () => {
   const pollFn = source.substring(source.indexOf('async function pollSessions'), source.indexOf('async function pollSessions') + 700);
   assert.ok(pollFn.includes('updatePageTitle'), 'pollSessions must call updatePageTitle');
 });
+
+// --- _createDeviceSelect and showNewSessionInput multi-device tests ---
+
+test('_createDeviceSelect builds a <select> with Local + remote options', () => {
+  // Verify function is exported
+  assert.strictEqual(typeof app._createDeviceSelect, 'function', '_createDeviceSelect must be exported');
+
+  // Set up server settings with multi_device_enabled + remote_instances + device_name
+  app._setServerSettings({
+    multi_device_enabled: true,
+    remote_instances: [{ name: 'Remote A', url: 'http://a' }],
+    device_name: 'MyDevice',
+  });
+
+  // Mock document.createElement to capture created elements
+  const origCE = globalThis.document.createElement;
+  const builtOptions = [];
+  let selectEl = null;
+
+  globalThis.document.createElement = (tag) => {
+    if (tag === 'select') {
+      selectEl = {
+        tagName: 'SELECT',
+        className: '',
+        value: '',
+        options: builtOptions,
+        appendChild: (child) => { builtOptions.push(child); },
+        addEventListener: () => {},
+      };
+      return selectEl;
+    }
+    // option elements
+    return { tagName: tag.toUpperCase(), value: '', textContent: '', selected: false };
+  };
+
+  const result = app._createDeviceSelect();
+  globalThis.document.createElement = origCE;
+
+  assert.ok(result !== null, '_createDeviceSelect must return non-null when multi_device_enabled + remotes present');
+  assert.strictEqual(result.className, 'new-session-device-select', 'select must have className new-session-device-select');
+  assert.strictEqual(builtOptions.length, 2, 'must have 2 options: local + 1 remote');
+  assert.strictEqual(builtOptions[0].value, '', 'first option value must be empty string (local)');
+  assert.strictEqual(builtOptions[0].textContent, 'MyDevice', 'first option text must use device_name');
+  assert.strictEqual(builtOptions[1].value, '0', 'remote option value must be "0" (String(index))');
+  assert.strictEqual(builtOptions[1].textContent, 'Remote A', 'remote option text must use remote.name');
+});
+
+test('showNewSessionInput creates device select when multi_device_enabled with remotes', () => {
+  app._setServerSettings({
+    multi_device_enabled: true,
+    remote_instances: [{ name: 'Remote B', url: 'http://b' }],
+    device_name: 'LocalDev',
+  });
+
+  const origCE = globalThis.document.createElement;
+  const createdTags = [];
+  const insertedEls = [];
+
+  globalThis.document.createElement = (tag) => {
+    createdTags.push(tag);
+    return {
+      tagName: tag.toUpperCase(),
+      className: '',
+      type: '',
+      placeholder: '',
+      autocomplete: '',
+      spellcheck: false,
+      value: '',
+      style: {},
+      options: [],
+      appendChild: () => {},
+      addEventListener: () => {},
+      focus: () => {},
+    };
+  };
+
+  const btn = {
+    style: {},
+    parentNode: {
+      insertBefore: (el) => { insertedEls.push(el); },
+    },
+  };
+
+  app.showNewSessionInput(btn);
+  globalThis.document.createElement = origCE;
+
+  assert.ok(createdTags.includes('select'), 'showNewSessionInput must create a <select> element when multi_device_enabled');
+});
+
+test('showNewSessionInput passes remoteId from device select to createNewSession', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Extract showNewSessionInput function body
+  const fnStart = source.indexOf('function showNewSessionInput(');
+  assert.ok(fnStart !== -1, 'showNewSessionInput function must exist');
+  const fnBody = source.substring(fnStart, fnStart + 1200);
+  // Must call _createDeviceSelect
+  assert.ok(fnBody.includes('_createDeviceSelect'), 'showNewSessionInput must call _createDeviceSelect');
+  // Must read remoteId from select.value (or equivalent)
+  assert.ok(
+    fnBody.includes('remoteId') && (fnBody.includes('select.value') || fnBody.includes('sel.value')),
+    'showNewSessionInput Enter handler must read remoteId from select element value',
+  );
+  // Must call createNewSession with two arguments (name and remoteId)
+  assert.ok(
+    fnBody.includes('createNewSession(name') && fnBody.includes('remoteId'),
+    'showNewSessionInput must call createNewSession with name and remoteId arguments',
+  );
+});

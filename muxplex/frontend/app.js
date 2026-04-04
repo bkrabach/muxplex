@@ -1910,17 +1910,56 @@ function _createSessionInput() {
 }
 
 /**
- * Replace the header + button with an inline text input for session naming.
- * Hides the button, inserts the input before it, and focuses it.
- * On Enter: if name is non-empty after trim, calls createNewSession(name).
+ * Create an optional device <select> for multi-device session creation.
+ * Returns null when multi_device_enabled is false or remote_instances is empty.
+ * @returns {HTMLSelectElement|null}
+ */
+function _createDeviceSelect() {
+  const ss = _serverSettings || {};
+  const remotes = ss.remote_instances;
+  if (!ss.multi_device_enabled || !remotes || remotes.length === 0) {
+    return null;
+  }
+
+  const select = document.createElement('select');
+  select.className = 'new-session-device-select';
+
+  // Local device option
+  const localOpt = document.createElement('option');
+  localOpt.value = '';
+  localOpt.textContent = ss.device_name || 'Local';
+  select.appendChild(localOpt);
+
+  // Remote instance options
+  for (var i = 0; i < remotes.length; i++) {
+    var opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = remotes[i].name || remotes[i].url || 'Remote ' + i;
+    if (_activeFilterDevice === remotes[i].name || _activeFilterDevice === remotes[i].url) {
+      opt.selected = true;
+      select.value = String(i);
+    }
+    select.appendChild(opt);
+  }
+
+  return select;
+}
+
+/**
+ * Replace the header + button with an inline text input (and optional device
+ * select) for session naming. Hides the button, inserts controls before it,
+ * and focuses the input.
+ * On Enter: if name is non-empty after trim, calls createNewSession(name, remoteId).
  * On Escape: restores the button (cleanup only).
  * On blur: delayed cleanup (150ms) to allow click handlers.
  * @param {HTMLElement} btn - The button element to replace temporarily.
  */
 function showNewSessionInput(btn) {
+  const select = _createDeviceSelect();
   const input = _createSessionInput();
 
   function cleanup() {
+    if (select && select.parentNode) select.parentNode.removeChild(select);
     if (input.parentNode) input.parentNode.removeChild(input);
     btn.style.display = '';
   }
@@ -1928,8 +1967,9 @@ function showNewSessionInput(btn) {
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
       const name = input.value.trim();
+      const remoteId = select ? select.value : '';
       cleanup();
-      if (name) createNewSession(name);
+      if (name) createNewSession(name, remoteId);
     } else if (e.key === 'Escape') {
       cleanup();
     }
@@ -1940,6 +1980,7 @@ function showNewSessionInput(btn) {
   });
 
   btn.style.display = 'none';
+  if (select) btn.parentNode.insertBefore(select, btn);
   btn.parentNode.insertBefore(input, btn);
   input.focus();
 }
@@ -2483,6 +2524,7 @@ if (typeof module !== 'undefined' && module.exports) {
     // Fetch wrapper
     api,
     // Header + button with inline name input
+    _createDeviceSelect,
     showNewSessionInput,
     showFabSessionInput,
     createNewSession,
