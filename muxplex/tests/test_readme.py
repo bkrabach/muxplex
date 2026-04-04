@@ -167,16 +167,89 @@ def test_readme_examples_show_tls_commands():
     )
 
 
-def test_readme_phase_2_items_noted():
-    """README must note Phase 2 items (Tailscale, mkcert) as upcoming."""
+def test_readme_no_phase_2_placeholders():
+    """README must NOT contain any '(Phase 2)' placeholder text."""
+    assert "(Phase 2)" not in README, (
+        "README must not contain '(Phase 2)' placeholder text — Phase 2 is complete"
+    )
+
+
+def test_readme_tls_tailscale_lets_encrypt():
+    """README must document Tailscale as providing real Let's Encrypt certs via tailscale cert."""
+    assert "tailscale cert" in README, (
+        "README must mention 'tailscale cert' command for Let's Encrypt certs"
+    )
     assert "Tailscale" in README, (
-        "README must mention Tailscale as a Phase 2 TLS method"
+        "README must mention Tailscale as a TLS method"
     )
-    assert "mkcert" in README, (
-        "README must mention mkcert as a Phase 2 TLS method"
+
+
+def test_readme_tls_mkcert_zero_browser_warnings():
+    """README must document mkcert as providing locally-trusted certs with zero browser warnings."""
+    assert "mkcert" in README, "README must mention mkcert as a TLS method"
+    assert "zero browser warnings" in README or "browser warnings" in README, (
+        "README must mention that mkcert provides zero browser warnings"
     )
-    assert "Phase 2" in README, (
-        "README must note Phase 2 items as upcoming"
+
+
+def test_readme_tls_selfsigned_browser_warning():
+    """README must document self-signed as fallback with browser warning note."""
+    readme_lower = README.lower()
+    assert "browser shows warning" in readme_lower or "browser warning" in readme_lower, (
+        "README must note that self-signed certs show browser warnings"
+    )
+
+
+def test_readme_tls_setup_status_command():
+    """README must document the 'muxplex setup-tls --status' command."""
+    assert "muxplex setup-tls --status" in README, (
+        "README must document 'muxplex setup-tls --status' command"
+    )
+
+
+def test_readme_tls_setup_method_tailscale():
+    """README must document 'muxplex setup-tls --method tailscale' in examples."""
+    assert "muxplex setup-tls --method tailscale" in README, (
+        "README must show 'muxplex setup-tls --method tailscale' in examples"
+    )
+
+
+def test_readme_tls_setup_method_mkcert():
+    """README must document 'muxplex setup-tls --method mkcert' in examples."""
+    assert "muxplex setup-tls --method mkcert" in README, (
+        "README must show 'muxplex setup-tls --method mkcert' in examples"
+    )
+
+
+def test_readme_tls_detection_priority_explanation():
+    """README must explain detection priority for TLS method auto-detection."""
+    readme_lower = README.lower()
+    assert "detection" in readme_lower or "priority" in readme_lower or "auto-detect" in readme_lower, (
+        "README must explain detection priority for auto-detect TLS method selection"
+    )
+
+
+def test_readme_tls_tailscale_cert_renewal_note():
+    """README must include a note about Tailscale cert renewal (90-day expiry)."""
+    assert "90-day" in README or "90 day" in README or "90 days" in README, (
+        "README must include a note about 90-day Tailscale cert renewal/expiry"
+    )
+
+
+def test_readme_cli_reference_setup_tls_updated():
+    """README CLI Reference must describe setup-tls with Tailscale/mkcert/self-signed."""
+    assert "Tailscale/mkcert/self-signed" in README or "Tailscale/mkcert" in README, (
+        "README CLI Reference must describe setup-tls with Tailscale/mkcert/self-signed methods"
+    )
+
+
+def test_readme_cli_reference_has_setup_tls_status():
+    """README CLI Reference must include setup-tls --status command with description."""
+    assert "setup-tls --status" in README, (
+        "README CLI Reference must include 'setup-tls --status' with description"
+    )
+    assert "Show current TLS" in README or "current TLS configuration" in README, (
+        "README CLI Reference must describe what setup-tls --status does"
     )
 
 

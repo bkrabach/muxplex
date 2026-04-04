@@ -56,11 +56,11 @@
 
 ### HTTPS / TLS
 
-- `muxplex setup-tls` — set up TLS certificates for HTTPS (auto-detects best method)
-- **Tailscale** *(Phase 2)* — automatic HTTPS via Tailscale funnel
-- **mkcert** *(Phase 2)* — locally-trusted development certificates via mkcert
-- **Self-signed fallback** — generates a self-signed cert when no other method is available
-- **Clipboard API** — HTTPS is required for clipboard access in most browsers
+- `muxplex setup-tls` — auto-detect and set up TLS certificates
+- **Tailscale** — real Let's Encrypt certs via `tailscale cert` (recommended)
+- **mkcert** — locally-trusted certs, zero browser warnings
+- **Self-signed** — fallback for immediate HTTPS (browser shows warning)
+- Required for browser clipboard API on non-localhost
 
 ---
 
@@ -148,7 +148,8 @@ muxplex upgrade [--force]            Smart update with version check
 muxplex doctor                       Check dependencies + config
 muxplex show-password                Show current auth password
 muxplex reset-secret                 Regenerate signing secret
-muxplex setup-tls [--method auto]   Set up TLS certs for HTTPS
+muxplex setup-tls [--method auto]   Set up TLS certs (Tailscale/mkcert/self-signed)
+muxplex setup-tls --status          Show current TLS configuration
 ```
 
 ### Service management
@@ -189,15 +190,24 @@ muxplex serve --host 0.0.0.0
 # Auto-detect the best TLS method and set up certificates
 muxplex setup-tls
 
-# Use self-signed certificates explicitly
+# Use a specific TLS method
+muxplex setup-tls --method tailscale
+muxplex setup-tls --method mkcert
 muxplex setup-tls --method selfsigned
 
+# Show current TLS status and configuration
+muxplex setup-tls --status
+
 # Override TLS cert/key for a single run (without saving to config)
-muxplex serve --tls-cert /path/to/cert.pem --tls-key /path/to/key.pem
+muxplex serve --tls-cert /path/cert.pem --tls-key /path/key.pem
 
 # Check TLS configuration and dependencies
 muxplex doctor
 ```
+
+Auto-detection priority: **Tailscale** (if `tailscale` is installed and a cert is available) → **mkcert** (if `mkcert` is installed) → **self-signed** (always available as a fallback). Use `--method` to override.
+
+> **Note:** Tailscale certs have a 90-day expiry. Run `muxplex setup-tls --method tailscale` to renew when needed.
 
 ---
 
