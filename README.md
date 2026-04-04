@@ -24,6 +24,9 @@
 - **Native clipboard** — Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
 - **Mouse select auto-copy** — selecting text copies to system clipboard on release
 - **OSC 52 tmux clipboard bridge** — tmux copy mode selections go to system clipboard
+- **Search** — Ctrl+F opens a search bar to find text in terminal scrollback (xterm-addon-search)
+- **Clickable URLs** — Ctrl+Click (Cmd+Click on macOS) opens URLs in terminal output in a new tab (xterm-addon-web-links)
+- **Inline image rendering** — Sixel and iTerm2 graphic protocols for tools like yazi file manager (xterm-addon-image)
 - **Sidebar session switcher** — quick-switch between sessions with live previews
 
 ### Settings
@@ -252,6 +255,9 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 |---|---|
 | Ctrl+Shift+C | Copy terminal selection to system clipboard |
 | Ctrl+Shift+V | Paste from system clipboard into terminal |
+| Ctrl+F | Open terminal search bar |
+| Enter / Shift+Enter | Next / previous search match |
+| Ctrl+Click (Cmd+Click) | Open URL in new tab |
 | `,` (comma) | Open settings |
 | Escape | Close settings / return to dashboard |
 
