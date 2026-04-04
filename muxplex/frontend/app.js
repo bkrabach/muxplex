@@ -1039,8 +1039,9 @@ function showToast(msg) {
 function updatePillBell() {
   const el = $('session-pill-bell');
   if (!el) return;
+  const viewingKey = _viewingRemoteId ? (_viewingRemoteId + ':' + _viewingSession) : _viewingSession;
   const hasBell = _currentSessions.some(
-    (s) => s.name !== _viewingSession && s.bell && s.bell.unseen_count > 0,
+    (s) => (s.sessionKey || s.name) !== viewingKey && s.bell && s.bell.unseen_count > 0,
   );
   if (hasBell) el.classList.remove('hidden'); else el.classList.add('hidden');
 }
@@ -1872,8 +1873,9 @@ function updateSessionPill(sessions) {
   if (_viewMode !== 'fullscreen') return;
   var pillBell = $('session-pill-bell');
   if (!pillBell) return;
+  var viewingKey = _viewingRemoteId ? (_viewingRemoteId + ':' + _viewingSession) : _viewingSession;
   var othersWithBell = sessions.filter(function(s) {
-    return s.name !== _viewingSession &&
+    return (s.sessionKey || s.name) !== viewingKey &&
       s.bell && s.bell.unseen_count > 0 &&
       (s.bell.seen_at === null || s.bell.last_fired_at > s.bell.seen_at);
   });

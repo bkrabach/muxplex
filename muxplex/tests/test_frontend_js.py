@@ -2494,3 +2494,52 @@ def test_device_name_change_updates_document_title() -> None:
     assert "document.title" in body, (
         "bindStaticEventListeners device-name handler must update document.title"
     )
+
+
+# ─── task-4-frontend-session-key-comparison ─────────────────────────────────
+
+
+def test_update_pill_bell_uses_session_key_or_name() -> None:
+    """updatePillBell must compare using sessionKey||name against a viewingKey
+    that accounts for remote sessions (_viewingRemoteId prefix)."""
+    match = re.search(
+        r"function updatePillBell\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "updatePillBell function not found"
+    body = match.group(1)
+    # Must build viewingKey using _viewingRemoteId
+    assert "_viewingRemoteId" in body, (
+        "updatePillBell must reference _viewingRemoteId to build viewingKey"
+    )
+    assert "viewingKey" in body, (
+        "updatePillBell must define a viewingKey variable"
+    )
+    # Must compare using sessionKey || s.name (not just s.name)
+    assert "sessionKey" in body, (
+        "updatePillBell must compare using s.sessionKey || s.name (not just s.name)"
+    )
+
+
+def test_update_session_pill_uses_session_key_or_name() -> None:
+    """updateSessionPill must compare using sessionKey||name against a viewingKey
+    that accounts for remote sessions (_viewingRemoteId prefix)."""
+    match = re.search(
+        r"function updateSessionPill\s*\(\w+\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "updateSessionPill function not found"
+    body = match.group(1)
+    # Must build viewingKey using _viewingRemoteId
+    assert "_viewingRemoteId" in body, (
+        "updateSessionPill must reference _viewingRemoteId to build viewingKey"
+    )
+    assert "viewingKey" in body, (
+        "updateSessionPill must define a viewingKey variable"
+    )
+    # Must compare using sessionKey || s.name (not just s.name)
+    assert "sessionKey" in body, (
+        "updateSessionPill must compare using s.sessionKey || s.name (not just s.name)"
+    )
