@@ -2513,9 +2513,7 @@ def test_update_pill_bell_uses_session_key_or_name() -> None:
     assert "_viewingRemoteId" in body, (
         "updatePillBell must reference _viewingRemoteId to build viewingKey"
     )
-    assert "viewingKey" in body, (
-        "updatePillBell must define a viewingKey variable"
-    )
+    assert "viewingKey" in body, "updatePillBell must define a viewingKey variable"
     # Must compare using sessionKey || s.name (not just s.name)
     assert "sessionKey" in body, (
         "updatePillBell must compare using s.sessionKey || s.name (not just s.name)"
@@ -2536,9 +2534,7 @@ def test_update_session_pill_uses_session_key_or_name() -> None:
     assert "_viewingRemoteId" in body, (
         "updateSessionPill must reference _viewingRemoteId to build viewingKey"
     )
-    assert "viewingKey" in body, (
-        "updateSessionPill must define a viewingKey variable"
-    )
+    assert "viewingKey" in body, "updateSessionPill must define a viewingKey variable"
     # Must compare using sessionKey || s.name (not just s.name)
     assert "sessionKey" in body, (
         "updateSessionPill must compare using s.sessionKey || s.name (not just s.name)"
