@@ -1672,7 +1672,7 @@ def test_show_new_session_input_handles_blur_with_delay() -> None:
 def test_create_new_session_posts_to_api_sessions() -> None:
     """createNewSession must POST to /api/sessions."""
     match = re.search(
-        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
@@ -1685,7 +1685,7 @@ def test_create_new_session_posts_to_api_sessions() -> None:
 def test_create_new_session_shows_toast() -> None:
     """createNewSession must call showToast."""
     match = re.search(
-        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
@@ -1697,7 +1697,7 @@ def test_create_new_session_shows_toast() -> None:
 def test_create_new_session_calls_poll_sessions() -> None:
     """createNewSession must call pollSessions."""
     match = re.search(
-        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
@@ -1709,7 +1709,7 @@ def test_create_new_session_calls_poll_sessions() -> None:
 def test_create_new_session_auto_opens_session() -> None:
     """createNewSession must call openSession when auto_open_created is not false."""
     match = re.search(
-        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
@@ -1724,7 +1724,7 @@ def test_create_new_session_auto_opens_session() -> None:
 def test_create_new_session_polls_before_open() -> None:
     """createNewSession must poll for the session to appear before calling openSession (not immediate setTimeout)."""
     match = re.search(
-        r"async function createNewSession\s*\(\w+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
