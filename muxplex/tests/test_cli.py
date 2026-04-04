@@ -1901,3 +1901,107 @@ def test_setup_tls_method_choices_expanded():
     assert "mkcert" in help_text, (
         f"Expected 'mkcert' in setup-tls --help output, got:\n{help_text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# task-6-existing-cert-regenerate-prompt: Existing cert detection & prompt
+# ---------------------------------------------------------------------------
+
+
+def test_setup_tls_prompts_when_certs_exist(tmp_path, monkeypatch, capsys):
+    """setup_tls() prints 'already configured' and prompts when certs already exist.
+
+    When tls_cert/tls_key are set in settings and the cert file exists,
+    setup_tls() must inform the user and prompt before overwriting.
+    When the user answers 'n', it must keep existing certs and return early.
+    """
+    import json
+
+    import muxplex.settings as settings_mod
+    import muxplex.tls as tls_mod
+    from muxplex.tls import generate_self_signed
+
+    from muxplex.cli import setup_tls
+
+    # Generate real self-signed cert in tmp_path
+    cert_path = tmp_path / "muxplex.crt"
+    key_path = tmp_path / "muxplex.key"
+    generate_self_signed(cert_path, key_path)
+
+    # Write settings pointing to the generated cert
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"tls_cert": str(cert_path), "tls_key": str(key_path)})
+    )
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    # Monkeypatch input to return 'n' (user declines regeneration)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+
+    # Monkeypatch detection functions to isolate prompt behavior
+    monkeypatch.setattr(tls_mod, "detect_tailscale", lambda: None)
+    monkeypatch.setattr(tls_mod, "detect_mkcert", lambda: False)
+
+    setup_tls()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "already configured" in out_lower or "regenerate" in out_lower, (
+        f"Expected 'already configured' or 'regenerate' in output, got: {out!r}"
+    )
+    # User said 'n' — should keep existing certs and return early
+    assert "keeping" in out_lower, (
+        f"Expected 'keeping' in output (user declined regeneration), got: {out!r}"
+    )
+    # Must NOT proceed to generate new certs (no "TLS setup complete" message)
+    assert "tls setup complete" not in out_lower, (
+        f"setup_tls() must return early when user says 'n', got: {out!r}"
+    )
+
+
+def test_setup_tls_regenerates_on_eof(tmp_path, monkeypatch, capsys):
+    """setup_tls() handles EOFError from input() gracefully (non-interactive mode).
+
+    When running in a non-interactive environment (e.g. piped stdin), input()
+    raises EOFError. The function must treat this as 'n' (keep existing certs)
+    and return normally without crashing.
+    """
+    import json
+
+    import muxplex.settings as settings_mod
+    import muxplex.tls as tls_mod
+    from muxplex.tls import generate_self_signed
+
+    from muxplex.cli import setup_tls
+
+    # Generate real self-signed cert in tmp_path
+    cert_path = tmp_path / "muxplex.crt"
+    key_path = tmp_path / "muxplex.key"
+    generate_self_signed(cert_path, key_path)
+
+    # Write settings pointing to the generated cert
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"tls_cert": str(cert_path), "tls_key": str(key_path)})
+    )
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    # Monkeypatch input to raise EOFError (non-interactive environment)
+    def raise_eof(prompt=""):
+        raise EOFError("non-interactive stdin")
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+
+    # Monkeypatch detection functions to isolate behavior
+    monkeypatch.setattr(tls_mod, "detect_tailscale", lambda: None)
+    monkeypatch.setattr(tls_mod, "detect_mkcert", lambda: False)
+
+    # Must not crash — EOFError is caught and treated as 'n'
+    setup_tls()  # No exception should propagate
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    # EOFError → default 'n' → keep existing certs
+    assert "keeping" in out_lower, (
+        f"Expected 'keeping' in output after EOFError (default 'n'), got: {out!r}"
+    )

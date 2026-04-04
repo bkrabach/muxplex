@@ -718,18 +718,35 @@ def setup_tls(method: str = "auto") -> None:
     Auto-detection chain (method='auto'): Tailscale → mkcert → self-signed.
     Use --method to force a specific certificate source.
     """
-    from muxplex.settings import SETTINGS_PATH, patch_settings  # noqa: PLC0415
+    from muxplex.settings import SETTINGS_PATH, load_settings, patch_settings  # noqa: PLC0415
     from muxplex.tls import (  # noqa: PLC0415
         detect_mkcert,
         detect_tailscale,
         generate_mkcert,
         generate_self_signed,
         generate_tailscale,
+        get_cert_info,
     )
 
     config_dir = SETTINGS_PATH.parent
     cert_path = config_dir / "muxplex.crt"
     key_path = config_dir / "muxplex.key"
+
+    # Check for existing certificates and prompt before overwriting
+    _settings = load_settings()
+    _existing_cert = _settings.get("tls_cert", "")
+    _existing_key = _settings.get("tls_key", "")
+    if _existing_cert and _existing_key and Path(_existing_cert).exists():
+        _info = get_cert_info(_existing_cert)
+        if _info is not None:
+            print(f"TLS already configured (expires {str(_info['expires'])[:10]}).")
+        try:
+            _answer = input("Regenerate? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            _answer = "n"
+        if _answer.lower() not in ("y", "yes"):
+            print("Keeping existing certificates.")
+            return
 
     result = None
     tailscale_info = None
