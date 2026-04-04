@@ -1561,3 +1561,76 @@ def test_serve_subcommand_accepts_tls_flags():
             tls_cert="/path/cert.pem",
             tls_key="/path/key.pem",
         )
+
+
+# ---------------------------------------------------------------------------
+# task-6-doctor-tls: TLS status section in doctor()
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_shows_tls_disabled(tmp_path, monkeypatch, capsys):
+    """doctor() shows TLS disabled when no TLS configured."""
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    # No tls_cert/tls_key — just use empty settings
+    settings_file.write_text("{}")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import doctor
+
+    doctor()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "tls" in out_lower, f"Expected 'tls' in doctor output, got: {out!r}"
+    assert "disabled" in out_lower, (
+        f"Expected 'disabled' in doctor output, got: {out!r}"
+    )
+
+
+def test_doctor_shows_tls_enabled(tmp_path, monkeypatch, capsys):
+    """doctor() shows TLS enabled when valid certs are configured."""
+    import json
+
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_self_signed
+
+    # Generate real self-signed certs in tmp_path
+    cert_path = tmp_path / "muxplex.crt"
+    key_path = tmp_path / "muxplex.key"
+    generate_self_signed(cert_path, key_path)
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps({"tls_cert": str(cert_path), "tls_key": str(key_path)})
+    )
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import doctor
+
+    doctor()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "tls" in out_lower, f"Expected 'tls' in doctor output, got: {out!r}"
+    assert "enabled" in out_lower, f"Expected 'enabled' in doctor output, got: {out!r}"
+
+
+def test_doctor_shows_tls_clipboard_warning(tmp_path, monkeypatch, capsys):
+    """doctor() mentions clipboard or https when TLS is disabled."""
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{}")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    from muxplex.cli import doctor
+
+    doctor()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "clipboard" in out_lower or "https" in out_lower, (
+        f"Expected 'clipboard' or 'https' in doctor TLS-disabled output, got: {out!r}"
+    )

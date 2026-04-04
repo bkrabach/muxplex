@@ -342,6 +342,37 @@ def doctor() -> None:
         f" (auth={cfg['auth']}, ttl={cfg['session_ttl']}s)"
     )
 
+    # TLS status
+    tls_cert = cfg.get("tls_cert", "")
+    tls_key = cfg.get("tls_key", "")
+    if tls_cert and tls_key:
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        from muxplex.tls import get_cert_info  # noqa: PLC0415
+
+        cert_info = get_cert_info(tls_cert)
+        if cert_info is not None:
+            expires = cert_info["expires"]
+            # Ensure timezone-aware for comparison
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            if expires < now:
+                days_ago = (now - expires).days
+                print(
+                    f"  {warn_mark} TLS: WARNING \u2014 cert expired {days_ago} days ago."
+                    " Run muxplex setup-tls to renew"
+                )
+            else:
+                expiry_str = expires.strftime("%Y-%m-%d")
+                print(f"  {ok_mark} TLS: enabled (cert expires {expiry_str})")
+        else:
+            print(f"  {warn_mark} TLS: configured but cert not readable ({tls_cert})")
+    else:
+        print(
+            f"  {warn_mark} TLS: disabled (clipboard requires HTTPS on non-localhost)"
+        )
+
     # Auth status
     pw_path = get_password_path()
     if pam_available():
