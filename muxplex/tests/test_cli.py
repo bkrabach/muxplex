@@ -1407,3 +1407,72 @@ def test_serve_prints_http_url_when_no_tls(tmp_path, monkeypatch, capsys):
     assert "https://" not in captured.out, (
         f"Must NOT print 'https://' when no TLS, got: {captured.out!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# TLS CLI flags — task-3-cli-flags
+# ---------------------------------------------------------------------------
+
+
+def test_main_passes_tls_cert_and_key_flags():
+    """main() with --tls-cert and --tls-key must forward exact paths to serve()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch(
+            "sys.argv",
+            ["muxplex", "--tls-cert", "/path/cert.pem", "--tls-key", "/path/key.pem"],
+        ):
+            main()
+        mock_serve.assert_called_once_with(
+            host=None,
+            port=None,
+            auth=None,
+            session_ttl=None,
+            tls_cert="/path/cert.pem",
+            tls_key="/path/key.pem",
+        )
+
+
+def test_main_passes_none_for_unset_tls_flags():
+    """main() with no TLS flags must call serve() with tls_cert=None and tls_key=None."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch("sys.argv", ["muxplex"]):
+            main()
+        mock_serve.assert_called_once_with(
+            host=None,
+            port=None,
+            auth=None,
+            session_ttl=None,
+            tls_cert=None,
+            tls_key=None,
+        )
+
+
+def test_serve_subcommand_accepts_tls_flags():
+    """'muxplex serve --tls-cert ... --tls-key ...' must forward both paths to serve()."""
+    from muxplex.cli import main
+
+    with patch("muxplex.cli.serve") as mock_serve:
+        with patch(
+            "sys.argv",
+            [
+                "muxplex",
+                "serve",
+                "--tls-cert",
+                "/path/cert.pem",
+                "--tls-key",
+                "/path/key.pem",
+            ],
+        ):
+            main()
+        mock_serve.assert_called_once_with(
+            host=None,
+            port=None,
+            auth=None,
+            session_ttl=None,
+            tls_cert="/path/cert.pem",
+            tls_key="/path/key.pem",
+        )
