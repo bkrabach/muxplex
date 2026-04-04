@@ -148,9 +148,7 @@ def test_readme_configuration_table_has_tls_cert_row():
 
 def test_readme_configuration_table_has_tls_key_row():
     """README Configuration table must document the tls_key setting."""
-    assert "`tls_key`" in README, (
-        "README Configuration table must include tls_key row"
-    )
+    assert "`tls_key`" in README, "README Configuration table must include tls_key row"
     assert "Path to TLS private key" in README or "TLS private key file" in README, (
         "README must describe tls_key as a TLS private key path"
     )
@@ -158,9 +156,7 @@ def test_readme_configuration_table_has_tls_key_row():
 
 def test_readme_examples_show_tls_commands():
     """README examples must show TLS setup commands."""
-    assert "setup-tls" in README, (
-        "README must show setup-tls in its examples"
-    )
+    assert "setup-tls" in README, "README must show setup-tls in its examples"
     # Check that the examples demonstrate at least the basic setup-tls usage
     assert "muxplex setup-tls" in README, (
         "README examples must show 'muxplex setup-tls' command"
@@ -179,9 +175,7 @@ def test_readme_tls_tailscale_lets_encrypt():
     assert "tailscale cert" in README, (
         "README must mention 'tailscale cert' command for Let's Encrypt certs"
     )
-    assert "Tailscale" in README, (
-        "README must mention Tailscale as a TLS method"
-    )
+    assert "Tailscale" in README, "README must mention Tailscale as a TLS method"
 
 
 def test_readme_tls_mkcert_zero_browser_warnings():
@@ -195,9 +189,9 @@ def test_readme_tls_mkcert_zero_browser_warnings():
 def test_readme_tls_selfsigned_browser_warning():
     """README must document self-signed as fallback with browser warning note."""
     readme_lower = README.lower()
-    assert "browser shows warning" in readme_lower or "browser warning" in readme_lower, (
-        "README must note that self-signed certs show browser warnings"
-    )
+    assert (
+        "browser shows warning" in readme_lower or "browser warning" in readme_lower
+    ), "README must note that self-signed certs show browser warnings"
 
 
 def test_readme_tls_setup_status_command():
@@ -222,11 +216,12 @@ def test_readme_tls_setup_method_mkcert():
 
 
 def test_readme_tls_detection_priority_explanation():
-    """README must explain detection priority for TLS method auto-detection."""
-    readme_lower = README.lower()
-    assert "detection" in readme_lower or "priority" in readme_lower or "auto-detect" in readme_lower, (
-        "README must explain detection priority for auto-detect TLS method selection"
-    )
+    """README must explain auto-detection priority mentioning Tailscale and mkcert."""
+    assert (
+        "Tailscale" in README
+        and "mkcert" in README
+        and ("priority" in README.lower() or "auto-detect" in README.lower())
+    ), "README must explain detection priority naming both Tailscale and mkcert"
 
 
 def test_readme_tls_tailscale_cert_renewal_note():
@@ -254,19 +249,15 @@ def test_readme_cli_reference_has_setup_tls_status():
 
 
 def test_readme_tls_cert_has_empty_default():
-    """README must show tls_cert default as empty string."""
-    # The config table must show the empty string default for tls_cert
+    """README must document the tls_cert config key (presence check)."""
     assert "`tls_cert`" in README, "README must document tls_cert"
 
 
 def test_readme_tls_key_has_empty_default():
-    """README must show tls_key default as empty string."""
-    # The config table must show the empty string default for tls_key
+    """README must document the tls_key config key (presence check)."""
     assert "`tls_key`" in README, "README must document tls_key"
 
 
 def test_readme_tls_setup_tls_entry_with_method_flag():
     """README CLI Reference must show setup-tls with --method flag."""
-    assert "--method" in README, (
-        "README must document the --method flag for setup-tls"
-    )
+    assert "--method" in README, "README must document the --method flag for setup-tls"
