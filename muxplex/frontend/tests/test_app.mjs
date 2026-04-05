@@ -4299,3 +4299,39 @@ test('CSS has new-session-device-select styling', () => {
     'style.css must have .new-session-device-select rule',
   );
 });
+
+// --- Fix: blur handler guards against closing when clicking device select ---
+
+test('showNewSessionInput blur does not close when clicking device select', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // Find the blur handler in showNewSessionInput
+  const fnStart = source.indexOf('function showNewSessionInput');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  // Must check activeElement before cleanup
+  assert.ok(fnBody.includes('activeElement'), 'blur handler must check activeElement before cleanup');
+});
+
+test('showFabSessionInput blur does not close when clicking device select', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function showFabSessionInput');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  assert.ok(fnBody.includes('activeElement'), 'FAB blur handler must check activeElement before cleanup');
+});
+
+test('showNewSessionInput device select has blur handler that guards against closing when focus returns to input', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function showNewSessionInput');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  // The select element should also have a blur handler
+  // We check that there's a blur listener added to the select element
+  const selectBlurIdx = fnBody.indexOf("select.addEventListener('blur'");
+  assert.ok(selectBlurIdx !== -1, 'select element must have a blur handler in showNewSessionInput');
+});
+
+test('showNewSessionInput device select has keydown handler for Escape', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function showNewSessionInput');
+  const fnBody = source.substring(fnStart, fnStart + 2000);
+  const selectKeydownIdx = fnBody.indexOf("select.addEventListener('keydown'");
+  assert.ok(selectKeydownIdx !== -1, 'select element must have a keydown handler in showNewSessionInput');
+});

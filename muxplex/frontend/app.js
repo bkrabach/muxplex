@@ -1975,9 +1975,26 @@ function showNewSessionInput(btn) {
     }
   });
 
-  input.addEventListener('blur', function () {
-    setTimeout(cleanup, 150);
+  input.addEventListener('blur', function() {
+    setTimeout(function() {
+      // Don't close if focus moved to the device select dropdown
+      if (select && document.activeElement === select) return;
+      cleanup();
+    }, 150);
   });
+
+  if (select) {
+    select.addEventListener('blur', function() {
+      setTimeout(function() {
+        // Don't close if focus moved back to the name input
+        if (document.activeElement === input) return;
+        cleanup();
+      }, 150);
+    });
+    select.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { cleanup(); }
+    });
+  }
 
   btn.style.display = 'none';
   if (select) btn.parentNode.insertBefore(select, btn);
@@ -2022,8 +2039,25 @@ function showFabSessionInput() {
   });
 
   input.addEventListener('blur', function() {
-    setTimeout(cleanup, 150);
+    setTimeout(function() {
+      // Don't close if focus moved to the device select dropdown
+      if (select && document.activeElement === select) return;
+      cleanup();
+    }, 150);
   });
+
+  if (select) {
+    select.addEventListener('blur', function() {
+      setTimeout(function() {
+        // Don't close if focus moved back to the name input
+        if (document.activeElement === input) return;
+        cleanup();
+      }, 150);
+    });
+    select.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { cleanup(); }
+    });
+  }
 
   if (fab) fab.style.display = 'none';
   document.body.appendChild(overlay);
