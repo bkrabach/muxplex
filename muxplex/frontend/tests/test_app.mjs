@@ -1240,6 +1240,52 @@ test('openSession for local session still POSTs to local /api/sessions/{name}/co
   globalThis.setTimeout = origSetTimeout;
 });
 
+test('openSession bails early when name is empty string', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('', {});
+
+  // Should NOT make any fetch calls to /connect
+  const connectCall = fetchCalls.find((c) => c.url && c.url.includes('/connect'));
+  assert.ok(!connectCall, 'should NOT call connect when name is empty string');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('openSession bails early when name is whitespace only', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = () => {};
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('  \t\n  ', {});
+
+  // Should NOT make any fetch calls to /connect
+  const connectCall = fetchCalls.find((c) => c.url && c.url.includes('/connect'));
+  assert.ok(!connectCall, 'should NOT call connect when name is whitespace only');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
 // --- closeSession ---
 
 test('closeSession is exported', () => {

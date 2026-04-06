@@ -839,10 +839,14 @@ function renderGrid(sessions) {
     on(tile, 'click', (e) => {
       // Don't navigate when clicking the delete button inside the tile
       if (e.target.closest && e.target.closest('.tile-delete')) return;
+      // Don't open error/status tiles (unreachable, auth_failed)
+      if (tile.classList.contains('source-tile--error') || !tile.dataset.session) return;
       openSession(tile.dataset.session, { remoteId: tile.dataset.remoteId || '' });
     });
     on(tile, 'keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
+        // Don't open error/status tiles (unreachable, auth_failed)
+        if (tile.classList.contains('source-tile--error') || !tile.dataset.session) return;
         openSession(tile.dataset.session, { remoteId: tile.dataset.remoteId || '' });
       }
     });
@@ -1154,6 +1158,7 @@ function updatePageTitle() {
  * @returns {Promise<void>}
  */
 async function openSession(name, opts = {}) {
+  if (!name || !name.trim()) return;
   hidePreview();
   _viewingSession = name;
   _viewingRemoteId = opts.remoteId != null ? opts.remoteId : '';
