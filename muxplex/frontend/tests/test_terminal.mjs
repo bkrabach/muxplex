@@ -991,4 +991,25 @@ test('terminal.js loads xterm-addon-image for inline graphics', () => {
   assert.ok(source.includes('ImageAddon'), 'must reference ImageAddon');
 });
 
+// --- Clipboard double-paste bug fix ---
+
+test('terminal.js Ctrl+Shift+V handler calls preventDefault to suppress double paste', () => {
+  // Regression: without e.preventDefault(), the browser fires a native paste event on
+  // xterm.js's hidden textarea after our handler sends via WebSocket, causing double paste.
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+
+  // Locate the Ctrl+Shift+V block by finding the key check, then extracting the block
+  const vIdx = source.indexOf("e.key === 'V'");
+  assert.ok(vIdx !== -1, "must have a Ctrl+Shift+V key check");
+  const blockStart = source.lastIndexOf('if (', vIdx);
+  const blockEnd = source.indexOf('return false', vIdx);
+  const vBlock = source.substring(blockStart, blockEnd);
+
+  assert.ok(
+    vBlock.includes('preventDefault'),
+    'Ctrl+Shift+V handler must call e.preventDefault() before the async clipboard read ' +
+    'to suppress the browser native paste event (which causes double-paste via xterm textarea)',
+  );
+});
+
 

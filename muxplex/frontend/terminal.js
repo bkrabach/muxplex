@@ -364,6 +364,7 @@ function openTerminal(sessionName, remoteId) {
 
     // Ctrl+Shift+V → paste from clipboard into terminal
     if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
+      e.preventDefault();  // suppress browser native paste event (prevents double-paste via xterm textarea)
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText().then(function(text) {
           if (text && _ws && _ws.readyState === WebSocket.OPEN) {
