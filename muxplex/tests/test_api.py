@@ -2624,3 +2624,57 @@ def test_federation_create_session_returns_502_when_remote_returns_error(
 
     response = client.post("/api/federation/0/sessions", json={"name": "new-session"})
     assert response.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Federation Authorization header safety — guard against empty key
+# ---------------------------------------------------------------------------
+
+
+def test_federation_auth_headers_guard_empty_key():
+    """Every federation Authorization header construction must guard against empty key.
+
+    An empty remote_instances[].key produces 'Bearer ' (trailing space, empty
+    token).  httpx rejects that with "Illegal header value b'Bearer '" which
+    silently makes the remote appear unreachable.
+
+    The fix: every site that constructs the header must use the pattern
+        headers={"Authorization": f"Bearer {key}"} if key else {}
+    or an equivalent conditional, so an empty key simply omits the header.
+
+    This is a source-inspection test — it catches regressions without spinning
+    up a live server.
+    """
+    import inspect
+
+    import muxplex.main as main_mod
+
+    source = inspect.getsource(main_mod)
+
+    # Collect every line that constructs an Authorization Bearer header (not
+    # comment or docstring lines — we only care about executable code lines).
+    offending: list[str] = []
+    for line in source.splitlines():
+        stripped = line.strip()
+        # Skip comment and docstring lines
+        if (
+            stripped.startswith("#")
+            or stripped.startswith('"""')
+            or stripped.startswith("'\"'\"'")
+        ):
+            continue
+        # Match lines that build the header dict value
+        if (
+            '"Authorization"' in stripped
+            and "Bearer" in stripped
+            and 'f"Bearer' in stripped
+        ):
+            # Must have an inline `if` guard — e.g. `{...} if key else {}`
+            if " if " not in stripped:
+                offending.append(stripped)
+
+    assert not offending, (
+        "Unguarded federation Bearer header(s) found in main.py — "
+        "use `{...} if key else {}` to skip the header when key is empty:\n"
+        + "\n".join(f"  {line}" for line in offending)
+    )

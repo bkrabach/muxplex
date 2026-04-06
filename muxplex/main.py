@@ -760,7 +760,9 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"},
+            additional_headers={"Authorization": f"Bearer {remote_key}"}
+            if remote_key
+            else {},
         ) as remote_ws:
 
             async def client_to_remote() -> None:
@@ -926,7 +928,7 @@ async def federation_sessions(request: Request) -> list[dict]:
         try:
             resp = await http_client.get(
                 f"{url.rstrip('/')}/api/sessions",
-                headers={"Authorization": f"Bearer {key}"},
+                headers={"Authorization": f"Bearer {key}"} if key else {},
             )
             if resp.status_code in (401, 403):
                 return [
@@ -1026,7 +1028,7 @@ async def federation_connect(
     try:
         resp = await http_client.post(
             url,
-            headers={"Authorization": f"Bearer {remote_key}"},
+            headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
         )
         resp.raise_for_status()
         return resp.json()
@@ -1072,7 +1074,7 @@ async def federation_bell_clear(
     try:
         resp = await http_client.post(
             url,
-            headers={"Authorization": f"Bearer {remote_key}"},
+            headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
         )
         resp.raise_for_status()
         return resp.json()
@@ -1119,7 +1121,7 @@ async def federation_create_session(
     try:
         resp = await http_client.post(
             url,
-            headers={"Authorization": f"Bearer {remote_key}"},
+            headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
             json={"name": payload.name},
         )
         resp.raise_for_status()
