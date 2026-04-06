@@ -760,9 +760,7 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"}
-            if remote_key
-            else {},
+            additional_headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
         ) as remote_ws:
 
             async def client_to_remote() -> None:
