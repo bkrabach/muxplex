@@ -1583,6 +1583,32 @@ def test_federation_client_exists_on_app_state(monkeypatch):
     )
 
 
+def test_federation_client_disables_ssl_verification(monkeypatch):
+    """Federation httpx client must disable SSL verification for self-signed certs.
+
+    muxplex setup-tls can generate self-signed certificates. When a remote instance
+    uses such a cert, httpx's default SSL verification rejects it with
+    CERTIFICATE_VERIFY_FAILED, making the remote unreachable in federation.
+    The client must use verify=False so self-signed certs on LAN/Tailscale remotes
+    are accepted. Bearer token auth still protects authorization.
+    """
+    import ssl
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+
+    with TestClient(app):
+        client = app.state.federation_client
+        # httpx.AsyncClient(verify=False) creates a transport whose SSL context
+        # has verify_mode=ssl.CERT_NONE (0). If verify=True (default), it would
+        # use CERT_REQUIRED (2).
+        ssl_context = client._transport._pool._ssl_context
+        assert ssl_context is not None, "federation_client SSL context must be present"
+        assert ssl_context.verify_mode == ssl.CERT_NONE, (
+            "federation_client must use verify=False (CERT_NONE) "
+            "to support self-signed certificates on remote instances"
+        )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/federation/sessions (task-5)
 # ---------------------------------------------------------------------------

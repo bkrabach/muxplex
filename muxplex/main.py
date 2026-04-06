@@ -176,7 +176,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # tmux not running at startup is OK; hook will be set on first poll
 
-    app.state.federation_client = httpx.AsyncClient(timeout=5.0, follow_redirects=False)
+    app.state.federation_client = httpx.AsyncClient(
+        timeout=5.0,
+        follow_redirects=False,
+        verify=False,  # nosec B501 — muxplex is a dev tool for LAN/Tailscale use;
+        # self-signed certs from `muxplex setup-tls` must be accepted for federation.
+        # Bearer token auth handles authorization. Users who need cert verification
+        # should use mkcert (CA-trusted) or Tailscale (LE-trusted) certs.
+    )
 
     yield
 
