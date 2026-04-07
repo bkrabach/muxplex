@@ -993,21 +993,25 @@ test('terminal.js loads xterm-addon-image for inline graphics', () => {
   assert.ok(source.includes('ImageAddon'), 'must reference ImageAddon');
 });
 
-// --- Native paste: xterm.js handles Ctrl+Shift+V ---
+// --- Ctrl+Shift+V: synthetic paste event on xterm textarea ---
 
-test('terminal.js does NOT intercept Ctrl+Shift+V — lets xterm.js handle paste natively', () => {
-  // Regression: every custom paste handler we tried broke either multiline or Unicode.
-  // xterm.js's native paste pipeline (browser paste event → handlePasteEvent →
-  // prepareTextForTerminal → bracketTextForPaste → triggerDataEvent → onData → WS)
-  // handles both correctly. Fix: stop intercepting Ctrl+Shift+V entirely.
+test('terminal.js Ctrl+Shift+V dispatches synthetic paste event on textarea', () => {
+  // Ctrl+Shift+V does NOT trigger a native browser paste event (unlike Cmd+V on macOS).
+  // Fix: read clipboard via navigator.clipboard.readText(), then dispatch a synthetic
+  // ClipboardEvent on xterm.js's hidden textarea. This goes through xterm.js's built-in
+  // handlePasteEvent which handles CR/LF normalization, bracketed paste, and correct encoding.
   const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
   const handlerStart = source.indexOf('attachCustomKeyEventHandler');
   const handlerEnd = source.indexOf('// Auto-copy:', handlerStart);
   const handlerBlock = source.substring(handlerStart, handlerEnd);
-  const hasVIntercept = handlerBlock.includes("e.key === 'V'") || handlerBlock.includes("e.code === 'KeyV'");
-  assert.ok(!hasVIntercept,
-    'attachCustomKeyEventHandler must NOT intercept Ctrl+Shift+V — ' +
-    'xterm.js handles paste natively with correct encoding + bracketed paste');
+  assert.ok(
+    handlerBlock.includes("e.key === 'V'") || handlerBlock.includes("e.code === 'KeyV'"),
+    'attachCustomKeyEventHandler must intercept Ctrl+Shift+V to trigger paste',
+  );
+  assert.ok(
+    handlerBlock.includes('ClipboardEvent') || handlerBlock.includes('dispatchEvent'),
+    'must dispatch synthetic paste event so xterm.js handlePasteEvent handles encoding correctly',
+  );
 });
 
 // --- UTF-8 output decoding via TextDecoder ---

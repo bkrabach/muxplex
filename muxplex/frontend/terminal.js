@@ -365,11 +365,12 @@ function openTerminal(sessionName, remoteId) {
 
   // --- Clipboard integration ---
   // Ctrl+Shift+C: copy selection to system clipboard (Ctrl+C still sends SIGINT)
-  // Ctrl+Shift+V: handled natively by xterm.js — browser fires paste event on xterm's hidden
-  //   textarea → xterm.js handlePasteEvent → prepareTextForTerminal → bracketTextForPaste
-  //   → triggerDataEvent → onData → WebSocket.  This path correctly handles both Unicode
-  //   encoding (TextEncoder) and bracketed paste mode (multiline protection).  Do NOT
-  //   intercept Ctrl+Shift+V here — every custom handler we tried broke one or the other.
+  // Ctrl+Shift+V: Ctrl+Shift+V does NOT trigger a native browser paste event (unlike Cmd+V
+  //   on macOS). We read the clipboard via navigator.clipboard.readText() and dispatch a
+  //   synthetic ClipboardEvent on xterm.js's hidden textarea. xterm.js catches this via its
+  //   built-in handlePasteEvent listener → prepareTextForTerminal → bracketTextForPaste
+  //   → triggerDataEvent → onData → WebSocket. This is the same path as Cmd+V and correctly
+  //   handles CR/LF normalization, bracketed paste mode, and UTF-8 encoding.
   _term.attachCustomKeyEventHandler(function(e) {
     if (e.type !== 'keydown') return true;
 
@@ -378,6 +379,24 @@ function openTerminal(sessionName, remoteId) {
       var sel = _term.getSelection();
       if (sel) _copyToClipboard(sel);
       return false;  // prevent xterm from processing
+    }
+
+    // Ctrl+Shift+V → paste from system clipboard via synthetic ClipboardEvent on xterm textarea.
+    // Dispatching on _term.textarea triggers xterm.js's built-in handlePasteEvent, which
+    // handles CR/LF normalization, bracketed paste mode, and correct UTF-8 encoding —
+    // the exact same code path as a native Cmd+V paste on macOS.
+    if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
+      if (navigator.clipboard && navigator.clipboard.readText && _term && _term.textarea) {
+        navigator.clipboard.readText().then(function(text) {
+          if (!text || !_term || !_term.textarea) return;
+          var pasteEvent = new ClipboardEvent('paste', {
+            clipboardData: new DataTransfer(),
+          });
+          pasteEvent.clipboardData.setData('text/plain', text);
+          _term.textarea.dispatchEvent(pasteEvent);
+        }).catch(function() {});
+      }
+      return false;  // prevent xterm from processing the raw key
     }
 
     // Ctrl+F → open search bar
