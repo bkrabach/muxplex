@@ -1012,6 +1012,33 @@ test('terminal.js Ctrl+Shift+V handler calls preventDefault to suppress double p
   );
 });
 
+// --- Multiline paste (bracketed paste mode) ---
+
+test('terminal.js Ctrl+Shift+V uses _term.paste() for bracketed paste mode', () => {
+  // Regression: the handler sent raw bytes via _ws.send(_encodePayload(0x30, text)),
+  // bypassing xterm.js's paste pipeline. Multiline text had no bracketed paste markers
+  // (ESC[200~...ESC[201~), so the shell treated each \n as Enter — executing each line
+  // separately instead of pasting as a block.
+  // Fix: use _term.paste(text) which goes through the proper pipeline.
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+
+  // Locate the Ctrl+Shift+V block
+  const vIdx = source.indexOf("e.key === 'V'");
+  assert.ok(vIdx !== -1, "must have a Ctrl+Shift+V key check");
+  const blockStart = source.lastIndexOf('if (', vIdx);
+  const blockEnd = source.indexOf('return false', vIdx);
+  const vBlock = source.substring(blockStart, blockEnd);
+
+  assert.ok(
+    vBlock.includes('_term.paste'),
+    'Ctrl+Shift+V must use _term.paste() for proper bracketed paste mode support',
+  );
+  assert.ok(
+    !vBlock.includes('_encodePayload') && !vBlock.includes('_ws.send'),
+    'Ctrl+Shift+V must NOT send raw bytes via WebSocket (bypasses bracketed paste wrapping)',
+  );
+});
+
 // --- Federation reconnect routing ---
 
 test('terminal.js reconnect uses federation connect path for remote sessions', () => {

@@ -375,8 +375,12 @@ function openTerminal(sessionName, remoteId) {
       e.preventDefault();  // suppress browser native paste event (prevents double-paste via xterm textarea)
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText().then(function(text) {
-          if (text && _ws && _ws.readyState === WebSocket.OPEN) {
-            _ws.send(_encodePayload(0x30, text));
+          if (text && _term) {
+            // Use xterm.js paste() pipeline: converts \r\n→\r, wraps in bracketed
+            // paste markers (ESC[200~...ESC[201~) so the shell treats multiline text
+            // as a paste block rather than executing each line on Enter.
+            // Fires onData → our WebSocket handler automatically.
+            _term.paste(text);
           }
         }).catch(function() {});
       }
