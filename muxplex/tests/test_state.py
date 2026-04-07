@@ -68,6 +68,16 @@ def test_empty_state_devices_is_empty_dict():
     assert state["devices"] == {}
 
 
+def test_empty_state_has_active_remote_id_key():
+    state = empty_state()
+    assert "active_remote_id" in state
+
+
+def test_empty_state_active_remote_id_is_none():
+    state = empty_state()
+    assert state["active_remote_id"] is None
+
+
 def test_empty_state_returns_independent_dicts():
     """Mutating one state must not affect another."""
     s1 = empty_state()

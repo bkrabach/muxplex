@@ -219,7 +219,10 @@ async function restoreState() {
     const res = await api('GET', '/api/state');
     const state = await res.json();
     if (state.active_session) {
-      await openSession(state.active_session, { skipAnimation: true });
+      await openSession(state.active_session, {
+        skipAnimation: true,
+        remoteId: state.active_remote_id || '',
+      });
     }
   } catch (err) {
     console.warn('[restoreState] could not restore previous session:', err);
@@ -1241,6 +1244,9 @@ async function openSession(name, opts = {}) {
     return closeSession();
   }
 
+  // Persist active_remote_id so restoreState() can reopen remote sessions after page refresh
+  api('PATCH', '/api/state', { active_session: name, active_remote_id: _remoteId || null }).catch(function() {});
+
   // Fire-and-forget bell-clear for remote sessions — acknowledge bells on the remote server
   if (_remoteId !== '') {
     api('POST', '/api/federation/' + encodeURIComponent(_remoteId) + '/sessions/' + encodeURIComponent(name) + '/bell/clear').catch(function() {});
@@ -1267,6 +1273,8 @@ function closeSession() {
   if (_viewingRemoteId === '') {
     api('DELETE', '/api/sessions/current').catch(function() {});
   }
+  // Clear active_remote_id so a page refresh does not attempt to reopen the remote session
+  api('PATCH', '/api/state', { active_session: null, active_remote_id: null }).catch(function() {});
   _viewingRemoteId = '';
 
   const expanded = $('view-expanded');
@@ -1857,8 +1865,9 @@ function renderSheetList() {
       (s.bell.seen_at === null || s.bell.last_fired_at > s.bell.seen_at);
     var isActive = s.name === _viewingSession;
     var escapedName = escapeHtml(s.name || '');
+    var remoteIdAttr = s.remoteId ? ' data-remote-id="' + escapeHtml(s.remoteId) + '"' : '';
     return '<li class="sheet-item' + (isActive ? ' sheet-item--active' : '') + '"' +
-      ' data-session="' + escapedName + '" role="option">' +
+      ' data-session="' + escapedName + '"' + remoteIdAttr + ' role="option">' +
       '<span class="sheet-item__name">' + escapedName + '</span>' +
       (hasBell ? '<span class="sheet-item__bell">\uD83D\uDD14</span>' : '') +
       '<span class="sheet-item__time">' + formatTimestamp(s.bell && s.bell.last_fired_at) + '</span>' +
@@ -1869,7 +1878,8 @@ function renderSheetList() {
     item.addEventListener('click', function() {
       closeBottomSheet();
       var name = item.dataset.session;
-      if (name !== _viewingSession) openSession(name);
+      var remoteId = item.dataset.remoteId || '';
+      if (name !== _viewingSession) openSession(name, { remoteId: remoteId });
     });
   });
 }

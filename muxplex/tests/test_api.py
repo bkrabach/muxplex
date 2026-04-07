@@ -139,6 +139,66 @@ def test_patch_state_rejects_non_list_session_order(client):
     assert response.status_code == 422
 
 
+def test_patch_state_updates_active_remote_id(client):
+    """PATCH /api/state with active_remote_id persists it in state."""
+    response = client.patch(
+        "/api/state",
+        json={"active_session": "remote-sess", "active_remote_id": "fed-abc123"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["active_remote_id"] == "fed-abc123"
+    assert data["active_session"] == "remote-sess"
+
+
+def test_patch_state_clears_active_remote_id(client):
+    """PATCH /api/state with active_remote_id: null clears it in state."""
+    from muxplex.state import save_state
+
+    # Set up initial state with active_remote_id
+    initial = {
+        "active_session": "remote-sess",
+        "active_remote_id": "fed-abc123",
+        "session_order": [],
+        "sessions": {},
+        "devices": {},
+    }
+    save_state(initial)
+
+    response = client.patch(
+        "/api/state",
+        json={"active_session": None, "active_remote_id": None},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["active_remote_id"] is None
+    assert data["active_session"] is None
+
+
+def test_patch_state_without_session_order_updates_active_remote_id_only(client):
+    """PATCH /api/state without session_order only updates active_remote_id."""
+    from muxplex.state import save_state
+
+    initial = {
+        "active_session": None,
+        "active_remote_id": None,
+        "session_order": ["alpha", "beta"],
+        "sessions": {},
+        "devices": {},
+    }
+    save_state(initial)
+
+    response = client.patch(
+        "/api/state",
+        json={"active_remote_id": "fed-xyz"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["active_remote_id"] == "fed-xyz"
+    # session_order should be unchanged
+    assert data["session_order"] == ["alpha", "beta"]
+
+
 def test_patch_state_ignores_unknown_fields(client):
     """PATCH /api/state ignores unknown fields in the request body."""
     response = client.patch(

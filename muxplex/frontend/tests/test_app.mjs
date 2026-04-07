@@ -4381,3 +4381,115 @@ test('showNewSessionInput device select has keydown handler for Escape', () => {
   const selectKeydownIdx = fnBody.indexOf("select.addEventListener('keydown'");
   assert.ok(selectKeydownIdx !== -1, 'select element must have a keydown handler in showNewSessionInput');
 });
+
+// --- Fix: remote sessions fail to connect because openSession call sites don't pass remoteId ---
+
+test('restoreState reads active_remote_id from state and passes it to openSession', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const restoreIdx = source.indexOf('async function restoreState');
+  assert.ok(restoreIdx >= 0, 'restoreState must exist');
+  const restoreEnd = source.indexOf('\n}', restoreIdx) + 2;
+  const restoreBody = source.slice(restoreIdx, restoreEnd);
+  assert.ok(
+    restoreBody.includes('active_remote_id'),
+    'restoreState must read active_remote_id from persisted state',
+  );
+  assert.ok(
+    restoreBody.includes('remoteId'),
+    'restoreState must pass remoteId to openSession so remote sessions restore correctly',
+  );
+});
+
+test('renderSheetList click handler passes remoteId to openSession', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const sheetIdx = source.indexOf('function renderSheetList');
+  assert.ok(sheetIdx >= 0, 'renderSheetList must exist');
+  // Extract the full function body (up to the closing brace)
+  const sheetEnd = source.indexOf('\n}', sheetIdx) + 2;
+  const sheetBody = source.slice(sheetIdx, sheetEnd);
+  assert.ok(
+    sheetBody.includes('remoteId'),
+    'renderSheetList click handler must pass remoteId to openSession',
+  );
+});
+
+test('renderSheetList item HTML includes data-remote-id attribute for remote sessions', () => {
+  let capturedHTML = '';
+  const mockList = {
+    get innerHTML() { return capturedHTML; },
+    set innerHTML(v) { capturedHTML = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'sheet-list' ? mockList : null);
+  app._setCurrentSessions([{ name: 'remote-sess', remoteId: 'fed-abc123', bell: null }]);
+
+  app.renderSheetList();
+
+  assert.ok(
+    capturedHTML.includes('data-remote-id="fed-abc123"'),
+    'sheet item should have data-remote-id attribute for remote sessions',
+  );
+  globalThis.document.getElementById = origGetById;
+});
+
+test('openSession PATCHes /api/state with active_remote_id after successful connect', async () => {
+  const fetchCalls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };  // invoke immediately so animation resolves
+  globalThis.window._openTerminal = () => {};
+
+  await app.openSession('remote-session', { remoteId: 'fed-abc123' });
+
+  const patchCall = fetchCalls.find((c) => c.url === '/api/state' && c.opts && c.opts.method === 'PATCH');
+  assert.ok(patchCall, 'openSession should PATCH /api/state after successful connect');
+  const body = JSON.parse(patchCall.opts.body);
+  assert.strictEqual(body.active_remote_id, 'fed-abc123', 'PATCH body should include active_remote_id');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
+test('closeSession PATCHes /api/state to clear active_remote_id', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+
+  // Open a remote session first so _viewingRemoteId is set
+  globalThis.fetch = async () => ({ ok: true });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = () => {};
+  globalThis.window._closeTerminal = () => {};
+
+  await app.openSession('remote-sess', { remoteId: 'fed-abc123' });
+
+  globalThis.setTimeout = origSetTimeout;
+
+  // Reset fetch tracking
+  const fetchCalls = [];
+  globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
+
+  await app.closeSession();
+  await new Promise((r) => setTimeout(r, 0));
+
+  const patchCall = fetchCalls.find((c) => c.url === '/api/state' && c.opts && c.opts.method === 'PATCH');
+  assert.ok(patchCall, 'closeSession should PATCH /api/state to clear remote session state');
+  const body = JSON.parse(patchCall.opts.body);
+  assert.strictEqual(body.active_remote_id, null, 'PATCH should clear active_remote_id to null');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});

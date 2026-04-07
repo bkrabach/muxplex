@@ -59,6 +59,7 @@ def empty_state() -> dict:
     """
     return {
         "active_session": None,
+        "active_remote_id": None,
         "session_order": [],
         "sessions": {},
         "devices": {},

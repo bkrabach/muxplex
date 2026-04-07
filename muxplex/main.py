@@ -279,7 +279,9 @@ app.add_middleware(
 
 
 class StatePatch(BaseModel):
-    session_order: list[str]
+    session_order: list[str] | None = None
+    active_session: str | None = None
+    active_remote_id: str | None = None
 
 
 class HeartbeatPayload(BaseModel):
@@ -332,10 +334,21 @@ async def get_state() -> dict:
 
 @app.patch("/api/state")
 async def patch_state(patch: StatePatch) -> dict:
-    """Update session_order in the persistent state and return the updated state."""
+    """Update fields in the persistent state and return the updated state.
+
+    Only fields explicitly included in the request body are updated;
+    omitted fields are left unchanged. Supports: session_order,
+    active_session, active_remote_id.
+    """
     async with state_lock:
         state = load_state()
-        state["session_order"] = patch.session_order
+        changed = patch.model_fields_set
+        if "session_order" in changed:
+            state["session_order"] = patch.session_order
+        if "active_session" in changed:
+            state["active_session"] = patch.active_session
+        if "active_remote_id" in changed:
+            state["active_remote_id"] = patch.active_remote_id
         save_state(state)
         return state
 
