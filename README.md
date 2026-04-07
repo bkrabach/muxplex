@@ -21,7 +21,7 @@
 ### Terminal
 
 - **Full interactive terminal** — powered by xterm.js + ttyd
-- **Native clipboard** — Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
+- **Native clipboard** — Ctrl+Shift+C to copy, Cmd+V (macOS) / Ctrl+Shift+V (Linux) to paste
 - **Mouse select auto-copy** — selecting text copies to system clipboard on release
 - **OSC 52 tmux clipboard bridge** — tmux copy mode selections go to system clipboard
 - **Search** — Ctrl+F opens a search bar to find text in terminal scrollback (xterm-addon-search)
@@ -254,7 +254,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | Shortcut | Action |
 |---|---|
 | Ctrl+Shift+C | Copy terminal selection to system clipboard |
-| Ctrl+Shift+V | Paste from system clipboard into terminal |
+| Cmd+V / Ctrl+Shift+V | Paste from system clipboard (native browser paste) |
 | Ctrl+F | Open terminal search bar |
 | Enter / Shift+Enter | Next / previous search match |
 | Ctrl+Click (Cmd+Click) | Open URL in new tab |
