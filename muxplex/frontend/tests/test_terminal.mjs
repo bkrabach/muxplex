@@ -622,11 +622,13 @@ test('message handler strips type byte and writes output for type 0x30', () => {
   assert.strictEqual(t.termWriteMessages.length, 1, 'term.write should be called exactly once');
 
   const written = t.termWriteMessages[0];
-  assert.ok(written instanceof Uint8Array, 'data written to xterm must be a Uint8Array');
-  assert.strictEqual(written[0], 'h'.charCodeAt(0),
-    'first byte written must be "h" (0x68), not the type byte 0x30');
-  assert.strictEqual(written.length, hello.length,
-    'written data length must equal payload length (type byte stripped)');
+  // After the UTF-8 fix: payload is decoded via TextDecoder before write(),
+  // so xterm.js receives a string (not raw Uint8Array).
+  // xterm.js write(Uint8Array) treated each byte as Latin-1 — TextDecoder fixes this.
+  assert.strictEqual(typeof written, 'string',
+    'data written to xterm must be a decoded string (TextDecoder fix for Latin-1 garbling)');
+  assert.strictEqual(written, 'hello',
+    'decoded output must match the original ASCII payload');
 });
 
 test('message handler ignores title type (0x31) — does not call term.write', () => {
@@ -1006,6 +1008,53 @@ test('terminal.js does NOT intercept Ctrl+Shift+V — lets xterm.js handle paste
   assert.ok(!hasVIntercept,
     'attachCustomKeyEventHandler must NOT intercept Ctrl+Shift+V — ' +
     'xterm.js handles paste natively with correct encoding + bracketed paste');
+});
+
+// --- UTF-8 output decoding via TextDecoder ---
+
+test('terminal.js uses TextDecoder to decode UTF-8 WebSocket output before writing to xterm', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('TextDecoder'), 'must create a TextDecoder for UTF-8 output decoding');
+  // Find the message handler block for type 0x30 and verify decode() is used
+  const msgIdx = source.indexOf('msgType === 0x30');
+  assert.ok(msgIdx !== -1, 'must have a type 0x30 output handler');
+  const writeBlock = source.substring(msgIdx, msgIdx + 200);
+  assert.ok(
+    writeBlock.includes('decode') || writeBlock.includes('Decoder'),
+    'output handler must decode Uint8Array to string before _term.write() — ' +
+    'xterm.js write(Uint8Array) treats bytes as Latin-1 not UTF-8, ' +
+    'causing box-drawing chars like ─ (E2 94 80) to render as â',
+  );
+});
+
+test('message handler writes decoded UTF-8 string (not raw Uint8Array) to xterm', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('test-session');
+
+  globalThis.setTimeout = orig;
+
+  // Simulate receiving a terminal output frame with a box-drawing character: ─ (U+2500)
+  // UTF-8 bytes for ─: E2 94 80
+  const encoder = new TextEncoder();
+  const boxChar = encoder.encode('─');  // [0xE2, 0x94, 0x80]
+  const msg = new Uint8Array(1 + boxChar.length);
+  msg[0] = 0x30;
+  msg.set(boxChar, 1);
+
+  t.fireMessage(msg.buffer);
+
+  assert.strictEqual(t.termWriteMessages.length, 1, 'term.write should be called exactly once');
+
+  const written = t.termWriteMessages[0];
+  assert.strictEqual(typeof written, 'string',
+    'data written to xterm must be a decoded string, not a Uint8Array — ' +
+    'xterm.js write(Uint8Array) interprets bytes as Latin-1 causing garbled box-drawing chars');
+  assert.strictEqual(written, '─',
+    'decoded output must be the original Unicode character ─, not garbled â bytes');
 });
 
 // --- Federation reconnect routing ---

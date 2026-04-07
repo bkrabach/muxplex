@@ -14,6 +14,11 @@ let _searchAddon = null;
 // ─── Module-level encoding helpers ──────────────────────────────────────────
 // Hoisted here so the clipboard key handler (in openTerminal) can also use them.
 const _encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+// TextDecoder: used to decode UTF-8 bytes received from ttyd before writing to xterm.js.
+// xterm.js write(Uint8Array) treats each byte as Latin-1, not UTF-8 — multi-byte characters
+// like ─ (U+2500, bytes E2 94 80) render as â (Latin-1 0xE2) without decoding first.
+// Matches ttyd's official client pattern: textDecoder.decode(payload) → _term.write(string).
+const _decoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 
 function _encodePayload(typeChar, str) {
   // Returns Uint8Array: [typeCharCode, ...utf8bytes]
@@ -131,7 +136,8 @@ function connectWebSocket(name, remoteId) {
         var msgType = msg[0];
         var payload = msg.slice(1);
         if (msgType === 0x30) {  // '0' = terminal output — write to xterm.js
-          _term.write(payload);
+          // decode: Uint8Array → UTF-8 string. write(Uint8Array) treats bytes as Latin-1.
+          _term.write(_decoder ? _decoder.decode(payload) : payload);
         }
         // 0x31 ('1') = window title, 0x32 ('2') = preferences — ignore for now
       } else if (typeof e.data === 'string') {
