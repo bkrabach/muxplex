@@ -901,7 +901,7 @@ test('terminal.js resets _reconnectAttempts on first message, not on open', () =
 
 // --- Clipboard integration ---
 
-test('terminal.js has clipboard integration with Ctrl+Shift+C and Ctrl+Shift+V', () => {
+test('terminal.js has clipboard integration with Ctrl+Shift+C (copy) and native paste support', () => {
   const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
   assert.ok(source.includes('attachCustomKeyEventHandler'), 'must register custom key handler');
   assert.ok(source.includes('getSelection'), 'must use getSelection() for copy');
@@ -991,77 +991,21 @@ test('terminal.js loads xterm-addon-image for inline graphics', () => {
   assert.ok(source.includes('ImageAddon'), 'must reference ImageAddon');
 });
 
-// --- Clipboard double-paste bug fix ---
+// --- Native paste: xterm.js handles Ctrl+Shift+V ---
 
-test('terminal.js Ctrl+Shift+V handler calls preventDefault to suppress double paste', () => {
-  // Regression: without e.preventDefault(), the browser fires a native paste event on
-  // xterm.js's hidden textarea after our handler sends via WebSocket, causing double paste.
+test('terminal.js does NOT intercept Ctrl+Shift+V — lets xterm.js handle paste natively', () => {
+  // Regression: every custom paste handler we tried broke either multiline or Unicode.
+  // xterm.js's native paste pipeline (browser paste event → handlePasteEvent →
+  // prepareTextForTerminal → bracketTextForPaste → triggerDataEvent → onData → WS)
+  // handles both correctly. Fix: stop intercepting Ctrl+Shift+V entirely.
   const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
-
-  // Locate the Ctrl+Shift+V block by finding the key check, then extracting the block
-  const vIdx = source.indexOf("e.key === 'V'");
-  assert.ok(vIdx !== -1, "must have a Ctrl+Shift+V key check");
-  const blockStart = source.lastIndexOf('if (', vIdx);
-  const blockEnd = source.indexOf('return false', vIdx);
-  const vBlock = source.substring(blockStart, blockEnd);
-
-  assert.ok(
-    vBlock.includes('preventDefault'),
-    'Ctrl+Shift+V handler must call e.preventDefault() before the async clipboard read ' +
-    'to suppress the browser native paste event (which causes double-paste via xterm textarea)',
-  );
-});
-
-// --- Multiline paste (bracketed paste mode) ---
-
-test('terminal.js Ctrl+Shift+V uses bracketed paste wrapping (multiline protection)', () => {
-  // Regression history:
-  //   v1 — raw _ws.send(): no bracketed paste markers, each \n executed as Enter
-  //   v2 — _term.paste(): bracketed paste mode works but garbles Unicode box-drawing chars
-  //   v3 (current) — hybrid: manual bracketed markers + direct UTF-8 WebSocket send
-  // This test validates the multiline protection aspect of v3.
-  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
-
-  // Locate the Ctrl+Shift+V block
-  const vIdx = source.indexOf("e.key === 'V'");
-  assert.ok(vIdx !== -1, "must have a Ctrl+Shift+V key check");
-  const blockStart = source.lastIndexOf('if (', vIdx);
-  const blockEnd = source.indexOf('return false', vIdx);
-  const vBlock = source.substring(blockStart, blockEnd);
-
-  assert.ok(
-    vBlock.includes('\\x1b[200~') || vBlock.includes('\\u001b[200~') || vBlock.includes('[200~'),
-    'Ctrl+Shift+V must include bracketed paste markers (ESC[200~...ESC[201~) for multiline protection',
-  );
-});
-
-// --- Hybrid paste: bracketed markers + direct WebSocket send (Unicode fix) ---
-
-test('terminal.js Ctrl+Shift+V uses bracketed paste with direct WebSocket send', () => {
-  // Regression: _term.paste() garbled Unicode box-drawing characters (â instead of ─│┌┐).
-  // Fix: manually apply bracketed paste wrapping (ESC[200~...ESC[201~) for multiline
-  // protection, then send via _encodePayload/TextEncoder for correct UTF-8 encoding.
-  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
-  const vIdx = source.indexOf("e.key === 'V'");
-  assert.ok(vIdx !== -1, "must have a Ctrl+Shift+V key check");
-  const blockStart = source.lastIndexOf('if (', vIdx);
-  const blockEnd = source.indexOf('return false', vIdx);
-  const vBlock = source.substring(blockStart, blockEnd);
-  // Must have bracketed paste markers
-  assert.ok(
-    vBlock.includes('\\x1b[200~') || vBlock.includes('\\u001b[200~') || vBlock.includes('[200~'),
-    'Ctrl+Shift+V must include bracketed paste markers for multiline protection',
-  );
-  // Must send via WebSocket (not _term.paste)
-  assert.ok(
-    vBlock.includes('_ws.send') || vBlock.includes('_encodePayload'),
-    'Ctrl+Shift+V must send via WebSocket for correct UTF-8 encoding',
-  );
-  // Must NOT use _term.paste (causes Unicode garbling)
-  assert.ok(
-    !vBlock.includes('_term.paste'),
-    'Ctrl+Shift+V must NOT use _term.paste() — it garbles Unicode characters',
-  );
+  const handlerStart = source.indexOf('attachCustomKeyEventHandler');
+  const handlerEnd = source.indexOf('// Auto-copy:', handlerStart);
+  const handlerBlock = source.substring(handlerStart, handlerEnd);
+  const hasVIntercept = handlerBlock.includes("e.key === 'V'") || handlerBlock.includes("e.code === 'KeyV'");
+  assert.ok(!hasVIntercept,
+    'attachCustomKeyEventHandler must NOT intercept Ctrl+Shift+V — ' +
+    'xterm.js handles paste natively with correct encoding + bracketed paste');
 });
 
 // --- Federation reconnect routing ---

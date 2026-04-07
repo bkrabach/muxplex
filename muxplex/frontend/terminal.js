@@ -26,7 +26,7 @@ function _encodePayload(typeChar, str) {
 
 // ─── Clipboard helpers ───────────────────────────────────────────────────────
 // Ctrl+Shift+C: copy terminal selection to system clipboard
-// Ctrl+Shift+V: paste from system clipboard into terminal
+// Ctrl+Shift+V: handled natively by xterm.js (browser paste event → xterm → WebSocket)
 
 function _copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -359,7 +359,11 @@ function openTerminal(sessionName, remoteId) {
 
   // --- Clipboard integration ---
   // Ctrl+Shift+C: copy selection to system clipboard (Ctrl+C still sends SIGINT)
-  // Ctrl+Shift+V: paste from system clipboard (Ctrl+V still sends literal bytes)
+  // Ctrl+Shift+V: handled natively by xterm.js — browser fires paste event on xterm's hidden
+  //   textarea → xterm.js handlePasteEvent → prepareTextForTerminal → bracketTextForPaste
+  //   → triggerDataEvent → onData → WebSocket.  This path correctly handles both Unicode
+  //   encoding (TextEncoder) and bracketed paste mode (multiline protection).  Do NOT
+  //   intercept Ctrl+Shift+V here — every custom handler we tried broke one or the other.
   _term.attachCustomKeyEventHandler(function(e) {
     if (e.type !== 'keydown') return true;
 
@@ -367,30 +371,6 @@ function openTerminal(sessionName, remoteId) {
     if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.code === 'KeyC')) {
       var sel = _term.getSelection();
       if (sel) _copyToClipboard(sel);
-      return false;  // prevent xterm from processing
-    }
-
-    // Ctrl+Shift+V → paste from clipboard into terminal
-    if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
-      e.preventDefault();  // suppress browser native paste event (prevents double-paste via xterm textarea)
-      if (navigator.clipboard && navigator.clipboard.readText) {
-        navigator.clipboard.readText().then(function(text) {
-          if (text && _ws && _ws.readyState === WebSocket.OPEN) {
-            // Hybrid paste: manual bracketed paste wrapping + direct UTF-8 WebSocket send.
-            // The xterm.js paste pipeline garbled Unicode box-drawing chars (â instead of
-            // ─│┌┐) because its internals process text differently than TextEncoder encoding.
-            //
-            // This approach gives us both:
-            //   1. \r\n→\r conversion (same as xterm.js prepareTextForTerminal)
-            //   2. Bracketed paste markers (ESC[200~...ESC[201~) so shells with bracketed
-            //      paste mode treat the block as pasted text, not individual Enter-submitted lines
-            //   3. Direct _encodePayload/TextEncoder path → correct UTF-8 bytes (proven path)
-            var prepared = text.replace(/\r?\n/g, '\r');
-            var payload = '\x1b[200~' + prepared + '\x1b[201~';
-            _ws.send(_encodePayload(0x30, payload));
-          }
-        }).catch(function() {});
-      }
       return false;  // prevent xterm from processing
     }
 
