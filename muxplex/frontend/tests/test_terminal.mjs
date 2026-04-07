@@ -1012,4 +1012,27 @@ test('terminal.js Ctrl+Shift+V handler calls preventDefault to suppress double p
   );
 });
 
+// --- Federation reconnect routing ---
+
+test('terminal.js reconnect uses federation connect path for remote sessions', () => {
+  // Regression: connect() inside connectWebSocket() always called local
+  // /api/sessions/{name}/connect even when remoteId was set, causing 404 for remote sessions.
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+
+  // Find the connect() function inside connectWebSocket
+  const connectFnIdx = source.indexOf('function connect()');
+  assert.ok(connectFnIdx !== -1, 'must have a connect() function inside connectWebSocket');
+  // Extract enough chars to cover the full reconnect block (incl. long comment preamble)
+  const connectFn = source.substring(connectFnIdx, connectFnIdx + 1000);
+
+  assert.ok(
+    connectFn.includes('remoteId'),
+    'reconnect connect() must check remoteId to choose federation vs local routing',
+  );
+  assert.ok(
+    connectFn.includes('/api/federation/'),
+    'reconnect connect() must use /api/federation/{remoteId}/connect/{name} for remote sessions',
+  );
+});
+
 

@@ -165,7 +165,15 @@ function connectWebSocket(name, remoteId) {
     // response (plus an 800ms settle delay for ttyd to bind its port). The early return
     // prevents falling through to the direct _connectWebSocket() call below.
     if (_reconnectAttempts >= 2 && _currentSession) {
-      fetch('/api/sessions/' + encodeURIComponent(_currentSession) + '/connect', {
+      var connectPath;
+      if (remoteId) {
+        // Remote session: route through federation proxy
+        connectPath = '/api/federation/' + encodeURIComponent(remoteId) + '/connect/' + encodeURIComponent(_currentSession);
+      } else {
+        // Local session
+        connectPath = '/api/sessions/' + encodeURIComponent(_currentSession) + '/connect';
+      }
+      fetch(connectPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
