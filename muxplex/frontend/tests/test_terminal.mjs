@@ -1014,12 +1014,12 @@ test('terminal.js Ctrl+Shift+V handler calls preventDefault to suppress double p
 
 // --- Multiline paste (bracketed paste mode) ---
 
-test('terminal.js Ctrl+Shift+V uses _term.paste() for bracketed paste mode', () => {
-  // Regression: the handler sent raw bytes via _ws.send(_encodePayload(0x30, text)),
-  // bypassing xterm.js's paste pipeline. Multiline text had no bracketed paste markers
-  // (ESC[200~...ESC[201~), so the shell treated each \n as Enter — executing each line
-  // separately instead of pasting as a block.
-  // Fix: use _term.paste(text) which goes through the proper pipeline.
+test('terminal.js Ctrl+Shift+V uses bracketed paste wrapping (multiline protection)', () => {
+  // Regression history:
+  //   v1 — raw _ws.send(): no bracketed paste markers, each \n executed as Enter
+  //   v2 — _term.paste(): bracketed paste mode works but garbles Unicode box-drawing chars
+  //   v3 (current) — hybrid: manual bracketed markers + direct UTF-8 WebSocket send
+  // This test validates the multiline protection aspect of v3.
   const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
 
   // Locate the Ctrl+Shift+V block
@@ -1030,12 +1030,37 @@ test('terminal.js Ctrl+Shift+V uses _term.paste() for bracketed paste mode', () 
   const vBlock = source.substring(blockStart, blockEnd);
 
   assert.ok(
-    vBlock.includes('_term.paste'),
-    'Ctrl+Shift+V must use _term.paste() for proper bracketed paste mode support',
+    vBlock.includes('\\x1b[200~') || vBlock.includes('\\u001b[200~') || vBlock.includes('[200~'),
+    'Ctrl+Shift+V must include bracketed paste markers (ESC[200~...ESC[201~) for multiline protection',
   );
+});
+
+// --- Hybrid paste: bracketed markers + direct WebSocket send (Unicode fix) ---
+
+test('terminal.js Ctrl+Shift+V uses bracketed paste with direct WebSocket send', () => {
+  // Regression: _term.paste() garbled Unicode box-drawing characters (â instead of ─│┌┐).
+  // Fix: manually apply bracketed paste wrapping (ESC[200~...ESC[201~) for multiline
+  // protection, then send via _encodePayload/TextEncoder for correct UTF-8 encoding.
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  const vIdx = source.indexOf("e.key === 'V'");
+  assert.ok(vIdx !== -1, "must have a Ctrl+Shift+V key check");
+  const blockStart = source.lastIndexOf('if (', vIdx);
+  const blockEnd = source.indexOf('return false', vIdx);
+  const vBlock = source.substring(blockStart, blockEnd);
+  // Must have bracketed paste markers
   assert.ok(
-    !vBlock.includes('_encodePayload') && !vBlock.includes('_ws.send'),
-    'Ctrl+Shift+V must NOT send raw bytes via WebSocket (bypasses bracketed paste wrapping)',
+    vBlock.includes('\\x1b[200~') || vBlock.includes('\\u001b[200~') || vBlock.includes('[200~'),
+    'Ctrl+Shift+V must include bracketed paste markers for multiline protection',
+  );
+  // Must send via WebSocket (not _term.paste)
+  assert.ok(
+    vBlock.includes('_ws.send') || vBlock.includes('_encodePayload'),
+    'Ctrl+Shift+V must send via WebSocket for correct UTF-8 encoding',
+  );
+  // Must NOT use _term.paste (causes Unicode garbling)
+  assert.ok(
+    !vBlock.includes('_term.paste'),
+    'Ctrl+Shift+V must NOT use _term.paste() — it garbles Unicode characters',
   );
 });
 

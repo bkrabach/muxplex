@@ -375,12 +375,19 @@ function openTerminal(sessionName, remoteId) {
       e.preventDefault();  // suppress browser native paste event (prevents double-paste via xterm textarea)
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText().then(function(text) {
-          if (text && _term) {
-            // Use xterm.js paste() pipeline: converts \r\n→\r, wraps in bracketed
-            // paste markers (ESC[200~...ESC[201~) so the shell treats multiline text
-            // as a paste block rather than executing each line on Enter.
-            // Fires onData → our WebSocket handler automatically.
-            _term.paste(text);
+          if (text && _ws && _ws.readyState === WebSocket.OPEN) {
+            // Hybrid paste: manual bracketed paste wrapping + direct UTF-8 WebSocket send.
+            // The xterm.js paste pipeline garbled Unicode box-drawing chars (â instead of
+            // ─│┌┐) because its internals process text differently than TextEncoder encoding.
+            //
+            // This approach gives us both:
+            //   1. \r\n→\r conversion (same as xterm.js prepareTextForTerminal)
+            //   2. Bracketed paste markers (ESC[200~...ESC[201~) so shells with bracketed
+            //      paste mode treat the block as pasted text, not individual Enter-submitted lines
+            //   3. Direct _encodePayload/TextEncoder path → correct UTF-8 bytes (proven path)
+            var prepared = text.replace(/\r?\n/g, '\r');
+            var payload = '\x1b[200~' + prepared + '\x1b[201~';
+            _ws.send(_encodePayload(0x30, payload));
           }
         }).catch(function() {});
       }
