@@ -442,3 +442,20 @@ def test_federation_ws_proxy_route_exists():
     assert "/federation/{remote_id}/terminal/ws" in paths, (
         "App must have a WebSocket route at /federation/{remote_id}/terminal/ws"
     )
+
+
+def test_federation_ws_proxy_uses_ssl_context_for_wss():
+    """Federation WS proxy must pass an SSL context when connecting via wss://.
+
+    Self-signed certs on remote instances (cortex, spark-2, etc.) fail the
+    default SSL verification in websockets.connect().  The proxy must build an
+    SSLContext with CERT_NONE for wss:// URLs — the same fix already applied
+    to the httpx client (verify=False) but for the websockets library.
+    """
+    from muxplex.main import federation_terminal_ws_proxy
+
+    source = inspect.getsource(federation_terminal_ws_proxy)
+    assert "ssl" in source and ("CERT_NONE" in source or "ssl_context" in source), (
+        "Federation WS proxy must configure an SSL context (CERT_NONE / ssl_context) "
+        "for self-signed cert support on wss:// connections"
+    )

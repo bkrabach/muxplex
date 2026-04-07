@@ -17,6 +17,7 @@ import os
 import pathlib
 import pwd
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -754,13 +755,27 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
     else:
         ws_url = remote_url + "/terminal/ws"  # assume already ws:// or wss://
 
+    # Build an SSL context that skips verification for self-signed certs on
+    # remote instances.  Same rationale as httpx verify=False: federation
+    # peers may use self-signed or Tailscale-issued certs that don't pass the
+    # system CA store.  None tells websockets to use default behaviour (no
+    # TLS) for plain ws:// URLs.
+    ssl_context: ssl.SSLContext | None = None
+    if ws_url.startswith("wss://"):
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
     await websocket.accept(subprotocol="tty")
 
     try:
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+            additional_headers={"Authorization": f"Bearer {remote_key}"}
+            if remote_key
+            else {},
+            ssl=ssl_context,
         ) as remote_ws:
 
             async def client_to_remote() -> None:
