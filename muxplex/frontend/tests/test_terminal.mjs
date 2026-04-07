@@ -993,25 +993,22 @@ test('terminal.js loads xterm-addon-image for inline graphics', () => {
   assert.ok(source.includes('ImageAddon'), 'must reference ImageAddon');
 });
 
-// --- Ctrl+Shift+V: synthetic paste event on xterm textarea ---
+// --- Ctrl+Shift+V: xterm.js handles paste natively, no custom interception ---
 
-test('terminal.js Ctrl+Shift+V dispatches synthetic paste event on textarea', () => {
-  // Ctrl+Shift+V does NOT trigger a native browser paste event (unlike Cmd+V on macOS).
-  // Fix: read clipboard via navigator.clipboard.readText(), then dispatch a synthetic
-  // ClipboardEvent on xterm.js's hidden textarea. This goes through xterm.js's built-in
-  // handlePasteEvent which handles CR/LF normalization, bracketed paste, and correct encoding.
+test('terminal.js does NOT intercept Ctrl+Shift+V in attachCustomKeyEventHandler', () => {
+  // COE review: every custom paste handler we built caused either double-paste or encoding issues.
+  // On Linux, Ctrl+Shift+V is a native browser paste shortcut — it fires a paste event on the
+  // focused textarea, xterm.js catches it natively. On macOS, Cmd+V does the same.
+  // Zero custom paste code needed.
   const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
   const handlerStart = source.indexOf('attachCustomKeyEventHandler');
-  const handlerEnd = source.indexOf('// Auto-copy:', handlerStart);
+  const handlerEnd = source.indexOf('onSelectionChange', handlerStart);
   const handlerBlock = source.substring(handlerStart, handlerEnd);
-  assert.ok(
-    handlerBlock.includes("e.key === 'V'") || handlerBlock.includes("e.code === 'KeyV'"),
-    'attachCustomKeyEventHandler must intercept Ctrl+Shift+V to trigger paste',
-  );
-  assert.ok(
-    handlerBlock.includes('ClipboardEvent') || handlerBlock.includes('dispatchEvent'),
-    'must dispatch synthetic paste event so xterm.js handlePasteEvent handles encoding correctly',
-  );
+  // Must NOT have any V key interception
+  assert.ok(!handlerBlock.includes("e.key === 'V'"),
+    'must NOT intercept Ctrl+Shift+V — xterm.js handles paste natively via browser events');
+  assert.ok(!handlerBlock.includes("e.code === 'KeyV'"),
+    'must NOT intercept KeyV — xterm.js handles paste natively via browser events');
 });
 
 // --- UTF-8 output decoding via TextDecoder ---
