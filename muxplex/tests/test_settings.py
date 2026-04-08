@@ -507,7 +507,11 @@ def test_patch_preserves_existing_key_when_patch_sends_empty_key():
     save_settings(
         {
             "remote_instances": [
-                {"url": "http://spark-2:8088", "name": "spark-2", "key": "h0NtMnGt-real-key"},
+                {
+                    "url": "http://spark-2:8088",
+                    "name": "spark-2",
+                    "key": "h0NtMnGt-real-key",
+                },
             ]
         }
     )
@@ -568,7 +572,11 @@ def test_patch_preserves_key_when_key_field_absent_from_patch():
     save_settings(
         {
             "remote_instances": [
-                {"url": "http://tower:8088", "name": "tower", "key": "tower-secret-key"},
+                {
+                    "url": "http://tower:8088",
+                    "name": "tower",
+                    "key": "tower-secret-key",
+                },
             ]
         }
     )
@@ -635,7 +643,11 @@ def test_patch_new_remote_with_key_is_saved():
     patch_settings(
         {
             "remote_instances": [
-                {"url": "http://new-host:8088", "name": "new-host", "key": "brand-new-key"},
+                {
+                    "url": "http://new-host:8088",
+                    "name": "new-host",
+                    "key": "brand-new-key",
+                },
             ]
         }
     )
@@ -729,3 +741,106 @@ def test_old_settings_file_without_tls_keys_loads_correctly(redirect_settings_pa
     assert result["tls_key"] == "", (
         f"tls_key must default to '' for old settings files, got: {result['tls_key']!r}"
     )
+
+
+# ============================================================
+# Display settings keys (task-1-add-display-settings-to-defaults)
+# ============================================================
+
+
+def test_defaults_include_display_settings():
+    """DEFAULT_SETTINGS must include all 10 display settings keys with correct defaults."""
+    assert "fontSize" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'fontSize'"
+    assert DEFAULT_SETTINGS["fontSize"] == 14, (
+        f"fontSize default must be 14, got: {DEFAULT_SETTINGS['fontSize']!r}"
+    )
+
+    assert "hoverPreviewDelay" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'hoverPreviewDelay'"
+    )
+    assert DEFAULT_SETTINGS["hoverPreviewDelay"] == 1500, (
+        f"hoverPreviewDelay default must be 1500, got: {DEFAULT_SETTINGS['hoverPreviewDelay']!r}"
+    )
+
+    assert "gridColumns" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'gridColumns'"
+    )
+    assert DEFAULT_SETTINGS["gridColumns"] == "auto", (
+        f"gridColumns default must be 'auto', got: {DEFAULT_SETTINGS['gridColumns']!r}"
+    )
+
+    assert "bellSound" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'bellSound'"
+    assert DEFAULT_SETTINGS["bellSound"] is False, (
+        f"bellSound default must be False, got: {DEFAULT_SETTINGS['bellSound']!r}"
+    )
+
+    assert "viewMode" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'viewMode'"
+    assert DEFAULT_SETTINGS["viewMode"] == "auto", (
+        f"viewMode default must be 'auto', got: {DEFAULT_SETTINGS['viewMode']!r}"
+    )
+
+    assert "showDeviceBadges" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'showDeviceBadges'"
+    )
+    assert DEFAULT_SETTINGS["showDeviceBadges"] is True, (
+        f"showDeviceBadges default must be True, got: {DEFAULT_SETTINGS['showDeviceBadges']!r}"
+    )
+
+    assert "showHoverPreview" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'showHoverPreview'"
+    )
+    assert DEFAULT_SETTINGS["showHoverPreview"] is True, (
+        f"showHoverPreview default must be True, got: {DEFAULT_SETTINGS['showHoverPreview']!r}"
+    )
+
+    assert "activityIndicator" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'activityIndicator'"
+    )
+    assert DEFAULT_SETTINGS["activityIndicator"] == "both", (
+        f"activityIndicator default must be 'both', got: {DEFAULT_SETTINGS['activityIndicator']!r}"
+    )
+
+    assert "gridViewMode" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'gridViewMode'"
+    )
+    assert DEFAULT_SETTINGS["gridViewMode"] == "flat", (
+        f"gridViewMode default must be 'flat', got: {DEFAULT_SETTINGS['gridViewMode']!r}"
+    )
+
+    assert "sidebarOpen" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'sidebarOpen'"
+    )
+    assert DEFAULT_SETTINGS["sidebarOpen"] is None, (
+        f"sidebarOpen default must be None, got: {DEFAULT_SETTINGS['sidebarOpen']!r}"
+    )
+
+
+def test_display_settings_round_trip_via_patch():
+    """patch_settings() + load_settings() cycle must preserve custom display setting values."""
+    custom_values = {
+        "fontSize": 18,
+        "hoverPreviewDelay": 800,
+        "gridColumns": 3,
+        "bellSound": True,
+        "viewMode": "grid",
+        "showDeviceBadges": False,
+        "showHoverPreview": False,
+        "activityIndicator": "icon",
+        "gridViewMode": "grouped",
+        "sidebarOpen": True,
+    }
+
+    result = patch_settings(custom_values)
+
+    # Verify all custom values are returned by patch_settings
+    for key, expected in custom_values.items():
+        assert result[key] == expected, (
+            f"patch_settings() must return custom {key}={expected!r}, got: {result[key]!r}"
+        )
+
+    # Verify all custom values survive a load_settings() round-trip
+    loaded = load_settings()
+    for key, expected in custom_values.items():
+        assert loaded[key] == expected, (
+            f"load_settings() must return persisted {key}={expected!r}, got: {loaded[key]!r}"
+        )

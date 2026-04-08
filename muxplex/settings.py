@@ -31,6 +31,16 @@ DEFAULT_SETTINGS: dict = {
     "federation_key": "",
     "tls_cert": "",
     "tls_key": "",
+    "fontSize": 14,
+    "hoverPreviewDelay": 1500,
+    "gridColumns": "auto",
+    "bellSound": False,
+    "viewMode": "auto",
+    "showDeviceBadges": True,
+    "showHoverPreview": True,
+    "activityIndicator": "both",
+    "gridViewMode": "flat",
+    "sidebarOpen": None,
 }
 
 
