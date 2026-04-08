@@ -403,7 +403,7 @@ function buildTileHTML(session, index, mobile) {
   const priority = sessionPriority(session);
   const isBell = priority === 'bell';
 
-  var ds = loadDisplaySettings();
+  var ds = getDisplaySettings();
   var actIndicator = ds.activityIndicator !== undefined ? ds.activityIndicator : 'both';
 
   let classes = 'session-tile';
@@ -461,7 +461,7 @@ function buildSidebarHTML(session, currentSession) {
   const escapedName = escapeHtml(name);
   const isActive = name === currentSession;
 
-  var ds = loadDisplaySettings();
+  var ds = getDisplaySettings();
   var actIndicator = ds.activityIndicator !== undefined ? ds.activityIndicator : 'both';
 
   const unseen = session.bell && session.bell.unseen_count;
@@ -858,7 +858,7 @@ function renderGrid(sessions) {
   }
 
   // Reapply view mode layout after grid HTML is rebuilt
-  var currentDs = loadDisplaySettings();
+  var currentDs = getDisplaySettings();
   var currentMode = currentDs.viewMode || 'auto';
   if (currentMode === 'fit' && grid) {
     grid.classList.add('session-grid--fit');
@@ -885,7 +885,7 @@ function _previewClickHandler(e) {
 
 function showPreview(name) {
   if (!name || !_currentSessions) return;
-  var _previewDs = loadDisplaySettings();
+  var _previewDs = getDisplaySettings();
   if (_previewDs.showHoverPreview === false) return;
   var session = _currentSessions.find(function (s) { return s.name === name; });
   if (!session || !session.snapshot) return;
@@ -1284,7 +1284,7 @@ function closeSession() {
   if (overview) overview.style.display = '';  // overview uses view--active (no !important), style.display clears fine
 
   // Reapply fit layout after overview becomes visible again
-  var _closDs = loadDisplaySettings();
+  var _closDs = getDisplaySettings();
   if ((_closDs.viewMode || 'auto') === 'fit') {
     var _closGrid = document.getElementById('session-grid');
     if (_closGrid) {
@@ -1485,10 +1485,11 @@ function applyFitLayout(grid) {
  * Persists to localStorage and reapplies display settings.
  */
 function cycleViewMode() {
-  var ds = loadDisplaySettings();
+  var ds = getDisplaySettings();
   var idx = VIEW_MODES.indexOf(ds.viewMode || 'auto');
   ds.viewMode = VIEW_MODES[(idx + 1) % VIEW_MODES.length];
-  saveDisplaySettings(ds);
+  if (_serverSettings) _serverSettings.viewMode = ds.viewMode;
+  patchServerSetting('viewMode', ds.viewMode);
   applyDisplaySettings(ds);
 
   // Update button label
@@ -1546,7 +1547,7 @@ function applyDisplaySettings(ds) {
  * @returns {string}
  */
 function loadGridViewMode() {
-  var ds = loadDisplaySettings();
+  var ds = getDisplaySettings();
   return ds.gridViewMode || 'flat';
 }
 
@@ -1555,19 +1556,18 @@ function loadGridViewMode() {
  * @param {string} mode - The grid view mode to save.
  */
 function saveGridViewMode(mode) {
-  var ds = loadDisplaySettings();
-  ds.gridViewMode = mode;
-  saveDisplaySettings(ds);
+  if (_serverSettings) _serverSettings.gridViewMode = mode;
+  patchServerSetting('gridViewMode', mode);
   _gridViewMode = mode;
 }
 
 /**
  * Handle a change event on any Display settings control.
- * Reads current values from form elements, saves via saveDisplaySettings,
+ * Reads current values from form elements, saves via server settings PATCH,
  * and applies via applyDisplaySettings immediately.
  */
 function onDisplaySettingChange() {
-  var ds = loadDisplaySettings();
+  var ds = getDisplaySettings();
 
   var fontSizeEl = document.getElementById('setting-font-size');
   if (fontSizeEl) ds.fontSize = parseInt(fontSizeEl.value, 10) || ds.fontSize;
@@ -1590,7 +1590,18 @@ function onDisplaySettingChange() {
   var activityIndicatorEl = document.getElementById('setting-activity-indicator');
   if (activityIndicatorEl) ds.activityIndicator = activityIndicatorEl.value;
 
-  saveDisplaySettings(ds);
+  var patch = {
+    fontSize: ds.fontSize,
+    hoverPreviewDelay: ds.hoverPreviewDelay,
+    gridColumns: ds.gridColumns,
+    showDeviceBadges: ds.showDeviceBadges,
+    showHoverPreview: ds.showHoverPreview,
+    activityIndicator: ds.activityIndicator,
+  };
+  Object.assign(_serverSettings, patch);
+  api('PATCH', '/api/settings', patch)
+    .then(function() { showToast('Settings saved'); })
+    .catch(function(err) { console.warn('[onDisplaySettingChange] failed:', err); });
   applyDisplaySettings(ds);
 }
 
@@ -1628,7 +1639,7 @@ function openSettings() {
   if (dialog) dialog.showModal();
   const backdrop = $('settings-backdrop');
   if (backdrop) backdrop.classList.remove('hidden');
-  const settings = loadDisplaySettings();
+  const settings = getDisplaySettings();
   const fontSizeEl = $('setting-font-size');
   if (fontSizeEl) fontSizeEl.value = String(settings.fontSize);
   const hoverDelayEl = $('setting-hover-delay');
@@ -2224,7 +2235,7 @@ function bindStaticEventListeners() {
       if (!tile) return;
       if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
       var name = tile.dataset.session;
-      var delay = loadDisplaySettings().hoverPreviewDelay;
+      var delay = getDisplaySettings().hoverPreviewDelay;
       if (delay > 0) _previewTimer = setTimeout(function () { showPreview(name); }, delay);
     }, true);  // useCapture: true for delegation with mouseenter
 
@@ -2243,7 +2254,7 @@ function bindStaticEventListeners() {
       if (!item) return;
       if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
       var name = item.dataset.session;
-      var delay = loadDisplaySettings().hoverPreviewDelay;
+      var delay = getDisplaySettings().hoverPreviewDelay;
       if (delay > 0) _previewTimer = setTimeout(function () { showPreview(name); }, delay);
     }, true);
 
@@ -2302,11 +2313,10 @@ function bindStaticEventListeners() {
     });
   }
 
-  // Notifications settings — bell sound toggle persists to display settings localStorage
+  // Notifications settings — bell sound toggle persists to server settings
   on($('setting-bell-sound'), 'change', function() {
-    const ds = loadDisplaySettings();
-    ds.bellSound = this.checked;
-    saveDisplaySettings(ds);
+    if (_serverSettings) _serverSettings.bellSound = this.checked;
+    patchServerSetting('bellSound', this.checked);
   });
 
   // Notifications settings — permission request button
@@ -2314,9 +2324,6 @@ function bindStaticEventListeners() {
     if (typeof Notification === 'undefined') return;
     Notification.requestPermission().then(function(permission) {
       _notificationPermission = permission;
-      const ds = loadDisplaySettings();
-      ds.notificationPermission = permission;
-      saveDisplaySettings(ds);
       // Update UI state
       const statusEl = $('notification-status-text');
       const reqBtn = $('notification-request-btn');
@@ -2477,7 +2484,7 @@ function _setActiveFilterDevice(device) {
 
 // Recalculate fit layout on window resize
 window.addEventListener('resize', function() {
-  var ds = loadDisplaySettings();
+  var ds = getDisplaySettings();
   if ((ds.viewMode || 'auto') === 'fit') {
     var grid = document.getElementById('session-grid');
     if (grid) applyFitLayout(grid);
@@ -2486,7 +2493,7 @@ window.addEventListener('resize', function() {
 
 document.addEventListener('DOMContentLoaded', () => {
   initDeviceId();
-  var _initDs = loadDisplaySettings();
+  var _initDs = getDisplaySettings();
   applyDisplaySettings(_initDs);
   _gridViewMode = loadGridViewMode();
 
