@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import copy
 import hmac
+import importlib.metadata
 import json
 import logging
 import os
@@ -209,7 +210,11 @@ async def lifespan(app: FastAPI):
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="muxplex", version="0.2.0", lifespan=lifespan)
+app = FastAPI(
+    title="muxplex",
+    version=importlib.metadata.version("muxplex"),
+    lifespan=lifespan,
+)
 
 
 # ---------------------------------------------------------------------------
