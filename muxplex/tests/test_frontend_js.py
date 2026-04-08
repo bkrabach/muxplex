@@ -328,15 +328,25 @@ def test_settings_open_state_variable_exists() -> None:
     assert "_settingsOpen" in _JS, "_settingsOpen must be declared in app.js"
 
 
-def test_display_settings_key_constant_exists() -> None:
-    """DISPLAY_SETTINGS_KEY constant must be declared."""
-    assert "DISPLAY_SETTINGS_KEY" in _JS, "DISPLAY_SETTINGS_KEY must be in app.js"
+def test_get_display_settings_function_exists_via_constant_section() -> None:
+    """getDisplaySettings function must exist (display settings are now server-side)."""
+    assert "function getDisplaySettings" in _JS, (
+        "getDisplaySettings must be defined in app.js"
+    )
 
 
-def test_display_settings_key_value() -> None:
-    """DISPLAY_SETTINGS_KEY must be 'muxplex.display'."""
-    assert "'muxplex.display'" in _JS or '"muxplex.display"' in _JS, (
-        "DISPLAY_SETTINGS_KEY must be 'muxplex.display'"
+def test_get_display_settings_reads_server_settings() -> None:
+    """getDisplaySettings must read from _serverSettings (not localStorage)."""
+    match = re.search(
+        r"function getDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "getDisplaySettings function not found"
+    body = match.group(1)
+    assert "_serverSettings" in body, "getDisplaySettings must read from _serverSettings"
+    assert "localStorage" not in body, (
+        "getDisplaySettings must not use localStorage — display settings are server-side"
     )
 
 
@@ -376,17 +386,17 @@ def test_display_defaults_has_notification_permission() -> None:
 # ── Settings functions must exist ─────────────────────────────────────────────
 
 
-def test_load_display_settings_function_exists() -> None:
-    """loadDisplaySettings function must exist."""
-    assert "function loadDisplaySettings" in _JS, (
-        "loadDisplaySettings must be defined in app.js"
+def test_get_display_settings_function_exists() -> None:
+    """getDisplaySettings function must exist."""
+    assert "function getDisplaySettings" in _JS, (
+        "getDisplaySettings must be defined in app.js"
     )
 
 
-def test_save_display_settings_function_exists() -> None:
-    """saveDisplaySettings function must exist."""
-    assert "function saveDisplaySettings" in _JS, (
-        "saveDisplaySettings must be defined in app.js"
+def test_save_display_settings_function_absent() -> None:
+    """saveDisplaySettings must not exist — display writes go via patchServerSetting."""
+    assert "function saveDisplaySettings" not in _JS, (
+        "saveDisplaySettings must not be defined in app.js — use patchServerSetting instead"
     )
 
 
@@ -410,76 +420,80 @@ def test_switch_settings_tab_function_exists() -> None:
 # ── loadDisplaySettings implementation ───────────────────────────────────────
 
 
-def test_load_display_settings_reads_from_localstorage() -> None:
-    """loadDisplaySettings must read from localStorage using DISPLAY_SETTINGS_KEY."""
+def test_get_display_settings_reads_from_server_settings() -> None:
+    """getDisplaySettings must read from _serverSettings, not localStorage."""
     match = re.search(
-        r"function loadDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        r"function getDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*)",
         _JS,
         re.DOTALL,
     )
-    assert match, "loadDisplaySettings function not found"
+    assert match, "getDisplaySettings function not found"
     body = match.group(1)
-    assert "localStorage" in body, "loadDisplaySettings must read from localStorage"
-    assert "DISPLAY_SETTINGS_KEY" in body or "muxplex.display" in body, (
-        "loadDisplaySettings must use DISPLAY_SETTINGS_KEY"
+    assert "_serverSettings" in body, "getDisplaySettings must read from _serverSettings"
+    assert "localStorage" not in body, (
+        "getDisplaySettings must not use localStorage — display settings are server-side"
     )
 
 
-def test_load_display_settings_uses_object_assign() -> None:
-    """loadDisplaySettings must merge with DISPLAY_DEFAULTS via Object.assign."""
+def test_get_display_settings_uses_object_assign() -> None:
+    """getDisplaySettings must merge with DISPLAY_DEFAULTS via Object.assign."""
     match = re.search(
-        r"function loadDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        r"function getDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*)",
         _JS,
         re.DOTALL,
     )
-    assert match, "loadDisplaySettings function not found"
+    assert match, "getDisplaySettings function not found"
     body = match.group(1)
     assert "Object.assign" in body, (
-        "loadDisplaySettings must use Object.assign to merge with defaults"
+        "getDisplaySettings must use Object.assign to merge with defaults"
     )
 
 
-def test_load_display_settings_returns_defaults_on_error() -> None:
-    """loadDisplaySettings must catch errors and return defaults."""
+def test_get_display_settings_uses_display_defaults() -> None:
+    """getDisplaySettings must use DISPLAY_DEFAULTS as fallback for missing keys."""
     match = re.search(
-        r"function loadDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        r"function getDisplaySettings\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*)",
         _JS,
         re.DOTALL,
     )
-    assert match, "loadDisplaySettings function not found"
+    assert match, "getDisplaySettings function not found"
     body = match.group(1)
-    assert "catch" in body or "try" in body, (
-        "loadDisplaySettings must have error handling (try/catch)"
+    assert "DISPLAY_DEFAULTS" in body, (
+        "getDisplaySettings must use DISPLAY_DEFAULTS as fallback"
     )
 
 
 # ── saveDisplaySettings implementation ───────────────────────────────────────
 
 
-def test_save_display_settings_writes_to_localstorage() -> None:
-    """saveDisplaySettings must write to localStorage."""
+def test_on_display_setting_change_uses_api_patch() -> None:
+    """onDisplaySettingChange must write display settings via API PATCH, not localStorage."""
     match = re.search(
-        r"function saveDisplaySettings\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*)",
         _JS,
         re.DOTALL,
     )
-    assert match, "saveDisplaySettings function not found"
+    assert match, "onDisplaySettingChange function not found"
     body = match.group(1)
-    assert "localStorage" in body, "saveDisplaySettings must write to localStorage"
-    assert "setItem" in body, "saveDisplaySettings must call localStorage.setItem"
+    assert "api('PATCH'" in body or 'api("PATCH"' in body, (
+        "onDisplaySettingChange must write display settings via api('PATCH', '/api/settings', patch)"
+    )
+    assert "localStorage" not in body, (
+        "onDisplaySettingChange must not use localStorage for display settings"
+    )
 
 
-def test_save_display_settings_catches_errors() -> None:
-    """saveDisplaySettings must catch errors."""
+def test_on_display_setting_change_catches_errors() -> None:
+    """onDisplaySettingChange must handle API errors gracefully via .catch()."""
     match = re.search(
-        r"function saveDisplaySettings\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*)",
         _JS,
         re.DOTALL,
     )
-    assert match, "saveDisplaySettings function not found"
+    assert match, "onDisplaySettingChange function not found"
     body = match.group(1)
-    assert "catch" in body or "try" in body, (
-        "saveDisplaySettings must have error handling (try/catch)"
+    assert ".catch" in body, (
+        "onDisplaySettingChange must handle errors via .catch()"
     )
 
 
@@ -783,8 +797,8 @@ def test_bind_static_event_listeners_binds_settings_tabs() -> None:
 # ── module.exports for new settings functions ────────────────────────────────
 
 
-def test_exports_load_display_settings() -> None:
-    """module.exports must export loadDisplaySettings."""
+def test_exports_get_display_settings() -> None:
+    """module.exports must export getDisplaySettings."""
     match = re.search(
         r"module\.exports\s*=\s*\{(.*?)\};",
         _JS,
@@ -792,13 +806,13 @@ def test_exports_load_display_settings() -> None:
     )
     assert match, "module.exports block not found"
     exports = match.group(1)
-    assert "loadDisplaySettings" in exports, (
-        "module.exports must export loadDisplaySettings"
+    assert "getDisplaySettings" in exports, (
+        "module.exports must export getDisplaySettings"
     )
 
 
-def test_exports_save_display_settings() -> None:
-    """module.exports must export saveDisplaySettings."""
+def test_exports_no_save_display_settings() -> None:
+    """module.exports must NOT export saveDisplaySettings (removed in server-settings migration)."""
     match = re.search(
         r"module\.exports\s*=\s*\{(.*?)\};",
         _JS,
@@ -806,8 +820,8 @@ def test_exports_save_display_settings() -> None:
     )
     assert match, "module.exports block not found"
     exports = match.group(1)
-    assert "saveDisplaySettings" in exports, (
-        "module.exports must export saveDisplaySettings"
+    assert "saveDisplaySettings" not in exports, (
+        "module.exports must not export saveDisplaySettings — use patchServerSetting instead"
     )
 
 
@@ -955,7 +969,7 @@ def test_on_display_setting_change_reads_grid_columns() -> None:
 
 
 def test_on_display_setting_change_calls_save_display_settings() -> None:
-    """onDisplaySettingChange must call saveDisplaySettings."""
+    """onDisplaySettingChange must save display settings via api('PATCH', '/api/settings', ...)."""
     match = re.search(
         r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
         _JS,
@@ -963,8 +977,8 @@ def test_on_display_setting_change_calls_save_display_settings() -> None:
     )
     assert match, "onDisplaySettingChange function not found"
     body = match.group(1)
-    assert "saveDisplaySettings" in body, (
-        "onDisplaySettingChange must call saveDisplaySettings"
+    assert "api('PATCH'" in body or 'api("PATCH"' in body, (
+        "onDisplaySettingChange must save display settings via api('PATCH', '/api/settings', patch)"
     )
 
 
@@ -1000,7 +1014,7 @@ def test_hover_preview_no_hardcoded_1500() -> None:
 
 
 def test_hover_preview_reads_delay_from_settings() -> None:
-    """Hover preview must read delay from loadDisplaySettings().hoverPreviewDelay."""
+    """Hover preview must read delay from getDisplaySettings().hoverPreviewDelay."""
     match = re.search(
         r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
         _JS,
@@ -1008,8 +1022,8 @@ def test_hover_preview_reads_delay_from_settings() -> None:
     )
     assert match, "bindStaticEventListeners function not found"
     body = match.group(1)
-    assert "loadDisplaySettings" in body and "hoverPreviewDelay" in body, (
-        "bindStaticEventListeners hover preview must read delay from loadDisplaySettings().hoverPreviewDelay"
+    assert "getDisplaySettings" in body and "hoverPreviewDelay" in body, (
+        "bindStaticEventListeners hover preview must read delay from getDisplaySettings().hoverPreviewDelay"
     )
 
 
@@ -1074,7 +1088,7 @@ def test_bind_static_event_listeners_binds_grid_columns_change() -> None:
 
 
 def test_dom_content_loaded_calls_apply_display_settings() -> None:
-    """DOMContentLoaded handler must call applyDisplaySettings(loadDisplaySettings())."""
+    """DOMContentLoaded handler must call applyDisplaySettings(getDisplaySettings())."""
     # Find the DOMContentLoaded handler block
     match = re.search(
         r"DOMContentLoaded.*?\{(.*?)(?=\}\);?\s*\n// |\}\);\s*$)",
@@ -1084,10 +1098,10 @@ def test_dom_content_loaded_calls_apply_display_settings() -> None:
     assert match, "DOMContentLoaded handler not found"
     body = match.group(1)
     assert "applyDisplaySettings" in body, (
-        "DOMContentLoaded handler must call applyDisplaySettings(loadDisplaySettings())"
+        "DOMContentLoaded handler must call applyDisplaySettings(getDisplaySettings())"
     )
-    assert "loadDisplaySettings" in body, (
-        "DOMContentLoaded handler must call applyDisplaySettings(loadDisplaySettings())"
+    assert "getDisplaySettings" in body, (
+        "DOMContentLoaded handler must call applyDisplaySettings(getDisplaySettings())"
     )
 
 
