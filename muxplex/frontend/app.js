@@ -1234,7 +1234,7 @@ async function openSession(name, opts = {}) {
   await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (window._openTerminal) window._openTerminal(name, _remoteId);
+  if (window._openTerminal) window._openTerminal(name, _remoteId, getDisplaySettings().fontSize);
 }
 
 /**

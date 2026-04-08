@@ -1081,4 +1081,104 @@ test('terminal.js reconnect uses federation connect path for remote sessions', (
   );
 });
 
+// --- fontSize: must come from server settings, NOT localStorage ---
+
+test('terminal.js createTerminal does not read fontSize from localStorage', () => {
+  // Verify createTerminal accepts fontSize as a parameter (no localStorage dependency).
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  const createTermIdx = source.indexOf('function createTerminal(');
+  assert.ok(createTermIdx !== -1, 'createTerminal function must exist');
+  // Extract createTerminal body (up to next top-level function)
+  const afterStart = source.indexOf('{', createTermIdx);
+  let depth = 0;
+  let bodyEnd = -1;
+  for (let i = afterStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) { bodyEnd = i; break; }
+    }
+  }
+  const createTermBody = source.substring(createTermIdx, bodyEnd + 1);
+  assert.ok(
+    !createTermBody.includes('localStorage'),
+    'createTerminal must NOT read from localStorage — fontSize must come from the server settings parameter',
+  );
+});
+
+test('openTerminal uses passed fontSize to configure xterm.js Terminal constructor', () => {
+  // Verify openTerminal forwards fontSize parameter to createTerminal.
+  const modulePath = join(__dirname, '..', 'terminal.js');
+  delete require.cache[require.resolve(modulePath)];
+
+  let capturedTerminalOptions = null;
+  const mockTerm = {
+    cols: 80, rows: 24,
+    open: () => {},
+    onData: () => {},
+    onResize: () => {},
+    loadAddon: () => {},
+    dispose: () => {},
+    write: () => {},
+    focus: () => {},
+    attachCustomKeyEventHandler: () => {},
+    getSelection: () => '',
+    onSelectionChange: () => {},
+    parser: { registerOscHandler: () => {} },
+    options: { fontSize: 14 },
+  };
+
+  globalThis.WebSocket = class MockWS {
+    constructor() { this.readyState = 1; this.binaryType = ''; }
+    addEventListener() {}
+    close() {}
+    send() {}
+  };
+  globalThis.WebSocket.OPEN = 1;
+  globalThis.location = { protocol: 'http:', host: 'localhost' };
+  globalThis.document = {
+    getElementById: (id) => {
+      if (id === 'terminal-container') return { appendChild: () => {} };
+      if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
+      return null;
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    createElement: () => ({ style: {}, classList: { add: () => {}, remove: () => {} } }),
+  };
+  globalThis.window = {
+    addEventListener: () => {},
+    location: { href: '' },
+    innerWidth: 1024,
+    Terminal: function Terminal(options) {
+      capturedTerminalOptions = options;
+      return mockTerm;
+    },
+    FitAddon: { FitAddon: function FitAddon() { return { fit: () => {} }; } },
+  };
+
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  require(modulePath);
+
+  globalThis.setTimeout = origSetTimeout;
+
+  const openTerminal = globalThis.window._openTerminal;
+
+  const origST2 = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  openTerminal('session', '', 20);
+
+  globalThis.setTimeout = origST2;
+
+  assert.ok(capturedTerminalOptions !== null, 'Terminal constructor must have been called');
+  assert.strictEqual(
+    capturedTerminalOptions.fontSize, 20,
+    'openTerminal must pass the fontSize argument to the xterm.js Terminal constructor',
+  );
+});
+
 

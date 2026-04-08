@@ -1217,6 +1217,32 @@ test('openSession with remoteId passes remoteId to window._openTerminal', async 
   globalThis.setTimeout = origSetTimeout;
 });
 
+test('openSession passes getDisplaySettings().fontSize to window._openTerminal as third argument', async () => {
+  // Verify openSession passes getDisplaySettings().fontSize to _openTerminal as third argument.
+  let openTerminalArgs = null;
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.fetch = async () => ({ ok: true });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (...args) => { openTerminalArgs = args; };
+
+  app._setServerSettings({ fontSize: 18 });
+  await app.openSession('my-session', { skipAnimation: true });
+  app._setServerSettings(null);
+
+  assert.ok(openTerminalArgs !== null, '_openTerminal should have been called');
+  assert.strictEqual(openTerminalArgs[2], 18,
+    '_openTerminal third arg should be fontSize from getDisplaySettings()');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+});
+
 test('openSession for local session still POSTs to local /api/sessions/{name}/connect', async () => {
   const fetchCalls = [];
   const origFetch = globalThis.fetch;
@@ -1746,7 +1772,7 @@ test('renderSidebar does nothing when view is not fullscreen', () => {
 // ─── initSidebar ─────────────────────────────────────────────────────────────
 
 test('initSidebar defaults to open (removes sidebar--collapsed) on wide screens when no stored value', () => {
-  delete _localStorageStore['muxplex.sidebarOpen'];
+  app._setServerSettings(null); // ensure no stored sidebarOpen value in server settings
   const origInnerWidth = globalThis.window.innerWidth;
   globalThis.window.innerWidth = 1200;
 
@@ -3567,12 +3593,12 @@ test('buildTileHTML shows session-tile--edge-bell class when activityIndicator i
 });
 
 test('buildTileHTML shows both session-tile--bell and session-tile--edge-bell when activityIndicator is both (legacy test updated)', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  app._setServerSettings({ activityIndicator: 'both' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is both');
   assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is both');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML omits all bell indicator classes when activityIndicator is none', () => {
@@ -3594,19 +3620,19 @@ test('buildTileHTML omits session-tile--edge-bell when activityIndicator is glow
 });
 
 test('buildTileHTML adds session-tile--bell when activityIndicator is glow', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  app._setServerSettings({ activityIndicator: 'glow' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is glow');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML adds session-tile--bell when activityIndicator is both', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  app._setServerSettings({ activityIndicator: 'both' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is both');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML omits session-tile--bell when activityIndicator is none', () => {
@@ -3700,27 +3726,27 @@ test('api() is same-origin only (no baseUrl parameter support)', async () => {
 // ─── Edge-bar design: failing tests added before implementation ───
 
 test('buildTileHTML does NOT include tile-bell-dot in HTML (edge bar replaces dot)', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  app._setServerSettings({ activityIndicator: 'both' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear in HTML — edge bar replaces it');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML adds session-tile--edge-bell class when activityIndicator is dot', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'dot' });
+  app._setServerSettings({ activityIndicator: 'dot' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is dot');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML adds session-tile--edge-bell class when activityIndicator is both', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  app._setServerSettings({ activityIndicator: 'both' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is both');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML does NOT add session-tile--edge-bell when activityIndicator is glow', () => {
@@ -3760,19 +3786,19 @@ test('buildSidebarHTML does not have sidebar-item-meta element', () => {
 });
 
 test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is dot', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'dot' });
+  app._setServerSettings({ activityIndicator: 'dot' });
   const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
   const html = app.buildSidebarHTML(session, '');
   assert.ok(html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must appear when activityIndicator is dot');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is both', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  app._setServerSettings({ activityIndicator: 'both' });
   const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
   const html = app.buildSidebarHTML(session, '');
   assert.ok(html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must appear when activityIndicator is both');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildSidebarHTML does NOT add sidebar-item--edge-bell when activityIndicator is glow', () => {
@@ -3784,11 +3810,11 @@ test('buildSidebarHTML does NOT add sidebar-item--edge-bell when activityIndicat
 });
 
 test('buildSidebarHTML does NOT include tile-bell-dot in HTML', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'both' });
+  app._setServerSettings({ activityIndicator: 'both' });
   const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
   const html = app.buildSidebarHTML(session, '');
   assert.ok(!html.includes('tile-bell-dot'), 'tile-bell-dot must NOT appear in sidebar HTML — edge bar replaces it');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('CSS style.css has .session-tile--edge-bell rule', () => {
@@ -3965,9 +3991,15 @@ test('remote instance debounced input listener selector includes .settings-remot
 
 test('killSession closes active session and returns to dashboard', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  // Find killSession function body (use 600 chars to ensure closeSession call is included)
+  // Find killSession function body using brace-counting extraction
   const fnStart = source.indexOf('function killSession');
-  const fnBody = source.substring(fnStart, fnStart + 600);
+  const afterStart = source.indexOf('{', fnStart);
+  let depth = 0, bodyEnd = -1;
+  for (let i = afterStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') { depth--; if (depth === 0) { bodyEnd = i; break; } }
+  }
+  const fnBody = source.substring(fnStart, bodyEnd + 1);
   assert.ok(fnBody.includes('_viewingSession'), 'killSession must check if deleted session is the active one');
   assert.ok(fnBody.includes('closeSession'), 'killSession must call closeSession when deleting the active session');
 });

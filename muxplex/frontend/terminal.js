@@ -224,8 +224,9 @@ function initVisualViewport() {
  * Create (or recreate) the xterm.js Terminal and FitAddon instances.
  * Disposes any existing terminal first.
  * Stores the results in module-level _term and _fitAddon.
+ * @param {number} [fontSize=14] - font size in pixels, from server display settings
  */
-function createTerminal() {
+function createTerminal(fontSize) {
   // Dispose any existing instance
   if (_term) {
     _term.dispose();
@@ -233,22 +234,15 @@ function createTerminal() {
     _fitAddon = null;
   }
 
-  // Read font size from display settings (localStorage key 'muxplex.display')
-  var storedFontSize = 14;
-  try {
-    var raw = localStorage.getItem('muxplex.display');
-    if (raw) {
-      var parsed = JSON.parse(raw);
-      if (parsed && parsed.fontSize) storedFontSize = parsed.fontSize;
-    }
-  } catch (_) { /* use default 14 */ }
+  // Use the fontSize passed from app.js (getDisplaySettings().fontSize), defaulting to 14.
+  var storedFontSize = (typeof fontSize === 'number' && fontSize > 0) ? fontSize : 14;
 
   const mobile = window.innerWidth < 600; // matches MOBILE_THRESHOLD in app.js
-  const fontSize = mobile ? Math.min(storedFontSize, 12) : storedFontSize;
+  const effectiveFontSize = mobile ? Math.min(storedFontSize, 12) : storedFontSize;
 
   _term = new window.Terminal({
     cursorBlink: true,
-    fontSize: fontSize,
+    fontSize: effectiveFontSize,
     fontFamily: "'SF Mono', 'Fira Code', Consolas, monospace",
     theme: {
       background: '#000000',
@@ -333,7 +327,7 @@ function _searchPrev() {
  *   When provided, the WebSocket connects via the federation proxy path
  *   ws://host/federation/{remoteId}/terminal/ws (same origin, no cross-origin).
  */
-function openTerminal(sessionName, remoteId) {
+function openTerminal(sessionName, remoteId, fontSize) {
   // Null _currentSession first so any in-flight close handler on the old WS won't
   // schedule a reconnect (it checks `if (!_currentSession) return;`).
   _currentSession = null;
@@ -359,7 +353,7 @@ function openTerminal(sessionName, remoteId) {
     return;
   }
 
-  createTerminal();
+  createTerminal(fontSize);
 
   _term.open(container);
 

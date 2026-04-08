@@ -2069,47 +2069,54 @@ def test_js_show_fab_session_input_uses_factory() -> None:
 # ─── Task 7: Apply settings effects (task-7-apply-settings-effects) ──────────
 
 
-# ── terminal.js: createTerminal reads font size from localStorage ─────────────
+# ── terminal.js: createTerminal receives font size as parameter ───────────────
 
 
-def test_create_terminal_reads_font_size_from_localstorage() -> None:
-    """createTerminal() must read font size from localStorage key 'muxplex.display'."""
+def test_create_terminal_accepts_font_size_parameter() -> None:
+    """createTerminal() must accept a fontSize parameter (from server settings via app.js).
+    The old localStorage-based approach is gone since the server-settings migration.
+    """
     match = re.search(
-        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        r"function createTerminal\s*\([^)]*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _TERMINAL_JS,
+        re.DOTALL,
+    )
+    assert match, "createTerminal function not found in terminal.js"
+    # Verify the function signature accepts a parameter (not zero-arg)
+    sig_match = re.search(r"function createTerminal\s*\(([^)]+)\)", _TERMINAL_JS)
+    assert sig_match, "createTerminal must accept a fontSize parameter"
+    param = sig_match.group(1).strip()
+    assert param, "createTerminal must accept a fontSize parameter (not zero-arg)"
+    assert "localStorage" not in match.group(1), (
+        "createTerminal must NOT read from localStorage — "
+        "fontSize must be passed as a parameter from app.js (getDisplaySettings().fontSize)"
+    )
+
+
+def test_create_terminal_does_not_parse_json_from_localstorage() -> None:
+    """createTerminal() must NOT parse JSON from localStorage (server-settings migration).
+    Font size now comes directly from the fontSize parameter passed by app.js.
+    """
+    match = re.search(
+        r"function createTerminal\s*\([^)]*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _TERMINAL_JS,
         re.DOTALL,
     )
     assert match, "createTerminal function not found in terminal.js"
     body = match.group(1)
-    assert "muxplex.display" in body or "DISPLAY_SETTINGS_KEY" in body, (
-        "createTerminal must read from localStorage key 'muxplex.display'"
-    )
-    assert "localStorage" in body, (
-        "createTerminal must use localStorage to read font size"
-    )
-
-
-def test_create_terminal_parses_json_for_font_size() -> None:
-    """createTerminal() must parse JSON from localStorage to extract fontSize."""
-    match = re.search(
-        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
-        _TERMINAL_JS,
-        re.DOTALL,
-    )
-    assert match, "createTerminal function not found in terminal.js"
-    body = match.group(1)
-    assert "JSON.parse" in body, (
-        "createTerminal must use JSON.parse to extract fontSize from localStorage"
+    assert "JSON.parse" not in body, (
+        "createTerminal must NOT use JSON.parse — localStorage is no longer used; "
+        "fontSize comes directly as a parameter from app.js"
     )
     assert "fontSize" in body, (
-        "createTerminal must extract fontSize from parsed display settings"
+        "createTerminal must use the fontSize parameter for terminal configuration"
     )
 
 
 def test_create_terminal_applies_mobile_cap_with_math_min() -> None:
     """createTerminal() must apply mobile cap using Math.min(storedFontSize, 12)."""
     match = re.search(
-        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        r"function createTerminal\s*\([^)]*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _TERMINAL_JS,
         re.DOTALL,
     )
@@ -2121,9 +2128,9 @@ def test_create_terminal_applies_mobile_cap_with_math_min() -> None:
 
 
 def test_create_terminal_uses_stored_font_size_not_hardcoded() -> None:
-    """createTerminal() must use stored fontSize variable, not hardcoded 14 or ternary."""
+    """createTerminal() must use passed fontSize parameter, not hardcoded 14 or ternary."""
     match = re.search(
-        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        r"function createTerminal\s*\([^)]*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _TERMINAL_JS,
         re.DOTALL,
     )
@@ -2133,21 +2140,21 @@ def test_create_terminal_uses_stored_font_size_not_hardcoded() -> None:
     # Check that there's no raw "mobile ? 12 : 14" pattern anymore
     assert "mobile ? 12 : 14" not in body, (
         "createTerminal must not use hardcoded 'mobile ? 12 : 14' ternary; "
-        "use stored font size from localStorage with Math.min cap"
+        "use the passed fontSize parameter with Math.min cap for mobile"
     )
 
 
 def test_create_terminal_has_default_font_size_14() -> None:
-    """createTerminal() must default to fontSize 14 when not set in localStorage."""
+    """createTerminal() must default to fontSize 14 when no parameter is passed."""
     match = re.search(
-        r"function createTerminal\s*\(\s*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        r"function createTerminal\s*\([^)]*\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _TERMINAL_JS,
         re.DOTALL,
     )
     assert match, "createTerminal function not found in terminal.js"
     body = match.group(1)
     assert "14" in body, (
-        "createTerminal must have default font size of 14 for when localStorage is not set"
+        "createTerminal must have default font size of 14 for when no fontSize parameter is passed"
     )
 
 
