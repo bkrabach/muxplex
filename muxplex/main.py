@@ -18,6 +18,7 @@ import pathlib
 import pwd
 import socket
 import ssl
+import shutil
 import subprocess
 import sys
 import time
@@ -376,28 +377,98 @@ async def get_sessions() -> list[dict]:
 
 @app.post("/api/sessions")
 async def create_session(payload: CreateSessionPayload) -> dict:
-    """Create a new tmux session using the new_session_template from settings.
+    """Create a new session using the new_session_template from settings.
 
-    Substitutes {name} in the template with the validated payload name, then
-    runs the command as a fire-and-forget subprocess (stdout/stderr discarded).
+    Substitutes ``{name}`` in the template with the validated payload name,
+    runs the command as an async subprocess, and waits up to 30 seconds for
+    it to finish.  Returns ``{name, ok: True}`` on success or
+    ``{name, ok: False, error: ...}`` with HTTP 500 on failure so that the
+    frontend can surface actionable errors instead of silently timing out.
 
-    Returns {name: name} regardless of outcome.
-    Raises HTTP 422 if name is empty or whitespace (handled by Pydantic).
+    Some session commands (e.g. ``amplifier-workspace``) create the tmux
+    session and then attempt to *attach* to it, which requires a TTY.  When
+    launched from muxplex (no TTY available) the attach step fails with a
+    non-zero exit code even though the session was successfully created.  To
+    handle this, when the command exits non-zero we check whether a tmux
+    session with the requested name now exists -- if it does, we treat it as
+    a success.
     """
     name = payload.name
     settings = load_settings()
-    command = settings["new_session_template"].replace("{name}", name)
+    template = settings["new_session_template"]
+
+    # Pre-flight: check that the base command is on PATH.
+    base_cmd = template.split()[0] if template.strip() else ""
+    if base_cmd and not shutil.which(base_cmd):
+        _log.error(
+            "Session command binary not found on PATH: %r (PATH=%s)",
+            base_cmd,
+            os.environ.get("PATH", ""),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Command not found: {base_cmd}. "
+            "Ensure it is installed and in the server's PATH.",
+        )
+
+    command = template.replace("{name}", name)
     _log.info("Creating session '%s' with command: %s", name, command)
     try:
-        subprocess.Popen(
+        proc = await asyncio.create_subprocess_shell(
             command,
-            shell=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-    except Exception:
-        _log.warning("Failed to launch new-session command: %r", command)
-    return {"name": name}
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=30
+        )
+        if proc.returncode != 0:
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            # Some commands (amplifier-workspace) create the session then
+            # try to attach (which fails without a TTY).  If the session
+            # exists despite the non-zero exit, treat it as success.
+            sessions = await enumerate_sessions()
+            if name in sessions:
+                _log.info(
+                    "Session command exited %d but session '%s' exists -- "
+                    "treating as success (likely a TTY-attach failure)",
+                    proc.returncode,
+                    name,
+                )
+            else:
+                _log.warning(
+                    "Session command exited %d: %s (stderr: %s)",
+                    proc.returncode,
+                    command,
+                    stderr_text,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"Session command failed (exit {proc.returncode}): "
+                        f"{stderr_text}"
+                    )
+                    if stderr_text
+                    else f"Session command failed with exit code {proc.returncode}",
+                )
+    except asyncio.TimeoutError:
+        _log.info(
+            "Session command still running after 30s (may be long-lived): %s",
+            command,
+        )
+        # Long-running session commands (e.g. amplifier-workspace that
+        # spawns background processes) may outlive the 30s window.  This is
+        # not necessarily an error -- return success and let the frontend
+        # poll for the session to appear.
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("Failed to launch session command %r: %s", command, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to launch command: {exc}",
+        )
+    return {"name": name, "ok": True}
 
 
 @app.post("/api/sessions/{name}/connect")
@@ -584,9 +655,19 @@ async def get_settings() -> dict:
 
 @app.patch("/api/settings")
 async def update_settings(request: Request) -> dict:
-    """Merge known keys from the request body into settings and return updated settings."""
+    """Merge known keys from the request body into settings and return updated settings.
+
+    The response is redacted in the same way as ``GET /api/settings`` so that
+    sensitive keys are never leaked to the browser.
+    """
     body = await request.json()
-    return patch_settings(body)
+    updated = patch_settings(body)
+    result = copy.deepcopy(updated)
+    result["federation_key"] = ""
+    for inst in result.get("remote_instances", []):
+        if "key" in inst:
+            inst["key"] = ""
+    return result
 
 
 @app.get("/api/instance-info")
@@ -785,7 +866,9 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+            additional_headers={"Authorization": f"Bearer {remote_key}"}
+            if remote_key
+            else {},
             ssl=ssl_context,
         ) as remote_ws:
 
@@ -1065,7 +1148,7 @@ async def federation_connect(
         _log.warning("federation_connect: remote %s unreachable: %s", remote_url, exc)
         raise HTTPException(
             status_code=503,
-            detail=f"Remote unreachable: {remote_url}",
+            detail=f"Remote unreachable: {remote_url} ({type(exc).__name__}: {exc})",
         )
 
 
@@ -1113,7 +1196,7 @@ async def federation_bell_clear(
         )
         raise HTTPException(
             status_code=503,
-            detail=f"Remote unreachable: {remote_url}",
+            detail=f"Remote unreachable: {remote_url} ({type(exc).__name__}: {exc})",
         )
 
 
@@ -1161,7 +1244,7 @@ async def federation_create_session(
         )
         raise HTTPException(
             status_code=503,
-            detail=f"Remote unreachable: {remote_url}",
+            detail=f"Remote unreachable: {remote_url} ({type(exc).__name__}: {exc})",
         )
 
 

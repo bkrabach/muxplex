@@ -85,7 +85,7 @@ async def enumerate_sessions() -> list[str]:
     """
     try:
         output = await run_tmux("list-sessions", "-F", "#{session_name}")
-    except RuntimeError:
+    except (RuntimeError, FileNotFoundError):
         return []
 
     names = [line.strip() for line in output.splitlines() if line.strip()]

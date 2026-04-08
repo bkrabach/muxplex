@@ -145,6 +145,7 @@ _AUTH_EXEMPT_PATHS = {"/login", "/auth/mode", "/auth/logout", "/api/instance-inf
 _STATIC_EXTENSIONS = {
     ".css",
     ".js",
+    ".json",
     ".svg",
     ".png",
     ".ico",

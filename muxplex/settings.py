@@ -83,13 +83,18 @@ def patch_settings(patch: dict) -> dict:
     """
     current = load_settings()
 
-    # Snapshot existing remote keys by URL *before* applying the patch so we
-    # can restore them if the patch contains redacted (empty) key values.
-    existing_remote_keys: dict[str, str] = {
-        r["url"]: r.get("key", "")
-        for r in current.get("remote_instances", [])
-        if r.get("url")
+    # Snapshot existing remote keys by URL *and* by position *before* applying
+    # the patch so we can restore them if the patch contains redacted (empty)
+    # key values.  The URL-based lookup handles the common case (name-only edits).
+    # The position-based fallback handles URL edits (e.g. http -> https) where
+    # the URL changes but the remote identity is the same.
+    existing_remotes = current.get("remote_instances", [])
+    existing_remote_keys_by_url: dict[str, str] = {
+        r["url"]: r.get("key", "") for r in existing_remotes if r.get("url")
     }
+    existing_remote_keys_by_index: list[str] = [
+        r.get("key", "") for r in existing_remotes
+    ]
 
     for key in DEFAULT_SETTINGS:
         if key in patch:
@@ -97,10 +102,21 @@ def patch_settings(patch: dict) -> dict:
 
     # Restore keys that were stripped by redaction.
     if "remote_instances" in patch:
-        for remote in current["remote_instances"]:
+        for i, remote in enumerate(current["remote_instances"]):
+            if remote.get("key"):
+                # Non-empty key in the patch = intentional key rotation, keep it.
+                continue
             url = remote.get("url", "")
-            if not remote.get("key") and url in existing_remote_keys:
-                remote["key"] = existing_remote_keys[url]
+            if url in existing_remote_keys_by_url:
+                # URL unchanged -- restore by exact URL match.
+                remote["key"] = existing_remote_keys_by_url[url]
+            elif (
+                i < len(existing_remote_keys_by_index)
+                and existing_remote_keys_by_index[i]
+            ):
+                # URL changed (e.g. http -> https) but position is the same --
+                # restore by index so editing a URL doesn't erase the key.
+                remote["key"] = existing_remote_keys_by_index[i]
 
     save_settings(current)
     return current

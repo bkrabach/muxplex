@@ -1720,7 +1720,7 @@ function openSettings() {
     // Auto-open
     const autoOpenEl = $('setting-auto-open');
     if (autoOpenEl) {
-      autoOpenEl.checked = ss && ss.auto_open !== undefined ? !!ss.auto_open : true;
+      autoOpenEl.checked = ss && ss.auto_open_created !== undefined ? !!ss.auto_open_created : true;
     }
 
     // Device name
@@ -2288,7 +2288,7 @@ function bindStaticEventListeners() {
   });
   on($('setting-auto-open'), 'change', function() {
     var el = $('setting-auto-open');
-    if (el) patchServerSetting('auto_open', el.checked);
+    if (el) patchServerSetting('auto_open_created', el.checked);
   });
 
   // Hidden sessions — delegated handler on container (checkboxes are dynamic)
