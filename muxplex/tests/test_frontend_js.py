@@ -344,7 +344,9 @@ def test_get_display_settings_reads_server_settings() -> None:
     )
     assert match, "getDisplaySettings function not found"
     body = match.group(1)
-    assert "_serverSettings" in body, "getDisplaySettings must read from _serverSettings"
+    assert "_serverSettings" in body, (
+        "getDisplaySettings must read from _serverSettings"
+    )
     assert "localStorage" not in body, (
         "getDisplaySettings must not use localStorage — display settings are server-side"
     )
@@ -429,7 +431,9 @@ def test_get_display_settings_reads_from_server_settings() -> None:
     )
     assert match, "getDisplaySettings function not found"
     body = match.group(1)
-    assert "_serverSettings" in body, "getDisplaySettings must read from _serverSettings"
+    assert "_serverSettings" in body, (
+        "getDisplaySettings must read from _serverSettings"
+    )
     assert "localStorage" not in body, (
         "getDisplaySettings must not use localStorage — display settings are server-side"
     )
@@ -492,9 +496,7 @@ def test_on_display_setting_change_catches_errors() -> None:
     )
     assert match, "onDisplaySettingChange function not found"
     body = match.group(1)
-    assert ".catch" in body, (
-        "onDisplaySettingChange must handle errors via .catch()"
-    )
+    assert ".catch" in body, "onDisplaySettingChange must handle errors via .catch()"
 
 
 # ── openSettings implementation ───────────────────────────────────────────────
@@ -2597,3 +2599,107 @@ def test_open_session_bell_clear_is_fire_and_forget() -> None:
         assert "await" not in line, (
             f"openSession bell-clear POST must NOT be awaited (fire-and-forget): {line.strip()}"
         )
+
+
+# ─── Task 4: sidebar functions use server-side settings ──────────────────────
+
+
+def test_no_sidebar_key_constant() -> None:
+    """SIDEBAR_KEY constant must be removed — sidebar state moves to _serverSettings."""
+    assert "SIDEBAR_KEY" not in _JS, (
+        "SIDEBAR_KEY constant must be removed from app.js; "
+        "sidebar open/closed state is now stored in _serverSettings.sidebarOpen"
+    )
+
+
+def test_init_sidebar_reads_server_settings() -> None:
+    """initSidebar must read sidebarOpen from _serverSettings, not localStorage."""
+    match = re.search(
+        r"function initSidebar\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "initSidebar function not found"
+    body = match.group(1)
+    assert "_serverSettings" in body, (
+        "initSidebar must read sidebarOpen from _serverSettings"
+    )
+    assert "localStorage" not in body, (
+        "initSidebar must not use localStorage — sidebar state is now server-side"
+    )
+
+
+def test_init_sidebar_calls_patch_server_setting() -> None:
+    """initSidebar must call patchServerSetting to persist the auto-detected state."""
+    match = re.search(
+        r"function initSidebar\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "initSidebar function not found"
+    body = match.group(1)
+    assert "patchServerSetting" in body, (
+        "initSidebar must call patchServerSetting to persist the auto-detected sidebar state"
+    )
+
+
+def test_toggle_sidebar_reads_server_settings() -> None:
+    """toggleSidebar must derive state from the DOM class, not from localStorage."""
+    match = re.search(
+        r"function toggleSidebar\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "toggleSidebar function not found"
+    body = match.group(1)
+    assert "_serverSettings" in body, (
+        "toggleSidebar must write new state to _serverSettings"
+    )
+    assert "localStorage" not in body, (
+        "toggleSidebar must not use localStorage — sidebar state is now server-side"
+    )
+
+
+def test_toggle_sidebar_calls_patch_server_setting() -> None:
+    """toggleSidebar must call patchServerSetting to persist the toggled state."""
+    match = re.search(
+        r"function toggleSidebar\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "toggleSidebar function not found"
+    body = match.group(1)
+    assert "patchServerSetting" in body, (
+        "toggleSidebar must call patchServerSetting to persist the toggled sidebar state"
+    )
+
+
+def test_bind_sidebar_click_away_uses_server_settings() -> None:
+    """bindSidebarClickAway must write false to _serverSettings on collapse."""
+    match = re.search(
+        r"function bindSidebarClickAway\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindSidebarClickAway function not found"
+    body = match.group(1)
+    assert "_serverSettings" in body, (
+        "bindSidebarClickAway must write false to _serverSettings.sidebarOpen on collapse"
+    )
+    assert "localStorage" not in body, (
+        "bindSidebarClickAway must not use localStorage — sidebar state is now server-side"
+    )
+
+
+def test_bind_sidebar_click_away_calls_patch_server_setting() -> None:
+    """bindSidebarClickAway must call patchServerSetting to persist collapsed state."""
+    match = re.search(
+        r"function bindSidebarClickAway\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindSidebarClickAway function not found"
+    body = match.group(1)
+    assert "patchServerSetting" in body, (
+        "bindSidebarClickAway must call patchServerSetting to persist collapsed state"
+    )

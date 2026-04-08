@@ -598,24 +598,24 @@ const SIDEBAR_NARROW_THRESHOLD = 960;
 
 /**
  * Initialise sidebar open/closed state on page load.
- * Reads muxplex.sidebarOpen from localStorage (JSON.parse with try/catch).
+ * Reads sidebarOpen from _serverSettings cache.
  * Defaults to open on wide screens (innerWidth >= 960) when no stored value.
  * Applies sidebar--collapsed class accordingly and persists the initial state.
  */
 function initSidebar() {
-  let isOpen;
-  try {
-    const stored = localStorage.getItem(SIDEBAR_KEY);
-    if (stored !== null) {
-      isOpen = JSON.parse(stored);
-    } else {
-      isOpen = window.innerWidth >= SIDEBAR_NARROW_THRESHOLD;
-    }
-  } catch (_) {
+  var stored = _serverSettings ? _serverSettings.sidebarOpen : null;
+  var isOpen;
+
+  if (stored !== null && stored !== undefined) {
+    isOpen = !!stored;
+  } else {
     isOpen = window.innerWidth >= SIDEBAR_NARROW_THRESHOLD;
+    // Persist the auto-detected value (fire-and-forget)
+    if (_serverSettings) _serverSettings.sidebarOpen = isOpen;
+    patchServerSetting('sidebarOpen', isOpen);
   }
 
-  const sidebar = $('session-sidebar');
+  var sidebar = $('session-sidebar');
   if (sidebar) {
     if (isOpen) {
       sidebar.classList.remove('sidebar--collapsed');
@@ -623,51 +623,32 @@ function initSidebar() {
       sidebar.classList.add('sidebar--collapsed');
     }
   }
-
-  // Persist initial state
-  try {
-    localStorage.setItem(SIDEBAR_KEY, JSON.stringify(isOpen));
-  } catch (_) { /* blocked — ok */ }
 }
 
 /**
  * Toggle the sidebar open/closed state.
- * Reads current state from localStorage, inverts it, persists, applies
- * sidebar--collapsed class, and updates the collapse button text.
+ * Derives current state from DOM class, inverts it, persists to server,
+ * applies sidebar--collapsed class, and updates the collapse button text.
  * Button shows ‹ when open, › when closed.
  */
 function toggleSidebar() {
-  let isOpen;
-  try {
-    const stored = localStorage.getItem(SIDEBAR_KEY);
-    isOpen = stored !== null ? JSON.parse(stored) : true;
-  } catch (_) {
-    isOpen = true;
-  }
+  var sidebar = $('session-sidebar');
+  if (!sidebar) return;
 
-  // Invert state
+  var isOpen = !sidebar.classList.contains('sidebar--collapsed');
   isOpen = !isOpen;
 
-  // Persist
-  try {
-    localStorage.setItem(SIDEBAR_KEY, JSON.stringify(isOpen));
-  } catch (_) { /* blocked — ok */ }
-
-  // Apply class
-  const sidebar = $('session-sidebar');
-  if (sidebar) {
-    if (isOpen) {
-      sidebar.classList.remove('sidebar--collapsed');
-    } else {
-      sidebar.classList.add('sidebar--collapsed');
-    }
+  if (isOpen) {
+    sidebar.classList.remove('sidebar--collapsed');
+  } else {
+    sidebar.classList.add('sidebar--collapsed');
   }
 
-  // Update collapse button text (‹ when open, › when closed)
-  const collapseBtn = $('sidebar-collapse-btn');
-  if (collapseBtn) {
-    collapseBtn.textContent = isOpen ? '\u2039' : '\u203a';
-  }
+  if (_serverSettings) _serverSettings.sidebarOpen = isOpen;
+  patchServerSetting('sidebarOpen', isOpen);
+
+  var collapseBtn = $('sidebar-collapse-btn');
+  if (collapseBtn) collapseBtn.textContent = isOpen ? '\u2039' : '\u203a';
 }
 
 /**
@@ -679,17 +660,16 @@ function toggleSidebar() {
  *   - the sidebar is already collapsed
  */
 function bindSidebarClickAway() {
-  const container = $('terminal-container');
+  var container = $('terminal-container');
   if (!container) return;
-  container.addEventListener('click', () => {
+  container.addEventListener('click', function() {
     if (window.innerWidth >= SIDEBAR_NARROW_THRESHOLD) return;
-    const sidebar = $('session-sidebar');
+    var sidebar = $('session-sidebar');
     if (!sidebar) return;
     if (sidebar.classList.contains('sidebar--collapsed')) return;
     sidebar.classList.add('sidebar--collapsed');
-    try {
-      localStorage.setItem(SIDEBAR_KEY, JSON.stringify(false));
-    } catch (_) { /* blocked — ok */ }
+    if (_serverSettings) _serverSettings.sidebarOpen = false;
+    patchServerSetting('sidebarOpen', false);
   });
 }
 
