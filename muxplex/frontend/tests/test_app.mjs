@@ -1773,7 +1773,7 @@ test('initSidebar defaults to open (removes sidebar--collapsed) on wide screens 
 });
 
 test('initSidebar defaults to closed (adds sidebar--collapsed) on narrow screens when no stored value', () => {
-  delete _localStorageStore['muxplex.sidebarOpen'];
+  app._setServerSettings(null);  // ensure no stored sidebarOpen value in server settings
   const origInnerWidth = globalThis.window.innerWidth;
   globalThis.window.innerWidth = 600;
 
@@ -1800,7 +1800,7 @@ test('initSidebar defaults to closed (adds sidebar--collapsed) on narrow screens
 });
 
 test('initSidebar respects stored value true regardless of screen width — even at 600px removes collapsed class', () => {
-  _localStorageStore['muxplex.sidebarOpen'] = 'true';
+  app._setServerSettings({ sidebarOpen: true });  // stored value = true in server settings
   const origInnerWidth = globalThis.window.innerWidth;
   globalThis.window.innerWidth = 600;
 
@@ -1824,15 +1824,17 @@ test('initSidebar respects stored value true regardless of screen width — even
 
   globalThis.document.getElementById = origGetById;
   globalThis.window.innerWidth = origInnerWidth;
+  app._setServerSettings(null);
 });
 
 // ─── toggleSidebar ───────────────────────────────────────────────────────────
 
-test('toggleSidebar persists state to localStorage — from true toggles to false', () => {
-  _localStorageStore['muxplex.sidebarOpen'] = 'true';
+test('toggleSidebar persists state to _serverSettings — from open toggles to closed', () => {
+  app._setServerSettings({});  // non-null so sidebarOpen assignment takes effect
 
+  // Sidebar is open (no sidebar--collapsed class) — contains returns false
   const mockSidebar = {
-    classList: { remove: () => {}, add: () => {} },
+    classList: { remove: () => {}, add: () => {}, contains: () => false },
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -1844,17 +1846,19 @@ test('toggleSidebar persists state to localStorage — from true toggles to fals
 
   app.toggleSidebar();
 
-  assert.strictEqual(_localStorageStore['muxplex.sidebarOpen'], 'false', 'should persist false after toggling from true');
+  assert.strictEqual(app._getServerSettings().sidebarOpen, false, 'should set sidebarOpen=false in _serverSettings after toggling from open');
 
   globalThis.document.getElementById = origGetById;
+  app._setServerSettings(null);
 });
 
 test('toggleSidebar adds sidebar--collapsed class when closing (from open)', () => {
-  _localStorageStore['muxplex.sidebarOpen'] = 'true';
+  app._setServerSettings({});  // non-null so sidebarOpen assignment takes effect
 
   const addedClasses = [];
+  // Sidebar is open (no sidebar--collapsed class) — contains returns false
   const mockSidebar = {
-    classList: { remove: () => {}, add: (c) => addedClasses.push(c) },
+    classList: { remove: () => {}, add: (c) => addedClasses.push(c), contains: () => false },
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -1869,14 +1873,16 @@ test('toggleSidebar adds sidebar--collapsed class when closing (from open)', () 
   assert.ok(addedClasses.includes('sidebar--collapsed'), 'should add sidebar--collapsed class when closing');
 
   globalThis.document.getElementById = origGetById;
+  app._setServerSettings(null);
 });
 
-test('toggleSidebar removes sidebar--collapsed class when opening (from closed) and sets localStorage to true', () => {
-  _localStorageStore['muxplex.sidebarOpen'] = 'false';
+test('toggleSidebar removes sidebar--collapsed class when opening (from closed) and persists to _serverSettings', () => {
+  app._setServerSettings({});  // non-null so sidebarOpen assignment takes effect
 
   const removedClasses = [];
+  // Sidebar is closed (has sidebar--collapsed class) — contains returns true
   const mockSidebar = {
-    classList: { remove: (c) => removedClasses.push(c), add: () => {} },
+    classList: { remove: (c) => removedClasses.push(c), add: () => {}, contains: (c) => c === 'sidebar--collapsed' },
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -1889,9 +1895,10 @@ test('toggleSidebar removes sidebar--collapsed class when opening (from closed) 
   app.toggleSidebar();
 
   assert.ok(removedClasses.includes('sidebar--collapsed'), 'should remove sidebar--collapsed class when opening');
-  assert.strictEqual(_localStorageStore['muxplex.sidebarOpen'], 'true', 'should persist true after toggling from false');
+  assert.strictEqual(app._getServerSettings().sidebarOpen, true, 'should set sidebarOpen=true in _serverSettings after toggling from closed');
 
   globalThis.document.getElementById = origGetById;
+  app._setServerSettings(null);
 });
 
 // --- Guard: initSidebar and renderSidebar are exported and callable ---
@@ -2685,51 +2692,47 @@ test('loadGridViewMode returns flat by default', () => {
   assert.strictEqual(mode, 'flat', 'loadGridViewMode should return flat when no preference is set');
 });
 
-test('loadGridViewMode reads from localStorage when scope is local', () => {
-  // Set display settings with viewPreferenceScope 'local' and gridViewMode 'grouped'
+test('loadGridViewMode reads gridViewMode from _serverSettings', () => {
+  // gridViewMode is now stored in server settings
   _localStorageStore = {};
-  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'local', gridViewMode: 'grouped' });
-  app._setServerSettings(null);
+  app._setServerSettings({ gridViewMode: 'grouped' });
 
   const mode = app.loadGridViewMode();
-  assert.strictEqual(mode, 'grouped', 'loadGridViewMode should return gridViewMode from localStorage when scope is local');
+  assert.strictEqual(mode, 'grouped', 'loadGridViewMode should return gridViewMode from _serverSettings');
 
   // Cleanup
-  _localStorageStore = {};
-});
-
-test('loadGridViewMode reads from localStorage regardless of viewPreferenceScope', () => {
-  // viewPreferenceScope is no longer used — loadGridViewMode always reads from localStorage
-  _localStorageStore = {};
-  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server', gridViewMode: 'filtered' });
-  app._setServerSettings({ grid_view_mode: 'grouped' });
-
-  const mode = app.loadGridViewMode();
-  // Must return localStorage value ('filtered'), NOT server value ('grouped')
-  assert.strictEqual(mode, 'filtered', 'loadGridViewMode should always return gridViewMode from localStorage');
-
-  // Cleanup
-  _localStorageStore = {};
   app._setServerSettings(null);
 });
 
-test('saveGridViewMode stores to localStorage when scope is local', () => {
-  // Set scope to local (default)
+test('loadGridViewMode reads gridViewMode from _serverSettings (not localStorage)', () => {
+  // viewPreferenceScope is removed — loadGridViewMode reads from _serverSettings via getDisplaySettings()
   _localStorageStore = {};
-  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'local' });
+  app._setServerSettings({ gridViewMode: 'filtered' });
+
+  const mode = app.loadGridViewMode();
+  // Must return _serverSettings value ('filtered')
+  assert.strictEqual(mode, 'filtered', 'loadGridViewMode should return gridViewMode from _serverSettings');
+
+  // Cleanup
+  _localStorageStore = {};
   app._setServerSettings(null);
+});
+
+test('saveGridViewMode stores to _serverSettings', () => {
+  // gridViewMode is now stored in server settings
+  _localStorageStore = {};
+  app._setServerSettings({});
 
   app.saveGridViewMode('grouped');
 
   // Verify _gridViewMode was updated
   assert.strictEqual(app._getGridViewMode(), 'grouped', '_gridViewMode should be set to grouped');
 
-  // Verify it was saved to localStorage display settings
-  const saved = JSON.parse(_localStorageStore['muxplex.display'] || '{}');
-  assert.strictEqual(saved.gridViewMode, 'grouped', 'gridViewMode should be saved to localStorage display settings');
+  // Verify it was saved to _serverSettings
+  assert.strictEqual(app._getServerSettings().gridViewMode, 'grouped', 'gridViewMode should be saved to _serverSettings');
 
   // Cleanup
-  _localStorageStore = {};
+  app._setServerSettings(null);
   app._setGridViewMode('flat');
 });
 
@@ -3078,20 +3081,21 @@ test('applyDisplaySettings does NOT handle compact mode (compact was removed)', 
 });
 
 test('cycleViewMode cycles through auto -> fit -> auto (two modes, compact removed)', () => {
-  // Reset display settings to auto
-  const ds = app.loadDisplaySettings();
-  ds.viewMode = 'auto';
-  app.saveDisplaySettings(ds);
+  // Reset server settings so viewMode starts at 'auto'
+  app._setServerSettings({ viewMode: 'auto' });
 
   // First cycle: auto -> fit
   app.cycleViewMode();
-  const ds1 = app.loadDisplaySettings();
+  const ds1 = app.getDisplaySettings();
   assert.strictEqual(ds1.viewMode, 'fit', 'first cycle should go auto -> fit');
 
   // Second cycle: fit -> auto (wraps, compact is gone)
   app.cycleViewMode();
-  const ds2 = app.loadDisplaySettings();
+  const ds2 = app.getDisplaySettings();
   assert.strictEqual(ds2.viewMode, 'auto', 'second cycle should wrap fit -> auto (only two modes)');
+
+  // Cleanup
+  app._setServerSettings(null);
 });
 
 test('bindStaticEventListeners wires view-mode-btn click to cycleViewMode', () => {
@@ -3362,25 +3366,23 @@ test('HTML index.html has no setting-view-scope select element', () => {
   assert.ok(!source.includes('setting-view-scope'), '#setting-view-scope must be removed from HTML');
 });
 
-test('loadGridViewMode always reads from localStorage (ignores viewPreferenceScope=server)', () => {
-  // After removing view scope, loadGridViewMode should ALWAYS use localStorage regardless
+test('loadGridViewMode always reads from _serverSettings (view scope removed, localStorage ignored)', () => {
+  // After removing view scope, loadGridViewMode always reads from _serverSettings
   _localStorageStore = {};
-  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server', gridViewMode: 'grouped' });
-  app._setServerSettings({ grid_view_mode: 'filtered' });
+  app._setServerSettings({ gridViewMode: 'grouped' });
 
   const mode = app.loadGridViewMode();
-  // Must return the localStorage value ('grouped'), NOT the server value ('filtered')
-  assert.strictEqual(mode, 'grouped', 'loadGridViewMode must always read from localStorage — server scope removed');
+  // Must return the _serverSettings value ('grouped')
+  assert.strictEqual(mode, 'grouped', 'loadGridViewMode must always read from _serverSettings — view scope removed');
 
   // Cleanup
   _localStorageStore = {};
   app._setServerSettings(null);
 });
 
-test('saveGridViewMode always writes to localStorage (ignores viewPreferenceScope=server)', () => {
+test('saveGridViewMode always writes to _serverSettings (view scope removed)', () => {
   _localStorageStore = {};
-  _localStorageStore['muxplex.display'] = JSON.stringify({ viewPreferenceScope: 'server' });
-  app._setServerSettings({ grid_view_mode: 'flat' });
+  app._setServerSettings({});
 
   const fetchCalls = [];
   const origFetch = globalThis.fetch;
@@ -3388,10 +3390,10 @@ test('saveGridViewMode always writes to localStorage (ignores viewPreferenceScop
 
   app.saveGridViewMode('filtered');
 
-  // Must NOT call fetch (no server PATCH), must write to localStorage
-  assert.strictEqual(fetchCalls.length, 0, 'saveGridViewMode must NOT call fetch — server scope removed');
-  const saved = JSON.parse(_localStorageStore['muxplex.display'] || '{}');
-  assert.strictEqual(saved.gridViewMode, 'filtered', 'gridViewMode must be saved to localStorage');
+  // Must call fetch to PATCH server settings
+  assert.ok(fetchCalls.length > 0, 'saveGridViewMode must call fetch to PATCH server settings');
+  // Must write to _serverSettings
+  assert.strictEqual(app._getServerSettings().gridViewMode, 'filtered', 'gridViewMode must be saved to _serverSettings');
 
   // Cleanup
   globalThis.fetch = origFetch;
@@ -3556,12 +3558,12 @@ test('HTML index.html has setting-activity-indicator select element', () => {
 });
 
 test('buildTileHTML shows session-tile--edge-bell class when activityIndicator is dot (legacy test updated)', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'dot' });
+  app._setServerSettings({ activityIndicator: 'dot' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must appear when activityIndicator is dot');
   assert.ok(!html.includes('session-tile--bell'), 'session-tile--bell (glow) must NOT appear when activityIndicator is dot only');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML shows both session-tile--bell and session-tile--edge-bell when activityIndicator is both (legacy test updated)', () => {
@@ -3574,21 +3576,21 @@ test('buildTileHTML shows both session-tile--bell and session-tile--edge-bell wh
 });
 
 test('buildTileHTML omits all bell indicator classes when activityIndicator is none', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'none' });
+  app._setServerSettings({ activityIndicator: 'none' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('session-tile--bell'), 'session-tile--bell must NOT appear when activityIndicator is none');
   assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is none');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML omits session-tile--edge-bell when activityIndicator is glow (glow only, no edge bar)', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  app._setServerSettings({ activityIndicator: 'glow' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(html.includes('session-tile--bell'), 'session-tile--bell must appear when activityIndicator is glow');
   assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is glow');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML adds session-tile--bell when activityIndicator is glow', () => {
@@ -3608,11 +3610,11 @@ test('buildTileHTML adds session-tile--bell when activityIndicator is both', () 
 });
 
 test('buildTileHTML omits session-tile--bell when activityIndicator is none', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'none' });
+  app._setServerSettings({ activityIndicator: 'none' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('session-tile--bell'), 'session-tile--bell must NOT appear when activityIndicator is none');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('CSS style.css has #setting-device-name max-width rule', () => {
@@ -3722,19 +3724,19 @@ test('buildTileHTML adds session-tile--edge-bell class when activityIndicator is
 });
 
 test('buildTileHTML does NOT add session-tile--edge-bell when activityIndicator is glow', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  app._setServerSettings({ activityIndicator: 'glow' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is glow');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildTileHTML does NOT add session-tile--edge-bell when activityIndicator is none', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'none' });
+  app._setServerSettings({ activityIndicator: 'none' });
   const session = { name: 's', bell: { unseen_count: 1, seen_at: null, last_fired_at: 100 }, snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
   assert.ok(!html.includes('session-tile--edge-bell'), 'session-tile--edge-bell must NOT appear when activityIndicator is none');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildSidebarHTML has single-line header with name, badge, and delete button', () => {
@@ -3774,11 +3776,11 @@ test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is bo
 });
 
 test('buildSidebarHTML does NOT add sidebar-item--edge-bell when activityIndicator is glow', () => {
-  _localStorageStore['muxplex.display'] = JSON.stringify({ activityIndicator: 'glow' });
+  app._setServerSettings({ activityIndicator: 'glow' });
   const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
   const html = app.buildSidebarHTML(session, '');
   assert.ok(!html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must NOT appear when activityIndicator is glow');
-  _localStorageStore = {};
+  app._setServerSettings(null);
 });
 
 test('buildSidebarHTML does NOT include tile-bell-dot in HTML', () => {
@@ -3963,9 +3965,9 @@ test('remote instance debounced input listener selector includes .settings-remot
 
 test('killSession closes active session and returns to dashboard', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  // Find killSession function body
+  // Find killSession function body (use 600 chars to ensure closeSession call is included)
   const fnStart = source.indexOf('function killSession');
-  const fnBody = source.substring(fnStart, fnStart + 500);
+  const fnBody = source.substring(fnStart, fnStart + 600);
   assert.ok(fnBody.includes('_viewingSession'), 'killSession must check if deleted session is the active one');
   assert.ok(fnBody.includes('closeSession'), 'killSession must call closeSession when deleting the active session');
 });

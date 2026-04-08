@@ -1462,7 +1462,7 @@ function applyFitLayout(grid) {
 
 /**
  * Cycle the dashboard view mode: auto → fit → auto.
- * Persists to localStorage and reapplies display settings.
+ * Persists to server settings and reapplies display settings.
  */
 function cycleViewMode() {
   var ds = getDisplaySettings();
@@ -1522,7 +1522,7 @@ function applyDisplaySettings(ds) {
 }
 
 /**
- * Load grid view mode preference from display settings (localStorage).
+ * Load grid view mode preference from display settings (server).
  * Returns 'flat' as default.
  * @returns {string}
  */
@@ -1532,7 +1532,7 @@ function loadGridViewMode() {
 }
 
 /**
- * Save grid view mode preference to display settings (localStorage) and update _gridViewMode.
+ * Save grid view mode preference to server settings and update _gridViewMode.
  * @param {string} mode - The grid view mode to save.
  */
 function saveGridViewMode(mode) {
@@ -2447,6 +2447,11 @@ function _setServerSettings(settings) {
   _serverSettings = settings;
 }
 
+/** Test-only: get _serverSettings. */
+function _getServerSettings() {
+  return _serverSettings;
+}
+
 /** Test-only: get _gridViewMode. */
 function _getGridViewMode() {
   return _gridViewMode;
@@ -2471,8 +2476,12 @@ window.addEventListener('resize', function() {
   }
 });
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async function() {
   initDeviceId();
+
+  // Load ALL settings (now includes display + sidebar) before first render
+  await loadServerSettings();
+
   var _initDs = getDisplaySettings();
   applyDisplaySettings(_initDs);
   _gridViewMode = loadGridViewMode();
@@ -2486,17 +2495,15 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('touchstart', trackInteraction);
 
   restoreState()
-    .then(() => {
+    .then(function() {
       startPolling();
-      loadServerSettings().then(function() {
-        updatePageTitle();
-      });
+      updatePageTitle();
       startHeartbeat();
       bindStaticEventListeners();
     })
-    .catch((err) => {
+    .catch(function(err) {
       console.error('[init] restoreState failed, retrying in 5s:', err);
-      setTimeout(() => startPolling(), POLL_MS);
+      setTimeout(function() { startPolling(); }, POLL_MS);
     });
 });
 
@@ -2581,6 +2588,7 @@ if (typeof module !== 'undefined' && module.exports) {
     _setCurrentSessions,
     _setViewMode,
     _setServerSettings,
+    _getServerSettings,
     _getGridViewMode,
     _setGridViewMode,
     _setActiveFilterDevice,
