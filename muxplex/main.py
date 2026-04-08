@@ -1248,6 +1248,53 @@ async def federation_create_session(
         )
 
 
+@app.delete("/api/federation/{remote_id}/sessions/{session_name}")
+async def federation_delete_session(
+    remote_id: int, session_name: str, request: Request
+) -> dict:
+    """Proxy a delete-session DELETE to a remote instance.
+
+    Looks up the remote by integer index into ``remote_instances`` in settings,
+    sends ``DELETE {remote_url}/api/sessions/{session_name}`` with a Bearer auth
+    header, and returns the remote's JSON response.
+
+    Raises HTTP 404 if ``remote_id`` is not a valid integer index,
+    503 when remote is unreachable, 502 when remote returns HTTP error.
+    """
+    settings = load_settings()
+    remotes = settings.get("remote_instances", [])
+    if remote_id < 0 or remote_id >= len(remotes):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Remote instance '{remote_id}' not found",
+        )
+    remote = remotes[remote_id]
+    remote_url: str = remote.get("url", "").rstrip("/")
+    remote_key: str = remote.get("key", "")
+    url = f"{remote_url}/api/sessions/{session_name}"
+    http_client: httpx.AsyncClient = request.app.state.federation_client
+    try:
+        resp = await http_client.delete(
+            url,
+            headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Remote returned {exc.response.status_code}",
+        )
+    except Exception as exc:
+        _log.warning(
+            "federation_delete_session: remote %s unreachable: %s", remote_url, exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Remote unreachable: {remote_url} ({type(exc).__name__}: {exc})",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------

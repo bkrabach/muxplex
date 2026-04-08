@@ -2154,12 +2154,17 @@ async function createNewSession(name, remoteId) {
 
 /**
  * Kill a tmux session by name via DELETE /api/sessions/{name}.
+ * For remote sessions, proxies through the federation delete route.
  * Shows a confirmation dialog before killing. Refreshes the session list on success.
  * @param {string} name - The session name to kill.
+ * @param {string} [remoteId] - Remote instance index (empty or absent for local).
  */
-function killSession(name) {
+function killSession(name, remoteId) {
   if (!confirm('Kill session "' + name + '"?')) return;
-  api('DELETE', '/api/sessions/' + name)
+  var endpoint = remoteId
+    ? '/api/federation/' + encodeURIComponent(remoteId) + '/sessions/' + encodeURIComponent(name)
+    : '/api/sessions/' + encodeURIComponent(name);
+  api('DELETE', endpoint)
     .then(function() {
       showToast('Session \'' + name + '\' killed');
       // If we deleted the session we're currently viewing, return to dashboard
@@ -2184,7 +2189,10 @@ function bindStaticEventListeners() {
     if (!deleteBtn) return;
     e.stopPropagation();
     var name = deleteBtn.dataset.session;
-    if (name) killSession(name);
+    // Walk up to the tile/sidebar-item to get remoteId for federation routing
+    var container = deleteBtn.closest('[data-remote-id]');
+    var remoteId = container ? container.dataset.remoteId : '';
+    if (name) killSession(name, remoteId);
   });
 
   on($('back-btn'), 'click', closeSession);
