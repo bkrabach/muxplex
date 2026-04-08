@@ -4493,3 +4493,95 @@ test('closeSession PATCHes /api/state to clear active_remote_id', async () => {
   globalThis.document.querySelector = origQS;
   globalThis.setTimeout = origSetTimeout;
 });
+
+// ─── Task 2: Replace localStorage storage layer with server-settings-cache ───
+
+test('DISPLAY_SETTINGS_KEY constant is deleted from app.js source', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    !source.includes('const DISPLAY_SETTINGS_KEY'),
+    'DISPLAY_SETTINGS_KEY constant declaration must be deleted from app.js'
+  );
+});
+
+test('SIDEBAR_KEY constant declaration is deleted from app.js source', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(
+    !source.includes('const SIDEBAR_KEY'),
+    'SIDEBAR_KEY constant declaration must be deleted from app.js'
+  );
+});
+
+test('DISPLAY_DEFAULTS does not include notificationPermission', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
+  assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(
+    !defaultsBody.includes('notificationPermission'),
+    'DISPLAY_DEFAULTS must NOT include notificationPermission'
+  );
+});
+
+test('DISPLAY_DEFAULTS includes gridViewMode with default flat', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
+  assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('gridViewMode'), 'DISPLAY_DEFAULTS must include gridViewMode');
+  assert.ok(
+    defaultsBody.includes("'flat'") || defaultsBody.includes('"flat"'),
+    "DISPLAY_DEFAULTS gridViewMode default must be 'flat'"
+  );
+});
+
+test('DISPLAY_DEFAULTS has exactly 9 keys', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
+  assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  const keyMatches = defaultsBody.match(/^\s+\w+:/gm);
+  assert.ok(keyMatches, 'DISPLAY_DEFAULTS must have keys');
+  assert.strictEqual(keyMatches.length, 9, `DISPLAY_DEFAULTS must have exactly 9 keys, got ${keyMatches.length}`);
+});
+
+test('getDisplaySettings is exported from app.js', () => {
+  assert.ok('getDisplaySettings' in app, 'app.js must export getDisplaySettings');
+  assert.strictEqual(typeof app.getDisplaySettings, 'function', 'getDisplaySettings must be a function');
+});
+
+test('loadDisplaySettings is NOT exported from app.js', () => {
+  assert.ok(!('loadDisplaySettings' in app), 'app.js must NOT export loadDisplaySettings (replaced by getDisplaySettings)');
+});
+
+test('saveDisplaySettings is NOT exported from app.js', () => {
+  assert.ok(!('saveDisplaySettings' in app), 'app.js must NOT export saveDisplaySettings (deleted)');
+});
+
+test('getDisplaySettings returns DISPLAY_DEFAULTS when _serverSettings is null', () => {
+  app._setServerSettings(null);
+  const ds = app.getDisplaySettings();
+  assert.strictEqual(ds.fontSize, 14, 'getDisplaySettings must return default fontSize');
+  assert.strictEqual(ds.hoverPreviewDelay, 1500, 'getDisplaySettings must return default hoverPreviewDelay');
+  assert.strictEqual(ds.gridColumns, 'auto', 'getDisplaySettings must return default gridColumns');
+  assert.strictEqual(ds.bellSound, false, 'getDisplaySettings must return default bellSound');
+  assert.strictEqual(ds.viewMode, 'auto', 'getDisplaySettings must return default viewMode');
+  assert.strictEqual(ds.showDeviceBadges, true, 'getDisplaySettings must return default showDeviceBadges');
+  assert.strictEqual(ds.showHoverPreview, true, 'getDisplaySettings must return default showHoverPreview');
+  assert.strictEqual(ds.activityIndicator, 'both', 'getDisplaySettings must return default activityIndicator');
+  assert.strictEqual(ds.gridViewMode, 'flat', 'getDisplaySettings must return default gridViewMode');
+});
+
+test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DEFAULTS fallback', () => {
+  app._setServerSettings({ fontSize: 18, viewMode: 'fit', unknownKey: 'ignored' });
+  const ds = app.getDisplaySettings();
+  assert.strictEqual(ds.fontSize, 18, 'getDisplaySettings must use fontSize from _serverSettings');
+  assert.strictEqual(ds.viewMode, 'fit', 'getDisplaySettings must use viewMode from _serverSettings');
+  assert.strictEqual(ds.hoverPreviewDelay, 1500, 'getDisplaySettings must fall back to default hoverPreviewDelay');
+  assert.strictEqual(ds.gridViewMode, 'flat', 'getDisplaySettings must fall back to default gridViewMode');
+  assert.ok(!('unknownKey' in ds), 'getDisplaySettings must not include keys not in DISPLAY_DEFAULTS');
+  app._setServerSettings(null);
+});

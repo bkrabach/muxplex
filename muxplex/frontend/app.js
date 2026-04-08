@@ -137,17 +137,16 @@ let _settingsOpen = false;
 let _serverSettings = null;
 let _gridViewMode = 'flat';
 let _activeFilterDevice = 'all';
-const DISPLAY_SETTINGS_KEY = 'muxplex.display';
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
   hoverPreviewDelay: 1500,
   gridColumns: 'auto',
   bellSound: false,
-  notificationPermission: 'default',
   viewMode: 'auto',
   showDeviceBadges: true,        // show device name labels on tiles/sidebar
   showHoverPreview: true,        // show hover preview popover on tile hover
   activityIndicator: 'both',     // 'none' | 'glow' | 'dot' | 'both'
+  gridViewMode: 'flat',          // 'flat' | 'grouped'
 };
 
 var VIEW_MODES = ['auto', 'fit'];
@@ -595,7 +594,6 @@ function renderSidebar(sessions, currentSession) {
 
 }
 
-const SIDEBAR_KEY = 'muxplex.sidebarOpen';
 const SIDEBAR_NARROW_THRESHOLD = 960;
 
 /**
@@ -1428,29 +1426,20 @@ function _updateMultiDeviceFieldsState(enabled) {
 // ─── Settings dialog ──────────────────────────────────────────────────────────
 
 /**
- * Load display settings from localStorage, merging with DISPLAY_DEFAULTS.
- * Returns defaults on any error.
+ * Get display settings from the server-settings cache (_serverSettings),
+ * falling back to DISPLAY_DEFAULTS for any missing keys.
+ * Only includes keys defined in DISPLAY_DEFAULTS.
  * @returns {object}
  */
-function loadDisplaySettings() {
-  try {
-    const raw = localStorage.getItem(DISPLAY_SETTINGS_KEY);
-    if (raw === null) return Object.assign({}, DISPLAY_DEFAULTS);
-    const saved = JSON.parse(raw);
-    return Object.assign({}, DISPLAY_DEFAULTS, saved);
-  } catch (_) {
-    return Object.assign({}, DISPLAY_DEFAULTS);
+function getDisplaySettings() {
+  const result = Object.assign({}, DISPLAY_DEFAULTS);
+  const ss = _serverSettings || {};
+  for (const key of Object.keys(DISPLAY_DEFAULTS)) {
+    if (Object.prototype.hasOwnProperty.call(ss, key)) {
+      result[key] = ss[key];
+    }
   }
-}
-
-/**
- * Save display settings to localStorage.
- * @param {object} settings
- */
-function saveDisplaySettings(settings) {
-  try {
-    localStorage.setItem(DISPLAY_SETTINGS_KEY, JSON.stringify(settings));
-  } catch (_) { /* blocked — ok */ }
+  return result;
 }
 
 /**
@@ -2572,8 +2561,7 @@ if (typeof module !== 'undefined' && module.exports) {
     showPreview,
     hidePreview,
     // Settings
-    loadDisplaySettings,
-    saveDisplaySettings,
+    getDisplaySettings,
     applyDisplaySettings,
     loadGridViewMode,
     saveGridViewMode,
