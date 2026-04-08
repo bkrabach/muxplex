@@ -244,6 +244,16 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `multi_device_enabled` | `false` | Enable multi-instance federation |
 | `tls_cert` | `""` | Path to TLS certificate file (empty = HTTP) |
 | `tls_key` | `""` | Path to TLS private key file (empty = HTTP) |
+| `fontSize` | `14` | Terminal and tile preview font size (px) |
+| `hoverPreviewDelay` | `1500` | Hover preview popup delay (ms) |
+| `gridColumns` | `"auto"` | Number of grid columns (`"auto"` or integer) |
+| `bellSound` | `false` | Play audio sound on terminal bell |
+| `viewMode` | `"auto"` | Grid tile sizing: `auto` or `fit` |
+| `showDeviceBadges` | `true` | Show device name labels on tiles |
+| `showHoverPreview` | `true` | Show hover preview popover on tile hover |
+| `activityIndicator` | `"both"` | Activity style: `none`, `glow`, `dot`, `both` |
+| `gridViewMode` | `"flat"` | Multi-device grid layout: `flat`, `grouped`, `filtered` |
+| `sidebarOpen` | `null` | Sidebar state: `true`, `false`, or `null` (auto-detect from screen width) |
 
 **Priority:** CLI flags > `settings.json` > defaults.
 
