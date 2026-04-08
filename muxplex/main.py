@@ -209,7 +209,7 @@ async def lifespan(app: FastAPI):
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="muxplex", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="muxplex", version="0.2.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
