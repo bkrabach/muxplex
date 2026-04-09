@@ -1091,7 +1091,8 @@ function _drawFaviconBadge() {
  * Delegates drawing to _drawFaviconBadge which manages the cached Image object.
  */
 function updateFaviconBadge() {
-  var hasActivity = _currentSessions && _currentSessions.some(function (s) {
+  var visible = getVisibleSessions(_currentSessions);
+  var hasActivity = visible.length > 0 && visible.some(function (s) {
     return s.bell && s.bell.unseen_count > 0;
   });
 
@@ -1122,7 +1123,8 @@ function updatePageTitle() {
   var hostname = (_serverSettings && _serverSettings.device_name) ||
                  (typeof location !== 'undefined' ? location.hostname : null) ||
                  'muxplex';
-  var count = (_currentSessions || []).filter(function(s) {
+  var visible = getVisibleSessions(_currentSessions);
+  var count = visible.filter(function(s) {
     return s.bell && s.bell.unseen_count > 0;
   }).length;
   var prefix = count > 0 ? '(' + count + ') ' : '';
@@ -2547,6 +2549,7 @@ if (typeof module !== 'undefined' && module.exports) {
     renderSheetList,
     updateSessionPill,
     updatePageTitle,
+    updateFaviconBadge,
     // ANSI color rendering
     ansiToHtml,
     ansiParamsToStyle,

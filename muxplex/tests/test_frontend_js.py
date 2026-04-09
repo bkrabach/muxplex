@@ -2733,3 +2733,36 @@ def test_get_visible_sessions_uses_null_check_not_falsy() -> None:
         "getVisibleSessions must use 's.remoteId == null' (or '=== null') to correctly treat "
         "remoteId=0 as a real remote while matching null/undefined as local sessions."
     )
+
+
+# ─── task-2: updatePageTitle and updateFaviconBadge filter hidden sessions ─────
+
+
+def test_update_page_title_filters_through_visible_sessions() -> None:
+    """updatePageTitle() must count bell activity from getVisibleSessions(), not all sessions."""
+    match = re.search(
+        r"function updatePageTitle\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "updatePageTitle function not found in app.js"
+    body = match.group(1)
+    assert "getVisibleSessions" in body, (
+        "updatePageTitle must filter sessions through getVisibleSessions() "
+        "to exclude hidden sessions from the bell count"
+    )
+
+
+def test_update_favicon_badge_filters_through_visible_sessions() -> None:
+    """updateFaviconBadge() must check bell activity from getVisibleSessions(), not all sessions."""
+    match = re.search(
+        r"function updateFaviconBadge\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// ─|\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "updateFaviconBadge function not found in app.js"
+    body = match.group(1)
+    assert "getVisibleSessions" in body, (
+        "updateFaviconBadge must filter sessions through getVisibleSessions() "
+        "to exclude hidden sessions from the bell activity check"
+    )

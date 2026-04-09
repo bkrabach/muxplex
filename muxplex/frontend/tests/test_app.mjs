@@ -4641,3 +4641,63 @@ test('getVisibleSessions hides local session (remoteId null) but keeps remote se
   assert.strictEqual(visible[0].remoteId, 0, 'the visible session must be the remote one with remoteId=0');
   app._setServerSettings(null);
 });
+
+// --- task-2: updatePageTitle and updateFaviconBadge filter hidden sessions ---
+
+test('updatePageTitle excludes hidden sessions from bell count', () => {
+  // Set up server settings with hidden_sessions
+  app._setServerSettings({ hidden_sessions: ['hidden-build'] });
+
+  // Create two sessions: visible-dev (unseen_count 2) and hidden-build (unseen_count 5)
+  app._setCurrentSessions([
+    { name: 'visible-dev', bell: { unseen_count: 2 } },
+    { name: 'hidden-build', bell: { unseen_count: 5 } },
+  ]);
+
+  // Call updatePageTitle
+  app.updatePageTitle();
+
+  // Assert title starts with '(1)' — only visible-dev counts, not hidden-build
+  assert.ok(
+    document.title.startsWith('(1)'),
+    `title must start with '(1)' when only 1 visible session has bells, got '${document.title}'`
+  );
+
+  // Clean up
+  app._setServerSettings(null);
+  app._setCurrentSessions([]);
+});
+
+test('updateFaviconBadge does not show activity for only-hidden sessions with bells', () => {
+  // Set up server settings with hidden_sessions
+  app._setServerSettings({ hidden_sessions: ['hidden-build'] });
+
+  // Create only a hidden session with bell activity
+  app._setCurrentSessions([
+    { name: 'hidden-build', bell: { unseen_count: 5 } },
+  ]);
+
+  // Mock document.querySelector to return a fake link element
+  const origQS = globalThis.document.querySelector;
+  const faviconHref = 'http://localhost/favicon.ico';
+  const fakeLink = { href: faviconHref };
+  globalThis.document.querySelector = (sel) => {
+    if (sel && sel.includes('icon')) return fakeLink;
+    return null;
+  };
+
+  // Call updateFaviconBadge — should NOT draw badge since no visible sessions have bells
+  app.updateFaviconBadge();
+
+  // favicon href must not change — no badge should be applied
+  assert.strictEqual(
+    fakeLink.href,
+    faviconHref,
+    'favicon href must not change when only hidden sessions have bell activity'
+  );
+
+  // Restore mocks and state
+  globalThis.document.querySelector = origQS;
+  app._setServerSettings(null);
+  app._setCurrentSessions([]);
+});
