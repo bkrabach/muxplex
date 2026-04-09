@@ -41,7 +41,30 @@ DEFAULT_SETTINGS: dict = {
     "activityIndicator": "both",
     "gridViewMode": "flat",
     "sidebarOpen": None,
+    "settings_updated_at": 0.0,
 }
+
+SYNCABLE_KEYS: frozenset[str] = frozenset(
+    {
+        # Display preferences
+        "fontSize",
+        "hoverPreviewDelay",
+        "gridColumns",
+        "bellSound",
+        "viewMode",
+        "showDeviceBadges",
+        "showHoverPreview",
+        "activityIndicator",
+        "gridViewMode",
+        "sidebarOpen",
+        # Session behavior
+        "sort_order",
+        "hidden_sessions",
+        "default_session",
+        "window_size_largest",
+        "auto_open_created",
+    }
+)
 
 
 def load_settings() -> dict:

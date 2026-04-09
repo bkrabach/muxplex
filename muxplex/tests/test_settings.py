@@ -11,6 +11,7 @@ import pytest
 import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
+    SYNCABLE_KEYS,
     load_federation_key,
     load_settings,
     patch_settings,
@@ -844,3 +845,76 @@ def test_display_settings_round_trip_via_patch():
         assert loaded[key] == expected, (
             f"load_settings() must return persisted {key}={expected!r}, got: {loaded[key]!r}"
         )
+
+
+# ============================================================
+# SYNCABLE_KEYS allowlist and settings_updated_at (task-5)
+# ============================================================
+
+
+def test_syncable_keys_is_frozenset():
+    """SYNCABLE_KEYS must be a frozenset."""
+    assert isinstance(SYNCABLE_KEYS, frozenset)
+
+
+def test_syncable_keys_contains_display_settings():
+    """SYNCABLE_KEYS must include all display preference keys."""
+    display_keys = {
+        "fontSize",
+        "hoverPreviewDelay",
+        "gridColumns",
+        "bellSound",
+        "viewMode",
+        "showDeviceBadges",
+        "showHoverPreview",
+        "activityIndicator",
+        "gridViewMode",
+        "sidebarOpen",
+    }
+    assert display_keys.issubset(SYNCABLE_KEYS)
+
+
+def test_syncable_keys_contains_session_behavior():
+    """SYNCABLE_KEYS must include session behavior keys."""
+    session_keys = {
+        "sort_order",
+        "hidden_sessions",
+        "default_session",
+        "window_size_largest",
+        "auto_open_created",
+    }
+    assert session_keys.issubset(SYNCABLE_KEYS)
+
+
+def test_syncable_keys_excludes_infrastructure():
+    """SYNCABLE_KEYS must NOT include infrastructure/identity keys."""
+    infra_keys = {
+        "host",
+        "port",
+        "auth",
+        "session_ttl",
+        "tls_cert",
+        "tls_key",
+        "device_name",
+        "federation_key",
+        "remote_instances",
+        "multi_device_enabled",
+        "new_session_template",
+        "delete_session_template",
+    }
+    assert SYNCABLE_KEYS.isdisjoint(infra_keys)
+
+
+def test_syncable_keys_excludes_settings_updated_at():
+    """settings_updated_at is metadata, not a syncable key."""
+    assert "settings_updated_at" not in SYNCABLE_KEYS
+
+
+def test_syncable_keys_subset_of_default_settings():
+    """Every SYNCABLE_KEY must exist in DEFAULT_SETTINGS."""
+    assert SYNCABLE_KEYS.issubset(DEFAULT_SETTINGS.keys())
+
+
+def test_defaults_include_settings_updated_at():
+    """DEFAULT_SETTINGS must include settings_updated_at with default 0.0."""
+    assert DEFAULT_SETTINGS["settings_updated_at"] == 0.0
