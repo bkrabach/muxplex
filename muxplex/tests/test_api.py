@@ -2691,6 +2691,117 @@ def test_federation_create_session_returns_502_when_remote_returns_error(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Poll cycle federation bell clear (task-3)
+# ---------------------------------------------------------------------------
+
+
+async def test_poll_cycle_fires_federation_bell_clear_for_remote_session(
+    monkeypatch, tmp_path
+):
+    """_run_poll_cycle() fires POST bell/clear to remote when a device is viewing a remote session.
+
+    Sets up state with active_remote_id=0, one device viewing 'build' in fullscreen
+    with a recent interaction timestamp, mocks the module-level _federation_client,
+    runs one poll cycle, and verifies mock_client.post was called with the correct
+    URL and Bearer auth header.
+    """
+    import json
+    import time
+    from unittest.mock import MagicMock
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+    from muxplex.state import save_state
+
+    # Set up settings with one remote instance at index 0
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "test-key",
+                        "name": "remote-host",
+                    }
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Set up state with active_remote_id=0, one device viewing 'build' in fullscreen
+    state = {
+        "active_session": None,
+        "active_remote_id": 0,
+        "session_order": ["build"],
+        "sessions": {
+            "build": {
+                "bell": {"last_fired_at": None, "seen_at": None, "unseen_count": 0}
+            }
+        },
+        "devices": {
+            "dev-1": {
+                "label": "My Device",
+                "viewing_session": "build",
+                "view_mode": "fullscreen",
+                "last_interaction_at": time.time(),
+                "last_heartbeat_at": time.time(),
+            }
+        },
+    }
+    save_state(state)
+
+    # Mock all poll-cycle dependencies so the cycle completes without real tmux
+    async def mock_enumerate():
+        return ["build"]
+
+    async def mock_snapshot_all(names):
+        return {"build": "pane text"}
+
+    async def mock_process_bell_flags(names, state):
+        pass
+
+    monkeypatch.setattr("muxplex.main.enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr("muxplex.main.snapshot_all", mock_snapshot_all)
+    monkeypatch.setattr(
+        "muxplex.main.update_session_cache", lambda names, snapshots: None
+    )
+    monkeypatch.setattr("muxplex.main.apply_bell_clear_rule", lambda state: None)
+    monkeypatch.setattr("muxplex.main.prune_devices", lambda state: None)
+    monkeypatch.setattr("muxplex.main.process_bell_flags", mock_process_bell_flags)
+
+    # Capture POST calls from the mocked federation client
+    post_calls: list[dict] = []
+
+    async def mock_post(url, **kwargs):
+        post_calls.append({"url": url, "kwargs": kwargs})
+        resp = MagicMock()
+        resp.status_code = 200
+        return resp
+
+    mock_client = MagicMock()
+    mock_client.post = mock_post
+    monkeypatch.setattr(main_mod, "_federation_client", mock_client)
+
+    # Run one poll cycle
+    await main_mod._run_poll_cycle()
+
+    # Verify mock_client.post was called exactly once with the correct URL and auth
+    assert len(post_calls) == 1, (
+        f"Expected exactly 1 POST call to remote bell/clear, got {len(post_calls)}: {post_calls}"
+    )
+    call = post_calls[0]
+    assert "/api/sessions/build/bell/clear" in call["url"], (
+        f"Expected URL to contain '/api/sessions/build/bell/clear', got: {call['url']}"
+    )
+    headers = call["kwargs"].get("headers", {})
+    assert headers.get("Authorization") == "Bearer test-key", (
+        f"Expected 'Authorization: Bearer test-key' header, got: {headers}"
+    )
+
+
 def test_federation_auth_headers_guard_empty_key():
     """Every federation Authorization header construction must guard against empty key.
 

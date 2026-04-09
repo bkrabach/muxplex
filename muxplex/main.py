@@ -81,6 +81,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _poll_task: asyncio.Task | None = None
+_federation_client: httpx.AsyncClient | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,46 @@ async def _run_poll_cycle() -> None:
         # 9. Apply bell clear rule (acknowledge bells when device is watching fullscreen)
         apply_bell_clear_rule(state)
 
+        # 12. Fire bell/clear to the active remote for any device viewing a remote
+        # session in fullscreen with recent interaction.  Fire-and-forget: errors
+        # are logged and do not abort the rest of the poll cycle.
+        if _federation_client is not None:
+            active_remote_id = state.get("active_remote_id")
+            if active_remote_id is not None:
+                settings = load_settings()
+                remote_instances = settings.get("remote_instances", [])
+                if (
+                    isinstance(active_remote_id, int)
+                    and 0 <= active_remote_id < len(remote_instances)
+                ):
+                    remote = remote_instances[active_remote_id]
+                    remote_url: str = remote.get("url", "").rstrip("/")
+                    remote_key: str = remote.get("key", "")
+                    now = time.time()
+                    for device in state.get("devices", {}).values():
+                        viewing_session = device.get("viewing_session")
+                        view_mode = device.get("view_mode")
+                        last_interaction_at = device.get("last_interaction_at", 0)
+                        if (
+                            viewing_session
+                            and view_mode == "fullscreen"
+                            and (now - last_interaction_at) < 60
+                        ):
+                            bell_clear_url = (
+                                f"{remote_url}/api/sessions/{viewing_session}/bell/clear"
+                            )
+                            try:
+                                await _federation_client.post(
+                                    bell_clear_url,
+                                    headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+                                )
+                            except Exception:
+                                _log.warning(
+                                    "federation bell clear failed for %s: %s",
+                                    viewing_session,
+                                    bell_clear_url,
+                                )
+
         # 10. Prune devices that haven't sent a heartbeat recently
         prune_devices(state)
 
@@ -161,6 +202,7 @@ async def _poll_loop() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     global _poll_task
+    global _federation_client
 
     # Startup: kill any orphaned ttyd from a previous muxplex run, then
     # start the background poll loop.
@@ -187,6 +229,7 @@ async def lifespan(app: FastAPI):
         # Bearer token auth handles authorization. Users who need cert verification
         # should use mkcert (CA-trusted) or Tailscale (LE-trusted) certs.
     )
+    _federation_client = app.state.federation_client
 
     yield
 
@@ -194,6 +237,7 @@ async def lifespan(app: FastAPI):
         client = getattr(app.state, "federation_client", None)
         if client is not None:
             await client.aclose()
+            _federation_client = None
     except Exception:
         _log.exception("federation_client aclose error")
     finally:
@@ -871,9 +915,7 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"}
-            if remote_key
-            else {},
+            additional_headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
             ssl=ssl_context,
         ) as remote_ws:
 
