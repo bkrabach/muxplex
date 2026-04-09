@@ -79,6 +79,7 @@ from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
 POLL_INTERVAL: float = float(os.environ.get("POLL_INTERVAL", "2.0"))
 SERVER_PORT: int = int(os.environ.get("MUXPLEX_PORT", "8088"))
+SETTINGS_SYNC_INTERVAL: int = 15  # sync every ~30 seconds (15 * 2s poll interval)
 
 _log = logging.getLogger(__name__)
 
@@ -88,6 +89,74 @@ _log = logging.getLogger(__name__)
 
 _poll_task: asyncio.Task | None = None
 _federation_client: httpx.AsyncClient | None = None
+_settings_sync_counter: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Settings sync
+# ---------------------------------------------------------------------------
+
+
+async def _sync_settings_with_remotes(
+    settings: dict, http_client: httpx.AsyncClient
+) -> None:
+    """Sync settings with all reachable remote instances.
+
+    For each remote:
+    - GET /api/settings/sync to retrieve remote timestamp.
+    - If remote is newer: adopt remote settings via apply_synced_settings().
+    - If local is newer: push local settings via PUT /api/settings/sync.
+    - If equal: no action.
+
+    Errors are caught per-remote so one unreachable peer doesn't abort others.
+    404/405 responses from older muxplex instances that lack sync endpoints are
+    silently skipped.
+    """
+    local_sync = get_syncable_settings()
+    local_ts = local_sync.get("settings_updated_at", 0.0)
+
+    for remote in settings.get("remote_instances", []):
+        url = remote.get("url", "").rstrip("/")
+        key = remote.get("key", "")
+        if not url:
+            continue
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        try:
+            resp = await http_client.get(
+                f"{url}/api/settings/sync", headers=headers, timeout=5.0
+            )
+            if resp.status_code in (404, 405):
+                # Older muxplex instance without sync endpoint — skip silently.
+                continue
+            resp.raise_for_status()
+            remote_data = resp.json()
+            remote_ts = remote_data.get("settings_updated_at", 0.0)
+
+            if remote_ts > local_ts:
+                # Remote is newer — adopt.
+                apply_synced_settings(remote_data.get("settings", {}), remote_ts)
+                # Refresh local state so subsequent remotes see the updated ts.
+                local_sync = get_syncable_settings()
+                local_ts = local_sync.get("settings_updated_at", 0.0)
+            elif local_ts > remote_ts:
+                # Local is newer — push.
+                payload = {
+                    "settings": {
+                        k: local_sync[k]
+                        for k in local_sync
+                        if k != "settings_updated_at"
+                    },
+                    "settings_updated_at": local_ts,
+                }
+                await http_client.put(
+                    f"{url}/api/settings/sync",
+                    json=payload,
+                    headers=headers,
+                    timeout=5.0,
+                )
+            # If equal: no action.
+        except Exception as exc:
+            _log.warning("Settings sync with %s failed: %s", url, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +166,7 @@ _federation_client: httpx.AsyncClient | None = None
 
 async def _run_poll_cycle() -> None:
     """Perform one full poll cycle, all operations executed under state_lock."""
+    global _settings_sync_counter
     async with state_lock:
         # 1. Enumerate live tmux sessions
         names = await enumerate_sessions()
@@ -183,6 +253,19 @@ async def _run_poll_cycle() -> None:
 
         # 12. Atomically persist the updated state
         save_state(state)
+
+    # 13. Periodically sync settings with remote instances (every SETTINGS_SYNC_INTERVAL
+    #     poll cycles, ~30 seconds). Runs outside the state_lock to avoid blocking the
+    #     poll cycle while waiting on remote HTTP calls.
+    _settings_sync_counter += 1
+    if _settings_sync_counter >= SETTINGS_SYNC_INTERVAL:
+        _settings_sync_counter = 0
+        if _federation_client is not None:
+            settings = load_settings()
+            try:
+                await _sync_settings_with_remotes(settings, _federation_client)
+            except Exception:
+                _log.exception("settings sync cycle error")
 
 
 # ---------------------------------------------------------------------------
