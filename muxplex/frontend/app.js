@@ -521,8 +521,8 @@ function buildStatusTileHTML(deviceName, statusText, statusClass) {
 
 /**
  * Returns sessions with hidden session names removed.
- * Only hides LOCAL sessions (those with no remoteId) matching the
- * hidden_sessions list. Remote sessions with the same name remain visible.
+ * Hides any session whose name appears in the hidden_sessions list,
+ * regardless of whether it is local or remote (federated).
  * Consolidates the hidden-session filter used by all render paths.
  * @param {object[]} sessions
  * @returns {object[]}
@@ -530,7 +530,7 @@ function buildStatusTileHTML(deviceName, statusText, statusClass) {
 function getVisibleSessions(sessions) {
   var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
   return (sessions || []).filter(function(s) {
-    if (hidden.length > 0 && s.remoteId == null && hidden.includes(s.name)) {
+    if (hidden.length > 0 && hidden.includes(s.name)) {
       return false;
     }
     return true;

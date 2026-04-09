@@ -2715,9 +2715,13 @@ def test_bind_sidebar_click_away_calls_patch_server_setting() -> None:
 # ─── task-1: getVisibleSessions falsy-0 bug fix ────────────────────────────
 
 
-def test_get_visible_sessions_uses_null_check_not_falsy() -> None:
-    """getVisibleSessions must use s.remoteId == null (not !s.remoteId) to avoid
-    treating remoteId=0 (first remote instance) as falsy and incorrectly hiding it."""
+def test_get_visible_sessions_has_no_remote_id_filter() -> None:
+    """getVisibleSessions must not check s.remoteId at all.
+
+    After federation settings sync, hidden_sessions applies to both local and
+    remote sessions.  The filter must check session name only, with no remoteId
+    guard.  Must also not use !s.remoteId which would treat remoteId=0 as falsy.
+    """
     match = re.search(
         r"function getVisibleSessions\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _JS,
@@ -2727,11 +2731,11 @@ def test_get_visible_sessions_uses_null_check_not_falsy() -> None:
     body = match.group(1)
     assert "!s.remoteId" not in body, (
         "getVisibleSessions must NOT use '!s.remoteId' — this treats remoteId=0 as falsy, "
-        "hiding the first remote instance. Use 's.remoteId == null' instead."
+        "hiding the first remote instance."
     )
-    assert "s.remoteId == null" in body or "s.remoteId === null" in body, (
-        "getVisibleSessions must use 's.remoteId == null' (or '=== null') to correctly treat "
-        "remoteId=0 as a real remote while matching null/undefined as local sessions."
+    assert "s.remoteId" not in body, (
+        "getVisibleSessions must NOT reference s.remoteId at all — the filter applies to "
+        "all sessions regardless of origin (local or federated)."
     )
 
 

@@ -2442,26 +2442,21 @@ test('getVisibleSessions exported and filters hidden sessions', () => {
   app._setServerSettings(null);
 });
 
-test('getVisibleSessions hides local sessions by name but not remote sessions with same name', () => {
-  // Set server settings with a session name that exists both locally and remotely
+test('getVisibleSessions hides remote sessions with matching name (federation-aware)', () => {
+  // hidden_sessions syncs across federation nodes, so the filter must apply to
+  // ALL sessions regardless of remoteId — both local and federated.
   app._setServerSettings({ hidden_sessions: ['shared-name'] });
 
   const sessions = [
     { name: 'shared-name' },                         // local (no remoteId) — should be hidden
-    { name: 'shared-name', remoteId: 1 },            // remote — should remain visible
+    { name: 'shared-name', remoteId: 1 },            // remote — should ALSO be hidden
     { name: 'another' },                             // local, not in hidden list — should remain
   ];
 
   const result = app.getVisibleSessions(sessions);
-  assert.strictEqual(result.length, 2, 'should show 2 sessions (remote + another)');
-  // The remote one should survive
-  const remote = result.find((s) => s.remoteId === 1);
-  assert.ok(remote, 'remote session with same name should not be hidden');
-  assert.strictEqual(remote.name, 'shared-name', 'remote session name should be shared-name');
-  // The local one should be hidden
-  assert.ok(!result.some((s) => !s.remoteId && s.name === 'shared-name'), 'local session with hidden name should be removed');
-  // another should remain
+  assert.strictEqual(result.length, 1, 'should show only 1 session (another); both local and remote shared-name are hidden');
   assert.ok(result.some((s) => s.name === 'another'), 'another should remain visible');
+  assert.ok(!result.some((s) => s.name === 'shared-name'), 'all sessions named shared-name (local or remote) should be hidden');
 
   // Clean up
   app._setServerSettings(null);
@@ -4622,23 +4617,26 @@ test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DE
 
 // --- getVisibleSessions: remoteId=0 falsy-zero bug fix ---
 
-test('getVisibleSessions does NOT hide sessions with remoteId 0 whose name is in hidden_sessions', () => {
+test('getVisibleSessions hides remote sessions with remoteId=0 when name is in hidden_sessions', () => {
+  // The filter no longer guards on remoteId — hidden_sessions applies to all sessions,
+  // local and federated alike (settings now sync across nodes).
   app._setServerSettings({ hidden_sessions: ['work'] });
   const sessions = [{ name: 'work', remoteId: 0 }];
   const visible = app.getVisibleSessions(sessions);
-  assert.strictEqual(visible.length, 1, 'session with remoteId=0 must NOT be hidden even if name is in hidden_sessions');
+  assert.strictEqual(visible.length, 0, 'session with remoteId=0 must be hidden when its name is in hidden_sessions');
   app._setServerSettings(null);
 });
 
-test('getVisibleSessions hides local session (remoteId null) but keeps remote session (remoteId 0) with same name', () => {
+test('getVisibleSessions hides all sessions (local and remoteId=0) with names in hidden_sessions', () => {
+  // Both the local session (remoteId=null) and the remote session (remoteId=0)
+  // should be hidden when hidden_sessions syncs across federation nodes.
   app._setServerSettings({ hidden_sessions: ['work'] });
   const sessions = [
     { name: 'work', remoteId: null },
     { name: 'work', remoteId: 0 },
   ];
   const visible = app.getVisibleSessions(sessions);
-  assert.strictEqual(visible.length, 1, 'only the remote session (remoteId=0) should be visible');
-  assert.strictEqual(visible[0].remoteId, 0, 'the visible session must be the remote one with remoteId=0');
+  assert.strictEqual(visible.length, 0, 'both local and remote sessions named "work" should be hidden');
   app._setServerSettings(null);
 });
 
