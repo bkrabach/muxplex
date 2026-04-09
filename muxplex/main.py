@@ -132,7 +132,7 @@ async def _run_poll_cycle() -> None:
         # 9. Apply bell clear rule (acknowledge bells when device is watching fullscreen)
         apply_bell_clear_rule(state)
 
-        # 12. Fire bell/clear to the active remote for any device viewing a remote
+        # 10. Fire bell/clear to the active remote for any device viewing a remote
         # session in fullscreen with recent interaction.  Fire-and-forget: errors
         # are logged and do not abort the rest of the poll cycle.
         if _federation_client is not None:
@@ -173,10 +173,10 @@ async def _run_poll_cycle() -> None:
                                     exc,
                                 )
 
-        # 10. Prune devices that haven't sent a heartbeat recently
+        # 11. Prune devices that haven't sent a heartbeat recently
         prune_devices(state)
 
-        # 11. Atomically persist the updated state
+        # 12. Atomically persist the updated state
         save_state(state)
 
 
