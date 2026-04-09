@@ -165,11 +165,12 @@ async def _run_poll_cycle() -> None:
                                     bell_clear_url,
                                     headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
                                 )
-                            except Exception:
+                            except Exception as exc:
                                 _log.warning(
-                                    "federation bell clear failed for %s: %s",
+                                    "federation bell clear failed for %s at %s: %s",
                                     viewing_session,
                                     bell_clear_url,
+                                    exc,
                                 )
 
         # 10. Prune devices that haven't sent a heartbeat recently
