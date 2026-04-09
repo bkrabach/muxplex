@@ -30,7 +30,7 @@ import websockets
 from websockets.typing import Subprotocol
 
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse
@@ -65,6 +65,7 @@ from muxplex.state import (
     state_lock,
 )
 from muxplex.settings import (
+    apply_synced_settings,
     get_syncable_settings,
     load_federation_key,
     load_settings,
@@ -357,6 +358,11 @@ class CreateSessionPayload(BaseModel):
         if not stripped:
             raise ValueError("name must not be empty or whitespace")
         return stripped
+
+
+class SettingsSyncPayload(BaseModel):
+    settings: dict
+    settings_updated_at: float
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +743,36 @@ async def get_settings_sync() -> dict:
     ts = syncable.get("settings_updated_at", 0.0)
     settings = {k: v for k, v in syncable.items() if k != "settings_updated_at"}
     return {"settings": settings, "settings_updated_at": ts}
+
+
+@app.put("/api/settings/sync")
+async def put_settings_sync(payload: SettingsSyncPayload):
+    """Accept synced settings from a remote server (newer-wins).
+
+    Compares the incoming timestamp against the local settings_updated_at.
+    If the incoming timestamp is strictly newer, applies only the syncable
+    keys via apply_synced_settings() and returns 200 with the final state.
+    If the incoming timestamp is equal to or older than the local one, returns
+    409 (Conflict) with the current local state so the caller can see what
+    this instance has.
+    """
+    current = load_settings()
+    local_ts: float = current.get("settings_updated_at", 0.0)
+
+    if payload.settings_updated_at > local_ts:
+        apply_synced_settings(payload.settings, payload.settings_updated_at)
+        syncable = get_syncable_settings()
+        ts = syncable.get("settings_updated_at", 0.0)
+        settings_out = {k: v for k, v in syncable.items() if k != "settings_updated_at"}
+        return {"settings": settings_out, "settings_updated_at": ts}
+    else:
+        syncable = get_syncable_settings()
+        ts = syncable.get("settings_updated_at", 0.0)
+        settings_out = {k: v for k, v in syncable.items() if k != "settings_updated_at"}
+        return JSONResponse(
+            status_code=409,
+            content={"settings": settings_out, "settings_updated_at": ts},
+        )
 
 
 @app.get("/api/instance-info")

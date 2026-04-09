@@ -2915,3 +2915,124 @@ def test_federation_auth_headers_guard_empty_key():
         "use `{...} if key else {}` to skip the header when key is empty:\n"
         + "\n".join(f"  {line}" for line in offending)
     )
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/settings/sync (task-8)
+# ---------------------------------------------------------------------------
+
+
+def test_put_settings_sync_applies_when_newer(client, tmp_path, monkeypatch):
+    """PUT /api/settings/sync applies settings when incoming timestamp is newer."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Set local timestamp to something old
+    settings_path.write_text(json.dumps({"settings_updated_at": 1000.0}))
+
+    response = client.put(
+        "/api/settings/sync",
+        json={"settings": {"fontSize": 20}, "settings_updated_at": 2000.0},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data, f"Response must have 'settings' key, got: {data}"
+    assert "settings_updated_at" in data, (
+        f"Response must have 'settings_updated_at' key, got: {data}"
+    )
+    assert data["settings_updated_at"] == 2000.0, (
+        f"Timestamp must be 2000.0, got: {data['settings_updated_at']}"
+    )
+    assert data["settings"]["fontSize"] == 20, (
+        f"fontSize must be 20, got: {data['settings'].get('fontSize')}"
+    )
+
+
+def test_put_settings_sync_rejects_when_older(client, tmp_path, monkeypatch):
+    """PUT /api/settings/sync returns 409 when incoming timestamp is older."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Set local timestamp to something newer than the incoming
+    settings_path.write_text(json.dumps({"settings_updated_at": 2000.0}))
+
+    response = client.put(
+        "/api/settings/sync",
+        json={"settings": {"fontSize": 18}, "settings_updated_at": 1000.0},
+    )
+    assert response.status_code == 409
+    data = response.json()
+    assert "settings" in data, f"409 body must have 'settings' key, got: {data}"
+    assert "settings_updated_at" in data, (
+        f"409 body must have 'settings_updated_at' key, got: {data}"
+    )
+    # Should return local state, which has the newer timestamp
+    assert data["settings_updated_at"] == 2000.0, (
+        f"409 body must return local timestamp 2000.0, got: {data['settings_updated_at']}"
+    )
+
+
+def test_put_settings_sync_rejects_when_equal(client, tmp_path, monkeypatch):
+    """PUT /api/settings/sync returns 409 when timestamps are equal."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Set local timestamp
+    settings_path.write_text(json.dumps({"settings_updated_at": 1500.0}))
+
+    response = client.put(
+        "/api/settings/sync",
+        json={"settings": {"fontSize": 16}, "settings_updated_at": 1500.0},
+    )
+    assert response.status_code == 409, (
+        f"Equal timestamps must return 409, got {response.status_code}"
+    )
+    data = response.json()
+    assert data["settings_updated_at"] == 1500.0, (
+        f"409 body must return local timestamp 1500.0, got: {data.get('settings_updated_at')}"
+    )
+
+
+def test_put_settings_sync_ignores_nonsyncable_keys(client, tmp_path, monkeypatch):
+    """PUT /api/settings/sync does not apply non-syncable keys like host."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Start with default settings (host defaults to "127.0.0.1")
+    settings_path.write_text(json.dumps({"settings_updated_at": 0.0}))
+
+    response = client.put(
+        "/api/settings/sync",
+        json={
+            "settings": {"fontSize": 20, "host": "evil.com"},
+            "settings_updated_at": 9999999999.0,
+        },
+    )
+    assert response.status_code == 200
+
+    # Verify fontSize (syncable) was changed
+    local = settings_mod.load_settings()
+    assert local["fontSize"] == 20, (
+        f"Syncable key 'fontSize' must be updated to 20, got: {local['fontSize']}"
+    )
+
+    # Verify host (non-syncable) was NOT changed
+    assert local["host"] == "127.0.0.1", (
+        f"Non-syncable key 'host' must remain '127.0.0.1', got: {local['host']}"
+    )
