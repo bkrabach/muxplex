@@ -2802,6 +2802,72 @@ async def test_poll_cycle_fires_federation_bell_clear_for_remote_session(
     )
 
 
+# ---------------------------------------------------------------------------
+# GET /api/settings/sync (task-7)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_sync_returns_200(client, tmp_path, monkeypatch):
+    """GET /api/settings/sync returns HTTP 200."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    response = client.get("/api/settings/sync")
+    assert response.status_code == 200
+
+
+def test_settings_sync_response_has_settings_and_timestamp(
+    client, tmp_path, monkeypatch
+):
+    """GET /api/settings/sync returns {settings: dict, settings_updated_at: float}."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    response = client.get("/api/settings/sync")
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings" in data, (
+        f"Response must have 'settings' key, got: {list(data.keys())}"
+    )
+    assert "settings_updated_at" in data, (
+        f"Response must have 'settings_updated_at' key, got: {list(data.keys())}"
+    )
+    assert isinstance(data["settings"], dict), (
+        f"'settings' must be a dict, got: {type(data['settings'])}"
+    )
+    assert isinstance(data["settings_updated_at"], float), (
+        f"'settings_updated_at' must be a float, got: {type(data['settings_updated_at'])}"
+    )
+
+
+def test_settings_sync_excludes_infrastructure_keys(client, tmp_path, monkeypatch):
+    """GET /api/settings/sync settings dict must not contain infrastructure keys."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    response = client.get("/api/settings/sync")
+    assert response.status_code == 200
+    settings = response.json()["settings"]
+    infra_keys = (
+        "host",
+        "port",
+        "auth",
+        "session_ttl",
+        "tls_cert",
+        "tls_key",
+        "device_name",
+        "federation_key",
+        "remote_instances",
+        "multi_device_enabled",
+        "new_session_template",
+        "delete_session_template",
+    )
+    for key in infra_keys:
+        assert key not in settings, (
+            f"Infrastructure key '{key}' must not appear in /api/settings/sync response"
+        )
+
+
 def test_federation_auth_headers_guard_empty_key():
     """Every federation Authorization header construction must guard against empty key.
 

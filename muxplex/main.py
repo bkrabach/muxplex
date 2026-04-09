@@ -64,7 +64,12 @@ from muxplex.state import (
     save_state,
     state_lock,
 )
-from muxplex.settings import load_federation_key, load_settings, patch_settings
+from muxplex.settings import (
+    get_syncable_settings,
+    load_federation_key,
+    load_settings,
+    patch_settings,
+)
 from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
 # ---------------------------------------------------------------------------
@@ -140,9 +145,8 @@ async def _run_poll_cycle() -> None:
             if active_remote_id is not None:
                 settings = load_settings()
                 remote_instances = settings.get("remote_instances", [])
-                if (
-                    isinstance(active_remote_id, int)
-                    and 0 <= active_remote_id < len(remote_instances)
+                if isinstance(active_remote_id, int) and 0 <= active_remote_id < len(
+                    remote_instances
                 ):
                     remote = remote_instances[active_remote_id]
                     remote_url: str = remote.get("url", "").rstrip("/")
@@ -157,13 +161,13 @@ async def _run_poll_cycle() -> None:
                             and view_mode == "fullscreen"
                             and (now - last_interaction_at) < 60
                         ):
-                            bell_clear_url = (
-                                f"{remote_url}/api/sessions/{viewing_session}/bell/clear"
-                            )
+                            bell_clear_url = f"{remote_url}/api/sessions/{viewing_session}/bell/clear"
                             try:
                                 await _federation_client.post(
                                     bell_clear_url,
-                                    headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+                                    headers={"Authorization": f"Bearer {remote_key}"}
+                                    if remote_key
+                                    else {},
                                 )
                             except Exception as exc:
                                 _log.warning(
@@ -720,6 +724,21 @@ async def update_settings(request: Request) -> dict:
     return result
 
 
+@app.get("/api/settings/sync")
+async def get_settings_sync() -> dict:
+    """Return syncable settings + timestamp for federation sync.
+
+    Authenticated via federation Bearer token (same auth middleware as all other
+    non-exempt endpoints). Returns only the keys in SYNCABLE_KEYS plus the
+    settings_updated_at timestamp; infrastructure keys (host, port, federation_key,
+    etc.) are never included.
+    """
+    syncable = get_syncable_settings()
+    ts = syncable.get("settings_updated_at", 0.0)
+    settings = {k: v for k, v in syncable.items() if k != "settings_updated_at"}
+    return {"settings": settings, "settings_updated_at": ts}
+
+
 @app.get("/api/instance-info")
 async def instance_info() -> dict:
     """Return this instance's display name and version.
@@ -916,7 +935,9 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+            additional_headers={"Authorization": f"Bearer {remote_key}"}
+            if remote_key
+            else {},
             ssl=ssl_context,
         ) as remote_ws:
 
