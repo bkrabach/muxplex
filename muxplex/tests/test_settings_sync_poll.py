@@ -248,3 +248,25 @@ async def test_sync_skips_remote_with_no_url():
 
         http_client.get.assert_not_called()
         http_client.put.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Pattern test: PUT response is checked via raise_for_status()
+# ---------------------------------------------------------------------------
+
+
+def test_sync_put_response_calls_raise_for_status():
+    """_sync_settings_with_remotes must capture the PUT response and call raise_for_status() on it."""
+    import inspect
+
+    source = inspect.getsource(main_mod._sync_settings_with_remotes)
+    # The PUT response must be assigned to a variable (not fire-and-forget)
+    assert "put_resp" in source, (
+        "_sync_settings_with_remotes must capture the PUT response in put_resp "
+        "so errors (401, 500) are not silently swallowed"
+    )
+    # raise_for_status() must be called on the captured response
+    assert "raise_for_status" in source, (
+        "_sync_settings_with_remotes must call raise_for_status() on the PUT response "
+        "so non-2xx errors propagate to the outer exception handler"
+    )

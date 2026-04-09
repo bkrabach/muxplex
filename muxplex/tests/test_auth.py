@@ -487,8 +487,16 @@ def _make_federation_app(federation_key: str = "fed-key") -> FastAPI:
     return test_app
 
 
-def test_middleware_valid_bearer_token_passes():
-    """Non-localhost with valid Bearer token and federation_key configured passes through (200)."""
+def test_middleware_valid_bearer_token_passes(monkeypatch):
+    """Non-localhost with valid Bearer token passes through (200).
+
+    Mocks load_federation_key in muxplex.auth so the test is isolated from any
+    real key file on disk — the fix reads the key live on each request instead
+    of using the stale self.federation_key set at startup.
+    """
+    import muxplex.auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "load_federation_key", lambda: "my-federation-secret")
     app = _make_federation_app(federation_key="my-federation-secret")
     client = TestClient(app, base_url="http://192.168.1.1")
     response = client.get(
@@ -498,8 +506,11 @@ def test_middleware_valid_bearer_token_passes():
     assert response.text == "OK"
 
 
-def test_middleware_invalid_bearer_token_falls_through():
+def test_middleware_invalid_bearer_token_falls_through(monkeypatch):
     """Non-localhost with wrong Bearer token falls through to 401 (not accepted)."""
+    import muxplex.auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "load_federation_key", lambda: "my-federation-secret")
     app = _make_federation_app(federation_key="my-federation-secret")
     client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
     response = client.get(
@@ -525,3 +536,34 @@ def test_middleware_bearer_skipped_when_no_federation_key():
     )
     # Bearer should be skipped when federation_key is empty, falls through to 401
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Pattern tests: live federation key read in dispatch()
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_calls_load_federation_key_live():
+    """dispatch() must call load_federation_key() live on each request, not use cached self.federation_key."""
+    import inspect
+
+    import muxplex.auth as auth_mod
+
+    source = inspect.getsource(auth_mod.AuthMiddleware.dispatch)
+    assert "load_federation_key()" in source, (
+        "dispatch() must call load_federation_key() live on each request "
+        "so key changes after startup are picked up without a restart"
+    )
+
+
+def test_dispatch_does_not_use_stale_self_federation_key_for_bearer():
+    """dispatch() must NOT use self.federation_key for the live Bearer token check."""
+    import inspect
+
+    import muxplex.auth as auth_mod
+
+    source = inspect.getsource(auth_mod.AuthMiddleware.dispatch)
+    assert "self.federation_key" not in source, (
+        "dispatch() must not use self.federation_key (stale cached value); "
+        "use load_federation_key() instead so generate-key takes effect immediately"
+    )

@@ -13,6 +13,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
+from muxplex.settings import load_federation_key
+
 _log = logging.getLogger(__name__)
 
 
@@ -199,13 +201,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if cookie and verify_session_cookie(self.secret, cookie, self.ttl_seconds):
             return await call_next(request)
 
-        # 4a. Bearer token (server-to-server federation)
+        # 4a. Bearer token (server-to-server federation).
+        # Read the key fresh from disk on every request so a key generated or
+        # rotated after startup (via POST /api/federation/generate-key) takes
+        # effect immediately without a server restart.
         auth_header = request.headers.get("authorization", "")
-        if self.federation_key and auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-            if hmac.compare_digest(token, self.federation_key):
-                return await call_next(request)
-            _log.warning("federation: rejected Bearer from %s", client_host)
+        if auth_header.lower().startswith("bearer "):
+            federation_key = load_federation_key()
+            if not federation_key:
+                _log.warning(
+                    "federation: Bearer token received from %s but no key configured on this server",
+                    client_host,
+                )
+            else:
+                token = auth_header[7:]
+                if hmac.compare_digest(token, federation_key):
+                    return await call_next(request)
+                _log.warning("federation: rejected Bearer from %s", client_host)
 
         # 5. Authorization: Basic header
         auth_header = request.headers.get("authorization", "")

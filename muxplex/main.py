@@ -148,12 +148,17 @@ async def _sync_settings_with_remotes(
                     },
                     "settings_updated_at": local_ts,
                 }
-                await http_client.put(
+                put_resp = await http_client.put(
                     f"{url}/api/settings/sync",
                     json=payload,
                     headers=headers,
                     timeout=5.0,
                 )
+                if put_resp.status_code == 409:
+                    # Remote is newer — let the next sync cycle pull.
+                    _log.debug("Settings sync push to %s: 409 (remote is newer)", url)
+                else:
+                    put_resp.raise_for_status()
             # If equal: no action.
         except Exception as exc:
             _log.warning("Settings sync with %s failed: %s", url, exc)
