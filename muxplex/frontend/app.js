@@ -530,7 +530,7 @@ function buildStatusTileHTML(deviceName, statusText, statusClass) {
 function getVisibleSessions(sessions) {
   var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
   return (sessions || []).filter(function(s) {
-    if (hidden.length > 0 && !s.remoteId && hidden.includes(s.name)) {
+    if (hidden.length > 0 && s.remoteId == null && hidden.includes(s.name)) {
       return false;
     }
     return true;

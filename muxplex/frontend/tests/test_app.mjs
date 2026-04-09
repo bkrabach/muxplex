@@ -4619,3 +4619,25 @@ test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DE
   assert.ok(!('unknownKey' in ds), 'getDisplaySettings must not include keys not in DISPLAY_DEFAULTS');
   app._setServerSettings(null);
 });
+
+// --- getVisibleSessions: remoteId=0 falsy-zero bug fix ---
+
+test('getVisibleSessions does NOT hide sessions with remoteId 0 whose name is in hidden_sessions', () => {
+  app._setServerSettings({ hidden_sessions: ['work'] });
+  const sessions = [{ name: 'work', remoteId: 0 }];
+  const visible = app.getVisibleSessions(sessions);
+  assert.strictEqual(visible.length, 1, 'session with remoteId=0 must NOT be hidden even if name is in hidden_sessions');
+  app._setServerSettings(null);
+});
+
+test('getVisibleSessions hides local session (remoteId null) but keeps remote session (remoteId 0) with same name', () => {
+  app._setServerSettings({ hidden_sessions: ['work'] });
+  const sessions = [
+    { name: 'work', remoteId: null },
+    { name: 'work', remoteId: 0 },
+  ];
+  const visible = app.getVisibleSessions(sessions);
+  assert.strictEqual(visible.length, 1, 'only the remote session (remoteId=0) should be visible');
+  assert.strictEqual(visible[0].remoteId, 0, 'the visible session must be the remote one with remoteId=0');
+  app._setServerSettings(null);
+});

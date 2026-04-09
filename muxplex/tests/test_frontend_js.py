@@ -2710,3 +2710,26 @@ def test_bind_sidebar_click_away_calls_patch_server_setting() -> None:
     assert "patchServerSetting" in body, (
         "bindSidebarClickAway must call patchServerSetting to persist collapsed state"
     )
+
+
+# ─── task-1: getVisibleSessions falsy-0 bug fix ────────────────────────────
+
+
+def test_get_visible_sessions_uses_null_check_not_falsy() -> None:
+    """getVisibleSessions must use s.remoteId == null (not !s.remoteId) to avoid
+    treating remoteId=0 (first remote instance) as falsy and incorrectly hiding it."""
+    match = re.search(
+        r"function getVisibleSessions\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "getVisibleSessions function not found in app.js"
+    body = match.group(1)
+    assert "!s.remoteId" not in body, (
+        "getVisibleSessions must NOT use '!s.remoteId' — this treats remoteId=0 as falsy, "
+        "hiding the first remote instance. Use 's.remoteId == null' instead."
+    )
+    assert "s.remoteId == null" in body or "s.remoteId === null" in body, (
+        "getVisibleSessions must use 's.remoteId == null' (or '=== null') to correctly treat "
+        "remoteId=0 as a real remote while matching null/undefined as local sessions."
+    )
