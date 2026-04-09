@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.2 (2026-04-09)
+
+### Bug Fixes
+- **Hidden sessions filter now applies to federated sessions** -- hiding a session now hides it everywhere (local and remote), completing the federation-aware hidden sessions feature
+
 ## v0.3.1 (2026-04-08)
 
 ### Bug Fixes
