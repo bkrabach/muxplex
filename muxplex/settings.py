@@ -8,6 +8,7 @@ import copy
 import json
 import os
 import socket
+import time
 from pathlib import Path
 
 SETTINGS_PATH = Path.home() / ".config" / "muxplex" / "settings.json"
@@ -151,8 +152,34 @@ def patch_settings(patch: dict) -> dict:
                 # restore by index so editing a URL doesn't erase the key.
                 remote["key"] = existing_remote_keys_by_index[i]
 
+    if any(key in SYNCABLE_KEYS for key in patch if key in DEFAULT_SETTINGS):
+        current["settings_updated_at"] = time.time()
+
     save_settings(current)
     return current
+
+
+def apply_synced_settings(incoming_settings: dict, incoming_timestamp: float) -> dict:
+    """Apply synced settings from a remote server.
+
+    Only applies keys that are in SYNCABLE_KEYS. Sets settings_updated_at
+    to the incoming timestamp (NOT time.time()) to prevent sync loops.
+    """
+    current = load_settings()
+    for key in SYNCABLE_KEYS:
+        if key in incoming_settings:
+            current[key] = incoming_settings[key]
+    current["settings_updated_at"] = incoming_timestamp
+    save_settings(current)
+    return current
+
+
+def get_syncable_settings() -> dict:
+    """Return only syncable settings + the settings_updated_at timestamp."""
+    settings = load_settings()
+    result = {key: settings[key] for key in SYNCABLE_KEYS if key in settings}
+    result["settings_updated_at"] = settings.get("settings_updated_at", 0.0)
+    return result
 
 
 def load_federation_key() -> str:

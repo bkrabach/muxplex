@@ -12,6 +12,8 @@ import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
     SYNCABLE_KEYS,
+    apply_synced_settings,
+    get_syncable_settings,
     load_federation_key,
     load_settings,
     patch_settings,
@@ -918,3 +920,55 @@ def test_syncable_keys_subset_of_default_settings():
 def test_defaults_include_settings_updated_at():
     """DEFAULT_SETTINGS must include settings_updated_at with default 0.0."""
     assert DEFAULT_SETTINGS["settings_updated_at"] == 0.0
+
+
+# ============================================================
+# Sync-aware patch_settings + apply_synced_settings (task-6)
+# ============================================================
+
+
+def test_patch_settings_bumps_timestamp_for_syncable_key():
+    """patch_settings bumps settings_updated_at when a syncable key is patched."""
+    patch_settings({"fontSize": 20})
+    settings = load_settings()
+    assert settings["settings_updated_at"] > 0.0
+
+
+def test_patch_settings_does_not_bump_timestamp_for_nonsyncable_key():
+    """patch_settings does NOT bump settings_updated_at for non-syncable keys."""
+    patch_settings({"host": "0.0.0.0"})
+    settings = load_settings()
+    assert settings["settings_updated_at"] == 0.0
+
+
+def test_apply_synced_settings_uses_incoming_timestamp():
+    """apply_synced_settings sets settings_updated_at to the incoming timestamp."""
+    apply_synced_settings({"fontSize": 18}, 1712600000.0)
+    settings = load_settings()
+    assert settings["fontSize"] == 18
+    assert settings["settings_updated_at"] == 1712600000.0
+
+
+def test_apply_synced_settings_ignores_nonsyncable_keys():
+    """apply_synced_settings ignores keys not in SYNCABLE_KEYS."""
+    apply_synced_settings({"fontSize": 18, "host": "evil.com"}, 1712600000.0)
+    settings = load_settings()
+    assert settings["fontSize"] == 18
+    assert settings["host"] == "127.0.0.1"  # unchanged from default
+
+
+def test_get_syncable_settings_returns_only_syncable_keys():
+    """get_syncable_settings returns only SYNCABLE_KEYS + settings_updated_at."""
+    result = get_syncable_settings()
+    for key in result:
+        assert key in SYNCABLE_KEYS or key == "settings_updated_at"
+    assert "host" not in result
+    assert "settings_updated_at" in result
+
+
+def test_apply_synced_settings_does_not_use_time_now():
+    """apply_synced_settings must use the incoming timestamp, not time.time()."""
+    old_ts = 1000.0
+    apply_synced_settings({"fontSize": 16}, old_ts)
+    settings = load_settings()
+    assert settings["settings_updated_at"] == old_ts  # exact match, not "close to now"
