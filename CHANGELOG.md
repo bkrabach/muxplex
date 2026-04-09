@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1 (2026-04-08)
+
+### Bug Fixes
+- **Federation auth stale key** -- the auth middleware now reads the federation key fresh from disk on each request instead of caching it at startup; key generation and rotation no longer require a server restart
+- **Settings sync silent push failures** -- the PUT response from `/api/settings/sync` is now checked; 409 (remote newer) is handled gracefully, other errors are logged
+
 ## v0.3.0 (2026-04-08)
 
 ### Features
