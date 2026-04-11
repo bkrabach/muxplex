@@ -534,13 +534,15 @@ function setTerminalFontSize(size) {
 window._setTerminalFontSize = setTerminalFontSize;
 
 // ---------------------------------------------------------------------------
-// Android touch scroll — rAF-batched WheelEvent dispatch
-// Android batches touchmove events irregularly; dispatching one WheelEvent
+// Mobile touch scroll — rAF-batched WheelEvent dispatch
+// Mobile devices batch touchmove events irregularly; dispatching one WheelEvent
 // per frame (via requestAnimationFrame) smooths over burst delivery.
-// UA-gated: iOS and macOS are unaffected (they use mouse wheel natively).
+// Applies to Android, iOS, and iPadOS touch devices.
 // ---------------------------------------------------------------------------
-;(function initAndroidTerminalScroll() {
-  if (!/Android/i.test(navigator.userAgent)) return;
+;(function initMobileTerminalScroll() {
+  var isTouchDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (!isTouchDevice) return;
 
   var container = document.getElementById('terminal-container');
   if (!container) return;
