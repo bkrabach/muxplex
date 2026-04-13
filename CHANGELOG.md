@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.4 (2026-04-13)
+
+### Bug Fixes
+- **Zero-session devices visible** — devices with no tmux sessions now show a "No sessions" status tile instead of being invisible
+- **Flapping prevention** — server-side cache of last-known-good federation results per remote; returns cached sessions for up to 3 consecutive failures before marking unreachable
+- **Status tiles show device name** — offline/unreachable tiles display the device name instead of blank (was passing session.name which is undefined for status entries)
+- **Status entries filtered from session list** — unreachable/auth_failed entries no longer render as blank session tiles in dashboard or sidebar
+- **remoteId=0 falsy bug in mobile sheet** — first remote instance (index 0) now works correctly in the mobile bottom sheet session switcher
+
 ## v0.3.3 (2026-04-13)
 
 ### Bug Fixes
