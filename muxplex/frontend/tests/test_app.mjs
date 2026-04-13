@@ -1769,6 +1769,37 @@ test('renderSidebar does nothing when view is not fullscreen', () => {
   globalThis.document.getElementById = origGetById;
 });
 
+// --- getVisibleSessions ---
+
+test('getVisibleSessions filters out entries with unreachable status (no name)', () => {
+  const sessions = [
+    { name: 'real-session', snapshot: '' },
+    { status: 'unreachable', remoteId: 0, deviceName: 'alienware-r13' },
+  ];
+  const result = app.getVisibleSessions(sessions);
+  assert.strictEqual(result.length, 1, 'should return only the real session');
+  assert.strictEqual(result[0].name, 'real-session');
+});
+
+test('getVisibleSessions filters out entries with auth_failed status', () => {
+  const sessions = [
+    { name: 'real-session', snapshot: '' },
+    { name: 'Workstation', status: 'auth_failed' },
+  ];
+  const result = app.getVisibleSessions(sessions);
+  assert.strictEqual(result.length, 1, 'auth_failed entry should be filtered out');
+  assert.strictEqual(result[0].name, 'real-session');
+});
+
+test('getVisibleSessions passes through sessions with no status field', () => {
+  const sessions = [
+    { name: 'alpha', snapshot: '' },
+    { name: 'beta', snapshot: '' },
+  ];
+  const result = app.getVisibleSessions(sessions);
+  assert.strictEqual(result.length, 2, 'normal sessions should all pass through');
+});
+
 // ─── initSidebar ─────────────────────────────────────────────────────────────
 
 test('initSidebar defaults to open (removes sidebar--collapsed) on wide screens when no stored value', () => {

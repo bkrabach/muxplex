@@ -530,6 +530,8 @@ function buildStatusTileHTML(deviceName, statusText, statusClass) {
 function getVisibleSessions(sessions) {
   var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
   return (sessions || []).filter(function(s) {
+    // Skip status entries (unreachable, auth_failed) — rendered separately as status tiles
+    if (s.status) return false;
     if (hidden.length > 0 && hidden.includes(s.name)) {
       return false;
     }
