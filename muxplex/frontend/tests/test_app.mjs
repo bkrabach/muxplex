@@ -1604,6 +1604,20 @@ test('renderSheetList escapes HTML special chars in sheet-item__name span', () =
   globalThis.document.getElementById = origGetById;
 });
 
+// --- Fix 3: renderSheetList uses null check for remoteId (not falsy) ---
+
+test('renderSheetList uses null check for remoteId (not falsy)', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function renderSheetList');
+  const fnEnd = source.indexOf('\n}\n', fnStart + 100);
+  const fnBody = source.substring(fnStart, fnEnd);
+  // Must use != null check, not truthy check
+  assert.ok(fnBody.includes('remoteId != null') || fnBody.includes('remoteId !== null'),
+    'renderSheetList must use null check for remoteId (0 is valid)');
+  assert.ok(!fnBody.match(/s\.remoteId\s*\?[^=]/),
+    'renderSheetList must NOT use truthy check for remoteId (0 is falsy)');
+});
+
 // --- Fix 2: openBottomSheet/closeBottomSheet use static backdrop binding ---
 
 test('openBottomSheet does not dynamically add click listener to sheet-backdrop', () => {

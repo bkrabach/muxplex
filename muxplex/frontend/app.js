@@ -1851,7 +1851,7 @@ function renderSheetList() {
       (s.bell.seen_at === null || s.bell.last_fired_at > s.bell.seen_at);
     var isActive = s.name === _viewingSession;
     var escapedName = escapeHtml(s.name || '');
-    var remoteIdAttr = s.remoteId ? ' data-remote-id="' + escapeHtml(s.remoteId) + '"' : '';
+    var remoteIdAttr = s.remoteId != null ? ' data-remote-id="' + escapeHtml(s.remoteId) + '"' : '';
     return '<li class="sheet-item' + (isActive ? ' sheet-item--active' : '') + '"' +
       ' data-session="' + escapedName + '"' + remoteIdAttr + ' role="option">' +
       '<span class="sheet-item__name">' + escapedName + '</span>' +
