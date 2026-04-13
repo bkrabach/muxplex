@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.3 (2026-04-13)
+
+### Bug Fixes
+- **iOS/iPadOS touch scrolling** — fix touch scroll handling for Safari on iOS and iPadOS devices (PR #4, @samueljklee)
+
 ## v0.3.2 (2026-04-09)
 
 ### Bug Fixes
