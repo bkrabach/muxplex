@@ -1182,6 +1182,13 @@ async def auth_mode_endpoint():
     return {"mode": _auth_mode, "user": username}
 
 
+# Module-level cache: remote_id → {"sessions": [...], "fail_count": int}
+# Populated by fetch_remote() on every successful poll; returned on transient failures
+# so a single slow/dropped request doesn't immediately evict a device from the UI.
+_federation_cache: dict[int, dict] = {}
+_FEDERATION_GRACE_FAILURES = 3  # consecutive failures before marking unreachable
+
+
 @app.get("/api/federation/sessions")
 async def federation_sessions(request: Request) -> list[dict]:
     """Fetch sessions from all instances (local + remotes) and merge.
@@ -1220,7 +1227,12 @@ async def federation_sessions(request: Request) -> list[dict]:
     http_client: httpx.AsyncClient = request.app.state.federation_client
 
     async def fetch_remote(i: int, remote: dict) -> list[dict]:
-        """Fetch /api/sessions from a remote instance, returning session dicts or a status entry."""
+        """Fetch /api/sessions from a remote instance, returning session dicts or a status entry.
+
+        On success: cache the result and return tagged sessions (or {status: 'empty'} if none).
+        On transient failure: return cached sessions for up to _FEDERATION_GRACE_FAILURES
+        consecutive failures before promoting to {status: 'unreachable'}.
+        """
         url: str = remote.get("url", "")
         key: str = remote.get("key", "")
         remote_name: str = remote.get("name", url)
@@ -1231,6 +1243,8 @@ async def federation_sessions(request: Request) -> list[dict]:
                 headers={"Authorization": f"Bearer {key}"} if key else {},
             )
             if resp.status_code in (401, 403):
+                # Auth failure — clear cache so stale data is not served
+                _federation_cache.pop(remote_id, None)
                 return [
                     {
                         "status": "auth_failed",
@@ -1241,7 +1255,7 @@ async def federation_sessions(request: Request) -> list[dict]:
             resp.raise_for_status()
             sessions = resp.json()
             # Tag each session with deviceName, remoteId, and unique sessionKey
-            return [
+            tagged = [
                 {
                     **s,
                     "deviceName": remote_name,
@@ -1250,7 +1264,24 @@ async def federation_sessions(request: Request) -> list[dict]:
                 }
                 for s in sessions
             ]
+            # Update cache on every successful poll (even empty)
+            _federation_cache[remote_id] = {"sessions": tagged, "fail_count": 0}
+            if not tagged:
+                # Device is online but has zero tmux sessions — show a status tile
+                # rather than making the device completely invisible.
+                return [
+                    {
+                        "status": "empty",
+                        "remoteId": remote_id,
+                        "deviceName": remote_name,
+                    }
+                ]
+            return tagged
         except httpx.HTTPStatusError:
+            cached = _federation_cache.get(remote_id)
+            if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
+                cached["fail_count"] += 1
+                return cached["sessions"]
             return [
                 {
                     "status": "unreachable",
@@ -1260,6 +1291,10 @@ async def federation_sessions(request: Request) -> list[dict]:
             ]
         except Exception as exc:
             _log.warning("Unexpected error fetching remote %s: %s", url, exc)
+            cached = _federation_cache.get(remote_id)
+            if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
+                cached["fail_count"] += 1
+                return cached["sessions"]
             return [
                 {
                     "status": "unreachable",

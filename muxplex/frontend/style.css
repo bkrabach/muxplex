@@ -1002,6 +1002,11 @@ body {
   border-style: dashed;
 }
 
+.source-tile--empty {
+  opacity: 0.6;
+  border-style: dashed;
+}
+
 .source-tile__name {
   font-size: 15px;
   font-weight: 600;

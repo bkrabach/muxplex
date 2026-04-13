@@ -762,6 +762,7 @@ function renderGrid(sessions) {
     (sessions || []).forEach(function(session) {
       if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth');
       else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
+      else if (session.status === 'empty') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
     });
     if (grid) grid.innerHTML = statusTilesHtml;
     // Only show empty-state when there are truly no tiles at all
@@ -800,11 +801,12 @@ function renderGrid(sessions) {
     html = ordered.map(function(session, index) { return buildTileHTML(session, index, mobile); }).join('');
   }
 
-  // Append status tiles for auth_failed and unreachable sessions
+  // Append status tiles for auth_failed, unreachable, and empty sessions
   var statusTilesHtml = '';
   (sessions || []).forEach(function(session) {
     if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth');
     else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
+    else if (session.status === 'empty') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
   });
   if (grid) grid.innerHTML = html + statusTilesHtml;
 

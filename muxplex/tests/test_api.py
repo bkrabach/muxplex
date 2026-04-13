@@ -41,6 +41,22 @@ def patch_startup_and_state(tmp_path, monkeypatch):
     monkeypatch.setattr("muxplex.main._poll_loop", noop_poll_loop)
 
 
+@pytest.fixture(autouse=True)
+def reset_federation_cache():
+    """Clear _federation_cache before and after each test.
+
+    The module-level _federation_cache persists across tests in the same process,
+    causing cross-test contamination: a test that populates the cache for remoteId=0
+    causes a later test (also using remoteId=0) to get stale cached data instead of
+    the expected unreachable status.
+    """
+    import muxplex.main as main_mod
+
+    main_mod._federation_cache.clear()
+    yield
+    main_mod._federation_cache.clear()
+
+
 # ---------------------------------------------------------------------------
 # Client fixture — TestClient with lifespan enabled
 # ---------------------------------------------------------------------------
@@ -3035,4 +3051,216 @@ def test_put_settings_sync_ignores_nonsyncable_keys(client, tmp_path, monkeypatc
     # Verify host (non-syncable) was NOT changed
     assert local["host"] == "127.0.0.1", (
         f"Non-syncable key 'host' must remain '127.0.0.1', got: {local['host']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# fetch_remote: zero-session visibility and flapping grace period
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_remote_returns_empty_status_for_zero_sessions(
+    client, monkeypatch, tmp_path
+):
+    """When remote /api/sessions returns [], federation returns {status: 'empty'} entry.
+
+    A device that is online but has zero tmux sessions must not vanish silently.
+    Instead, the endpoint must include a {status: 'empty', deviceName: ...} entry
+    so the frontend can render a 'No sessions' tile.
+
+    Before implementation: fails because the list comprehension returns [] for empty
+    session lists, and the empty list is flattened into nothing.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://empty-host:8088",
+                        "key": "secret",
+                        "name": "empty-host",
+                    }
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    mock_resp = MagicMock(spec=httpx.Response)
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = []
+    mock_resp.raise_for_status.return_value = None
+
+    async def mock_get(*args, **kwargs):
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1, (
+        f"Expected exactly one status entry for empty remote, got {len(data)} entries: {data}"
+    )
+    assert data[0].get("status") == "empty", (
+        f"Expected status='empty' for zero-session remote, got: {data[0].get('status')!r}"
+    )
+    assert data[0].get("deviceName") == "empty-host", (
+        f"Expected deviceName='empty-host', got: {data[0].get('deviceName')!r}"
+    )
+
+
+def test_fetch_remote_uses_cache_on_transient_failure(client, monkeypatch, tmp_path):
+    """When remote fails after a prior success, cached sessions are returned (grace period).
+
+    A single failed HTTP request must not immediately evict the device from the UI.
+    The server keeps the last-known-good result and returns it for up to
+    _FEDERATION_GRACE_FAILURES consecutive failures.
+
+    Before implementation: fails because fetch_remote has no cache — transient failure
+    immediately returns {status: 'unreachable'}.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+
+    # Reset module-level cache so this test starts clean
+    monkeypatch.setattr(main_mod, "_federation_cache", {})
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {"url": "http://remote:8088", "key": "k", "name": "cache-host"}
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    call_count = [0]
+
+    async def mock_get_stateful(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            mock_resp = MagicMock(spec=httpx.Response)
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = [{"name": "sess1"}, {"name": "sess2"}]
+            mock_resp.raise_for_status.return_value = None
+            return mock_resp
+        raise httpx.TimeoutException("timeout", request=MagicMock())
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get_stateful
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    # First call: succeeds and populates cache
+    r1 = client.get("/api/federation/sessions")
+    assert r1.status_code == 200
+    d1 = [s for s in r1.json() if s.get("deviceName") == "cache-host"]
+    assert len(d1) == 2, f"First call must return 2 sessions, got {d1}"
+
+    # Second call: remote times out — cache should return the 2 cached sessions
+    r2 = client.get("/api/federation/sessions")
+    assert r2.status_code == 200
+    d2 = [s for s in r2.json() if s.get("deviceName") == "cache-host"]
+    assert len(d2) == 2, f"Within grace period, must return 2 cached sessions, got {d2}"
+    assert not any(s.get("status") == "unreachable" for s in d2), (
+        "Within grace period, cached sessions must be returned, not 'unreachable'"
+    )
+
+
+def test_fetch_remote_marks_unreachable_after_grace_period(
+    client, monkeypatch, tmp_path
+):
+    """After _FEDERATION_GRACE_FAILURES consecutive failures, device is marked unreachable.
+
+    The grace period prevents flapping, but must not hide a genuinely offline device
+    indefinitely. After 3 consecutive failures the next poll must return
+    {status: 'unreachable'}.
+
+    Before implementation: fails because there is no cache at all — unreachable is
+    returned immediately on first failure.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+
+    # Reset module-level cache so this test starts clean
+    monkeypatch.setattr(main_mod, "_federation_cache", {})
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {"url": "http://remote:8088", "key": "k", "name": "grace-host"}
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    call_count = [0]
+
+    async def mock_get_stateful(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            mock_resp = MagicMock(spec=httpx.Response)
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = [{"name": "sess1"}]
+            mock_resp.raise_for_status.return_value = None
+            return mock_resp
+        raise httpx.TimeoutException("timeout", request=MagicMock())
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get_stateful
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    # Call 1: success — populates cache
+    r = client.get("/api/federation/sessions")
+    d = r.json()
+    assert any(s.get("name") == "sess1" for s in d), "Call 1 must return sess1"
+
+    # Calls 2-4 (failures 1-3): within grace period — must return cached sessions
+    for i in range(3):
+        r = client.get("/api/federation/sessions")
+        d = r.json()
+        host_entries = [s for s in d if s.get("deviceName") == "grace-host"]
+        assert not any(s.get("status") == "unreachable" for s in host_entries), (
+            f"Call {i + 2}: fail_count={i + 1} is within grace period — "
+            f"must return cached sessions, not 'unreachable'. Got: {host_entries}"
+        )
+
+    # Call 5 (failure 4): exceeds grace period — must return unreachable
+    r = client.get("/api/federation/sessions")
+    d = r.json()
+    host_entries = [s for s in d if s.get("deviceName") == "grace-host"]
+    assert any(s.get("status") == "unreachable" for s in host_entries), (
+        f"After exceeding grace period, device must be marked 'unreachable'. Got: {host_entries}"
     )

@@ -4758,3 +4758,35 @@ test('renderGrid status tiles use session.deviceName not session.name for offlin
 
   globalThis.document.getElementById = origGetById;
 });
+
+// --- renderGrid: status=empty shows "No sessions" tile ---
+
+test('renderGrid shows "No sessions" status tile for status=empty devices', () => {
+  // A device that is online but has zero tmux sessions returns
+  // {status: 'empty', deviceName: '...'} from the federation endpoint.
+  // renderGrid must render a status tile with the text "No sessions" (not blank).
+  //
+  // Before implementation: fails because neither status loop handles status === 'empty',
+  // so the tile is never rendered and grid.innerHTML stays empty.
+  const grid = { innerHTML: '' };
+  const emptyState = { style: {}, classList: { add() {}, remove() {} } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return grid;
+    if (id === 'empty-state') return emptyState;
+    return null;
+  };
+
+  app.renderGrid([{ status: 'empty', deviceName: 'quiet-box', remoteId: 3 }]);
+
+  assert.ok(
+    grid.innerHTML.includes('No sessions'),
+    `renderGrid must include "No sessions" text for status=empty device, got: ${grid.innerHTML}`
+  );
+  assert.ok(
+    grid.innerHTML.includes('quiet-box'),
+    `renderGrid must include the deviceName "quiet-box" in the status tile, got: ${grid.innerHTML}`
+  );
+
+  globalThis.document.getElementById = origGetById;
+});
