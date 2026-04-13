@@ -626,7 +626,7 @@ test('renderGrid includes auth tile HTML when a session has auth_failed status',
 
   const sessions = [
     { name: 'my-session', snapshot: 'hello' },
-    { name: 'Workstation', status: 'auth_failed' },
+    { deviceName: 'Workstation', status: 'auth_failed' },
   ];
   app.renderGrid(sessions);
 
@@ -651,7 +651,7 @@ test('renderGrid includes offline tile HTML when a session has unreachable statu
 
   const sessions = [
     { name: 'my-session', snapshot: 'hello' },
-    { name: 'Dev Server', status: 'unreachable' },
+    { deviceName: 'Dev Server', status: 'unreachable' },
   ];
   app.renderGrid(sessions);
 
@@ -4729,4 +4729,32 @@ test('updateFaviconBadge does not show activity for only-hidden sessions with be
   globalThis.document.querySelector = origQS;
   app._setServerSettings(null);
   app._setCurrentSessions([]);
+});
+
+// --- renderGrid: status tiles use deviceName not name ---
+
+test('renderGrid status tiles use session.deviceName not session.name for offline devices', () => {
+  // Status entries (unreachable/auth_failed) have deviceName but no name.
+  // buildStatusTileHTML must receive session.deviceName so the tile shows the device label.
+  const grid = { innerHTML: '' };
+  const emptyState = { style: {}, classList: { add() {}, remove() {} } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return grid;
+    if (id === 'empty-state') return emptyState;
+    return null;
+  };
+
+  // An unreachable device: has deviceName but no name (as federation returns it)
+  app.renderGrid([{ status: 'unreachable', deviceName: 'my-server', remoteId: 1 }]);
+
+  assert.ok(grid.innerHTML.includes('my-server'),
+    'offline status tile HTML must include the deviceName "my-server"');
+
+  // Also verify an auth_failed device shows its deviceName
+  app.renderGrid([{ status: 'auth_failed', deviceName: 'auth-box', remoteId: 2 }]);
+  assert.ok(grid.innerHTML.includes('auth-box'),
+    'auth_failed status tile HTML must include the deviceName "auth-box"');
+
+  globalThis.document.getElementById = origGetById;
 });
