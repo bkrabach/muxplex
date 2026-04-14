@@ -472,6 +472,15 @@ function openTerminal(sessionName, remoteId, fontSize) {
     newPrev.addEventListener('click', _searchPrev);
   }
 
+  // --- Right-click context menu ---
+  // Suppress the browser context menu on plain right-click inside the terminal
+  // so tmux's own menu (when `set -g mouse on`) isn't covered by the browser's.
+  // Shift+RMB and Ctrl+RMB still open the browser context menu as escape hatches.
+  container.addEventListener('contextmenu', function(e) {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) return; // let modified clicks through
+    e.preventDefault();
+  });
+
   connectWebSocket(sessionName, remoteId);
   initVisualViewport(); /* defined in Task 14 */
 }
