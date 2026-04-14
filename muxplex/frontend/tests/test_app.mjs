@@ -441,24 +441,28 @@ test('pollSessions uses /api/sessions when multi_device_enabled is false', async
 
 // --- startPolling ---
 
-test('startPolling guards against double-start (only creates one interval)', () => {
-  const intervals = [];
-  const origSetInterval = globalThis.setInterval;
-  globalThis.setInterval = (fn, ms) => {
-    intervals.push(ms);
+test('startPolling guards against double-start (only starts one poll loop)', async () => {
+  const timeouts = [];
+  const origSetTimeout = globalThis.setTimeout;
+  // Capture scheduling calls and prevent real timers from firing
+  globalThis.setTimeout = (fn, ms) => {
+    timeouts.push(ms);
     return Symbol('timer');
   };
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => ({ ok: true, json: async () => [] });
 
-  // First call should create the interval; second should be a no-op
+  // First call should start one pollLoop; second should be a no-op (sentinel guard)
   app.startPolling();
   app.startPolling();
 
-  assert.strictEqual(intervals.length, 1, 'startPolling should create exactly one interval');
-  assert.strictEqual(intervals[0], 2000, 'interval should be POLL_MS (2000ms)');
+  // Yield microtasks so the async pollLoop can complete and schedule the next timeout
+  await new Promise((r) => origSetTimeout(r, 0));
 
-  globalThis.setInterval = origSetInterval;
+  assert.strictEqual(timeouts.length, 1, 'startPolling should schedule exactly one setTimeout for rescheduling');
+  assert.strictEqual(timeouts[0], 2000, 'setTimeout delay should be POLL_MS (2000ms)');
+
+  globalThis.setTimeout = origSetTimeout;
   globalThis.fetch = origFetch;
 });
 
@@ -857,11 +861,12 @@ test('startHeartbeat is exported', () => {
   assert.strictEqual(typeof app.startHeartbeat, 'function');
 });
 
-test('startHeartbeat guards against double-start (only creates one interval)', () => {
-  const intervals = [];
-  const origSetInterval = globalThis.setInterval;
-  globalThis.setInterval = (fn, ms) => {
-    intervals.push(ms);
+test('startHeartbeat guards against double-start (only starts one heartbeat loop)', async () => {
+  const timeouts = [];
+  const origSetTimeout = globalThis.setTimeout;
+  // Capture scheduling calls and prevent real timers from firing
+  globalThis.setTimeout = (fn, ms) => {
+    timeouts.push(ms);
     return Symbol('heartbeat-timer');
   };
   const origFetch = globalThis.fetch;
@@ -869,14 +874,17 @@ test('startHeartbeat guards against double-start (only creates one interval)', (
 
   app._resetHeartbeatTimer(); // ensure clean state regardless of test order
   app.startHeartbeat();
-  app.startHeartbeat(); // second call should be a no-op
+  app.startHeartbeat(); // second call should be a no-op (sentinel guard)
 
-  assert.strictEqual(intervals.length, 1, 'startHeartbeat should create exactly one interval');
-  assert.strictEqual(intervals[0], 5000, 'interval should be HEARTBEAT_MS (5000ms)');
+  // Yield microtasks so the async heartbeatLoop can complete and schedule the next timeout
+  await new Promise((r) => origSetTimeout(r, 0));
 
-  globalThis.setInterval = origSetInterval;
+  assert.strictEqual(timeouts.length, 1, 'startHeartbeat should schedule exactly one setTimeout for rescheduling');
+  assert.strictEqual(timeouts[0], 5000, 'setTimeout delay should be HEARTBEAT_MS (5000ms)');
+
+  globalThis.setTimeout = origSetTimeout;
   globalThis.fetch = origFetch;
-  // _heartbeatTimer is now set; next test using startHeartbeat must call _resetHeartbeatTimer()
+  // _heartbeatTimer is now set to Symbol; next test using startHeartbeat must call _resetHeartbeatTimer()
 });
 
 test('startHeartbeat calls sendHeartbeat immediately (calls fetch for heartbeat)', async () => {
@@ -4803,4 +4811,28 @@ test('renderGrid shows "No sessions" status tile for status=empty devices', () =
   );
 
   globalThis.document.getElementById = origGetById;
+});
+
+// --- async-safe polling: setTimeout not setInterval ---
+
+test('startPolling uses setTimeout not setInterval for async-safe polling', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function startPolling');
+  const fnEnd = source.indexOf('\n}\n', fnStart + 20);
+  const fnBody = source.substring(fnStart, fnEnd + 3);
+  assert.ok(!fnBody.includes('setInterval'),
+    'startPolling must NOT use setInterval — causes overlapping async requests');
+  assert.ok(fnBody.includes('setTimeout'),
+    'startPolling must use setTimeout for self-scheduling async poll loop');
+});
+
+test('heartbeat uses setTimeout not setInterval for async-safe scheduling', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function startHeartbeat');
+  const fnEnd = source.indexOf('\n}\n', fnStart + 20);
+  const fnBody = source.substring(fnStart, fnEnd + 3);
+  assert.ok(!fnBody.includes('setInterval'),
+    'startHeartbeat must NOT use setInterval — causes overlapping async requests');
+  assert.ok(fnBody.includes('setTimeout'),
+    'startHeartbeat must use setTimeout for self-scheduling async loop');
 });

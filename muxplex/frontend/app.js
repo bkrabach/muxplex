@@ -279,12 +279,19 @@ async function pollSessions() {
 }
 
 /**
- * Start the session polling interval. Guards against double-start.
+ * Start the session polling loop. Guards against double-start.
+ * Uses self-scheduling setTimeout so at most one poll is in-flight at a time.
+ * If a poll takes longer than POLL_MS, the next poll starts POLL_MS after it
+ * finishes — never while it is still running.
  */
 function startPolling() {
   if (_pollingTimer) return;
-  pollSessions();
-  _pollingTimer = setInterval(pollSessions, POLL_MS);
+  _pollingTimer = true; // sentinel: prevents double-start before first setTimeout fires
+  async function pollLoop() {
+    await pollSessions();
+    _pollingTimer = setTimeout(pollLoop, POLL_MS);
+  }
+  pollLoop();
 }
 
 // ─── Grid rendering ──────────────────────────────────────────────────────────
@@ -989,18 +996,23 @@ async function sendHeartbeat() {
 }
 
 /**
- * Start the heartbeat interval. Guards against double-start.
- * Calls sendHeartbeat() immediately, then every HEARTBEAT_MS milliseconds.
+ * Start the heartbeat loop. Guards against double-start.
+ * Uses self-scheduling setTimeout so at most one heartbeat is in-flight at a time.
+ * Calls sendHeartbeat() immediately, then HEARTBEAT_MS after each completion.
  */
 function startHeartbeat() {
   if (_heartbeatTimer) return;
-  sendHeartbeat();
-  _heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+  _heartbeatTimer = true; // sentinel: prevents double-start before first setTimeout fires
+  async function heartbeatLoop() {
+    await sendHeartbeat();
+    _heartbeatTimer = setTimeout(heartbeatLoop, HEARTBEAT_MS);
+  }
+  heartbeatLoop();
 }
 
 /** Test-only helper: reset heartbeat timer state so tests can exercise startHeartbeat cleanly. */
 function _resetHeartbeatTimer() {
-  if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+  if (_heartbeatTimer) clearTimeout(_heartbeatTimer);
   _heartbeatTimer = undefined;
 }
 
