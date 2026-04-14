@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.5 (2026-04-14)
+
+### Bug Fixes
+- **Connection pool exhaustion fix** — replaced `setInterval` with self-scheduling `setTimeout` for both `pollSessions` and `sendHeartbeat` loops; prevents `ERR_INSUFFICIENT_RESOURCES` death spiral when federation requests time out during 2-second poll cycles
+
 ## v0.3.4 (2026-04-13)
 
 ### Bug Fixes
