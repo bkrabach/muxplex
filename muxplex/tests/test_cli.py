@@ -2154,6 +2154,72 @@ def test_upgrade_pypi_install_uses_package_name(monkeypatch, capsys):
     assert not any("git+" in str(arg) for arg in install_cmd)
 
 
+# ---------------------------------------------------------------------------
+# task-6-reset-device-id: --reset-device-id CLI command tests
+# ---------------------------------------------------------------------------
+
+
+def test_reset_device_id_writes_new_id(tmp_path, monkeypatch, capsys):
+    """reset_device_id_command() writes a new device_id different from the previous one.
+
+    Monkeypatches the identity path, creates an initial identity, calls the
+    command, and verifies that:
+    - The file now has a different device_id
+    - Output mentions 'device_id' or 'identity'
+    - Output includes a warning or mentions 'orphan'
+    """
+    import json
+
+    import muxplex.identity as identity_mod
+    from muxplex.cli import reset_device_id_command
+
+    # Set up fake identity path
+    identity_path = tmp_path / "identity.json"
+    monkeypatch.setattr(identity_mod, "IDENTITY_PATH", identity_path)
+
+    # Create an initial identity
+    original_id = "11111111-1111-4111-a111-111111111111"
+    identity_path.write_text(json.dumps({"device_id": original_id}))
+
+    # Run the command
+    reset_device_id_command()
+
+    # Verify new ID was written and is different
+    data = json.loads(identity_path.read_text())
+    new_id = data["device_id"]
+    assert new_id != original_id, (
+        f"reset_device_id_command() must write a new different device_id, "
+        f"got: {new_id!r} (same as original)"
+    )
+
+    # Verify output mentions device_id/identity
+    captured = capsys.readouterr()
+    output_lower = captured.out.lower()
+    assert "device_id" in output_lower or "identity" in output_lower, (
+        f"Output must mention 'device_id' or 'identity', got: {captured.out!r}"
+    )
+
+    # Verify output includes warning about orphaned session keys
+    assert "orphan" in output_lower or "warning" in output_lower, (
+        f"Output must include warning about orphaned session keys, got: {captured.out!r}"
+    )
+
+
+def test_main_dispatches_to_reset_device_id(monkeypatch):
+    """main() with 'reset-device-id' subcommand must invoke reset_device_id_command()."""
+    import muxplex.cli as cli_mod
+
+    calls = []
+    monkeypatch.setattr(cli_mod, "reset_device_id_command", lambda: calls.append(True))
+
+    with patch("sys.argv", ["muxplex", "reset-device-id"]):
+        cli_mod.main()
+
+    assert len(calls) == 1, (
+        "reset_device_id_command() must be called once for 'reset-device-id' subcommand"
+    )
+
+
 def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
     """upgrade() for git installs must still use git+https URL."""
     import subprocess

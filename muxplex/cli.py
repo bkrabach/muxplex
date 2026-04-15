@@ -149,6 +149,18 @@ def reset_secret() -> None:
     print("Warning: all active sessions are now invalid.")
 
 
+def reset_device_id_command() -> None:
+    """Regenerate the device identity UUID and warn about orphaned session keys."""
+    from muxplex.identity import IDENTITY_PATH, load_device_id, reset_device_id  # noqa: PLC0415
+
+    old_id = load_device_id()
+    new_id = reset_device_id()
+    print(f"New device_id: {new_id}")
+    print(f"Identity file: {IDENTITY_PATH}")
+    print(f"Previous device_id: {old_id}")
+    print("Warning: existing session keys are now orphaned.")
+
+
 def show_password() -> None:
     """Print the current muxplex password or indicate PAM mode."""
     auth_mode = os.environ.get("MUXPLEX_AUTH", "").lower()
@@ -954,6 +966,11 @@ def main() -> None:
     )
 
     sub.add_parser(
+        "reset-device-id",
+        help="Regenerate device identity UUID (orphans existing session keys)",
+    )
+
+    sub.add_parser(
         "generate-federation-key",
         help="Generate a random federation key and write it to disk",
     )
@@ -1005,6 +1022,8 @@ def main() -> None:
         show_password()
     elif args.command == "reset-secret":
         reset_secret()
+    elif args.command == "reset-device-id":
+        reset_device_id_command()
     elif args.command == "generate-federation-key":
         generate_federation_key()
     elif args.command == "doctor":
