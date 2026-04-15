@@ -5,6 +5,8 @@ State schema (all values are plain JSON-serialisable dicts):
 
     {
         "active_session": str | None,
+        "active_remote_id": str | None,
+        "active_view": str,  # 'all' | 'hidden' | view name
         "session_order": list[str],
         "sessions": {
             "<name>": {
@@ -37,8 +39,12 @@ from pathlib import Path
 # Paths
 # ---------------------------------------------------------------------------
 
-_default_state_dir = Path.home() / ".local" / "share" / "tmux-web"
-STATE_DIR: Path = Path(os.environ.get("TMUX_WEB_STATE_DIR", _default_state_dir))
+_default_state_dir = Path.home() / ".local" / "share" / "muxplex"
+STATE_DIR: Path = Path(
+    os.environ.get(
+        "MUXPLEX_STATE_DIR", os.environ.get("TMUX_WEB_STATE_DIR", _default_state_dir)
+    )
+)
 STATE_PATH: Path = STATE_DIR / "state.json"
 
 # ---------------------------------------------------------------------------
@@ -60,6 +66,7 @@ def empty_state() -> dict:
     return {
         "active_session": None,
         "active_remote_id": None,
+        "active_view": "all",
         "session_order": [],
         "sessions": {},
         "devices": {},

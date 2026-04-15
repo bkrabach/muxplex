@@ -92,6 +92,24 @@ def test_empty_state_returns_independent_dicts():
     assert s2["devices"] == {}
 
 
+def test_empty_state_has_active_view_key():
+    state = empty_state()
+    assert "active_view" in state
+
+
+def test_empty_state_active_view_defaults_to_all():
+    state = empty_state()
+    assert state["active_view"] == "all"
+
+
+def test_state_dir_uses_muxplex_name():
+    import muxplex.state as state_mod
+
+    path_str = str(state_mod._default_state_dir)
+    assert "muxplex" in path_str
+    assert "tmux-web" not in path_str
+
+
 # ---------------------------------------------------------------------------
 # empty_bell()
 # ---------------------------------------------------------------------------
