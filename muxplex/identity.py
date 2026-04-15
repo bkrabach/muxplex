@@ -45,5 +45,5 @@ def _generate_and_save() -> str:
     """Generate a new UUID v4, persist it to IDENTITY_PATH, and return it."""
     device_id = str(uuid.uuid4())
     IDENTITY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    IDENTITY_PATH.write_text(json.dumps({"device_id": device_id}))
+    IDENTITY_PATH.write_text(json.dumps({"device_id": device_id}, indent=2) + "\n")
     return device_id

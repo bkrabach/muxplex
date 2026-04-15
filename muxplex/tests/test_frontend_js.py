@@ -2929,3 +2929,84 @@ def test_render_grid_no_filtered_mode_check() -> None:
         "renderGrid must not check _gridViewMode === 'filtered' — "
         "the 'filtered' mode has been removed; only 'flat' and 'grouped' remain"
     )
+
+
+# ---------------------------------------------------------------------------
+# COE verification fixes
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_active_view_function_exists() -> None:
+    """_resolveActiveView must exist in app.js for active_view fallback (GAP 4).
+
+    When active_view references a view name that no longer exists in the views
+    list, _resolveActiveView must fall back to 'all' so the user always sees
+    sessions rather than an empty/broken state.
+    """
+    assert "_resolveActiveView" in _JS, (
+        "_resolveActiveView function must exist in app.js for active_view fallback; "
+        "when a view is deleted while a device is offline the stored active_view "
+        "must fall back to 'all'"
+    )
+
+
+def test_resolve_active_view_falls_back_to_all() -> None:
+    """_resolveActiveView must return 'all' when active_view is not in views list."""
+    match = re.search(
+        r"function _resolveActiveView\s*\(.*?\)\s*\{(.*?)^}",
+        _JS,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, "_resolveActiveView function not found"
+    body = match.group(1)
+    assert "return 'all'" in body, (
+        "_resolveActiveView must return 'all' as the fallback when active_view "
+        "is not found in the views list"
+    )
+    assert "'all'" in body and "'hidden'" in body, (
+        "_resolveActiveView must pass 'all' and 'hidden' through without lookup "
+        "(these are reserved view names, not user-created views)"
+    )
+
+
+def test_create_device_select_uses_device_id_for_option_value() -> None:
+    """_createDeviceSelect must use device_id (not integer index) for option values.
+
+    Session creation routes now accept a device_id string, not an integer index.
+    The select option value must be remotes[i].device_id when available so the
+    correct device_id is passed to createNewSession().
+    """
+    match = re.search(
+        r"function _createDeviceSelect\s*\(\s*\)\s*\{(.*?)^}",
+        _JS,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, "_createDeviceSelect function not found"
+    body = match.group(1)
+    assert "device_id" in body, (
+        "_createDeviceSelect must use remotes[i].device_id (with String(i) fallback) "
+        "for option values; integer index no longer matches federation API expectations"
+    )
+
+
+def test_settings_hidden_sessions_uses_session_key() -> None:
+    """Settings hidden_sessions checkbox must use sessionKey for the checkbox value.
+
+    The hidden_sessions list now stores device_id:name keys (sessionKey format).
+    The settings panel checkbox builder must use s.sessionKey || s.name as the
+    checkbox value so toggling a remote session stores the correct key format.
+    """
+    match = re.search(
+        r"const hiddenSessionsEl = \$\('setting-hidden-sessions'\);.*?hiddenSessionsEl\.innerHTML = ''",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "hidden sessions settings block not found"
+    # Find the wider block starting from here
+    start = match.start()
+    block = _JS[start : start + 800]
+    assert "sessionKey" in block, (
+        "Settings panel hidden_sessions checkbox builder must use s.sessionKey "
+        "(with s.name fallback) as the checkbox value so remote sessions are "
+        "stored in device_id:name format in hidden_sessions"
+    )

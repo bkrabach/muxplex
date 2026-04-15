@@ -152,3 +152,24 @@ def test_reset_creates_parent_dirs(tmp_path, monkeypatch):
     assert _is_valid_uuid4(new_id)
     data = json.loads(identity_path.read_text())
     assert data["device_id"] == new_id
+
+
+def test_identity_json_is_human_readable(tmp_path, monkeypatch):
+    """identity.json must be written with indentation for human readability.
+
+    Consistent with settings.py and state.py which both write indented JSON.
+    """
+    identity_path = tmp_path / "identity.json"
+    monkeypatch.setattr("muxplex.identity.IDENTITY_PATH", identity_path)
+
+    load_device_id()
+
+    raw = identity_path.read_text()
+    # Human-readable JSON has newlines; compact JSON does not
+    assert "\n" in raw, (
+        "identity.json must be written with indent=2 for human readability "
+        "(consistent with settings.json and state.json formatting)"
+    )
+    # Must still be valid JSON
+    data = json.loads(raw)
+    assert "device_id" in data

@@ -551,6 +551,27 @@ function getVisibleSessions(sessions) {
 }
 
 /**
+ * Resolve the active view name against the known views list.
+ *
+ * If active_view is "all" or "hidden" it is always valid and returned as-is.
+ * If active_view matches a view name in the views list it is returned as-is.
+ * Otherwise (e.g. the view was deleted while this device was offline) fall back
+ * to "all" so the user always sees sessions rather than an empty/broken state.
+ *
+ * @param {string} activeView - The stored active_view value from state.
+ * @param {object[]} views - The views array from settings (each has a .name field).
+ * @returns {string} Resolved view name — always "all", "hidden", or a known view name.
+ */
+function _resolveActiveView(activeView, views) {
+  if (activeView === 'all' || activeView === 'hidden') return activeView;
+  var list = views || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].name === activeView) return activeView;
+  }
+  return 'all';
+}
+
+/**
  * Render the session sidebar list. Only renders in fullscreen view.
  * Shows empty state when no sessions exist.
  * Binds click handlers on each sidebar-item to switch sessions.
@@ -1686,13 +1707,14 @@ function openSettings() {
       const hiddenList = (ss && ss.hidden_sessions) || [];
       (_currentSessions || []).forEach(function(s) {
         const name = s.name || '';
+        const sessionKey = s.sessionKey || name;
         const item = document.createElement('label');
         item.className = 'settings-checkbox-item';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.className = 'settings-checkbox';
-        cb.value = name;
-        cb.checked = hiddenList.includes(name);
+        cb.value = sessionKey;
+        cb.checked = hiddenList.includes(sessionKey) || hiddenList.includes(name);
         item.appendChild(cb);
         item.appendChild(document.createTextNode(' ' + name));
         hiddenSessionsEl.appendChild(item);
@@ -1936,11 +1958,11 @@ function _createDeviceSelect() {
   // Remote instance options
   for (var i = 0; i < remotes.length; i++) {
     var opt = document.createElement('option');
-    opt.value = String(i);
+    opt.value = remotes[i].device_id || String(i);
     opt.textContent = remotes[i].name || remotes[i].url || 'Remote ' + i;
     if (_activeFilterDevice === remotes[i].name || _activeFilterDevice === remotes[i].url) {
       opt.selected = true;
-      select.value = String(i);
+      select.value = remotes[i].device_id || String(i);
     }
     select.appendChild(opt);
   }

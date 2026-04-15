@@ -220,12 +220,8 @@ async def _run_poll_cycle() -> None:
         if _federation_client is not None:
             active_remote_id = state.get("active_remote_id")
             if active_remote_id is not None:
-                settings = load_settings()
-                remote_instances = settings.get("remote_instances", [])
-                if isinstance(active_remote_id, int) and 0 <= active_remote_id < len(
-                    remote_instances
-                ):
-                    remote = remote_instances[active_remote_id]
+                remote = _lookup_remote_by_device_id(str(active_remote_id))
+                if remote is not None:
                     remote_url: str = remote.get("url", "").rstrip("/")
                     remote_key: str = remote.get("key", "")
                     key = remote_key

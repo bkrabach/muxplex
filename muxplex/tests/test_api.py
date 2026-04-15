@@ -2851,6 +2851,120 @@ async def test_poll_cycle_fires_federation_bell_clear_for_remote_session(
     )
 
 
+async def test_poll_cycle_fires_federation_bell_clear_for_remote_session_with_uuid(
+    monkeypatch, tmp_path
+):
+    """_run_poll_cycle() fires bell/clear when active_remote_id is a UUID string.
+
+    Regression test for the bug where isinstance(active_remote_id, int) was
+    always False for UUID strings, silently skipping the bell-clear POST.
+
+    Sets up state with active_remote_id="dead-beef-uuid", remote instance has
+    device_id="dead-beef-uuid", one device viewing 'build' in fullscreen with
+    a recent interaction. Verifies mock_client.post is called with the correct
+    URL and Bearer auth header.
+    """
+    import json
+    import time
+    from unittest.mock import MagicMock
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+    from muxplex.state import save_state
+
+    remote_uuid = "dead-beef-uuid-1234-abcd"
+
+    # Set up settings with one remote instance that has a device_id
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "uuid-key",
+                        "name": "remote-host",
+                        "device_id": remote_uuid,
+                    }
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # Set up state with active_remote_id as a UUID string (not an integer)
+    state = {
+        "active_session": None,
+        "active_remote_id": remote_uuid,
+        "session_order": ["build"],
+        "sessions": {
+            "build": {
+                "bell": {"last_fired_at": None, "seen_at": None, "unseen_count": 0}
+            }
+        },
+        "devices": {
+            "dev-1": {
+                "label": "My Device",
+                "viewing_session": "build",
+                "view_mode": "fullscreen",
+                "last_interaction_at": time.time(),
+                "last_heartbeat_at": time.time(),
+            }
+        },
+    }
+    save_state(state)
+
+    # Mock all poll-cycle dependencies so the cycle completes without real tmux
+    async def mock_enumerate():
+        return ["build"]
+
+    async def mock_snapshot_all(names):
+        return {"build": "pane text"}
+
+    async def mock_process_bell_flags(names, state):
+        pass
+
+    monkeypatch.setattr("muxplex.main.enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr("muxplex.main.snapshot_all", mock_snapshot_all)
+    monkeypatch.setattr(
+        "muxplex.main.update_session_cache", lambda names, snapshots: None
+    )
+    monkeypatch.setattr("muxplex.main.apply_bell_clear_rule", lambda state: None)
+    monkeypatch.setattr("muxplex.main.prune_devices", lambda state: None)
+    monkeypatch.setattr("muxplex.main.process_bell_flags", mock_process_bell_flags)
+
+    # Capture POST calls from the mocked federation client
+    post_calls: list[dict] = []
+
+    async def mock_post(url, **kwargs):
+        post_calls.append({"url": url, "kwargs": kwargs})
+        resp = MagicMock()
+        resp.status_code = 200
+        return resp
+
+    mock_client = MagicMock()
+    mock_client.post = mock_post
+    monkeypatch.setattr(main_mod, "_federation_client", mock_client)
+
+    # Run one poll cycle
+    await main_mod._run_poll_cycle()
+
+    # Verify mock_client.post was called — the isinstance bug causes 0 calls
+    assert len(post_calls) == 1, (
+        f"Expected exactly 1 POST call to remote bell/clear (UUID active_remote_id), "
+        f"got {len(post_calls)}: {post_calls}. "
+        f"This indicates the isinstance(active_remote_id, int) guard is still present."
+    )
+    call = post_calls[0]
+    assert "/api/sessions/build/bell/clear" in call["url"], (
+        f"Expected URL to contain '/api/sessions/build/bell/clear', got: {call['url']}"
+    )
+    headers = call["kwargs"].get("headers", {})
+    assert headers.get("Authorization") == "Bearer uuid-key", (
+        f"Expected 'Authorization: Bearer uuid-key' header, got: {headers}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/settings/sync (task-7)
 # ---------------------------------------------------------------------------
