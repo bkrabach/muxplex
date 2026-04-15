@@ -228,6 +228,8 @@ async def _run_poll_cycle() -> None:
                     remote = remote_instances[active_remote_id]
                     remote_url: str = remote.get("url", "").rstrip("/")
                     remote_key: str = remote.get("key", "")
+                    key = remote_key
+                    auth_headers = {"Authorization": f"Bearer {key}"} if key else {}
                     now = time.time()
                     for device in state.get("devices", {}).values():
                         viewing_session = device.get("viewing_session")
@@ -242,9 +244,7 @@ async def _run_poll_cycle() -> None:
                             try:
                                 await _federation_client.post(
                                     bell_clear_url,
-                                    headers={"Authorization": f"Bearer {remote_key}"}
-                                    if remote_key
-                                    else {},
+                                    headers=auth_headers,
                                 )
                             except Exception as exc:
                                 _log.warning(
@@ -1091,13 +1091,12 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
 
     await websocket.accept(subprotocol="tty")
 
+    auth_headers = {"Authorization": f"Bearer {remote_key}"} if remote_key else {}
     try:
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"}
-            if remote_key
-            else {},
+            additional_headers=auth_headers,
             ssl=ssl_context,
         ) as remote_ws:
 
