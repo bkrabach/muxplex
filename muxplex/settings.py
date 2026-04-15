@@ -171,6 +171,7 @@ def apply_synced_settings(incoming_settings: dict, incoming_timestamp: float) ->
     any session key that appears in both hidden_sessions and a view's sessions
     is removed from hidden_sessions (visibility wins over hiding).
     """
+    # Lazy import: avoids potential circular import between settings and views
     from muxplex.views import enforce_mutual_exclusion
 
     current = load_settings()

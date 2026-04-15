@@ -1028,8 +1028,6 @@ def test_apply_synced_settings_enforces_mutual_exclusion(redirect_settings_path)
     hidden_sessions=['abc:dev'].
     Assert 'abc:dev' NOT in result['hidden_sessions'] and IS in result['views'][0]['sessions'].
     """
-    import json
-
     # Pre-populate settings with hidden_sessions containing 'abc:dev'
     redirect_settings_path.write_text(
         json.dumps({"hidden_sessions": ["abc:dev"], "views": []})
