@@ -242,9 +242,7 @@ async def _run_poll_cycle() -> None:
                             try:
                                 await _federation_client.post(
                                     bell_clear_url,
-                                    headers={"Authorization": f"Bearer {remote_key}"}
-                                    if remote_key
-                                    else {},
+                                    headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
                                 )
                             except Exception as exc:
                                 _log.warning(
@@ -1047,29 +1045,26 @@ def _lookup_remote_by_device_id(device_id: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-@app.websocket("/federation/{remote_id}/terminal/ws")
-async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> None:
+@app.websocket("/federation/{device_id}/terminal/ws")
+async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> None:
     """Proxy WebSocket frames between the browser and a remote muxplex ttyd.
 
-    *remote_id* is the integer index into the ``remote_instances`` list in
+    *device_id* is the device_id string of the remote instance in
     settings.  Authenticates to the remote instance using the configured
     ``key`` field via a Bearer header.
 
     Auth check uses the same cookie + bearer pattern as terminal_ws_proxy.
-    Closes with code 4004 if remote_id is out of range.
+    Closes with code 4004 if device_id does not match any remote.
     """
     # Auth check before accepting — same pattern as terminal_ws_proxy
     if not await _ws_auth_check(websocket):
         return
 
-    # Look up remote instance by index
-    settings = load_settings()
-    remote_instances: list[dict] = settings.get("remote_instances", [])
-    if remote_id < 0 or remote_id >= len(remote_instances):
+    # Look up remote instance by device_id
+    remote = _lookup_remote_by_device_id(device_id)
+    if remote is None:
         await websocket.close(code=4004)
         return
-
-    remote = remote_instances[remote_id]
     remote_url: str = remote.get("url", "").rstrip("/")
     remote_key: str = remote.get("key", "")
 
@@ -1098,9 +1093,7 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, remote_id: int) -> 
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"}
-            if remote_key
-            else {},
+            additional_headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
             ssl=ssl_context,
         ) as remote_ws:
 
@@ -1373,26 +1366,24 @@ async def federation_generate_key() -> dict:
     return {"key": key, "path": str(path)}
 
 
-@app.post("/api/federation/{remote_id}/connect/{session_name}")
+@app.post("/api/federation/{device_id}/connect/{session_name}")
 async def federation_connect(
-    remote_id: int, session_name: str, request: Request
+    device_id: str, session_name: str, request: Request
 ) -> dict:
     """Proxy a connect POST to a remote instance to spawn its ttyd.
 
-    Looks up the remote by integer index into ``remote_instances`` in settings,
+    Looks up the remote by device_id string via ``_lookup_remote_by_device_id``,
     sends ``POST {remote_url}/api/sessions/{session_name}/connect`` with a
     Bearer auth header, and returns the remote's JSON response.
 
-    Raises HTTP 404 if ``remote_id`` is not a valid integer index.
+    Raises HTTP 404 if ``device_id`` does not match any remote instance.
     """
-    settings = load_settings()
-    remotes = settings.get("remote_instances", [])
-    if remote_id < 0 or remote_id >= len(remotes):
+    remote = _lookup_remote_by_device_id(device_id)
+    if remote is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Remote instance '{remote_id}' not found",
+            detail=f"Remote instance '{device_id}' not found",
         )
-    remote = remotes[remote_id]
 
     remote_url: str = remote.get("url", "").rstrip("/")
     remote_key: str = remote.get("key", "")
@@ -1419,26 +1410,24 @@ async def federation_connect(
         )
 
 
-@app.post("/api/federation/{remote_id}/sessions/{session_name}/bell/clear")
+@app.post("/api/federation/{device_id}/sessions/{session_name}/bell/clear")
 async def federation_bell_clear(
-    remote_id: int, session_name: str, request: Request
+    device_id: str, session_name: str, request: Request
 ) -> dict:
     """Proxy a bell-clear POST to a remote instance.
 
-    Looks up the remote by integer index into ``remote_instances`` in settings,
+    Looks up the remote by device_id string via ``_lookup_remote_by_device_id``,
     sends ``POST {remote_url}/api/sessions/{session_name}/bell/clear`` with a
     Bearer auth header, and returns the remote's JSON response.
 
-    Raises HTTP 404 if ``remote_id`` is not a valid integer index.
+    Raises HTTP 404 if ``device_id`` does not match any remote instance.
     """
-    settings = load_settings()
-    remotes = settings.get("remote_instances", [])
-    if remote_id < 0 or remote_id >= len(remotes):
+    remote = _lookup_remote_by_device_id(device_id)
+    if remote is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Remote instance '{remote_id}' not found",
+            detail=f"Remote instance '{device_id}' not found",
         )
-    remote = remotes[remote_id]
 
     remote_url: str = remote.get("url", "").rstrip("/")
     remote_key: str = remote.get("key", "")
@@ -1467,27 +1456,25 @@ async def federation_bell_clear(
         )
 
 
-@app.post("/api/federation/{remote_id}/sessions")
+@app.post("/api/federation/{device_id}/sessions")
 async def federation_create_session(
-    remote_id: int, payload: CreateSessionPayload, request: Request
+    device_id: str, payload: CreateSessionPayload, request: Request
 ) -> dict:
     """Proxy a create-session POST to a remote instance.
 
-    Looks up the remote by integer index into ``remote_instances`` in settings,
+    Looks up the remote by device_id string via ``_lookup_remote_by_device_id``,
     sends ``POST {remote_url}/api/sessions`` with a Bearer auth header and JSON
     body ``{name: ...}``, and returns the remote's JSON response.
 
-    Raises HTTP 404 if ``remote_id`` is not a valid integer index,
+    Raises HTTP 404 if ``device_id`` does not match any remote instance,
     503 when remote is unreachable, 502 when remote returns HTTP error.
     """
-    settings = load_settings()
-    remotes = settings.get("remote_instances", [])
-    if remote_id < 0 or remote_id >= len(remotes):
+    remote = _lookup_remote_by_device_id(device_id)
+    if remote is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Remote instance '{remote_id}' not found",
+            detail=f"Remote instance '{device_id}' not found",
         )
-    remote = remotes[remote_id]
     remote_url: str = remote.get("url", "").rstrip("/")
     remote_key: str = remote.get("key", "")
     url = f"{remote_url}/api/sessions"
@@ -1515,27 +1502,25 @@ async def federation_create_session(
         )
 
 
-@app.delete("/api/federation/{remote_id}/sessions/{session_name}")
+@app.delete("/api/federation/{device_id}/sessions/{session_name}")
 async def federation_delete_session(
-    remote_id: int, session_name: str, request: Request
+    device_id: str, session_name: str, request: Request
 ) -> dict:
     """Proxy a delete-session DELETE to a remote instance.
 
-    Looks up the remote by integer index into ``remote_instances`` in settings,
+    Looks up the remote by device_id string via ``_lookup_remote_by_device_id``,
     sends ``DELETE {remote_url}/api/sessions/{session_name}`` with a Bearer auth
     header, and returns the remote's JSON response.
 
-    Raises HTTP 404 if ``remote_id`` is not a valid integer index,
+    Raises HTTP 404 if ``device_id`` does not match any remote instance,
     503 when remote is unreachable, 502 when remote returns HTTP error.
     """
-    settings = load_settings()
-    remotes = settings.get("remote_instances", [])
-    if remote_id < 0 or remote_id >= len(remotes):
+    remote = _lookup_remote_by_device_id(device_id)
+    if remote is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Remote instance '{remote_id}' not found",
+            detail=f"Remote instance '{device_id}' not found",
         )
-    remote = remotes[remote_id]
     remote_url: str = remote.get("url", "").rstrip("/")
     remote_key: str = remote.get("key", "")
     url = f"{remote_url}/api/sessions/{session_name}"

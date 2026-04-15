@@ -2127,10 +2127,11 @@ def test_federation_connect_returns_404_for_invalid_remote_id(
 def test_federation_connect_returns_404_for_non_integer_remote_id(
     client, monkeypatch, tmp_path
 ):
-    """POST /api/federation/{remote_id}/connect/{session_name} returns 422 when remote_id is not an integer.
+    """POST /api/federation/{device_id}/connect/{session_name} returns 404 when device_id has no match.
 
-    With remote_id typed as int, FastAPI validates the path parameter at the
-    framework level and returns 422 Unprocessable Entity for non-integer values.
+    With device_id typed as str, any string is a valid path parameter.
+    When no remote matches 'not-an-int' by device_id and it cannot be parsed
+    as an integer index, the lookup returns None and the endpoint returns 404.
     """
     import json
 
@@ -2141,7 +2142,7 @@ def test_federation_connect_returns_404_for_non_integer_remote_id(
     settings_path.write_text(json.dumps({"remote_instances": []}))
 
     response = client.post("/api/federation/not-an-int/connect/my-session")
-    assert response.status_code == 422  # FastAPI rejects non-integer path param
+    assert response.status_code == 404  # device_id not found in remote_instances
 
 
 def test_federation_connect_returns_503_when_remote_unreachable(
@@ -3364,4 +3365,86 @@ def test_lookup_remote_by_device_id_not_found(tmp_path, monkeypatch):
 
     assert result is None, (
         f"Expected None for unknown device_id 'zzz-999', got: {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task-9: Federation Proxy Endpoints — Switch to device_id Lookup
+# ---------------------------------------------------------------------------
+
+
+def test_federation_connect_by_device_id(client, monkeypatch, tmp_path):
+    """POST /api/federation/{device_id}/connect/{session_name} works when device_id matches a remote.
+
+    Configures a remote with device_id='aaa-111-bbb', POSTs to the new device_id-based
+    URL, and verifies the endpoint proxies to the correct remote and returns 200.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://laptop:8088",
+                        "key": "key-aaa",
+                        "name": "Laptop",
+                        "device_id": "aaa-111-bbb",
+                    }
+                ],
+            }
+        )
+    )
+
+    post_calls = []
+
+    async def mock_post(url, **kwargs):
+        post_calls.append({"url": url, "kwargs": kwargs})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "active_session": "my-session",
+            "ttyd_port": 7682,
+        }
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.post = mock_post
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.post("/api/federation/aaa-111-bbb/connect/my-session")
+    assert response.status_code == 200, (
+        f"Expected 200, got {response.status_code}: {response.text}"
+    )
+    data = response.json()
+    assert data["active_session"] == "my-session"
+
+
+def test_federation_connect_device_id_not_found(client, monkeypatch, tmp_path):
+    """POST /api/federation/{device_id}/connect/{session_name} returns 404 when device_id has no match.
+
+    POSTs to a URL with an unrecognised device_id; the lookup returns None and
+    the endpoint must respond with HTTP 404.
+    """
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    # No remotes configured — any device_id lookup returns None
+    settings_path.write_text(json.dumps({"remote_instances": []}))
+
+    response = client.post(
+        "/api/federation/nonexistent-device/connect/my-session"
+    )
+    assert response.status_code == 404, (
+        f"Expected 404 for unknown device_id, got {response.status_code}: {response.text}"
     )
