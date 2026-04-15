@@ -1006,6 +1006,43 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Federation helper utilities
+# ---------------------------------------------------------------------------
+
+
+def _lookup_remote_by_device_id(device_id: str) -> dict | None:
+    """Return the first remote instance whose ``device_id`` matches *device_id*.
+
+    Primary lookup: iterate ``remote_instances`` and return the first entry
+    where ``remote.get('device_id') == device_id``.
+
+    Fallback (transition compatibility): if *device_id* looks like an integer
+    (i.e. ``int(device_id)`` succeeds) treat it as a 0-based index into the
+    ``remote_instances`` list and return the remote at that position, provided
+    the index is in range.
+
+    Returns ``None`` if no match is found.
+    """
+    settings = load_settings()
+    remotes: list[dict] = settings.get("remote_instances", [])
+
+    # Primary: match by device_id field
+    for remote in remotes:
+        if remote.get("device_id") == device_id:
+            return remote
+
+    # Fallback: index-based lookup for transition compatibility
+    try:
+        idx = int(device_id)
+        if 0 <= idx < len(remotes):
+            return remotes[idx]
+    except (ValueError, TypeError):
+        pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Federation WebSocket proxy — bridges browser to a remote instance's ttyd
 # ---------------------------------------------------------------------------
 

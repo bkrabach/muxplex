@@ -3284,3 +3284,84 @@ def test_fetch_remote_marks_unreachable_after_grace_period(
     assert any(s.get("status") == "unreachable" for s in host_entries), (
         f"After exceeding grace period, device must be marked 'unreachable'. Got: {host_entries}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _lookup_remote_by_device_id helper
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_remote_by_device_id_found(tmp_path, monkeypatch):
+    """_lookup_remote_by_device_id returns the remote dict matching the given device_id."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    from muxplex.main import _lookup_remote_by_device_id
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://laptop:8088",
+                        "key": "key-aaa",
+                        "name": "Laptop",
+                        "device_id": "aaa-111",
+                    },
+                    {
+                        "url": "http://desktop:8088",
+                        "key": "key-bbb",
+                        "name": "Desktop",
+                        "device_id": "bbb-222",
+                    },
+                ]
+            }
+        )
+    )
+
+    result = _lookup_remote_by_device_id("bbb-222")
+
+    assert result is not None, "Expected a remote dict, got None"
+    assert result.get("name") == "Desktop", (
+        f"Expected 'Desktop' remote, got: {result!r}"
+    )
+    assert result.get("device_id") == "bbb-222", (
+        f"Expected device_id 'bbb-222', got: {result.get('device_id')!r}"
+    )
+
+
+def test_lookup_remote_by_device_id_not_found(tmp_path, monkeypatch):
+    """_lookup_remote_by_device_id returns None when no remote matches the given device_id."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    from muxplex.main import _lookup_remote_by_device_id
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://laptop:8088",
+                        "key": "key-aaa",
+                        "name": "Laptop",
+                        "device_id": "aaa-111",
+                    },
+                ]
+            }
+        )
+    )
+
+    result = _lookup_remote_by_device_id("zzz-999")
+
+    assert result is None, (
+        f"Expected None for unknown device_id 'zzz-999', got: {result!r}"
+    )
