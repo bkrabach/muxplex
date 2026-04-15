@@ -1217,10 +1217,10 @@ async def auth_mode_endpoint():
     return {"mode": _auth_mode, "user": username}
 
 
-# Module-level cache: remote_id → {"sessions": [...], "fail_count": int}
+# Module-level cache: remote_device_id → {"sessions": [...], "fail_count": int}
 # Populated by fetch_remote() on every successful poll; returned on transient failures
 # so a single slow/dropped request doesn't immediately evict a device from the UI.
-_federation_cache: dict[int, dict] = {}
+_federation_cache: dict[str, dict] = {}
 _FEDERATION_GRACE_FAILURES = 3  # consecutive failures before marking unreachable
 
 
@@ -1235,9 +1235,10 @@ async def federation_sessions(request: Request) -> list[dict]:
     """
     settings = load_settings()
     local_device_name: str = settings.get("device_name", "")
+    local_device_id: str = load_device_id()
     remote_instances: list[dict] = settings.get("remote_instances", [])
 
-    # Build local sessions with deviceName/remoteId tags
+    # Build local sessions with deviceId/deviceName/remoteId/sessionKey tags
     names = get_session_list()
     snapshots = get_snapshots()
     state = await read_state()
@@ -1250,8 +1251,10 @@ async def federation_sessions(request: Request) -> list[dict]:
                 "name": name,
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
+                "deviceId": local_device_id,
                 "deviceName": local_device_name,
                 "remoteId": None,
+                "sessionKey": f"{local_device_id}:{name}",
             }
         )
 
@@ -1271,7 +1274,7 @@ async def federation_sessions(request: Request) -> list[dict]:
         url: str = remote.get("url", "")
         key: str = remote.get("key", "")
         remote_name: str = remote.get("name", url)
-        remote_id: int = i
+        remote_device_id: str = remote.get("device_id", str(i))
         try:
             resp = await http_client.get(
                 f"{url.rstrip('/')}/api/sessions",
@@ -1279,61 +1282,66 @@ async def federation_sessions(request: Request) -> list[dict]:
             )
             if resp.status_code in (401, 403):
                 # Auth failure — clear cache so stale data is not served
-                _federation_cache.pop(remote_id, None)
+                _federation_cache.pop(remote_device_id, None)
                 return [
                     {
                         "status": "auth_failed",
-                        "remoteId": remote_id,
+                        "deviceId": remote_device_id,
+                        "remoteId": remote_device_id,
                         "deviceName": remote_name,
                     }
                 ]
             resp.raise_for_status()
             sessions = resp.json()
-            # Tag each session with deviceName, remoteId, and unique sessionKey
+            # Tag each session with deviceId, deviceName, remoteId, and unique sessionKey
             tagged = [
                 {
                     **s,
+                    "deviceId": remote_device_id,
                     "deviceName": remote_name,
-                    "remoteId": remote_id,
-                    "sessionKey": f"{remote_id}:{s.get('name', '')}",
+                    "remoteId": remote_device_id,
+                    "sessionKey": f"{remote_device_id}:{s.get('name', '')}",
                 }
                 for s in sessions
             ]
             # Update cache on every successful poll (even empty)
-            _federation_cache[remote_id] = {"sessions": tagged, "fail_count": 0}
+            _federation_cache[remote_device_id] = {"sessions": tagged, "fail_count": 0}
             if not tagged:
                 # Device is online but has zero tmux sessions — show a status tile
                 # rather than making the device completely invisible.
                 return [
                     {
                         "status": "empty",
-                        "remoteId": remote_id,
+                        "deviceId": remote_device_id,
+                        "remoteId": remote_device_id,
                         "deviceName": remote_name,
                     }
                 ]
             return tagged
         except httpx.HTTPStatusError:
-            cached = _federation_cache.get(remote_id)
+            cached = _federation_cache.get(remote_device_id)
             if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
                 cached["fail_count"] += 1
                 return cached["sessions"]
             return [
                 {
                     "status": "unreachable",
-                    "remoteId": remote_id,
+                    "deviceId": remote_device_id,
+                    "remoteId": remote_device_id,
                     "deviceName": remote_name,
                 }
             ]
         except Exception as exc:
             _log.warning("Unexpected error fetching remote %s: %s", url, exc)
-            cached = _federation_cache.get(remote_id)
+            cached = _federation_cache.get(remote_device_id)
             if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
                 cached["fail_count"] += 1
                 return cached["sessions"]
             return [
                 {
                     "status": "unreachable",
-                    "remoteId": remote_id,
+                    "deviceId": remote_device_id,
+                    "remoteId": remote_device_id,
                     "deviceName": remote_name,
                 }
             ]

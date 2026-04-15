@@ -1754,11 +1754,11 @@ def test_federation_sessions_returns_local_sessions(client, monkeypatch, tmp_pat
 
 
 def test_federation_sessions_remote_id_is_integer_index(client, monkeypatch, tmp_path):
-    """GET /api/federation/sessions returns integer remoteId (index) for remote sessions.
+    """GET /api/federation/sessions returns device_id-based remoteId for remote sessions.
 
-    remoteId must be the enumerate index (0, 1, 2...) of the remote in
-    remote_instances -- NOT the URL string and NOT any 'id' field from the
-    remote config dict.
+    When a remote doesn't have a device_id field, remoteId falls back to str(index)
+    (e.g. '0', '1', '2'...) -- NOT the URL string and NOT any 'id' field from the
+    remote config dict. When device_id is set, it is used directly.
     """
     import json
 
@@ -1823,36 +1823,42 @@ def test_federation_sessions_remote_id_is_integer_index(client, monkeypatch, tmp
         (s for s in remote_entries if s.get("deviceName") == "spark-2"), None
     )
     assert spark2_session is not None, "Expected a session entry from spark-2"
-    assert spark2_session["remoteId"] == 0, (
-        f"remoteId for first remote (index 0) must be integer 0, "
+    assert spark2_session["remoteId"] == "0", (
+        f"remoteId for first remote (no device_id, index 0) must be string '0', "
         f"got: {spark2_session['remoteId']!r}"
     )
-    assert isinstance(spark2_session["remoteId"], int), (
-        f"remoteId must be an int, got {type(spark2_session['remoteId'])}"
+    assert isinstance(spark2_session["remoteId"], str), (
+        f"remoteId must be a str, got {type(spark2_session['remoteId'])}"
     )
 
-    # The unreachable remote (spark-3, index 1) must have remoteId == 1
+    # The unreachable remote (spark-3, index 1) must have remoteId == '1'
     spark3_entry = next(
         (s for s in remote_entries if s.get("deviceName") == "spark-3"), None
     )
     assert spark3_entry is not None, "Expected a status entry from spark-3"
-    assert spark3_entry["remoteId"] == 1, (
-        f"remoteId for second remote (index 1) must be integer 1, "
+    assert spark3_entry["remoteId"] == "1", (
+        f"remoteId for second remote (no device_id, index 1) must be string '1', "
         f"got: {spark3_entry['remoteId']!r}"
     )
 
 
-def test_federation_sessions_local_sessions_have_no_session_key(
+def test_federation_sessions_local_sessions_have_session_key(
     client, monkeypatch, tmp_path
 ):
-    """GET /api/federation/sessions: local sessions must NOT have a sessionKey field.
+    """GET /api/federation/sessions: local sessions must have sessionKey = 'deviceId:name'.
 
-    Local sessions use name as the unique key — no prefix needed since they
-    never collide with themselves.
+    Local sessions are tagged with sessionKey = f'{local_device_id}:{name}' so they
+    can be uniquely identified in the merged multi-device session list.
     """
     import json
 
+    import muxplex.identity as identity_mod
     import muxplex.settings as settings_mod
+
+    # Redirect identity file to a known UUID
+    identity_path = tmp_path / "identity.json"
+    identity_path.write_text(json.dumps({"device_id": "test-local-id"}))
+    monkeypatch.setattr(identity_mod, "IDENTITY_PATH", identity_path)
 
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
@@ -1875,8 +1881,12 @@ def test_federation_sessions_local_sessions_have_no_session_key(
     assert len(local_sessions) == 2, f"Expected 2 local sessions, got: {local_sessions}"
 
     for local in local_sessions:
-        assert "sessionKey" not in local, (
-            f"Local session must NOT have sessionKey field, but got: {local}"
+        assert "sessionKey" in local, (
+            f"Local session must have sessionKey field, but got: {local}"
+        )
+        expected_key = f"test-local-id:{local['name']}"
+        assert local["sessionKey"] == expected_key, (
+            f"Local sessionKey must be '{expected_key}', got: {local['sessionKey']!r}"
         )
 
 
@@ -2030,7 +2040,9 @@ def test_federation_sessions_includes_remote_failure_status(
     )
     entry = failure_entries[0]
     assert entry["status"] == "unreachable"
-    assert entry.get("remoteId") == 0  # integer index, not the "id" field string
+    assert (
+        entry.get("remoteId") == "0"
+    )  # device_id string (fallback to str(index) when no device_id)
 
 
 # ---------------------------------------------------------------------------
@@ -3426,6 +3438,55 @@ def test_federation_connect_by_device_id(client, monkeypatch, tmp_path):
     assert data["active_session"] == "my-session"
 
 
+# ---------------------------------------------------------------------------
+# Task-10: Tag Sessions with device_id
+# ---------------------------------------------------------------------------
+
+
+def test_federation_sessions_tags_local_with_device_id(client, monkeypatch, tmp_path):
+    """GET /api/federation/sessions: local sessions have deviceId and sessionKey from identity.
+
+    The local device_id is loaded from the identity file and used to:
+    - tag each local session with deviceId: local_device_id
+    - build sessionKey: f'{local_device_id}:{name}'
+    """
+    import json
+
+    import muxplex.identity as identity_mod
+    import muxplex.settings as settings_mod
+
+    # Redirect identity file to a known UUID
+    identity_path = tmp_path / "identity.json"
+    identity_path.write_text(json.dumps({"device_id": "local-uuid"}))
+    monkeypatch.setattr(identity_mod, "IDENTITY_PATH", identity_path)
+
+    # Set up settings with no remote instances
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps({"device_name": "my-machine", "remote_instances": []})
+    )
+
+    # Mock local session list
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["dev"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"dev": ""})
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    local_sessions = [s for s in data if s.get("remoteId") is None]
+    assert len(local_sessions) == 1, f"Expected 1 local session, got: {local_sessions}"
+
+    local = local_sessions[0]
+    assert local.get("deviceId") == "local-uuid", (
+        f"Local session must have deviceId='local-uuid', got: {local.get('deviceId')!r}"
+    )
+    assert local.get("sessionKey") == "local-uuid:dev", (
+        f"Local session must have sessionKey='local-uuid:dev', got: {local.get('sessionKey')!r}"
+    )
+
+
 def test_federation_connect_device_id_not_found(client, monkeypatch, tmp_path):
     """POST /api/federation/{device_id}/connect/{session_name} returns 404 when device_id has no match.
 
@@ -3442,9 +3503,7 @@ def test_federation_connect_device_id_not_found(client, monkeypatch, tmp_path):
     # No remotes configured — any device_id lookup returns None
     settings_path.write_text(json.dumps({"remote_instances": []}))
 
-    response = client.post(
-        "/api/federation/nonexistent-device/connect/my-session"
-    )
+    response = client.post("/api/federation/nonexistent-device/connect/my-session")
     assert response.status_code == 404, (
         f"Expected 404 for unknown device_id, got {response.status_code}: {response.text}"
     )
