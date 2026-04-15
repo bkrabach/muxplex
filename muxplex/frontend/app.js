@@ -444,7 +444,9 @@ function buildTileHTML(session, index, mobile) {
   }
   const lastLines = allLines.slice(_lineCount).join('\n');
 
-  const remoteIdAttr = session.remoteId != null ? ` data-remote-id="${escapeHtml(session.remoteId)}"` : '';
+  // Prefer deviceId (device_id string from backend) over legacy integer remoteId
+  var _effRemoteId = session.deviceId != null ? session.deviceId : session.remoteId;
+  const remoteIdAttr = _effRemoteId != null ? ` data-remote-id="${escapeHtml(_effRemoteId)}"` : '';
   return (
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
@@ -498,8 +500,10 @@ function buildSidebarHTML(session, currentSession) {
   }
   const lastLines = allLines.slice(-20).join('\n');
 
+  // Prefer deviceId (device_id string from backend) over legacy integer remoteId
+  var _sidebarEffRemoteId = session.deviceId != null ? session.deviceId : (session.remoteId != null ? session.remoteId : '');
   return (
-    `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(session.remoteId != null ? session.remoteId : '')}" tabindex="0" role="listitem">` +
+    `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(_sidebarEffRemoteId)}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
     badgeHtml +
@@ -539,7 +543,7 @@ function getVisibleSessions(sessions) {
   return (sessions || []).filter(function(s) {
     // Skip status entries (unreachable, auth_failed) — rendered separately as status tiles
     if (s.status) return false;
-    if (hidden.length > 0 && hidden.includes(s.name)) {
+    if (hidden.length > 0 && (hidden.includes(s.sessionKey || s.name) || hidden.includes(s.name))) {
       return false;
     }
     return true;
@@ -1227,11 +1231,12 @@ async function openSession(name, opts = {}) {
   if (fab) fab.classList.add('hidden');
 
   // Always spawn ttyd for this session — ensures correct session after service restart or page restore
-  var _remoteId = opts.remoteId != null ? opts.remoteId : '';
+  // _deviceId holds the device_id string (was integer remoteId index in old protocol)
+  var _deviceId = opts.remoteId != null ? opts.remoteId : '';
   try {
-    if (_remoteId !== '') {
+    if (_deviceId !== '') {
       // Remote session: route connect POST through same-origin federation proxy
-      await api('POST', '/api/federation/' + encodeURIComponent(_remoteId) + '/connect/' + encodeURIComponent(name));
+      await api('POST', '/api/federation/' + encodeURIComponent(_deviceId) + '/connect/' + encodeURIComponent(name));
     } else {
       await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/connect');
     }
@@ -1241,18 +1246,18 @@ async function openSession(name, opts = {}) {
   }
 
   // Persist active_remote_id so restoreState() can reopen remote sessions after page refresh
-  api('PATCH', '/api/state', { active_session: name, active_remote_id: _remoteId || null }).catch(function() {});
+  api('PATCH', '/api/state', { active_session: name, active_remote_id: _deviceId || null }).catch(function() {});
 
   // Fire-and-forget bell-clear for remote sessions — acknowledge bells on the remote server
-  if (_remoteId !== '') {
-    api('POST', '/api/federation/' + encodeURIComponent(_remoteId) + '/sessions/' + encodeURIComponent(name) + '/bell/clear').catch(function() {});
+  if (_deviceId !== '') {
+    api('POST', '/api/federation/' + encodeURIComponent(_deviceId) + '/sessions/' + encodeURIComponent(name) + '/bell/clear').catch(function() {});
   }
 
   // Wait for animation to finish (may already be done if /connect was slow)
   await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (window._openTerminal) window._openTerminal(name, _remoteId, getDisplaySettings().fontSize);
+  if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize);
 }
 
 /**
@@ -2087,9 +2092,9 @@ function showFabSessionInput() {
  * @returns {Promise<void>}
  */
 async function createNewSession(name, remoteId) {
-  remoteId = remoteId || '';
+  var deviceId = remoteId || '';  // Accept device_id string (was integer index in old protocol)
   try {
-    var endpoint = remoteId ? '/api/federation/' + encodeURIComponent(remoteId) + '/sessions' : '/api/sessions';
+    var endpoint = deviceId ? '/api/federation/' + encodeURIComponent(deviceId) + '/sessions' : '/api/sessions';
     const res = await api('POST', endpoint, { name });
     const data = await res.json();
     const sessionName = data.name || name;
@@ -2122,8 +2127,8 @@ async function createNewSession(name, remoteId) {
       return;
     }
 
-    // Compute expectedKey: for remote sessions, use 'remoteId:sessionName' (sessionKey format)
-    var expectedKey = remoteId ? (remoteId + ':' + sessionName) : sessionName;
+    // Compute expectedKey: for remote sessions, use 'deviceId:sessionName' (sessionKey format)
+    var expectedKey = deviceId ? (deviceId + ':' + sessionName) : sessionName;
 
     // Poll until the session appears in _currentSessions (max 30s, every 2s)
     var attempts = 0;
@@ -2138,7 +2143,7 @@ async function createNewSession(name, remoteId) {
         clearInterval(pollForSession);
         removeLoadingTile();
         showToast('Session \'' + sessionName + '\' ready');
-        openSession(sessionName, { remoteId: remoteId });
+        openSession(sessionName, { remoteId: deviceId });
       } else if (attempts >= maxAttempts) {
         clearInterval(pollForSession);
         removeLoadingTile();

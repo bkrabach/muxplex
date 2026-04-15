@@ -2580,9 +2580,9 @@ def test_open_session_fires_bell_clear_for_remote() -> None:
     assert "/bell/clear" in body, (
         "openSession must POST to /api/federation/{remoteId}/sessions/{name}/bell/clear"
     )
-    # Must guard bell-clear with a _remoteId !== '' check
-    assert "_remoteId !== ''" in body, (
-        "openSession must guard bell-clear POST with _remoteId !== '' check"
+    # Must guard bell-clear with a _deviceId !== '' check (renamed from _remoteId in task-11)
+    assert "_deviceId !== ''" in body, (
+        "openSession must guard bell-clear POST with _deviceId !== '' check"
     )
 
 
@@ -2769,4 +2769,106 @@ def test_update_favicon_badge_filters_through_visible_sessions() -> None:
     assert "getVisibleSessions" in body, (
         "updateFaviconBadge must filter sessions through getVisibleSessions() "
         "to exclude hidden sessions from the bell activity check"
+    )
+
+
+# ─── Task 11: Frontend — Change Session Key Format to `device_id:name` ────────
+
+
+def test_build_tile_html_prefers_device_id_for_data_remote_id() -> None:
+    """buildTileHTML must use session.deviceId (falling back to session.remoteId) for data-remote-id.
+
+    The backend now sends deviceId (device_id string) alongside remoteId on every session.
+    The tile's data-remote-id must prefer deviceId so the click handler passes the correct
+    device_id to openSession(), enabling federation API calls with the new device_id format.
+    """
+    match = re.search(
+        r"function buildTileHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "buildTileHTML function not found"
+    body = match.group(1)
+    assert "session.deviceId" in body, (
+        "buildTileHTML must use session.deviceId for data-remote-id attribute "
+        "(with fallback to session.remoteId for backward compatibility with old servers)"
+    )
+
+
+def test_build_sidebar_html_prefers_device_id_for_data_remote_id() -> None:
+    """buildSidebarHTML must use session.deviceId (falling back to session.remoteId) for data-remote-id.
+
+    The sidebar click handler reads data-remote-id and passes it to openSession().
+    Must prefer deviceId so federation API calls use the new device_id:name format.
+    """
+    match = re.search(
+        r"function buildSidebarHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "buildSidebarHTML function not found"
+    body = match.group(1)
+    assert "session.deviceId" in body, (
+        "buildSidebarHTML must use session.deviceId for data-remote-id attribute "
+        "(with fallback to session.remoteId for backward compatibility with old servers)"
+    )
+
+
+def test_get_visible_sessions_checks_session_key_in_hidden() -> None:
+    """getVisibleSessions must check sessionKey (as well as name) against the hidden_sessions list.
+
+    hidden_sessions may contain either:
+    - old format: plain session name (e.g. 'dev')
+    - new format: device_id:name key (e.g. 'abc-123:dev')
+
+    Both formats must be matched for backward compatibility.
+    """
+    match = re.search(
+        r"function getVisibleSessions\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "getVisibleSessions function not found"
+    body = match.group(1)
+    assert "sessionKey" in body, (
+        "getVisibleSessions must check s.sessionKey (in addition to s.name) against hidden_sessions "
+        "for backward compatibility: hidden_sessions may contain plain names OR device_id:name keys"
+    )
+
+
+def test_open_session_uses_device_id_variable_for_federation() -> None:
+    """openSession must use _deviceId variable (from opts.remoteId) for federation API calls.
+
+    The local variable _remoteId is renamed to _deviceId to reflect that the value
+    is now a device_id string, not an integer remote instance index.
+    """
+    match = re.search(
+        r"async function openSession\s*\(.*?\)\s*\{(.*?)^\}",
+        _JS,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert match, "openSession function not found"
+    body = match.group(1)
+    assert "_deviceId" in body, (
+        "openSession must use _deviceId variable (assigned from opts.remoteId) "
+        "for federation API URL construction — reflects that the value is now a device_id string"
+    )
+
+
+def test_create_new_session_uses_device_id_variable_internally() -> None:
+    """createNewSession must use a deviceId variable internally for federation endpoint construction.
+
+    The internal variable is renamed from 'remoteId' to 'deviceId' to reflect that
+    the value is now a device_id string (e.g. 'abc-123'), not an integer index.
+    """
+    match = re.search(
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "var deviceId" in body, (
+        "createNewSession must declare 'var deviceId' internally (assigned from the remoteId parameter) "
+        "to reflect that the value is now a device_id string used in federation API URLs"
     )
