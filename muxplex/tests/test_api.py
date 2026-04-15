@@ -227,6 +227,39 @@ def test_patch_state_ignores_unknown_fields(client):
     assert data["session_order"] == ["a", "b"]
 
 
+def test_patch_state_sets_active_view(client):
+    """PATCH /api/state with active_view persists the value.
+
+    Verifies response contains active_view and subsequent GET returns the value.
+    """
+    from muxplex.state import load_state
+
+    # PATCH with a specific active_view value
+    response = client.patch("/api/state", json={"active_view": "my-view"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["active_view"] == "my-view"
+
+    # Verify the value persists via GET
+    get_response = client.get("/api/state")
+    assert get_response.status_code == 200
+    get_data = get_response.json()
+    assert get_data["active_view"] == "my-view"
+
+    # Also verify it was persisted to disk
+    persisted = load_state()
+    assert persisted["active_view"] == "my-view"
+
+
+def test_patch_state_active_view_defaults_to_all(client):
+    """GET /api/state returns active_view='all' by default."""
+    response = client.get("/api/state")
+    assert response.status_code == 200
+    data = response.json()
+    assert "active_view" in data
+    assert data["active_view"] == "all"
+
+
 # ---------------------------------------------------------------------------
 # GET /api/sessions
 # ---------------------------------------------------------------------------

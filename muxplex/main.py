@@ -423,6 +423,7 @@ class StatePatch(BaseModel):
     session_order: list[str] | None = None
     active_session: str | None = None
     active_remote_id: str | None = None
+    active_view: str | None = None
 
 
 class HeartbeatPayload(BaseModel):
@@ -495,6 +496,8 @@ async def patch_state(patch: StatePatch) -> dict:
             state["active_session"] = patch.active_session
         if "active_remote_id" in changed:
             state["active_remote_id"] = patch.active_remote_id
+        if "active_view" in changed:
+            state["active_view"] = patch.active_view
         save_state(state)
         return state
 
