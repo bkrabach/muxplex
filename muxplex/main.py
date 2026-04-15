@@ -71,6 +71,7 @@ from muxplex.settings import (
     load_settings,
     patch_settings,
 )
+from muxplex.identity import load_device_id
 from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
 # ---------------------------------------------------------------------------
@@ -865,16 +866,17 @@ async def put_settings_sync(payload: SettingsSyncPayload):
 
 @app.get("/api/instance-info")
 async def instance_info() -> dict:
-    """Return this instance's display name and version.
+    """Return this instance's display name, device identity, and version.
 
     Public endpoint (no auth required) — used by remote instances to
-    discover peer names and verify reachability.
+    discover peer names, device identity, and verify reachability.
     """
     settings = load_settings()
     # Read fresh so the UI reflects key-file changes without requiring a restart.
     fed_key = load_federation_key()
     return {
         "name": settings["device_name"],
+        "device_id": load_device_id(),
         "version": app.version,
         "federation_enabled": bool(fed_key),
     }

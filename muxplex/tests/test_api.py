@@ -1294,6 +1294,26 @@ def test_instance_info_federation_enabled_true_when_key_exists(
     )
 
 
+def test_instance_info_includes_device_id(client, tmp_path, monkeypatch):
+    """GET /api/instance-info includes device_id as a non-empty string."""
+    import muxplex.identity as identity_mod
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(identity_mod, "IDENTITY_PATH", tmp_path / "identity.json")
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert "device_id" in data, f"Response must include 'device_id' key, got: {data}"
+    assert isinstance(data["device_id"], str), (
+        f"device_id must be a string, got: {type(data['device_id'])}"
+    )
+    assert data["device_id"] != "", (
+        f"device_id must be a non-empty string, got: {data['device_id']!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # POST /api/sessions (create new session)
 # ---------------------------------------------------------------------------
