@@ -972,3 +972,44 @@ def test_apply_synced_settings_does_not_use_time_now():
     apply_synced_settings({"fontSize": 16}, old_ts)
     settings = load_settings()
     assert settings["settings_updated_at"] == old_ts  # exact match, not "close to now"
+
+
+# ============================================================
+# Views key in DEFAULT_SETTINGS and SYNCABLE_KEYS (task-3)
+# ============================================================
+
+
+def test_views_in_default_settings():
+    """DEFAULT_SETTINGS must have 'views' key initialised to []."""
+    assert "views" in DEFAULT_SETTINGS, "DEFAULT_SETTINGS must include 'views'"
+    assert DEFAULT_SETTINGS["views"] == [], (
+        f"views default must be [], got: {DEFAULT_SETTINGS['views']!r}"
+    )
+
+
+def test_views_in_syncable_keys():
+    """SYNCABLE_KEYS must include 'views'."""
+    assert "views" in SYNCABLE_KEYS, "SYNCABLE_KEYS must include 'views'"
+
+
+def test_views_roundtrip_through_save_and_load():
+    """views data with two views containing session arrays survives a save/load cycle."""
+    views_data = [
+        {"name": "Work", "sessions": ["session-a", "session-b"]},
+        {"name": "Personal", "sessions": ["session-c"]},
+    ]
+    save_settings({"views": views_data})
+    result = load_settings()
+    assert result["views"] == views_data, (
+        f"views must survive save/load roundtrip, got: {result['views']!r}"
+    )
+
+
+def test_patch_settings_syncs_views():
+    """patch_settings with 'views' bumps settings_updated_at because views is in SYNCABLE_KEYS."""
+    views_data = [{"name": "Dev", "sessions": ["dev-session"]}]
+    patch_settings({"views": views_data})
+    settings = load_settings()
+    assert settings["settings_updated_at"] > 0, (
+        "settings_updated_at must be > 0 after patching a syncable key (views)"
+    )

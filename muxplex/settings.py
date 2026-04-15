@@ -22,6 +22,7 @@ DEFAULT_SETTINGS: dict = {
     "default_session": None,
     "sort_order": "manual",
     "hidden_sessions": [],
+    "views": [],
     "window_size_largest": False,
     "auto_open_created": True,
     "new_session_template": "tmux new-session -d -s {name}",
@@ -61,6 +62,7 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
         # Session behavior
         "sort_order",
         "hidden_sessions",
+        "views",
         "default_session",
         "window_size_largest",
         "auto_open_created",
