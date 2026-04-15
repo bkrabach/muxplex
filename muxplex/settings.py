@@ -166,11 +166,18 @@ def apply_synced_settings(incoming_settings: dict, incoming_timestamp: float) ->
 
     Only applies keys that are in SYNCABLE_KEYS. Sets settings_updated_at
     to the incoming timestamp (NOT time.time()) to prevent sync loops.
+
+    After applying synced keys, enforces the mutual exclusion invariant:
+    any session key that appears in both hidden_sessions and a view's sessions
+    is removed from hidden_sessions (visibility wins over hiding).
     """
+    from muxplex.views import enforce_mutual_exclusion
+
     current = load_settings()
     for key in SYNCABLE_KEYS:
         if key in incoming_settings:
             current[key] = incoming_settings[key]
+    enforce_mutual_exclusion(current)
     current["settings_updated_at"] = incoming_timestamp
     save_settings(current)
     return current

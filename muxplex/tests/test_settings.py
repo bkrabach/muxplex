@@ -1013,3 +1013,43 @@ def test_patch_settings_syncs_views():
     assert settings["settings_updated_at"] > 0, (
         "settings_updated_at must be > 0 after patching a syncable key (views)"
     )
+
+
+# ============================================================
+# Post-sync mutual exclusion invariant repair (task-7)
+# ============================================================
+
+
+def test_apply_synced_settings_enforces_mutual_exclusion(redirect_settings_path):
+    """apply_synced_settings must call enforce_mutual_exclusion after applying synced keys.
+
+    Pre-populate settings with hidden_sessions=['abc:dev'] and views=[].
+    Apply incoming sync with views=[{'name': 'Work', 'sessions': ['abc:dev']}] and
+    hidden_sessions=['abc:dev'].
+    Assert 'abc:dev' NOT in result['hidden_sessions'] and IS in result['views'][0]['sessions'].
+    """
+    import json
+
+    # Pre-populate settings with hidden_sessions containing 'abc:dev'
+    redirect_settings_path.write_text(
+        json.dumps({"hidden_sessions": ["abc:dev"], "views": []})
+    )
+
+    # Apply incoming sync that has 'abc:dev' in BOTH views and hidden_sessions
+    incoming = {
+        "views": [{"name": "Work", "sessions": ["abc:dev"]}],
+        "hidden_sessions": ["abc:dev"],
+    }
+    result = apply_synced_settings(incoming, 1712600000.0)
+
+    # enforce_mutual_exclusion should remove 'abc:dev' from hidden_sessions
+    # because it now appears in a view's sessions
+    assert "abc:dev" not in result["hidden_sessions"], (
+        f"'abc:dev' must be removed from hidden_sessions after mutual exclusion repair; "
+        f"got hidden_sessions={result['hidden_sessions']!r}"
+    )
+    # 'abc:dev' must still be in the view's sessions
+    assert "abc:dev" in result["views"][0]["sessions"], (
+        f"'abc:dev' must remain in views[0]['sessions'] after mutual exclusion repair; "
+        f"got views={result['views']!r}"
+    )
