@@ -242,7 +242,9 @@ async def _run_poll_cycle() -> None:
                             try:
                                 await _federation_client.post(
                                     bell_clear_url,
-                                    headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+                                    headers={"Authorization": f"Bearer {remote_key}"}
+                                    if remote_key
+                                    else {},
                                 )
                             except Exception as exc:
                                 _log.warning(
@@ -1093,7 +1095,9 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
         async with websockets.connect(
             ws_url,
             subprotocols=[Subprotocol("tty")],
-            additional_headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+            additional_headers={"Authorization": f"Bearer {remote_key}"}
+            if remote_key
+            else {},
             ssl=ssl_context,
         ) as remote_ws:
 
