@@ -762,11 +762,6 @@ function renderGrid(sessions) {
 
   var visible = getVisibleSessions(sessions);
 
-  // In filtered mode, apply device filter
-  if (_gridViewMode === 'filtered' && _activeFilterDevice !== 'all') {
-    visible = visible.filter(function(s) { return s.deviceName === _activeFilterDevice; });
-  }
-
   if (visible.length === 0) {
     // Build status tiles for auth_failed/unreachable sessions even when no regular sessions exist
     var statusTilesHtml = '';
@@ -781,14 +776,7 @@ function renderGrid(sessions) {
       if (statusTilesHtml) emptyState.classList.add('hidden');
       else emptyState.classList.remove('hidden');
     }
-    // Show filter bar even when filtered to empty (so user can switch back)
-    if (filterBar) {
-      if (_gridViewMode === 'filtered') {
-        renderFilterBar(filterBar, sessions);
-      } else {
-        filterBar.innerHTML = '';
-      }
-    }
+    if (filterBar) filterBar.innerHTML = '';
     return;
   }
 
@@ -821,14 +809,8 @@ function renderGrid(sessions) {
   });
   if (grid) grid.innerHTML = html + statusTilesHtml;
 
-  // Render filter bar
-  if (filterBar) {
-    if (_gridViewMode === 'filtered') {
-      renderFilterBar(filterBar, sessions);
-    } else {
-      filterBar.innerHTML = '';
-    }
-  }
+  // Clear filter bar (filtered mode removed; bar is a no-op for flat/grouped)
+  if (filterBar) filterBar.innerHTML = '';
 
   // Bind interaction handlers on each tile
   document.querySelectorAll('.session-tile').forEach(function(tile) {
@@ -1551,7 +1533,10 @@ function applyDisplaySettings(ds) {
  */
 function loadGridViewMode() {
   var ds = getDisplaySettings();
-  return ds.gridViewMode || 'flat';
+  var mode = ds.gridViewMode || 'flat';
+  // 'filtered' was removed in the Views feature — fall back to 'flat'
+  if (mode === 'filtered') mode = 'flat';
+  return mode;
 }
 
 /**
@@ -2482,6 +2467,8 @@ function _getGridViewMode() {
 
 /** Test-only: set _gridViewMode directly. */
 function _setGridViewMode(mode) {
+  // 'filtered' was removed in the Views feature — fall back to 'flat'
+  if (mode === 'filtered') mode = 'flat';
   _gridViewMode = mode;
 }
 

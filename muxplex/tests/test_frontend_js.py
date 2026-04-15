@@ -2872,3 +2872,60 @@ def test_create_new_session_uses_device_id_variable_internally() -> None:
         "createNewSession must declare 'var deviceId' internally (assigned from the remoteId parameter) "
         "to reflect that the value is now a device_id string used in federation API URLs"
     )
+
+
+# ─── Task 12: Remove 'filtered' from gridViewMode options ─────────────────────
+
+
+def test_load_grid_view_mode_guards_filtered_value() -> None:
+    """loadGridViewMode must remap 'filtered' to 'flat' for users who had it set."""
+    match = re.search(
+        r"function loadGridViewMode\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*\*)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "loadGridViewMode function not found"
+    body = match.group(1)
+    assert "filtered" in body, (
+        "loadGridViewMode must guard against 'filtered': "
+        "if (mode === 'filtered') mode = 'flat';  — graceful fallback for existing users"
+    )
+    assert "flat" in body, (
+        "loadGridViewMode must fall back to 'flat' when mode is 'filtered'"
+    )
+
+
+def test_set_grid_view_mode_guards_filtered_value() -> None:
+    """_setGridViewMode (test helper) must remap 'filtered' to 'flat'."""
+    match = re.search(
+        r"function _setGridViewMode\s*\(\w+\)\s*\{(.*?)(?=\n\})",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_setGridViewMode function not found"
+    body = match.group(1)
+    assert "filtered" in body, (
+        "_setGridViewMode must guard against 'filtered': "
+        "if (mode === 'filtered') mode = 'flat';"
+    )
+    assert "flat" in body, "_setGridViewMode must remap 'filtered' to 'flat'"
+
+
+def test_render_grid_no_filtered_mode_check() -> None:
+    """renderGrid must not contain any _gridViewMode === 'filtered' check.
+
+    The 'filtered' gridViewMode has been removed.  All references in renderGrid
+    that branch on _gridViewMode === 'filtered' must be deleted so the filter bar
+    is never rendered and the device-filter logic is never applied.
+    """
+    match = re.search(
+        r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderGrid function not found in app.js"
+    body = match.group(1)
+    assert "'filtered'" not in body and '"filtered"' not in body, (
+        "renderGrid must not check _gridViewMode === 'filtered' — "
+        "the 'filtered' mode has been removed; only 'flat' and 'grouped' remain"
+    )
