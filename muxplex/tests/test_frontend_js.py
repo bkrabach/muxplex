@@ -4181,3 +4181,33 @@ def test_flyout_menu_map_is_const() -> None:
     assert "var FLYOUT_MENU_MAP" not in _JS, (
         "FLYOUT_MENU_MAP must not use 'var' — change to 'const'"
     )
+
+
+# ── Fix B: ARIA role correction in kill confirm sheet (Phase 3 COE re-verification) ──
+
+
+def test_kill_confirm_buttons_use_role_button() -> None:
+    """Kill and Cancel buttons inside the alertdialog must use role='button', not 'menuitem'.
+
+    Fix B: _openMobileKillConfirm() renders buttons inside a role='alertdialog'
+    panel.  The ARIA spec requires buttons inside an alertdialog to carry
+    role='button' (not role='menuitem', which only belongs inside role='menu').
+    """
+    # Negative check: role="menuitem" must NOT appear on the confirm-kill button
+    assert 'data-action="confirm-kill" role="menuitem"' not in _JS, (
+        "Kill button inside alertdialog must not use role='menuitem' — "
+        "use role='button' instead (menuitem is only valid inside role='menu')"
+    )
+    # Negative check: role="menuitem" must NOT appear on the cancel button
+    assert 'data-action="cancel" role="menuitem"' not in _JS, (
+        "Cancel button inside alertdialog must not use role='menuitem' — "
+        "use role='button' instead (menuitem is only valid inside role='menu')"
+    )
+    # Positive check: role="button" must appear on the confirm-kill button
+    assert 'data-action="confirm-kill" role="button"' in _JS, (
+        "Kill button inside alertdialog must use role='button'"
+    )
+    # Positive check: role="button" must appear on the cancel button
+    assert 'data-action="cancel" role="button"' in _JS, (
+        "Cancel button inside alertdialog must use role='button'"
+    )

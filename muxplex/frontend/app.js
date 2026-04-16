@@ -1738,8 +1738,8 @@ function _openMobileKillConfirm(sessionName, remoteId) {
   html += '<div class="flyout-sheet__panel" aria-label="Confirm kill session" role="alertdialog">';
   html += '<div class="flyout-sheet__handle" aria-hidden="true"></div>';
   html += '<div class="flyout-sheet__title">Kill ' + escapeHtml(sessionName) + '?</div>';
-  html += '<button class="flyout-sheet__item flyout-sheet__item--danger" data-action="confirm-kill" role="menuitem">Kill</button>';
-  html += '<button class="flyout-sheet__item" data-action="cancel" role="menuitem">Cancel</button>';
+  html += '<button class="flyout-sheet__item flyout-sheet__item--danger" data-action="confirm-kill" role="button">Kill</button>';
+  html += '<button class="flyout-sheet__item" data-action="cancel" role="button">Cancel</button>';
   html += '</div>';
 
   sheet.innerHTML = html;

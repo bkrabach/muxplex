@@ -2274,3 +2274,38 @@ def test_tile_delete_css_removed() -> None:
         ".tile-delete CSS rules must be removed from style.css — "
         "the button was removed from buildTileHTML; orphaned CSS is dead code"
     )
+
+
+# ── Fix A: .flyout-sheet__title CSS (Phase 3 COE re-verification) ─────────────
+
+
+def test_flyout_sheet_title_css_exists() -> None:
+    """.flyout-sheet__title must have a CSS rule in the flyout-sheet section.
+
+    Fix A: The kill-confirm sheet renders a title div with class
+    `flyout-sheet__title` but the CSS rule was missing, leaving the title
+    as raw unstyled text.
+    """
+    css = read_css()
+    assert ".flyout-sheet__title" in css, (
+        ".flyout-sheet__title CSS rule must exist in style.css — "
+        "the kill-confirm sheet renders a title div with this class"
+    )
+
+
+# ── Fix C: .sidebar-delete orphaned CSS removed (Phase 3 COE re-verification) ──
+
+
+def test_no_sidebar_delete_css() -> None:
+    """.sidebar-delete CSS rules must be removed from style.css (orphaned dead code).
+
+    Fix C: The .sidebar-delete button was removed from buildSidebarHTML() in a
+    previous task.  The 3 CSS rule blocks (.sidebar-delete,
+    .sidebar-item:hover .sidebar-delete, .sidebar-delete:hover) are now dead
+    code and must be cleaned up.
+    """
+    css = read_css()
+    assert ".sidebar-delete" not in css, (
+        ".sidebar-delete CSS rules must be removed from style.css — "
+        "the button was removed from buildSidebarHTML(); orphaned CSS is dead code"
+    )
