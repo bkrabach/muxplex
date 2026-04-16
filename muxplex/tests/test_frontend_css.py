@@ -2136,3 +2136,39 @@ def test_css_sidebar_item_default_left_border() -> None:
         ".sidebar-item must not use transparent for default border-left — "
         "it makes the left edge invisible on dark backgrounds"
     )
+
+
+# ============================================================
+# Header view dropdown styles (task-5)
+# ============================================================
+
+
+def test_view_dropdown_trigger_styled() -> None:
+    """.view-dropdown__trigger must exist in CSS."""
+    css = read_css()
+    assert ".view-dropdown__trigger" in css, (
+        "Missing .view-dropdown__trigger CSS rule in style.css"
+    )
+
+
+def test_view_dropdown_menu_styled() -> None:
+    """.view-dropdown__menu must exist in CSS and be absolutely positioned below trigger."""
+    css = read_css()
+    assert ".view-dropdown__menu" in css, (
+        "Missing .view-dropdown__menu CSS rule in style.css"
+    )
+    block = _extract_rule_block(css, ".view-dropdown__menu {")
+    assert "position: absolute" in block, (
+        ".view-dropdown__menu must use position: absolute"
+    )
+    assert "z-index: 100" in block, (
+        ".view-dropdown__menu must have z-index: 100"
+    )
+
+
+def test_view_dropdown_item_styled() -> None:
+    """.view-dropdown__item must exist in CSS."""
+    css = read_css()
+    assert ".view-dropdown__item" in css, (
+        "Missing .view-dropdown__item CSS rule in style.css"
+    )

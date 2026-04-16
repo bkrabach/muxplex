@@ -1617,6 +1617,142 @@ body {
 }
 
 /* ============================================================
+   View dropdown — header view selector
+   ============================================================ */
+
+.view-dropdown {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-left: 12px;
+}
+
+.view-dropdown__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px 10px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.view-dropdown__trigger:hover,
+.view-dropdown__trigger[aria-expanded="true"] {
+  border-color: var(--border);
+  background: var(--bg-surface);
+}
+
+.view-dropdown__caret {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.view-dropdown__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 200px;
+  max-width: 280px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.view-dropdown__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  width: 100%;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.view-dropdown__item:hover,
+.view-dropdown__item:focus-visible {
+  background: var(--bg-surface);
+  outline: none;
+}
+
+.view-dropdown__item--active {
+  color: var(--accent);
+}
+
+.view-dropdown__item--active::before {
+  content: "\2713";
+  flex-shrink: 0;
+}
+
+.view-dropdown__shortcut {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+
+.view-dropdown__separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-subtle);
+}
+
+.view-dropdown__action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  background: transparent;
+  border: none;
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+}
+
+.view-dropdown__action:hover {
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+.view-dropdown__new-input {
+  width: calc(100% - 24px);
+  margin: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  padding: 4px 8px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.view-dropdown__count {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ============================================================
    Device badge, group header, filter bar, sidebar device header
    ============================================================ */
 
