@@ -1431,6 +1431,21 @@ function renderGrid(sessions) {
     else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
     else if (session.status === 'empty') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
   });
+  // Add Sessions affordance tile — shown in user views only
+  if (_activeView !== 'all' && _activeView !== 'hidden') {
+    var viewsArr = (_serverSettings && _serverSettings.views) || [];
+    var isUserView = false;
+    for (var vi = 0; vi < viewsArr.length; vi++) {
+      if (viewsArr[vi].name === _activeView) { isUserView = true; break; }
+    }
+    if (isUserView) {
+      html += '<button class="add-sessions-tile" onclick="window.MuxplexApp.openAddSessionsPanel()" aria-label="Add sessions to this view">';
+      html += '<span class="add-sessions-tile__icon">+</span>';
+      html += '<span class="add-sessions-tile__label">Add Sessions</span>';
+      html += '</button>';
+    }
+  }
+
   if (grid) grid.innerHTML = html + statusTilesHtml;
 
   // Clear filter bar (filtered mode removed; bar is a no-op for flat/grouped)

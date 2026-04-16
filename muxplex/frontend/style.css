@@ -2494,3 +2494,35 @@ body {
   margin: 4px 0;
   background: var(--border-subtle);
 }
+
+/* —— Add Sessions affordance tile ————————————————————————————————————————— */
+
+.add-sessions-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 120px;
+  background: transparent;
+  border: 2px dashed var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast);
+}
+
+.add-sessions-tile:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.add-sessions-tile__icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.add-sessions-tile__label {
+  font-size: 12px;
+}

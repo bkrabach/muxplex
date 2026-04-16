@@ -3942,3 +3942,14 @@ def test_open_flyout_menu_checks_mobile() -> None:
     assert "isMobile" in fn_body, (
         "openFlyoutMenu must check isMobile() to branch between flyout and sheet"
     )
+
+
+# ─── Task 11: Add Sessions entry point in grid ───────────────────────────────
+
+
+def test_render_grid_has_add_sessions_affordance() -> None:
+    """renderGrid must include an 'Add Sessions' affordance when in a user view."""
+    fn_body = _JS.split("function renderGrid")[1].split("\nfunction ")[0]
+    assert "add-sessions" in fn_body.lower() or "openAddSessionsPanel" in fn_body, (
+        "renderGrid must render an 'Add Sessions' affordance for user views"
+    )
