@@ -195,19 +195,16 @@ def test_html_reconnect_overlay_outside_view_body() -> None:
 
 
 def test_html_session_sidebar_structure() -> None:
-    """#session-sidebar must contain .sidebar-header (with .sidebar-title and #sidebar-collapse-btn) and #sidebar-list."""
+    """#session-sidebar must contain .sidebar-header (with #sidebar-view-dropdown and #sidebar-collapse-btn) and #sidebar-list."""
     soup = _SOUP
     sidebar = soup.find(id="session-sidebar")
     assert sidebar is not None, "Missing #session-sidebar"
     # .sidebar-header
     sidebar_header = sidebar.find(class_="sidebar-header")
     assert sidebar_header is not None, "Missing .sidebar-header inside #session-sidebar"
-    # .sidebar-title with text 'Sessions'
-    sidebar_title = sidebar_header.find(class_="sidebar-title")
-    assert sidebar_title is not None, "Missing .sidebar-title inside .sidebar-header"
-    assert "Sessions" in sidebar_title.get_text(), (
-        f".sidebar-title text must contain 'Sessions', got: {sidebar_title.get_text()!r}"
-    )
+    # #sidebar-view-dropdown (replaces old .sidebar-title)
+    sidebar_dropdown = sidebar_header.find(id="sidebar-view-dropdown")
+    assert sidebar_dropdown is not None, "Missing #sidebar-view-dropdown inside .sidebar-header"
     # #sidebar-collapse-btn
     collapse_btn = sidebar_header.find(id="sidebar-collapse-btn")
     assert collapse_btn is not None, (
@@ -1501,3 +1498,25 @@ def test_settings_has_views_panel() -> None:
     # Must contain the empty message element
     empty_msg = panel.find(id="views-settings-empty")
     assert empty_msg is not None, "Missing #views-settings-empty inside views panel"
+
+
+# ============================================================
+# Sidebar View Switcher (task-10)
+# ============================================================
+
+
+def test_sidebar_view_dropdown_exists() -> None:
+    """#sidebar-view-dropdown-trigger must exist in the sidebar header."""
+    soup = _SOUP
+    trigger = soup.find(id="sidebar-view-dropdown-trigger")
+    assert trigger is not None, "Missing #sidebar-view-dropdown-trigger"
+    assert trigger.name == "button", (
+        f"#sidebar-view-dropdown-trigger must be a <button>, got: {trigger.name}"
+    )
+
+
+def test_sidebar_view_dropdown_menu_exists() -> None:
+    """#sidebar-view-dropdown-menu must exist in the sidebar header."""
+    soup = _SOUP
+    menu = soup.find(id="sidebar-view-dropdown-menu")
+    assert menu is not None, "Missing #sidebar-view-dropdown-menu"

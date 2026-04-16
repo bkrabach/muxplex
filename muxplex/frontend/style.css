@@ -487,6 +487,41 @@ body {
   color: var(--text-muted);
 }
 
+/* Sidebar view switcher dropdown */
+.sidebar-view-dropdown {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-view-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sidebar-view-trigger:hover {
+  color: var(--accent);
+}
+
+#sidebar-view-dropdown-menu {
+  left: 0;
+  top: calc(100% + 2px);
+  min-width: 180px;
+}
+
 .sidebar-list {
   flex: 1;
   overflow-y: auto;

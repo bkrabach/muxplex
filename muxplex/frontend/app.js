@@ -899,6 +899,62 @@ function closeViewDropdown() {
 }
 
 /**
+ * Render the sidebar view dropdown menu (same data as the header dropdown,
+ * but no action buttons — navigation only).
+ */
+function renderSidebarViewDropdown() {
+  var menu = $('sidebar-view-dropdown-menu');
+  if (!menu) return;
+
+  var views = (_serverSettings && _serverSettings.views) || [];
+  var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  var hiddenCount = hidden.length;
+
+  var html = '';
+
+  // — All Sessions (always first)
+  var allActive = _activeView === 'all' ? ' view-dropdown-item--active' : '';
+  html += '<button class="view-dropdown-item' + allActive + '" data-view="all"><span class="view-dropdown-shortcut">1</span> All Sessions</button>';
+
+  // — User views
+  if (views.length > 0) {
+    html += '<div class="view-dropdown-separator"></div>';
+    for (var i = 0; i < views.length && i < 7; i++) {
+      var v = views[i];
+      var vActive = _activeView === v.name ? ' view-dropdown-item--active' : '';
+      html += '<button class="view-dropdown-item' + vActive + '" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown-shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
+    }
+  }
+
+  // — Hidden (N) (always last system view)
+  html += '<div class="view-dropdown-separator"></div>';
+  var hiddenActive = _activeView === 'hidden' ? ' view-dropdown-item--active' : '';
+  html += '<button class="view-dropdown-item' + hiddenActive + '" data-view="hidden"><span class="view-dropdown-shortcut">9</span> Hidden <span class="view-dropdown-badge">' + hiddenCount + '</span></button>';
+
+  menu.innerHTML = html;
+}
+
+/**
+ * Toggle the sidebar view dropdown open/closed.
+ * Calls renderSidebarViewDropdown() when opening to ensure fresh content.
+ */
+function toggleSidebarViewDropdown() {
+  var menu = $('sidebar-view-dropdown-menu');
+  var trigger = $('sidebar-view-dropdown-trigger');
+  if (!menu) return;
+
+  var isOpen = !menu.classList.contains('hidden');
+  if (isOpen) {
+    menu.classList.add('hidden');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  } else {
+    menu.classList.remove('hidden');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    renderSidebarViewDropdown();
+  }
+}
+
+/**
  * Show an inline text input inside the view dropdown for creating a new view.
  * Replaces the '+ New View' button with a text input inside the dropdown menu.
  * - Removes any existing input and re-focuses it if already present.
@@ -1235,6 +1291,17 @@ function switchView(viewName) {
   renderGrid(_currentSessions || []);
   renderSidebar(_currentSessions || [], _viewingSession);
   renderViewDropdown();
+  // Update sidebar view label to match the active view
+  var sidebarLabel = $('sidebar-view-label');
+  if (sidebarLabel) {
+    if (viewName === 'all') {
+      sidebarLabel.textContent = 'All Sessions';
+    } else if (viewName === 'hidden') {
+      sidebarLabel.textContent = 'Hidden';
+    } else {
+      sidebarLabel.textContent = viewName;
+    }
+  }
   // Persist active view — fire and forget
   api('PATCH', '/api/state', { active_view: viewName }).catch(function() {});
 }
@@ -2777,6 +2844,23 @@ function bindStaticEventListeners() {
     });
   }
 
+  // Sidebar view dropdown — trigger opens/closes, delegated item clicks switch view
+  var sidebarViewTrigger = $('sidebar-view-dropdown-trigger');
+  if (sidebarViewTrigger) on(sidebarViewTrigger, 'click', toggleSidebarViewDropdown);
+
+  var sidebarViewMenu = $('sidebar-view-dropdown-menu');
+  if (sidebarViewMenu) {
+    sidebarViewMenu.addEventListener('click', function(e) {
+      var item = e.target.closest('[data-view]');
+      if (item) {
+        switchView(item.dataset.view);
+        // Close sidebar dropdown after selection
+        sidebarViewMenu.classList.add('hidden');
+        if (sidebarViewTrigger) sidebarViewTrigger.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
   // Click-outside closes the dropdown
   document.addEventListener('click', function(e) {
     var dropdown = $('view-dropdown-menu');
@@ -3204,6 +3288,9 @@ if (typeof module !== 'undefined' && module.exports) {
     closeViewDropdown,
     showNewViewInput,
     switchView,
+    // Sidebar view dropdown
+    renderSidebarViewDropdown,
+    toggleSidebarViewDropdown,
     // Manage Views settings tab
     renderViewsSettingsTab,
     _saveViewsAndRerender,

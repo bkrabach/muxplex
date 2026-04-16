@@ -49,7 +49,13 @@
     <div class="view-body">
       <div id="session-sidebar" class="session-sidebar">
         <div class="sidebar-header">
-          <span class="sidebar-title">Sessions</span>
+          <div class="sidebar-view-dropdown" id="sidebar-view-dropdown">
+            <button id="sidebar-view-dropdown-trigger" class="sidebar-view-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="sidebar-view-dropdown-menu">
+              <span id="sidebar-view-label">All Sessions</span>
+              <span class="view-dropdown__caret" aria-hidden="true">&#9662;</span>
+            </button>
+            <div id="sidebar-view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
+          </div>
           <button id="sidebar-collapse-btn" class="sidebar-collapse-btn" aria-label="Collapse session list">&#8249;</button>
         </div>
         <div id="sidebar-list" class="sidebar-list"></div>
