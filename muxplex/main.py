@@ -485,7 +485,7 @@ async def patch_state(patch: StatePatch) -> dict:
 
     Only fields explicitly included in the request body are updated;
     omitted fields are left unchanged. Supports: session_order,
-    active_session, active_remote_id.
+    active_session, active_remote_id, active_view.
     """
     async with state_lock:
         state = load_state()
