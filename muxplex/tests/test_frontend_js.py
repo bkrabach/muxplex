@@ -3247,3 +3247,431 @@ def test_no_active_filter_device_in_render_grid() -> None:
     assert "_activeFilterDevice" not in body, (
         "renderGrid must not reference _activeFilterDevice (filtered mode removed)"
     )
+
+
+# ============================================================
+# Phase 2 COE verification findings
+# ============================================================
+
+
+# ─── Fix 1: CSS/JS class name mismatch (BEM) ─────────────────────────────────
+
+
+def test_render_view_dropdown_uses_bem_item_class() -> None:
+    """renderViewDropdown must use BEM class 'view-dropdown__item' (not 'view-dropdown-item')."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__item" in body, (
+        "renderViewDropdown must use BEM class 'view-dropdown__item'"
+    )
+
+
+def test_render_view_dropdown_no_single_hyphen_item_class() -> None:
+    """renderViewDropdown must NOT use single-hyphen 'view-dropdown-item'."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    # Should not have the old single-hyphen class; allow only '--active' modifiers via '__'
+    import re as _re
+    bad_matches = _re.findall(r'"view-dropdown-item(?!--active)', body)
+    assert not bad_matches, (
+        "renderViewDropdown must not use single-hyphen 'view-dropdown-item' class (use BEM 'view-dropdown__item')"
+    )
+
+
+def test_render_view_dropdown_uses_bem_separator_class() -> None:
+    """renderViewDropdown must use BEM class 'view-dropdown__separator'."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__separator" in body, (
+        "renderViewDropdown must use BEM class 'view-dropdown__separator'"
+    )
+
+
+def test_render_view_dropdown_uses_bem_action_class() -> None:
+    """renderViewDropdown must use BEM class 'view-dropdown__action'."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__action" in body, (
+        "renderViewDropdown must use BEM class 'view-dropdown__action'"
+    )
+
+
+def test_render_view_dropdown_uses_bem_count_class() -> None:
+    """renderViewDropdown must use BEM class 'view-dropdown__count' (not 'view-dropdown-badge')."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__count" in body, (
+        "renderViewDropdown must use BEM class 'view-dropdown__count' (was 'view-dropdown-badge')"
+    )
+    assert "view-dropdown-badge" not in body, (
+        "renderViewDropdown must not use old 'view-dropdown-badge' class"
+    )
+
+
+def test_render_sidebar_view_dropdown_uses_bem_item_class() -> None:
+    """renderSidebarViewDropdown must use BEM class 'view-dropdown__item'."""
+    match = re.search(
+        r"function renderSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebarViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__item" in body, (
+        "renderSidebarViewDropdown must use BEM class 'view-dropdown__item'"
+    )
+
+
+def test_render_sidebar_view_dropdown_no_single_hyphen_item_class() -> None:
+    """renderSidebarViewDropdown must NOT use single-hyphen 'view-dropdown-item'."""
+    match = re.search(
+        r"function renderSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebarViewDropdown function not found"
+    body = match.group(1)
+    import re as _re
+    bad_matches = _re.findall(r'"view-dropdown-item(?!--active)', body)
+    assert not bad_matches, (
+        "renderSidebarViewDropdown must not use single-hyphen 'view-dropdown-item' class"
+    )
+
+
+def test_render_sidebar_view_dropdown_uses_bem_count_class() -> None:
+    """renderSidebarViewDropdown must use BEM class 'view-dropdown__count'."""
+    match = re.search(
+        r"function renderSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebarViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__count" in body, (
+        "renderSidebarViewDropdown must use BEM class 'view-dropdown__count'"
+    )
+    assert "view-dropdown-badge" not in body, (
+        "renderSidebarViewDropdown must not use old 'view-dropdown-badge' class"
+    )
+
+
+# ─── Fix 2: role="menuitem" on dropdown buttons ──────────────────────────────
+
+
+def test_render_view_dropdown_buttons_have_role_menuitem() -> None:
+    """renderViewDropdown must add role='menuitem' to every button it renders."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert 'role="menuitem"' in body, (
+        "renderViewDropdown must include role=\"menuitem\" on buttons — "
+        "handleGlobalKeydown arrow navigation queries [role='menuitem']"
+    )
+
+
+def test_render_sidebar_view_dropdown_buttons_have_role_menuitem() -> None:
+    """renderSidebarViewDropdown must add role='menuitem' to every button it renders."""
+    match = re.search(
+        r"function renderSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebarViewDropdown function not found"
+    body = match.group(1)
+    assert 'role="menuitem"' in body, (
+        "renderSidebarViewDropdown must include role=\"menuitem\" on buttons"
+    )
+
+
+# ─── Fix 3: sidebar dropdown uses position:fixed ────────────────────────────
+
+
+def test_toggle_sidebar_view_dropdown_positions_with_bounding_rect() -> None:
+    """toggleSidebarViewDropdown must use getBoundingClientRect when opening."""
+    match = re.search(
+        r"function toggleSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "toggleSidebarViewDropdown function not found"
+    body = match.group(1)
+    assert "getBoundingClientRect" in body, (
+        "toggleSidebarViewDropdown must use getBoundingClientRect() to position "
+        "the menu when opening — sidebar has overflow:hidden which clips absolute children"
+    )
+
+
+# ─── Fix 4: manage-views handler opens settings ──────────────────────────────
+
+
+def test_manage_views_action_opens_settings() -> None:
+    """bindStaticEventListeners manage-views handler must call openSettings()."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    # The manage-views action must do more than just close the dropdown
+    # Find the section near 'manage-views'
+    assert "manage-views" in body, "bindStaticEventListeners must handle manage-views action"
+    # After manage-views, openSettings must be called
+    idx = body.find("manage-views")
+    nearby = body[idx : idx + 200]
+    assert "openSettings" in nearby, (
+        "bindStaticEventListeners manage-views handler must call openSettings()"
+    )
+
+
+def test_manage_views_action_switches_to_views_tab() -> None:
+    """bindStaticEventListeners manage-views handler must call switchSettingsTab('views')."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    idx = body.find("manage-views")
+    assert idx >= 0, "manage-views action not found in bindStaticEventListeners"
+    nearby = body[idx : idx + 300]
+    assert "switchSettingsTab" in nearby, (
+        "bindStaticEventListeners manage-views handler must call switchSettingsTab"
+    )
+    assert "'views'" in nearby or '"views"' in nearby, (
+        "bindStaticEventListeners manage-views handler must switch to 'views' tab"
+    )
+
+
+# ─── Fix 5: active_view persisted on delete/rename ───────────────────────────
+
+
+def test_delete_active_view_persists_active_view_to_server() -> None:
+    """When deleting the active view in renderViewsSettingsTab, PATCH /api/state with active_view."""
+    match = re.search(
+        r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewsSettingsTab function not found"
+    body = match.group(1)
+    # Find the section that sets _activeView = 'all' (the delete fallback path)
+    fallback_idx = body.find("_activeView = 'all'")
+    assert fallback_idx >= 0, "_activeView = 'all' fallback not found in renderViewsSettingsTab"
+    # Within ~200 chars after the fallback, there must be an api( call for persistence
+    nearby = body[fallback_idx : fallback_idx + 200]
+    assert "api(" in nearby, (
+        "renderViewsSettingsTab delete path must call api() immediately after setting _activeView = 'all'"
+    )
+    assert "active_view" in nearby, (
+        "renderViewsSettingsTab delete path must PATCH /api/state with active_view"
+    )
+
+
+def test_rename_active_view_persists_active_view_to_server() -> None:
+    """When renaming the active view in renderViewsSettingsTab, PATCH /api/state with active_view."""
+    match = re.search(
+        r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewsSettingsTab function not found"
+    body = match.group(1)
+    # Find the commitRename block or rename path
+    rename_idx = body.find("commitRename")
+    assert rename_idx >= 0, "commitRename not found in renderViewsSettingsTab"
+    rename_block = body[rename_idx:]
+    assert "api(" in rename_block, (
+        "renderViewsSettingsTab rename path must call api() to persist active_view"
+    )
+    assert "active_view" in rename_block, (
+        "renderViewsSettingsTab rename path must PATCH /api/state with active_view"
+    )
+
+
+# ─── Fix 6: click-outside handler for sidebar dropdown ───────────────────────
+
+
+def test_bind_static_event_listeners_has_sidebar_dropdown_click_outside() -> None:
+    """bindStaticEventListeners must have a click-outside handler for sidebar-view-dropdown-menu."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    # There must be a document click listener that references the sidebar dropdown menu
+    # and closes it when clicking outside
+    assert "sidebar-view-dropdown-menu" in body, (
+        "bindStaticEventListeners must reference sidebar-view-dropdown-menu"
+    )
+    # The click-outside pattern: document.addEventListener click that checks sidebar dropdown
+    # We verify that sidebar dropdown is handled in a click listener beyond the direct click handler
+    click_count = body.count("document.addEventListener('click'")
+    assert click_count >= 2, (
+        "bindStaticEventListeners must have at least 2 document click listeners: "
+        "one for header dropdown click-outside and one for sidebar dropdown click-outside"
+    )
+
+
+# ─── Fix 7: case-insensitive reserved name check ─────────────────────────────
+
+
+def test_show_new_view_input_reserved_name_check_is_case_insensitive() -> None:
+    """showNewViewInput reserved name check must use toLowerCase()."""
+    match = re.search(
+        r"function showNewViewInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewViewInput function not found"
+    body = match.group(1)
+    # Must use toLowerCase for reserved name check
+    assert "toLowerCase" in body, (
+        "showNewViewInput reserved name check must use toLowerCase() — spec requires case-insensitive check"
+    )
+
+
+def test_rename_reserved_name_check_is_case_insensitive() -> None:
+    """The rename commitRename reserved name check must use toLowerCase()."""
+    match = re.search(
+        r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewsSettingsTab function not found"
+    body = match.group(1)
+    rename_idx = body.find("commitRename")
+    assert rename_idx >= 0, "commitRename not found in renderViewsSettingsTab"
+    rename_block = body[rename_idx:]
+    assert "toLowerCase" in rename_block, (
+        "commitRename reserved name check must use toLowerCase() — spec requires case-insensitive"
+    )
+
+
+# ─── Fix 8: rename input maxLength ───────────────────────────────────────────
+
+
+def test_rename_input_has_max_length() -> None:
+    """renderViewsSettingsTab rename input must have maxLength = 30."""
+    match = re.search(
+        r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewsSettingsTab function not found"
+    body = match.group(1)
+    rename_idx = body.find("views-settings-rename-input")
+    assert rename_idx >= 0, "rename input not found in renderViewsSettingsTab"
+    rename_block = body[rename_idx : rename_idx + 400]
+    assert "maxLength" in rename_block, (
+        "renderViewsSettingsTab rename input must set maxLength = 30 "
+        "(matches creation input constraint)"
+    )
+
+
+# ─── Fix 9: device_id from /api/instance-info ────────────────────────────────
+
+
+def test_local_device_id_variable_declared() -> None:
+    """_localDeviceId module-level variable must be declared."""
+    assert "_localDeviceId" in _JS, (
+        "_localDeviceId must be declared as a module-level variable — "
+        "used by createNewSession for local session key construction"
+    )
+
+
+def test_instance_info_fetched_at_startup() -> None:
+    """DOMContentLoaded or init code must fetch /api/instance-info to cache device_id."""
+    match = re.search(
+        r"DOMContentLoaded.*?\{(.*?)(?=\}\);\s*\n// |\}\);\s*$)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "DOMContentLoaded handler not found"
+    body = match.group(1)
+    assert "instance-info" in body or "/api/instance-info" in body, (
+        "DOMContentLoaded must fetch /api/instance-info to cache device_id in _localDeviceId"
+    )
+
+
+def test_create_new_session_uses_local_device_id() -> None:
+    """createNewSession must use _localDeviceId (not _serverSettings.device_id) for local sessions."""
+    match = re.search(
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "_localDeviceId" in body, (
+        "createNewSession must use _localDeviceId — device_id is not in /api/settings response"
+    )
+    assert "_serverSettings.device_id" not in body, (
+        "createNewSession must not use _serverSettings.device_id — device_id comes from /api/instance-info"
+    )
+
+
+# ─── Fix 10: dead code removal (renderFilterBar and filter bar click handler) ─
+
+
+def test_render_filter_bar_body_is_empty() -> None:
+    """renderFilterBar function body must be empty (dead code)."""
+    match = re.search(
+        r"function renderFilterBar\s*\(.*?\)\s*\{(.*?)(?=\n\})",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderFilterBar function not found"
+    body = match.group(1).strip()
+    assert body == "" or body == "// dead code" or body.startswith("//"), (
+        "renderFilterBar body must be empty (dead code removed) — "
+        f"but found content: {body[:80]!r}"
+    )
+
+
+def test_bind_static_event_listeners_no_filter_bar_click_handler() -> None:
+    """bindStaticEventListeners must not contain the dead filter-bar click handler."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    # The filter bar click handler used to set _activeFilterDevice
+    assert "_activeFilterDevice = pill.dataset.device" not in body, (
+        "bindStaticEventListeners must not contain the dead filter-bar click handler "
+        "that sets _activeFilterDevice"
+    )

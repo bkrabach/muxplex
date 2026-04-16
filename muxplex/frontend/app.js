@@ -138,6 +138,7 @@ let _serverSettings = null;
 let _gridViewMode = 'flat';
 let _activeFilterDevice = 'all';
 let _activeView = 'all';
+let _localDeviceId = null;
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
   hoverPreviewDelay: 1500,
@@ -784,27 +785,7 @@ function renderGroupedGrid(sessions, mobile) {
  * @param {Array} allSessions - Full (unfiltered) session list used to derive device names.
  */
 function renderFilterBar(container, allSessions) {
-  allSessions = allSessions || [];
-  // Collect unique device names preserving insertion order
-  var devices = [];
-  var seen = {};
-  for (var i = 0; i < allSessions.length; i++) {
-    var dn = allSessions[i].deviceName || 'Unknown';
-    if (!seen[dn]) {
-      seen[dn] = true;
-      devices.push(dn);
-    }
-  }
-
-  // Build HTML: 'All' pill first, then one pill per device
-  var allActive = _activeFilterDevice === 'all' ? ' filter-pill--active' : '';
-  var html = '<button class="filter-pill' + allActive + '" data-device="all">All</button>';
-  for (var j = 0; j < devices.length; j++) {
-    var active = _activeFilterDevice === devices[j] ? ' filter-pill--active' : '';
-    html += '<button class="filter-pill' + active + '" data-device="' + escapeHtml(devices[j]) + '">' + escapeHtml(devices[j]) + '</button>';
-  }
-
-  container.innerHTML = html;
+  // Dead code: filter bar replaced by Views feature. Kept as empty stub for export compatibility.
 }
 
 // ---------------------------------------------------------------------------
@@ -826,28 +807,28 @@ function renderViewDropdown() {
   var html = '';
 
   // — All Sessions (always first, shortcut 1)
-  var allActive = _activeView === 'all' ? ' view-dropdown-item--active' : '';
-  html += '<button class="view-dropdown-item' + allActive + '" data-view="all"><span class="view-dropdown-shortcut">1</span> All Sessions</button>';
+  var allActive = _activeView === 'all' ? ' view-dropdown__item--active' : '';
+  html += '<button class="view-dropdown__item' + allActive + '" role="menuitem" data-view="all"><span class="view-dropdown__shortcut">1</span> All Sessions</button>';
 
   // — User views (shortcuts 2–8)
   if (views.length > 0) {
-    html += '<div class="view-dropdown-separator"></div>';
+    html += '<div class="view-dropdown__separator"></div>';
     for (var i = 0; i < views.length && i < 7; i++) {
       var v = views[i];
-      var vActive = _activeView === v.name ? ' view-dropdown-item--active' : '';
-      html += '<button class="view-dropdown-item' + vActive + '" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown-shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
+      var vActive = _activeView === v.name ? ' view-dropdown__item--active' : '';
+      html += '<button class="view-dropdown__item' + vActive + '" role="menuitem" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown__shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
     }
   }
 
   // — Hidden (N) (always last system view, shortcut 9)
-  html += '<div class="view-dropdown-separator"></div>';
-  var hiddenActive = _activeView === 'hidden' ? ' view-dropdown-item--active' : '';
-  html += '<button class="view-dropdown-item' + hiddenActive + '" data-view="hidden"><span class="view-dropdown-shortcut">9</span> Hidden <span class="view-dropdown-badge">' + hiddenCount + '</span></button>';
+  html += '<div class="view-dropdown__separator"></div>';
+  var hiddenActive = _activeView === 'hidden' ? ' view-dropdown__item--active' : '';
+  html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden"><span class="view-dropdown__shortcut">9</span> Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
 
   // — Actions
-  html += '<div class="view-dropdown-separator"></div>';
-  html += '<button class="view-dropdown-item view-dropdown-action" data-action="new-view">+ New View</button>';
-  html += '<button class="view-dropdown-item view-dropdown-action" data-action="manage-views">Manage Views\u2026</button>';
+  html += '<div class="view-dropdown__separator"></div>';
+  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="new-view">+ New View</button>';
+  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-views">Manage Views\u2026</button>';
 
   menu.innerHTML = html;
 
@@ -913,23 +894,23 @@ function renderSidebarViewDropdown() {
   var html = '';
 
   // — All Sessions (always first)
-  var allActive = _activeView === 'all' ? ' view-dropdown-item--active' : '';
-  html += '<button class="view-dropdown-item' + allActive + '" data-view="all"><span class="view-dropdown-shortcut">1</span> All Sessions</button>';
+  var allActive = _activeView === 'all' ? ' view-dropdown__item--active' : '';
+  html += '<button class="view-dropdown__item' + allActive + '" role="menuitem" data-view="all"><span class="view-dropdown__shortcut">1</span> All Sessions</button>';
 
   // — User views
   if (views.length > 0) {
-    html += '<div class="view-dropdown-separator"></div>';
+    html += '<div class="view-dropdown__separator"></div>';
     for (var i = 0; i < views.length && i < 7; i++) {
       var v = views[i];
-      var vActive = _activeView === v.name ? ' view-dropdown-item--active' : '';
-      html += '<button class="view-dropdown-item' + vActive + '" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown-shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
+      var vActive = _activeView === v.name ? ' view-dropdown__item--active' : '';
+      html += '<button class="view-dropdown__item' + vActive + '" role="menuitem" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown__shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
     }
   }
 
   // — Hidden (N) (always last system view)
-  html += '<div class="view-dropdown-separator"></div>';
-  var hiddenActive = _activeView === 'hidden' ? ' view-dropdown-item--active' : '';
-  html += '<button class="view-dropdown-item' + hiddenActive + '" data-view="hidden"><span class="view-dropdown-shortcut">9</span> Hidden <span class="view-dropdown-badge">' + hiddenCount + '</span></button>';
+  html += '<div class="view-dropdown__separator"></div>';
+  var hiddenActive = _activeView === 'hidden' ? ' view-dropdown__item--active' : '';
+  html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden"><span class="view-dropdown__shortcut">9</span> Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
 
   menu.innerHTML = html;
 }
@@ -948,6 +929,12 @@ function toggleSidebarViewDropdown() {
     menu.classList.add('hidden');
     if (trigger) trigger.setAttribute('aria-expanded', 'false');
   } else {
+    // Position with fixed coordinates to escape sidebar overflow:hidden clipping
+    if (trigger) {
+      var rect = trigger.getBoundingClientRect();
+      menu.style.top = (rect.bottom + 2) + 'px';
+      menu.style.left = rect.left + 'px';
+    }
     menu.classList.remove('hidden');
     if (trigger) trigger.setAttribute('aria-expanded', 'true');
     renderSidebarViewDropdown();
@@ -998,8 +985,8 @@ function showNewViewInput() {
       // Validate: not empty
       if (!name) return;
 
-      // Validate: not reserved
-      if (name === 'all' || name === 'hidden') {
+      // Validate: not reserved (case-insensitive)
+      if (name.toLowerCase() === 'all' || name.toLowerCase() === 'hidden') {
         showToast('Cannot use reserved name \'' + name + '\'');
         return;
       }
@@ -1204,6 +1191,7 @@ function renderViewsSettingsTab() {
       // If deleting the active view, fall back to 'all'
       if (_activeView === views[idx].name) {
         _activeView = 'all';
+        api('PATCH', '/api/state', { active_view: _activeView }).catch(function() {});
       }
       _saveViewsAndRerender(updated);
       return;
@@ -1227,6 +1215,7 @@ function renderViewsSettingsTab() {
       input.type = 'text';
       input.className = 'views-settings-rename-input';
       input.value = currentName;
+      input.maxLength = 30;
       target.parentNode.replaceChild(input, target);
       input.focus();
       input.select();
@@ -1239,8 +1228,8 @@ function renderViewsSettingsTab() {
           renderViewsSettingsTab();
           return;
         }
-        // Validate: not reserved
-        if (newName === 'all' || newName === 'hidden') {
+        // Validate: not reserved (case-insensitive)
+        if (newName.toLowerCase() === 'all' || newName.toLowerCase() === 'hidden') {
           showToast('Cannot use reserved name \'' + newName + '\'');
           renderViewsSettingsTab();
           return;
@@ -1260,6 +1249,7 @@ function renderViewsSettingsTab() {
         // If this was the active view, update _activeView
         if (_activeView === currentName) {
           _activeView = newName;
+          api('PATCH', '/api/state', { active_view: _activeView }).catch(function() {});
         }
         _saveViewsAndRerender(updated);
       }
@@ -2684,8 +2674,8 @@ async function createNewSession(name, remoteId) {
       }
       if (viewIdx >= 0) {
         var newSessionKey = remoteId ? (remoteId + ':' + sessionName) : sessionName;
-        if (!remoteId && _serverSettings && _serverSettings.device_id) {
-          newSessionKey = _serverSettings.device_id + ':' + sessionName;
+        if (!remoteId && _localDeviceId) {
+          newSessionKey = _localDeviceId + ':' + sessionName;
         }
         var updatedViews = JSON.parse(JSON.stringify(views));
         if (!updatedViews[viewIdx].sessions.includes(newSessionKey)) {
@@ -2816,6 +2806,10 @@ function bindStaticEventListeners() {
       if (action) {
         if (action.dataset.action === 'new-view') {
           showNewViewInput();
+        } else if (action.dataset.action === 'manage-views') {
+          closeViewDropdown();
+          openSettings();
+          switchSettingsTab('views');
         } else {
           closeViewDropdown();
         }
@@ -2840,13 +2834,25 @@ function bindStaticEventListeners() {
     });
   }
 
-  // Click-outside closes the dropdown
+  // Click-outside closes the header view dropdown
   document.addEventListener('click', function(e) {
     var dropdown = $('view-dropdown-menu');
     if (!dropdown || dropdown.classList.contains('hidden')) return;
     var trigger = $('view-dropdown-trigger');
     if (trigger && trigger.contains(e.target)) return;
     if (!dropdown.contains(e.target)) closeViewDropdown();
+  });
+
+  // Click-outside closes the sidebar view dropdown
+  document.addEventListener('click', function(e) {
+    var sidebarDropdown = $('sidebar-view-dropdown-menu');
+    if (!sidebarDropdown || sidebarDropdown.classList.contains('hidden')) return;
+    var sidebarTrigger = $('sidebar-view-dropdown-trigger');
+    if (sidebarTrigger && sidebarTrigger.contains(e.target)) return;
+    if (!sidebarDropdown.contains(e.target)) {
+      sidebarDropdown.classList.add('hidden');
+      if (sidebarTrigger) sidebarTrigger.setAttribute('aria-expanded', 'false');
+    }
   });
 
   var newSessionBtn = $('new-session-btn');
@@ -3060,17 +3066,6 @@ function bindStaticEventListeners() {
     });
   }
 
-  // Filter bar — delegated click handler (pills are re-rendered each poll)
-  var filterBarEl = $('filter-bar');
-  if (filterBarEl) {
-    filterBarEl.addEventListener('click', function(e) {
-      var pill = e.target.closest && e.target.closest('.filter-pill');
-      if (!pill) return;
-      _activeFilterDevice = pill.dataset.device || 'all';
-      renderGrid(_currentSessions || []);
-    });
-  }
-
   // Commands tab — delete template textarea with 500ms debounce
   var _deleteTemplateDebounceTimer;
   on($('setting-delete-template'), 'input', function() {
@@ -3148,6 +3143,13 @@ document.addEventListener('DOMContentLoaded', async function() {
 
   // Load ALL settings (now includes display + sidebar) before first render
   await loadServerSettings();
+
+  // Cache local device_id from /api/instance-info for session key construction
+  api('GET', '/api/instance-info').then(function(res) {
+    return res.json();
+  }).then(function(info) {
+    if (info && info.device_id) _localDeviceId = info.device_id;
+  }).catch(function() { /* non-critical — local session key falls back to plain name */ });
 
   var _initDs = getDisplaySettings();
   applyDisplaySettings(_initDs);

@@ -517,8 +517,7 @@ body {
 }
 
 #sidebar-view-dropdown-menu {
-  left: 0;
-  top: calc(100% + 2px);
+  position: fixed;
   min-width: 180px;
 }
 
