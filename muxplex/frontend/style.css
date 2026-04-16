@@ -2131,3 +2131,223 @@ body {
   padding: 3px 6px;
   outline: none;
 }
+
+/* —— Tile Flyout Menu ————————————————————————————————————————————————————— */
+
+.tile-options-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tile);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+  transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
+}
+
+.tile-options-btn:hover,
+.tile-options-btn:focus-visible {
+  border-color: var(--border);
+  color: var(--text);
+  background: var(--bg-surface);
+}
+
+.flyout-menu {
+  position: fixed;
+  min-width: 200px;
+  max-width: 280px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 0;
+  z-index: 300;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.flyout-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  position: relative;
+}
+
+.flyout-menu__item:hover,
+.flyout-menu__item:focus-visible {
+  background: var(--bg-surface);
+}
+
+.flyout-menu__item--danger {
+  color: var(--err);
+}
+
+.flyout-menu__item--danger:hover {
+  background: rgba(248, 81, 73, 0.1);
+}
+
+.flyout-menu__item--has-submenu::after {
+  content: "\25B8";
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.flyout-menu__separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-subtle);
+}
+
+.flyout-menu__confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.flyout-menu__confirm-btn {
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.flyout-menu__confirm-btn:hover {
+  background: var(--bg-surface);
+}
+
+.flyout-menu__confirm-btn--yes {
+  border-color: var(--err);
+  color: var(--err);
+}
+
+.flyout-menu__confirm-btn--yes:hover {
+  background: rgba(248, 81, 73, 0.15);
+}
+
+/* —— Flyout Submenu (Add to View) ———————————————————————————————————————— */
+
+.flyout-submenu {
+  position: fixed;
+  min-width: 180px;
+  max-width: 240px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 0;
+  z-index: 310;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.flyout-submenu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.flyout-submenu__item:hover {
+  background: var(--bg-surface);
+}
+
+.flyout-submenu__check {
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+/* —— Mobile: Flyout as bottom action sheet ——————————————————————————————— */
+
+.flyout-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: flex-end;
+}
+
+.flyout-sheet__backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-overlay);
+}
+
+.flyout-sheet__panel {
+  position: relative;
+  width: 100%;
+  background: var(--bg-header);
+  border-top: 1px solid var(--border);
+  border-radius: 12px 12px 0 0;
+  max-height: 70vh;
+  overflow-y: auto;
+  animation: sheet-up var(--t-zoom) ease;
+  padding-bottom: env(safe-area-inset-bottom, 8px);
+}
+
+.flyout-sheet__handle {
+  width: 36px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin: 10px auto 6px;
+}
+
+.flyout-sheet__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 20px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.flyout-sheet__item:active {
+  background: var(--bg-surface);
+}
+
+.flyout-sheet__item--danger {
+  color: var(--err);
+}
+
+.flyout-sheet__separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-subtle);
+}

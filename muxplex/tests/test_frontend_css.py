@@ -2161,9 +2161,7 @@ def test_view_dropdown_menu_styled() -> None:
     assert "position: absolute" in block, (
         ".view-dropdown__menu must use position: absolute"
     )
-    assert "z-index: 100" in block, (
-        ".view-dropdown__menu must have z-index: 100"
-    )
+    assert "z-index: 100" in block, ".view-dropdown__menu must have z-index: 100"
 
 
 def test_view_dropdown_item_styled() -> None:
@@ -2171,4 +2169,41 @@ def test_view_dropdown_item_styled() -> None:
     css = read_css()
     assert ".view-dropdown__item" in css, (
         "Missing .view-dropdown__item CSS rule in style.css"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tile flyout menu styles
+# ---------------------------------------------------------------------------
+
+
+def test_flyout_menu_styled() -> None:
+    """style.css must contain .flyout-menu styles."""
+    css = read_css()
+    assert ".flyout-menu" in css, "style.css must style .flyout-menu"
+
+
+def test_flyout_menu_item_styled() -> None:
+    """style.css must contain .flyout-menu__item styles."""
+    css = read_css()
+    assert ".flyout-menu__item" in css, "style.css must style .flyout-menu__item"
+
+
+def test_flyout_trigger_styled() -> None:
+    """style.css must contain .tile-options-btn styles."""
+    css = read_css()
+    assert ".tile-options-btn" in css, "style.css must style .tile-options-btn"
+
+
+def test_flyout_submenu_styled() -> None:
+    """style.css must contain .flyout-submenu styles."""
+    css = read_css()
+    assert ".flyout-submenu" in css, "style.css must style .flyout-submenu"
+
+
+def test_flyout_bottom_sheet_styled() -> None:
+    """style.css must contain .flyout-sheet styles for mobile."""
+    css = read_css()
+    assert ".flyout-sheet" in css, (
+        "style.css must style .flyout-sheet (mobile bottom action sheet)"
     )
