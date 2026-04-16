@@ -459,7 +459,7 @@ function buildTileHTML(session, index, mobile) {
     `<span class="tile-meta">${badgeHtml}${badgeHtml ? `<span class="tile-meta-sep">\xb7</span>` : ''}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
     `</div>` +
     `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
-    `<button class="tile-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
+    `<button class="tile-options-btn" data-session="${escapedName}" aria-label="Session options" aria-haspopup="true">&#8942;</button>` +
     `</article>`
   );
 }

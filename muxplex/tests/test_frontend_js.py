@@ -1273,7 +1273,6 @@ def test_bind_static_event_listeners_binds_auto_open_change() -> None:
     )
 
 
-
 def test_exports_load_server_settings() -> None:
     """module.exports must export loadServerSettings."""
     match = re.search(
@@ -2974,7 +2973,6 @@ def test_create_device_select_uses_device_id_for_option_value() -> None:
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Active view state variable and getVisibleSessions (task-2-active-view)
 # ---------------------------------------------------------------------------
@@ -3282,6 +3280,7 @@ def test_render_view_dropdown_no_single_hyphen_item_class() -> None:
     body = match.group(1)
     # Should not have the old single-hyphen class; allow only '--active' modifiers via '__'
     import re as _re
+
     bad_matches = _re.findall(r'"view-dropdown-item(?!--active)', body)
     assert not bad_matches, (
         "renderViewDropdown must not use single-hyphen 'view-dropdown-item' class (use BEM 'view-dropdown__item')"
@@ -3357,6 +3356,7 @@ def test_render_sidebar_view_dropdown_no_single_hyphen_item_class() -> None:
     assert match, "renderSidebarViewDropdown function not found"
     body = match.group(1)
     import re as _re
+
     bad_matches = _re.findall(r'"view-dropdown-item(?!--active)', body)
     assert not bad_matches, (
         "renderSidebarViewDropdown must not use single-hyphen 'view-dropdown-item' class"
@@ -3393,7 +3393,7 @@ def test_render_view_dropdown_buttons_have_role_menuitem() -> None:
     assert match, "renderViewDropdown function not found"
     body = match.group(1)
     assert 'role="menuitem"' in body, (
-        "renderViewDropdown must include role=\"menuitem\" on buttons — "
+        'renderViewDropdown must include role="menuitem" on buttons — '
         "handleGlobalKeydown arrow navigation queries [role='menuitem']"
     )
 
@@ -3408,7 +3408,7 @@ def test_render_sidebar_view_dropdown_buttons_have_role_menuitem() -> None:
     assert match, "renderSidebarViewDropdown function not found"
     body = match.group(1)
     assert 'role="menuitem"' in body, (
-        "renderSidebarViewDropdown must include role=\"menuitem\" on buttons"
+        'renderSidebarViewDropdown must include role="menuitem" on buttons'
     )
 
 
@@ -3444,7 +3444,9 @@ def test_manage_views_action_opens_settings() -> None:
     body = match.group(1)
     # The manage-views action must do more than just close the dropdown
     # Find the section near 'manage-views'
-    assert "manage-views" in body, "bindStaticEventListeners must handle manage-views action"
+    assert "manage-views" in body, (
+        "bindStaticEventListeners must handle manage-views action"
+    )
     # After manage-views, openSettings must be called
     idx = body.find("manage-views")
     nearby = body[idx : idx + 200]
@@ -3487,7 +3489,9 @@ def test_delete_active_view_persists_active_view_to_server() -> None:
     body = match.group(1)
     # Find the section that sets _activeView = 'all' (the delete fallback path)
     fallback_idx = body.find("_activeView = 'all'")
-    assert fallback_idx >= 0, "_activeView = 'all' fallback not found in renderViewsSettingsTab"
+    assert fallback_idx >= 0, (
+        "_activeView = 'all' fallback not found in renderViewsSettingsTab"
+    )
     # Within ~200 chars after the fallback, there must be an api( call for persistence
     nearby = body[fallback_idx : fallback_idx + 200]
     assert "api(" in nearby, (
@@ -3674,4 +3678,34 @@ def test_bind_static_event_listeners_no_filter_bar_click_handler() -> None:
     assert "_activeFilterDevice = pill.dataset.device" not in body, (
         "bindStaticEventListeners must not contain the dead filter-bar click handler "
         "that sets _activeFilterDevice"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tile options button (⋮) replaces tile-delete
+# ---------------------------------------------------------------------------
+
+
+def test_tile_has_options_button() -> None:
+    """buildTileHTML must include a .tile-options-btn button."""
+    fn_body = _JS.split("function buildTileHTML")[1].split("\nfunction ")[0]
+    assert "tile-options-btn" in fn_body, (
+        "buildTileHTML must render a .tile-options-btn element"
+    )
+
+
+def test_tile_options_btn_has_aria() -> None:
+    """The ⋮ button must have aria-label='Session options' and aria-haspopup='true'."""
+    fn_body = _JS.split("function buildTileHTML")[1].split("\nfunction ")[0]
+    assert "aria-label" in fn_body and "Session options" in fn_body, (
+        "tile-options-btn must have aria-label='Session options'"
+    )
+    assert "aria-haspopup" in fn_body, "tile-options-btn must have aria-haspopup='true'"
+
+
+def test_tile_delete_button_removed() -> None:
+    """buildTileHTML must NOT include the old .tile-delete button."""
+    fn_body = _JS.split("function buildTileHTML")[1].split("\nfunction ")[0]
+    assert "tile-delete" not in fn_body, (
+        "buildTileHTML must not render the old .tile-delete button (kill moved to flyout)"
     )
