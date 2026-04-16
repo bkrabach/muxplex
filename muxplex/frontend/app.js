@@ -859,7 +859,7 @@ function renderViewDropdown() {
     } else if (_activeView === 'hidden') {
       label.textContent = 'Hidden';
     } else {
-      label.textContent = escapeHtml(_activeView);
+      label.textContent = _activeView;
     }
   }
 }
