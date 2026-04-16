@@ -1785,6 +1785,111 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
   });
 }
 
+/**
+ * Hide a session: add to hidden_sessions and remove from ALL views.
+ * Closes the flyout and re-renders the grid.
+ */
+function _doHideSession() {
+  var sessionKey = _flyoutSessionKey;
+  if (!sessionKey) return;
+
+  var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  var views = (_serverSettings && _serverSettings.views) || [];
+
+  // Add to hidden_sessions
+  var updatedHidden = hidden.slice();
+  if (updatedHidden.indexOf(sessionKey) === -1) {
+    updatedHidden.push(sessionKey);
+  }
+
+  // Remove from all views (mutual exclusion)
+  var updatedViews = JSON.parse(JSON.stringify(views));
+  for (var i = 0; i < updatedViews.length; i++) {
+    var sessions = updatedViews[i].sessions || [];
+    var idx = sessions.indexOf(sessionKey);
+    if (idx !== -1) sessions.splice(idx, 1);
+  }
+
+  closeFlyoutMenu();
+
+  api('PATCH', '/api/settings', { hidden_sessions: updatedHidden, views: updatedViews })
+    .then(function() {
+      if (_serverSettings) {
+        _serverSettings.hidden_sessions = updatedHidden;
+        _serverSettings.views = updatedViews;
+      }
+      renderGrid(_currentSessions || []);
+      renderViewDropdown();
+    })
+    .catch(function(err) {
+      showToast('Couldn\u2019t save \u2014 try again');
+      console.warn('[_doHideSession] PATCH failed:', err);
+    });
+}
+
+/**
+ * Unhide a session: remove from hidden_sessions.
+ * Closes the flyout and re-renders the grid.
+ */
+function _doUnhideSession() {
+  var sessionKey = _flyoutSessionKey;
+  if (!sessionKey) return;
+
+  var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  var idx = hidden.indexOf(sessionKey);
+  if (idx === -1) { closeFlyoutMenu(); return; }
+
+  var updatedHidden = hidden.slice();
+  updatedHidden.splice(idx, 1);
+
+  closeFlyoutMenu();
+
+  api('PATCH', '/api/settings', { hidden_sessions: updatedHidden })
+    .then(function() {
+      if (_serverSettings) _serverSettings.hidden_sessions = updatedHidden;
+      renderGrid(_currentSessions || []);
+      renderViewDropdown();
+    })
+    .catch(function(err) {
+      showToast('Couldn\u2019t save \u2014 try again');
+      console.warn('[_doUnhideSession] PATCH failed:', err);
+    });
+}
+
+/**
+ * Remove a session from the currently active user view.
+ * Closes the flyout and re-renders the grid.
+ */
+function _doRemoveFromView() {
+  var sessionKey = _flyoutSessionKey;
+  if (!sessionKey || _activeView === 'all' || _activeView === 'hidden') return;
+
+  var views = (_serverSettings && _serverSettings.views) || [];
+  var updatedViews = JSON.parse(JSON.stringify(views));
+
+  // Find the active view and remove the session
+  for (var i = 0; i < updatedViews.length; i++) {
+    if (updatedViews[i].name === _activeView) {
+      var sessions = updatedViews[i].sessions || [];
+      var idx = sessions.indexOf(sessionKey);
+      if (idx !== -1) sessions.splice(idx, 1);
+      break;
+    }
+  }
+
+  closeFlyoutMenu();
+
+  api('PATCH', '/api/settings', { views: updatedViews })
+    .then(function() {
+      if (_serverSettings) _serverSettings.views = updatedViews;
+      renderGrid(_currentSessions || []);
+    })
+    .catch(function(err) {
+      showToast('Couldn\u2019t save \u2014 try again');
+      console.warn('[_doRemoveFromView] PATCH failed:', err);
+    });
+}
+
 // ─── Notification permission ────────────────────────────────────────────────
 
 /**

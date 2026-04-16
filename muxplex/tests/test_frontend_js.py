@@ -3821,3 +3821,38 @@ def test_submenu_toggles_view_membership() -> None:
     assert "views" in fn_body and ("PATCH" in fn_body or "api(" in fn_body), (
         "_openFlyoutSubmenu must PATCH /api/settings to add/remove session from view"
     )
+
+
+# ─── Task 6: Hide/Unhide/Remove actions ──────────────────────────────────────
+
+
+def test_do_hide_session_function_exists() -> None:
+    """app.js must define a _doHideSession function."""
+    assert "function _doHideSession" in _JS, (
+        "app.js must contain a _doHideSession function"
+    )
+
+
+def test_do_unhide_session_function_exists() -> None:
+    """app.js must define a _doUnhideSession function."""
+    assert "function _doUnhideSession" in _JS, (
+        "app.js must contain a _doUnhideSession function"
+    )
+
+
+def test_do_remove_from_view_function_exists() -> None:
+    """app.js must define a _doRemoveFromView function."""
+    assert "function _doRemoveFromView" in _JS, (
+        "app.js must contain a _doRemoveFromView function"
+    )
+
+
+def test_hide_session_removes_from_all_views() -> None:
+    """_doHideSession must update both hidden_sessions AND views (remove from all views)."""
+    fn_body = _JS.split("function _doHideSession")[1].split("\nfunction ")[0]
+    assert "hidden_sessions" in fn_body, (
+        "_doHideSession must add session to hidden_sessions"
+    )
+    assert "views" in fn_body, (
+        "_doHideSession must remove session from all views (mutual exclusion)"
+    )
