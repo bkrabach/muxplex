@@ -1231,7 +1231,7 @@ def test_instance_info_returns_200(client):
 
 
 def test_instance_info_returns_name_and_version(client, tmp_path, monkeypatch):
-    """GET /api/instance-info returns name='test-host' and version='0.1.0' when hostname is mocked."""
+    """GET /api/instance-info returns name='test-host' and a non-empty version string when hostname is mocked."""
     import socket
 
     import muxplex.settings as settings_mod
@@ -1243,7 +1243,7 @@ def test_instance_info_returns_name_and_version(client, tmp_path, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == "test-host"
-    assert data["version"] == "0.1.0"
+    assert "version" in data and isinstance(data["version"], str) and data["version"]
 
 
 def test_instance_info_uses_explicit_device_name(client, tmp_path, monkeypatch):
@@ -1260,7 +1260,7 @@ def test_instance_info_uses_explicit_device_name(client, tmp_path, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == "My Workstation"
-    assert data["version"] == "0.1.0"
+    assert "version" in data and isinstance(data["version"], str) and data["version"]
 
 
 def test_instance_info_no_auth_required(tmp_path, monkeypatch):

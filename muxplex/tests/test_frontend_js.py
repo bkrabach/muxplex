@@ -2759,12 +2759,12 @@ def test_update_favicon_badge_filters_through_visible_sessions() -> None:
 # ─── Task 11: Frontend — Change Session Key Format to `device_id:name` ────────
 
 
-def test_build_tile_html_prefers_device_id_for_data_remote_id() -> None:
-    """buildTileHTML must use session.deviceId (falling back to session.remoteId) for data-remote-id.
+def test_build_tile_html_uses_remote_id_for_data_remote_id() -> None:
+    """buildTileHTML must use session.remoteId (not session.deviceId) for data-remote-id.
 
-    The backend now sends deviceId (device_id string) alongside remoteId on every session.
-    The tile's data-remote-id must prefer deviceId so the click handler passes the correct
-    device_id to openSession(), enabling federation API calls with the new device_id format.
+    v0.4.1 hotfix changed this from deviceId to remoteId because deviceId is non-null for
+    local sessions, which caused them to route through federation endpoints and 404.
+    remoteId is null for local sessions, so only remote sessions get routed via federation.
     """
     match = re.search(
         r"function buildTileHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*\*)",
@@ -2773,17 +2773,23 @@ def test_build_tile_html_prefers_device_id_for_data_remote_id() -> None:
     )
     assert match, "buildTileHTML function not found"
     body = match.group(1)
-    assert "session.deviceId" in body, (
-        "buildTileHTML must use session.deviceId for data-remote-id attribute "
-        "(with fallback to session.remoteId for backward compatibility with old servers)"
+    assert "session.remoteId" in body, (
+        "buildTileHTML must use session.remoteId for data-remote-id attribute — "
+        "deviceId is intentionally NOT used because it is non-null for local sessions, "
+        "which would incorrectly route them through federation endpoints"
+    )
+    assert "session.deviceId" not in body, (
+        "buildTileHTML must NOT use session.deviceId for data-remote-id — "
+        "deviceId is non-null for local sessions and causes federation 404s"
     )
 
 
-def test_build_sidebar_html_prefers_device_id_for_data_remote_id() -> None:
-    """buildSidebarHTML must use session.deviceId (falling back to session.remoteId) for data-remote-id.
+def test_build_sidebar_html_uses_remote_id_for_data_remote_id() -> None:
+    """buildSidebarHTML must use session.remoteId (not session.deviceId) for data-remote-id.
 
-    The sidebar click handler reads data-remote-id and passes it to openSession().
-    Must prefer deviceId so federation API calls use the new device_id:name format.
+    v0.4.1 hotfix changed this from deviceId to remoteId because deviceId is non-null for
+    local sessions, which caused them to route through federation endpoints and 404.
+    remoteId is null for local sessions, so only remote sessions get routed via federation.
     """
     match = re.search(
         r"function buildSidebarHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*\*)",
@@ -2792,9 +2798,14 @@ def test_build_sidebar_html_prefers_device_id_for_data_remote_id() -> None:
     )
     assert match, "buildSidebarHTML function not found"
     body = match.group(1)
-    assert "session.deviceId" in body, (
-        "buildSidebarHTML must use session.deviceId for data-remote-id attribute "
-        "(with fallback to session.remoteId for backward compatibility with old servers)"
+    assert "session.remoteId" in body, (
+        "buildSidebarHTML must use session.remoteId for data-remote-id attribute — "
+        "deviceId is intentionally NOT used because it is non-null for local sessions, "
+        "which would incorrectly route them through federation endpoints"
+    )
+    assert "session.deviceId" not in body, (
+        "buildSidebarHTML must NOT use session.deviceId for data-remote-id — "
+        "deviceId is non-null for local sessions and causes federation 404s"
     )
 
 
