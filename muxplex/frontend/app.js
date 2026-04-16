@@ -139,6 +139,82 @@ let _flyoutSessionKey = null;
 let _flyoutSessionName = null;
 let _flyoutRemoteId = null;
 
+/**
+ * Data map of menu item definitions keyed by view type.
+ * Each entry is an array of item config objects with:
+ *   { label, action, className?, separator? }
+ * The 'user' view type gets the active view name injected at render time.
+ */
+var FLYOUT_MENU_MAP = {
+  'all': [
+    { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Hide', action: 'hide' },
+    { separator: true },
+    { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
+  ],
+  'user': [
+    { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Remove from {viewName}', action: 'remove-from-view' },
+    { label: 'Hide', action: 'hide' },
+    { separator: true },
+    { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
+  ],
+  'hidden': [
+    { label: 'Unhide', action: 'unhide' },
+    { label: 'Unhide & Add to View\u2026', action: 'unhide-add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { separator: true },
+    { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
+  ],
+};
+
+/**
+ * Build the flyout menu HTML string based on the active view type.
+ * Uses FLYOUT_MENU_MAP to generate items — no if/else chains.
+ * @returns {string} HTML for the menu items
+ */
+function _buildFlyoutMenuItems() {
+  // Determine view type: 'all', 'hidden', or 'user'
+  var viewType = _activeView;
+  if (viewType !== 'all' && viewType !== 'hidden') {
+    viewType = 'user';
+  }
+
+  var items = FLYOUT_MENU_MAP[viewType] || FLYOUT_MENU_MAP['all'];
+  var html = '';
+
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    if (item.separator) {
+      html += '<div class="flyout-menu__separator" role="separator"></div>';
+      continue;
+    }
+
+    var label = item.label;
+    // Inject view name for "Remove from {viewName}"
+    if (label.indexOf('{viewName}') !== -1) {
+      var displayName = _activeView;
+      if (displayName.length > 20) {
+        displayName = displayName.substring(0, 20) + '\u2026';
+      }
+      label = label.replace('{viewName}', escapeHtml(displayName));
+    }
+
+    var cls = 'flyout-menu__item';
+    if (item.className) cls += ' ' + item.className;
+
+    var titleAttr = '';
+    if (item.action === 'remove-from-view' && _activeView && _activeView.length > 20) {
+      titleAttr = ' title="Remove from ' + escapeHtml(_activeView) + '"';
+    }
+
+    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '"' + titleAttr + '>';
+    html += label;
+    html += '</button>';
+  }
+
+  return html;
+}
+
 // ─── Settings state ───────────────────────────────────────────────────────────
 let _settingsOpen = false;
 let _serverSettings = null;

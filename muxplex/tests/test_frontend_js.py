@@ -3748,3 +3748,43 @@ def test_old_tile_delete_handler_removed() -> None:
     assert "tile-delete" not in bind_body, (
         "The old .tile-delete delegated handler must be removed from bindStaticEventListeners"
     )
+
+
+# ─── Task 4: Context-dependent menu items — FLYOUT_MENU_MAP ──────────────────
+
+
+def test_flyout_menu_map_exists() -> None:
+    """app.js must define a FLYOUT_MENU_MAP data structure."""
+    assert "FLYOUT_MENU_MAP" in _JS, (
+        "app.js must contain a FLYOUT_MENU_MAP data structure"
+    )
+
+
+def test_flyout_menu_map_has_three_view_types() -> None:
+    """FLYOUT_MENU_MAP must have keys for 'all', 'user', and 'hidden'."""
+    # The map should reference all three view types
+    map_section = _JS.split("FLYOUT_MENU_MAP")[1].split("};")[0]
+    assert "'all'" in map_section or '"all"' in map_section, (
+        "FLYOUT_MENU_MAP must include an 'all' key"
+    )
+    assert "'user'" in map_section or '"user"' in map_section, (
+        "FLYOUT_MENU_MAP must include a 'user' key"
+    )
+    assert "'hidden'" in map_section or '"hidden"' in map_section, (
+        "FLYOUT_MENU_MAP must include a 'hidden' key"
+    )
+
+
+def test_build_flyout_menu_items_function_exists() -> None:
+    """app.js must define a _buildFlyoutMenuItems function."""
+    assert "function _buildFlyoutMenuItems" in _JS, (
+        "app.js must contain a _buildFlyoutMenuItems function"
+    )
+
+
+def test_build_flyout_uses_menu_map() -> None:
+    """_buildFlyoutMenuItems must reference FLYOUT_MENU_MAP."""
+    fn_body = _JS.split("function _buildFlyoutMenuItems")[1].split("\nfunction ")[0]
+    assert "FLYOUT_MENU_MAP" in fn_body, (
+        "_buildFlyoutMenuItems must reference FLYOUT_MENU_MAP (data-driven, not if/else)"
+    )
