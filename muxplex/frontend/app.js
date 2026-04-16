@@ -1953,25 +1953,82 @@ function switchSettingsTab(tabName) {
 
 /**
  * Global keydown handler.
- * If settings are open: Escape closes settings.
- * Comma key (not in inputs) opens settings.
- * In fullscreen: Escape returns to grid.
+ * Settings open: Escape closes settings, return.
+ * Ignore shortcuts when typing in INPUT/TEXTAREA/SELECT.
+ * Comma key (not in inputs, no ctrl/meta) opens settings.
+ * Grid overview only: backtick toggles dropdown, number keys 1-9 switch views.
+ * Arrow keys + Enter navigate within open dropdown.
+ * Escape closes open dropdown.
+ * Fullscreen: Escape calls closeSession().
  * @param {KeyboardEvent} e
  */
 function handleGlobalKeydown(e) {
+  // Settings open: only Escape closes it, then bail
   if (_settingsOpen) {
-    if (e.key === 'Escape') {
-      closeSettings();
-    }
+    if (e.key === 'Escape') { closeSettings(); }
     return;
   }
-  if (e.key === ',' && !e.ctrlKey && !e.metaKey) {
-    const tag = document.activeElement && document.activeElement.tagName;
-    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
-      openSettings();
+  // Determine if focus is inside a text input
+  const tag = document.activeElement && document.activeElement.tagName;
+  const inInput = (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT');
+  // Comma key (not in inputs, no ctrl/meta) opens settings
+  if (e.key === ',' && !e.ctrlKey && !e.metaKey && !inInput) {
+    openSettings();
+    return;
+  }
+  // View dropdown shortcuts — grid overview only, not in input, no ctrl/meta
+  if (_viewMode === 'grid' && !inInput && !e.ctrlKey && !e.metaKey) {
+    // Backtick toggles the view dropdown
+    if (e.code === 'Backquote') {
+      e.preventDefault();
+      toggleViewDropdown();
+      return;
+    }
+    // Number keys 1-9: 1=all, 9=hidden, 2-8=user views by index (num-2)
+    if (e.code && e.code.startsWith('Digit')) {
+      const num = parseInt(e.key, 10);
+      if (num >= 1 && num <= 9) {
+        const views = (_serverSettings && _serverSettings.views) || [];
+        if (num === 1) {
+          switchView('all');
+        } else if (num === 9) {
+          switchView('hidden');
+        } else {
+          const vIdx = num - 2;
+          if (vIdx < views.length) { switchView(views[vIdx].name); }
+        }
+        return;
+      }
+    }
+  }
+  // Arrow key navigation within open dropdown
+  const menu = $('view-dropdown-menu');
+  if (menu && !menu.classList.contains('hidden')) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+      if (items.length > 0) {
+        const focusedEl = document.activeElement;
+        let itemIdx = items.indexOf(focusedEl);
+        if (e.key === 'ArrowDown') {
+          itemIdx = (itemIdx + 1) % items.length;
+        } else {
+          itemIdx = (itemIdx - 1 + items.length) % items.length;
+        }
+        items[itemIdx].focus();
+      }
+      return;
+    }
+    if (e.key === 'Enter') {
+      const focusedEl = document.activeElement;
+      if (menu.contains(focusedEl)) { focusedEl.click(); return; }
+    }
+    if (e.key === 'Escape') {
+      closeViewDropdown();
       return;
     }
   }
+  // Fullscreen: Escape calls closeSession
   if (_viewMode === 'fullscreen' && e.key === 'Escape') {
     e.preventDefault();
     closeSession();

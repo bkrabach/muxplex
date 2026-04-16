@@ -3165,3 +3165,67 @@ def test_switch_view_patches_state() -> None:
     body = match.group(1)
     assert "PATCH" in body, "switchView must use PATCH method"
     assert "/api/state" in body, "switchView must PATCH /api/state"
+
+
+# ---------------------------------------------------------------------------
+# Keyboard Shortcuts — Backtick, Number Keys, Arrow Navigation (task-7)
+# ---------------------------------------------------------------------------
+
+
+def test_handle_global_keydown_has_backtick_handler() -> None:
+    """handleGlobalKeydown must handle backtick/Backquote key to toggle view dropdown."""
+    match = re.search(
+        r"function handleGlobalKeydown\s*\(e\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "handleGlobalKeydown function not found"
+    body = match.group(1)
+    has_backtick = (
+        "Backquote" in body
+        or "e.key === '`'" in body
+        or 'e.key === "`"' in body
+    )
+    assert has_backtick, (
+        "handleGlobalKeydown must handle backtick/Backquote key to toggle view dropdown"
+    )
+    assert "toggleViewDropdown" in body, (
+        "handleGlobalKeydown backtick handler must call toggleViewDropdown"
+    )
+
+
+def test_handle_global_keydown_has_number_key_shortcuts() -> None:
+    """handleGlobalKeydown must call switchView for number keys 1–9."""
+    match = re.search(
+        r"function handleGlobalKeydown\s*\(e\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "handleGlobalKeydown function not found"
+    body = match.group(1)
+    assert "switchView" in body, (
+        "handleGlobalKeydown must call switchView for number keys 1–9"
+    )
+    has_number_handling = (
+        "Digit" in body or "parseInt" in body
+    )
+    assert has_number_handling, (
+        "handleGlobalKeydown must handle number key codes (e.g. e.code.startsWith('Digit'))"
+    )
+
+
+def test_backtick_only_on_grid_not_fullscreen() -> None:
+    """Backtick handler must check _viewMode === 'grid' (not active in fullscreen)."""
+    match = re.search(
+        r"function handleGlobalKeydown\s*\(e\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "handleGlobalKeydown function not found"
+    body = match.group(1)
+    assert "_viewMode" in body, (
+        "handleGlobalKeydown backtick handler must check _viewMode"
+    )
+    assert "'grid'" in body, (
+        "handleGlobalKeydown must check _viewMode === 'grid' before handling backtick/number shortcuts"
+    )
