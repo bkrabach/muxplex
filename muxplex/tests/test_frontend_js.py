@@ -3788,3 +3788,36 @@ def test_build_flyout_uses_menu_map() -> None:
     assert "FLYOUT_MENU_MAP" in fn_body, (
         "_buildFlyoutMenuItems must reference FLYOUT_MENU_MAP (data-driven, not if/else)"
     )
+
+
+# ─── Task 5: Flyout click handler + Add to View submenu ──────────────────────
+
+
+def test_handle_flyout_click_function_exists() -> None:
+    """app.js must define a _handleFlyoutClick function."""
+    assert "function _handleFlyoutClick" in _JS, (
+        "app.js must contain a _handleFlyoutClick function"
+    )
+
+
+def test_handle_flyout_click_dispatches_actions() -> None:
+    """_handleFlyoutClick must check data-action for dispatching."""
+    fn_body = _JS.split("function _handleFlyoutClick")[1].split("\nfunction ")[0]
+    assert "data-action" in fn_body or "dataset.action" in fn_body, (
+        "_handleFlyoutClick must read data-action from the clicked element"
+    )
+
+
+def test_open_flyout_submenu_function_exists() -> None:
+    """app.js must define a _openFlyoutSubmenu function."""
+    assert "function _openFlyoutSubmenu" in _JS, (
+        "app.js must contain a _openFlyoutSubmenu function"
+    )
+
+
+def test_submenu_toggles_view_membership() -> None:
+    """_openFlyoutSubmenu must PATCH /api/settings to toggle view membership."""
+    fn_body = _JS.split("function _openFlyoutSubmenu")[1].split("\nfunction ")[0]
+    assert "views" in fn_body and ("PATCH" in fn_body or "api(" in fn_body), (
+        "_openFlyoutSubmenu must PATCH /api/settings to add/remove session from view"
+    )

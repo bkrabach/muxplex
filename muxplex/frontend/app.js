@@ -1633,6 +1633,158 @@ function _flyoutOutsideClickHandler(e) {
   }
 }
 
+/**
+ * Delegated click handler for the flyout menu.
+ * Dispatches based on data-action attribute.
+ * @param {MouseEvent} e
+ */
+function _handleFlyoutClick(e) {
+  var item = e.target.closest('[data-action]');
+  if (!item) return;
+
+  var action = item.dataset.action;
+
+  switch (action) {
+    case 'add-to-view':
+    case 'unhide-add-to-view':
+      _openFlyoutSubmenu(item, action === 'unhide-add-to-view');
+      break;
+    case 'remove-from-view':
+      _doRemoveFromView();
+      break;
+    case 'hide':
+      _doHideSession();
+      break;
+    case 'unhide':
+      _doUnhideSession();
+      break;
+    case 'kill':
+      _doKillSessionInline(item);
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * Open the "Add to View" submenu next to a flyout menu item.
+ * Lists all user-created views with checkmarks for views the session is already in.
+ * Clicking a view toggles membership immediately via PATCH /api/settings.
+ * The flyout stays open after submenu actions.
+ * @param {HTMLElement} triggerItem - The menu item that triggered the submenu
+ * @param {boolean} unhideFirst - If true, also unhide the session (for "Unhide & Add to View")
+ */
+function _openFlyoutSubmenu(triggerItem, unhideFirst) {
+  // Close existing submenu
+  if (_flyoutSubmenuEl) {
+    _flyoutSubmenuEl.remove();
+    _flyoutSubmenuEl = null;
+  }
+
+  var views = (_serverSettings && _serverSettings.views) || [];
+  if (views.length === 0) {
+    showToast('No user views. Create one from the header dropdown.');
+    return;
+  }
+
+  var sessionKey = _flyoutSessionKey;
+  var html = '';
+  for (var i = 0; i < views.length; i++) {
+    var v = views[i];
+    var isIn = (v.sessions || []).indexOf(sessionKey) !== -1;
+    html += '<button class="flyout-submenu__item" role="menuitem" data-view-index="' + i + '">';
+    html += '<span class="flyout-submenu__check">' + (isIn ? '\u2713' : '') + '</span>';
+    html += escapeHtml(v.name);
+    html += '</button>';
+  }
+
+  var submenu = document.createElement('div');
+  submenu.className = 'flyout-submenu';
+  submenu.setAttribute('role', 'menu');
+  submenu.innerHTML = html;
+  document.body.appendChild(submenu);
+  _flyoutSubmenuEl = submenu;
+
+  // Position to the right of the trigger item (or left if no space)
+  if (_flyoutMenuEl) {
+    var menuRect = _flyoutMenuEl.getBoundingClientRect();
+    var subWidth = submenu.offsetWidth;
+    var subHeight = submenu.offsetHeight;
+    var itemRect = triggerItem.getBoundingClientRect();
+
+    var left = menuRect.right + 4;
+    if (left + subWidth > window.innerWidth - 8) {
+      left = menuRect.left - subWidth - 4;
+    }
+    var top = itemRect.top;
+    if (top + subHeight > window.innerHeight - 8) {
+      top = window.innerHeight - subHeight - 8;
+    }
+    if (top < 8) top = 8;
+
+    submenu.style.top = top + 'px';
+    submenu.style.left = left + 'px';
+  }
+
+  // Click handler — toggle view membership via PATCH /api/settings
+  submenu.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-view-index]');
+    if (!btn) return;
+    var idx = parseInt(btn.dataset.viewIndex, 10);
+
+    var updatedViews = JSON.parse(JSON.stringify((_serverSettings && _serverSettings.views) || []));
+    var view = updatedViews[idx];
+    if (!view) return;
+
+    var sessions = view.sessions || [];
+    var pos = sessions.indexOf(sessionKey);
+    if (pos !== -1) {
+      sessions.splice(pos, 1);
+    } else {
+      sessions.push(sessionKey);
+    }
+    view.sessions = sessions;
+
+    var patch = { views: updatedViews };
+
+    if (unhideFirst) {
+      var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+      var hiddenIdx = hidden.indexOf(sessionKey);
+      if (hiddenIdx !== -1) {
+        var updatedHidden = hidden.slice();
+        updatedHidden.splice(hiddenIdx, 1);
+        patch.hidden_sessions = updatedHidden;
+      }
+    }
+
+    api('PATCH', '/api/settings', patch)
+      .then(function() {
+        if (_serverSettings) {
+          _serverSettings.views = updatedViews;
+          if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+        }
+        // Update checkmarks in submenu
+        if (_flyoutSubmenuEl) {
+          var checkItems = _flyoutSubmenuEl.querySelectorAll('[data-view-index]');
+          for (var ci = 0; ci < checkItems.length; ci++) {
+            var vi = parseInt(checkItems[ci].dataset.viewIndex, 10);
+            var checkEl = checkItems[ci].querySelector('.flyout-submenu__check');
+            if (checkEl && updatedViews[vi]) {
+              checkEl.textContent = (updatedViews[vi].sessions || []).indexOf(sessionKey) !== -1 ? '\u2713' : '';
+            }
+          }
+        }
+        if (unhideFirst) {
+          renderGrid(_currentSessions || []);
+        }
+      })
+      .catch(function(err) {
+        showToast('Couldn\u2019t save \u2014 try again');
+        console.warn('[_openFlyoutSubmenu] PATCH failed:', err);
+      });
+  });
+}
+
 // ─── Notification permission ────────────────────────────────────────────────
 
 /**
