@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muxplex"
-version = "0.4.1"
+version = "0.4.2"
 description = "Web-based tmux session dashboard — access all your tmux sessions from any browser"
 readme = "README.md"
 license = { text = "MIT" }
