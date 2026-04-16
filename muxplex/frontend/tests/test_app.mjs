@@ -2397,18 +2397,19 @@ test('app.js source uses 500ms debounce for template input and references new_se
   assert.ok(source.includes('new_session_template'), 'must reference new_session_template setting key');
 });
 
-test('buildTileHTML includes tile-delete button with data-session attribute', () => {
+test('buildTileHTML includes tile-options-btn button with data-session attribute', () => {
   const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0, seen_at: null, last_fired_at: null } };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('tile-delete'), 'buildTileHTML must include tile-delete button class');
-  assert.ok(html.includes('data-session="my-session"'), 'tile-delete button must have data-session attribute');
+  assert.ok(html.includes('tile-options-btn'), 'buildTileHTML must include tile-options-btn button class');
+  assert.ok(html.includes('data-session="my-session"'), 'tile-options-btn button must have data-session attribute');
+  assert.ok(html.includes('aria-label="Session options"'), 'tile-options-btn must have aria-label="Session options"');
+  assert.ok(html.includes('aria-haspopup="true"'), 'tile-options-btn must have aria-haspopup="true"');
 });
 
-test('buildSidebarHTML includes sidebar-delete button with data-session attribute', () => {
+test('buildSidebarHTML does not include sidebar-delete button', () => {
   const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0, seen_at: null, last_fired_at: null } };
   const html = app.buildSidebarHTML(session, null);
-  assert.ok(html.includes('sidebar-delete'), 'buildSidebarHTML must include sidebar-delete button class');
-  assert.ok(html.includes('data-session="my-session"'), 'sidebar-delete button must have data-session attribute');
+  assert.ok(!html.includes('sidebar-delete'), 'buildSidebarHTML must NOT include sidebar-delete button (it was removed)');
 });
 
 // --- api ---
@@ -3821,7 +3822,6 @@ test('buildSidebarHTML has single-line header with name, badge, and delete butto
   const headerEnd = html.indexOf('</div>', headerStart);
   const headerContent = html.substring(headerStart, headerEnd);
   assert.ok(headerContent.includes('device-badge'), 'device-badge must be inside sidebar-item-header');
-  assert.ok(headerContent.includes('sidebar-delete'), 'sidebar-delete must be inside sidebar-item-header');
   app._setServerSettings(null);
 });
 
@@ -4052,19 +4052,19 @@ test('killSession closes active session and returns to dashboard', () => {
   assert.ok(fnBody.includes('closeSession'), 'killSession must call closeSession when deleting the active session');
 });
 
-test('sidebar click handler ignores clicks on delete button', () => {
+test('sidebar click handler does not guard on sidebar-delete (button was removed)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(
-    source.includes("closest('.sidebar-delete')"),
-    "sidebar click handler must guard against clicks on .sidebar-delete button"
+    !source.includes("closest('.sidebar-delete')"),
+    "sidebar click handler must NOT reference .sidebar-delete (button was removed)"
   );
 });
 
-test('tile click handler ignores clicks on tile-delete button', () => {
+test('tile click handler ignores clicks on tile-options-btn button', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   assert.ok(
-    source.includes("closest('.tile-delete')"),
-    "tile click handler must guard against clicks on .tile-delete button"
+    source.includes("closest('.tile-options-btn')"),
+    "tile click handler must guard against clicks on .tile-options-btn button"
   );
 });
 
