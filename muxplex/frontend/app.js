@@ -911,10 +911,15 @@ function renderViewDropdown() {
   var hiddenActive = _activeView === 'hidden' ? ' view-dropdown__item--active' : '';
   html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden">Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
 
-  // — Actions
-  html += '<div class="view-dropdown__separator"></div>';
+  // — Actions (stronger separator)
+  html += '<div class="view-dropdown__separator view-dropdown__separator--strong"></div>';
+  // Only show "Manage [ViewName]\u2026" when a user view is active
+  if (_activeView !== 'all' && _activeView !== 'hidden') {
+    var displayViewName = _activeView.length > 20 ? _activeView.substring(0, 20) + '\u2026' : _activeView;
+    html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-view">Manage \u201c' + escapeHtml(displayViewName) + '\u201d\u2026</button>';
+  }
+  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-views">Manage All Views\u2026</button>';
   html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="new-view">+ New View</button>';
-  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-views">Manage Views\u2026</button>';
 
   menu.innerHTML = html;
 
@@ -1003,10 +1008,15 @@ function renderSidebarViewDropdown() {
   var hiddenActive = _activeView === 'hidden' ? ' view-dropdown__item--active' : '';
   html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden">Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
 
-  // — Actions: new view + manage views
-  html += '<div class="view-dropdown__separator"></div>';
+  // — Actions (stronger separator)
+  html += '<div class="view-dropdown__separator view-dropdown__separator--strong"></div>';
+  // Only show "Manage [ViewName]…" when a user view is active
+  if (_activeView !== 'all' && _activeView !== 'hidden') {
+    var sbDisplayViewName = _activeView.length > 20 ? _activeView.substring(0, 20) + '…' : _activeView;
+    html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-view">Manage “' + escapeHtml(sbDisplayViewName) + '”…</button>';
+  }
+  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-views">Manage All Views…</button>';
   html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="new-view">+ New View</button>';
-  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-views">Manage Views\u2026</button>';
 
   menu.innerHTML = html;
 }
@@ -1100,7 +1110,7 @@ function showNewViewInput() {
         .then(function() {
           if (_serverSettings) _serverSettings.views = updatedViews;
           switchView(name);
-          openAddSessionsPanel();
+          openManageViewPanel();
         })
         .catch(function() {
           showToast('Failed to create view');
@@ -1122,7 +1132,7 @@ function showNewViewInput() {
 /**
  * Show an inline text input inside the SIDEBAR view dropdown for creating a new view.
  * Targets #sidebar-view-dropdown-menu instead of #view-dropdown-menu.
- * - On Enter: validates, PATCHes /api/settings, calls switchView + openAddSessionsPanel.
+ * - On Enter: validates, PATCHes /api/settings, calls switchView + openManageViewPanel.
  * - On Escape / blur: closes the sidebar dropdown.
  */
 function showSidebarNewViewInput() {
@@ -1185,7 +1195,7 @@ function showSidebarNewViewInput() {
           if (_serverSettings) _serverSettings.views = updatedViews;
           closeSidebarDropdown();
           switchView(name);
-          openAddSessionsPanel();
+          openManageViewPanel();
         })
         .catch(function() {
           showToast('Failed to create view');
@@ -1241,7 +1251,7 @@ function renderViewsSettingsTab() {
 
   if (emptyEl) emptyEl.style.display = 'none';
 
-  // Build the list of view rows
+  // Build the list of view rows (no inline rename — rename is in Manage View panel)
   listEl.innerHTML = '';
   views.forEach(function(view, idx) {
     var viewSessions = view.sessions || [];
@@ -1251,11 +1261,10 @@ function renderViewsSettingsTab() {
     row.className = 'views-settings-row';
     row.setAttribute('data-view-idx', String(idx));
 
-    // Name span (clickable for rename)
+    // Name span (not clickable for rename — rename is in Manage View panel)
     var nameSpan = document.createElement('span');
     nameSpan.className = 'views-settings-name';
     nameSpan.textContent = view.name;
-    nameSpan.title = 'Click to rename';
 
     // Session count
     var countSpan = document.createElement('span');
@@ -1269,7 +1278,7 @@ function renderViewsSettingsTab() {
     // Up button
     var upBtn = document.createElement('button');
     upBtn.className = 'views-settings-btn';
-    upBtn.textContent = '▲';
+    upBtn.textContent = '\u25b2';
     upBtn.title = 'Move up';
     upBtn.setAttribute('data-action', 'move-up');
     upBtn.setAttribute('data-idx', String(idx));
@@ -1278,11 +1287,18 @@ function renderViewsSettingsTab() {
     // Down button
     var downBtn = document.createElement('button');
     downBtn.className = 'views-settings-btn';
-    downBtn.textContent = '▼';
+    downBtn.textContent = '\u25bc';
     downBtn.title = 'Move down';
     downBtn.setAttribute('data-action', 'move-down');
     downBtn.setAttribute('data-idx', String(idx));
     if (idx === views.length - 1) downBtn.disabled = true;
+
+    // Manage button (opens Manage View panel — close settings first)
+    var manageBtn = document.createElement('button');
+    manageBtn.className = 'views-settings-btn views-settings-btn--manage';
+    manageBtn.textContent = 'Manage';
+    manageBtn.setAttribute('data-action', 'manage');
+    manageBtn.setAttribute('data-idx', String(idx));
 
     // Delete button
     var deleteBtn = document.createElement('button');
@@ -1293,6 +1309,7 @@ function renderViewsSettingsTab() {
 
     actionsDiv.appendChild(upBtn);
     actionsDiv.appendChild(downBtn);
+    actionsDiv.appendChild(manageBtn);
     actionsDiv.appendChild(deleteBtn);
 
     row.appendChild(nameSpan);
@@ -1300,6 +1317,16 @@ function renderViewsSettingsTab() {
     row.appendChild(actionsDiv);
     listEl.appendChild(row);
   });
+
+  // Add "+ New View" button at the bottom
+  var newViewRow = document.createElement('div');
+  newViewRow.className = 'views-settings-new-row';
+  var newViewBtn = document.createElement('button');
+  newViewBtn.className = 'views-settings-btn views-settings-btn--new';
+  newViewBtn.textContent = '+ New View';
+  newViewBtn.setAttribute('data-action', 'new-view-in-settings');
+  newViewRow.appendChild(newViewBtn);
+  listEl.appendChild(newViewRow);
 
   // Delegated click handler on the list
   listEl.onclick = function(e) {
@@ -1329,6 +1356,17 @@ function renderViewsSettingsTab() {
         updated[idx] = tmp;
         _saveViewsAndRerender(updated);
       }
+      return;
+    }
+
+    // Manage: close settings, switch to that view, open Manage View panel
+    if (target.getAttribute('data-action') === 'manage') {
+      var idx = parseInt(target.getAttribute('data-idx'), 10);
+      var viewName = views[idx] && views[idx].name;
+      if (!viewName) return;
+      closeSettings();
+      switchView(viewName);
+      openManageViewPanel();
       return;
     }
 
@@ -1385,69 +1423,34 @@ function renderViewsSettingsTab() {
       return;
     }
 
-    // Click on name: inline rename
-    if (target.classList.contains('views-settings-name')) {
-      var row = target.closest('.views-settings-row');
-      if (!row) return;
-      var idx = parseInt(row.getAttribute('data-view-idx'), 10);
-      var currentName = views[idx] && views[idx].name;
-      if (currentName === undefined) return;
-
-      var input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'views-settings-rename-input';
-      input.value = currentName;
-      input.maxLength = 30;
-      target.parentNode.replaceChild(input, target);
-      input.focus();
-      input.select();
-
-      var committed = false;
-      function commitRename() {
-        if (committed) return;
-        var newName = input.value.trim();
-        if (!newName || newName === currentName) {
-          renderViewsSettingsTab();
-          return;
-        }
-        // Validate: not reserved (case-insensitive)
-        if (newName.toLowerCase() === 'all' || newName.toLowerCase() === 'hidden') {
-          showToast('Cannot use reserved name \'' + newName + '\'');
-          renderViewsSettingsTab();
-          return;
-        }
-        // Validate: not duplicate
-        var duplicate = views.find(function(v, i) { return i !== idx && v.name === newName; });
-        if (duplicate) {
-          showToast('View \'' + newName + '\' already exists');
-          renderViewsSettingsTab();
-          return;
-        }
-        // Update the view name
-        committed = true;
-        var updated = views.map(function(v, i) {
-          return i === idx ? Object.assign({}, v, { name: newName }) : v;
-        });
-        // If this was the active view, update _activeView
-        if (_activeView === currentName) {
-          _activeView = newName;
-          api('PATCH', '/api/state', { active_view: _activeView }).catch(function() {});
-        }
-        _saveViewsAndRerender(updated);
+    // + New View: create a new view and open Manage View panel
+    if (target.getAttribute('data-action') === 'new-view-in-settings') {
+      var newName = prompt('View name:');
+      if (!newName || !newName.trim()) return;
+      newName = newName.trim();
+      if (newName.toLowerCase() === 'all' || newName.toLowerCase() === 'hidden') {
+        showToast('Cannot use reserved name \'' + newName + '\'');
+        return;
       }
-
-      input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          commitRename();
-        } else if (e.key === 'Escape') {
+      if (views.find(function(v) { return v.name === newName; })) {
+        showToast('View \'' + newName + '\' already exists');
+        return;
+      }
+      var updatedViews = views.concat([{ name: newName, sessions: [] }]);
+      api('PATCH', '/api/settings', { views: updatedViews })
+        .then(function() {
+          if (_serverSettings) _serverSettings.views = updatedViews;
           renderViewsSettingsTab();
-        }
-      });
-
-      input.addEventListener('blur', function() {
-        commitRename();
-      });
+          renderViewDropdown();
+          // Close settings and open Manage View panel for the new view
+          closeSettings();
+          switchView(newName);
+          openManageViewPanel();
+        })
+        .catch(function() {
+          showToast('Failed to create view');
+        });
+      return;
     }
   };
 }
@@ -1474,8 +1477,6 @@ function switchView(viewName) {
       sidebarLabel.textContent = viewName;
     }
   }
-  // Show/hide the header Add Sessions button
-  updateAddSessionsButton();
   // Persist active view — fire and forget
   api('PATCH', '/api/state', { active_view: viewName }).catch(function() {});
 }
@@ -2346,78 +2347,56 @@ function _executeKill(name, remoteId) {
     });
 }
 
-// ─── Add Sessions Panel ──────────────────────────────────────────────────────────────────────────
+// ─── Manage View Panel ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Open the Add Sessions panel for the active user view.
+ * Open the Manage View panel for the active user view.
  * Only available for user views (not "All" or "Hidden").
  */
-function openAddSessionsPanel() {
+function openManageViewPanel() {
   if (_activeView === 'all' || _activeView === 'hidden') return;
 
-  var panel = $('add-sessions-panel');
+  var panel = $('manage-view-panel');
   if (!panel) return;
 
-  // Update title
-  var titleEl = $('add-sessions-title');
-  if (titleEl) titleEl.textContent = 'Add Sessions to “' + _activeView + '”';
+  // Update title/name
+  var nameEl = $('manage-view-name');
+  if (nameEl) nameEl.textContent = _activeView;
 
-  renderAddSessionsList();
+  renderManageViewList();
   panel.classList.remove('hidden');
 
   // Close on backdrop click
-  var backdrop = $('add-sessions-backdrop');
+  var backdrop = $('manage-view-backdrop');
   if (backdrop) {
-    backdrop.onclick = closeAddSessionsPanel;
+    backdrop.onclick = closeManageViewPanel;
   }
 
-  // Close button
-  var closeBtn = $('add-sessions-close');
+  // Close button at bottom
+  var closeBtn = $('manage-view-close');
   if (closeBtn) {
-    closeBtn.onclick = closeAddSessionsPanel;
+    closeBtn.onclick = closeManageViewPanel;
   }
 }
 
 /**
- * Close the Add Sessions panel.
+ * Close the Manage View panel.
  */
-function closeAddSessionsPanel() {
-  var panel = $('add-sessions-panel');
+function closeManageViewPanel() {
+  var panel = $('manage-view-panel');
   if (panel) panel.classList.add('hidden');
 }
 
 /**
- * Show or hide the header #add-sessions-btn based on the active view.
- * Visible only when in a user-created view (not 'all' or 'hidden').
- * Called from switchView() and on initial load.
+ * Render the session list inside the Manage View panel.
+ * Shows ALL sessions: checked = in this view, unchecked = not in this view.
+ * Checked items sorted first, then unchecked. Within each group, alphabetical by device.
+ * Immediate-commit: each checkbox toggle fires PATCH /api/settings immediately.
+ * Hidden sessions: dimmed with "hidden" badge. Static note below for hidden items.
  */
-function updateAddSessionsButton() {
-  var btn = $('add-sessions-btn');
-  if (!btn) return;
-  var isUserView = false;
-  if (_activeView !== 'all' && _activeView !== 'hidden') {
-    var views = (_serverSettings && _serverSettings.views) || [];
-    for (var i = 0; i < views.length; i++) {
-      if (views[i].name === _activeView) { isUserView = true; break; }
-    }
-  }
-  if (isUserView) {
-    btn.classList.remove('hidden');
-  } else {
-    btn.classList.add('hidden');
-  }
-}
-
-/**
- * Render the session list inside the Add Sessions panel.
- * Shows all sessions NOT currently in the active view.
- * Hidden sessions are shown dimmed with a "hidden" badge and disclosure text.
- * Grouped by device, alphabetical within each group.
- * Immediate-commit checkboxes — each change fires a PATCH immediately.
- */
-function renderAddSessionsList() {
-  var listEl = $('add-sessions-list');
-  var emptyEl = $('add-sessions-empty');
+function renderManageViewList() {
+  var listEl = $('manage-view-list');
+  var summaryEl = $('manage-view-summary');
   if (!listEl) return;
 
   var views = (_serverSettings && _serverSettings.views) || [];
@@ -2434,103 +2413,113 @@ function renderAddSessionsList() {
   if (!activeViewObj) { listEl.innerHTML = ''; return; }
   var viewSessions = activeViewObj.sessions || [];
 
-  // Get all real sessions (not status entries), excluding those already in the view
+  // Get all real sessions (not status entries)
   var allSessions = (_currentSessions || []).filter(function(s) {
     return !s.status;
   });
 
+  // Update summary line
+  if (summaryEl) {
+    summaryEl.textContent = allSessions.length + ' sessions · ' + viewSessions.length + ' in this view';
+  }
+
+  // Partition into inView (checked first) and notInView
+  var inView = allSessions.filter(function(s) {
+    var key = s.sessionKey || s.name;
+    return viewSessions.indexOf(key) !== -1 || viewSessions.indexOf(s.name) !== -1;
+  });
   var notInView = allSessions.filter(function(s) {
     var key = s.sessionKey || s.name;
-    return viewSessions.indexOf(key) === -1;
+    return viewSessions.indexOf(key) === -1 && viewSessions.indexOf(s.name) === -1;
   });
 
-  if (notInView.length === 0) {
-    listEl.innerHTML = '';
-    if (emptyEl) emptyEl.style.display = '';
-    return;
+  // Sort each group: alphabetical, grouped by device
+  function sortByDeviceAlpha(arr) {
+    return arr.slice().sort(function(a, b) {
+      var da = (_getDeviceDisplayName(a) || '').toLowerCase();
+      var db = (_getDeviceDisplayName(b) || '').toLowerCase();
+      if (da !== db) return da < db ? -1 : 1;
+      var na = (a.name || '').toLowerCase();
+      var nb = (b.name || '').toLowerCase();
+      return na < nb ? -1 : na > nb ? 1 : 0;
+    });
   }
-  if (emptyEl) emptyEl.style.display = 'none';
 
-  // Sort: group by deviceName, alphabetical within each group
-  notInView.sort(function(a, b) {
-    var da = (_getDeviceDisplayName(a) || '').toLowerCase();
-    var db = (_getDeviceDisplayName(b) || '').toLowerCase();
-    if (da !== db) return da < db ? -1 : 1;
-    var na = (a.name || '').toLowerCase();
-    var nb = (b.name || '').toLowerCase();
-    return na < nb ? -1 : na > nb ? 1 : 0;
-  });
+  var sorted = sortByDeviceAlpha(inView).concat(sortByDeviceAlpha(notInView));
 
   var html = '';
-  for (var j = 0; j < notInView.length; j++) {
-    var s = notInView[j];
+  for (var j = 0; j < sorted.length; j++) {
+    var s = sorted[j];
     var key = s.sessionKey || s.name;
+    var isInView = viewSessions.indexOf(key) !== -1 || viewSessions.indexOf(s.name) !== -1;
     var isHidden = hidden.indexOf(key) !== -1 || hidden.indexOf(s.name) !== -1;
     var escapedName = escapeHtml(s.name || '');
     var deviceName = escapeHtml(_getDeviceDisplayName(s) || '');
 
-    html += '<label class="add-sessions-item' + (isHidden ? ' add-sessions-item--hidden' : '') + '">';
-    html += '<input type="checkbox" class="add-sessions-item__checkbox" data-session-key="' + escapeHtml(key) + '"' + (isHidden ? ' data-is-hidden="1"' : '') + ' />';
-    html += '<span class="add-sessions-item__name">' + escapedName + '</span>';
-    if (deviceName) html += '<span class="add-sessions-item__device">' + deviceName + '</span>';
-    if (isHidden) html += '<span class="add-sessions-item__badge">hidden</span>';
+    html += '<label class="manage-view-item' + (isHidden ? ' manage-view-item--hidden' : '') + '">';
+    html += '<input type="checkbox" class="manage-view-item__checkbox" data-session-key="' + escapeHtml(key) + '"' + (isInView ? ' checked' : '') + (isHidden ? ' data-is-hidden="1"' : '') + ' />';
+    html += '<span class="manage-view-item__name">' + escapedName + '</span>';
+    if (deviceName) html += '<span class="manage-view-item__device">' + deviceName + '</span>';
+    if (isHidden) html += '<span class="manage-view-item__badge">hidden</span>';
     html += '</label>';
     if (isHidden) {
-      html += '<div class="add-sessions-item__disclosure">This will make it visible again.</div>';
+      html += '<div class="manage-view-item__disclosure">Adding will unhide this session</div>';
     }
   }
 
   listEl.innerHTML = html;
 
   // Delegated change handler for immediate-commit checkboxes
-  // Each checkbox change fires api('PATCH', '/api/settings') immediately (no batch Done).
   listEl.onchange = function(e) {
-    var cb = e.target.closest('.add-sessions-item__checkbox');
+    var cb = e.target.closest('.manage-view-item__checkbox');
     if (!cb) return;
     var sessionKey = cb.dataset.sessionKey;
+    var isChecked = cb.checked;
     var isHiddenSession = cb.dataset.isHidden === '1';
 
-    if (cb.checked) {
-      var views = (_serverSettings && _serverSettings.views) || [];
-      var updatedViews = JSON.parse(JSON.stringify(views));
-      for (var vi = 0; vi < updatedViews.length; vi++) {
-        if (updatedViews[vi].name === _activeView) {
-          var vs = updatedViews[vi].sessions || [];
-          if (vs.indexOf(sessionKey) === -1) vs.push(sessionKey);
-          updatedViews[vi].sessions = vs;
-          break;
-        }
-      }
-      var patch = { views: updatedViews };
-      if (isHiddenSession) {
-        var hiddenList = (_serverSettings && _serverSettings.hidden_sessions) || [];
-        var hi = hiddenList.indexOf(sessionKey);
-        if (hi !== -1) {
-          var updatedHidden = hiddenList.slice();
-          updatedHidden.splice(hi, 1);
-          patch.hidden_sessions = updatedHidden;
-        }
-      }
-      api('PATCH', '/api/settings', patch)
-        .then(function() {
-          if (_serverSettings) {
-            _serverSettings.views = updatedViews;
-            if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
-          }
-          renderAddSessionsList();
-          renderGrid(_currentSessions || []);
-        })
-        .catch(function(err) {
-          showToast('Couldn’t save — try again');
-          if (cb) cb.checked = false;
-          console.warn('[renderAddSessionsList] PATCH failed:', err);
-        });
-    } else {
-      // Should not normally happen (unchecking means removing), but handle gracefully
-      cb.checked = false;
-    }
-  };
+    var views = (_serverSettings && _serverSettings.views) || [];
+    var updatedViews = JSON.parse(JSON.stringify(views));
 
+    for (var vi = 0; vi < updatedViews.length; vi++) {
+      if (updatedViews[vi].name === _activeView) {
+        var vs = updatedViews[vi].sessions || [];
+        if (isChecked) {
+          if (vs.indexOf(sessionKey) === -1) vs.push(sessionKey);
+        } else {
+          var pos = vs.indexOf(sessionKey);
+          if (pos !== -1) vs.splice(pos, 1);
+        }
+        updatedViews[vi].sessions = vs;
+        break;
+      }
+    }
+
+    var patch = { views: updatedViews };
+    if (isHiddenSession && isChecked) {
+      var hiddenList = (_serverSettings && _serverSettings.hidden_sessions) || [];
+      var hi = hiddenList.indexOf(sessionKey);
+      if (hi !== -1) {
+        var updatedHidden = hiddenList.slice();
+        updatedHidden.splice(hi, 1);
+        patch.hidden_sessions = updatedHidden;
+      }
+    }
+
+    api('PATCH', '/api/settings', patch)
+      .then(function() {
+        if (_serverSettings) {
+          _serverSettings.views = updatedViews;
+          if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+        }
+        renderManageViewList();
+        renderGrid(_currentSessions || []);
+      })
+      .catch(function(err) {
+        showToast('Couldn’t save — try again');
+        if (cb) cb.checked = !isChecked;
+        console.warn('[renderManageViewList] PATCH failed:', err);
+      });
+  };
 }
 
 /**
@@ -2547,6 +2536,7 @@ function _getDeviceDisplayName(session) {
   if (session.device_id) return session.device_id.slice(0, 8);
   return '';
 }
+
 
 // ─── Notification permission ────────────────────────────────────────────────
 
@@ -3895,6 +3885,9 @@ function bindStaticEventListeners() {
       if (action) {
         if (action.dataset.action === 'new-view') {
           showNewViewInput();
+        } else if (action.dataset.action === 'manage-view') {
+          closeViewDropdown();
+          openManageViewPanel();
         } else if (action.dataset.action === 'manage-views') {
           closeViewDropdown();
           openSettings();
@@ -3925,6 +3918,10 @@ function bindStaticEventListeners() {
       if (action) {
         if (action.dataset.action === 'new-view') {
           showSidebarNewViewInput();
+        } else if (action.dataset.action === 'manage-view') {
+          sidebarViewMenu.classList.add('hidden');
+          if (sidebarViewTrigger) sidebarViewTrigger.setAttribute('aria-expanded', 'false');
+          openManageViewPanel();
         } else if (action.dataset.action === 'manage-views') {
           sidebarViewMenu.classList.add('hidden');
           if (sidebarViewTrigger) sidebarViewTrigger.setAttribute('aria-expanded', 'false');
@@ -3937,9 +3934,6 @@ function bindStaticEventListeners() {
       }
     });
   }
-
-  var addSessionsBtn = $('add-sessions-btn');
-  if (addSessionsBtn) on(addSessionsBtn, 'click', openAddSessionsPanel);
 
   // Click-outside closes the header view dropdown
   document.addEventListener('click', function(e) {
@@ -3958,6 +3952,8 @@ function bindStaticEventListeners() {
     if (!sidebarDropdown || sidebarDropdown.classList.contains('hidden')) return;
     var sidebarTrigger = $('sidebar-view-dropdown-trigger');
     if (sidebarTrigger && sidebarTrigger.contains(e.target)) return;
+    // Don't close if a new-view input was just created (replaceChild removes the click target from DOM)
+    if (sidebarDropdown.querySelector('.view-dropdown__new-input')) return;
     if (!sidebarDropdown.contains(e.target)) {
       sidebarDropdown.classList.add('hidden');
       if (sidebarTrigger) sidebarTrigger.setAttribute('aria-expanded', 'false');
@@ -4278,7 +4274,14 @@ document.addEventListener('DOMContentLoaded', async function() {
       updatePageTitle();
       startHeartbeat();
       bindStaticEventListeners();
-      updateAddSessionsButton();
+      renderViewDropdown();
+      // Update sidebar label after restoreState sets _activeView (Issue 7)
+      var sidebarLabelEl = $('sidebar-view-label');
+      if (sidebarLabelEl) {
+        if (_activeView === 'all') sidebarLabelEl.textContent = 'All Sessions';
+        else if (_activeView === 'hidden') sidebarLabelEl.textContent = 'Hidden';
+        else sidebarLabelEl.textContent = _activeView;
+      }
     })
     .catch(function(err) {
       console.error('[init] restoreState failed, retrying in 5s:', err);
@@ -4357,10 +4360,10 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
-    // Add Sessions panel
-    openAddSessionsPanel,
-    closeAddSessionsPanel,
-    renderAddSessionsList,
+    // Manage View panel
+    openManageViewPanel,
+    closeManageViewPanel,
+    renderManageViewList,
     // Flyout menu
     openFlyoutMenu,
     closeFlyoutMenu,
@@ -4376,8 +4379,6 @@ if (typeof module !== 'undefined' && module.exports) {
     renderSidebarViewDropdown,
     toggleSidebarViewDropdown,
     showSidebarNewViewInput,
-    // Add Sessions header button
-    updateAddSessionsButton,
     // Manage Views settings tab
     renderViewsSettingsTab,
     _saveViewsAndRerender,

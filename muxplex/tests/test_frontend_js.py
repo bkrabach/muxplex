@@ -3502,8 +3502,11 @@ def test_delete_active_view_persists_active_view_to_server() -> None:
     )
 
 
-def test_rename_active_view_persists_active_view_to_server() -> None:
-    """When renaming the active view in renderViewsSettingsTab, PATCH /api/state with active_view."""
+def test_views_settings_tab_no_inline_rename_commit() -> None:
+    """renderViewsSettingsTab must NOT have inline rename (commitRename removed in Issue 6).
+
+    Rename now lives in the Manage View panel, not the settings tab.
+    """
     match = re.search(
         r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
         _JS,
@@ -3511,15 +3514,10 @@ def test_rename_active_view_persists_active_view_to_server() -> None:
     )
     assert match, "renderViewsSettingsTab function not found"
     body = match.group(1)
-    # Find the commitRename block or rename path
-    rename_idx = body.find("commitRename")
-    assert rename_idx >= 0, "commitRename not found in renderViewsSettingsTab"
-    rename_block = body[rename_idx:]
-    assert "api(" in rename_block, (
-        "renderViewsSettingsTab rename path must call api() to persist active_view"
-    )
-    assert "active_view" in rename_block, (
-        "renderViewsSettingsTab rename path must PATCH /api/state with active_view"
+    # Inline rename (commitRename) must be gone — it moved to the Manage View panel
+    assert "commitRename" not in body, (
+        "renderViewsSettingsTab must not have inline commitRename — "
+        "rename moved to the Manage View panel (Issue 6)"
     )
 
 
@@ -3567,8 +3565,8 @@ def test_show_new_view_input_reserved_name_check_is_case_insensitive() -> None:
     )
 
 
-def test_rename_reserved_name_check_is_case_insensitive() -> None:
-    """The rename commitRename reserved name check must use toLowerCase()."""
+def test_rename_reserved_name_check_moved_to_manage_view_panel() -> None:
+    """renderViewsSettingsTab must NOT contain commitRename — it moved to Manage View panel (Issue 6)."""
     match = re.search(
         r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
         _JS,
@@ -3576,19 +3574,17 @@ def test_rename_reserved_name_check_is_case_insensitive() -> None:
     )
     assert match, "renderViewsSettingsTab function not found"
     body = match.group(1)
-    rename_idx = body.find("commitRename")
-    assert rename_idx >= 0, "commitRename not found in renderViewsSettingsTab"
-    rename_block = body[rename_idx:]
-    assert "toLowerCase" in rename_block, (
-        "commitRename reserved name check must use toLowerCase() — spec requires case-insensitive"
+    # commitRename was removed from settings tab — it now lives in openManageViewPanel
+    assert "commitRename" not in body, (
+        "renderViewsSettingsTab must not have commitRename — rename moved to Manage View panel (Issue 6)"
     )
 
 
 # ─── Fix 8: rename input maxLength ───────────────────────────────────────────
 
 
-def test_rename_input_has_max_length() -> None:
-    """renderViewsSettingsTab rename input must have maxLength = 30."""
+def test_rename_input_not_in_settings_tab() -> None:
+    """renderViewsSettingsTab must NOT have views-settings-rename-input (Issue 6: inline rename removed)."""
     match = re.search(
         r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
         _JS,
@@ -3596,12 +3592,9 @@ def test_rename_input_has_max_length() -> None:
     )
     assert match, "renderViewsSettingsTab function not found"
     body = match.group(1)
-    rename_idx = body.find("views-settings-rename-input")
-    assert rename_idx >= 0, "rename input not found in renderViewsSettingsTab"
-    rename_block = body[rename_idx : rename_idx + 400]
-    assert "maxLength" in rename_block, (
-        "renderViewsSettingsTab rename input must set maxLength = 30 "
-        "(matches creation input constraint)"
+    assert "views-settings-rename-input" not in body, (
+        "renderViewsSettingsTab must NOT have views-settings-rename-input — "
+        "inline rename was moved to the Manage View panel (Issue 6)"
     )
 
 
@@ -3889,40 +3882,40 @@ def test_do_kill_inline_shows_confirmation_buttons() -> None:
 # ============================================================
 
 
-def test_open_add_sessions_panel_function_exists() -> None:
-    """app.js must define an openAddSessionsPanel function."""
-    assert "function openAddSessionsPanel" in _JS, (
-        "app.js must contain an openAddSessionsPanel function"
+def test_open_manage_view_panel_function_exists() -> None:
+    """app.js must define an openManageViewPanel function (renamed from openAddSessionsPanel)."""
+    assert "function openManageViewPanel" in _JS, (
+        "app.js must contain an openManageViewPanel function"
     )
 
 
-def test_close_add_sessions_panel_function_exists() -> None:
-    """app.js must define a closeAddSessionsPanel function."""
-    assert "function closeAddSessionsPanel" in _JS, (
-        "app.js must contain a closeAddSessionsPanel function"
+def test_close_manage_view_panel_function_exists() -> None:
+    """app.js must define a closeManageViewPanel function (renamed from closeAddSessionsPanel)."""
+    assert "function closeManageViewPanel" in _JS, (
+        "app.js must contain a closeManageViewPanel function"
     )
 
 
-def test_render_add_sessions_list_function_exists() -> None:
-    """app.js must define a renderAddSessionsList function."""
-    assert "function renderAddSessionsList" in _JS, (
-        "app.js must contain a renderAddSessionsList function"
+def test_render_manage_view_list_function_exists() -> None:
+    """app.js must define a renderManageViewList function (renamed from renderAddSessionsList)."""
+    assert "function renderManageViewList" in _JS, (
+        "app.js must contain a renderManageViewList function"
     )
 
 
-def test_add_sessions_uses_immediate_commit() -> None:
-    """renderAddSessionsList must PATCH immediately on checkbox change (no batch Done)."""
-    fn_body = _JS.split("function renderAddSessionsList")[1].split("\nfunction ")[0]
+def test_manage_view_uses_immediate_commit() -> None:
+    """renderManageViewList must PATCH immediately on checkbox change (no batch Done)."""
+    fn_body = _JS.split("function renderManageViewList")[1].split("\nfunction ")[0]
     assert "PATCH" in fn_body or "api(" in fn_body, (
-        "renderAddSessionsList must fire PATCH on each checkbox change (immediate commit)"
+        "renderManageViewList must fire PATCH on each checkbox change (immediate commit)"
     )
 
 
-def test_add_sessions_shows_device_name() -> None:
-    """renderAddSessionsList must show device name next to each session."""
-    fn_body = _JS.split("function renderAddSessionsList")[1].split("\nfunction ")[0]
+def test_manage_view_shows_device_name() -> None:
+    """renderManageViewList must show device name next to each session."""
+    fn_body = _JS.split("function renderManageViewList")[1].split("\nfunction ")[0]
     assert "deviceName" in fn_body or "device" in fn_body, (
-        "renderAddSessionsList must show device name for disambiguation"
+        "renderManageViewList must show device name for disambiguation"
     )
 
 
@@ -3947,23 +3940,22 @@ def test_open_flyout_menu_checks_mobile() -> None:
 # ─── Task 11: Add Sessions entry point in grid ───────────────────────────────
 
 
-def test_render_grid_has_add_sessions_affordance() -> None:
-    """app.js must have an 'Add Sessions' affordance for user views.
+def test_render_view_dropdown_has_manage_view_affordance() -> None:
+    """renderViewDropdown must include a 'Manage [ViewName]...' action for user views.
 
-    The affordance moved from a tile in renderGrid to a header button (#add-sessions-btn)
-    managed by updateAddSessionsButton(). Either the old tile approach or the new header
-    button approach satisfies this requirement.
+    The affordance moved from a header button to the dropdown's 'Manage [ViewName]...' item.
+    This item should open the Manage View panel for the current user view.
     """
-    fn_body = _JS.split("function renderGrid")[1].split("\nfunction ")[0]
-    # Old approach: tile in the grid | New approach: header button via updateAddSessionsButton
-    has_affordance = (
-        "add-sessions" in fn_body.lower()
-        or "openAddSessionsPanel" in fn_body
-        or "updateAddSessionsButton" in _JS
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
     )
-    assert has_affordance, (
-        "app.js must have an 'Add Sessions' affordance for user views — "
-        "either as a tile in renderGrid or as a header button via updateAddSessionsButton"
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "manage-view" in body, (
+        "renderViewDropdown must include a 'Manage [ViewName]...' action with data-action='manage-view' "
+        "for user views — this replaced the old #add-sessions-btn header button"
     )
 
 
@@ -4028,21 +4020,21 @@ def test_flyout_delegation_handler_no_stop_propagation() -> None:
 # ── BUG 2: disclosure has no hover-based show/hide in renderAddSessionsList ──
 
 
-def test_render_add_sessions_list_no_hover_disclosure() -> None:
-    """renderAddSessionsList must NOT have mouseover/mouseout handlers for disclosure.
+def test_render_manage_view_list_no_hover_disclosure() -> None:
+    """renderManageViewList must NOT have mouseover/mouseout handlers for disclosure.
 
     BUG: The disclosure was shown only on hover via JS mouseover/mouseout. This broke
     on mobile (no hover) and was inconsistent. Fix: disclose statically — remove CSS
     display:none and remove the hover handlers. The disclosure appears whenever the
     hidden item is in the HTML (it's already conditionally rendered for hidden items).
     """
-    fn_body = _JS.split("function renderAddSessionsList")[1].split("\nfunction ")[0]
+    fn_body = _JS.split("function renderManageViewList")[1].split("\nfunction ")[0]
     assert "onmouseover" not in fn_body, (
-        "renderAddSessionsList must not use onmouseover to show disclosure — "
+        "renderManageViewList must not use onmouseover to show disclosure — "
         "the disclosure must be statically visible (BUG 2 fix)"
     )
     assert "onmouseout" not in fn_body, (
-        "renderAddSessionsList must not use onmouseout to hide disclosure — "
+        "renderManageViewList must not use onmouseout to hide disclosure — "
         "the disclosure must be statically visible (BUG 2 fix)"
     )
 
@@ -4349,8 +4341,8 @@ def test_render_view_dropdown_shows_user_view_session_count() -> None:
 
 # — Issue 3: Empty new view opens Add Sessions panel ———————————————————
 
-def test_show_new_view_input_calls_open_add_sessions_panel() -> None:
-    """showNewViewInput must call openAddSessionsPanel after creating a new view."""
+def test_show_new_view_input_calls_open_manage_view_panel() -> None:
+    """showNewViewInput must call openManageViewPanel after creating a new view."""
     match = re.search(
         r"function showNewViewInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
@@ -4358,14 +4350,14 @@ def test_show_new_view_input_calls_open_add_sessions_panel() -> None:
     )
     assert match, "showNewViewInput function not found"
     body = match.group(1)
-    assert "openAddSessionsPanel" in body, (
-        "showNewViewInput must call openAddSessionsPanel() after creating a new view — "
-        "so the user immediately sees the Add Sessions panel for their empty view"
+    assert "openManageViewPanel" in body, (
+        "showNewViewInput must call openManageViewPanel() after creating a new view — "
+        "so the user immediately sees the Manage View panel for their empty view"
     )
 
 
-def test_show_sidebar_new_view_input_calls_open_add_sessions_panel() -> None:
-    """showSidebarNewViewInput must call openAddSessionsPanel after creating a new view."""
+def test_show_sidebar_new_view_input_calls_open_manage_view_panel() -> None:
+    """showSidebarNewViewInput must call openManageViewPanel after creating a new view."""
     match = re.search(
         r"function showSidebarNewViewInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
@@ -4373,8 +4365,8 @@ def test_show_sidebar_new_view_input_calls_open_add_sessions_panel() -> None:
     )
     assert match, "showSidebarNewViewInput function not found"
     body = match.group(1)
-    assert "openAddSessionsPanel" in body, (
-        "showSidebarNewViewInput must call openAddSessionsPanel() after creating a new view"
+    assert "openManageViewPanel" in body, (
+        "showSidebarNewViewInput must call openManageViewPanel() after creating a new view"
     )
 
 
@@ -4417,16 +4409,16 @@ def test_open_flyout_submenu_new_view_creates_and_switches() -> None:
 
 # — Issue 5: Add Sessions header button ————————————————————————————————
 
-def test_update_add_sessions_button_function_exists() -> None:
-    """updateAddSessionsButton function must exist in app.js."""
-    assert "function updateAddSessionsButton" in _JS, (
-        "updateAddSessionsButton must be defined in app.js — "
-        "shows/hides the '+ Add' header button based on active view"
+def test_update_add_sessions_button_removed() -> None:
+    """updateAddSessionsButton must be REMOVED — the + Add button is gone (Issue 5)."""
+    assert "function updateAddSessionsButton" not in _JS, (
+        "updateAddSessionsButton must be removed — the #add-sessions-btn header button "
+        "was removed and replaced by the 'Manage [ViewName]...' dropdown item"
     )
 
 
-def test_switch_view_calls_update_add_sessions_button() -> None:
-    """switchView must call updateAddSessionsButton to update header button visibility."""
+def test_switch_view_no_update_add_sessions_button() -> None:
+    """switchView must NOT call updateAddSessionsButton (it was removed in Issue 5)."""
     match = re.search(
         r"function switchView\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
         _JS,
@@ -4434,22 +4426,22 @@ def test_switch_view_calls_update_add_sessions_button() -> None:
     )
     assert match, "switchView function not found"
     body = match.group(1)
-    assert "updateAddSessionsButton" in body, (
-        "switchView must call updateAddSessionsButton() to show/hide the header Add button"
+    assert "updateAddSessionsButton" not in body, (
+        "switchView must not call updateAddSessionsButton() — it was removed in Issue 5"
     )
 
 
 def test_render_grid_no_muxplex_app_onclick() -> None:
-    """renderGrid must not use the broken window.MuxplexApp.openAddSessionsPanel onclick."""
+    """renderGrid must not use the broken window.MuxplexApp.openManageViewPanel onclick."""
     fn_body = _JS.split("function renderGrid")[1].split("\nfunction ")[0]
     assert "MuxplexApp.openAddSessionsPanel" not in fn_body, (
         "renderGrid must not use onclick='window.MuxplexApp.openAddSessionsPanel()' — "
-        "this was broken; the Add Sessions entry point moved to the header button"
+        "this was broken; the Manage View entry point moved to the dropdown"
     )
 
 
-def test_bind_static_event_listeners_binds_add_sessions_btn() -> None:
-    """bindStaticEventListeners must bind #add-sessions-btn click to openAddSessionsPanel."""
+def test_bind_static_event_listeners_no_add_sessions_btn() -> None:
+    """bindStaticEventListeners must NOT bind #add-sessions-btn (button was removed in Issue 5)."""
     match = re.search(
         r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
         _JS,
@@ -4457,8 +4449,9 @@ def test_bind_static_event_listeners_binds_add_sessions_btn() -> None:
     )
     assert match, "bindStaticEventListeners function not found"
     body = match.group(1)
-    assert "add-sessions-btn" in body, (
-        "bindStaticEventListeners must bind #add-sessions-btn click to openAddSessionsPanel"
+    assert "add-sessions-btn" not in body, (
+        "bindStaticEventListeners must not bind #add-sessions-btn — "
+        "the button was removed; Manage View is reached via the dropdown"
     )
 
 
@@ -4487,4 +4480,152 @@ def test_tile_options_btn_css_not_absolute() -> None:
     assert "position: absolute" not in rule_body and "position:absolute" not in rule_body, (
         ".tile-options-btn must not use position:absolute — "
         "it should be an inline flex item inside tile-header to prevent device badge overlap"
+    )
+
+
+# ============================================================
+# UX Overhaul — 9 refinements from live testing
+# ============================================================
+
+
+# — Issue 1: Sidebar dropdown "New View" click-dismiss race ——————————————
+
+
+def test_sidebar_click_outside_has_new_view_input_guard() -> None:
+    """Sidebar click-outside handler must guard against new-view input dismiss race.
+
+    Race condition: clicking '+ New View' in the sidebar triggers the click-outside
+    handler before the input appears. Guard: check for .view-dropdown__new-input
+    presence and return early if found.
+    """
+    match = re.search(
+        r"// Click-outside closes the sidebar view dropdown\s*\n\s*"
+        r"document\.addEventListener\('click',\s*function\(e\)\s*\{(.*?)\}\s*\);",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "Click-outside handler for sidebar view dropdown not found"
+    body = match.group(1)
+    assert ".view-dropdown__new-input" in body, (
+        "Sidebar click-outside handler must guard: "
+        "if (sidebarDropdown.querySelector('.view-dropdown__new-input')) return; "
+        "— prevents race where the new-view input is dismissed immediately"
+    )
+
+
+# — Issue 4: Dropdown structure — "Manage [ViewName]…" ————————————————
+
+
+def test_render_view_dropdown_has_manage_view_item_for_user_view() -> None:
+    """renderViewDropdown must include 'Manage [ViewName]...' action for user views."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "manage-view" in body, (
+        "renderViewDropdown must include a 'Manage [ViewName]...' action "
+        "with data-action='manage-view' for user views"
+    )
+
+
+def test_render_sidebar_dropdown_has_manage_view_item_for_user_view() -> None:
+    """renderSidebarViewDropdown must include 'Manage [ViewName]...' action for user views."""
+    match = re.search(
+        r"function renderSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebarViewDropdown function not found"
+    body = match.group(1)
+    assert "manage-view" in body, (
+        "renderSidebarViewDropdown must include a 'Manage [ViewName]...' action "
+        "with data-action='manage-view' for user views"
+    )
+
+
+# — Issue 5: No #add-sessions-btn + updateAddSessionsButton removed ————————
+
+
+def test_domcontentloaded_no_update_add_sessions_button_call() -> None:
+    """DOMContentLoaded handler must NOT call updateAddSessionsButton (it was removed)."""
+    assert "updateAddSessionsButton" not in _JS, (
+        "updateAddSessionsButton must be completely removed from app.js — "
+        "the #add-sessions-btn header button was replaced by the dropdown manage-view item"
+    )
+
+
+# — Issue 6: Manage View settings tab ——————————————————————————————————
+
+
+def test_views_settings_tab_has_manage_button_per_row() -> None:
+    """renderViewsSettingsTab must include a 'Manage' button per view row."""
+    match = re.search(
+        r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewsSettingsTab function not found"
+    body = match.group(1)
+    assert "manage-view" in body.lower() or "Manage" in body, (
+        "renderViewsSettingsTab must include a 'Manage' button per view row "
+        "that opens the Manage View panel for that view"
+    )
+
+
+def test_views_settings_tab_has_new_view_button_at_bottom() -> None:
+    """renderViewsSettingsTab must include a '+ New View' button at the bottom."""
+    match = re.search(
+        r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewsSettingsTab function not found"
+    body = match.group(1)
+    assert "New View" in body or "new-view" in body, (
+        "renderViewsSettingsTab must include a '+ New View' button at the bottom"
+    )
+
+
+def test_views_settings_tab_no_inline_rename_on_name_click() -> None:
+    """renderViewsSettingsTab must NOT have click-to-rename on the name span.
+
+    Rename now lives in the Manage View panel, not in the settings tab.
+    """
+    match = re.search(
+        r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewsSettingsTab function not found"
+    body = match.group(1)
+    # The old inline rename code clicked on views-settings-name span to show an input
+    assert "views-settings-rename-input" not in body, (
+        "renderViewsSettingsTab must not have inline rename via views-settings-rename-input — "
+        "rename now lives in the Manage View panel"
+    )
+
+
+# — Issue 7: Dropdown label fix on page reload —————————————————————————
+
+
+def test_domcontentloaded_calls_render_view_dropdown_after_restore() -> None:
+    """DOMContentLoaded must call renderViewDropdown() after restoreState() completes.
+
+    Bug: restoreState() sets _activeView but the dropdown label stays as 'All Sessions'.
+    Fix: call renderViewDropdown() after restoreState() so the label reflects _activeView.
+    """
+    # Find the DOMContentLoaded handler section (from DOMContentLoaded to end of file)
+    idx = _JS.find("document.addEventListener('DOMContentLoaded'")
+    assert idx >= 0, "DOMContentLoaded handler not found"
+    handler_section = _JS[idx:]
+    # restoreState must appear before renderViewDropdown in the handler
+    restore_idx = handler_section.find("restoreState()")
+    assert restore_idx >= 0, "restoreState call not found in DOMContentLoaded section"
+    after_restore = handler_section[restore_idx:]
+    assert "renderViewDropdown" in after_restore, (
+        "DOMContentLoaded must call renderViewDropdown() after restoreState() so the "
+        "dropdown label correctly reflects _activeView on page reload"
     )

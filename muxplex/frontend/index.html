@@ -27,7 +27,6 @@
         <div id="view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
       </div>
       <div class="header-actions">
-        <button id="add-sessions-btn" class="header-btn hidden" aria-label="Add sessions to view">+ Add</button>
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
         <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
         <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;</button>
@@ -87,16 +86,20 @@
     </div>
   </div>
 
-  <!-- —— Add Sessions panel ——————————————————————————————————————————— -->
-  <div id="add-sessions-panel" class="add-sessions-panel hidden" role="dialog" aria-modal="true" aria-label="Add sessions to view">
-    <div class="add-sessions-panel__backdrop" id="add-sessions-backdrop"></div>
-    <div class="add-sessions-panel__content">
-      <div class="add-sessions-panel__header">
-        <h2 id="add-sessions-title" class="add-sessions-panel__title">Add Sessions</h2>
-        <button id="add-sessions-close" class="add-sessions-panel__close" aria-label="Close">&times;</button>
+  <!-- —— Manage View panel ———————————————————————————————————————————————————————————————————————————————————— -->
+  <div id="manage-view-panel" class="manage-view-panel hidden" role="dialog" aria-modal="true" aria-label="Manage view">
+    <div class="manage-view-panel__backdrop" id="manage-view-backdrop"></div>
+    <div class="manage-view-panel__content">
+      <div class="manage-view-panel__header">
+        <div class="manage-view-panel__name-row">
+          <h2 id="manage-view-name" class="manage-view-panel__name">View Name</h2>
+        </div>
+        <p id="manage-view-summary" class="manage-view-panel__summary"></p>
       </div>
-      <div id="add-sessions-list" class="add-sessions-panel__list"></div>
-      <p id="add-sessions-empty" class="add-sessions-panel__empty" style="display:none">All sessions are already in this view.</p>
+      <div id="manage-view-list" class="manage-view-panel__list"></div>
+      <div class="manage-view-panel__footer">
+        <button id="manage-view-close" class="manage-view-panel__close-btn">Close</button>
+      </div>
     </div>
   </div>
 
@@ -228,7 +231,7 @@
             <button id="setting-template-reset" class="settings-action-btn">Reset to default</button>
           </div>
           <div class="settings-field settings-field--column">
-            <label class="settings-label" for="setting-delete-template">Delete session command</label>
+            <label class="settings-label" for="setting-delete-template">Kill session command</label>
             <textarea id="setting-delete-template" class="settings-textarea" rows="3" placeholder="tmux kill-session -t {name}"></textarea>
             <span class="settings-helper">{name} is replaced with the session name</span>
             <button id="setting-delete-template-reset" class="settings-action-btn">Reset to default</button>

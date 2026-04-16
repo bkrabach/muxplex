@@ -1540,20 +1540,49 @@ def test_no_hidden_sessions_checkbox_list_in_settings() -> None:
 # ============================================================
 
 
-def test_add_sessions_panel_exists() -> None:
-    """index.html must contain an add-sessions-panel element."""
+def test_manage_view_panel_exists() -> None:
+    """index.html must contain a manage-view-panel element (renamed from add-sessions-panel)."""
     soup = _SOUP
-    assert soup.find(id="add-sessions-panel"), (
-        "index.html must contain an element with id='add-sessions-panel'"
+    assert soup.find(id="manage-view-panel"), (
+        "index.html must contain an element with id='manage-view-panel'"
     )
 
 
-def test_add_sessions_panel_has_role_dialog() -> None:
-    """add-sessions-panel must have role='dialog' and aria-modal='true'."""
+def test_manage_view_panel_has_role_dialog() -> None:
+    """manage-view-panel must have role='dialog' and aria-modal='true'."""
     soup = _SOUP
-    panel = soup.find(id="add-sessions-panel")
-    assert panel, "Missing #add-sessions-panel"
-    assert panel.get("role") == "dialog", "add-sessions-panel must have role='dialog'"
+    panel = soup.find(id="manage-view-panel")
+    assert panel, "Missing #manage-view-panel"
+    assert panel.get("role") == "dialog", "manage-view-panel must have role='dialog'"
     assert panel.get("aria-modal") == "true", (
-        "add-sessions-panel must have aria-modal='true'"
+        "manage-view-panel must have aria-modal='true'"
+    )
+
+
+def test_add_sessions_btn_removed() -> None:
+    """index.html must NOT contain #add-sessions-btn (removed in Issue 5).
+
+    The '+ Add' header button was removed — Manage View is now accessed via
+    the dropdown's 'Manage [ViewName]...' item.
+    """
+    soup = _SOUP
+    assert not soup.find(id="add-sessions-btn"), (
+        "index.html must NOT contain id='add-sessions-btn' — "
+        "the button was removed; use the dropdown 'Manage [ViewName]...' item instead"
+    )
+
+
+def test_kill_session_command_label() -> None:
+    """Settings Commands tab must use 'Kill session command' not 'Delete session command'.
+
+    Terminology must match the flyout menu which uses 'Kill Session'.
+    """
+    html = HTML_PATH.read_text()
+    assert "Kill session command" in html or "Kill Session Command" in html, (
+        "Settings Commands tab must use 'Kill session command' — "
+        "terminology must match the flyout's 'Kill Session' action"
+    )
+    assert "Delete session command" not in html and "Delete Session Command" not in html, (
+        "Settings Commands tab must not use 'Delete session command' — "
+        "rename to 'Kill session command' to match the flyout"
     )

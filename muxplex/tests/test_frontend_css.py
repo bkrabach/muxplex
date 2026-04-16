@@ -2214,17 +2214,16 @@ def test_flyout_bottom_sheet_styled() -> None:
 # ============================================================
 
 
-def test_add_sessions_panel_styled() -> None:
-    """style.css must contain .add-sessions-panel styles."""
+def test_manage_view_panel_styled() -> None:
+    """style.css must contain .manage-view-panel styles (renamed from .add-sessions-panel)."""
     css = read_css()
-    assert ".add-sessions-panel" in css, "style.css must style .add-sessions-panel"
+    assert ".manage-view-panel" in css, "style.css must style .manage-view-panel"
 
 
-def test_add_sessions_item_styled() -> None:
-    """style.css must contain .add-sessions-item styles."""
+def test_manage_view_item_styled() -> None:
+    """style.css must contain .manage-view-item styles (renamed from .add-sessions-item)."""
     css = read_css()
-    assert ".add-sessions-item" in css, "style.css must style .add-sessions-item"
-    assert ".add-sessions-item" in css, "style.css must style .add-sessions-item"
+    assert ".manage-view-item" in css, "style.css must style .manage-view-item"
 
 
 # ─── Phase 3 COE findings regression tests ──────────────────────────────────
@@ -2246,11 +2245,11 @@ def test_disclosure_not_hidden_by_css() -> None:
     import re as _re
 
     match = _re.search(
-        r"\.add-sessions-item__disclosure\s*\{([^}]*)\}",
+        r"\.manage-view-item__disclosure\s*\{([^}]*)\}",
         css,
         _re.DOTALL,
     )
-    assert match, ".add-sessions-item__disclosure rule not found in style.css"
+    assert match, ".manage-view-item__disclosure rule not found in style.css"
     body = match.group(1)
     assert "display: none" not in body and "display:none" not in body.replace(" ", ""), (
         ".add-sessions-item__disclosure must NOT have display:none — "
@@ -2308,4 +2307,58 @@ def test_no_sidebar_delete_css() -> None:
     assert ".sidebar-delete" not in css, (
         ".sidebar-delete CSS rules must be removed from style.css — "
         "the button was removed from buildSidebarHTML(); orphaned CSS is dead code"
+    )
+
+
+# ============================================================
+# UX Overhaul CSS — Issues 3 and 8
+# ============================================================
+
+
+def test_manage_view_panel_styles_exist() -> None:
+    """.manage-view-panel CSS rule must exist (renamed from .add-sessions-panel).
+
+    Issue 3: The Add Sessions panel was redesigned as the Manage View panel.
+    All CSS classes must be renamed from add-sessions-* to manage-view-*.
+    """
+    css = read_css()
+    assert ".manage-view-panel" in css, (
+        ".manage-view-panel CSS rule must exist in style.css — "
+        "renamed from .add-sessions-panel (Issue 3)"
+    )
+    assert ".add-sessions-panel" not in css, (
+        ".add-sessions-panel CSS rule must be removed — "
+        "renamed to .manage-view-panel (Issue 3)"
+    )
+
+
+def test_device_badge_height_matches_flyout_button() -> None:
+    """.device-badge must have a height/line-height matching the ⋮ button (~22-24px).
+
+    Issue 8: The device badge was shorter than the ⋮ flyout button (24x24px),
+    making the tile header look uneven. Fix: increase .device-badge dimensions.
+    """
+    import re
+
+    css = read_css()
+    # Find the BASE .device-badge rule (not a qualified selector like .parent .device-badge)
+    # We look for the standalone rule at the start of a line (or after whitespace)
+    match = re.search(r"(?:^|\n)\.device-badge\s*\{([^}]*)\}", css, re.DOTALL)
+    assert match, ".device-badge CSS rule not found"
+    rule = match.group(1)
+    # Should have a line-height or min-height that results in ~22-24px
+    # Check for either explicit height/min-height or a large enough line-height/padding
+    has_height = (
+        "min-height" in rule
+        or ("line-height" in rule and any(
+            f"line-height: {n}" in rule or f"line-height:{n}" in rule
+            for n in ["1.6", "1.7", "1.8", "1.9", "2", "22px", "23px", "24px"]
+        ))
+        or ("padding" in rule and "padding: 2px" in rule)
+        or ("padding: 3px" in rule)
+        or ("padding: 4px" in rule)
+    )
+    assert has_height, (
+        ".device-badge must have increased height to match the ~24px ⋮ button — "
+        "add min-height or increase padding/line-height so the badge is ~22-24px tall"
     )
