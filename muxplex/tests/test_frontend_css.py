@@ -2362,3 +2362,22 @@ def test_device_badge_height_matches_flyout_button() -> None:
         ".device-badge must have increased height to match the ~24px ⋮ button — "
         "add min-height or increase padding/line-height so the badge is ~22-24px tall"
     )
+
+
+# ── Sidebar flyout menu (feat: add flyout menu to sidebar session items) ──────
+
+
+def test_css_sidebar_options_btn_styled() -> None:
+    """CSS must contain a rule targeting .tile-options-btn inside .sidebar-item-header or .sidebar-item."""
+    css = read_css()
+    # Look for a CSS rule that targets the options btn specifically in the sidebar context
+    has_sidebar_btn_style = (
+        ".sidebar-item-header .tile-options-btn" in css
+        or ".sidebar-item .tile-options-btn" in css
+        or ".sidebar-item-header > .tile-options-btn" in css
+    )
+    assert has_sidebar_btn_style, (
+        "CSS must include a rule targeting .tile-options-btn inside .sidebar-item-header "
+        "or .sidebar-item to ensure the button fits the sidebar layout "
+        "(smaller and compact for the narrower sidebar width)"
+    )

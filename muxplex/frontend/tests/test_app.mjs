@@ -1717,6 +1717,39 @@ test('buildSidebarHTML includes snapshot preview in a pre element', () => {
   assert.ok(/<pre>[\s\S]*line1[\s\S]*<\/pre>/.test(html), 'snapshot content should be inside a <pre> element');
 });
 
+// --- buildSidebarHTML flyout menu button ---
+
+test('buildSidebarHTML article element has data-session-key attribute', () => {
+  const session = { name: 'my-session', sessionKey: 'key::my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('data-session-key='), 'article must have data-session-key attribute');
+  assert.ok(html.includes('data-session-key="key::my-session"'), 'data-session-key must use sessionKey value');
+});
+
+test('buildSidebarHTML article element uses session name as data-session-key when sessionKey is absent', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('data-session-key="my-session"'), 'data-session-key must fall back to session.name when sessionKey absent');
+});
+
+test('buildSidebarHTML header contains a tile-options-btn button', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('tile-options-btn'), 'sidebar item header must include tile-options-btn button');
+});
+
+test('buildSidebarHTML tile-options-btn has aria-label="Session options"', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('aria-label="Session options"'), 'tile-options-btn must have aria-label="Session options"');
+});
+
+test('buildSidebarHTML tile-options-btn has aria-haspopup="true"', () => {
+  const session = { name: 'my-session', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, '');
+  assert.ok(html.includes('aria-haspopup="true"'), 'tile-options-btn must have aria-haspopup="true"');
+});
+
 // --- renderSidebar ---
 
 test('renderSidebar populates sidebar-list innerHTML when viewMode is fullscreen', () => {

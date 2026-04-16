@@ -4632,3 +4632,82 @@ def test_domcontentloaded_calls_render_view_dropdown_after_restore() -> None:
         "DOMContentLoaded must call renderViewDropdown() after restoreState() so the "
         "dropdown label correctly reflects _activeView on page reload"
     )
+
+
+# ── Sidebar flyout menu (feat: add flyout menu to sidebar session items) ──────
+
+
+def test_build_sidebar_html_article_has_data_session_key() -> None:
+    """buildSidebarHTML must include data-session-key on the article element."""
+    match = re.search(
+        r"function buildSidebarHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "buildSidebarHTML function not found"
+    body = match.group(1)
+    assert "data-session-key" in body, (
+        "buildSidebarHTML must include data-session-key attribute on the article element "
+        "so openFlyoutMenu can look up session data via closest('[data-session-key]')"
+    )
+
+
+def test_build_sidebar_html_has_tile_options_btn() -> None:
+    """buildSidebarHTML must include a .tile-options-btn button in the header."""
+    match = re.search(
+        r"function buildSidebarHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "buildSidebarHTML function not found"
+    body = match.group(1)
+    assert "tile-options-btn" in body, (
+        "buildSidebarHTML must include a button with class 'tile-options-btn' "
+        "in the sidebar item header so users can access the flyout menu"
+    )
+
+
+def test_build_sidebar_html_options_btn_has_aria_label() -> None:
+    """buildSidebarHTML tile-options-btn must have aria-label='Session options'."""
+    match = re.search(
+        r"function buildSidebarHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "buildSidebarHTML function not found"
+    body = match.group(1)
+    assert 'aria-label="Session options"' in body or "aria-label='Session options'" in body, (
+        "buildSidebarHTML tile-options-btn must have aria-label='Session options' "
+        "for accessibility (same as tile version)"
+    )
+
+
+def test_build_sidebar_html_options_btn_has_aria_haspopup() -> None:
+    """buildSidebarHTML tile-options-btn must have aria-haspopup='true'."""
+    match = re.search(
+        r"function buildSidebarHTML\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "buildSidebarHTML function not found"
+    body = match.group(1)
+    assert 'aria-haspopup="true"' in body or "aria-haspopup='true'" in body, (
+        "buildSidebarHTML tile-options-btn must have aria-haspopup='true' "
+        "for accessibility (same as tile version)"
+    )
+
+
+def test_render_sidebar_click_handler_guards_tile_options_btn() -> None:
+    """renderSidebar click handler must guard against tile-options-btn clicks."""
+    match = re.search(
+        r"function renderSidebar\s*\(.*?\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebar function not found"
+    body = match.group(1)
+    assert "tile-options-btn" in body, (
+        "renderSidebar click handler must guard against .tile-options-btn clicks "
+        "so clicking ⋮ doesn't also trigger openSession() — "
+        "use: if (e.target.closest('.tile-options-btn')) return;"
+    )

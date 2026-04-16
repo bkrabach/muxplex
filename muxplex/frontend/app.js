@@ -596,10 +596,11 @@ function buildSidebarHTML(session, currentSession) {
   // which is not a registered remote_instance, so routing through federation would 404.
   var _sidebarEffRemoteId = session.remoteId != null ? String(session.remoteId) : '';
   return (
-    `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(_sidebarEffRemoteId)}" tabindex="0" role="listitem">` +
+    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}" data-remote-id="${escapeHtml(_sidebarEffRemoteId)}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
     badgeHtml +
+    `<button class="tile-options-btn" data-session="${escapedName}" aria-label="Session options" aria-haspopup="true">&#8942;</button>` +
     `</div>` +
     `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `</article>`
@@ -738,6 +739,7 @@ function renderSidebar(sessions, currentSession) {
       const name = item.dataset.session;
       const remoteId = item.dataset.remoteId || '';
       on(item, 'click', (e) => {
+        if (e.target.closest && e.target.closest('.tile-options-btn')) return;
         if (name !== currentSession) openSession(name, { remoteId });
       });
     });

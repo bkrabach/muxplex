@@ -658,6 +658,24 @@ body {
   flex-shrink: 0;
 }
 
+.sidebar-item-header .tile-options-btn {
+  width: 20px;
+  height: 20px;
+  font-size: 12px;
+  flex-shrink: 0;
+  background: transparent;
+  border-color: transparent;
+  opacity: 0.6;
+}
+
+.sidebar-item:hover .sidebar-item-header .tile-options-btn,
+.sidebar-item-header .tile-options-btn:hover,
+.sidebar-item-header .tile-options-btn:focus-visible {
+  opacity: 1;
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+}
+
 .sidebar-empty {
   padding: 16px 12px;
   color: var(--text-muted);
