@@ -1384,6 +1384,16 @@ function renderGrid(sessions) {
   var emptyState = $('empty-state');
   var filterBar = $('filter-bar');
 
+  // Close flyout if the targeted session no longer exists
+  if (_flyoutSessionKey) {
+    var flyoutStillExists = (sessions || []).some(function(s) {
+      return (s.sessionKey || s.name) === _flyoutSessionKey;
+    });
+    if (!flyoutStillExists) {
+      closeFlyoutMenu();
+    }
+  }
+
   var visible = getVisibleSessions(sessions);
 
   if (visible.length === 0) {

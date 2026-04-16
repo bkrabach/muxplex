@@ -3953,3 +3953,14 @@ def test_render_grid_has_add_sessions_affordance() -> None:
     assert "add-sessions" in fn_body.lower() or "openAddSessionsPanel" in fn_body, (
         "renderGrid must render an 'Add Sessions' affordance for user views"
     )
+
+
+# ─── Task 12: Session death detection ────────────────────────────────────────
+
+
+def test_render_grid_closes_stale_flyout() -> None:
+    """renderGrid must close the flyout if the targeted session no longer exists."""
+    fn_body = _JS.split("function renderGrid")[1].split("\nfunction ")[0]
+    assert "_flyoutSessionKey" in fn_body or "closeFlyoutMenu" in fn_body, (
+        "renderGrid must check if the flyout's target session still exists and close if not"
+    )
