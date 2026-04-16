@@ -1890,6 +1890,85 @@ function _doRemoveFromView() {
     });
 }
 
+/**
+ * Show inline kill confirmation inside the flyout menu.
+ * Replaces the "Kill Session" item with "Kill? [Yes] [No]".
+ * No timeout — stays until click-outside closes the menu.
+ * On error: "Failed" for 2 seconds then reverts.
+ * @param {HTMLElement} killItem - The "Kill Session" menu item element
+ */
+function _doKillSessionInline(killItem) {
+  var sessionName = _flyoutSessionName;
+  var remoteId = _flyoutRemoteId;
+
+  // Replace the kill item with confirmation UI
+  var confirmHtml =
+    '<div class="flyout-menu__confirm">' +
+    '<span>Kill?</span>' +
+    '<button class="flyout-menu__confirm-btn flyout-menu__confirm-btn--yes" data-action="confirm-kill">Yes</button>' +
+    '<button class="flyout-menu__confirm-btn" data-action="cancel-kill">No</button>' +
+    '</div>';
+
+  killItem.outerHTML = confirmHtml;
+
+  // Re-attach handlers on the confirm/cancel buttons
+  if (!_flyoutMenuEl) return;
+
+  var confirmBtn = _flyoutMenuEl.querySelector('[data-action="confirm-kill"]');
+  var cancelBtn = _flyoutMenuEl.querySelector('[data-action="cancel-kill"]');
+
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      _executeKill(sessionName, remoteId);
+    });
+  }
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      closeFlyoutMenu();
+    });
+  }
+}
+
+/**
+ * Execute the kill session API call from the flyout inline confirmation.
+ * On success: closes flyout, shows toast, refreshes sessions.
+ * On error: shows "Failed" for 2s in the confirm area, then reverts.
+ * @param {string} name
+ * @param {string} remoteId
+ */
+function _executeKill(name, remoteId) {
+  var endpoint = remoteId
+    ? '/api/federation/' + encodeURIComponent(remoteId) + '/sessions/' + encodeURIComponent(name)
+    : '/api/sessions/' + encodeURIComponent(name);
+
+  api('DELETE', endpoint)
+    .then(function() {
+      closeFlyoutMenu();
+      showToast('Session \'' + name + '\' killed');
+      if (_viewingSession === name) {
+        closeSession();
+      }
+      pollSessions();
+    })
+    .catch(function(err) {
+      // Show "Failed" for 2 seconds
+      var confirmDiv = _flyoutMenuEl && _flyoutMenuEl.querySelector('.flyout-menu__confirm');
+      if (confirmDiv) {
+        confirmDiv.innerHTML = '<span style="color:var(--err)">Failed</span>';
+        setTimeout(function() {
+          // Revert to original kill button if menu is still open
+          if (_flyoutMenuEl && confirmDiv.parentNode) {
+            confirmDiv.outerHTML =
+              '<button class="flyout-menu__item flyout-menu__item--danger" role="menuitem" data-action="kill">Kill Session</button>';
+          }
+        }, 2000);
+      }
+    });
+}
+
 // ─── Notification permission ────────────────────────────────────────────────
 
 /**
@@ -3190,7 +3269,6 @@ async function createNewSession(name, remoteId) {
  * @param {string} [remoteId] - Remote instance index (empty or absent for local).
  */
 function killSession(name, remoteId) {
-  if (!confirm('Kill session "' + name + '"?')) return;
   var endpoint = remoteId
     ? '/api/federation/' + encodeURIComponent(remoteId) + '/sessions/' + encodeURIComponent(name)
     : '/api/sessions/' + encodeURIComponent(name);

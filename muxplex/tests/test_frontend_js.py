@@ -3856,3 +3856,29 @@ def test_hide_session_removes_from_all_views() -> None:
     assert "views" in fn_body, (
         "_doHideSession must remove session from all views (mutual exclusion)"
     )
+
+
+# ─── Task 7: Kill session inline confirmation ─────────────────────────────────
+
+
+def test_do_kill_session_inline_function_exists() -> None:
+    """app.js must define a _doKillSessionInline function."""
+    assert "function _doKillSessionInline" in _JS, (
+        "app.js must contain a _doKillSessionInline function"
+    )
+
+
+def test_kill_session_no_confirm_dialog() -> None:
+    """killSession must NOT use window.confirm() (replaced by inline confirmation)."""
+    fn_body = _JS.split("function killSession")[1].split("\nfunction ")[0]
+    assert "confirm(" not in fn_body, (
+        "killSession must not use confirm() — replaced by inline flyout confirmation"
+    )
+
+
+def test_do_kill_inline_shows_confirmation_buttons() -> None:
+    """_doKillSessionInline must render Yes/No confirmation buttons."""
+    fn_body = _JS.split("function _doKillSessionInline")[1].split("\nfunction ")[0]
+    assert "Yes" in fn_body and "No" in fn_body, (
+        "_doKillSessionInline must show 'Kill? [Yes] [No]' inline"
+    )
