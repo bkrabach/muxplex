@@ -208,6 +208,7 @@ body {
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
+  gap: 4px;
 }
 
 .tile-name {
@@ -2216,9 +2217,7 @@ body {
 /* —— Tile Flyout Menu ————————————————————————————————————————————————————— */
 
 .tile-options-btn {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+  flex-shrink: 0;
   width: 24px;
   height: 24px;
   display: flex;
@@ -2231,7 +2230,6 @@ body {
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
-  z-index: 2;
   transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
 }
 

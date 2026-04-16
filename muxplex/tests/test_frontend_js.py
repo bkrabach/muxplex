@@ -3948,10 +3948,22 @@ def test_open_flyout_menu_checks_mobile() -> None:
 
 
 def test_render_grid_has_add_sessions_affordance() -> None:
-    """renderGrid must include an 'Add Sessions' affordance when in a user view."""
+    """app.js must have an 'Add Sessions' affordance for user views.
+
+    The affordance moved from a tile in renderGrid to a header button (#add-sessions-btn)
+    managed by updateAddSessionsButton(). Either the old tile approach or the new header
+    button approach satisfies this requirement.
+    """
     fn_body = _JS.split("function renderGrid")[1].split("\nfunction ")[0]
-    assert "add-sessions" in fn_body.lower() or "openAddSessionsPanel" in fn_body, (
-        "renderGrid must render an 'Add Sessions' affordance for user views"
+    # Old approach: tile in the grid | New approach: header button via updateAddSessionsButton
+    has_affordance = (
+        "add-sessions" in fn_body.lower()
+        or "openAddSessionsPanel" in fn_body
+        or "updateAddSessionsButton" in _JS
+    )
+    assert has_affordance, (
+        "app.js must have an 'Add Sessions' affordance for user views — "
+        "either as a tile in renderGrid or as a header button via updateAddSessionsButton"
     )
 
 
@@ -4243,4 +4255,236 @@ def test_kill_confirm_buttons_use_role_button() -> None:
     # Positive check: role="button" must appear on the cancel button
     assert 'data-action="cancel" role="button"' in _JS, (
         "Cancel button inside alertdialog must use role='button'"
+    )
+
+
+# ============================================================
+# UX Refinements from live testing (6 issues)
+# ============================================================
+
+CSS_PATH = pathlib.Path(__file__).parent.parent / "frontend" / "style.css"
+_CSS: str = CSS_PATH.read_text()
+
+
+# — Issue 1: Sidebar dropdown "+ New View" ——————————————————————————
+
+def test_render_sidebar_view_dropdown_has_new_view_action() -> None:
+    """renderSidebarViewDropdown must include a '+ New View' action button."""
+    match = re.search(
+        r"function renderSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebarViewDropdown function not found"
+    body = match.group(1)
+    assert 'data-action="new-view"' in body, (
+        'renderSidebarViewDropdown must include a "+ New View" button with data-action="new-view"'
+    )
+
+
+def test_show_sidebar_new_view_input_function_exists() -> None:
+    """showSidebarNewViewInput function must exist in app.js."""
+    assert "function showSidebarNewViewInput" in _JS, (
+        "showSidebarNewViewInput must be defined in app.js"
+    )
+
+
+def test_bind_static_event_listeners_calls_show_sidebar_new_view_input() -> None:
+    """bindStaticEventListeners sidebar dropdown handler must call showSidebarNewViewInput."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "showSidebarNewViewInput" in body, (
+        "bindStaticEventListeners must call showSidebarNewViewInput for sidebar new-view action"
+    )
+
+
+# — Issue 2: Remove shortcut numbers, add session counts ———————————————
+
+def test_render_view_dropdown_no_shortcut_spans() -> None:
+    """renderViewDropdown must not include view-dropdown__shortcut spans (numbers removed)."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__shortcut" not in body, (
+        "renderViewDropdown must not include view-dropdown__shortcut spans — shortcut numbers removed"
+    )
+
+
+def test_render_sidebar_view_dropdown_no_shortcut_spans() -> None:
+    """renderSidebarViewDropdown must not include view-dropdown__shortcut spans."""
+    match = re.search(
+        r"function renderSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebarViewDropdown function not found"
+    body = match.group(1)
+    assert "view-dropdown__shortcut" not in body, (
+        "renderSidebarViewDropdown must not include view-dropdown__shortcut spans — shortcut numbers removed"
+    )
+
+
+def test_render_view_dropdown_shows_user_view_session_count() -> None:
+    """renderViewDropdown must show session count for user views."""
+    match = re.search(
+        r"function renderViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderViewDropdown function not found"
+    body = match.group(1)
+    assert "sessions.length" in body or "sessions || []).length" in body, (
+        "renderViewDropdown must show session count for user views (view.sessions.length)"
+    )
+
+
+# — Issue 3: Empty new view opens Add Sessions panel ———————————————————
+
+def test_show_new_view_input_calls_open_add_sessions_panel() -> None:
+    """showNewViewInput must call openAddSessionsPanel after creating a new view."""
+    match = re.search(
+        r"function showNewViewInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewViewInput function not found"
+    body = match.group(1)
+    assert "openAddSessionsPanel" in body, (
+        "showNewViewInput must call openAddSessionsPanel() after creating a new view — "
+        "so the user immediately sees the Add Sessions panel for their empty view"
+    )
+
+
+def test_show_sidebar_new_view_input_calls_open_add_sessions_panel() -> None:
+    """showSidebarNewViewInput must call openAddSessionsPanel after creating a new view."""
+    match = re.search(
+        r"function showSidebarNewViewInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showSidebarNewViewInput function not found"
+    body = match.group(1)
+    assert "openAddSessionsPanel" in body, (
+        "showSidebarNewViewInput must call openAddSessionsPanel() after creating a new view"
+    )
+
+
+# — Issue 4: Flyout submenu "+ New View" ———————————————————————————————
+
+def test_open_flyout_submenu_has_new_view_option() -> None:
+    """_openFlyoutSubmenu must include a '+ New View' option."""
+    match = re.search(
+        r"function _openFlyoutSubmenu\s*\(.*?\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_openFlyoutSubmenu function not found"
+    body = match.group(1)
+    assert "new-view-in-flyout" in body, (
+        '_openFlyoutSubmenu must include a "+ New View" option with data-action="new-view-in-flyout"'
+    )
+
+
+def test_open_flyout_submenu_new_view_creates_and_switches() -> None:
+    """_openFlyoutSubmenu '+ New View' handler must create a view and switch to it."""
+    match = re.search(
+        r"function _openFlyoutSubmenu\s*\(.*?\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "_openFlyoutSubmenu function not found"
+    body = match.group(1)
+    assert "new-view-in-flyout" in body, (
+        "'new-view-in-flyout' not found in _openFlyoutSubmenu"
+    )
+    # switchView and PATCH must appear in the function body (the handler for new-view-in-flyout)
+    assert "switchView" in body, (
+        '_openFlyoutSubmenu must call switchView — the "+ New View" handler needs to switch to the new view'
+    )
+    assert "PATCH" in body or "api(" in body, (
+        '_openFlyoutSubmenu must PATCH /api/settings to create the view'
+    )
+
+
+# — Issue 5: Add Sessions header button ————————————————————————————————
+
+def test_update_add_sessions_button_function_exists() -> None:
+    """updateAddSessionsButton function must exist in app.js."""
+    assert "function updateAddSessionsButton" in _JS, (
+        "updateAddSessionsButton must be defined in app.js — "
+        "shows/hides the '+ Add' header button based on active view"
+    )
+
+
+def test_switch_view_calls_update_add_sessions_button() -> None:
+    """switchView must call updateAddSessionsButton to update header button visibility."""
+    match = re.search(
+        r"function switchView\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "switchView function not found"
+    body = match.group(1)
+    assert "updateAddSessionsButton" in body, (
+        "switchView must call updateAddSessionsButton() to show/hide the header Add button"
+    )
+
+
+def test_render_grid_no_muxplex_app_onclick() -> None:
+    """renderGrid must not use the broken window.MuxplexApp.openAddSessionsPanel onclick."""
+    fn_body = _JS.split("function renderGrid")[1].split("\nfunction ")[0]
+    assert "MuxplexApp.openAddSessionsPanel" not in fn_body, (
+        "renderGrid must not use onclick='window.MuxplexApp.openAddSessionsPanel()' — "
+        "this was broken; the Add Sessions entry point moved to the header button"
+    )
+
+
+def test_bind_static_event_listeners_binds_add_sessions_btn() -> None:
+    """bindStaticEventListeners must bind #add-sessions-btn click to openAddSessionsPanel."""
+    match = re.search(
+        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "bindStaticEventListeners function not found"
+    body = match.group(1)
+    assert "add-sessions-btn" in body, (
+        "bindStaticEventListeners must bind #add-sessions-btn click to openAddSessionsPanel"
+    )
+
+
+# — Issue 6: Tile header flexbox layout ————————————————————————————————
+
+def test_build_tile_html_options_btn_inside_tile_header() -> None:
+    """buildTileHTML must render tile-options-btn inside tile-header (before tile-body)."""
+    fn_body = _JS.split("function buildTileHTML")[1].split("\nfunction ")[0]
+    tile_opts_pos = fn_body.find("tile-options-btn")
+    tile_body_pos = fn_body.find("tile-body")
+    assert tile_opts_pos >= 0, "tile-options-btn must appear in buildTileHTML"
+    assert tile_body_pos >= 0, "tile-body must appear in buildTileHTML"
+    assert tile_opts_pos < tile_body_pos, (
+        "tile-options-btn must appear before tile-body in the HTML string — "
+        "it must be inside tile-header (as an inline flex item), not positioned after tile-body"
+    )
+
+
+def test_tile_options_btn_css_not_absolute() -> None:
+    """CSS .tile-options-btn must not use position:absolute — prevent badge/button overlap."""
+    import re as _re
+
+    match = _re.search(r"\.tile-options-btn\s*\{([^}]*)\}", _CSS, _re.DOTALL)
+    assert match, ".tile-options-btn CSS rule not found"
+    rule_body = match.group(1)
+    assert "position: absolute" not in rule_body and "position:absolute" not in rule_body, (
+        ".tile-options-btn must not use position:absolute — "
+        "it should be an inline flex item inside tile-header to prevent device badge overlap"
     )

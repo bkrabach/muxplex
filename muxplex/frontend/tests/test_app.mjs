@@ -2614,30 +2614,36 @@ test('buildTileHTML escapes HTML in deviceName within device-badge', () => {
 
 // --- buildTileHTML device badge placement (task-3) ---
 
-test('buildTileHTML places device-badge inside tile-meta span', () => {
+test('buildTileHTML places device-badge inline in tile-header (before tile-meta)', () => {
   app._setServerSettings({ multi_device_enabled: true });
   const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  const tileMetaStart = html.indexOf('<span class="tile-meta">');
-  // Note: finds the first </span> after tileMetaStart, which is device-badge's closing tag
-  // (not tile-meta's own close), but the assertion still holds because device-badge
-  // opens and closes before tile-time within the tile-meta container.
-  const tileMetaEnd = html.indexOf('</span>', tileMetaStart);
-  assert.ok(tileMetaStart !== -1, 'tile-meta span should exist');
+  // Badge is now a sibling flex item inside tile-header, after tile-name, before tile-meta/button
+  const tileHeaderStart = html.indexOf('<div class="tile-header">');
+  const tileHeaderEnd = html.indexOf('</div>', tileHeaderStart);
+  assert.ok(tileHeaderStart !== -1, 'tile-header div should exist');
   const deviceBadgePos = html.indexOf('device-badge');
+  assert.ok(deviceBadgePos !== -1, 'device-badge should exist in tile HTML');
   assert.ok(
-    deviceBadgePos > tileMetaStart && deviceBadgePos < tileMetaEnd,
-    `device-badge should be inside tile-meta span (tile-meta starts at ${tileMetaStart}, device-badge at ${deviceBadgePos}, tile-meta closes at ${tileMetaEnd})`
+    deviceBadgePos > tileHeaderStart && deviceBadgePos < tileHeaderEnd,
+    `device-badge should be inside tile-header (tile-header starts at ${tileHeaderStart}, device-badge at ${deviceBadgePos}, tile-header closes at ${tileHeaderEnd})`
   );
   app._setServerSettings(null);
 });
 
-test('buildTileHTML includes tile-meta-sep with middle dot when badge present', () => {
+test('buildTileHTML badge and options-btn are siblings in tile-header when badge present', () => {
+  // Since the badge moved out of tile-meta into tile-header directly, tile-meta-sep is removed.
+  // The tile-options-btn is also now inside tile-header as a flex sibling.
   app._setServerSettings({ multi_device_enabled: true });
   const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
   const html = app.buildTileHTML(session, 0, false);
-  assert.ok(html.includes('tile-meta-sep'), 'should include tile-meta-sep element when badge is present');
-  assert.ok(html.includes('\u00b7'), 'should include middle dot separator (\u00b7)');
+  // Badge is directly in tile-header (not inside tile-meta)
+  assert.ok(html.includes('device-badge'), 'device-badge should exist in tile HTML');
+  // tile-options-btn is also inside tile-header (before tile-body)
+  const headerStart = html.indexOf('<div class="tile-header">');
+  const bodyStart = html.indexOf('<div class="tile-body">');
+  const btnPos = html.indexOf('tile-options-btn');
+  assert.ok(btnPos > headerStart && btnPos < bodyStart, 'tile-options-btn should be inside tile-header (before tile-body)');
   app._setServerSettings(null);
 });
 

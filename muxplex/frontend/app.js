@@ -539,10 +539,11 @@ function buildTileHTML(session, index, mobile) {
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
     `<span class="tile-name">${escapeHtml(name)}</span>` +
-    `<span class="tile-meta">${badgeHtml}${badgeHtml ? `<span class="tile-meta-sep">\xb7</span>` : ''}<span class="tile-time">${escapeHtml(timeStr)}</span></span>` +
+    `${badgeHtml}` +
+    `<span class="tile-meta">${escapeHtml(timeStr)}</span>` +
+    `<button class="tile-options-btn" data-session="${escapedName}" aria-label="Session options" aria-haspopup="true">&#8942;</button>` +
     `</div>` +
     `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
-    `<button class="tile-options-btn" data-session="${escapedName}" aria-label="Session options" aria-haspopup="true">&#8942;</button>` +
     `</article>`
   );
 }
@@ -886,24 +887,29 @@ function renderViewDropdown() {
 
   var html = '';
 
-  // — All Sessions (always first, shortcut 1)
+  // — All Sessions (always first) — show count of non-hidden sessions
+  var allHiddenSessions = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  var allCount = (_currentSessions || []).filter(function(s) {
+    if (s.status) return false;
+    return allHiddenSessions.indexOf(s.sessionKey || s.name) === -1 && allHiddenSessions.indexOf(s.name) === -1;
+  }).length;
   var allActive = _activeView === 'all' ? ' view-dropdown__item--active' : '';
-  html += '<button class="view-dropdown__item' + allActive + '" role="menuitem" data-view="all"><span class="view-dropdown__shortcut">1</span> All Sessions</button>';
+  html += '<button class="view-dropdown__item' + allActive + '" role="menuitem" data-view="all">All Sessions <span class="view-dropdown__count">' + allCount + '</span></button>';
 
-  // — User views (shortcuts 2–8)
+  // — User views
   if (views.length > 0) {
     html += '<div class="view-dropdown__separator"></div>';
     for (var i = 0; i < views.length && i < 7; i++) {
       var v = views[i];
       var vActive = _activeView === v.name ? ' view-dropdown__item--active' : '';
-      html += '<button class="view-dropdown__item' + vActive + '" role="menuitem" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown__shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
+      html += '<button class="view-dropdown__item' + vActive + '" role="menuitem" data-view="' + escapeHtml(v.name) + '">' + escapeHtml(v.name) + ' <span class="view-dropdown__count">' + (v.sessions || []).length + '</span></button>';
     }
   }
 
-  // — Hidden (N) (always last system view, shortcut 9)
+  // — Hidden (N) (always last system view)
   html += '<div class="view-dropdown__separator"></div>';
   var hiddenActive = _activeView === 'hidden' ? ' view-dropdown__item--active' : '';
-  html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden"><span class="view-dropdown__shortcut">9</span> Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
+  html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden">Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
 
   // — Actions
   html += '<div class="view-dropdown__separator"></div>';
@@ -973,9 +979,14 @@ function renderSidebarViewDropdown() {
 
   var html = '';
 
-  // — All Sessions (always first)
+  // — All Sessions (always first) — show count of non-hidden sessions
+  var sbHiddenSessions = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  var sbAllCount = (_currentSessions || []).filter(function(s) {
+    if (s.status) return false;
+    return sbHiddenSessions.indexOf(s.sessionKey || s.name) === -1 && sbHiddenSessions.indexOf(s.name) === -1;
+  }).length;
   var allActive = _activeView === 'all' ? ' view-dropdown__item--active' : '';
-  html += '<button class="view-dropdown__item' + allActive + '" role="menuitem" data-view="all"><span class="view-dropdown__shortcut">1</span> All Sessions</button>';
+  html += '<button class="view-dropdown__item' + allActive + '" role="menuitem" data-view="all">All Sessions <span class="view-dropdown__count">' + sbAllCount + '</span></button>';
 
   // — User views
   if (views.length > 0) {
@@ -983,14 +994,19 @@ function renderSidebarViewDropdown() {
     for (var i = 0; i < views.length && i < 7; i++) {
       var v = views[i];
       var vActive = _activeView === v.name ? ' view-dropdown__item--active' : '';
-      html += '<button class="view-dropdown__item' + vActive + '" role="menuitem" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown__shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
+      html += '<button class="view-dropdown__item' + vActive + '" role="menuitem" data-view="' + escapeHtml(v.name) + '">' + escapeHtml(v.name) + ' <span class="view-dropdown__count">' + (v.sessions || []).length + '</span></button>';
     }
   }
 
   // — Hidden (N) (always last system view)
   html += '<div class="view-dropdown__separator"></div>';
   var hiddenActive = _activeView === 'hidden' ? ' view-dropdown__item--active' : '';
-  html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden"><span class="view-dropdown__shortcut">9</span> Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
+  html += '<button class="view-dropdown__item' + hiddenActive + '" role="menuitem" data-view="hidden">Hidden <span class="view-dropdown__count">' + hiddenCount + '</span></button>';
+
+  // — Actions: new view + manage views
+  html += '<div class="view-dropdown__separator"></div>';
+  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="new-view">+ New View</button>';
+  html += '<button class="view-dropdown__item view-dropdown__action" role="menuitem" data-action="manage-views">Manage Views\u2026</button>';
 
   menu.innerHTML = html;
 }
@@ -1084,6 +1100,7 @@ function showNewViewInput() {
         .then(function() {
           if (_serverSettings) _serverSettings.views = updatedViews;
           switchView(name);
+          openAddSessionsPanel();
         })
         .catch(function() {
           showToast('Failed to create view');
@@ -1097,6 +1114,91 @@ function showNewViewInput() {
     setTimeout(function() {
       if (document.activeElement !== input) {
         closeViewDropdown();
+      }
+    }, 150);
+  });
+}
+
+/**
+ * Show an inline text input inside the SIDEBAR view dropdown for creating a new view.
+ * Targets #sidebar-view-dropdown-menu instead of #view-dropdown-menu.
+ * - On Enter: validates, PATCHes /api/settings, calls switchView + openAddSessionsPanel.
+ * - On Escape / blur: closes the sidebar dropdown.
+ */
+function showSidebarNewViewInput() {
+  var menu = $('sidebar-view-dropdown-menu');
+  if (!menu) return;
+
+  // Re-focus existing input instead of creating a duplicate
+  var existing = menu.querySelector('.view-dropdown__new-input');
+  if (existing) {
+    existing.focus();
+    return;
+  }
+
+  // Find the '+ New View' button to replace
+  var newViewBtn = menu.querySelector('[data-action="new-view"]');
+  if (!newViewBtn) return;
+
+  // Create the inline text input
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'view-dropdown__new-input';
+  input.placeholder = 'View name';
+  input.maxLength = 30;
+  input.setAttribute('aria-label', 'New view name');
+
+  // Replace the '+ New View' button with the input
+  newViewBtn.parentNode.replaceChild(input, newViewBtn);
+  input.focus();
+
+  function closeSidebarDropdown() {
+    menu.classList.add('hidden');
+    var trigger = $('sidebar-view-dropdown-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      var name = input.value.trim();
+
+      // Validate: not empty
+      if (!name) return;
+
+      // Validate: not reserved (case-insensitive)
+      if (name.toLowerCase() === 'all' || name.toLowerCase() === 'hidden') {
+        showToast('Cannot use reserved name \'' + name + '\'');
+        return;
+      }
+
+      // Validate: not duplicate
+      var views = (_serverSettings && _serverSettings.views) || [];
+      if (views.find(function(v) { return v.name === name; })) {
+        showToast('View \'' + name + '\' already exists');
+        return;
+      }
+
+      // Create view and PATCH /api/settings
+      var updatedViews = views.concat([{ name: name, sessions: [] }]);
+      api('PATCH', '/api/settings', { views: updatedViews })
+        .then(function() {
+          if (_serverSettings) _serverSettings.views = updatedViews;
+          closeSidebarDropdown();
+          switchView(name);
+          openAddSessionsPanel();
+        })
+        .catch(function() {
+          showToast('Failed to create view');
+        });
+    } else if (e.key === 'Escape') {
+      closeSidebarDropdown();
+    }
+  });
+
+  input.addEventListener('blur', function() {
+    setTimeout(function() {
+      if (document.activeElement !== input) {
+        closeSidebarDropdown();
       }
     }, 150);
   });
@@ -1372,6 +1474,8 @@ function switchView(viewName) {
       sidebarLabel.textContent = viewName;
     }
   }
+  // Show/hide the header Add Sessions button
+  updateAddSessionsButton();
   // Persist active view — fire and forget
   api('PATCH', '/api/state', { active_view: viewName }).catch(function() {});
 }
@@ -1438,21 +1542,6 @@ function renderGrid(sessions) {
     else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
     else if (session.status === 'empty') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
   });
-  // Add Sessions affordance tile — shown in user views only
-  if (_activeView !== 'all' && _activeView !== 'hidden') {
-    var viewsArr = (_serverSettings && _serverSettings.views) || [];
-    var isUserView = false;
-    for (var vi = 0; vi < viewsArr.length; vi++) {
-      if (viewsArr[vi].name === _activeView) { isUserView = true; break; }
-    }
-    if (isUserView) {
-      html += '<button class="add-sessions-tile" onclick="window.MuxplexApp.openAddSessionsPanel()" aria-label="Add sessions to this view">';
-      html += '<span class="add-sessions-tile__icon">+</span>';
-      html += '<span class="add-sessions-tile__label">Add Sessions</span>';
-      html += '</button>';
-    }
-  }
-
   if (grid) grid.innerHTML = html + statusTilesHtml;
 
   // Clear filter bar (filtered mode removed; bar is a no-op for flat/grouped)
@@ -1922,10 +2011,6 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
   }
 
   var views = (_serverSettings && _serverSettings.views) || [];
-  if (views.length === 0) {
-    showToast('No user views. Create one from the header dropdown.');
-    return;
-  }
 
   var sessionKey = _flyoutSessionKey;
   // When in a user view, filter it out — the user already has "Remove from [ViewName]" for it
@@ -1940,6 +2025,11 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
     html += escapeHtml(v.name);
     html += '</button>';
   }
+  // — Always show "+ New View" option at the bottom
+  if (views.length > 0) {
+    html += '<div class="flyout-menu__separator" role="separator"></div>';
+  }
+  html += '<button class="flyout-submenu__item" role="menuitem" data-action="new-view-in-flyout">+ New View</button>';
 
   var submenu = document.createElement('div');
   submenu.className = 'flyout-submenu';
@@ -1971,6 +2061,50 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
 
   // Click handler — toggle view membership via PATCH /api/settings
   submenu.addEventListener('click', function(e) {
+    // Handle '+ New View' action
+    var newViewAction = e.target.closest('[data-action="new-view-in-flyout"]');
+    if (newViewAction) {
+      var capturedKey = sessionKey;
+      var capturedUnhide = unhideFirst;
+      closeFlyoutMenu();
+      var newName = prompt('View name:');
+      if (!newName || !newName.trim()) return;
+      newName = newName.trim();
+      if (newName.toLowerCase() === 'all' || newName.toLowerCase() === 'hidden') {
+        showToast('Cannot use reserved name \'' + newName + '\'');
+        return;
+      }
+      var existViews = (_serverSettings && _serverSettings.views) || [];
+      if (existViews.find(function(v) { return v.name === newName; })) {
+        showToast('View \'' + newName + '\' already exists');
+        return;
+      }
+      var newView = { name: newName, sessions: [capturedKey] };
+      var newViews = existViews.concat([newView]);
+      var flyoutPatch = { views: newViews };
+      if (capturedUnhide) {
+        var hiddenList = (_serverSettings && _serverSettings.hidden_sessions) || [];
+        var hi = hiddenList.indexOf(capturedKey);
+        if (hi !== -1) {
+          var updHidden = hiddenList.slice();
+          updHidden.splice(hi, 1);
+          flyoutPatch.hidden_sessions = updHidden;
+        }
+      }
+      api('PATCH', '/api/settings', flyoutPatch)
+        .then(function() {
+          if (_serverSettings) {
+            _serverSettings.views = newViews;
+            if (flyoutPatch.hidden_sessions) _serverSettings.hidden_sessions = flyoutPatch.hidden_sessions;
+          }
+          switchView(newName);
+        })
+        .catch(function() {
+          showToast('Failed to create view');
+        });
+      return;
+    }
+
     var btn = e.target.closest('[data-view-index]');
     if (!btn) return;
     var idx = parseInt(btn.dataset.viewIndex, 10);
@@ -2250,6 +2384,28 @@ function openAddSessionsPanel() {
 function closeAddSessionsPanel() {
   var panel = $('add-sessions-panel');
   if (panel) panel.classList.add('hidden');
+}
+
+/**
+ * Show or hide the header #add-sessions-btn based on the active view.
+ * Visible only when in a user-created view (not 'all' or 'hidden').
+ * Called from switchView() and on initial load.
+ */
+function updateAddSessionsButton() {
+  var btn = $('add-sessions-btn');
+  if (!btn) return;
+  var isUserView = false;
+  if (_activeView !== 'all' && _activeView !== 'hidden') {
+    var views = (_serverSettings && _serverSettings.views) || [];
+    for (var i = 0; i < views.length; i++) {
+      if (views[i].name === _activeView) { isUserView = true; break; }
+    }
+  }
+  if (isUserView) {
+    btn.classList.remove('hidden');
+  } else {
+    btn.classList.add('hidden');
+  }
 }
 
 /**
@@ -3763,9 +3919,27 @@ function bindStaticEventListeners() {
         // Close sidebar dropdown after selection
         sidebarViewMenu.classList.add('hidden');
         if (sidebarViewTrigger) sidebarViewTrigger.setAttribute('aria-expanded', 'false');
+        return;
+      }
+      var action = e.target.closest('[data-action]');
+      if (action) {
+        if (action.dataset.action === 'new-view') {
+          showSidebarNewViewInput();
+        } else if (action.dataset.action === 'manage-views') {
+          sidebarViewMenu.classList.add('hidden');
+          if (sidebarViewTrigger) sidebarViewTrigger.setAttribute('aria-expanded', 'false');
+          openSettings();
+          switchSettingsTab('views');
+        } else {
+          sidebarViewMenu.classList.add('hidden');
+          if (sidebarViewTrigger) sidebarViewTrigger.setAttribute('aria-expanded', 'false');
+        }
       }
     });
   }
+
+  var addSessionsBtn = $('add-sessions-btn');
+  if (addSessionsBtn) on(addSessionsBtn, 'click', openAddSessionsPanel);
 
   // Click-outside closes the header view dropdown
   document.addEventListener('click', function(e) {
@@ -4104,6 +4278,7 @@ document.addEventListener('DOMContentLoaded', async function() {
       updatePageTitle();
       startHeartbeat();
       bindStaticEventListeners();
+      updateAddSessionsButton();
     })
     .catch(function(err) {
       console.error('[init] restoreState failed, retrying in 5s:', err);
@@ -4200,6 +4375,9 @@ if (typeof module !== 'undefined' && module.exports) {
     // Sidebar view dropdown
     renderSidebarViewDropdown,
     toggleSidebarViewDropdown,
+    showSidebarNewViewInput,
+    // Add Sessions header button
+    updateAddSessionsButton,
     // Manage Views settings tab
     renderViewsSettingsTab,
     _saveViewsAndRerender,
