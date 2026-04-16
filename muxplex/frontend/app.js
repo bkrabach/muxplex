@@ -1019,8 +1019,6 @@ function renderViewsSettingsTab() {
   // Build the list of view rows
   listEl.innerHTML = '';
   views.forEach(function(view, idx) {
-    var sessions = (_serverSettings && _serverSettings.sessions) || [];
-    // Count sessions that belong to this view
     var viewSessions = view.sessions || [];
     var sessionCount = viewSessions.length;
 
@@ -1177,7 +1175,9 @@ function renderViewsSettingsTab() {
       input.focus();
       input.select();
 
+      var committed = false;
       function commitRename() {
+        if (committed) return;
         var newName = input.value.trim();
         if (!newName || newName === currentName) {
           renderViewsSettingsTab();
@@ -1197,6 +1197,7 @@ function renderViewsSettingsTab() {
           return;
         }
         // Update the view name
+        committed = true;
         var updated = views.map(function(v, i) {
           return i === idx ? Object.assign({}, v, { name: newName }) : v;
         });
