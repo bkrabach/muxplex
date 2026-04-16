@@ -629,7 +629,6 @@ def test_html_sessions_panel_has_sort_order_select() -> None:
         assert v in values, f"#setting-sort-order missing option value='{v}'"
 
 
-
 def test_html_sessions_panel_has_window_size_largest_checkbox() -> None:
     """Sessions panel must contain a #setting-window-size-largest checkbox."""
     soup = _SOUP
@@ -1533,4 +1532,28 @@ def test_no_hidden_sessions_checkbox_list_in_settings() -> None:
     assert el is None, (
         "#setting-hidden-sessions must be removed from the settings panel "
         "(replaced by the Hidden view + tile flyout in Phase 3)"
+    )
+
+
+# ============================================================
+# Add Sessions panel (task-8)
+# ============================================================
+
+
+def test_add_sessions_panel_exists() -> None:
+    """index.html must contain an add-sessions-panel element."""
+    soup = _SOUP
+    assert soup.find(id="add-sessions-panel"), (
+        "index.html must contain an element with id='add-sessions-panel'"
+    )
+
+
+def test_add_sessions_panel_has_role_dialog() -> None:
+    """add-sessions-panel must have role='dialog' and aria-modal='true'."""
+    soup = _SOUP
+    panel = soup.find(id="add-sessions-panel")
+    assert panel, "Missing #add-sessions-panel"
+    assert panel.get("role") == "dialog", "add-sessions-panel must have role='dialog'"
+    assert panel.get("aria-modal") == "true", (
+        "add-sessions-panel must have aria-modal='true'"
     )

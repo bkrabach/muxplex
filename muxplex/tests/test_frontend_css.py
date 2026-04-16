@@ -2207,3 +2207,20 @@ def test_flyout_bottom_sheet_styled() -> None:
     assert ".flyout-sheet" in css, (
         "style.css must style .flyout-sheet (mobile bottom action sheet)"
     )
+
+
+# ============================================================
+# Add Sessions panel CSS (task-8)
+# ============================================================
+
+
+def test_add_sessions_panel_styled() -> None:
+    """style.css must contain .add-sessions-panel styles."""
+    css = read_css()
+    assert ".add-sessions-panel" in css, "style.css must style .add-sessions-panel"
+
+
+def test_add_sessions_item_styled() -> None:
+    """style.css must contain .add-sessions-item styles."""
+    css = read_css()
+    assert ".add-sessions-item" in css, "style.css must style .add-sessions-item"

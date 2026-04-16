@@ -86,6 +86,19 @@
     </div>
   </div>
 
+  <!-- —— Add Sessions panel ——————————————————————————————————————————— -->
+  <div id="add-sessions-panel" class="add-sessions-panel hidden" role="dialog" aria-modal="true" aria-label="Add sessions to view">
+    <div class="add-sessions-panel__backdrop" id="add-sessions-backdrop"></div>
+    <div class="add-sessions-panel__content">
+      <div class="add-sessions-panel__header">
+        <h2 id="add-sessions-title" class="add-sessions-panel__title">Add Sessions</h2>
+        <button id="add-sessions-close" class="add-sessions-panel__close" aria-label="Close">&times;</button>
+      </div>
+      <div id="add-sessions-list" class="add-sessions-panel__list"></div>
+      <p id="add-sessions-empty" class="add-sessions-panel__empty" style="display:none">All sessions are already in this view.</p>
+    </div>
+  </div>
+
   <!-- ── Session pill (persistent overlay button) ────────────────────────── -->
   <button id="session-pill" class="session-pill hidden" aria-label="Switch session">
     <span id="session-pill-label" class="session-pill__label"></span>
