@@ -531,9 +531,12 @@ function buildTileHTML(session, index, mobile) {
   }
   const lastLines = allLines.slice(_lineCount).join('\n');
 
-  // Prefer deviceId (device_id string from backend) over legacy integer remoteId
-  var _effRemoteId = session.deviceId != null ? session.deviceId : session.remoteId;
-  const remoteIdAttr = _effRemoteId != null ? ` data-remote-id="${escapeHtml(_effRemoteId)}"` : '';
+  // Use remoteId (null for local sessions, device_id string for remote sessions) so
+  // openSession() can correctly distinguish local vs federation routing.
+  // deviceId is the local device's own UUID for local sessions — using it here would
+  // cause openSession() to route local sessions through /api/federation/{deviceId}/…
+  // which returns 404 because the local device is not a registered remote instance.
+  const remoteIdAttr = session.remoteId != null ? ` data-remote-id="${escapeHtml(String(session.remoteId))}"` : '';
   return (
     `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
     `<div class="tile-header">` +
@@ -588,8 +591,10 @@ function buildSidebarHTML(session, currentSession) {
   }
   const lastLines = allLines.slice(-20).join('\n');
 
-  // Prefer deviceId (device_id string from backend) over legacy integer remoteId
-  var _sidebarEffRemoteId = session.deviceId != null ? session.deviceId : (session.remoteId != null ? session.remoteId : '');
+  // Use remoteId (null for local sessions, device_id string for remote sessions).
+  // Do NOT use deviceId here: for local sessions deviceId is the local machine's UUID
+  // which is not a registered remote_instance, so routing through federation would 404.
+  var _sidebarEffRemoteId = session.remoteId != null ? String(session.remoteId) : '';
   return (
     `<article class="${classes}" data-session="${escapedName}" data-remote-id="${escapeHtml(_sidebarEffRemoteId)}" tabindex="0" role="listitem">` +
     `<div class="sidebar-item-header">` +
