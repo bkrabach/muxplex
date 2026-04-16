@@ -2133,6 +2133,30 @@ async function createNewSession(name, remoteId) {
     const res = await api('POST', endpoint, { name });
     const data = await res.json();
     const sessionName = data.name || name;
+
+    // Auto-add to active user view (not 'all' or 'hidden')
+    if (_activeView !== 'all' && _activeView !== 'hidden') {
+      var views = (_serverSettings && _serverSettings.views) || [];
+      var viewIdx = -1;
+      for (var vi = 0; vi < views.length; vi++) {
+        if (views[vi].name === _activeView) { viewIdx = vi; break; }
+      }
+      if (viewIdx >= 0) {
+        var newSessionKey = remoteId ? (remoteId + ':' + sessionName) : sessionName;
+        if (!remoteId && _serverSettings && _serverSettings.device_id) {
+          newSessionKey = _serverSettings.device_id + ':' + sessionName;
+        }
+        var updatedViews = JSON.parse(JSON.stringify(views));
+        if (!updatedViews[viewIdx].sessions.includes(newSessionKey)) {
+          updatedViews[viewIdx].sessions.push(newSessionKey);
+          api('PATCH', '/api/settings', { views: updatedViews }).catch(function(err) {
+            console.warn('[createNewSession] auto-add to view failed:', err);
+          });
+          if (_serverSettings) _serverSettings.views = updatedViews;
+        }
+      }
+    }
+
     showToast('Creating session \'' + sessionName + '\'…');
 
     // Inject a loading placeholder tile so the user sees feedback immediately

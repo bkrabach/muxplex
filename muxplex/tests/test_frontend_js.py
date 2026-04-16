@@ -3093,3 +3093,22 @@ def test_set_active_view_helper_exported() -> None:
     assert "_setActiveView" in exports, (
         "module.exports must export _setActiveView test helper"
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-add session to active user view on creation (task-3-auto-add-to-view)
+# ---------------------------------------------------------------------------
+
+
+def test_create_new_session_references_active_view() -> None:
+    """createNewSession must reference _activeView to auto-add the new session to the active user view."""
+    match = re.search(
+        r"async function createNewSession\s*\([\w,\s]+\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "createNewSession function not found"
+    body = match.group(1)
+    assert "_activeView" in body, (
+        "createNewSession must reference _activeView to auto-add new session to the active user view"
+    )
