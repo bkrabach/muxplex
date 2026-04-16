@@ -3882,3 +3882,45 @@ def test_do_kill_inline_shows_confirmation_buttons() -> None:
     assert "Yes" in fn_body and "No" in fn_body, (
         "_doKillSessionInline must show 'Kill? [Yes] [No]' inline"
     )
+
+
+# ============================================================
+# Add Sessions panel JS logic (task-9)
+# ============================================================
+
+
+def test_open_add_sessions_panel_function_exists() -> None:
+    """app.js must define an openAddSessionsPanel function."""
+    assert "function openAddSessionsPanel" in _JS, (
+        "app.js must contain an openAddSessionsPanel function"
+    )
+
+
+def test_close_add_sessions_panel_function_exists() -> None:
+    """app.js must define a closeAddSessionsPanel function."""
+    assert "function closeAddSessionsPanel" in _JS, (
+        "app.js must contain a closeAddSessionsPanel function"
+    )
+
+
+def test_render_add_sessions_list_function_exists() -> None:
+    """app.js must define a renderAddSessionsList function."""
+    assert "function renderAddSessionsList" in _JS, (
+        "app.js must contain a renderAddSessionsList function"
+    )
+
+
+def test_add_sessions_uses_immediate_commit() -> None:
+    """renderAddSessionsList must PATCH immediately on checkbox change (no batch Done)."""
+    fn_body = _JS.split("function renderAddSessionsList")[1].split("\nfunction ")[0]
+    assert "PATCH" in fn_body or "api(" in fn_body, (
+        "renderAddSessionsList must fire PATCH on each checkbox change (immediate commit)"
+    )
+
+
+def test_add_sessions_shows_device_name() -> None:
+    """renderAddSessionsList must show device name next to each session."""
+    fn_body = _JS.split("function renderAddSessionsList")[1].split("\nfunction ")[0]
+    assert "deviceName" in fn_body or "device" in fn_body, (
+        "renderAddSessionsList must show device name for disambiguation"
+    )

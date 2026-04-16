@@ -1969,6 +1969,260 @@ function _executeKill(name, remoteId) {
     });
 }
 
+// ─── Add Sessions Panel ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Open the Add Sessions panel for the active user view.
+ * Only available for user views (not "All" or "Hidden").
+ */
+function openAddSessionsPanel() {
+  if (_activeView === 'all' || _activeView === 'hidden') return;
+
+  var panel = $('add-sessions-panel');
+  if (!panel) return;
+
+  // Update title
+  var titleEl = $('add-sessions-title');
+  if (titleEl) titleEl.textContent = 'Add Sessions to “' + _activeView + '”';
+
+  renderAddSessionsList();
+  panel.classList.remove('hidden');
+
+  // Close on backdrop click
+  var backdrop = $('add-sessions-backdrop');
+  if (backdrop) {
+    backdrop.onclick = closeAddSessionsPanel;
+  }
+
+  // Close button
+  var closeBtn = $('add-sessions-close');
+  if (closeBtn) {
+    closeBtn.onclick = closeAddSessionsPanel;
+  }
+}
+
+/**
+ * Close the Add Sessions panel.
+ */
+function closeAddSessionsPanel() {
+  var panel = $('add-sessions-panel');
+  if (panel) panel.classList.add('hidden');
+}
+
+/**
+ * Render the session list inside the Add Sessions panel.
+ * Shows all sessions NOT currently in the active view.
+ * Hidden sessions are shown dimmed with a "hidden" badge and disclosure text.
+ * Grouped by device, alphabetical within each group.
+ * Immediate-commit checkboxes — each change fires a PATCH immediately.
+ */
+function renderAddSessionsList() {
+  var listEl = $('add-sessions-list');
+  var emptyEl = $('add-sessions-empty');
+  if (!listEl) return;
+
+  var views = (_serverSettings && _serverSettings.views) || [];
+  var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+
+  // Find the active view's session list
+  var activeViewObj = null;
+  for (var i = 0; i < views.length; i++) {
+    if (views[i].name === _activeView) {
+      activeViewObj = views[i];
+      break;
+    }
+  }
+  if (!activeViewObj) { listEl.innerHTML = ''; return; }
+  var viewSessions = activeViewObj.sessions || [];
+
+  // Get all real sessions (not status entries), excluding those already in the view
+  var allSessions = (_currentSessions || []).filter(function(s) {
+    return !s.status;
+  });
+
+  var notInView = allSessions.filter(function(s) {
+    var key = s.sessionKey || s.name;
+    return viewSessions.indexOf(key) === -1;
+  });
+
+  if (notInView.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.style.display = '';
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  // Sort: group by deviceName, alphabetical within each group
+  notInView.sort(function(a, b) {
+    var da = (_getDeviceDisplayName(a) || '').toLowerCase();
+    var db = (_getDeviceDisplayName(b) || '').toLowerCase();
+    if (da !== db) return da < db ? -1 : 1;
+    var na = (a.name || '').toLowerCase();
+    var nb = (b.name || '').toLowerCase();
+    return na < nb ? -1 : na > nb ? 1 : 0;
+  });
+
+  var html = '';
+  for (var j = 0; j < notInView.length; j++) {
+    var s = notInView[j];
+    var key = s.sessionKey || s.name;
+    var isHidden = hidden.indexOf(key) !== -1 || hidden.indexOf(s.name) !== -1;
+    var escapedName = escapeHtml(s.name || '');
+    var deviceName = escapeHtml(_getDeviceDisplayName(s) || '');
+
+    html += '<label class="add-sessions-item' + (isHidden ? ' add-sessions-item--hidden' : '') + '">';
+    html += '<input type="checkbox" class="add-sessions-item__checkbox" data-session-key="' + escapeHtml(key) + '"' + (isHidden ? ' data-is-hidden="1"' : '') + ' />';
+    html += '<span class="add-sessions-item__name">' + escapedName + '</span>';
+    if (deviceName) html += '<span class="add-sessions-item__device">' + deviceName + '</span>';
+    if (isHidden) html += '<span class="add-sessions-item__badge">hidden</span>';
+    html += '</label>';
+    if (isHidden) {
+      html += '<div class="add-sessions-item__disclosure">This will make it visible again.</div>';
+    }
+  }
+
+  listEl.innerHTML = html;
+
+  // Delegated change handler for immediate-commit checkboxes
+  // Each checkbox change fires api('PATCH', '/api/settings') immediately (no batch Done).
+  listEl.onchange = function(e) {
+    var cb = e.target.closest('.add-sessions-item__checkbox');
+    if (!cb) return;
+    var sessionKey = cb.dataset.sessionKey;
+    var isHiddenSession = cb.dataset.isHidden === '1';
+
+    if (cb.checked) {
+      var views = (_serverSettings && _serverSettings.views) || [];
+      var updatedViews = JSON.parse(JSON.stringify(views));
+      for (var vi = 0; vi < updatedViews.length; vi++) {
+        if (updatedViews[vi].name === _activeView) {
+          var vs = updatedViews[vi].sessions || [];
+          if (vs.indexOf(sessionKey) === -1) vs.push(sessionKey);
+          updatedViews[vi].sessions = vs;
+          break;
+        }
+      }
+      var patch = { views: updatedViews };
+      if (isHiddenSession) {
+        var hiddenList = (_serverSettings && _serverSettings.hidden_sessions) || [];
+        var hi = hiddenList.indexOf(sessionKey);
+        if (hi !== -1) {
+          var updatedHidden = hiddenList.slice();
+          updatedHidden.splice(hi, 1);
+          patch.hidden_sessions = updatedHidden;
+        }
+      }
+      api('PATCH', '/api/settings', patch)
+        .then(function() {
+          if (_serverSettings) {
+            _serverSettings.views = updatedViews;
+            if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+          }
+          renderAddSessionsList();
+          renderGrid(_currentSessions || []);
+        })
+        .catch(function(err) {
+          showToast('Couldn’t save — try again');
+          if (cb) cb.checked = false;
+          console.warn('[renderAddSessionsList] PATCH failed:', err);
+        });
+    } else {
+      // Should not normally happen (unchecking means removing), but handle gracefully
+      cb.checked = false;
+    }
+  };
+
+  // Show/hide disclosure on hover for hidden items
+  listEl.onmouseover = function(e) {
+    var item = e.target.closest('.add-sessions-item--hidden');
+    if (item) {
+      var disc = item.nextElementSibling;
+      if (disc && disc.classList.contains('add-sessions-item__disclosure')) {
+        disc.style.display = '';
+      }
+    }
+  };
+  listEl.onmouseout = function(e) {
+    var item = e.target.closest('.add-sessions-item--hidden');
+    if (item) {
+      var disc = item.nextElementSibling;
+      if (disc && disc.classList.contains('add-sessions-item__disclosure')) {
+        disc.style.display = 'none';
+      }
+    }
+  };
+}
+
+/**
+ * Get a human-readable display name for the device a session belongs to.
+ * Priority: friendly name → hostname → truncated device_id → empty string.
+ * @param {object} session
+ * @returns {string}
+ */
+function _getDeviceDisplayName(session) {
+  if (!session) return '';
+  if (session.device_name) return session.device_name;
+  if (session.deviceName) return session.deviceName;
+  if (session.hostname) return session.hostname;
+  if (session.device_id) return session.device_id.slice(0, 8);
+  return '';
+}
+
+/**
+ * Add a session to the active user view via PATCH.
+ * If the session is hidden, also unhide it.
+ * On error: show toast, revert checkbox.
+ * @param {string} sessionKey
+ * @param {boolean} unhideFirst
+ * @param {HTMLInputElement} checkbox
+ */
+function _addSessionToActiveView(sessionKey, unhideFirst, checkbox) {
+  var views = (_serverSettings && _serverSettings.views) || [];
+  var updatedViews = JSON.parse(JSON.stringify(views));
+
+  // Find active view and add session
+  for (var i = 0; i < updatedViews.length; i++) {
+    if (updatedViews[i].name === _activeView) {
+      var sessions = updatedViews[i].sessions || [];
+      if (sessions.indexOf(sessionKey) === -1) {
+        sessions.push(sessionKey);
+      }
+      updatedViews[i].sessions = sessions;
+      break;
+    }
+  }
+
+  var patch = { views: updatedViews };
+
+  if (unhideFirst) {
+    var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+    var hiddenIdx = hidden.indexOf(sessionKey);
+    if (hiddenIdx !== -1) {
+      var updatedHidden = hidden.slice();
+      updatedHidden.splice(hiddenIdx, 1);
+      patch.hidden_sessions = updatedHidden;
+    }
+  }
+
+  api('PATCH', '/api/settings', patch)
+    .then(function() {
+      if (_serverSettings) {
+        _serverSettings.views = updatedViews;
+        if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+      }
+      // Re-render the list (session is now in the view, so it disappears from the list)
+      renderAddSessionsList();
+      // Refresh the grid behind the panel
+      renderGrid(_currentSessions || []);
+    })
+    .catch(function(err) {
+      showToast('Couldn’t save — try again');
+      if (checkbox) checkbox.checked = false;
+      console.warn('[_addSessionToActiveView] PATCH failed:', err);
+    });
+}
+
+
 // ─── Notification permission ────────────────────────────────────────────────
 
 /**
@@ -3758,6 +4012,10 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
+    // Add Sessions panel
+    openAddSessionsPanel,
+    closeAddSessionsPanel,
+    renderAddSessionsList,
     // Flyout menu
     openFlyoutMenu,
     closeFlyoutMenu,
