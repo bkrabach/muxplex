@@ -3229,3 +3229,35 @@ def test_backtick_only_on_grid_not_fullscreen() -> None:
     assert "'grid'" in body, (
         "handleGlobalKeydown must check _viewMode === 'grid' before handling backtick/number shortcuts"
     )
+
+
+# ---------------------------------------------------------------------------
+# New View inline creation flow (task-8)
+# ---------------------------------------------------------------------------
+
+
+def test_show_new_view_input_function_exists() -> None:
+    """app.js defines showNewViewInput for inline view creation."""
+    assert "function showNewViewInput" in _JS, (
+        "showNewViewInput must be defined in app.js"
+    )
+
+
+def test_show_new_view_input_patches_settings() -> None:
+    """showNewViewInput handler PATCHes /api/settings with views on Enter."""
+    match = re.search(
+        r"function showNewViewInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "showNewViewInput function not found"
+    body = match.group(1)
+    assert "PATCH" in body, (
+        "showNewViewInput must PATCH /api/settings to create the view"
+    )
+    assert "/api/settings" in body, (
+        "showNewViewInput must PATCH /api/settings with the updated views"
+    )
+    assert "views" in body, (
+        "showNewViewInput must include 'views' in the PATCH body"
+    )

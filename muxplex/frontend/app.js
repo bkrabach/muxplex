@@ -899,6 +899,87 @@ function closeViewDropdown() {
 }
 
 /**
+ * Show an inline text input inside the view dropdown for creating a new view.
+ * Replaces the '+ New View' button with a text input inside the dropdown menu.
+ * - Removes any existing input and re-focuses it if already present.
+ * - On Enter: validates name (not empty, not reserved, not duplicate),
+ *   then PATCHes /api/settings with the new view appended to views,
+ *   updates _serverSettings.views on success, and calls switchView(name).
+ * - On Escape: closes the dropdown.
+ * - On blur: closes the dropdown after 150ms if input is no longer focused.
+ */
+function showNewViewInput() {
+  var menu = $('view-dropdown-menu');
+  if (!menu) return;
+
+  // Re-focus existing input instead of creating a duplicate
+  var existing = menu.querySelector('.view-dropdown__new-input');
+  if (existing) {
+    existing.focus();
+    return;
+  }
+
+  // Find the '+ New View' button to replace
+  var newViewBtn = menu.querySelector('[data-action="new-view"]');
+  if (!newViewBtn) return;
+
+  // Create the inline text input
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'view-dropdown__new-input';
+  input.placeholder = 'View name';
+  input.maxLength = 30;
+  input.setAttribute('aria-label', 'New view name');
+
+  // Replace the '+ New View' button with the input
+  newViewBtn.parentNode.replaceChild(input, newViewBtn);
+  input.focus();
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      var name = input.value.trim();
+
+      // Validate: not empty
+      if (!name) return;
+
+      // Validate: not reserved
+      if (name === 'all' || name === 'hidden') {
+        showToast('Cannot use reserved name \'' + name + '\'');
+        return;
+      }
+
+      // Validate: not duplicate
+      var views = (_serverSettings && _serverSettings.views) || [];
+      if (views.find(function(v) { return v.name === name; })) {
+        showToast('View \'' + name + '\' already exists');
+        return;
+      }
+
+      // Create view and PATCH /api/settings
+      var updatedViews = views.concat([{ name: name, sessions: [] }]);
+      api('PATCH', '/api/settings', { views: updatedViews })
+        .then(function() {
+          if (_serverSettings) _serverSettings.views = updatedViews;
+          switchView(name);
+        })
+        .catch(function() {
+          showToast('Failed to create view');
+        });
+    } else if (e.key === 'Escape') {
+      closeViewDropdown();
+    }
+  });
+
+  input.addEventListener('blur', function() {
+    setTimeout(function() {
+      if (document.activeElement !== input) {
+        closeViewDropdown();
+      }
+    }, 150);
+  });
+}
+
+/**
  * Switch to a named view. Updates _activeView, re-renders the grid and sidebar,
  * updates the dropdown label, and persists the change via PATCH /api/state.
  * @param {string} viewName - 'all', 'hidden', or a user view name.
@@ -2439,8 +2520,11 @@ function bindStaticEventListeners() {
       }
       var action = e.target.closest('[data-action]');
       if (action) {
-        // action handlers (new-view, manage-views) — placeholder for future tasks
-        closeViewDropdown();
+        if (action.dataset.action === 'new-view') {
+          showNewViewInput();
+        } else {
+          closeViewDropdown();
+        }
       }
     });
   }
@@ -2870,6 +2954,7 @@ if (typeof module !== 'undefined' && module.exports) {
     renderViewDropdown,
     toggleViewDropdown,
     closeViewDropdown,
+    showNewViewInput,
     switchView,
     // Federation tiles
     buildStatusTileHTML,
