@@ -3924,3 +3924,21 @@ def test_add_sessions_shows_device_name() -> None:
     assert "deviceName" in fn_body or "device" in fn_body, (
         "renderAddSessionsList must show device name for disambiguation"
     )
+
+
+# ─── Task 10: Mobile variants ────────────────────────────────────────────────
+
+
+def test_open_flyout_sheet_function_exists() -> None:
+    """app.js must define a _openFlyoutSheet function for mobile."""
+    assert "function _openFlyoutSheet" in _JS, (
+        "app.js must contain a _openFlyoutSheet function for mobile bottom sheet"
+    )
+
+
+def test_open_flyout_menu_checks_mobile() -> None:
+    """openFlyoutMenu must check isMobile() to decide between flyout and sheet."""
+    fn_body = _JS.split("function openFlyoutMenu")[1].split("\nfunction ")[0]
+    assert "isMobile" in fn_body, (
+        "openFlyoutMenu must check isMobile() to branch between flyout and sheet"
+    )

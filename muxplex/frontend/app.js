@@ -1623,6 +1623,81 @@ function closeFlyoutMenu() {
 }
 
 /**
+ * Open a bottom action sheet for the flyout menu (mobile).
+ * Same actions as the desktop flyout, but renders as a full-width bottom sheet.
+ */
+function _openFlyoutSheet() {
+  var viewType = _activeView;
+  if (viewType !== 'all' && viewType !== 'hidden') viewType = 'user';
+
+  var items = FLYOUT_MENU_MAP[viewType] || FLYOUT_MENU_MAP['all'];
+
+  var html = '<div class="flyout-sheet__backdrop"></div>';
+  html += '<div class="flyout-sheet__panel">';
+  html += '<div class="flyout-sheet__handle" aria-hidden="true"></div>';
+
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    if (item.separator) {
+      html += '<div class="flyout-sheet__separator"></div>';
+      continue;
+    }
+
+    var label = item.label;
+    if (label.indexOf('{viewName}') !== -1) {
+      var displayName = _activeView;
+      if (displayName.length > 20) displayName = displayName.substring(0, 20) + '\u2026';
+      label = label.replace('{viewName}', escapeHtml(displayName));
+    }
+
+    var cls = 'flyout-sheet__item';
+    if (item.className && item.className.indexOf('danger') !== -1) cls += ' flyout-sheet__item--danger';
+
+    html += '<button class="' + cls + '" data-action="' + item.action + '">';
+    html += label;
+    html += '</button>';
+  }
+
+  html += '</div>';
+
+  var sheet = document.createElement('div');
+  sheet.className = 'flyout-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
+  sheet.innerHTML = html;
+  document.body.appendChild(sheet);
+
+  // Backdrop closes
+  var backdrop = sheet.querySelector('.flyout-sheet__backdrop');
+  if (backdrop) {
+    backdrop.addEventListener('click', closeFlyoutMenu);
+  }
+
+  // Delegated action handler
+  var panel = sheet.querySelector('.flyout-sheet__panel');
+  if (panel) {
+    panel.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-action]');
+      if (!btn) return;
+
+      var action = btn.dataset.action;
+      if (action === 'add-to-view' || action === 'unhide-add-to-view') {
+        // On mobile, close sheet and open Add Sessions panel
+        closeFlyoutMenu();
+        openAddSessionsPanel();
+      } else if (action === 'kill') {
+        // Simple confirm on mobile (inline doesn't work well in sheets)
+        closeFlyoutMenu();
+        killSession(_flyoutSessionName, _flyoutRemoteId);
+      } else {
+        // Dispatch directly
+        _handleFlyoutClick(e);
+      }
+    });
+  }
+}
+
+/**
  * Click-outside handler for the flyout menu.
  * @param {MouseEvent} e
  */
