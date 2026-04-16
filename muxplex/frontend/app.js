@@ -132,6 +132,13 @@ let _previewTimer = null;
 
 var _previewSessionName = null;  // track by NAME, not DOM element
 
+// Flyout menu state
+let _flyoutMenuEl = null;
+let _flyoutSubmenuEl = null;
+let _flyoutSessionKey = null;
+let _flyoutSessionName = null;
+let _flyoutRemoteId = null;
+
 // ─── Settings state ───────────────────────────────────────────────────────────
 let _settingsOpen = false;
 let _serverSettings = null;
@@ -1451,6 +1458,103 @@ function hidePreview() {
   }
   hidePreviewDOM();
   _previewSessionName = null;
+}
+
+// ── Tile Flyout Menu ──────────────────────────────────────────────────────────
+
+/**
+ * Open the flyout menu for a session tile's ⋮ button.
+ * Creates a floating menu appended to document.body, positioned relative to
+ * the trigger button via getBoundingClientRect. On mobile, renders as a
+ * bottom action sheet instead.
+ * @param {HTMLElement} triggerEl - The .tile-options-btn element that was clicked
+ */
+function openFlyoutMenu(triggerEl) {
+  closeFlyoutMenu();
+
+  // Read session info from the tile
+  var tile = triggerEl.closest('[data-session-key]');
+  if (!tile) return;
+  _flyoutSessionKey = tile.dataset.sessionKey || '';
+  _flyoutSessionName = tile.dataset.session || '';
+  _flyoutRemoteId = tile.dataset.remoteId || '';
+
+  if (isMobile()) {
+    _openFlyoutSheet();
+    return;
+  }
+
+  // Build menu items based on active view type
+  var menuHtml = _buildFlyoutMenuItems();
+
+  var menu = document.createElement('div');
+  menu.className = 'flyout-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'Session options');
+  menu.innerHTML = menuHtml;
+  document.body.appendChild(menu);
+  _flyoutMenuEl = menu;
+
+  // Position relative to trigger
+  var rect = triggerEl.getBoundingClientRect();
+  var menuWidth = menu.offsetWidth;
+  var menuHeight = menu.offsetHeight;
+
+  // Default: below and to the left of the trigger
+  var top = rect.bottom + 4;
+  var left = rect.right - menuWidth;
+
+  // Keep within viewport
+  if (left < 8) left = 8;
+  if (top + menuHeight > window.innerHeight - 8) {
+    top = rect.top - menuHeight - 4;
+  }
+  if (top < 8) top = 8;
+
+  menu.style.top = top + 'px';
+  menu.style.left = left + 'px';
+
+  // Delegated click handler on the flyout
+  menu.addEventListener('click', _handleFlyoutClick);
+
+  // Close on click-outside (next tick to avoid the opening click)
+  setTimeout(function() {
+    document.addEventListener('click', _flyoutOutsideClickHandler, true);
+  }, 0);
+}
+
+/**
+ * Close the flyout menu and any open submenu.
+ */
+function closeFlyoutMenu() {
+  if (_flyoutSubmenuEl) {
+    _flyoutSubmenuEl.remove();
+    _flyoutSubmenuEl = null;
+  }
+  if (_flyoutMenuEl) {
+    _flyoutMenuEl.removeEventListener('click', _handleFlyoutClick);
+    _flyoutMenuEl.remove();
+    _flyoutMenuEl = null;
+  }
+  // Remove mobile sheet if open
+  var sheet = document.querySelector('.flyout-sheet');
+  if (sheet) sheet.remove();
+
+  document.removeEventListener('click', _flyoutOutsideClickHandler, true);
+  _flyoutSessionKey = null;
+  _flyoutSessionName = null;
+  _flyoutRemoteId = null;
+}
+
+/**
+ * Click-outside handler for the flyout menu.
+ * @param {MouseEvent} e
+ */
+function _flyoutOutsideClickHandler(e) {
+  if (_flyoutMenuEl && !_flyoutMenuEl.contains(e.target) &&
+      (!_flyoutSubmenuEl || !_flyoutSubmenuEl.contains(e.target))) {
+    closeFlyoutMenu();
+  }
 }
 
 // ─── Notification permission ────────────────────────────────────────────────
@@ -2776,16 +2880,12 @@ function killSession(name, remoteId) {
  * Called once after restoreState() resolves.
  */
 function bindStaticEventListeners() {
-  // Delegated kill-session handler (tiles + sidebar items are re-rendered each poll)
+  // Delegated ⋮ options button handler (tiles are re-rendered each poll)
   document.addEventListener('click', function(e) {
-    var deleteBtn = e.target.closest && e.target.closest('.tile-delete, .sidebar-delete');
-    if (!deleteBtn) return;
+    var optionsBtn = e.target.closest && e.target.closest('.tile-options-btn');
+    if (!optionsBtn) return;
     e.stopPropagation();
-    var name = deleteBtn.dataset.session;
-    // Walk up to the tile/sidebar-item to get remoteId for federation routing
-    var container = deleteBtn.closest('[data-remote-id]');
-    var remoteId = container ? container.dataset.remoteId : '';
-    if (name) killSession(name, remoteId);
+    openFlyoutMenu(optionsBtn);
   });
 
   on($('back-btn'), 'click', closeSession);
@@ -3247,6 +3347,9 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
+    // Flyout menu
+    openFlyoutMenu,
+    closeFlyoutMenu,
     // Filter bar
     renderFilterBar,
     // View dropdown

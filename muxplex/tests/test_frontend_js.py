@@ -3709,3 +3709,42 @@ def test_tile_delete_button_removed() -> None:
     assert "tile-delete" not in fn_body, (
         "buildTileHTML must not render the old .tile-delete button (kill moved to flyout)"
     )
+
+
+def test_open_flyout_menu_function_exists() -> None:
+    """app.js must define an openFlyoutMenu function."""
+    assert "function openFlyoutMenu" in _JS, (
+        "app.js must contain an openFlyoutMenu function"
+    )
+
+
+def test_close_flyout_menu_function_exists() -> None:
+    """app.js must define a closeFlyoutMenu function."""
+    assert "function closeFlyoutMenu" in _JS, (
+        "app.js must contain a closeFlyoutMenu function"
+    )
+
+
+def test_flyout_menu_uses_fixed_positioning() -> None:
+    """openFlyoutMenu must use position:fixed and getBoundingClientRect for positioning."""
+    fn_body = _JS.split("function openFlyoutMenu")[1].split("\nfunction ")[0]
+    assert "getBoundingClientRect" in fn_body, (
+        "openFlyoutMenu must use getBoundingClientRect to calculate position"
+    )
+
+
+def test_flyout_delegated_on_tile_container() -> None:
+    """A delegated click listener must handle .tile-options-btn clicks."""
+    assert "tile-options-btn" in _JS.split("bindStaticEventListeners")[1], (
+        "bindStaticEventListeners must handle .tile-options-btn clicks via delegation"
+    )
+
+
+def test_old_tile_delete_handler_removed() -> None:
+    """The old delegated .tile-delete click handler must be removed."""
+    bind_body = _JS.split("function bindStaticEventListeners")[1].split("\nfunction ")[
+        0
+    ]
+    assert "tile-delete" not in bind_body, (
+        "The old .tile-delete delegated handler must be removed from bindStaticEventListeners"
+    )
