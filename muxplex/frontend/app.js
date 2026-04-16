@@ -218,6 +218,9 @@ async function restoreState() {
   try {
     const res = await api('GET', '/api/state');
     const state = await res.json();
+    if (state.active_view) {
+      _activeView = state.active_view;
+    }
     if (state.active_session) {
       await openSession(state.active_session, {
         skipAnimation: true,
@@ -802,6 +805,112 @@ function renderFilterBar(container, allSessions) {
   }
 
   container.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// View dropdown — render, open/close, view switching
+// ---------------------------------------------------------------------------
+
+/**
+ * Populate #view-dropdown-menu with the full view list and update the label.
+ * Called on open and after a view switch.
+ */
+function renderViewDropdown() {
+  var menu = $('view-dropdown-menu');
+  if (!menu) return;
+
+  var views = (_serverSettings && _serverSettings.views) || [];
+  var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  var hiddenCount = hidden.length;
+
+  var html = '';
+
+  // — All Sessions (always first, shortcut 1)
+  var allActive = _activeView === 'all' ? ' view-dropdown-item--active' : '';
+  html += '<button class="view-dropdown-item' + allActive + '" data-view="all"><span class="view-dropdown-shortcut">1</span> All Sessions</button>';
+
+  // — User views (shortcuts 2–8)
+  if (views.length > 0) {
+    html += '<div class="view-dropdown-separator"></div>';
+    for (var i = 0; i < views.length && i < 7; i++) {
+      var v = views[i];
+      var vActive = _activeView === v.name ? ' view-dropdown-item--active' : '';
+      html += '<button class="view-dropdown-item' + vActive + '" data-view="' + escapeHtml(v.name) + '"><span class="view-dropdown-shortcut">' + (i + 2) + '</span> ' + escapeHtml(v.name) + '</button>';
+    }
+  }
+
+  // — Hidden (N) (always last system view, shortcut 9)
+  html += '<div class="view-dropdown-separator"></div>';
+  var hiddenActive = _activeView === 'hidden' ? ' view-dropdown-item--active' : '';
+  html += '<button class="view-dropdown-item' + hiddenActive + '" data-view="hidden"><span class="view-dropdown-shortcut">9</span> Hidden <span class="view-dropdown-badge">' + hiddenCount + '</span></button>';
+
+  // — Actions
+  html += '<div class="view-dropdown-separator"></div>';
+  html += '<button class="view-dropdown-item view-dropdown-action" data-action="new-view">+ New View</button>';
+  html += '<button class="view-dropdown-item view-dropdown-action" data-action="manage-views">Manage Views\u2026</button>';
+
+  menu.innerHTML = html;
+
+  // Update the label
+  var label = $('view-dropdown-label');
+  if (label) {
+    if (_activeView === 'all') {
+      label.textContent = 'All Sessions';
+    } else if (_activeView === 'hidden') {
+      label.textContent = 'Hidden';
+    } else {
+      label.textContent = escapeHtml(_activeView);
+    }
+  }
+}
+
+/**
+ * Toggle the view dropdown open/closed.
+ * Calls renderViewDropdown() when opening to ensure fresh content.
+ */
+function toggleViewDropdown() {
+  var menu = $('view-dropdown-menu');
+  var trigger = $('view-dropdown-trigger');
+  if (!menu) return;
+
+  var isOpen = !menu.classList.contains('hidden');
+  if (isOpen) {
+    closeViewDropdown();
+  } else {
+    menu.classList.remove('hidden');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    renderViewDropdown();
+  }
+}
+
+/**
+ * Close the view dropdown. Removes inline new-view input if present.
+ */
+function closeViewDropdown() {
+  var menu = $('view-dropdown-menu');
+  var trigger = $('view-dropdown-trigger');
+  if (menu) {
+    menu.classList.add('hidden');
+    // Remove any inline new-view input
+    var newViewInput = menu.querySelector('.view-dropdown-new-input');
+    if (newViewInput) newViewInput.remove();
+  }
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+/**
+ * Switch to a named view. Updates _activeView, re-renders the grid and sidebar,
+ * updates the dropdown label, and persists the change via PATCH /api/state.
+ * @param {string} viewName - 'all', 'hidden', or a user view name.
+ */
+function switchView(viewName) {
+  _activeView = viewName;
+  closeViewDropdown();
+  renderGrid(_currentSessions || []);
+  renderSidebar(_currentSessions || [], _viewingSession);
+  renderViewDropdown();
+  // Persist active view — fire and forget
+  api('PATCH', '/api/state', { active_view: viewName }).catch(function() {});
 }
 
 function renderGrid(sessions) {
@@ -2258,6 +2367,36 @@ function bindStaticEventListeners() {
   });
 
   on($('back-btn'), 'click', closeSession);
+
+  // View dropdown — trigger opens/closes, delegated item clicks switch view
+  var viewDropdownTrigger = $('view-dropdown-trigger');
+  if (viewDropdownTrigger) on(viewDropdownTrigger, 'click', toggleViewDropdown);
+
+  var viewDropdownMenu = $('view-dropdown-menu');
+  if (viewDropdownMenu) {
+    viewDropdownMenu.addEventListener('click', function(e) {
+      var item = e.target.closest('[data-view]');
+      if (item) {
+        switchView(item.dataset.view);
+        return;
+      }
+      var action = e.target.closest('[data-action]');
+      if (action) {
+        // action handlers (new-view, manage-views) — placeholder for future tasks
+        closeViewDropdown();
+      }
+    });
+  }
+
+  // Click-outside closes the dropdown
+  document.addEventListener('click', function(e) {
+    var dropdown = $('view-dropdown-menu');
+    if (!dropdown || dropdown.classList.contains('hidden')) return;
+    var trigger = $('view-dropdown-trigger');
+    if (trigger && trigger.contains(e.target)) return;
+    if (!dropdown.contains(e.target)) closeViewDropdown();
+  });
+
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
   var sidebarNewSessionBtn = $('sidebar-new-session-btn');
@@ -2670,6 +2809,11 @@ if (typeof module !== 'undefined' && module.exports) {
     killSession,
     // Filter bar
     renderFilterBar,
+    // View dropdown
+    renderViewDropdown,
+    toggleViewDropdown,
+    closeViewDropdown,
+    switchView,
     // Federation tiles
     buildStatusTileHTML,
     // Constants

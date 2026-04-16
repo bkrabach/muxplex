@@ -3112,3 +3112,56 @@ def test_create_new_session_references_active_view() -> None:
     assert "_activeView" in body, (
         "createNewSession must reference _activeView to auto-add new session to the active user view"
     )
+
+
+# ---------------------------------------------------------------------------
+# Header Dropdown — JS Render + Open/Close + View Switching (task-6)
+# ---------------------------------------------------------------------------
+
+
+def test_render_view_dropdown_function_exists() -> None:
+    """renderViewDropdown function must exist in app.js."""
+    assert "function renderViewDropdown" in _JS, (
+        "renderViewDropdown must be defined in app.js"
+    )
+
+
+def test_render_view_dropdown_exported() -> None:
+    """module.exports must export renderViewDropdown."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "renderViewDropdown" in exports, (
+        "module.exports must export renderViewDropdown"
+    )
+
+
+def test_toggle_view_dropdown_function_exists() -> None:
+    """toggleViewDropdown function must exist in app.js."""
+    assert "function toggleViewDropdown" in _JS, (
+        "toggleViewDropdown must be defined in app.js"
+    )
+
+
+def test_switch_view_function_exists() -> None:
+    """switchView function must exist in app.js."""
+    assert "function switchView" in _JS, (
+        "switchView must be defined in app.js"
+    )
+
+
+def test_switch_view_patches_state() -> None:
+    """switchView must PATCH /api/state to persist active_view."""
+    match = re.search(
+        r"function switchView\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "switchView function not found"
+    body = match.group(1)
+    assert "PATCH" in body, "switchView must use PATCH method"
+    assert "/api/state" in body, "switchView must PATCH /api/state"
