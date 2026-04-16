@@ -3010,3 +3010,86 @@ def test_settings_hidden_sessions_uses_session_key() -> None:
         "(with s.name fallback) as the checkbox value so remote sessions are "
         "stored in device_id:name format in hidden_sessions"
     )
+
+
+# ---------------------------------------------------------------------------
+# Active view state variable and getVisibleSessions (task-2-active-view)
+# ---------------------------------------------------------------------------
+
+
+def test_active_view_state_variable_exists() -> None:
+    """_activeView state variable must be declared with default 'all'."""
+    assert "let _activeView = 'all'" in _JS, (
+        "let _activeView = 'all' must be declared in the App state section of app.js"
+    )
+
+
+def test_get_visible_sessions_all_view_excludes_hidden() -> None:
+    """getVisibleSessions must reference _activeView to honour the active view."""
+    match = re.search(
+        r"function getVisibleSessions\(sessions\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "getVisibleSessions function not found"
+    body = match.group(1)
+    assert "_activeView" in body, (
+        "getVisibleSessions must check _activeView to filter sessions by view"
+    )
+
+
+def test_get_visible_sessions_hidden_view_shows_hidden() -> None:
+    """getVisibleSessions must handle the 'hidden' view case."""
+    match = re.search(
+        r"function getVisibleSessions\(sessions\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "getVisibleSessions function not found"
+    body = match.group(1)
+    assert "'hidden'" in body or '"hidden"' in body, (
+        "getVisibleSessions must explicitly handle the 'hidden' view (show only hidden sessions)"
+    )
+
+
+def test_get_visible_sessions_user_view_filters_by_session_key() -> None:
+    """getVisibleSessions must use sessionKey when filtering for a user-defined view."""
+    match = re.search(
+        r"function getVisibleSessions\(sessions\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "getVisibleSessions function not found"
+    body = match.group(1)
+    assert "sessionKey" in body, (
+        "getVisibleSessions must use sessionKey to match sessions against the user view's "
+        "sessions list"
+    )
+
+
+def test_get_active_view_helper_exported() -> None:
+    """window.MuxplexApp must export _getActiveView test helper."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "_getActiveView" in exports, (
+        "module.exports must export _getActiveView test helper"
+    )
+
+
+def test_set_active_view_helper_exported() -> None:
+    """window.MuxplexApp must export _setActiveView test helper."""
+    match = re.search(
+        r"module\.exports\s*=\s*\{(.*?)\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "module.exports block not found"
+    exports = match.group(1)
+    assert "_setActiveView" in exports, (
+        "module.exports must export _setActiveView test helper"
+    )

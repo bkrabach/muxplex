@@ -137,6 +137,7 @@ let _settingsOpen = false;
 let _serverSettings = null;
 let _gridViewMode = 'flat';
 let _activeFilterDevice = 'all';
+let _activeView = 'all';
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
   hoverPreviewDelay: 1500,
@@ -531,18 +532,45 @@ function buildStatusTileHTML(deviceName, statusText, statusClass) {
 }
 
 /**
- * Returns sessions with hidden session names removed.
- * Hides any session whose name appears in the hidden_sessions list,
- * regardless of whether it is local or remote (federated).
- * Consolidates the hidden-session filter used by all render paths.
+ * Returns sessions filtered by the active view.
+ *
+ * - 'all' view:    excludes hidden sessions (sessions in hidden_sessions list)
+ * - 'hidden' view: shows only hidden sessions
+ * - user view:     shows only sessions whose sessionKey is in that view's sessions list
+ *
+ * Status entries (unreachable, auth_failed, empty) are always excluded —
+ * they are rendered separately as status tiles.
+ *
+ * Falls back to 'all' behaviour if the active view no longer exists.
+ *
  * @param {object[]} sessions
  * @returns {object[]}
  */
 function getVisibleSessions(sessions) {
   var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+  var views = (_serverSettings && _serverSettings.views) || [];
+  var view = _resolveActiveView(_activeView, views);
+
   return (sessions || []).filter(function(s) {
-    // Skip status entries (unreachable, auth_failed) — rendered separately as status tiles
+    // Skip status entries (unreachable, auth_failed, empty) — rendered separately as status tiles
     if (s.status) return false;
+
+    if (view === 'hidden') {
+      // 'hidden' view: only show sessions that are in the hidden list
+      return hidden.length > 0 && (hidden.includes(s.sessionKey || s.name) || hidden.includes(s.name));
+    }
+
+    if (view !== 'all') {
+      // User-defined view: show only sessions whose sessionKey is in this view's sessions list
+      var userView = views.find(function(v) { return v.name === view; });
+      if (userView) {
+        var viewSessions = userView.sessions || [];
+        return viewSessions.includes(s.sessionKey || s.name) || viewSessions.includes(s.name);
+      }
+      // View no longer exists — fall through to 'all' behaviour
+    }
+
+    // 'all' view: exclude hidden sessions
     if (hidden.length > 0 && (hidden.includes(s.sessionKey || s.name) || hidden.includes(s.name))) {
       return false;
     }
@@ -2499,6 +2527,12 @@ function _setActiveFilterDevice(device) {
   _activeFilterDevice = device;
 }
 
+/** Test-only: get current _activeView value. */
+function _getActiveView() { return _activeView; }
+
+/** Test-only: set _activeView directly. */
+function _setActiveView(view) { _activeView = view; }
+
 // Recalculate fit layout on window resize
 window.addEventListener('resize', function() {
   var ds = getDisplaySettings();
@@ -2625,5 +2659,7 @@ if (typeof module !== 'undefined' && module.exports) {
     _getGridViewMode,
     _setGridViewMode,
     _setActiveFilterDevice,
+    _getActiveView,
+    _setActiveView,
   };
 }
