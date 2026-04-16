@@ -3773,6 +3773,8 @@ function bindStaticEventListeners() {
     if (!dropdown || dropdown.classList.contains('hidden')) return;
     var trigger = $('view-dropdown-trigger');
     if (trigger && trigger.contains(e.target)) return;
+    // Don't close if a new-view input was just created (replaceChild removes the click target from DOM)
+    if (dropdown.querySelector('.view-dropdown__new-input')) return;
     if (!dropdown.contains(e.target)) closeViewDropdown();
   });
 

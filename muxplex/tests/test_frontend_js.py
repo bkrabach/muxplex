@@ -4186,6 +4186,39 @@ def test_flyout_menu_map_is_const() -> None:
 # ── Fix B: ARIA role correction in kill confirm sheet (Phase 3 COE re-verification) ──
 
 
+# ─── Click-outside race condition guard (new-view dropdown) ─────────────────
+
+
+def test_click_outside_view_dropdown_guards_against_new_view_input() -> None:
+    """Click-outside handler must not close dropdown when new-view input is being shown.
+
+    Race condition: showNewViewInput() replaces the '+ New View' button with an
+    input via replaceChild.  The click event then bubbles up to the document-level
+    click-outside handler, where e.target is the OLD button that was just removed
+    from the DOM.  Since it is no longer in the DOM, dropdown.contains(e.target)
+    returns false and the handler calls closeViewDropdown(), making the input
+    disappear immediately.
+
+    Fix: before closing, check whether the dropdown now contains a
+    .view-dropdown__new-input element — if so, showNewViewInput() just ran and
+    we must not close the dropdown.
+    """
+    match = re.search(
+        r"// Click-outside closes the header view dropdown\s*\n\s*"
+        r"document\.addEventListener\('click',\s*function\(e\)\s*\{(.*?)\}\s*\);",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "Click-outside handler for header view dropdown not found"
+    body = match.group(1)
+    assert ".view-dropdown__new-input" in body, (
+        "Click-outside handler must guard: if (dropdown.querySelector"
+        "('.view-dropdown__new-input')) return; — prevents the race condition "
+        "where showNewViewInput() replaces the button with an input (removing "
+        "it from the DOM) and the bubbling click event incorrectly closes the dropdown"
+    )
+
+
 def test_kill_confirm_buttons_use_role_button() -> None:
     """Kill and Cancel buttons inside the alertdialog must use role='button', not 'menuitem'.
 
