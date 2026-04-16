@@ -145,7 +145,7 @@ let _flyoutRemoteId = null;
  *   { label, action, className?, separator? }
  * The 'user' view type gets the active view name injected at render time.
  */
-var FLYOUT_MENU_MAP = {
+const FLYOUT_MENU_MAP = {
   'all': [
     { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
     { label: 'Hide', action: 'hide' },
@@ -595,7 +595,6 @@ function buildSidebarHTML(session, currentSession) {
     `<div class="sidebar-item-header">` +
     `<span class="sidebar-item-name">${escapedName}</span>` +
     badgeHtml +
-    `<button class="sidebar-delete" data-session="${escapedName}" aria-label="Kill session">&times;</button>` +
     `</div>` +
     `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
     `</article>`
@@ -734,8 +733,6 @@ function renderSidebar(sessions, currentSession) {
       const name = item.dataset.session;
       const remoteId = item.dataset.remoteId || '';
       on(item, 'click', (e) => {
-        // Don't navigate when clicking the delete button inside the item
-        if (e.target.closest && e.target.closest('.sidebar-delete')) return;
         if (name !== currentSession) openSession(name, { remoteId });
       });
     });
@@ -1464,8 +1461,8 @@ function renderGrid(sessions) {
   // Bind interaction handlers on each tile
   document.querySelectorAll('.session-tile').forEach(function(tile) {
     on(tile, 'click', (e) => {
-      // Don't navigate when clicking the delete button inside the tile
-      if (e.target.closest && e.target.closest('.tile-delete')) return;
+      // Don't navigate when clicking the options button inside the tile
+      if (e.target.closest && e.target.closest('.tile-options-btn')) return;
       // Don't open error/status tiles (unreachable, auth_failed)
       if (tile.classList.contains('source-tile--error') || !tile.dataset.session) return;
       openSession(tile.dataset.session, { remoteId: tile.dataset.remoteId || '' });
@@ -1658,7 +1655,7 @@ function _openFlyoutSheet() {
   var items = FLYOUT_MENU_MAP[viewType] || FLYOUT_MENU_MAP['all'];
 
   var html = '<div class="flyout-sheet__backdrop"></div>';
-  html += '<div class="flyout-sheet__panel">';
+  html += '<div class="flyout-sheet__panel" aria-label="Session options" role="menu">';
   html += '<div class="flyout-sheet__handle" aria-hidden="true"></div>';
 
   for (var i = 0; i < items.length; i++) {
@@ -1678,7 +1675,7 @@ function _openFlyoutSheet() {
     var cls = 'flyout-sheet__item';
     if (item.className && item.className.indexOf('danger') !== -1) cls += ' flyout-sheet__item--danger';
 
-    html += '<button class="' + cls + '" data-action="' + item.action + '">';
+    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '">';
     html += label;
     html += '</button>';
   }
@@ -1707,17 +1704,160 @@ function _openFlyoutSheet() {
 
       var action = btn.dataset.action;
       if (action === 'add-to-view' || action === 'unhide-add-to-view') {
-        // On mobile, close sheet and open Add Sessions panel
+        // On mobile, show a view picker sheet (not the Add Sessions panel which is for the active view)
+        var sessionKey = _flyoutSessionKey;
+        var sessionName = _flyoutSessionName;
+        var unhideFirst = action === 'unhide-add-to-view';
         closeFlyoutMenu();
-        openAddSessionsPanel();
+        _openMobileViewPicker(sessionKey, sessionName, unhideFirst);
       } else if (action === 'kill') {
-        // Simple confirm on mobile (inline doesn't work well in sheets)
+        // Show a confirmation sheet — consistent with the existing sheet pattern
+        var killName = _flyoutSessionName;
+        var killRemoteId = _flyoutRemoteId;
         closeFlyoutMenu();
-        killSession(_flyoutSessionName, _flyoutRemoteId);
+        _openMobileKillConfirm(killName, killRemoteId);
       } else {
         // Dispatch directly
         _handleFlyoutClick(e);
       }
+    });
+  }
+}
+
+/**
+ * Show a confirmation bottom sheet before killing a session on mobile.
+ * Shows "Kill [sessionName]?" with Kill and Cancel buttons.
+ * @param {string} sessionName
+ * @param {string} remoteId
+ */
+function _openMobileKillConfirm(sessionName, remoteId) {
+  var sheet = document.createElement('div');
+  sheet.className = 'flyout-sheet';
+
+  var html = '<div class="flyout-sheet__backdrop"></div>';
+  html += '<div class="flyout-sheet__panel" aria-label="Confirm kill session" role="alertdialog">';
+  html += '<div class="flyout-sheet__handle" aria-hidden="true"></div>';
+  html += '<div class="flyout-sheet__title">Kill ' + escapeHtml(sessionName) + '?</div>';
+  html += '<button class="flyout-sheet__item flyout-sheet__item--danger" data-action="confirm-kill" role="menuitem">Kill</button>';
+  html += '<button class="flyout-sheet__item" data-action="cancel" role="menuitem">Cancel</button>';
+  html += '</div>';
+
+  sheet.innerHTML = html;
+  document.body.appendChild(sheet);
+
+  var backdrop = sheet.querySelector('.flyout-sheet__backdrop');
+  if (backdrop) backdrop.addEventListener('click', function() { sheet.remove(); });
+
+  var panel = sheet.querySelector('.flyout-sheet__panel');
+  if (panel) {
+    panel.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      sheet.remove();
+      if (btn.dataset.action === 'confirm-kill') {
+        killSession(sessionName, remoteId);
+      }
+    });
+  }
+}
+
+/**
+ * Open a bottom sheet listing all user views for the session (mobile view picker).
+ * Same toggle behaviour as the desktop submenu — each tap fires a PATCH immediately.
+ * The sheet has a "Done" button that closes it.
+ * @param {string} sessionKey
+ * @param {string} sessionName
+ * @param {boolean} unhideFirst - If true, also unhide the session on first add
+ */
+function _openMobileViewPicker(sessionKey, sessionName, unhideFirst) {
+  var views = (_serverSettings && _serverSettings.views) || [];
+  if (views.length === 0) {
+    showToast('No user views. Create one from the header dropdown.');
+    return;
+  }
+
+  var sheet = document.createElement('div');
+  sheet.className = 'flyout-sheet';
+
+  var html = '<div class="flyout-sheet__backdrop"></div>';
+  html += '<div class="flyout-sheet__panel" aria-label="Add to View" role="menu">';
+  html += '<div class="flyout-sheet__handle" aria-hidden="true"></div>';
+
+  for (var i = 0; i < views.length; i++) {
+    var v = views[i];
+    var isIn = (v.sessions || []).indexOf(sessionKey) !== -1;
+    html += '<button class="flyout-sheet__item" role="menuitem" data-view-index="' + i + '">';
+    html += '<span style="margin-right:8px">' + (isIn ? '\u2713' : '\u00a0\u00a0') + '</span>';
+    html += escapeHtml(v.name);
+    html += '</button>';
+  }
+
+  html += '<div class="flyout-sheet__separator"></div>';
+  html += '<button class="flyout-sheet__item" data-action="done" role="menuitem">Done</button>';
+  html += '</div>';
+
+  sheet.innerHTML = html;
+  document.body.appendChild(sheet);
+
+  var backdrop = sheet.querySelector('.flyout-sheet__backdrop');
+  if (backdrop) backdrop.addEventListener('click', function() { sheet.remove(); });
+
+  var panel = sheet.querySelector('.flyout-sheet__panel');
+  if (panel) {
+    panel.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-action="done"]');
+      if (btn) { sheet.remove(); return; }
+
+      var viewBtn = e.target.closest('[data-view-index]');
+      if (!viewBtn) return;
+
+      var idx = parseInt(viewBtn.dataset.viewIndex, 10);
+      var updatedViews = JSON.parse(JSON.stringify((_serverSettings && _serverSettings.views) || []));
+      var view = updatedViews[idx];
+      if (!view) return;
+
+      var sessions = view.sessions || [];
+      var pos = sessions.indexOf(sessionKey);
+      var nowIn;
+      if (pos !== -1) {
+        sessions.splice(pos, 1);
+        nowIn = false;
+      } else {
+        sessions.push(sessionKey);
+        nowIn = true;
+      }
+      view.sessions = sessions;
+
+      var patch = { views: updatedViews };
+      if (unhideFirst && nowIn) {
+        var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
+        var hiddenIdx = hidden.indexOf(sessionKey);
+        if (hiddenIdx !== -1) {
+          var updatedHidden = hidden.slice();
+          updatedHidden.splice(hiddenIdx, 1);
+          patch.hidden_sessions = updatedHidden;
+          unhideFirst = false;  // only unhide on first successful add
+        }
+      }
+
+      // Update checkmark immediately for responsiveness
+      var checkEl = viewBtn.querySelector('span');
+      if (checkEl) checkEl.textContent = nowIn ? '\u2713' : '\u00a0\u00a0';
+
+      api('PATCH', '/api/settings', patch)
+        .then(function() {
+          if (_serverSettings) {
+            _serverSettings.views = updatedViews;
+            if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+          }
+          if (patch.hidden_sessions) renderGrid(_currentSessions || []);
+        })
+        .catch(function(err) {
+          showToast('Couldn\u2019t save \u2014 try again');
+          // Revert checkmark
+          if (checkEl) checkEl.textContent = nowIn ? '\u00a0\u00a0' : '\u2713';
+          console.warn('[_openMobileViewPicker] PATCH failed:', err);
+        });
     });
   }
 }
@@ -1788,9 +1928,12 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
   }
 
   var sessionKey = _flyoutSessionKey;
+  // When in a user view, filter it out — the user already has "Remove from [ViewName]" for it
+  var isInUserView = _activeView !== 'all' && _activeView !== 'hidden';
   var html = '';
   for (var i = 0; i < views.length; i++) {
     var v = views[i];
+    if (isInUserView && v.name === _activeView) continue;
     var isIn = (v.sessions || []).indexOf(sessionKey) !== -1;
     html += '<button class="flyout-submenu__item" role="menuitem" data-view-index="' + i + '">';
     html += '<span class="flyout-submenu__check">' + (isIn ? '\u2713' : '') + '</span>';
@@ -2232,25 +2375,6 @@ function renderAddSessionsList() {
     }
   };
 
-  // Show/hide disclosure on hover for hidden items
-  listEl.onmouseover = function(e) {
-    var item = e.target.closest('.add-sessions-item--hidden');
-    if (item) {
-      var disc = item.nextElementSibling;
-      if (disc && disc.classList.contains('add-sessions-item__disclosure')) {
-        disc.style.display = '';
-      }
-    }
-  };
-  listEl.onmouseout = function(e) {
-    var item = e.target.closest('.add-sessions-item--hidden');
-    if (item) {
-      var disc = item.nextElementSibling;
-      if (disc && disc.classList.contains('add-sessions-item__disclosure')) {
-        disc.style.display = 'none';
-      }
-    }
-  };
 }
 
 /**
@@ -2267,61 +2391,6 @@ function _getDeviceDisplayName(session) {
   if (session.device_id) return session.device_id.slice(0, 8);
   return '';
 }
-
-/**
- * Add a session to the active user view via PATCH.
- * If the session is hidden, also unhide it.
- * On error: show toast, revert checkbox.
- * @param {string} sessionKey
- * @param {boolean} unhideFirst
- * @param {HTMLInputElement} checkbox
- */
-function _addSessionToActiveView(sessionKey, unhideFirst, checkbox) {
-  var views = (_serverSettings && _serverSettings.views) || [];
-  var updatedViews = JSON.parse(JSON.stringify(views));
-
-  // Find active view and add session
-  for (var i = 0; i < updatedViews.length; i++) {
-    if (updatedViews[i].name === _activeView) {
-      var sessions = updatedViews[i].sessions || [];
-      if (sessions.indexOf(sessionKey) === -1) {
-        sessions.push(sessionKey);
-      }
-      updatedViews[i].sessions = sessions;
-      break;
-    }
-  }
-
-  var patch = { views: updatedViews };
-
-  if (unhideFirst) {
-    var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
-    var hiddenIdx = hidden.indexOf(sessionKey);
-    if (hiddenIdx !== -1) {
-      var updatedHidden = hidden.slice();
-      updatedHidden.splice(hiddenIdx, 1);
-      patch.hidden_sessions = updatedHidden;
-    }
-  }
-
-  api('PATCH', '/api/settings', patch)
-    .then(function() {
-      if (_serverSettings) {
-        _serverSettings.views = updatedViews;
-        if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
-      }
-      // Re-render the list (session is now in the view, so it disappears from the list)
-      renderAddSessionsList();
-      // Refresh the grid behind the panel
-      renderGrid(_currentSessions || []);
-    })
-    .catch(function(err) {
-      showToast('Couldn’t save — try again');
-      if (checkbox) checkbox.checked = false;
-      console.warn('[_addSessionToActiveView] PATCH failed:', err);
-    });
-}
-
 
 // ─── Notification permission ────────────────────────────────────────────────
 
@@ -3649,7 +3718,6 @@ function bindStaticEventListeners() {
   document.addEventListener('click', function(e) {
     var optionsBtn = e.target.closest && e.target.closest('.tile-options-btn');
     if (!optionsBtn) return;
-    e.stopPropagation();
     openFlyoutMenu(optionsBtn);
   });
 

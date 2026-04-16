@@ -234,6 +234,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `default_session` | `null` | Session to auto-open on load |
 | `sort_order` | `manual` | Session ordering: `manual`, `alphabetical`, `recent` |
 | `hidden_sessions` | `[]` | Sessions hidden from the dashboard |
+| `views` | `[]` | Named session views for grouping and filtering sessions |
 | `window_size_largest` | `false` | Auto-set tmux `window-size largest` on connect |
 | `auto_open_created` | `true` | Auto-open newly created sessions |
 | `new_session_template` | `tmux new-session -d -s {name}` | Command template for creating sessions |
@@ -254,6 +255,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `activityIndicator` | `"both"` | Activity style: `none`, `glow`, `dot`, `both` |
 | `gridViewMode` | `"flat"` | Multi-device grid layout: `flat`, `grouped`, `filtered` |
 | `sidebarOpen` | `null` | Sidebar state: `true`, `false`, or `null` (auto-detect from screen width) |
+| `settings_updated_at` | `0.0` | Unix timestamp of last settings write (used for federation sync) |
 
 **Priority:** CLI flags > `settings.json` > defaults.
 

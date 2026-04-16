@@ -3964,3 +3964,220 @@ def test_render_grid_closes_stale_flyout() -> None:
     assert "_flyoutSessionKey" in fn_body or "closeFlyoutMenu" in fn_body, (
         "renderGrid must check if the flyout's target session still exists and close if not"
     )
+
+
+# ─── Phase 3 COE findings regression tests ──────────────────────────────────
+
+
+# ── BUG 1: tile click handler guards .tile-options-btn ───────────────────────
+
+
+def test_tile_click_handler_guards_options_btn() -> None:
+    """Tile click handler early return must guard .tile-options-btn (not .tile-delete).
+
+    BUG: Previously the guard checked .tile-delete which was removed in Phase 3.
+    Clicking ⋮ triggered BOTH flyout opening AND openSession() navigation.
+    Fix: guard must check .tile-options-btn to stop event from reaching openSession().
+    """
+    # The tile click handler is inside renderGrid — find it
+    render_grid_body = _JS.split("function renderGrid")[1].split("\nfunction ")[0]
+    assert "tile-options-btn" in render_grid_body, (
+        "Tile click handler must guard against .tile-options-btn clicks — "
+        "clicking ⋮ must NOT trigger openSession()"
+    )
+    # Confirm the old broken guard is gone
+    assert "'tile-delete'" not in render_grid_body and '"tile-delete"' not in render_grid_body or (
+        "tile-options-btn" in render_grid_body
+    ), (
+        "Guard must use .tile-options-btn, not the old .tile-delete which was removed"
+    )
+
+
+def test_flyout_delegation_handler_no_stop_propagation() -> None:
+    """bindStaticEventListeners .tile-options-btn delegation must NOT call e.stopPropagation().
+
+    BUG: e.stopPropagation() at document level is a no-op (document is the top of the
+    bubble chain). It created a false sense of correctness while doing nothing.
+    """
+    # Extract the tile-options-btn delegation handler block from bindStaticEventListeners
+    bind_body = _JS.split("function bindStaticEventListeners")[1].split("\nfunction ")[0]
+    # Find the section with tile-options-btn
+    assert "tile-options-btn" in bind_body, (
+        "bindStaticEventListeners must have .tile-options-btn delegation"
+    )
+    # The delegation block should not have stopPropagation
+    tile_opts_section = bind_body.split("tile-options-btn")[1].split("});")[0]
+    assert "stopPropagation" not in tile_opts_section, (
+        "The .tile-options-btn delegation handler must not call e.stopPropagation() — "
+        "it is a no-op at document level and creates false sense of correctness"
+    )
+
+
+# ── BUG 2: disclosure has no hover-based show/hide in renderAddSessionsList ──
+
+
+def test_render_add_sessions_list_no_hover_disclosure() -> None:
+    """renderAddSessionsList must NOT have mouseover/mouseout handlers for disclosure.
+
+    BUG: The disclosure was shown only on hover via JS mouseover/mouseout. This broke
+    on mobile (no hover) and was inconsistent. Fix: disclose statically — remove CSS
+    display:none and remove the hover handlers. The disclosure appears whenever the
+    hidden item is in the HTML (it's already conditionally rendered for hidden items).
+    """
+    fn_body = _JS.split("function renderAddSessionsList")[1].split("\nfunction ")[0]
+    assert "onmouseover" not in fn_body, (
+        "renderAddSessionsList must not use onmouseover to show disclosure — "
+        "the disclosure must be statically visible (BUG 2 fix)"
+    )
+    assert "onmouseout" not in fn_body, (
+        "renderAddSessionsList must not use onmouseout to hide disclosure — "
+        "the disclosure must be statically visible (BUG 2 fix)"
+    )
+
+
+# ── BUG 3: mobile kill has confirmation sheet ─────────────────────────────────
+
+
+def test_open_mobile_kill_confirm_function_exists() -> None:
+    """app.js must define _openMobileKillConfirm for mobile kill confirmation.
+
+    BUG: Mobile kill previously called killSession() directly with no confirmation.
+    Fix: A second bottom sheet confirms before killing.
+    """
+    assert "function _openMobileKillConfirm" in _JS, (
+        "_openMobileKillConfirm must be defined — mobile kill needs a confirmation sheet"
+    )
+
+
+def test_open_flyout_sheet_kill_calls_confirm_not_direct() -> None:
+    """_openFlyoutSheet must call _openMobileKillConfirm, not killSession() directly.
+
+    BUG: Direct killSession() call gave no confirmation chance to the user on mobile.
+    """
+    fn_body = _JS.split("function _openFlyoutSheet")[1].split("\nfunction ")[0]
+    assert "_openMobileKillConfirm" in fn_body, (
+        "Mobile kill action in _openFlyoutSheet must call _openMobileKillConfirm, not killSession() directly"
+    )
+
+
+# ── VIOLATION 1: mobile Add to View opens view picker ────────────────────────
+
+
+def test_open_mobile_view_picker_function_exists() -> None:
+    """app.js must define _openMobileViewPicker for mobile view selection.
+
+    VIOLATION: Mobile 'Add to View...' opened openAddSessionsPanel() which is the
+    session picker for the current view — wrong behaviour. Fix: a view picker that
+    lists all user views with checkboxes.
+    """
+    assert "function _openMobileViewPicker" in _JS, (
+        "_openMobileViewPicker must be defined — mobile 'Add to View...' must list views, not sessions"
+    )
+
+
+def test_open_flyout_sheet_add_to_view_calls_view_picker() -> None:
+    """_openFlyoutSheet must call _openMobileViewPicker, not openAddSessionsPanel.
+
+    VIOLATION: openAddSessionsPanel() is the session picker for the current view,
+    not a view picker for the current session.
+    """
+    fn_body = _JS.split("function _openFlyoutSheet")[1].split("\nfunction ")[0]
+    assert "_openMobileViewPicker" in fn_body, (
+        "Mobile 'Add to View' must call _openMobileViewPicker, not openAddSessionsPanel"
+    )
+    # Confirm the old wrong call is gone from the mobile handler
+    # (openAddSessionsPanel may still exist for the grid affordance — just not here)
+    assert "openAddSessionsPanel" not in fn_body.split("_openMobileViewPicker")[0].split(
+        "action === 'add-to-view'"
+    )[-1], (
+        "_openFlyoutSheet must not call openAddSessionsPanel for the add-to-view action"
+    )
+
+
+# ── VIOLATION 2: submenu filters current view ────────────────────────────────
+
+
+def test_open_flyout_submenu_filters_current_view() -> None:
+    """_openFlyoutSubmenu must skip the current user view from the submenu list.
+
+    VIOLATION: When in a user view, showing that view in the 'Add to View' submenu
+    was confusing — the user already has 'Remove from [ViewName]' for it.
+    """
+    fn_body = _JS.split("function _openFlyoutSubmenu")[1].split("\nfunction ")[0]
+    assert "_activeView" in fn_body, (
+        "_openFlyoutSubmenu must reference _activeView to filter the current view"
+    )
+    # The filter must specifically skip when in a user view (not 'all' or 'hidden')
+    assert "isInUserView" in fn_body or "_activeView" in fn_body, (
+        "_openFlyoutSubmenu must filter out the current user view from the submenu"
+    )
+
+
+# ── CLEANUP 2: sidebar kill button removed ────────────────────────────────────
+
+
+def test_build_sidebar_html_no_sidebar_delete_button() -> None:
+    """buildSidebarHTML must NOT include the .sidebar-delete kill button.
+
+    CLEANUP: The sidebar had a second kill location; flyout is now the only location.
+    """
+    fn_body = _JS.split("function buildSidebarHTML")[1].split("\nfunction ")[0]
+    assert "sidebar-delete" not in fn_body, (
+        "buildSidebarHTML must not render .sidebar-delete button — "
+        "kill is available only via the flyout menu (single kill location)"
+    )
+
+
+# ── CLEANUP 3: dead _addSessionToActiveView removed ───────────────────────────
+
+
+def test_add_session_to_active_view_removed() -> None:
+    """_addSessionToActiveView must be removed — renderAddSessionsList does same inline.
+
+    CLEANUP: The function was fully implemented but never called. Dead code removed.
+    """
+    assert "_addSessionToActiveView" not in _JS, (
+        "_addSessionToActiveView must be removed — it was dead code never called; "
+        "renderAddSessionsList handles the same logic inline"
+    )
+
+
+# ── CLEANUP 4: ARIA on mobile flyout sheet ────────────────────────────────────
+
+
+def test_flyout_sheet_panel_has_aria_label() -> None:
+    """_openFlyoutSheet must add aria-label='Session options' to the sheet panel.
+
+    CLEANUP: The panel had no ARIA labelling for screen readers.
+    """
+    fn_body = _JS.split("function _openFlyoutSheet")[1].split("\nfunction ")[0]
+    assert "aria-label" in fn_body and "Session options" in fn_body, (
+        "_openFlyoutSheet must set aria-label='Session options' on the sheet panel"
+    )
+
+
+def test_flyout_sheet_items_have_role_menuitem() -> None:
+    """_openFlyoutSheet must add role='menuitem' to each sheet item button.
+
+    CLEANUP: Sheet items lacked ARIA role, breaking screen reader navigation.
+    """
+    fn_body = _JS.split("function _openFlyoutSheet")[1].split("\nfunction ")[0]
+    assert "role=\"menuitem\"" in fn_body or "role='menuitem'" in fn_body, (
+        "_openFlyoutSheet must set role='menuitem' on each sheet item button"
+    )
+
+
+# ── CLEANUP 5: FLYOUT_MENU_MAP is const ──────────────────────────────────────
+
+
+def test_flyout_menu_map_is_const() -> None:
+    """FLYOUT_MENU_MAP must be declared with const, not var.
+
+    CLEANUP: It is an immutable data structure; var was incorrect.
+    """
+    assert "const FLYOUT_MENU_MAP" in _JS, (
+        "FLYOUT_MENU_MAP must be declared with 'const', not 'var' — it is immutable"
+    )
+    assert "var FLYOUT_MENU_MAP" not in _JS, (
+        "FLYOUT_MENU_MAP must not use 'var' — change to 'const'"
+    )

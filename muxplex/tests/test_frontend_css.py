@@ -2224,3 +2224,53 @@ def test_add_sessions_item_styled() -> None:
     """style.css must contain .add-sessions-item styles."""
     css = read_css()
     assert ".add-sessions-item" in css, "style.css must style .add-sessions-item"
+    assert ".add-sessions-item" in css, "style.css must style .add-sessions-item"
+
+
+# ─── Phase 3 COE findings regression tests ──────────────────────────────────
+
+
+# ── BUG 2: disclosure is statically visible (not hover-gated) ────────────────
+
+
+def test_disclosure_not_hidden_by_css() -> None:
+    """`.add-sessions-item__disclosure` must NOT have `display: none` in style.css.
+
+    BUG: The CSS had `display: none` on the disclosure. The JS hover handlers set
+    `disc.style.display = ''` (removing the inline style) which did NOT override the
+    CSS rule — the disclosure remained invisible on hover. Fix: remove `display: none`
+    from CSS so the disclosure is statically visible for hidden items (it is already
+    only rendered for hidden items in the HTML).
+    """
+    css = read_css()
+    import re as _re
+
+    match = _re.search(
+        r"\.add-sessions-item__disclosure\s*\{([^}]*)\}",
+        css,
+        _re.DOTALL,
+    )
+    assert match, ".add-sessions-item__disclosure rule not found in style.css"
+    body = match.group(1)
+    assert "display: none" not in body and "display:none" not in body.replace(" ", ""), (
+        ".add-sessions-item__disclosure must NOT have display:none — "
+        "the disclosure must be statically visible for hidden items (BUG 2 fix). "
+        "The hover-based show/hide was broken: setting disc.style.display='' doesn't "
+        "override a CSS display:none rule — it only removes the inline style."
+    )
+
+
+# ── CLEANUP 1: .tile-delete CSS removed ──────────────────────────────────────
+
+
+def test_tile_delete_css_removed() -> None:
+    """`.tile-delete` CSS rules must be removed from style.css.
+
+    CLEANUP: The .tile-delete button was removed from buildTileHTML (Phase 2 task).
+    The orphaned CSS rules must be cleaned up.
+    """
+    css = read_css()
+    assert ".tile-delete" not in css, (
+        ".tile-delete CSS rules must be removed from style.css — "
+        "the button was removed from buildTileHTML; orphaned CSS is dead code"
+    )

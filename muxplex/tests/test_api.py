@@ -1354,10 +1354,15 @@ def test_instance_info_includes_device_id(client, tmp_path, monkeypatch):
 
 def test_create_session_returns_200_with_name(client, monkeypatch):
     """POST /api/sessions with valid name returns 200 with {name: name}."""
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock, MagicMock
 
-    mock_popen = MagicMock()
-    monkeypatch.setattr("muxplex.main.subprocess.Popen", mock_popen)
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    monkeypatch.setattr(
+        "muxplex.main.asyncio.create_subprocess_shell", AsyncMock(return_value=mock_proc)
+    )
 
     response = client.post("/api/sessions", json={"name": "my-project"})
     assert response.status_code == 200
@@ -1368,6 +1373,7 @@ def test_create_session_returns_200_with_name(client, monkeypatch):
 def test_create_session_substitutes_name_in_template(client, tmp_path, monkeypatch):
     """POST /api/sessions substitutes {name} with actual name in new_session_template."""
     import json
+    from unittest.mock import AsyncMock, MagicMock
 
     import muxplex.settings as settings_mod
 
@@ -1375,18 +1381,22 @@ def test_create_session_substitutes_name_in_template(client, tmp_path, monkeypat
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
     settings_path.write_text(json.dumps({"new_session_template": "echo {name}"}))
 
-    popen_calls = []
+    shell_calls = []
 
-    def mock_popen(cmd, **kwargs):
-        popen_calls.append(cmd)
-        return object()
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
 
-    monkeypatch.setattr("muxplex.main.subprocess.Popen", mock_popen)
+    async def mock_create_subprocess(cmd, **kwargs):
+        shell_calls.append(cmd)
+        return mock_proc
+
+    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", mock_create_subprocess)
 
     response = client.post("/api/sessions", json={"name": "my-project"})
     assert response.status_code == 200
-    assert len(popen_calls) == 1
-    assert popen_calls[0] == "echo my-project"
+    assert len(shell_calls) == 1
+    assert shell_calls[0] == "echo my-project"
 
 
 def test_create_session_rejects_empty_name(client):
@@ -2447,16 +2457,22 @@ def test_delete_session_logs_command_at_info(client, monkeypatch, tmp_path, capl
 def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
     """POST /api/sessions must log the command being launched at INFO level."""
     import logging
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock
 
     import muxplex.settings as settings_mod
 
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
 
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    monkeypatch.setattr(
+        "muxplex.main.asyncio.create_subprocess_shell", AsyncMock(return_value=mock_proc)
+    )
+
     with caplog.at_level(logging.INFO, logger="muxplex.main"):
-        with patch("muxplex.main.subprocess.Popen") as mock_popen:
-            mock_popen.return_value = MagicMock()
-            client.post("/api/sessions", json={"name": "new-session"})
+        client.post("/api/sessions", json={"name": "new-session"})
 
     log_messages = "\n".join(caplog.messages)
     assert "new-session" in log_messages, (

@@ -434,13 +434,13 @@ def test_concurrent_ws_sessions(monkeypatch):
 
 
 def test_federation_ws_proxy_route_exists():
-    """App must have a WebSocket route at /federation/{remote_id}/terminal/ws."""
+    """App must have a WebSocket route at /federation/{device_id}/terminal/ws."""
     from starlette.routing import WebSocketRoute
 
     ws_routes = [r for r in app.routes if isinstance(r, WebSocketRoute)]
     paths = [r.path for r in ws_routes]
-    assert "/federation/{remote_id}/terminal/ws" in paths, (
-        "App must have a WebSocket route at /federation/{remote_id}/terminal/ws"
+    assert "/federation/{device_id}/terminal/ws" in paths, (
+        "App must have a WebSocket route at /federation/{device_id}/terminal/ws"
     )
 
 
