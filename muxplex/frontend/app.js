@@ -892,7 +892,7 @@ function closeViewDropdown() {
   if (menu) {
     menu.classList.add('hidden');
     // Remove any inline new-view input
-    var newViewInput = menu.querySelector('.view-dropdown-new-input');
+    var newViewInput = menu.querySelector('.view-dropdown__new-input');
     if (newViewInput) newViewInput.remove();
   }
   if (trigger) trigger.setAttribute('aria-expanded', 'false');
@@ -977,6 +977,250 @@ function showNewViewInput() {
       }
     }, 150);
   });
+}
+
+/**
+ * Save updated views array via PATCH /api/settings, update _serverSettings,
+ * re-render the views settings tab, and re-render the view dropdown.
+ * @param {Array} updatedViews - New views array to save.
+ */
+function _saveViewsAndRerender(updatedViews) {
+  return api('PATCH', '/api/settings', { views: updatedViews })
+    .then(function() {
+      if (_serverSettings) _serverSettings.views = updatedViews;
+      renderViewsSettingsTab();
+      renderViewDropdown();
+    })
+    .catch(function() {
+      showToast('Failed to save views');
+    });
+}
+
+/**
+ * Render the Views settings tab content.
+ * Reads views from _serverSettings and builds an interactive list
+ * with inline rename, up/down reorder, and delete with confirmation.
+ */
+function renderViewsSettingsTab() {
+  var listEl = $('views-settings-list');
+  var emptyEl = $('views-settings-empty');
+  if (!listEl) return;
+
+  var views = (_serverSettings && _serverSettings.views) || [];
+
+  if (views.length === 0) {
+    listEl.innerHTML = '';
+    if (emptyEl) emptyEl.style.display = '';
+    return;
+  }
+
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  // Build the list of view rows
+  listEl.innerHTML = '';
+  views.forEach(function(view, idx) {
+    var sessions = (_serverSettings && _serverSettings.sessions) || [];
+    // Count sessions that belong to this view
+    var viewSessions = view.sessions || [];
+    var sessionCount = viewSessions.length;
+
+    var row = document.createElement('div');
+    row.className = 'views-settings-row';
+    row.setAttribute('data-view-idx', String(idx));
+
+    // Name span (clickable for rename)
+    var nameSpan = document.createElement('span');
+    nameSpan.className = 'views-settings-name';
+    nameSpan.textContent = view.name;
+    nameSpan.title = 'Click to rename';
+
+    // Session count
+    var countSpan = document.createElement('span');
+    countSpan.className = 'views-settings-count';
+    countSpan.textContent = sessionCount + (sessionCount === 1 ? ' session' : ' sessions');
+
+    // Actions container
+    var actionsDiv = document.createElement('div');
+    actionsDiv.className = 'views-settings-actions';
+
+    // Up button
+    var upBtn = document.createElement('button');
+    upBtn.className = 'views-settings-btn';
+    upBtn.textContent = '▲';
+    upBtn.title = 'Move up';
+    upBtn.setAttribute('data-action', 'move-up');
+    upBtn.setAttribute('data-idx', String(idx));
+    if (idx === 0) upBtn.disabled = true;
+
+    // Down button
+    var downBtn = document.createElement('button');
+    downBtn.className = 'views-settings-btn';
+    downBtn.textContent = '▼';
+    downBtn.title = 'Move down';
+    downBtn.setAttribute('data-action', 'move-down');
+    downBtn.setAttribute('data-idx', String(idx));
+    if (idx === views.length - 1) downBtn.disabled = true;
+
+    // Delete button
+    var deleteBtn = document.createElement('button');
+    deleteBtn.className = 'views-settings-btn views-settings-btn--danger';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.setAttribute('data-action', 'delete');
+    deleteBtn.setAttribute('data-idx', String(idx));
+
+    actionsDiv.appendChild(upBtn);
+    actionsDiv.appendChild(downBtn);
+    actionsDiv.appendChild(deleteBtn);
+
+    row.appendChild(nameSpan);
+    row.appendChild(countSpan);
+    row.appendChild(actionsDiv);
+    listEl.appendChild(row);
+  });
+
+  // Delegated click handler on the list
+  listEl.onclick = function(e) {
+    var views = (_serverSettings && _serverSettings.views) || [];
+    var target = e.target;
+
+    // Move up
+    if (target.getAttribute('data-action') === 'move-up') {
+      var idx = parseInt(target.getAttribute('data-idx'), 10);
+      if (idx > 0) {
+        var updated = views.slice();
+        var tmp = updated[idx - 1];
+        updated[idx - 1] = updated[idx];
+        updated[idx] = tmp;
+        _saveViewsAndRerender(updated);
+      }
+      return;
+    }
+
+    // Move down
+    if (target.getAttribute('data-action') === 'move-down') {
+      var idx = parseInt(target.getAttribute('data-idx'), 10);
+      if (idx < views.length - 1) {
+        var updated = views.slice();
+        var tmp = updated[idx + 1];
+        updated[idx + 1] = updated[idx];
+        updated[idx] = tmp;
+        _saveViewsAndRerender(updated);
+      }
+      return;
+    }
+
+    // Delete: show inline confirm
+    if (target.getAttribute('data-action') === 'delete') {
+      var idx = parseInt(target.getAttribute('data-idx'), 10);
+      var row = listEl.querySelector('[data-view-idx="' + idx + '"]');
+      if (!row) return;
+
+      // Replace delete button with "Sure? [Yes] [No]"
+      var actionsDiv = row.querySelector('.views-settings-actions');
+      if (!actionsDiv) return;
+      actionsDiv.innerHTML = '';
+
+      var confirmSpan = document.createElement('span');
+      confirmSpan.className = 'views-settings-confirm';
+      confirmSpan.textContent = 'Sure? ';
+
+      var yesBtn = document.createElement('button');
+      yesBtn.className = 'views-settings-btn views-settings-btn--danger';
+      yesBtn.textContent = 'Yes';
+      yesBtn.setAttribute('data-action', 'confirm-delete');
+      yesBtn.setAttribute('data-idx', String(idx));
+
+      var noBtn = document.createElement('button');
+      noBtn.className = 'views-settings-btn';
+      noBtn.textContent = 'No';
+      noBtn.setAttribute('data-action', 'cancel-delete');
+
+      confirmSpan.appendChild(yesBtn);
+      confirmSpan.appendChild(document.createTextNode(' '));
+      confirmSpan.appendChild(noBtn);
+      actionsDiv.appendChild(confirmSpan);
+      return;
+    }
+
+    // Confirm delete
+    if (target.getAttribute('data-action') === 'confirm-delete') {
+      var idx = parseInt(target.getAttribute('data-idx'), 10);
+      var updated = views.slice();
+      updated.splice(idx, 1);
+      // If deleting the active view, fall back to 'all'
+      if (_activeView === views[idx].name) {
+        _activeView = 'all';
+      }
+      _saveViewsAndRerender(updated);
+      return;
+    }
+
+    // Cancel delete: re-render
+    if (target.getAttribute('data-action') === 'cancel-delete') {
+      renderViewsSettingsTab();
+      return;
+    }
+
+    // Click on name: inline rename
+    if (target.classList.contains('views-settings-name')) {
+      var row = target.closest('.views-settings-row');
+      if (!row) return;
+      var idx = parseInt(row.getAttribute('data-view-idx'), 10);
+      var currentName = views[idx] && views[idx].name;
+      if (currentName === undefined) return;
+
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'views-settings-rename-input';
+      input.value = currentName;
+      target.parentNode.replaceChild(input, target);
+      input.focus();
+      input.select();
+
+      function commitRename() {
+        var newName = input.value.trim();
+        if (!newName || newName === currentName) {
+          renderViewsSettingsTab();
+          return;
+        }
+        // Validate: not reserved
+        if (newName === 'all' || newName === 'hidden') {
+          showToast('Cannot use reserved name \'' + newName + '\'');
+          renderViewsSettingsTab();
+          return;
+        }
+        // Validate: not duplicate
+        var duplicate = views.find(function(v, i) { return i !== idx && v.name === newName; });
+        if (duplicate) {
+          showToast('View \'' + newName + '\' already exists');
+          renderViewsSettingsTab();
+          return;
+        }
+        // Update the view name
+        var updated = views.map(function(v, i) {
+          return i === idx ? Object.assign({}, v, { name: newName }) : v;
+        });
+        // If this was the active view, update _activeView
+        if (_activeView === currentName) {
+          _activeView = newName;
+        }
+        _saveViewsAndRerender(updated);
+      }
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commitRename();
+        } else if (e.key === 'Escape') {
+          renderViewsSettingsTab();
+        }
+      });
+
+      input.addEventListener('blur', function() {
+        commitRename();
+      });
+    }
+  };
 }
 
 /**
@@ -1990,6 +2234,9 @@ function openSettings() {
     if (deleteTemplateEl) {
       deleteTemplateEl.value = (ss && ss.delete_session_template) || DELETE_SESSION_DEFAULT_TEMPLATE;
     }
+
+    // Views tab
+    renderViewsSettingsTab();
   });
 }
 
@@ -2956,6 +3203,9 @@ if (typeof module !== 'undefined' && module.exports) {
     closeViewDropdown,
     showNewViewInput,
     switchView,
+    // Manage Views settings tab
+    renderViewsSettingsTab,
+    _saveViewsAndRerender,
     // Federation tiles
     buildStatusTileHTML,
     // Constants

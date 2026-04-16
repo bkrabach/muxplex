@@ -103,6 +103,7 @@
       <nav class="settings-tabs">
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
+        <button class="settings-tab" data-tab="views">Views</button>
         <button class="settings-tab" data-tab="new-session">Commands</button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
       </nav>
@@ -198,6 +199,10 @@
             <label class="settings-label">Hidden Sessions</label>
             <div id="setting-hidden-sessions" class="settings-checkbox-list"></div>
           </div>
+        </div>
+        <div class="settings-panel hidden" data-tab="views">
+          <div id="views-settings-list" class="views-settings-list"></div>
+          <p class="settings-helper" id="views-settings-empty" style="display:none">No user-created views yet. Use the dropdown in the header to create one.</p>
         </div>
         <div class="settings-panel hidden" data-tab="new-session">
           <div class="settings-field settings-field--column">

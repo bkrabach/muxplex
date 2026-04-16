@@ -3261,3 +3261,15 @@ def test_show_new_view_input_patches_settings() -> None:
     assert "views" in body, (
         "showNewViewInput must include 'views' in the PATCH body"
     )
+
+
+# ============================================================
+# Manage Views settings tab (task-9)
+# ============================================================
+
+
+def test_render_views_settings_tab_function_exists() -> None:
+    """renderViewsSettingsTab function must exist in app.js."""
+    assert "function renderViewsSettingsTab" in _JS, (
+        "renderViewsSettingsTab must be defined in app.js"
+    )

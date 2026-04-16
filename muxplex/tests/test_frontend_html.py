@@ -545,8 +545,8 @@ def test_html_settings_panels_use_data_tab() -> None:
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
     panels = dialog.find_all(class_="settings-panel")
-    assert len(panels) == 4, (
-        f"Expected 4 .settings-panel elements, found: {len(panels)}"
+    assert len(panels) == 5, (
+        f"Expected 5 .settings-panel elements, found: {len(panels)}"
     )
     for panel in panels:
         assert panel.get("data-tab") is not None, (
@@ -1464,3 +1464,40 @@ def test_view_dropdown_menu_has_role_menu() -> None:
     assert menu.get("role") == "menu", (
         f"#view-dropdown-menu must have role='menu', got: {menu.get('role')!r}"
     )
+
+
+# ============================================================
+# Manage Views settings tab (task-9)
+# ============================================================
+
+
+def test_settings_has_views_tab_button() -> None:
+    """Settings dialog must contain a tab button with data-tab='views'."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    tabs_container = dialog.find("nav", class_="settings-tabs")
+    assert tabs_container is not None, "Missing nav.settings-tabs"
+    tab = tabs_container.find("button", attrs={"data-tab": "views"})
+    assert tab is not None, "Missing tab button with data-tab='views' in settings-tabs"
+    tab_classes = tab.get("class") or []
+    assert "settings-tab" in tab_classes, (
+        f"views tab button must have class 'settings-tab', has: {tab_classes}"
+    )
+
+
+def test_settings_has_views_panel() -> None:
+    """A settings-panel with data-tab='views' must exist inside #settings-dialog."""
+    soup = _SOUP
+    dialog = soup.find(id="settings-dialog")
+    assert dialog is not None, "Missing #settings-dialog"
+    panel = dialog.find(class_="settings-panel", attrs={"data-tab": "views"})
+    assert panel is not None, (
+        "Missing settings-panel[data-tab='views'] (Views tab panel)"
+    )
+    # Must contain the views settings list
+    views_list = panel.find(id="views-settings-list")
+    assert views_list is not None, "Missing #views-settings-list inside views panel"
+    # Must contain the empty message element
+    empty_msg = panel.find(id="views-settings-empty")
+    assert empty_msg is not None, "Missing #views-settings-empty inside views panel"
