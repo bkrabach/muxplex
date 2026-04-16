@@ -629,18 +629,6 @@ def test_html_sessions_panel_has_sort_order_select() -> None:
         assert v in values, f"#setting-sort-order missing option value='{v}'"
 
 
-def test_html_sessions_panel_has_hidden_sessions_container() -> None:
-    """Sessions panel must contain a #setting-hidden-sessions container for checkboxes."""
-    soup = _SOUP
-    dialog = soup.find(id="settings-dialog")
-    assert dialog is not None, "Missing #settings-dialog"
-    sessions_panel = dialog.find(
-        class_="settings-panel", attrs={"data-tab": "sessions"}
-    )
-    assert sessions_panel is not None, "Missing sessions settings-panel"
-    el = sessions_panel.find(id="setting-hidden-sessions")
-    assert el is not None, "Missing #setting-hidden-sessions inside sessions panel"
-
 
 def test_html_sessions_panel_has_window_size_largest_checkbox() -> None:
     """Sessions panel must contain a #setting-window-size-largest checkbox."""
@@ -1531,4 +1519,18 @@ def test_no_filtered_option_in_view_mode_select() -> None:
     values = [o.get("value") for o in options]
     assert "filtered" not in values, (
         "View mode select must not contain a 'filtered' option (removed in task-11)"
+    )
+
+
+# ============================================================
+# Remove Hidden Sessions Section from Settings Panel (task-12)
+# ============================================================
+
+
+def test_no_hidden_sessions_checkbox_list_in_settings() -> None:
+    """#setting-hidden-sessions must not exist in HTML (replaced by Hidden view + tile flyout)."""
+    el = _SOUP.find(id="setting-hidden-sessions")
+    assert el is None, (
+        "#setting-hidden-sessions must be removed from the settings panel "
+        "(replaced by the Hidden view + tile flyout in Phase 3)"
     )

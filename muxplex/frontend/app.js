@@ -2230,27 +2230,6 @@ function openSettings() {
       sortOrderEl.value = ss.sort_order;
     }
 
-    // Hidden sessions checkboxes
-    const hiddenSessionsEl = $('setting-hidden-sessions');
-    if (hiddenSessionsEl) {
-      hiddenSessionsEl.innerHTML = '';
-      const hiddenList = (ss && ss.hidden_sessions) || [];
-      (_currentSessions || []).forEach(function(s) {
-        const name = s.name || '';
-        const sessionKey = s.sessionKey || name;
-        const item = document.createElement('label');
-        item.className = 'settings-checkbox-item';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.className = 'settings-checkbox';
-        cb.value = sessionKey;
-        cb.checked = hiddenList.includes(sessionKey) || hiddenList.includes(name);
-        item.appendChild(cb);
-        item.appendChild(document.createTextNode(' ' + name));
-        hiddenSessionsEl.appendChild(item);
-      });
-    }
-
     // Window size largest
     const windowSizeEl = $('setting-window-size-largest');
     if (windowSizeEl) {
@@ -2972,20 +2951,6 @@ function bindStaticEventListeners() {
     var el = $('setting-auto-open');
     if (el) patchServerSetting('auto_open_created', el.checked);
   });
-
-  // Hidden sessions — delegated handler on container (checkboxes are dynamic)
-  var hiddenSessionsContainer = $('setting-hidden-sessions');
-  if (hiddenSessionsContainer) {
-    hiddenSessionsContainer.addEventListener('change', function(e) {
-      var cb = e.target.closest('input[type="checkbox"]');
-      if (!cb) return;
-      var hidden = [];
-      hiddenSessionsContainer.querySelectorAll('input[type="checkbox"]').forEach(function(c) {
-        if (c.checked) hidden.push(c.value);
-      });
-      patchServerSetting('hidden_sessions', hidden);
-    });
-  }
 
   // Notifications settings — bell sound toggle persists to server settings
   on($('setting-bell-sound'), 'change', function() {

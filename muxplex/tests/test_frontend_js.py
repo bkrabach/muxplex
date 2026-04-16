@@ -1273,21 +1273,6 @@ def test_bind_static_event_listeners_binds_auto_open_change() -> None:
     )
 
 
-def test_bind_static_event_listeners_uses_delegated_handler_for_hidden_sessions() -> (
-    None
-):
-    """bindStaticEventListeners must use delegated change handler on #setting-hidden-sessions."""
-    match = re.search(
-        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
-        _JS,
-        re.DOTALL,
-    )
-    assert match, "bindStaticEventListeners function not found"
-    body = match.group(1)
-    assert "setting-hidden-sessions" in body, (
-        "bindStaticEventListeners must use delegated handler on setting-hidden-sessions"
-    )
-
 
 def test_exports_load_server_settings() -> None:
     """module.exports must export loadServerSettings."""
@@ -2988,28 +2973,6 @@ def test_create_device_select_uses_device_id_for_option_value() -> None:
         "for option values; integer index no longer matches federation API expectations"
     )
 
-
-def test_settings_hidden_sessions_uses_session_key() -> None:
-    """Settings hidden_sessions checkbox must use sessionKey for the checkbox value.
-
-    The hidden_sessions list now stores device_id:name keys (sessionKey format).
-    The settings panel checkbox builder must use s.sessionKey || s.name as the
-    checkbox value so toggling a remote session stores the correct key format.
-    """
-    match = re.search(
-        r"const hiddenSessionsEl = \$\('setting-hidden-sessions'\);.*?hiddenSessionsEl\.innerHTML = ''",
-        _JS,
-        re.DOTALL,
-    )
-    assert match, "hidden sessions settings block not found"
-    # Find the wider block starting from here
-    start = match.start()
-    block = _JS[start : start + 800]
-    assert "sessionKey" in block, (
-        "Settings panel hidden_sessions checkbox builder must use s.sessionKey "
-        "(with s.name fallback) as the checkbox value so remote sessions are "
-        "stored in device_id:name format in hidden_sessions"
-    )
 
 
 # ---------------------------------------------------------------------------
