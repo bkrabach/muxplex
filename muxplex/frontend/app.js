@@ -143,7 +143,7 @@ let _flyoutRemoteId = null;
  * Data map of menu item definitions keyed by view type.
  * Each entry is an array of item config objects with:
  *   { label, action, className?, separator? }
- * The 'user' view type gets the active view name injected at render time.
+ * The 'user' view type uses a unified Views submenu (no separate Remove item).
  */
 const FLYOUT_MENU_MAP = {
   'all': [
@@ -154,7 +154,6 @@ const FLYOUT_MENU_MAP = {
   ],
   'user': [
     { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
-    { label: 'Remove from {viewName}', action: 'remove-from-view' },
     { label: 'Hide', action: 'hide' },
     { separator: true },
     { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
@@ -2014,12 +2013,10 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
   var views = (_serverSettings && _serverSettings.views) || [];
 
   var sessionKey = _flyoutSessionKey;
-  // When in a user view, filter it out — the user already has "Remove from [ViewName]" for it
-  var isInUserView = _activeView !== 'all' && _activeView !== 'hidden';
+  // Show ALL user views with checkmarks — unified Views submenu
   var html = '';
   for (var i = 0; i < views.length; i++) {
     var v = views[i];
-    if (isInUserView && v.name === _activeView) continue;
     var isIn = (v.sessions || []).indexOf(sessionKey) !== -1;
     html += '<button class="flyout-submenu__item" role="menuitem" data-view-index="' + i + '">';
     html += '<span class="flyout-submenu__check">' + (isIn ? '\u2713' : '') + '</span>';
@@ -2352,6 +2349,7 @@ function _executeKill(name, remoteId) {
 /**
  * Open the Manage View panel for the active user view.
  * Only available for user views (not "All" or "Hidden").
+ * Renders the view name (clickable to rename) and a delete button in the header.
  */
 function openManageViewPanel() {
   if (_activeView === 'all' || _activeView === 'hidden') return;
@@ -2359,23 +2357,133 @@ function openManageViewPanel() {
   var panel = $('manage-view-panel');
   if (!panel) return;
 
-  // Update title/name
-  var nameEl = $('manage-view-name');
-  if (nameEl) nameEl.textContent = _activeView;
+  // Rebuild the name-row with view name + delete button
+  var nameRow = panel.querySelector('.manage-view-panel__name-row');
+  if (nameRow) {
+    nameRow.innerHTML =
+      '<h2 id="manage-view-name" class="manage-view-panel__name">' + escapeHtml(_activeView) + '</h2>' +
+      '<button id="manage-view-delete-btn" class="manage-view-panel__delete-btn" ' +
+        'title="Delete this view" aria-label="Delete view">\u2715</button>';
+  }
 
   renderManageViewList();
   panel.classList.remove('hidden');
 
   // Close on backdrop click
   var backdrop = $('manage-view-backdrop');
-  if (backdrop) {
-    backdrop.onclick = closeManageViewPanel;
-  }
+  if (backdrop) backdrop.onclick = closeManageViewPanel;
 
   // Close button at bottom
   var closeBtn = $('manage-view-close');
-  if (closeBtn) {
-    closeBtn.onclick = closeManageViewPanel;
+  if (closeBtn) closeBtn.onclick = closeManageViewPanel;
+
+  // — Rename click handler on the view name —
+  var nameEl = $('manage-view-name');
+  if (nameEl) {
+    nameEl.onclick = function() {
+      var currentName = _activeView;
+      // Replace h2 with an inline input for rename
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'manage-view-panel__name-input';
+      input.value = currentName;
+      input.maxLength = 30;
+      input.setAttribute('aria-label', 'View name');
+      if (nameEl.parentNode) nameEl.parentNode.replaceChild(input, nameEl);
+      input.focus();
+      input.select();
+
+      var _committed = false;
+
+      function commitRename() {
+        if (_committed) return;
+        var newName = input.value.trim();
+        if (!newName || newName === currentName) { revertRename(); return; }
+        if (newName.toLowerCase() === 'all' || newName.toLowerCase() === 'hidden') {
+          showToast('Cannot use reserved name \'' + newName + '\'');
+          input.focus(); return;
+        }
+        var views = (_serverSettings && _serverSettings.views) || [];
+        if (views.find(function(v) { return v.name === newName; })) {
+          showToast('View \'' + newName + '\' already exists');
+          input.focus(); return;
+        }
+        _committed = true;
+        var updatedViews = views.map(function(v) {
+          return v.name === currentName ? { name: newName, sessions: v.sessions || [] } : v;
+        });
+        api('PATCH', '/api/settings', { views: updatedViews })
+          .then(function() {
+            if (_serverSettings) _serverSettings.views = updatedViews;
+            _activeView = newName;
+            api('PATCH', '/api/state', { active_view: newName }).catch(function() {});
+            renderViewDropdown();
+            openManageViewPanel();
+          })
+          .catch(function() {
+            showToast('Failed to rename view');
+            _committed = false;
+            revertRename();
+          });
+      }
+
+      function revertRename() {
+        if (_committed) return;
+        openManageViewPanel();
+      }
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+        else if (e.key === 'Escape') { revertRename(); }
+      });
+      input.addEventListener('blur', function() {
+        setTimeout(function() {
+          if (document.activeElement !== input) {
+            var newName = input.value.trim();
+            if (newName && newName !== currentName) commitRename();
+            else revertRename();
+          }
+        }, 150);
+      });
+    };
+  }
+
+  // — Delete button handler —
+  var deleteBtn = $('manage-view-delete-btn');
+  if (deleteBtn) {
+    deleteBtn.onclick = function(e) {
+      e.stopPropagation();
+      // Show inline confirmation in the name-row
+      var nameRow2 = panel.querySelector('.manage-view-panel__name-row');
+      if (!nameRow2) return;
+      nameRow2.innerHTML =
+        '<span class="manage-view-panel__confirm-text">Delete this view?</span>' +
+        '<button id="manage-view-confirm-yes" class="manage-view-panel__close-btn" ' +
+          'style="margin-left:8px">Yes</button>' +
+        '<button id="manage-view-confirm-no" class="manage-view-panel__close-btn" ' +
+          'style="margin-left:4px">No</button>';
+      var yesBtn = $('manage-view-confirm-yes');
+      var noBtn = $('manage-view-confirm-no');
+      if (yesBtn) {
+        yesBtn.onclick = function() {
+          var viewToDelete = _activeView;
+          var views = (_serverSettings && _serverSettings.views) || [];
+          var updatedViews = views.filter(function(v) { return v.name !== viewToDelete; });
+          api('PATCH', '/api/settings', { views: updatedViews })
+            .then(function() {
+              if (_serverSettings) _serverSettings.views = updatedViews;
+              closeManageViewPanel();
+              switchView('all');
+              showToast('View \'' + viewToDelete + '\' deleted');
+              renderViewDropdown();
+            })
+            .catch(function() { showToast('Failed to delete view'); });
+        };
+      }
+      if (noBtn) {
+        noBtn.onclick = function() { openManageViewPanel(); };
+      }
+    };
   }
 }
 
@@ -2511,7 +2619,18 @@ function renderManageViewList() {
           _serverSettings.views = updatedViews;
           if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
         }
-        renderManageViewList();
+        // Update summary count in-place — do NOT re-render the full list (avoids layout thrash)
+        var summaryEl = $('manage-view-summary');
+        if (summaryEl) {
+          var latestViews = (_serverSettings && _serverSettings.views) || [];
+          var latestViewObj = null;
+          for (var si = 0; si < latestViews.length; si++) {
+            if (latestViews[si].name === _activeView) { latestViewObj = latestViews[si]; break; }
+          }
+          var latestViewSessions = (latestViewObj && latestViewObj.sessions) || [];
+          var latestAllSessions = (_currentSessions || []).filter(function(s) { return !s.status; });
+          summaryEl.textContent = latestAllSessions.length + ' sessions \u00b7 ' + latestViewSessions.length + ' in this view';
+        }
         renderGrid(_currentSessions || []);
       })
       .catch(function(err) {

@@ -4102,18 +4102,21 @@ def test_open_flyout_sheet_add_to_view_calls_view_picker() -> None:
 
 
 def test_open_flyout_submenu_filters_current_view() -> None:
-    """_openFlyoutSubmenu must skip the current user view from the submenu list.
+    """_openFlyoutSubmenu must show ALL user views (unified views submenu, Fix 4).
 
-    VIOLATION: When in a user view, showing that view in the 'Add to View' submenu
-    was confusing — the user already has 'Remove from [ViewName]' for it.
+    Fix 4: The old behavior filtered out the current view because 'Remove from [ViewName]'
+    handled it. Now that 'Remove from [ViewName]' is removed, the submenu shows ALL
+    views with toggle checkmarks so the user can multi-toggle without the submenu closing.
     """
     fn_body = _JS.split("function _openFlyoutSubmenu")[1].split("\nfunction ")[0]
-    assert "_activeView" in fn_body, (
-        "_openFlyoutSubmenu must reference _activeView to filter the current view"
+    # Must NOT have the old 'isInUserView' skip logic
+    assert "isInUserView" not in fn_body, (
+        "_openFlyoutSubmenu must not skip the current view — "
+        "Fix 4: unified submenu shows ALL views with toggle checkmarks"
     )
-    # The filter must specifically skip when in a user view (not 'all' or 'hidden')
-    assert "isInUserView" in fn_body or "_activeView" in fn_body, (
-        "_openFlyoutSubmenu must filter out the current user view from the submenu"
+    # Must show checkmarks for views the session is in
+    assert "\u2713" in fn_body or "isIn" in fn_body, (
+        "_openFlyoutSubmenu must show checkmarks for views the session is already in"
     )
 
 
