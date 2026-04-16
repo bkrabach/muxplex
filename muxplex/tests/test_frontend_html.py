@@ -204,7 +204,9 @@ def test_html_session_sidebar_structure() -> None:
     assert sidebar_header is not None, "Missing .sidebar-header inside #session-sidebar"
     # #sidebar-view-dropdown (replaces old .sidebar-title)
     sidebar_dropdown = sidebar_header.find(id="sidebar-view-dropdown")
-    assert sidebar_dropdown is not None, "Missing #sidebar-view-dropdown inside .sidebar-header"
+    assert sidebar_dropdown is not None, (
+        "Missing #sidebar-view-dropdown inside .sidebar-header"
+    )
     # #sidebar-collapse-btn
     collapse_btn = sidebar_header.find(id="sidebar-collapse-btn")
     assert collapse_btn is not None, (
@@ -715,9 +717,7 @@ def test_html_notifications_panel_has_notification_status_text() -> None:
     )
     assert sessions_panel is not None, "Missing sessions settings-panel"
     el = sessions_panel.find(id="notification-status-text")
-    assert el is not None, (
-        "Missing #notification-status-text inside sessions panel"
-    )
+    assert el is not None, "Missing #notification-status-text inside sessions panel"
     classes = el.get("class") or []
     assert "settings-status-text" in classes, (
         f"#notification-status-text must have class 'settings-status-text', has: {classes}"
@@ -734,9 +734,7 @@ def test_html_notifications_panel_has_request_btn() -> None:
     )
     assert sessions_panel is not None, "Missing sessions settings-panel"
     el = sessions_panel.find(id="notification-request-btn")
-    assert el is not None, (
-        "Missing #notification-request-btn inside sessions panel"
-    )
+    assert el is not None, "Missing #notification-request-btn inside sessions panel"
     classes = el.get("class") or []
     assert "settings-action-btn" in classes, (
         f"#notification-request-btn must have class 'settings-action-btn', has: {classes}"
@@ -1367,9 +1365,7 @@ def test_html_settings_remote_instance_key_input() -> None:
     devices_panel = soup.find("div", attrs={"data-tab": "devices"})
     assert devices_panel is not None, "Missing devices panel (data-tab='devices')"
     el = devices_panel.find(id="setting-remote-instances")
-    assert el is not None, (
-        "Missing #setting-remote-instances inside devices panel"
-    )
+    assert el is not None, "Missing #setting-remote-instances inside devices panel"
 
 
 # ============================================================
@@ -1398,9 +1394,9 @@ def test_html_loads_web_links_addon() -> None:
 def test_html_loads_search_addon() -> None:
     """index.html must load the xterm-addon-search CDN script."""
     html = read_html()
-    assert "search" in html.lower() and "addon" in html.lower() and "xterm" in html.lower(), (
-        "Must load xterm-addon-search from CDN"
-    )
+    assert (
+        "search" in html.lower() and "addon" in html.lower() and "xterm" in html.lower()
+    ), "Must load xterm-addon-search from CDN"
 
 
 def test_html_loads_image_addon() -> None:
@@ -1520,3 +1516,19 @@ def test_sidebar_view_dropdown_menu_exists() -> None:
     soup = _SOUP
     menu = soup.find(id="sidebar-view-dropdown-menu")
     assert menu is not None, "Missing #sidebar-view-dropdown-menu"
+
+
+# ============================================================
+# Remove filtered gridViewMode rendering code (task-11)
+# ============================================================
+
+
+def test_no_filtered_option_in_view_mode_select() -> None:
+    """No 'Filtered' option in view mode select."""
+    select = _SOUP.find(id="setting-view-mode")
+    assert select is not None, "Missing #setting-view-mode select"
+    options = select.find_all("option")
+    values = [o.get("value") for o in options]
+    assert "filtered" not in values, (
+        "View mode select must not contain a 'filtered' option (removed in task-11)"
+    )

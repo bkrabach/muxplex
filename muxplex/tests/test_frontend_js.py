@@ -3149,9 +3149,7 @@ def test_toggle_view_dropdown_function_exists() -> None:
 
 def test_switch_view_function_exists() -> None:
     """switchView function must exist in app.js."""
-    assert "function switchView" in _JS, (
-        "switchView must be defined in app.js"
-    )
+    assert "function switchView" in _JS, "switchView must be defined in app.js"
 
 
 def test_switch_view_patches_state() -> None:
@@ -3182,9 +3180,7 @@ def test_handle_global_keydown_has_backtick_handler() -> None:
     assert match, "handleGlobalKeydown function not found"
     body = match.group(1)
     has_backtick = (
-        "Backquote" in body
-        or "e.key === '`'" in body
-        or 'e.key === "`"' in body
+        "Backquote" in body or "e.key === '`'" in body or 'e.key === "`"' in body
     )
     assert has_backtick, (
         "handleGlobalKeydown must handle backtick/Backquote key to toggle view dropdown"
@@ -3206,9 +3202,7 @@ def test_handle_global_keydown_has_number_key_shortcuts() -> None:
     assert "switchView" in body, (
         "handleGlobalKeydown must call switchView for number keys 1–9"
     )
-    has_number_handling = (
-        "Digit" in body or "parseInt" in body
-    )
+    has_number_handling = "Digit" in body or "parseInt" in body
     assert has_number_handling, (
         "handleGlobalKeydown must handle number key codes (e.g. e.code.startsWith('Digit'))"
     )
@@ -3258,9 +3252,7 @@ def test_show_new_view_input_patches_settings() -> None:
     assert "/api/settings" in body, (
         "showNewViewInput must PATCH /api/settings with the updated views"
     )
-    assert "views" in body, (
-        "showNewViewInput must include 'views' in the PATCH body"
-    )
+    assert "views" in body, "showNewViewInput must include 'views' in the PATCH body"
 
 
 # ============================================================
@@ -3272,4 +3264,23 @@ def test_render_views_settings_tab_function_exists() -> None:
     """renderViewsSettingsTab function must exist in app.js."""
     assert "function renderViewsSettingsTab" in _JS, (
         "renderViewsSettingsTab must be defined in app.js"
+    )
+
+
+# ============================================================
+# Remove filtered gridViewMode rendering code (task-11)
+# ============================================================
+
+
+def test_no_active_filter_device_in_render_grid() -> None:
+    """renderGrid must not reference _activeFilterDevice."""
+    match = re.search(
+        r"function renderGrid\(sessions\)\s*\{(.*?)(?=\n// -------|\n// =======)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderGrid function not found"
+    body = match.group(1)
+    assert "_activeFilterDevice" not in body, (
+        "renderGrid must not reference _activeFilterDevice (filtered mode removed)"
     )
