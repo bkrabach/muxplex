@@ -1419,3 +1419,48 @@ def test_html_has_search_bar() -> None:
     html = read_html()
     assert "terminal-search-bar" in html, "Must have #terminal-search-bar element"
     assert "terminal-search-input" in html, "Must have #terminal-search-input element"
+
+
+# ============================================================
+# Header Dropdown (task-4)
+# ============================================================
+
+
+def test_view_dropdown_trigger_exists() -> None:
+    """#view-dropdown-trigger element must exist in the header."""
+    soup = _SOUP
+    trigger = soup.find(id="view-dropdown-trigger")
+    assert trigger is not None, "Missing #view-dropdown-trigger"
+    assert trigger.name == "button", (
+        f"#view-dropdown-trigger must be a <button>, got: {trigger.name}"
+    )
+
+
+def test_view_dropdown_container_exists() -> None:
+    """#view-dropdown-menu container must exist in the header."""
+    soup = _SOUP
+    menu = soup.find(id="view-dropdown-menu")
+    assert menu is not None, "Missing #view-dropdown-menu"
+
+
+def test_view_dropdown_trigger_has_aria() -> None:
+    """#view-dropdown-trigger must have aria-haspopup='true' and aria-expanded='false'."""
+    soup = _SOUP
+    trigger = soup.find(id="view-dropdown-trigger")
+    assert trigger is not None, "Missing #view-dropdown-trigger"
+    assert trigger.get("aria-haspopup") == "true", (
+        f"#view-dropdown-trigger must have aria-haspopup='true', got: {trigger.get('aria-haspopup')!r}"
+    )
+    assert trigger.get("aria-expanded") == "false", (
+        f"#view-dropdown-trigger must have aria-expanded='false', got: {trigger.get('aria-expanded')!r}"
+    )
+
+
+def test_view_dropdown_menu_has_role_menu() -> None:
+    """#view-dropdown-menu must have role='menu'."""
+    soup = _SOUP
+    menu = soup.find(id="view-dropdown-menu")
+    assert menu is not None, "Missing #view-dropdown-menu"
+    assert menu.get("role") == "menu", (
+        f"#view-dropdown-menu must have role='menu', got: {menu.get('role')!r}"
+    )

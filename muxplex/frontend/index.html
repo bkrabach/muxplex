@@ -19,6 +19,13 @@
   <div id="view-overview" class="view view--active">
     <header class="app-header">
       <h1 class="app-wordmark"><img src="/wordmark-on-dark.svg" alt="muxplex" height="24" /></h1>
+      <div class="view-dropdown" id="view-dropdown">
+        <button id="view-dropdown-trigger" class="view-dropdown__trigger" aria-haspopup="true" aria-expanded="false" aria-controls="view-dropdown-menu">
+          <span id="view-dropdown-label">All Sessions</span>
+          <span class="view-dropdown__caret" aria-hidden="true">&#9662;</span>
+        </button>
+        <div id="view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
+      </div>
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
         <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
