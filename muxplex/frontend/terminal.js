@@ -542,6 +542,13 @@ function setTerminalFontSize(size) {
 
 window._setTerminalFontSize = setTerminalFontSize;
 
+// Refit the terminal to its container dimensions.
+// Call after layout changes (e.g. sidebar toggle) that alter available space.
+window._refitTerminal = function() {
+  if (!_fitAddon) return;
+  try { _fitAddon.fit(); } catch (_) {}
+};
+
 // ---------------------------------------------------------------------------
 // Mobile touch scroll — rAF-batched WheelEvent dispatch
 // Mobile devices batch touchmove events irregularly; dispatching one WheelEvent

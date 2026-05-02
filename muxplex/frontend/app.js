@@ -804,6 +804,13 @@ function toggleSidebar() {
 
   var collapseBtn = $('sidebar-collapse-btn');
   if (collapseBtn) collapseBtn.textContent = isOpen ? '\u2039' : '\u203a';
+
+  // Refit xterm.js after the sidebar CSS transition completes (0.25s ease).
+  // 'width' fires on desktop (flex layout); 'transform' fires on mobile (overlay).
+  sidebar.addEventListener('transitionend', function(e) {
+    if (e.propertyName !== 'width' && e.propertyName !== 'transform') return;
+    if (window._refitTerminal) window._refitTerminal();
+  }, { once: true });
 }
 
 /**
