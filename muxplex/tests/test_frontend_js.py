@@ -2244,7 +2244,7 @@ def test_render_grid_reads_sort_order_from_server_settings() -> None:
 def test_render_sidebar_filters_hidden_sessions() -> None:
     """renderSidebar() must filter out hidden sessions via getVisibleSessions()."""
     match = re.search(
-        r"function renderSidebar\s*\(\w+,\s*\w+\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
+        r"function renderSidebar\s*\(.*?\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
         _JS,
         re.DOTALL,
     )
@@ -2258,7 +2258,7 @@ def test_render_sidebar_filters_hidden_sessions() -> None:
 def test_render_sidebar_uses_visible_array() -> None:
     """renderSidebar() must use visible array for rendering, not original sessions."""
     match = re.search(
-        r"function renderSidebar\s*\(\w+,\s*\w+\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
+        r"function renderSidebar\s*\(.*?\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
         _JS,
         re.DOTALL,
     )
