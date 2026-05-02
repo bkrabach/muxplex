@@ -10,6 +10,7 @@ let _currentSession = null;
 let _vpHandler = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 let _searchAddon = null;
+let _resizeObserver = null;
 
 // ─── Module-level encoding helpers ──────────────────────────────────────────
 // Hoisted here so the clipboard key handler (in openTerminal) can also use them.
@@ -357,6 +358,23 @@ function openTerminal(sessionName, remoteId, fontSize) {
 
   _term.open(container);
 
+  // --- Auto-refit on container resize (sidebar toggle, etc.) ---
+  // xterm.js FitAddon only resizes on explicit fit() calls. A ResizeObserver
+  // on the container handles ALL layout changes: sidebar toggle, window resize,
+  // and any future CSS geometry change. Debounced to coalesce rapid events
+  // (e.g. during CSS transition animation frames).
+  if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
+  if (typeof ResizeObserver !== 'undefined') {
+    var _roTimer = null;
+    _resizeObserver = new ResizeObserver(function() {
+      clearTimeout(_roTimer);
+      _roTimer = setTimeout(function() {
+        if (_fitAddon) try { _fitAddon.fit(); } catch (_) {}
+      }, 50);
+    });
+    _resizeObserver.observe(container);
+  }
+
   // --- Clipboard integration ---
   // Copy: Ctrl+Shift+C intercepts and copies selection to system clipboard
   // Paste: handled natively by xterm.js (browser paste event → hidden textarea → onData → WebSocket)
@@ -504,6 +522,8 @@ function closeTerminal() {
     _ws = null;
   }
 
+  if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
+
   if (_term) {
     _term.dispose();
     _term = null;
@@ -541,13 +561,6 @@ function setTerminalFontSize(size) {
 }
 
 window._setTerminalFontSize = setTerminalFontSize;
-
-// Refit the terminal to its container dimensions.
-// Call after layout changes (e.g. sidebar toggle) that alter available space.
-window._refitTerminal = function() {
-  if (!_fitAddon) return;
-  try { _fitAddon.fit(); } catch (_) {}
-};
 
 // ---------------------------------------------------------------------------
 // Mobile touch scroll — rAF-batched WheelEvent dispatch
