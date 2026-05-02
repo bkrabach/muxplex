@@ -354,7 +354,7 @@ async function pollSessions() {
     _pollFailCount = 0;
     setConnectionStatus('ok');
     renderGrid(sessions);
-    renderSidebar(sessions, _viewingSession);
+    renderSidebar(sessions, _viewingSession, _viewingRemoteId);
     handleBellTransitions(prev, sessions);
     updateSessionPill(sessions);
     updateFaviconBadge();
@@ -554,12 +554,13 @@ function buildTileHTML(session, index, mobile) {
  * Build the HTML string for a single session sidebar card.
  * @param {object} session
  * @param {string} currentSession - name of the currently active session
+ * @param {string} currentRemoteId - remoteId of the currently active session
  * @returns {string}
  */
-function buildSidebarHTML(session, currentSession) {
+function buildSidebarHTML(session, currentSession, currentRemoteId) {
   const name = session.name || '';
   const escapedName = escapeHtml(name);
-  const isActive = name === currentSession;
+  const isActive = name === currentSession && (session.remoteId ?? '') === (currentRemoteId ?? '');
 
   var ds = getDisplaySettings();
   var actIndicator = ds.activityIndicator !== undefined ? ds.activityIndicator : 'both';
@@ -697,8 +698,9 @@ function _resolveActiveView(activeView, views) {
  * Binds click handlers on each sidebar-item to switch sessions.
  * @param {object[]} sessions
  * @param {string|null} currentSession - name of the currently active session
+ * @param {string} [currentRemoteId] - remoteId of the currently active session
  */
-function renderSidebar(sessions, currentSession) {
+function renderSidebar(sessions, currentSession, currentRemoteId) {
   if (_viewMode !== 'fullscreen') return;
 
   const list = $('sidebar-list');
@@ -724,11 +726,11 @@ function renderSidebar(sessions, currentSession) {
 
     for (const [deviceName, deviceSessions] of groups) {
       html += `<h4 class="sidebar-device-header">${escapeHtml(deviceName)}</h4>`;
-      html += deviceSessions.map((session) => buildSidebarHTML(session, currentSession)).join('');
+      html += deviceSessions.map((session) => buildSidebarHTML(session, currentSession, currentRemoteId)).join('');
     }
   } else {
     // Single source: flat list with no device headers
-    html = visible.map((session) => buildSidebarHTML(session, currentSession)).join('');
+    html = visible.map((session) => buildSidebarHTML(session, currentSession, currentRemoteId)).join('');
   }
 
   list.innerHTML = html;
@@ -740,7 +742,7 @@ function renderSidebar(sessions, currentSession) {
       const remoteId = item.dataset.remoteId || '';
       on(item, 'click', (e) => {
         if (e.target.closest && e.target.closest('.tile-options-btn')) return;
-        if (name !== currentSession) openSession(name, { remoteId });
+        if (name !== currentSession || remoteId !== (currentRemoteId ?? '')) openSession(name, { remoteId });
       });
     });
   }
@@ -1470,7 +1472,7 @@ function switchView(viewName) {
   _activeView = viewName;
   closeViewDropdown();
   renderGrid(_currentSessions || []);
-  renderSidebar(_currentSessions || [], _viewingSession);
+  renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
   renderViewDropdown();
   // Update sidebar view label to match the active view
   var sidebarLabel = $('sidebar-view-label');
@@ -2330,7 +2332,7 @@ function _executeKill(name, remoteId) {
     .then(function() {
       closeFlyoutMenu();
       showToast('Session \'' + name + '\' killed');
-      if (_viewingSession === name) {
+      if (_viewingSession === name && (_viewingRemoteId ?? '') === (remoteId || '')) {
         closeSession();
       }
       pollSessions();
@@ -2903,7 +2905,7 @@ async function openSession(name, opts = {}) {
 
   // Pre-render sidebar with current sessions before first poll tick
   initSidebar();
-  renderSidebar(_currentSessions, name);
+  renderSidebar(_currentSessions, name, _viewingRemoteId);
 
   // Update expanded header
   const nameEl = $('expanded-session-name');
@@ -2941,7 +2943,7 @@ async function openSession(name, opts = {}) {
       }
       // Re-render sidebar after DOM is visible and dimensions are correct
       initSidebar();
-      renderSidebar(_currentSessions, name);
+      renderSidebar(_currentSessions, name, _viewingRemoteId);
       resolve();
     }, opts.skipAnimation ? 0 : 260);
     // If setTimeout is stubbed (e.g. in test env), resolve immediately so we don't hang
@@ -3643,7 +3645,7 @@ function renderSheetList() {
   list.innerHTML = sorted.map(function(s) {
     var hasBell = s.bell && s.bell.unseen_count > 0 &&
       (s.bell.seen_at === null || s.bell.last_fired_at > s.bell.seen_at);
-    var isActive = s.name === _viewingSession;
+    var isActive = s.name === _viewingSession && (s.remoteId ?? '') === (_viewingRemoteId ?? '');
     var escapedName = escapeHtml(s.name || '');
     var remoteIdAttr = s.remoteId != null ? ' data-remote-id="' + escapeHtml(s.remoteId) + '"' : '';
     return '<li class="sheet-item' + (isActive ? ' sheet-item--active' : '') + '"' +
@@ -3659,7 +3661,7 @@ function renderSheetList() {
       closeBottomSheet();
       var name = item.dataset.session;
       var remoteId = item.dataset.remoteId || '';
-      if (name !== _viewingSession) openSession(name, { remoteId: remoteId });
+      if (name !== _viewingSession || remoteId !== (_viewingRemoteId ?? '')) openSession(name, { remoteId: remoteId });
     });
   });
 }
@@ -3971,7 +3973,7 @@ function killSession(name, remoteId) {
     .then(function() {
       showToast('Session \'' + name + '\' killed');
       // If we deleted the session we're currently viewing, return to dashboard
-      if (_viewingSession === name) {
+      if (_viewingSession === name && (_viewingRemoteId ?? '') === (remoteId || '')) {
         closeSession();
       }
       pollSessions();
