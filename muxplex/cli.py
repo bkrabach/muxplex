@@ -742,8 +742,13 @@ def setup_tls(method: str = "auto") -> None:
     """
     from muxplex.settings import SETTINGS_PATH, load_settings, patch_settings  # noqa: PLC0415
     from muxplex.tls import (  # noqa: PLC0415
+        _default_hostnames,
+        _default_lan_ip,
+        _default_tailnet_name,
         detect_mkcert,
         detect_tailscale,
+        generate_leaf_signed_by_ca,
+        generate_local_ca,
         generate_mkcert,
         generate_self_signed,
         generate_tailscale,
@@ -813,6 +818,46 @@ def setup_tls(method: str = "auto") -> None:
     if result is None and method in ("auto", "selfsigned"):
         result = generate_self_signed(cert_path, key_path)
 
+    # Step 3.5: Try local CA (explicit opt-in only — not part of "auto").
+    # Generates a persistent local CA in ~/.config/muxplex/ca/ and signs
+    # a short-lived leaf with it. Install the CA on each client to get
+    # browser-trusted HTTPS without Tailscale or a public domain.
+    if result is None and method == "ca":
+        ca_dir = config_dir / "ca"
+        ca_cert_path = ca_dir / "muxplex-ca.crt"
+        ca_key_path = ca_dir / "muxplex-ca.key"
+
+        ca_info = generate_local_ca(ca_cert_path, ca_key_path)
+        if ca_info["regenerated"]:
+            print(f"  Generated local CA at {ca_cert_path}")
+        else:
+            print(f"  Reusing existing local CA at {ca_cert_path}")
+
+        # Build the SAN list: defaults + tailnet name (if reachable) + LAN IP.
+        leaf_hostnames: list[str] = list(_default_hostnames())
+        tailnet_name = _default_tailnet_name()
+        if tailnet_name and tailnet_name not in leaf_hostnames:
+            leaf_hostnames.append(tailnet_name)
+
+        leaf_ips: list[str] = ["127.0.0.1", "::1"]
+        lan_ip = _default_lan_ip()
+        if lan_ip and lan_ip not in leaf_ips:
+            leaf_ips.append(lan_ip)
+
+        result = generate_leaf_signed_by_ca(
+            ca_cert_path,
+            ca_key_path,
+            cert_path,
+            key_path,
+            hostnames=leaf_hostnames,
+            ip_addresses=leaf_ips,
+        )
+        # Decorate the result with the CA path so the success block can
+        # surface install instructions.
+        if result:
+            result["ca_cert_path"] = str(ca_cert_path)
+            result["ca_regenerated"] = ca_info["regenerated"]
+
     # Step 4: Final failure check
     if result is None:
         print(
@@ -850,6 +895,32 @@ def setup_tls(method: str = "auto") -> None:
     elif method_used == "tailscale":
         print("  Note: Tailscale certificates expire after 90 days.")
         print("  Run 'muxplex setup-tls' to renew.")
+        print()
+    elif method_used == "ca":
+        ca_cert_path_str = result.get("ca_cert_path", "")
+        print(f"  Local CA:    {ca_cert_path_str}")
+        print()
+        print("  Install the CA on each client to eliminate browser warnings.")
+        print("  The leaf rotates without re-trusting; the CA is what you trust.")
+        print()
+        print("  Windows (PowerShell, no admin needed):")
+        print(
+            "    Import-Certificate -FilePath <path-to-ca.crt> "
+            "-CertStoreLocation Cert:\\CurrentUser\\Root"
+        )
+        print()
+        print("  macOS:")
+        print(
+            "    sudo security add-trusted-cert -d -r trustRoot "
+            "-k /Library/Keychains/System.keychain <path-to-ca.crt>"
+        )
+        print()
+        print("  Linux (system-wide):")
+        print("    sudo cp <path-to-ca.crt> /usr/local/share/ca-certificates/")
+        print("    sudo update-ca-certificates")
+        print()
+        print("  Leaf cert rotates yearly — re-run 'muxplex setup-tls --method ca'")
+        print("  to generate a fresh leaf signed by the same CA (no client re-trust).")
         print()
 
     print("  Restart service to apply: muxplex service restart")
@@ -993,9 +1064,12 @@ def main() -> None:
     )
     setup_tls_parser.add_argument(
         "--method",
-        choices=["auto", "tailscale", "mkcert", "selfsigned"],
+        choices=["auto", "tailscale", "mkcert", "selfsigned", "ca"],
         default="auto",
-        help="Certificate generation method (default: auto)",
+        help="Certificate generation method (default: auto). 'ca' creates "
+        "a persistent local CA in ~/.config/muxplex/ca/ and signs a leaf "
+        "cert with it — install the CA on each client to eliminate browser "
+        "warnings without requiring Tailscale or a public domain.",
     )
     setup_tls_parser.add_argument(
         "--status",

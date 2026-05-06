@@ -3,6 +3,10 @@ muxplex/tls.py — TLS certificate generation and inspection.
 
 Provides:
   generate_self_signed(cert_path, key_path, hostnames=None, days_valid=3650)
+  generate_local_ca(ca_cert_path, ca_key_path, days_valid=3650)
+  generate_leaf_signed_by_ca(ca_cert_path, ca_key_path, leaf_cert_path,
+                             leaf_key_path, hostnames, ip_addresses,
+                             days_valid=397)
   get_cert_info(cert_path)
 """
 
@@ -15,6 +19,62 @@ from pathlib import Path
 def _default_hostnames() -> list[str]:
     hostname = socket.gethostname()
     return [hostname, f"{hostname}.local", "localhost"]
+
+
+def _default_lan_ip() -> str | None:
+    """Detect the primary outbound IPv4 address.
+
+    Returns the local IP that would be used to reach an external host
+    (no packets are actually sent — we use a connected UDP socket to ask
+    the kernel which interface would route the traffic). Returns None on
+    failure (no network, all-loopback configuration, etc.).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # 8.8.8.8:80 is a routing target; UDP connect doesn't transmit.
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+    if ip in ("0.0.0.0", "127.0.0.1"):
+        return None
+    return ip
+
+
+def _default_tailnet_name() -> str | None:
+    """Return this host's MagicDNS name (e.g. 'spark-1.tail8f3c4e.ts.net'),
+    or None if Tailscale is not installed / not connected / has no DNSName.
+
+    Best-effort and short-timeout — failure is silent and returns None.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("tailscale"):
+        return None
+    try:
+        result = subprocess.run(
+            ["tailscale", "status", "--self", "--json"],
+            timeout=5,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    self_info = data.get("Self") or {}
+    dns_name = self_info.get("DNSName", "") or data.get("DNSName", "")
+    if not dns_name:
+        return None
+    return dns_name.rstrip(".")
 
 
 def generate_self_signed(
@@ -115,6 +175,282 @@ def generate_self_signed(
         "cert_path": str(cert_path),
         "key_path": str(key_path),
         "hostnames": hostnames,
+        "expires": expires,
+    }
+
+
+def generate_local_ca(
+    ca_cert_path,
+    ca_key_path,
+    days_valid: int = 3650,
+    common_name: str = "muxplex Local CA",
+) -> dict:
+    """Generate (or reuse) a persistent local CA for signing leaf certs.
+
+    The CA is suitable for installation into OS / browser trust stores:
+    BasicConstraints CA:TRUE (path_length=0), KeyUsage keyCertSign+cRLSign,
+    SubjectKeyIdentifier present.
+
+    Idempotent: if both ca_cert_path and ca_key_path already exist, this
+    function does nothing and returns metadata for the existing CA. To
+    regenerate, delete the files first.
+
+    Args:
+        ca_cert_path: Destination path for the CA certificate PEM file.
+        ca_key_path:  Destination path for the CA private key PEM file.
+        days_valid:   CA validity period in days. Default 3650 (~10 years).
+        common_name:  CN for the CA's subject/issuer name.
+
+    Returns:
+        dict with keys: ca_cert_path, ca_key_path, common_name, expires,
+        regenerated (True if newly generated, False if reused).
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    ca_cert_path = Path(ca_cert_path)
+    ca_key_path = Path(ca_key_path)
+
+    if ca_cert_path.exists() and ca_key_path.exists():
+        info = get_cert_info(ca_cert_path)
+        return {
+            "ca_cert_path": str(ca_cert_path),
+            "ca_key_path": str(ca_key_path),
+            "common_name": common_name,
+            "expires": info["expires"] if info else None,
+            "regenerated": False,
+        }
+
+    ca_cert_path.parent.mkdir(parents=True, exist_ok=True)
+    ca_key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 4096-bit RSA for the long-lived CA
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "muxplex"),
+        ]
+    )
+
+    now = datetime.now(timezone.utc)
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(
+            datetime.fromtimestamp(
+                now.timestamp() + days_valid * 86400, tz=timezone.utc
+            )
+        )
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=0),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    # Write key with restricted permissions (touch 0o600 BEFORE write to
+    # avoid the world-readable window during file creation).
+    key_pem = ca_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    ca_key_path.touch(mode=0o600, exist_ok=True)
+    ca_key_path.write_bytes(key_pem)
+    ca_key_path.chmod(0o600)
+
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    ca_cert_path.write_bytes(cert_pem)
+
+    try:
+        expires = cert.not_valid_after_utc  # type: ignore[attr-defined]
+    except AttributeError:
+        expires = cert.not_valid_after  # type: ignore[attr-defined]
+
+    return {
+        "ca_cert_path": str(ca_cert_path),
+        "ca_key_path": str(ca_key_path),
+        "common_name": common_name,
+        "expires": expires,
+        "regenerated": True,
+    }
+
+
+def generate_leaf_signed_by_ca(
+    ca_cert_path,
+    ca_key_path,
+    leaf_cert_path,
+    leaf_key_path,
+    hostnames: list[str],
+    ip_addresses: list[str] | None = None,
+    days_valid: int = 397,
+) -> dict:
+    """Generate a leaf TLS certificate signed by a local CA.
+
+    The leaf is suitable for serving HTTPS: KeyUsage digitalSignature +
+    keyEncipherment, ExtendedKeyUsage serverAuth, SAN populated from
+    hostnames + ip_addresses, AuthorityKeyIdentifier linked to the CA.
+
+    Args:
+        ca_cert_path:   Path to the CA certificate PEM.
+        ca_key_path:    Path to the CA private key PEM.
+        leaf_cert_path: Destination for the leaf certificate.
+        leaf_key_path:  Destination for the leaf private key.
+        hostnames:      DNS names to include in SAN. The first is also used
+                        as the leaf's CN.
+        ip_addresses:   Optional IPv4/IPv6 strings to include as IP SAN
+                        entries. Invalid entries are skipped silently.
+        days_valid:     Leaf validity in days. Default 397 — just under
+                        the CA/B Forum 398-day enforcement ceiling that
+                        Apple/Chrome also apply to privately-installed
+                        roots in many recent versions.
+
+    Returns:
+        dict with keys: method, cert_path, key_path, hostnames, expires.
+    """
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    if not hostnames:
+        raise ValueError("at least one hostname is required for leaf certificate")
+
+    ca_cert_path = Path(ca_cert_path)
+    ca_key_path = Path(ca_key_path)
+    leaf_cert_path = Path(leaf_cert_path)
+    leaf_key_path = Path(leaf_key_path)
+
+    leaf_cert_path.parent.mkdir(parents=True, exist_ok=True)
+    leaf_key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
+    ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
+
+    leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0]),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "muxplex"),
+        ]
+    )
+
+    san_entries: list[x509.GeneralName] = [x509.DNSName(h) for h in hostnames]
+    valid_ips: list[str] = []
+    if ip_addresses:
+        for ip_str in ip_addresses:
+            try:
+                addr = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            san_entries.append(x509.IPAddress(addr))
+            valid_ips.append(ip_str)
+
+    now = datetime.now(timezone.utc)
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(leaf_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(
+            datetime.fromtimestamp(
+                now.timestamp() + days_valid * 86400, tz=timezone.utc
+            )
+        )
+        .add_extension(
+            x509.SubjectAlternativeName(san_entries),
+            critical=False,
+        )
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()),  # type: ignore[arg-type]
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())  # type: ignore[arg-type]
+    )
+
+    key_pem = leaf_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    leaf_key_path.touch(mode=0o600, exist_ok=True)
+    leaf_key_path.write_bytes(key_pem)
+    leaf_key_path.chmod(0o600)
+
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    leaf_cert_path.write_bytes(cert_pem)
+
+    try:
+        expires = cert.not_valid_after_utc  # type: ignore[attr-defined]
+    except AttributeError:
+        expires = cert.not_valid_after  # type: ignore[attr-defined]
+
+    # Combined display list: DNS names + stringified IPs (for the success
+    # message in the CLI).
+    display_hostnames = list(hostnames) + valid_ips
+
+    return {
+        "method": "ca",
+        "cert_path": str(leaf_cert_path),
+        "key_path": str(leaf_key_path),
+        "hostnames": display_hostnames,
         "expires": expires,
     }
 

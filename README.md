@@ -67,10 +67,11 @@
 ### HTTPS / TLS
 
 - `muxplex setup-tls` — auto-detect and set up TLS certificates
-- **Tailscale** — real Let's Encrypt certs via `tailscale cert` (recommended)
-- **mkcert** — locally-trusted certs, zero browser warnings
+- **Tailscale** — real Let's Encrypt certs via `tailscale cert` (recommended when every client has Tailscale)
+- **mkcert** — locally-trusted certs, zero browser warnings (when mkcert is installed on each client)
+- **Local CA** — persistent root CA + signed leaf for browser-trusted HTTPS on plain LAN names (`spark-1`, `192.168.1.5`) without Tailscale or a public domain; install the CA once per client → see [Trusting the local CA](docs/TRUSTING_THE_LOCAL_CA.md)
 - **Self-signed** — fallback for immediate HTTPS (browser shows warning)
-- Required for browser clipboard API on non-localhost
+- Required for browser clipboard API on non-localhost, and for stable PWA install (browsers refuse to keep installed PWAs in standalone mode against an untrusted origin)
 
 ---
 
@@ -204,6 +205,7 @@ muxplex setup-tls
 muxplex setup-tls --method tailscale
 muxplex setup-tls --method mkcert
 muxplex setup-tls --method selfsigned
+muxplex setup-tls --method ca           # persistent local CA + signed leaf
 
 # Show current TLS status and configuration
 muxplex setup-tls --status
@@ -218,6 +220,16 @@ muxplex doctor
 Auto-detection priority: **Tailscale** (if `tailscale` is installed and a cert is available) → **mkcert** (if `mkcert` is installed) → **self-signed** (always available as a fallback). Use `--method` to override.
 
 > **Note:** Tailscale certs have a 90-day expiry. Run `muxplex setup-tls --method tailscale` to renew when needed.
+
+#### When to use `--method ca`
+
+The `ca` method is for the case where you want browser-trusted HTTPS on plain LAN names (e.g. `https://my-host:8088`, `https://192.168.1.5:8088`) but **can't** use Tailscale (no client install, blocked by IT policy, or the URL must be the bare LAN name) and **don't** want to buy a public domain.
+
+It generates a persistent root CA in `~/.config/muxplex/ca/` and signs a 13-month leaf with it. The leaf's SAN automatically includes the hostname, `<hostname>.local`, `localhost`, the primary LAN IPv4 address, and the Tailscale MagicDNS name (if Tailscale is connected). Install the **CA** (not the leaf) once on each client; subsequent leaf rotations don't require re-trusting.
+
+Not part of the `auto` cascade — must be opted into explicitly.
+
+> **→ See [docs/TRUSTING_THE_LOCAL_CA.md](docs/TRUSTING_THE_LOCAL_CA.md)** for per-platform install instructions (Windows, macOS, Linux, iOS, Android, Firefox).
 
 ---
 
