@@ -4018,11 +4018,11 @@ def test_tile_click_handler_guards_options_btn() -> None:
         "clicking ⋮ must NOT trigger openSession()"
     )
     # Confirm the old broken guard is gone
-    assert "'tile-delete'" not in render_grid_body and '"tile-delete"' not in render_grid_body or (
-        "tile-options-btn" in render_grid_body
-    ), (
-        "Guard must use .tile-options-btn, not the old .tile-delete which was removed"
-    )
+    assert (
+        "'tile-delete'" not in render_grid_body
+        and '"tile-delete"' not in render_grid_body
+        or ("tile-options-btn" in render_grid_body)
+    ), "Guard must use .tile-options-btn, not the old .tile-delete which was removed"
 
 
 def test_flyout_delegation_handler_no_stop_propagation() -> None:
@@ -4032,7 +4032,9 @@ def test_flyout_delegation_handler_no_stop_propagation() -> None:
     bubble chain). It created a false sense of correctness while doing nothing.
     """
     # Extract the tile-options-btn delegation handler block from bindStaticEventListeners
-    bind_body = _JS.split("function bindStaticEventListeners")[1].split("\nfunction ")[0]
+    bind_body = _JS.split("function bindStaticEventListeners")[1].split("\nfunction ")[
+        0
+    ]
     # Find the section with tile-options-btn
     assert "tile-options-btn" in bind_body, (
         "bindStaticEventListeners must have .tile-options-btn delegation"
@@ -4119,11 +4121,12 @@ def test_open_flyout_sheet_add_to_view_calls_view_picker() -> None:
     )
     # Confirm the old wrong call is gone from the mobile handler
     # (openAddSessionsPanel may still exist for the grid affordance — just not here)
-    assert "openAddSessionsPanel" not in fn_body.split("_openMobileViewPicker")[0].split(
-        "action === 'add-to-view'"
-    )[-1], (
-        "_openFlyoutSheet must not call openAddSessionsPanel for the add-to-view action"
-    )
+    assert (
+        "openAddSessionsPanel"
+        not in fn_body.split("_openMobileViewPicker")[0].split(
+            "action === 'add-to-view'"
+        )[-1]
+    ), "_openFlyoutSheet must not call openAddSessionsPanel for the add-to-view action"
 
 
 # ── VIOLATION 2: submenu filters current view ────────────────────────────────
@@ -4197,7 +4200,7 @@ def test_flyout_sheet_items_have_role_menuitem() -> None:
     CLEANUP: Sheet items lacked ARIA role, breaking screen reader navigation.
     """
     fn_body = _JS.split("function _openFlyoutSheet")[1].split("\nfunction ")[0]
-    assert "role=\"menuitem\"" in fn_body or "role='menuitem'" in fn_body, (
+    assert 'role="menuitem"' in fn_body or "role='menuitem'" in fn_body, (
         "_openFlyoutSheet must set role='menuitem' on each sheet item button"
     )
 
@@ -4291,6 +4294,7 @@ _CSS: str = CSS_PATH.read_text()
 
 # — Issue 1: Sidebar dropdown "+ New View" ——————————————————————————
 
+
 def test_render_sidebar_view_dropdown_has_new_view_action() -> None:
     """renderSidebarViewDropdown must include a '+ New View' action button."""
     match = re.search(
@@ -4327,6 +4331,7 @@ def test_bind_static_event_listeners_calls_show_sidebar_new_view_input() -> None
 
 
 # — Issue 2: Remove shortcut numbers, add session counts ———————————————
+
 
 def test_render_view_dropdown_no_shortcut_spans() -> None:
     """renderViewDropdown must not include view-dropdown__shortcut spans (numbers removed)."""
@@ -4378,6 +4383,7 @@ def test_render_view_dropdown_shows_user_view_session_count() -> None:
 
 # — Issue 3: Empty new view opens Add Sessions panel ———————————————————
 
+
 def test_show_new_view_input_calls_open_manage_view_panel() -> None:
     """showNewViewInput must call openManageViewPanel after creating a new view."""
     match = re.search(
@@ -4408,6 +4414,7 @@ def test_show_sidebar_new_view_input_calls_open_manage_view_panel() -> None:
 
 
 # — Issue 4: Flyout submenu "+ New View" ———————————————————————————————
+
 
 def test_open_flyout_submenu_has_new_view_option() -> None:
     """_openFlyoutSubmenu must include a '+ New View' option."""
@@ -4440,11 +4447,12 @@ def test_open_flyout_submenu_new_view_creates_and_switches() -> None:
         '_openFlyoutSubmenu must call switchView — the "+ New View" handler needs to switch to the new view'
     )
     assert "PATCH" in body or "api(" in body, (
-        '_openFlyoutSubmenu must PATCH /api/settings to create the view'
+        "_openFlyoutSubmenu must PATCH /api/settings to create the view"
     )
 
 
 # — Issue 5: Add Sessions header button ————————————————————————————————
+
 
 def test_update_add_sessions_button_removed() -> None:
     """updateAddSessionsButton must be REMOVED — the + Add button is gone (Issue 5)."""
@@ -4494,6 +4502,7 @@ def test_bind_static_event_listeners_no_add_sessions_btn() -> None:
 
 # — Issue 6: Tile header flexbox layout ————————————————————————————————
 
+
 def test_build_tile_html_options_btn_inside_tile_header() -> None:
     """buildTileHTML must render tile-options-btn inside tile-header (before tile-body)."""
     fn_body = _JS.split("function buildTileHTML")[1].split("\nfunction ")[0]
@@ -4514,7 +4523,9 @@ def test_tile_options_btn_css_not_absolute() -> None:
     match = _re.search(r"\.tile-options-btn\s*\{([^}]*)\}", _CSS, _re.DOTALL)
     assert match, ".tile-options-btn CSS rule not found"
     rule_body = match.group(1)
-    assert "position: absolute" not in rule_body and "position:absolute" not in rule_body, (
+    assert (
+        "position: absolute" not in rule_body and "position:absolute" not in rule_body
+    ), (
         ".tile-options-btn must not use position:absolute — "
         "it should be an inline flex item inside tile-header to prevent device badge overlap"
     )
@@ -4710,7 +4721,9 @@ def test_build_sidebar_html_options_btn_has_aria_label() -> None:
     )
     assert match, "buildSidebarHTML function not found"
     body = match.group(1)
-    assert 'aria-label="Session options"' in body or "aria-label='Session options'" in body, (
+    assert (
+        'aria-label="Session options"' in body or "aria-label='Session options'" in body
+    ), (
         "buildSidebarHTML tile-options-btn must have aria-label='Session options' "
         "for accessibility (same as tile version)"
     )

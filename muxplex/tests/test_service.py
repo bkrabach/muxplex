@@ -610,7 +610,9 @@ def test_service_install_shows_tls_tip_on_network_host(capsys, tmp_path, monkeyp
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
 
     # Setup settings with network host and no TLS
-    settings_file.write_text(json.dumps({"host": "0.0.0.0", "tls_cert": "", "tls_key": ""}))
+    settings_file.write_text(
+        json.dumps({"host": "0.0.0.0", "tls_cert": "", "tls_key": ""})
+    )
 
     # Mock subprocess to avoid actual systemctl calls
     calls = []
@@ -646,7 +648,9 @@ def test_service_install_hides_tls_tip_on_localhost(capsys, tmp_path, monkeypatc
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
 
     # Setup settings with localhost
-    settings_file.write_text(json.dumps({"host": "127.0.0.1", "tls_cert": "", "tls_key": ""}))
+    settings_file.write_text(
+        json.dumps({"host": "127.0.0.1", "tls_cert": "", "tls_key": ""})
+    )
 
     # Mock subprocess
     calls = []

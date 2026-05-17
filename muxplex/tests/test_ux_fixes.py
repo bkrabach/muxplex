@@ -53,9 +53,7 @@ def test_manage_view_rename_validates_non_empty() -> None:
 def test_manage_view_rename_patches_settings() -> None:
     """The rename flow must PATCH /api/settings with updated view name."""
     # The rename action must call PATCH /api/settings
-    assert "PATCH" in _JS and "/api/settings" in _JS, (
-        "Rename must PATCH /api/settings"
-    )
+    assert "PATCH" in _JS and "/api/settings" in _JS, "Rename must PATCH /api/settings"
 
 
 def test_manage_view_rename_handles_escape() -> None:
@@ -126,11 +124,9 @@ def test_open_manage_view_panel_has_delete_button() -> None:
         "delete" in body.lower()
         or "trash" in body.lower()
         or "manage-view-delete" in body
-        or "data-action=\"delete\"" in body
+        or 'data-action="delete"' in body
     )
-    assert has_delete, (
-        "openManageViewPanel must render a delete button in the header"
-    )
+    assert has_delete, "openManageViewPanel must render a delete button in the header"
 
 
 def test_manage_view_delete_shows_confirmation() -> None:
@@ -167,9 +163,9 @@ def test_manage_view_delete_removes_view_from_settings() -> None:
     assert match, "openManageViewPanel function not found"
     body = match.group(1)
     # openManageViewPanel must either patch directly or call a helper that does
-    assert "api(" in body or "PATCH" in body or "_saveViews" in body or "splice" in body, (
-        "Manage View delete must call PATCH /api/settings to remove the view"
-    )
+    assert (
+        "api(" in body or "PATCH" in body or "_saveViews" in body or "splice" in body
+    ), "Manage View delete must call PATCH /api/settings to remove the view"
 
 
 def test_manage_view_delete_switches_to_all() -> None:
@@ -195,9 +191,7 @@ def test_manage_view_delete_shows_toast() -> None:
     )
     assert match, "openManageViewPanel function not found"
     body = match.group(1)
-    assert "showToast" in body, (
-        "Manage View delete must call showToast after deleting"
-    )
+    assert "showToast" in body, "Manage View delete must call showToast after deleting"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

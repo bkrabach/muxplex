@@ -1361,7 +1361,8 @@ def test_create_session_returns_200_with_name(client, monkeypatch):
     mock_proc.returncode = 0
 
     monkeypatch.setattr(
-        "muxplex.main.asyncio.create_subprocess_shell", AsyncMock(return_value=mock_proc)
+        "muxplex.main.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=mock_proc),
     )
 
     response = client.post("/api/sessions", json={"name": "my-project"})
@@ -1391,7 +1392,9 @@ def test_create_session_substitutes_name_in_template(client, tmp_path, monkeypat
         shell_calls.append(cmd)
         return mock_proc
 
-    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", mock_create_subprocess)
+    monkeypatch.setattr(
+        "muxplex.main.asyncio.create_subprocess_shell", mock_create_subprocess
+    )
 
     response = client.post("/api/sessions", json={"name": "my-project"})
     assert response.status_code == 200
@@ -2468,7 +2471,8 @@ def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
     mock_proc.returncode = 0
 
     monkeypatch.setattr(
-        "muxplex.main.asyncio.create_subprocess_shell", AsyncMock(return_value=mock_proc)
+        "muxplex.main.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=mock_proc),
     )
 
     with caplog.at_level(logging.INFO, logger="muxplex.main"):

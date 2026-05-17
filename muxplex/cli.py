@@ -21,6 +21,11 @@ from muxplex.auth import (
 _system_service_path = Path("/etc/systemd/system/muxplex.service")
 
 
+def _have_systemctl() -> bool:
+    """Return True if systemctl is on PATH (used to gate service-management steps)."""
+    return shutil.which("systemctl") is not None
+
+
 def _get_install_info() -> dict:
     """Detect how muxplex was installed using PEP 610 direct_url.json.
 
@@ -443,17 +448,24 @@ def doctor() -> None:
                 f"  {warn_mark} Service: not installed (run: muxplex service install)"
             )
     else:
-        systemd_user = Path.home() / ".config" / "systemd" / "user" / "muxplex.service"
-        if systemd_user.exists():
-            print(f"  {ok_mark} Service: systemd user unit installed ({systemd_user})")
-        elif _system_service_path.exists():
-            print(
-                f"  {ok_mark} Service: systemd system unit installed ({_system_service_path})"
-            )
+        if not _have_systemctl():
+            print(f"  {warn_mark} Service: systemd not available on this platform")
         else:
-            print(
-                f"  {warn_mark} Service: not installed (run: muxplex service install)"
+            systemd_user = (
+                Path.home() / ".config" / "systemd" / "user" / "muxplex.service"
             )
+            if systemd_user.exists():
+                print(
+                    f"  {ok_mark} Service: systemd user unit installed ({systemd_user})"
+                )
+            elif _system_service_path.exists():
+                print(
+                    f"  {ok_mark} Service: systemd system unit installed ({_system_service_path})"
+                )
+            else:
+                print(
+                    f"  {warn_mark} Service: not installed (run: muxplex service install)"
+                )
 
     print()  # trailing newline
 
@@ -517,18 +529,21 @@ def upgrade(*, force: bool = False) -> None:
             print("  No launchd service found (skipping stop)")
     else:
         # Linux/WSL — check systemd
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", "muxplex"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print("  Stopping systemd service...")
-            subprocess.run(
-                ["systemctl", "--user", "stop", "muxplex"], capture_output=True
-            )
+        if not _have_systemctl():
+            print("  ! systemctl not found — skipping service management step")
         else:
-            print("  No active systemd service found (skipping stop)")
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", "muxplex"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print("  Stopping systemd service...")
+                subprocess.run(
+                    ["systemctl", "--user", "stop", "muxplex"], capture_output=True
+                )
+            else:
+                print("  No active systemd service found (skipping stop)")
 
     # 2. Reinstall via uv tool install
     print("  Installing latest version...")
@@ -577,10 +592,13 @@ def upgrade(*, force: bool = False) -> None:
             return
 
     # 3. Regenerate service file (picks up any plist/unit changes)
-    print("  Regenerating service file...")
-    from muxplex.service import service_install  # noqa: PLC0415
+    if sys.platform == "darwin" or _have_systemctl():
+        print("  Regenerating service file...")
+        from muxplex.service import service_install  # noqa: PLC0415
 
-    service_install()
+        service_install()
+    else:
+        print("  ! systemctl not found — skipping service file regeneration")
 
     # 4. Restart service
     if sys.platform == "darwin":
@@ -602,7 +620,7 @@ def upgrade(*, force: bool = False) -> None:
                 print("  Service started (legacy)")
         else:
             print("  Service file not found — run: muxplex service install")
-    else:
+    elif _have_systemctl():
         result = subprocess.run(
             ["systemctl", "--user", "is-enabled", "muxplex"],
             capture_output=True,
@@ -619,6 +637,24 @@ def upgrade(*, force: bool = False) -> None:
             print("  Service started")
         else:
             print("  Service not enabled — run: muxplex service install")
+    else:
+        # No systemd available — ask the user to restart manually
+        pid_hint = ""
+        try:
+            pid_result = subprocess.run(
+                ["pgrep", "-f", "muxplex serve"],
+                capture_output=True,
+                text=True,
+            )
+            pid_str = pid_result.stdout.strip()
+            if pid_str:
+                pid_hint = f" (running PID: {pid_str})"
+        except Exception:
+            pass
+        print(
+            "  ! systemd not detected — restart muxplex manually to pick up the new version"
+            + pid_hint
+        )
 
     # 5. Doctor check
     print("\n  Verifying...")

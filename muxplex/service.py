@@ -74,6 +74,11 @@ def _is_darwin() -> bool:
     return sys.platform == "darwin"
 
 
+def _have_systemctl() -> bool:
+    """Return True if systemctl is on PATH (gates all systemd service operations)."""
+    return shutil.which("systemctl") is not None
+
+
 def _resolve_muxplex_bin() -> str:
     """Return the muxplex binary path.
 
@@ -116,8 +121,6 @@ def _prompt_host_if_localhost() -> None:
 # ---------------------------------------------------------------------------
 
 
-
-
 def _show_tls_nudge_if_needed() -> None:
     """Show TLS setup nudge if host is network and TLS is not configured."""
     from muxplex.settings import load_settings
@@ -128,6 +131,8 @@ def _show_tls_nudge_if_needed() -> None:
 
     if host != "127.0.0.1" and not tls_cert:
         print("  Tip: Enable HTTPS for clipboard support: muxplex setup-tls")
+
+
 def _systemd_install() -> None:
     muxplex_bin = _resolve_muxplex_bin()
     safe_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -235,57 +240,87 @@ def _launchd_logs() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _no_systemctl_error(command: str) -> None:
+    """Print a clear error when systemctl is not available."""
+    print(
+        f"  ERROR: 'muxplex service {command}' requires systemctl, which was not found on PATH.",
+        file=sys.stderr,
+    )
+    print(
+        "  This system does not appear to use systemd (e.g. Unraid, BSD, macOS, container).",
+        file=sys.stderr,
+    )
+    print(
+        "  Run muxplex serve directly to start the server without a service manager.",
+        file=sys.stderr,
+    )
+
+
 def service_install() -> None:
     """Install the muxplex service unit for the current user."""
     if _is_darwin():
         _launchd_install()
-    else:
+    elif _have_systemctl():
         _systemd_install()
+    else:
+        _no_systemctl_error("install")
 
 
 def service_uninstall() -> None:
     """Remove the muxplex service unit for the current user."""
     if _is_darwin():
         _launchd_uninstall()
-    else:
+    elif _have_systemctl():
         _systemd_uninstall()
+    else:
+        _no_systemctl_error("uninstall")
 
 
 def service_start() -> None:
     """Start the muxplex service."""
     if _is_darwin():
         _launchd_start()
-    else:
+    elif _have_systemctl():
         _systemd_start()
+    else:
+        _no_systemctl_error("start")
 
 
 def service_stop() -> None:
     """Stop the muxplex service."""
     if _is_darwin():
         _launchd_stop()
-    else:
+    elif _have_systemctl():
         _systemd_stop()
+    else:
+        _no_systemctl_error("stop")
 
 
 def service_restart() -> None:
     """Restart the muxplex service."""
     if _is_darwin():
         _launchd_restart()
-    else:
+    elif _have_systemctl():
         _systemd_restart()
+    else:
+        _no_systemctl_error("restart")
 
 
 def service_status() -> None:
     """Print the current status of the muxplex service."""
     if _is_darwin():
         _launchd_status()
-    else:
+    elif _have_systemctl():
         _systemd_status()
+    else:
+        _no_systemctl_error("status")
 
 
 def service_logs() -> None:
     """Stream or print logs for the muxplex service."""
     if _is_darwin():
         _launchd_logs()
-    else:
+    elif _have_systemctl():
         _systemd_logs()
+    else:
+        _no_systemctl_error("logs")

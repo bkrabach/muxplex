@@ -2257,3 +2257,229 @@ def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
     assert len(uv_calls) > 0
     install_cmd = uv_calls[0]
     assert any("git+" in str(arg) for arg in install_cmd)
+
+
+# ---------------------------------------------------------------------------
+# v0.6.1 bug-fix: tolerate systems without systemctl
+# ---------------------------------------------------------------------------
+
+
+def test_have_systemctl_helper_exists():
+    """_have_systemctl must be importable from muxplex.cli."""
+    from muxplex.cli import _have_systemctl  # noqa: F401
+
+
+def test_have_systemctl_returns_bool(monkeypatch):
+    """_have_systemctl() must return True when systemctl is on PATH, False otherwise."""
+    from muxplex.cli import _have_systemctl
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
+    )
+    assert _have_systemctl() is True
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert _have_systemctl() is False
+
+
+def test_upgrade_no_systemctl_runs_to_completion(monkeypatch, capsys):
+    """upgrade() must complete without raising when systemctl is not on PATH.
+
+    Regression test for FileNotFoundError on Unraid / BSD / macOS-container hosts.
+    """
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    subprocess_calls = []
+
+    def mock_run(cmd, **kwargs):
+        subprocess_calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    # systemctl absent; uv and pgrep present
+    def fake_which_no_systemctl(name):
+        if name == "systemctl":
+            return None
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
+    )
+    # Ensure we exercise the Linux (non-darwin) path
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    # Must NOT raise FileNotFoundError (the original bug)
+    cli_mod.upgrade()
+
+    # systemctl must never have been called
+    systemctl_calls = [
+        c for c in subprocess_calls if isinstance(c, list) and "systemctl" in c
+    ]
+    assert len(systemctl_calls) == 0, (
+        f"upgrade() must not call systemctl when _have_systemctl() is False; "
+        f"got: {systemctl_calls}"
+    )
+
+
+def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
+    """upgrade() must print a helpful note when systemctl is missing."""
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    def mock_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def fake_which_no_systemctl(name):
+        if name == "systemctl":
+            return None
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    # Must mention that systemctl was not found / skipped at least once
+    assert "systemctl" in out_lower, (
+        f"upgrade() must print a note mentioning 'systemctl' when it is absent; got: {out!r}"
+    )
+    assert (
+        "not found" in out_lower
+        or "skipping" in out_lower
+        or "not detected" in out_lower
+    ), f"upgrade() must indicate the step was skipped; got: {out!r}"
+
+
+def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
+    """upgrade() must tell the user to restart muxplex manually when systemd is absent."""
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    def mock_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def fake_which_no_systemctl(name):
+        if name == "systemctl":
+            return None
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "restart" in out_lower or "manually" in out_lower, (
+        f"upgrade() must advise manual restart when systemd is absent; got: {out!r}"
+    )
+
+
+def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
+    """upgrade() must call systemctl when it IS available (full Linux systemd path)."""
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    subprocess_calls = []
+
+    def mock_run(cmd, **kwargs):
+        subprocess_calls.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    systemctl_calls = [
+        c for c in subprocess_calls if isinstance(c, list) and "systemctl" in c
+    ]
+    assert len(systemctl_calls) > 0, (
+        "upgrade() must invoke systemctl commands when systemctl is available"
+    )
+    # Verify the is-active check was performed
+    is_active_calls = [c for c in systemctl_calls if "is-active" in c]
+    assert len(is_active_calls) > 0, (
+        "upgrade() must check is-active when systemctl is available"
+    )
+
+
+def test_doctor_no_systemctl_shows_graceful_message(monkeypatch, capsys):
+    """doctor() must show 'systemd not available' when systemctl is not on PATH."""
+    original_which = shutil.which
+
+    def fake_which_no_systemctl(name):
+        if name == "systemctl":
+            return None
+        return original_which(name)
+
+    monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
+
+    from muxplex.cli import doctor
+
+    doctor()
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "systemd" in out_lower, (
+        f"doctor() must mention 'systemd' in Service line when systemctl is absent; got: {out!r}"
+    )
+    assert "not available" in out_lower or "unavailable" in out_lower, (
+        f"doctor() must say systemd is 'not available' when systemctl is absent; got: {out!r}"
+    )
+
+
+def test_doctor_no_systemctl_does_not_crash(monkeypatch, capsys):
+    """doctor() must not raise FileNotFoundError or any exception when systemctl is absent."""
+    original_which = shutil.which
+
+    def fake_which_no_systemctl(name):
+        if name == "systemctl":
+            return None
+        return original_which(name)
+
+    monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
+
+    from muxplex.cli import doctor
+
+    # Must not raise — the original bug was FileNotFoundError on systems without systemctl
+    doctor()

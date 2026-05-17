@@ -2251,7 +2251,9 @@ def test_disclosure_not_hidden_by_css() -> None:
     )
     assert match, ".manage-view-item__disclosure rule not found in style.css"
     body = match.group(1)
-    assert "display: none" not in body and "display:none" not in body.replace(" ", ""), (
+    assert "display: none" not in body and "display:none" not in body.replace(
+        " ", ""
+    ), (
         ".add-sessions-item__disclosure must NOT have display:none — "
         "the disclosure must be statically visible for hidden items (BUG 2 fix). "
         "The hover-based show/hide was broken: setting disc.style.display='' doesn't "
@@ -2350,10 +2352,13 @@ def test_device_badge_height_matches_flyout_button() -> None:
     # Check for either explicit height/min-height or a large enough line-height/padding
     has_height = (
         "min-height" in rule
-        or ("line-height" in rule and any(
-            f"line-height: {n}" in rule or f"line-height:{n}" in rule
-            for n in ["1.6", "1.7", "1.8", "1.9", "2", "22px", "23px", "24px"]
-        ))
+        or (
+            "line-height" in rule
+            and any(
+                f"line-height: {n}" in rule or f"line-height:{n}" in rule
+                for n in ["1.6", "1.7", "1.8", "1.9", "2", "22px", "23px", "24px"]
+            )
+        )
         or ("padding" in rule and "padding: 2px" in rule)
         or ("padding: 3px" in rule)
         or ("padding: 4px" in rule)

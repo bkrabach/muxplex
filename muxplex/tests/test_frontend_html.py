@@ -1582,7 +1582,9 @@ def test_kill_session_command_label() -> None:
         "Settings Commands tab must use 'Kill session command' — "
         "terminology must match the flyout's 'Kill Session' action"
     )
-    assert "Delete session command" not in html and "Delete Session Command" not in html, (
+    assert (
+        "Delete session command" not in html and "Delete Session Command" not in html
+    ), (
         "Settings Commands tab must not use 'Delete session command' — "
         "rename to 'Kill session command' to match the flyout"
     )
