@@ -5584,6 +5584,140 @@ test('v0.6.3: grouped view still shows device header when device has at least on
   app._setActiveView('all');
 });
 
+// ─── v0.6.4 empty-device-block regression ────────────────────────────────────
+
+test('v0.6.4: status:empty block is NOT rendered in grouped grid mode for a remote with zero sessions', () => {
+  // The real user scenario (spark-1 viewing alienware-r13 via federation):
+  //   alienware-r13 has zero tmux sessions → server emits {status:"empty", deviceName:"alienware-r13"}.
+  //   spark-1 (the local device) still has its own sessions.
+  // BEFORE v0.6.4: renderGrid appended a source-tile--empty block for alienware-r13 even in
+  // grouped mode, showing the device name in the grid (the user's reported "device block").
+  // AFTER v0.6.4: the status:empty tile is suppressed in grouped mode.
+  const sessions = [
+    { name: 'local-sess', deviceName: 'spark-1', snapshot: '', sessionKey: 'spark-1:local-sess' },
+    { status: 'empty', deviceName: 'alienware-r13', deviceId: 'aw-uuid', remoteId: 'aw-uuid' },
+  ];
+  app._setServerSettings({ multi_device_enabled: true, hidden_sessions: [] });
+  app._setGridViewMode('grouped');
+  app._setActiveView('all');
+
+  let capturedHTML = '';
+  const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA    = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state')  return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  app.renderGrid(sessions);
+
+  assert.ok(
+    !capturedHTML.includes('alienware-r13'),
+    'alienware-r13 must NOT appear in grouped grid when the device has zero sessions; got: ' + capturedHTML
+  );
+  assert.ok(
+    !capturedHTML.includes('source-tile--empty'),
+    'source-tile--empty must NOT be rendered for an empty remote in grouped mode; got: ' + capturedHTML
+  );
+  assert.ok(
+    capturedHTML.includes('spark-1') || capturedHTML.includes('local-sess'),
+    'spark-1 local session must still appear; got: ' + capturedHTML
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  app._setGridViewMode('flat');
+  app._setServerSettings(null);
+  app._setActiveView('all');
+});
+
+test('v0.6.4: status:empty block IS still rendered in flat grid mode', () => {
+  // In flat mode the "No sessions" tile for an empty remote is intentional — only
+  // the grouped view should suppress it.
+  const sessions = [
+    { name: 'local-sess', deviceName: 'spark-1', snapshot: '', sessionKey: 'spark-1:local-sess' },
+    { status: 'empty', deviceName: 'alienware-r13', deviceId: 'aw-uuid', remoteId: 'aw-uuid' },
+  ];
+  app._setServerSettings({ multi_device_enabled: true, hidden_sessions: [] });
+  app._setGridViewMode('flat');
+  app._setActiveView('all');
+
+  let capturedHTML = '';
+  const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA    = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state')  return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  app.renderGrid(sessions);
+
+  assert.ok(
+    capturedHTML.includes('source-tile--empty'),
+    'source-tile--empty must still appear for an empty remote in flat mode; got: ' + capturedHTML
+  );
+  assert.ok(
+    capturedHTML.includes('alienware-r13'),
+    'alienware-r13 name must appear in the status tile in flat mode; got: ' + capturedHTML
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  app._setGridViewMode('flat');
+  app._setServerSettings(null);
+  app._setActiveView('all');
+});
+
+test('v0.6.4: auth_failed and unreachable tiles still appear in grouped mode', () => {
+  // Only status:empty is suppressed in grouped mode; auth_failed and unreachable
+  // are actionable error states and must always be shown.
+  const sessions = [
+    { name: 'local-sess', deviceName: 'spark-1', snapshot: '', sessionKey: 'spark-1:local-sess' },
+    { status: 'auth_failed',  deviceName: 'device-b', deviceId: 'b-uuid', remoteId: 'b-uuid' },
+    { status: 'unreachable',  deviceName: 'device-c', deviceId: 'c-uuid', remoteId: 'c-uuid' },
+  ];
+  app._setServerSettings({ multi_device_enabled: true, hidden_sessions: [] });
+  app._setGridViewMode('grouped');
+  app._setActiveView('all');
+
+  let capturedHTML = '';
+  const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA    = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state')  return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  app.renderGrid(sessions);
+
+  assert.ok(
+    capturedHTML.includes('source-tile--auth'),
+    'auth_failed tile must appear in grouped mode; got: ' + capturedHTML
+  );
+  assert.ok(
+    capturedHTML.includes('source-tile--offline'),
+    'unreachable tile must appear in grouped mode; got: ' + capturedHTML
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  app._setGridViewMode('flat');
+  app._setServerSettings(null);
+  app._setActiveView('all');
+});
+
 test('v0.6.3: empty-state still appears when every device has zero visible sessions', () => {
   // When ALL sessions across ALL devices are hidden, visible.length === 0.
   // renderGrid() must still reach its early-return branch and show empty-state,

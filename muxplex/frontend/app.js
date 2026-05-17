@@ -1658,12 +1658,14 @@ function renderGrid(sessions) {
   var visible = getVisibleSessions(sessions);
 
   if (visible.length === 0) {
-    // Build status tiles for auth_failed/unreachable sessions even when no regular sessions exist
+    // Build status tiles for auth_failed/unreachable sessions even when no regular sessions exist.
+    // In grouped grid mode, skip status:empty tiles — empty devices are silently omitted so that
+    // a remote with zero tmux sessions doesn't produce a visible device block in the grouped view.
     var statusTilesHtml = '';
     (sessions || []).forEach(function(session) {
       if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth');
       else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
-      else if (session.status === 'empty') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
+      else if (session.status === 'empty' && _gridViewMode !== 'grouped') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
     });
     if (grid) grid.innerHTML = statusTilesHtml;
     // Only show empty-state when there are truly no tiles at all
@@ -1695,12 +1697,15 @@ function renderGrid(sessions) {
     html = ordered.map(function(session, index) { return buildTileHTML(session, index, mobile); }).join('');
   }
 
-  // Append status tiles for auth_failed, unreachable, and empty sessions
+  // Append status tiles for auth_failed, unreachable, and empty sessions.
+  // In grouped grid mode, skip status:empty tiles — a remote with zero tmux sessions is simply
+  // omitted from the grouped view.  auth_failed and unreachable are always shown because those
+  // are actionable error states regardless of view mode.
   var statusTilesHtml = '';
   (sessions || []).forEach(function(session) {
     if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth');
     else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
-    else if (session.status === 'empty') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
+    else if (session.status === 'empty' && _gridViewMode !== 'grouped') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'No sessions', 'empty');
   });
   if (grid) grid.innerHTML = html + statusTilesHtml;
 
