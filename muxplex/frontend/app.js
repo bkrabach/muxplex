@@ -2613,7 +2613,6 @@ function renderManageViewList() {
   if (!listEl) return;
 
   var views = (_serverSettings && _serverSettings.views) || [];
-  var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
 
   // Find the active view's session list
   var activeViewObj = null;
@@ -2665,17 +2664,18 @@ function renderManageViewList() {
     var s = sorted[j];
     var key = s.sessionKey || s.name;
     var isInView = viewSessions.indexOf(key) !== -1 || viewSessions.indexOf(s.name) !== -1;
-    var isHidden = hidden.indexOf(key) !== -1 || hidden.indexOf(s.name) !== -1;
+    // Phase 5: use the isHidden() helper (Phase 1) — do not inline a hidden check here.
+    // The manage-view-item--hidden class triggers opacity + CSS ::after "(hidden)" badge.
+    var sessionIsHidden = isHidden(key, _serverSettings);
     var escapedName = escapeHtml(s.name || '');
     var deviceName = escapeHtml(_getDeviceDisplayName(s) || '');
 
-    html += '<label class="manage-view-item' + (isHidden ? ' manage-view-item--hidden' : '') + '">';
-    html += '<input type="checkbox" class="manage-view-item__checkbox" data-session-key="' + escapeHtml(key) + '"' + (isInView ? ' checked' : '') + (isHidden ? ' data-is-hidden="1"' : '') + ' />';
+    html += '<label class="manage-view-item' + (sessionIsHidden ? ' manage-view-item--hidden' : '') + '">';
+    html += '<input type="checkbox" class="manage-view-item__checkbox" data-session-key="' + escapeHtml(key) + '"' + (isInView ? ' checked' : '') + (sessionIsHidden ? ' data-is-hidden="1"' : '') + ' />';
     html += '<span class="manage-view-item__name">' + escapedName + '</span>';
     if (deviceName) html += '<span class="manage-view-item__device">' + deviceName + '</span>';
-    if (isHidden) html += '<span class="manage-view-item__badge">hidden</span>';
     html += '</label>';
-    if (isHidden) {
+    if (sessionIsHidden) {
       html += '<div class="manage-view-item__disclosure">Adding will unhide this session</div>';
     }
   }

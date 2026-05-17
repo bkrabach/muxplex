@@ -1907,7 +1907,16 @@ body {
 }
 
 .manage-view-item--hidden {
-  opacity: 0.5;
+  opacity: 0.55;
+}
+
+/* Phase 5: "(hidden)" badge via CSS pseudo-element on the name span.
+   CSS pseudo-elements cannot be read from JSDOM — test coverage verifies
+   the manage-view-item--hidden class is applied (which triggers this rule). */
+.manage-view-item--hidden .manage-view-item__name::after {
+  content: " (hidden)";
+  font-size: 0.85em;
+  opacity: 0.7;
 }
 
 .manage-view-item__checkbox {

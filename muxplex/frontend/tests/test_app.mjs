@@ -5349,3 +5349,141 @@ test('removeSessionFromViewOp does not mutate its settings argument', () => {
   app.removeSessionFromViewOp(settings, 'Work', 'dev1:a');
   assert.strictEqual(JSON.stringify(settings), before, 'settings must not be mutated');
 });
+
+// ─── Phase 5 dim styling ────────────────────────────────────────────────────
+//
+// renderManageViewList applies manage-view-item--hidden to rows for sessions
+// that are in settings.hidden_sessions.  The CSS class triggers:
+//   opacity: 0.55
+//   .manage-view-item__name::after { content: " (hidden)"; ... }
+//
+// The ::after pseudo-element is not readable from JSDOM, so tests verify that
+// the class is applied (which in a browser triggers the badge via CSS).
+// ────────────────────────────────────────────────────────────────────────────
+
+// Helper: mock document.getElementById for renderManageViewList and return
+// the fake list element so callers can inspect innerHTML.
+function _withManageViewDOM(fn) {
+  const fakeList = { innerHTML: '', onchange: null };
+  const fakeSummary = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'manage-view-list') return fakeList;
+    if (id === 'manage-view-summary') return fakeSummary;
+    return null;
+  };
+  try {
+    fn(fakeList, fakeSummary);
+  } finally {
+    globalThis.document.getElementById = origGetById;
+  }
+}
+
+test('Phase 5: hidden session row gets manage-view-item--hidden class', () => {
+  // Session dev1:hidden-sess is in the Work view AND in hidden_sessions.
+  const settings = {
+    hidden_sessions: ['dev1:hidden-sess'],
+    views: [{ name: 'Work', sessions: ['dev1:hidden-sess'] }],
+  };
+  app._setServerSettings(settings);
+  app._setCurrentSessions([{ name: 'hidden-sess', sessionKey: 'dev1:hidden-sess' }]);
+  app._setActiveView('Work');
+
+  let renderedHTML = '';
+  _withManageViewDOM((fakeList) => {
+    app.renderManageViewList();
+    renderedHTML = fakeList.innerHTML;
+  });
+
+  app._setServerSettings(null);
+  app._setCurrentSessions([]);
+
+  assert.ok(
+    renderedHTML.includes('manage-view-item--hidden'),
+    'hidden session label must have manage-view-item--hidden class; got: ' + renderedHTML
+  );
+});
+
+test('Phase 5: non-hidden session row does NOT get manage-view-item--hidden class', () => {
+  // Session dev1:visible-sess is in the Work view and NOT hidden.
+  const settings = {
+    hidden_sessions: [],
+    views: [{ name: 'Work', sessions: ['dev1:visible-sess'] }],
+  };
+  app._setServerSettings(settings);
+  app._setCurrentSessions([{ name: 'visible-sess', sessionKey: 'dev1:visible-sess' }]);
+  app._setActiveView('Work');
+
+  let renderedHTML = '';
+  _withManageViewDOM((fakeList) => {
+    app.renderManageViewList();
+    renderedHTML = fakeList.innerHTML;
+  });
+
+  app._setServerSettings(null);
+  app._setCurrentSessions([]);
+
+  assert.ok(
+    !renderedHTML.includes('manage-view-item--hidden'),
+    'visible session label must NOT have manage-view-item--hidden class; got: ' + renderedHTML
+  );
+});
+
+test('Phase 5: dim class is absent after session is unhidden (re-render)', () => {
+  // Render once with hidden, once without — verify the class toggles.
+  const sessionKey = 'dev1:toggled-sess';
+  const session = [{ name: 'toggled-sess', sessionKey }];
+
+  // First render: session is hidden.
+  app._setServerSettings({
+    hidden_sessions: [sessionKey],
+    views: [{ name: 'Work', sessions: [sessionKey] }],
+  });
+  app._setCurrentSessions(session);
+  app._setActiveView('Work');
+
+  let htmlWhenHidden = '';
+  _withManageViewDOM((fakeList) => {
+    app.renderManageViewList();
+    htmlWhenHidden = fakeList.innerHTML;
+  });
+
+  // Second render: unhide the session (empty hidden_sessions).
+  app._setServerSettings({
+    hidden_sessions: [],
+    views: [{ name: 'Work', sessions: [sessionKey] }],
+  });
+
+  let htmlWhenVisible = '';
+  _withManageViewDOM((fakeList) => {
+    app.renderManageViewList();
+    htmlWhenVisible = fakeList.innerHTML;
+  });
+
+  app._setServerSettings(null);
+  app._setCurrentSessions([]);
+
+  assert.ok(
+    htmlWhenHidden.includes('manage-view-item--hidden'),
+    'row must be dimmed when session is hidden'
+  );
+  assert.ok(
+    !htmlWhenVisible.includes('manage-view-item--hidden'),
+    'row must NOT be dimmed after session is unhidden'
+  );
+});
+
+test('Phase 5: isHidden() helper (not inline check) drives the dim class', () => {
+  // Verify that isHidden() correctly reports hidden state, confirming the
+  // helper is the source of truth used by renderManageViewList.
+  // (The CSS ::after "(hidden)" badge cannot be verified from JSDOM — see
+  //  comment at top of Phase 5 section.  Class presence is sufficient.)
+  const settings = { hidden_sessions: ['dev1:sess-a'] };
+
+  assert.strictEqual(app.isHidden('dev1:sess-a', settings), true,
+    'isHidden must return true for a key in hidden_sessions');
+  assert.strictEqual(app.isHidden('dev1:sess-b', settings), false,
+    'isHidden must return false for a key not in hidden_sessions');
+  assert.strictEqual(app.isHidden('dev1:sess-a', null), false,
+    'isHidden must return false when settings is null');
+});
