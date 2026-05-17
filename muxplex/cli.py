@@ -26,6 +26,11 @@ def _have_systemctl() -> bool:
     return shutil.which("systemctl") is not None
 
 
+def _have_launchctl() -> bool:
+    """Return True if launchctl is on PATH (used to gate service-management steps)."""
+    return shutil.which("launchctl") is not None
+
+
 def _get_install_info() -> dict:
     """Detect how muxplex was installed using PEP 610 direct_url.json.
 
@@ -431,17 +436,22 @@ def doctor() -> None:
     if sys.platform == "darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / "com.muxplex.plist"
         if plist.exists():
-            uid = os.getuid()
-            result = subprocess.run(
-                ["launchctl", "print", f"gui/{uid}/com.muxplex"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                print(f"  {ok_mark} Service: launchd agent running")
+            if _have_launchctl():
+                uid = os.getuid()
+                result = subprocess.run(
+                    ["launchctl", "print", f"gui/{uid}/com.muxplex"],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    print(f"  {ok_mark} Service: launchd agent running")
+                else:
+                    print(
+                        f"  {warn_mark} Service: launchd agent installed but not running ({plist})"
+                    )
             else:
                 print(
-                    f"  {warn_mark} Service: launchd agent installed but not running ({plist})"
+                    f"  {warn_mark} Service: launchctl not found — cannot check status"
                 )
         else:
             print(
@@ -515,12 +525,39 @@ def upgrade(*, force: bool = False) -> None:
     else:
         print("  Status: --force specified — skipping version check")
 
-    # 1. Detect platform and stop service
+    # Bug 3: Detect whether this install is managed by uv tool.
+    # If the resolved muxplex binary lives inside the uv tools directory we
+    # always use `uv tool install --reinstall --force muxplex` regardless of
+    # the PEP-610 source tag so that the correct tool-environment is upgraded.
+    _uv_tools_dir = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    _muxplex_script = shutil.which("muxplex")
+    _is_uv_managed = False
+    if _muxplex_script:
+        try:
+            if _uv_tools_dir in str(Path(_muxplex_script).resolve()):
+                _is_uv_managed = True
+        except Exception:
+            pass
+
+    # install_target: pypi / uv-tool-managed → package name; git → git URL
+    install_target = (
+        "muxplex"
+        if info["source"] == "pypi" or _is_uv_managed
+        else "git+https://github.com/bkrabach/muxplex"
+    )
+    uv_path = shutil.which("uv")
+
+    # Pre-compute macOS service identifiers — used in both stop and finally blocks.
+    label = "com.muxplex"
+    uid = os.getuid()
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+    # 1. Stop service
     if sys.platform == "darwin":
-        label = "com.muxplex"
-        uid = os.getuid()
-        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        if plist.exists():
+        # Bug 2a: guard every launchctl call with _have_launchctl()
+        if not _have_launchctl():
+            print("  ! launchctl not found — skipping service management step")
+        elif plist.exists():
             print("  Stopping launchd service...")
             subprocess.run(
                 ["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True
@@ -545,116 +582,123 @@ def upgrade(*, force: bool = False) -> None:
             else:
                 print("  No active systemd service found (skipping stop)")
 
-    # 2. Reinstall via uv tool install
+    # 2+4. Install (try) with guaranteed service restart in finally.
+    # Bug 1+2b: try/finally ensures the start step always runs — success OR failure.
+    _install_failed = False
     print("  Installing latest version...")
-    install_target = (
-        "muxplex"
-        if info["source"] == "pypi"
-        else "git+https://github.com/bkrabach/muxplex"
-    )
-    uv_path = shutil.which("uv")
-    if uv_path:
-        result = subprocess.run(
-            [
-                uv_path,
-                "tool",
-                "install",
-                install_target,
-                "--force",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print(f"  ERROR: uv tool install failed:\n{result.stderr}")
-            return
-        print("  Installed successfully")
-    else:
-        # Fallback: pip
-        pip_path = shutil.which("pip") or shutil.which("pip3")
-        if pip_path:
-            result = subprocess.run(
-                [
-                    pip_path,
+    try:
+        # Bug 3: dispatch — uv-tool-managed gets --reinstall; plain uv/pip otherwise
+        if uv_path:
+            if _is_uv_managed:
+                # uv-tool install: always reinstall the package by name
+                install_cmd = [
+                    uv_path,
+                    "tool",
                     "install",
-                    "--upgrade",
-                    install_target,
-                ],
-                capture_output=True,
-                text=True,
-            )
+                    "--reinstall",
+                    "--force",
+                    "muxplex",
+                ]
+            else:
+                install_cmd = [uv_path, "tool", "install", install_target, "--force"]
+            result = subprocess.run(install_cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                print(f"  ERROR: pip install failed:\n{result.stderr}")
-                return
-            print("  Installed successfully")
+                print(f"  ERROR: uv tool install failed:\n{result.stderr}")
+                _install_failed = True
+            else:
+                print("  Installed successfully")
         else:
-            print("  ERROR: neither uv nor pip found — cannot upgrade")
-            return
+            # Bug 3: uv absent → fall back to pip
+            pip_path = shutil.which("pip") or shutil.which("pip3")
+            if pip_path:
+                result = subprocess.run(
+                    [pip_path, "install", "--upgrade", install_target],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    print(f"  ERROR: pip install failed:\n{result.stderr}")
+                    _install_failed = True
+                else:
+                    print("  Installed successfully")
+            else:
+                print("  ERROR: neither uv nor pip found — cannot upgrade")
+                _install_failed = True
 
-    # 3. Regenerate service file (picks up any plist/unit changes)
-    if sys.platform == "darwin" or _have_systemctl():
-        print("  Regenerating service file...")
-        from muxplex.service import service_install  # noqa: PLC0415
+        if not _install_failed:
+            # 3. Regenerate service file (picks up any plist/unit changes)
+            if sys.platform == "darwin" or _have_systemctl():
+                print("  Regenerating service file...")
+                from muxplex.service import service_install  # noqa: PLC0415
 
-        service_install()
-    else:
-        print("  ! systemctl not found — skipping service file regeneration")
-
-    # 4. Restart service
-    if sys.platform == "darwin":
-        label = "com.muxplex"
-        uid = os.getuid()
-        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
-        if plist.exists():
-            print("  Starting launchd service...")
+                service_install()
+            else:
+                print("  ! systemctl not found — skipping service file regeneration")
+    finally:
+        # 4. Restart service — ALWAYS runs after install, even on failure (best-effort).
+        if sys.platform == "darwin":
+            # Bug 2a: guard launchctl
+            if _have_launchctl():
+                if plist.exists():
+                    print("  Starting launchd service...")
+                    result = subprocess.run(
+                        ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode == 0:
+                        print("  Service started")
+                    else:
+                        # Fallback to legacy load for older macOS
+                        subprocess.run(
+                            ["launchctl", "load", str(plist)], capture_output=True
+                        )
+                        print("  Service started (legacy)")
+                else:
+                    print("  Service file not found — run: muxplex service install")
+        elif _have_systemctl():
             result = subprocess.run(
-                ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                ["systemctl", "--user", "is-enabled", "muxplex"],
                 capture_output=True,
                 text=True,
             )
             if result.returncode == 0:
+                print("  Restarting systemd service...")
+                subprocess.run(
+                    ["systemctl", "--user", "daemon-reload"], capture_output=True
+                )
+                subprocess.run(
+                    ["systemctl", "--user", "start", "muxplex"], capture_output=True
+                )
                 print("  Service started")
             else:
-                # Fallback to legacy load for older macOS
-                subprocess.run(["launchctl", "load", str(plist)], capture_output=True)
-                print("  Service started (legacy)")
+                print("  Service not enabled — run: muxplex service install")
         else:
-            print("  Service file not found — run: muxplex service install")
-    elif _have_systemctl():
-        result = subprocess.run(
-            ["systemctl", "--user", "is-enabled", "muxplex"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print("  Restarting systemd service...")
-            subprocess.run(
-                ["systemctl", "--user", "daemon-reload"], capture_output=True
+            # No service manager — ask the user to restart manually
+            pid_hint = ""
+            try:
+                pid_result = subprocess.run(
+                    ["pgrep", "-f", "muxplex serve"],
+                    capture_output=True,
+                    text=True,
+                )
+                pid_str = pid_result.stdout.strip()
+                if pid_str:
+                    pid_hint = f" (running PID: {pid_str})"
+            except Exception:
+                pass
+            print(
+                "  ! systemd not detected — restart muxplex manually to pick up the new version"
+                + pid_hint
             )
-            subprocess.run(
-                ["systemctl", "--user", "start", "muxplex"], capture_output=True
-            )
-            print("  Service started")
-        else:
-            print("  Service not enabled — run: muxplex service install")
-    else:
-        # No systemd available — ask the user to restart manually
-        pid_hint = ""
-        try:
-            pid_result = subprocess.run(
-                ["pgrep", "-f", "muxplex serve"],
-                capture_output=True,
-                text=True,
-            )
-            pid_str = pid_result.stdout.strip()
-            if pid_str:
-                pid_hint = f" (running PID: {pid_str})"
-        except Exception:
-            pass
+
+    # Bug 1: propagate install failure as a non-zero exit so callers / scripts
+    # can detect the partial upgrade.  Service restart was attempted above (best-effort).
+    if _install_failed:
         print(
-            "  ! systemd not detected — restart muxplex manually to pick up the new version"
-            + pid_hint
+            "\n  ERROR: upgrade failed — muxplex service has been restarted (best-effort).\n"
         )
+        sys.exit(1)
 
     # 5. Doctor check
     print("\n  Verifying...")

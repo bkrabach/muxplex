@@ -2483,3 +2483,384 @@ def test_doctor_no_systemctl_does_not_crash(monkeypatch, capsys):
 
     # Must not raise — the original bug was FileNotFoundError on systems without systemctl
     doctor()
+
+
+# ---------------------------------------------------------------------------
+# v0.6.2 fixes: install failure propagation, service-restart-on-failure,
+#               prefer uv over pip for uv-tool-managed installs
+# ---------------------------------------------------------------------------
+
+
+def test_have_launchctl_helper_exists():
+    """_have_launchctl must be importable from muxplex.cli."""
+    from muxplex.cli import _have_launchctl  # noqa: F401
+
+
+def test_have_launchctl_returns_true_when_present(monkeypatch):
+    """_have_launchctl() returns True when launchctl is on PATH."""
+    import shutil as _shutil
+
+    from muxplex.cli import _have_launchctl
+
+    monkeypatch.setattr(
+        _shutil,
+        "which",
+        lambda name: "/usr/bin/launchctl" if name == "launchctl" else None,
+    )
+    assert _have_launchctl() is True
+
+
+def test_have_launchctl_returns_false_when_absent(monkeypatch):
+    """_have_launchctl() returns False when launchctl is absent."""
+    import shutil as _shutil
+
+    from muxplex.cli import _have_launchctl
+
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    assert _have_launchctl() is False
+
+
+def test_upgrade_propagates_install_failure_as_exit1(monkeypatch, capsys):
+    """upgrade() must sys.exit(1) when the install subprocess returns non-zero.
+
+    Regression test for Bug 1 (v0.6.2): previously upgrade() silently returned
+    exit 0 even when pip/uv failed mid-flight.
+    """
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    calls = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(cmd)
+        # Fail only on the install command (uv or pip)
+        if (
+            isinstance(cmd, list)
+            and cmd
+            and ("uv" in str(cmd[0]) or "pip" in str(cmd[0]))
+        ):
+            return type(
+                "R", (), {"returncode": 1, "stdout": "", "stderr": "install error"}
+            )()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.6.1 \u2192 v0.6.2)"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.upgrade()
+
+    assert exc_info.value.code == 1, (
+        f"upgrade() must exit(1) on install failure, got code {exc_info.value.code}"
+    )
+    out = capsys.readouterr().out
+    assert "error" in out.lower() or "fail" in out.lower(), (
+        f"upgrade() must print an error message on install failure; got: {out!r}"
+    )
+
+
+def test_upgrade_restarts_systemctl_after_failed_install(monkeypatch, capsys):
+    """upgrade() must attempt to restart the systemctl service even when install fails.
+
+    Regression test for Bug 2 (v0.6.2) — systemctl path: the start step must
+    run in the finally block regardless of install outcome.
+    """
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        # Fail the install command
+        if isinstance(cmd, list) and cmd and "uv" in str(cmd[0]):
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "uv fail"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with pytest.raises(SystemExit):
+        cli_mod.upgrade()
+
+    # systemctl start must still have been called after the failed install
+    start_calls = [
+        c for c in calls if isinstance(c, list) and "systemctl" in c and "start" in c
+    ]
+    assert len(start_calls) > 0, (
+        "upgrade() must call systemctl start after a failed install (try/finally)"
+    )
+
+    # Verify call ordering: install attempt precedes start
+    install_idx = next(
+        (
+            i
+            for i, c in enumerate(calls)
+            if isinstance(c, list) and c and "uv" in str(c[0])
+        ),
+        -1,
+    )
+    start_idx = next(
+        (
+            i
+            for i, c in enumerate(calls)
+            if isinstance(c, list) and "systemctl" in c and "start" in c
+        ),
+        -1,
+    )
+    assert install_idx >= 0, "install command must have been attempted"
+    assert start_idx > install_idx, (
+        "systemctl start must be called AFTER the failed install attempt"
+    )
+
+
+def test_upgrade_restarts_launchctl_after_failed_install(monkeypatch, capsys, tmp_path):
+    """upgrade() must attempt to re-load the launchd agent even when install fails (macOS).
+
+    Regression test for Bug 2 (v0.6.2) — launchctl path: the bootstrap step
+    must run in the finally block regardless of install outcome.
+    """
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    # Set up a fake macOS home with the launchd plist present
+    fake_home = tmp_path / "home"
+    plist_dir = fake_home / "Library" / "LaunchAgents"
+    plist_dir.mkdir(parents=True)
+    (plist_dir / "com.muxplex.plist").write_text("")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: True)
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        if isinstance(cmd, list) and cmd and "uv" in str(cmd[0]):
+            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "uv fail"})()
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available"),
+    )
+
+    with pytest.raises(SystemExit):
+        cli_mod.upgrade()
+
+    # launchctl bootstrap (or legacy load) must have been called after the failed install
+    restart_calls = [
+        c
+        for c in calls
+        if isinstance(c, list)
+        and "launchctl" in c
+        and ("bootstrap" in c or "load" in c)
+    ]
+    assert len(restart_calls) > 0, (
+        "upgrade() must call launchctl bootstrap/load after a failed install (try/finally)"
+    )
+
+    # Verify ordering: install attempt before restart
+    install_idx = next(
+        (
+            i
+            for i, c in enumerate(calls)
+            if isinstance(c, list) and c and "uv" in str(c[0])
+        ),
+        -1,
+    )
+    restart_idx = next(
+        (
+            i
+            for i, c in enumerate(calls)
+            if isinstance(c, list)
+            and "launchctl" in c
+            and ("bootstrap" in c or "load" in c)
+        ),
+        -1,
+    )
+    assert install_idx >= 0, "install command must have been attempted"
+    assert restart_idx > install_idx, (
+        "launchctl bootstrap/load must be called AFTER the failed install attempt"
+    )
+
+
+def test_upgrade_no_launchctl_on_linux_uses_systemctl(monkeypatch, capsys):
+    """On Linux without launchctl, upgrade() uses systemctl and never calls launchctl.
+
+    Simulates a Linux host where launchctl is not installed.  The upgrade must
+    complete normally (no SystemExit) using the systemctl path.
+    """
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    subprocess_calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        subprocess_calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def fake_which(name):
+        if name == "launchctl":
+            return None  # launchctl absent on Linux
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()  # must not raise
+
+    launchctl_calls = [
+        c for c in subprocess_calls if isinstance(c, list) and "launchctl" in c
+    ]
+    assert len(launchctl_calls) == 0, (
+        f"upgrade() must not call launchctl on Linux; got: {launchctl_calls}"
+    )
+    systemctl_calls = [
+        c for c in subprocess_calls if isinstance(c, list) and "systemctl" in c
+    ]
+    assert len(systemctl_calls) > 0, (
+        "upgrade() must call systemctl on Linux when available"
+    )
+
+
+def test_upgrade_prefers_uv_tool_when_uv_managed(monkeypatch, capsys):
+    """upgrade() calls 'uv tool install --reinstall --force muxplex' for uv-tool installs.
+
+    Regression test for Bug 3 (v0.6.2): when the running muxplex binary
+    resolves to inside the uv tools directory, the upgrade must use the uv
+    tool reinstall path (not pip).
+    """
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    # Build a fake muxplex path that looks like a uv-tool-managed install.
+    # Use Path.home() so _uv_tools_dir computation matches inside upgrade().
+    uv_tools_fake = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    fake_muxplex_resolved = f"{uv_tools_fake}/muxplex/bin/muxplex"
+    fake_uv_path = str(Path.home() / ".local" / "bin" / "uv")
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def fake_which(name):
+        if name == "uv":
+            return fake_uv_path
+        if name == "muxplex":
+            # Return the already-resolved path under the uv tools dir so that
+            # Path(fake_muxplex_resolved).resolve() == fake_muxplex_resolved
+            return fake_muxplex_resolved
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.6.1 \u2192 v0.6.2)"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    uv_reinstall_calls = [
+        c
+        for c in calls
+        if isinstance(c, list) and "tool" in c and "install" in c and "--reinstall" in c
+    ]
+    assert len(uv_reinstall_calls) > 0, (
+        "upgrade() must call 'uv tool install --reinstall' when install is uv-tool-managed"
+    )
+    install_cmd = uv_reinstall_calls[0]
+    assert "--reinstall" in install_cmd, "command must include --reinstall"
+    assert "--force" in install_cmd, "command must include --force"
+    assert "muxplex" in install_cmd, "command must target 'muxplex' package"
+    # Must not have fallen through to pip
+    pip_calls = [c for c in calls if isinstance(c, list) and c and "pip" in str(c[0])]
+    assert len(pip_calls) == 0, (
+        "upgrade() must not call pip when uv is available and install is uv-managed"
+    )
+
+
+def test_upgrade_falls_back_to_pip_when_uv_absent(monkeypatch, capsys):
+    """upgrade() uses pip install when uv is not on PATH.
+
+    Regression test for Bug 3 (v0.6.2): uv absent \u2192 pip must be the installer.
+    """
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def fake_which(name):
+        if name == "uv":
+            return None  # uv absent
+        if name in ("pip", "pip3"):
+            return f"/usr/local/bin/{name}"
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available"),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    pip_calls = [c for c in calls if isinstance(c, list) and c and "pip" in str(c[0])]
+    assert len(pip_calls) > 0, "upgrade() must call pip install when uv is absent"
+    uv_calls = [c for c in calls if isinstance(c, list) and c and "uv" in str(c[0])]
+    assert len(uv_calls) == 0, "upgrade() must not call uv when it is absent from PATH"
