@@ -4829,13 +4829,14 @@ test('renderGrid status tiles use session.deviceName not session.name for offlin
 
 // --- renderGrid: status=empty shows "No sessions" tile ---
 
-test('renderGrid shows "No sessions" status tile for status=empty devices', () => {
-  // A device that is online but has zero tmux sessions returns
+test('renderGrid silently drops status=empty devices (no tile emitted) [v0.6.5]', () => {
+  // v0.6.5: a device that is online but has zero tmux sessions returns
   // {status: 'empty', deviceName: '...'} from the federation endpoint.
-  // renderGrid must render a status tile with the text "No sessions" (not blank).
+  // renderGrid must NOT render any tile for it — the user asked not to see
+  // blocks for devices that have nothing to show (flat OR grouped mode).
   //
-  // Before implementation: fails because neither status loop handles status === 'empty',
-  // so the tile is never rendered and grid.innerHTML stays empty.
+  // Previously (pre-v0.6.5) a "No sessions" status tile was emitted; that
+  // behaviour is intentionally removed.
   const grid = { innerHTML: '' };
   const emptyState = { style: {}, classList: { add() {}, remove() {} } };
   const origGetById = globalThis.document.getElementById;
@@ -4848,12 +4849,16 @@ test('renderGrid shows "No sessions" status tile for status=empty devices', () =
   app.renderGrid([{ status: 'empty', deviceName: 'quiet-box', remoteId: 3 }]);
 
   assert.ok(
-    grid.innerHTML.includes('No sessions'),
-    `renderGrid must include "No sessions" text for status=empty device, got: ${grid.innerHTML}`
+    !grid.innerHTML.includes('No sessions'),
+    `renderGrid must NOT include "No sessions" text for status=empty device, got: ${grid.innerHTML}`
   );
   assert.ok(
-    grid.innerHTML.includes('quiet-box'),
-    `renderGrid must include the deviceName "quiet-box" in the status tile, got: ${grid.innerHTML}`
+    !grid.innerHTML.includes('quiet-box'),
+    `renderGrid must NOT include the deviceName "quiet-box" for a status=empty device, got: ${grid.innerHTML}`
+  );
+  assert.ok(
+    !grid.innerHTML.includes('source-tile--empty'),
+    `renderGrid must NOT emit source-tile--empty class for status=empty device, got: ${grid.innerHTML}`
   );
 
   globalThis.document.getElementById = origGetById;
@@ -5635,46 +5640,9 @@ test('v0.6.4: status:empty block is NOT rendered in grouped grid mode for a remo
   app._setActiveView('all');
 });
 
-test('v0.6.4: status:empty block IS still rendered in flat grid mode', () => {
-  // In flat mode the "No sessions" tile for an empty remote is intentional — only
-  // the grouped view should suppress it.
-  const sessions = [
-    { name: 'local-sess', deviceName: 'spark-1', snapshot: '', sessionKey: 'spark-1:local-sess' },
-    { status: 'empty', deviceName: 'alienware-r13', deviceId: 'aw-uuid', remoteId: 'aw-uuid' },
-  ];
-  app._setServerSettings({ multi_device_enabled: true, hidden_sessions: [] });
-  app._setGridViewMode('flat');
-  app._setActiveView('all');
-
-  let capturedHTML = '';
-  const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
-  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
-  const origGetById = globalThis.document.getElementById;
-  const origQSA    = globalThis.document.querySelectorAll;
-  globalThis.document.getElementById = (id) => {
-    if (id === 'session-grid') return mockGrid;
-    if (id === 'empty-state')  return mockEmpty;
-    return null;
-  };
-  globalThis.document.querySelectorAll = () => [];
-
-  app.renderGrid(sessions);
-
-  assert.ok(
-    capturedHTML.includes('source-tile--empty'),
-    'source-tile--empty must still appear for an empty remote in flat mode; got: ' + capturedHTML
-  );
-  assert.ok(
-    capturedHTML.includes('alienware-r13'),
-    'alienware-r13 name must appear in the status tile in flat mode; got: ' + capturedHTML
-  );
-
-  globalThis.document.getElementById = origGetById;
-  globalThis.document.querySelectorAll = origQSA;
-  app._setGridViewMode('flat');
-  app._setServerSettings(null);
-  app._setActiveView('all');
-});
+// NOTE: v0.6.4 tested that status:empty blocks appeared in flat mode. That behaviour was
+// wrong and is superseded by v0.6.5, which silently drops status:empty in ALL view modes.
+// See the v0.6.5 section below for the authoritative tests.
 
 test('v0.6.4: auth_failed and unreachable tiles still appear in grouped mode', () => {
   // Only status:empty is suppressed in grouped mode; auth_failed and unreachable
@@ -5713,6 +5681,145 @@ test('v0.6.4: auth_failed and unreachable tiles still appear in grouped mode', (
 
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelectorAll = origQSA;
+  app._setGridViewMode('flat');
+  app._setServerSettings(null);
+  app._setActiveView('all');
+});
+
+// ─── v0.6.5 empty tile suppressed in all view modes ──────────────────────────
+
+test('v0.6.5: flat view — status:empty sentinel produces NO tile', () => {
+  // User-reported bug: alienware-r13 showed a "No sessions" tile in flat view
+  // (the muxplex default).  v0.6.4 only suppressed it in grouped mode.
+  // v0.6.5 drops status:empty tiles unconditionally regardless of view mode.
+  const sessions = [
+    { name: 'local-sess', deviceName: 'spark-1', snapshot: '', sessionKey: 'spark-1:local-sess' },
+    { status: 'empty', deviceName: 'alienware-r13', sessionKey: 'devX:_empty' },
+  ];
+  app._setServerSettings({ multi_device_enabled: true, hidden_sessions: [] });
+  app._setGridViewMode('flat');
+  app._setActiveView('all');
+
+  let capturedHTML = '';
+  const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA    = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state')  return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  app.renderGrid(sessions);
+
+  assert.ok(
+    !capturedHTML.includes('source-tile--empty'),
+    'source-tile--empty must NOT appear in flat mode for an empty remote; got: ' + capturedHTML
+  );
+  assert.ok(
+    !capturedHTML.includes('No sessions'),
+    '"No sessions" text must NOT appear in flat mode for an empty remote; got: ' + capturedHTML
+  );
+  assert.ok(
+    capturedHTML.includes('local-sess') || capturedHTML.includes('spark-1'),
+    'the real local session must still render; got: ' + capturedHTML
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  app._setGridViewMode('flat');
+  app._setServerSettings(null);
+  app._setActiveView('all');
+});
+
+test('v0.6.5: grouped view — status:empty sentinel still produces NO tile (regression)', () => {
+  // v0.6.4 suppressed empty tiles only in grouped mode; v0.6.5 keeps that suppression
+  // intact.  This is a regression guard: grouped suppression must not have been broken
+  // while fixing flat mode.
+  const sessions = [
+    { name: 'local-sess', deviceName: 'spark-1', snapshot: '', sessionKey: 'spark-1:local-sess' },
+    { status: 'empty', deviceName: 'alienware-r13', sessionKey: 'devX:_empty' },
+  ];
+  app._setServerSettings({ multi_device_enabled: true, hidden_sessions: [] });
+  app._setGridViewMode('grouped');
+  app._setActiveView('all');
+
+  let capturedHTML = '';
+  const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA    = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state')  return mockEmpty;
+    return null;
+  };
+  globalThis.document.querySelectorAll = () => [];
+
+  app.renderGrid(sessions);
+
+  assert.ok(
+    !capturedHTML.includes('source-tile--empty'),
+    'source-tile--empty must NOT appear in grouped mode for an empty remote; got: ' + capturedHTML
+  );
+  assert.ok(
+    !capturedHTML.includes('No sessions'),
+    '"No sessions" text must NOT appear in grouped mode for an empty remote; got: ' + capturedHTML
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  app._setGridViewMode('flat');
+  app._setServerSettings(null);
+  app._setActiveView('all');
+});
+
+test('v0.6.5: real sessions still render alongside an empty sentinel', () => {
+  // A mix of a real session and a status:empty sentinel.  The real session must
+  // appear; the empty sentinel must be silently discarded in both flat and grouped modes.
+  const sessions = [
+    { name: 'my-sess', deviceName: 'spark-1', snapshot: '', sessionKey: 'spark-1:my-sess' },
+    { status: 'empty', deviceName: 'alienware-r13', sessionKey: 'devX:_empty' },
+  ];
+  app._setServerSettings({ multi_device_enabled: true, hidden_sessions: [] });
+  app._setActiveView('all');
+
+  for (const mode of ['flat', 'grouped']) {
+    app._setGridViewMode(mode);
+
+    let capturedHTML = '';
+    const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
+    const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+    const origGetById = globalThis.document.getElementById;
+    const origQSA    = globalThis.document.querySelectorAll;
+    globalThis.document.getElementById = (id) => {
+      if (id === 'session-grid') return mockGrid;
+      if (id === 'empty-state')  return mockEmpty;
+      return null;
+    };
+    globalThis.document.querySelectorAll = () => [];
+
+    app.renderGrid(sessions);
+
+    assert.ok(
+      capturedHTML.includes('my-sess') || capturedHTML.includes('spark-1'),
+      `[${mode}] real session must render; got: ` + capturedHTML
+    );
+    assert.ok(
+      !capturedHTML.includes('source-tile--empty'),
+      `[${mode}] source-tile--empty must NOT appear; got: ` + capturedHTML
+    );
+    assert.ok(
+      !capturedHTML.includes('No sessions'),
+      `[${mode}] "No sessions" text must NOT appear; got: ` + capturedHTML
+    );
+
+    globalThis.document.getElementById = origGetById;
+    globalThis.document.querySelectorAll = origQSA;
+  }
+
   app._setGridViewMode('flat');
   app._setServerSettings(null);
   app._setActiveView('all');
