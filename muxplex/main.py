@@ -17,6 +17,7 @@ import logging
 import os
 import pathlib
 import pwd
+import re
 import socket
 import ssl
 import shutil
@@ -526,6 +527,15 @@ _FRONTEND_DIR = pathlib.Path(__file__).parent / "frontend"
 # Short hostname (no domain) injected into page titles so browser tabs show
 # which machine each muxplex instance is running on.
 _HOSTNAME = socket.gethostname().split(".")[0]
+
+# Canonical version string — sourced from package metadata (same as `app.version`
+# and the `doctor` command).  Used to append `?v=<version>` to every static-asset
+# URL so browsers immediately pick up new code on each release.
+_UI_VERSION: str = importlib.metadata.version("muxplex")
+
+# Matches src="/<path>" and href="/<path>" in served HTML, excluding /api/ URLs.
+# Used by index_page() to inject cache-busting version query parameters.
+_ASSET_URL_RE = re.compile(r'((?:src|href)=")((?!/api/)/[^"?#]*)')
 
 
 # ---------------------------------------------------------------------------
@@ -1204,11 +1214,21 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/index.html", response_class=HTMLResponse)
 async def index_page():
-    """Serve index.html with hostname injected into the page title."""
+    """Serve index.html with hostname injected into the page title.
+
+    Also appends ``?v=<version>`` to every static-asset URL (script src, link
+    href) so browsers immediately pick up new code on each release rather than
+    serving stale JS/CSS from the HTTP cache.  API URLs (/api/...) are
+    excluded — they are not HTTP-cached by browsers.
+    """
     html = (_FRONTEND_DIR / "index.html").read_text()
     html = html.replace(
         "<title>muxplex</title>",
         f"<title>{_HOSTNAME} \u2014 muxplex</title>",
+    )
+    html = _ASSET_URL_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}?v={_UI_VERSION}",
+        html,
     )
     return HTMLResponse(html)
 
