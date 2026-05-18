@@ -44,8 +44,7 @@ _LAUNCHD_PLIST_TEMPLATE = """\
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{muxplex_bin}</string>
-        <string>serve</string>
+{program_arguments_xml}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -89,6 +88,33 @@ def _resolve_muxplex_bin() -> str:
     if which:
         return which
     return f"{sys.executable} -m muxplex"
+
+
+def _resolve_muxplex_bin_for_launchd() -> list[str]:
+    """Return the argv token list for the muxplex binary in a launchd plist.
+
+    Uses Option A: prefer ``~/.local/bin/muxplex`` (stable uv-tool
+    console-script symlink that survives ``uv tool reinstall``).  Falls back
+    to ``shutil.which("muxplex")``, then to ``[sys.executable, "-m",
+    "muxplex"]`` as explicitly split tokens.
+
+    Each element must become its own ``<string>`` in ProgramArguments.
+    launchd does **not** shell-split inside a ``<string>``; an element like
+    ``"python3 -m muxplex"`` is treated as a literal executable name, causing
+    the daemon to silently fail to start.
+    """
+    # Option A: stable console-script symlink installed by `uv tool`
+    local_bin = Path.home() / ".local" / "bin" / "muxplex"
+    if local_bin.exists() and os.access(str(local_bin), os.X_OK):
+        return [str(local_bin)]
+
+    # Fall back to PATH lookup
+    which = shutil.which("muxplex")
+    if which:
+        return [which]
+
+    # Last resort: explicit python -m invocation — correctly split into tokens
+    return [sys.executable, "-m", "muxplex"]
 
 
 # ---------------------------------------------------------------------------
@@ -184,11 +210,20 @@ def _systemd_logs() -> None:
 
 
 def _launchd_install() -> None:
-    muxplex_bin = _resolve_muxplex_bin()
+    bin_args = _resolve_muxplex_bin_for_launchd()
+    argv = bin_args + ["serve"]
+    # Each argv token is its own <string> element.  launchd does NOT
+    # shell-split inside a <string>, so we must NOT put the whole command
+    # (e.g. "python3 -m muxplex") into a single element.
+    program_arguments_xml = "\n".join(
+        f"        <string>{arg}</string>" for arg in argv
+    )
     base_path = os.environ.get("PATH", "/usr/bin:/bin")
     safe_path = f"/opt/homebrew/bin:/usr/local/bin:{base_path}"
     plist_content = _LAUNCHD_PLIST_TEMPLATE.format(
-        label=_LAUNCHD_LABEL, muxplex_bin=muxplex_bin, safe_path=safe_path
+        label=_LAUNCHD_LABEL,
+        program_arguments_xml=program_arguments_xml,
+        safe_path=safe_path,
     )
     _LAUNCHD_PLIST_DIR.mkdir(parents=True, exist_ok=True)
     _LAUNCHD_PLIST_PATH.write_text(plist_content)

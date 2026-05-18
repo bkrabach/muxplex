@@ -667,3 +667,51 @@ def test_service_install_hides_tls_tip_on_localhost(capsys, tmp_path, monkeypatc
     assert "muxplex setup-tls" not in out, (
         f"TLS tip must NOT appear in service install output when host is 127.0.0.1, got: {out!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# v0.6.7 fix — launchd plist ProgramArguments must use separate <string> tokens
+# ---------------------------------------------------------------------------
+
+
+def test_launchd_plist_program_arguments_are_separate_strings(monkeypatch, tmp_path):
+    """_launchd_install emits each argv token as its own <string> in ProgramArguments.
+
+    The v0.6.6 bug: a single <string> containing e.g.
+    "python3 -m muxplex" caused launchd to look for a literal executable
+    named "python3 -m muxplex" (with spaces) — which doesn't exist — so the
+    daemon silently failed to start on every boot.
+    """
+    import os
+    import plistlib
+
+    import muxplex.service as svc
+
+    plist_dir = tmp_path / "LaunchAgents"
+    plist_path = plist_dir / "com.muxplex.plist"
+
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+    monkeypatch.setattr(svc, "_show_tls_nudge_if_needed", lambda: None)
+
+    svc._launchd_install()
+
+    assert plist_path.exists(), "plist file must be written by _launchd_install"
+
+    plist_data = plistlib.loads(plist_path.read_bytes())
+    prog_args = plist_data.get("ProgramArguments", [])
+
+    assert len(prog_args) >= 2, (
+        f"ProgramArguments must have at least 2 elements, got: {prog_args!r}"
+    )
+    assert prog_args[-1] == "serve", (
+        f"Last ProgramArguments element must be 'serve', got: {prog_args!r}"
+    )
+    for arg in prog_args:
+        assert " " not in arg, (
+            f"ProgramArguments element must not contain spaces "
+            f"(embedded-space arg trap): {arg!r} in {prog_args!r}"
+        )
