@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 
 [[package]]
@@ -332,7 +332,7 @@ wheels = [
 
 [[package]]
 name = "muxplex"
-version = "0.6.0"
+version = "0.6.8"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },

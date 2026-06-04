@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.6.8 (2026-06-04)
+
+### Bug Fixes
+
+- **Ctrl+V paste never reached the terminal** — xterm.js translates Ctrl+V keydown into the
+  raw `0x16` (SYN) control byte, cancels the browser event, and sends it to the PTY. TUI apps
+  like Claude Code then attempt to read the *server-side* clipboard (headless/empty), so the
+  browser clipboard was never pasted. The custom key handler now returns `false` for Ctrl+V —
+  xterm skips its keydown translation *without* `preventDefault`, letting the browser's native
+  paste event fire on xterm's hidden textarea and flow through the normal bracketed-paste path.
+  No clipboard API call in this path, so no double-paste and no permission prompt.
+
+- **Right-click now pastes the browser clipboard** — matches Windows terminal conventions
+  (PuTTY, Windows Terminal). Uses `navigator.clipboard.readText()` → `_term.paste()` since no
+  native paste event exists for right-click (one-time browser permission prompt).
+  Shift+right-click / Ctrl+right-click still open the browser context menu as escape hatches.
+
+- **Shift+Enter inserts a newline instead of submitting** — xterm.js sends CR for Enter
+  regardless of Shift. Shift+Enter is now intercepted and sent as LF (`0x0a`, same as Ctrl+J),
+  which TUI apps like Claude Code treat as "insert newline" vs CR "submit". Plain shells treat
+  LF and CR identically, so behaviour elsewhere is unchanged.
+
+### Features
+
+- **View pills in the header** — one pill per view (All Sessions, user views, and Hidden when
+  non-empty) rendered across the overview header, each with a live session count; a single
+  click activates the view. The dropdown button remains as the management menu, now labelled
+  "Views" on desktop. Below 600px the pills collapse and the dropdown trigger reverts to
+  showing the active view name, functioning as the compact switcher exactly as before. Pills
+  refresh each poll cycle with a string-compare guard to avoid needless innerHTML churn.
+
 ## v0.6.4 (2026-05-17)
 
 ### Bug Fixes
