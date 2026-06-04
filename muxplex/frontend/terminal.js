@@ -32,7 +32,24 @@ function _encodePayload(typeChar, str) {
 
 // ─── Clipboard helpers ───────────────────────────────────────────────────────
 // Ctrl+Shift+C: copy terminal selection to system clipboard
-// Ctrl+Shift+V: handled natively by xterm.js (browser paste event → xterm → WebSocket)
+// Ctrl+V / Ctrl+Shift+V: native browser paste event → xterm → WebSocket
+//   (Ctrl+V needs the custom key handler to return false so xterm doesn't
+//   swallow it as raw 0x16 — see attachCustomKeyEventHandler in openTerminal)
+// Right-click: reads the browser clipboard via _pasteFromClipboard below
+
+// Paste the BROWSER clipboard into the terminal via the async clipboard API.
+// Used only where no native paste event exists (right-click). _term.paste()
+// routes through xterm's bracketed-paste support so multi-line pastes arrive
+// as one paste event. Returns true if the async clipboard API is available.
+function _pasteFromClipboard() {
+  if (!(navigator.clipboard && navigator.clipboard.readText)) return false;
+  navigator.clipboard.readText().then(function(text) {
+    if (text && _term) _term.paste(text);
+  }).catch(function() {
+    // Permission denied or empty clipboard — nothing to paste
+  });
+  return true;
+}
 
 function _copyToClipboard(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -389,6 +406,31 @@ function openTerminal(sessionName, remoteId, fontSize) {
       return false;  // prevent xterm from processing
     }
 
+    // Ctrl+V → paste (Windows convention). By default xterm translates this
+    // keydown into raw 0x16 (SYN) sent to the PTY *and* cancels the event, so
+    // the browser clipboard is never read (apps like Claude Code then try the
+    // server-side clipboard, which is headless/empty). Returning false here
+    // skips xterm's keydown processing WITHOUT preventDefault — the browser's
+    // native paste event then fires on xterm's hidden textarea and xterm
+    // pastes it through its normal bracketed-paste path. No clipboard API
+    // call, so no double-paste and no permission prompt (COE: custom paste
+    // handlers that read the clipboard caused double-paste).
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+      return false;
+    }
+
+    // Shift+Enter → send LF (0x0a, same as Ctrl+J) instead of CR. TUI apps
+    // like Claude Code treat LF as "insert newline" vs CR "submit", matching
+    // Shift+Enter behavior in desktop terminals. Plain shells treat LF and CR
+    // identically, so this is harmless everywhere else.
+    if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && e.key === 'Enter') {
+      if (_ws && _ws.readyState === WebSocket.OPEN) {
+        _ws.send(_encodePayload(0x30, '\n'));
+      }
+      e.preventDefault();
+      return false;
+    }
+
     // Ctrl+F → open search bar
     if (e.ctrlKey && !e.shiftKey && (e.key === 'f' || e.key === 'F' || e.code === 'KeyF')) {
       _openSearch();
@@ -490,13 +532,15 @@ function openTerminal(sessionName, remoteId, fontSize) {
     newPrev.addEventListener('click', _searchPrev);
   }
 
-  // --- Right-click context menu ---
-  // Suppress the browser context menu on plain right-click inside the terminal
-  // so tmux's own menu (when `set -g mouse on`) isn't covered by the browser's.
-  // Shift+RMB and Ctrl+RMB still open the browser context menu as escape hatches.
+  // --- Right-click → paste ---
+  // Plain right-click pastes the browser clipboard (Windows terminal convention:
+  // PuTTY, Windows Terminal). The browser context menu is suppressed so it
+  // doesn't cover the terminal; Shift+RMB and Ctrl+RMB still open the browser
+  // context menu as escape hatches.
   container.addEventListener('contextmenu', function(e) {
     if (e.shiftKey || e.ctrlKey || e.metaKey) return; // let modified clicks through
     e.preventDefault();
+    _pasteFromClipboard();
   });
 
   connectWebSocket(sessionName, remoteId);

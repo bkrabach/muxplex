@@ -993,22 +993,70 @@ test('terminal.js loads xterm-addon-image for inline graphics', () => {
   assert.ok(source.includes('ImageAddon'), 'must reference ImageAddon');
 });
 
-// --- Ctrl+Shift+V: xterm.js handles paste natively, no custom interception ---
+// --- Paste: Ctrl+V defers to native browser paste; no clipboard read in keydown ---
 
-test('terminal.js does NOT intercept Ctrl+Shift+V in attachCustomKeyEventHandler', () => {
-  // COE review: every custom paste handler we built caused either double-paste or encoding issues.
-  // On Linux, Ctrl+Shift+V is a native browser paste shortcut — it fires a paste event on the
-  // focused textarea, xterm.js catches it natively. On macOS, Cmd+V does the same.
-  // Zero custom paste code needed.
+test('terminal.js Ctrl+V branch returns false WITHOUT reading the clipboard (native paste, no double-paste)', () => {
+  // COE review: every custom paste handler that READ the clipboard caused either
+  // double-paste or encoding issues. The fix: the Ctrl+V branch only returns false
+  // (skips xterm's 0x16 translation + event cancel) and must NOT call the clipboard
+  // API or preventDefault — the browser's native paste event then fires on xterm's
+  // hidden textarea and xterm pastes it via its normal bracketed-paste path.
+  // Ctrl+Shift+V (Linux) and Cmd+V (macOS) already work natively and stay untouched.
   const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
   const handlerStart = source.indexOf('attachCustomKeyEventHandler');
   const handlerEnd = source.indexOf('onSelectionChange', handlerStart);
   const handlerBlock = source.substring(handlerStart, handlerEnd);
-  // Must NOT have any V key interception
-  assert.ok(!handlerBlock.includes("e.key === 'V'"),
+
+  // Ctrl+V must be intercepted (so xterm doesn't swallow it as raw 0x16/SYN)...
+  const vBranch = handlerBlock.match(/if \(e\.ctrlKey && !e\.shiftKey[^)]*\(e\.key === 'v'[^{]*\{([^}]*)\}/);
+  assert.ok(vBranch, 'must have a Ctrl+V (no shift) branch in the custom key handler');
+  // ...but the branch must ONLY return false — no clipboard read, no preventDefault
+  assert.ok(!vBranch[1].includes('clipboard') && !vBranch[1].includes('_pasteFromClipboard'),
+    'Ctrl+V branch must NOT read the clipboard — native paste event handles it (double-paste otherwise)');
+  assert.ok(!vBranch[1].includes('preventDefault'),
+    'Ctrl+V branch must NOT preventDefault — that would suppress the native paste event');
+  assert.ok(vBranch[1].includes('return false'),
+    'Ctrl+V branch must return false so xterm skips its 0x16 keydown translation');
+
+  // Ctrl+Shift+V must NOT be intercepted — every V-key check excludes shift
+  assert.ok(!/e\.ctrlKey && e\.shiftKey[^)]*Key[Vv]/.test(handlerBlock) &&
+            !/e\.ctrlKey && e\.shiftKey[^)]*'[Vv]'/.test(handlerBlock),
     'must NOT intercept Ctrl+Shift+V — xterm.js handles paste natively via browser events');
-  assert.ok(!handlerBlock.includes("e.code === 'KeyV'"),
-    'must NOT intercept KeyV — xterm.js handles paste natively via browser events');
+});
+
+// --- Right-click pastes browser clipboard (Windows terminal convention) ---
+
+test('terminal.js right-click pastes from the browser clipboard', () => {
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('_pasteFromClipboard'),
+    'must define _pasteFromClipboard for the right-click path');
+  assert.ok(source.includes('navigator.clipboard.readText'),
+    '_pasteFromClipboard must use navigator.clipboard.readText (no native paste event on right-click)');
+  assert.ok(source.includes('_term.paste('),
+    'must paste via _term.paste() so multi-line pastes use bracketed paste');
+  const ctxStart = source.indexOf("addEventListener('contextmenu'");
+  assert.ok(ctxStart !== -1, 'must have a contextmenu handler');
+  const ctxBlock = source.substring(ctxStart, source.indexOf('});', ctxStart));
+  assert.ok(ctxBlock.includes('_pasteFromClipboard()'),
+    'plain right-click must paste the clipboard');
+  assert.ok(ctxBlock.includes('e.shiftKey || e.ctrlKey'),
+    'modified right-clicks must still open the browser context menu');
+});
+
+// --- Shift+Enter inserts a newline (LF) instead of submitting (CR) ---
+
+test('terminal.js Shift+Enter sends LF (0x0a) so TUI apps insert a newline', () => {
+  // TUI apps like Claude Code treat LF (Ctrl+J) as "insert newline" vs CR "submit".
+  // xterm.js sends CR for Enter regardless of shift, so Shift+Enter must be
+  // intercepted and sent as '\n' over the WebSocket (ttyd input frame 0x30).
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  const handlerStart = source.indexOf('attachCustomKeyEventHandler');
+  const handlerEnd = source.indexOf('onSelectionChange', handlerStart);
+  const handlerBlock = source.substring(handlerStart, handlerEnd);
+  const enterBranch = handlerBlock.match(/if \(e\.shiftKey[^)]*e\.key === 'Enter'\) \{([\s\S]*?)return false;/);
+  assert.ok(enterBranch, 'must have a Shift+Enter branch in the custom key handler');
+  assert.ok(enterBranch[1].includes("_encodePayload(0x30, '\\n')"),
+    'Shift+Enter must send LF as a ttyd input frame (0x30)');
 });
 
 // --- UTF-8 output decoding via TextDecoder ---
