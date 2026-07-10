@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.8 (2026-07-10)
+
+### Bug Fixes
+
+- **OSC 52 clipboard bridge mangled multi-byte UTF-8 characters** — Copying text out of a
+  tmux session via the OSC 52 clipboard bridge (`set-clipboard on`) mangled box-drawing
+  lines, bullets, em dashes, and emoji (e.g. "─" became "â", "•" became "â¢"). The
+  handler decoded the base64 payload with plain `atob()`, which returns a "binary string"
+  (one JS char per raw byte, effectively Latin-1) rather than a UTF-8-decoded string. This
+  path was never covered by the earlier `ced0c62` WebSocket-output decode fix — mouse-select
+  copy was already correct; the OSC 52 bridge was not. Fixed by re-wrapping the decoded
+  bytes and running them through the same `TextDecoder` used for the primary output path.
+  Added a regression test and fixed a pre-existing test-mock gap
+  (`terminal-container` missing `addEventListener`) that was silently failing ~26
+  unrelated tests.
+
 ## v0.6.4 (2026-05-17)
 
 ### Bug Fixes
