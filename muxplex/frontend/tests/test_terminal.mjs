@@ -31,6 +31,8 @@ function loadTerminal() {
   let capturedOnResizeFn = null;
   let termWriteMessages = [];
   let lastWsInstance = null;
+  let capturedOscHandler = null;
+  let clipboardWrites = [];
 
   let capturedWsUrl = null;
   let onDataCallCount = 0;
@@ -50,7 +52,11 @@ function loadTerminal() {
     attachCustomKeyEventHandler: () => {},
     getSelection: () => '',
     onSelectionChange: () => {},
-    parser: { registerOscHandler: () => {} },
+    parser: {
+      registerOscHandler: (code, handler) => {
+        if (code === 52) capturedOscHandler = handler;
+      },
+    },
   };
 
   // Capture all messages sent via WebSocket.send()
@@ -84,7 +90,7 @@ function loadTerminal() {
   globalThis.location = { protocol: 'http:', host: 'localhost' };
   globalThis.document = {
     getElementById: (id) => {
-      if (id === 'terminal-container') return { appendChild: () => {} };
+      if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
       if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
       return null;
     },
@@ -104,6 +110,17 @@ function loadTerminal() {
     _openTerminal: undefined,
     _closeTerminal: undefined,
   };
+  // Node 21+ ships a built-in read-only `navigator` global (Web platform
+  // compat), so a plain assignment throws. Redefine it for the duration of
+  // this module load.
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      clipboard: {
+        writeText: (text) => { clipboardWrites.push(text); return Promise.resolve(); },
+      },
+    },
+  });
 
   require(modulePath);
 
@@ -141,8 +158,15 @@ function loadTerminal() {
     get capturedOnResizeFn() { return capturedOnResizeFn; },
     get termWriteMessages() { return termWriteMessages; },
     get focusCallCount() { return focusCallCount; },
+    get clipboardWrites() { return clipboardWrites; },
     fireClose() { if (capturedCloseHandler) capturedCloseHandler(); },
     fireOpen() { if (lastOpenHandler) lastOpenHandler(); },
+    fireOsc52(base64Payload) {
+      // xterm.js's registerOscHandler(52, cb) invokes cb with the payload
+      // AFTER the OSC number -- i.e. "Pc;Pd" (selection target + base64
+      // text), not the full "52;Pc;Pd" sequence.
+      if (capturedOscHandler) capturedOscHandler('c;' + base64Payload);
+    },
     fireMessage(data) {
       if (lastWsInstance && lastWsInstance._handlers['message']) {
         lastWsInstance._handlers['message']({ data });
@@ -353,7 +377,7 @@ function createMultiSessionEnv() {
   globalThis.location = { protocol: 'http:', host: 'localhost' };
   globalThis.document = {
     getElementById: (id) => {
-      if (id === 'terminal-container') return { appendChild: () => {} };
+      if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
       if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
       return null;
     },
@@ -1058,6 +1082,31 @@ test('message handler writes decoded UTF-8 string (not raw Uint8Array) to xterm'
     'decoded output must be the original Unicode character ─, not garbled â bytes');
 });
 
+test('OSC 52 clipboard handler UTF-8-decodes the base64 payload (not atob() raw bytes)', () => {
+  // Regression for the OSC 52 clipboard bridge (tmux `set-clipboard on` -> browser
+  // clipboard). atob() returns a "binary string" -- one JS char per raw byte, i.e.
+  // Latin-1 -- so multi-byte UTF-8 characters (box-drawing, bullets, em dashes,
+  // emoji) must be re-wrapped into a byte array and decoded with the same
+  // TextDecoder used for the primary WebSocket output path (see the decoder
+  // test above). Without that, "─" becomes "â", "•" becomes "â¢", etc.
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+  t.openTerminal('test-session');
+  globalThis.setTimeout = orig;
+
+  const sample = '─── • bullet — dash × times 📊 chart';
+  const base64Payload = Buffer.from(sample, 'utf-8').toString('base64');
+
+  t.fireOsc52(base64Payload);
+
+  assert.strictEqual(t.clipboardWrites.length, 1,
+    'OSC 52 handler should write exactly one value to the clipboard');
+  assert.strictEqual(t.clipboardWrites[0], sample,
+    'clipboard text must be the original Unicode string, not atob()\'s Latin-1-mangled bytes');
+});
+
 // --- Federation reconnect routing ---
 
 test('terminal.js reconnect uses federation connect path for remote sessions', () => {
@@ -1138,7 +1187,7 @@ test('openTerminal uses passed fontSize to configure xterm.js Terminal construct
   globalThis.location = { protocol: 'http:', host: 'localhost' };
   globalThis.document = {
     getElementById: (id) => {
-      if (id === 'terminal-container') return { appendChild: () => {} };
+      if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
       if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
       return null;
     },

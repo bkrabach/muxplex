@@ -419,7 +419,20 @@ function openTerminal(sessionName, remoteId, fontSize) {
     var parts = data.split(';');
     if (parts.length >= 2) {
       try {
-        var text = atob(parts[1]);
+        // atob() returns a "binary string" — one JS char per decoded byte
+        // (effectively Latin-1). tmux's OSC 52 payload is UTF-8 bytes, so
+        // multi-byte characters (box-drawing, bullets, em dashes, emoji)
+        // must be re-wrapped into a byte array and passed through the same
+        // TextDecoder used for the WebSocket output path — otherwise they
+        // decode as mojibake (e.g. "─" becomes "â") even though the primary
+        // terminal-output path (see _decoder.decode(payload) above) is
+        // already UTF-8 correct.
+        var binary = atob(parts[1]);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        var text = _decoder ? _decoder.decode(bytes) : binary;
         _copyToClipboard(text);
       } catch (e) {
         // Invalid base64 or unsupported — silently ignore
