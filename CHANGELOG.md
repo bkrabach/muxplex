@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.9 (2026-07-11)
+
+### Bug Fixes
+
+- **Custom tmux socket directories invisible to the muxplex service** — If a user sets
+  `TMUX_TMPDIR` in their shell rc (e.g. to keep sockets out of the shared `/tmp`), the
+  muxplex *service* process (systemd/launchd, which does not inherit the login shell's
+  environment) silently fell back to tmux's compiled-in default (`/tmp/tmux-$UID`) and
+  saw none of the user's real sessions, even though `muxplex doctor` (run interactively)
+  reported them correctly. Added a `tmux_socket_dir` setting (default empty, fully
+  backward compatible) and a shared `tmux_env()` helper, wired into both session
+  enumeration (`sessions.py`) and terminal attach (`ttyd.py`), that overrides
+  `TMUX_TMPDIR` and strips `$TMUX` (which otherwise takes priority over `TMUX_TMPDIR`
+  when a process is itself a descendant of an attached tmux client) for tmux subprocess
+  calls.
+
 ## v0.6.8 (2026-07-10)
 
 ### Bug Fixes
