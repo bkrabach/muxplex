@@ -15,6 +15,7 @@ from muxplex.sessions import (
     get_session_list,
     run_tmux,
     snapshot_all,
+    tmux_env,
     update_session_cache,
 )
 
@@ -47,6 +48,87 @@ def mock_subprocess():
         return patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc))
 
     return _factory
+
+
+# ---------------------------------------------------------------------------
+# tmux_env tests
+# ---------------------------------------------------------------------------
+
+
+def test_tmux_env_returns_none_when_socket_dir_unset():
+    """tmux_env() returns None (inherit ambient env unchanged) when
+    tmux_socket_dir is not configured -- fully backward compatible default."""
+    with patch("muxplex.sessions.load_settings", return_value={"tmux_socket_dir": ""}):
+        assert tmux_env() is None
+
+
+def test_tmux_env_overrides_tmux_tmpdir_when_configured():
+    """tmux_env() returns a copy of os.environ with TMUX_TMPDIR set to the
+    configured tmux_socket_dir.
+
+    Regression: a systemd/launchd service does not inherit the user's login
+    shell environment. If the user sets TMUX_TMPDIR in their shell rc to keep
+    tmux sockets out of /tmp, the muxplex service process never sees it and
+    every real session silently becomes invisible.
+    """
+    with (
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"tmux_socket_dir": "/home/user/.tmux"},
+        ),
+        patch.dict(
+            "os.environ", {"PATH": "/usr/bin", "HOME": "/home/user"}, clear=True
+        ),
+    ):
+        env = tmux_env()
+
+    assert env is not None
+    assert env["TMUX_TMPDIR"] == "/home/user/.tmux"
+    # Other ambient vars (PATH, HOME) must survive -- this overrides ONE key,
+    # it doesn't replace the whole environment.
+    assert env["PATH"] == "/usr/bin"
+    assert env["HOME"] == "/home/user"
+
+
+def test_tmux_env_strips_tmux_var_when_configured():
+    """tmux_env() removes $TMUX from the returned environment.
+
+    tmux gives $TMUX (set on any process descended from an *attached* tmux
+    client) priority over TMUX_TMPDIR when resolving which server to talk
+    to. Left in place, a muxplex process that happens to be a descendant of
+    some other tmux client would silently ignore tmux_socket_dir and keep
+    talking to that unrelated server -- the override would appear to have
+    no effect at all.
+    """
+    with (
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"tmux_socket_dir": "/home/user/.tmux"},
+        ),
+        patch.dict(
+            "os.environ",
+            {"PATH": "/usr/bin", "TMUX": "/tmp/tmux-1000/default,1234,0"},
+            clear=True,
+        ),
+    ):
+        env = tmux_env()
+
+    assert env is not None
+    assert "TMUX" not in env
+
+
+async def test_run_tmux_passes_tmux_env_to_subprocess(mock_subprocess):
+    """run_tmux() must pass tmux_env()'s result as the subprocess `env` kwarg."""
+    with (
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"tmux_socket_dir": "/custom/socket/dir"},
+        ),
+        mock_subprocess("session1\n") as mock_create,
+    ):
+        await run_tmux("list-sessions", "-F", "#{session_name}")
+
+    assert mock_create.call_args.kwargs["env"]["TMUX_TMPDIR"] == "/custom/socket/dir"
 
 
 # ---------------------------------------------------------------------------

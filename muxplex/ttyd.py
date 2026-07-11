@@ -22,6 +22,8 @@ import subprocess as _subprocess
 import time
 from pathlib import Path
 
+from muxplex.sessions import tmux_env
+
 # ---------------------------------------------------------------------------
 # Paths and constants
 # ---------------------------------------------------------------------------
@@ -214,6 +216,10 @@ async def spawn_ttyd(session_name: str) -> asyncio.subprocess.Process:
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=True,  # detach from parent process group so ttyd survives independently
+        # Honor `tmux_socket_dir` (see sessions.tmux_env docstring): ttyd execs
+        # `tmux attach` itself, so the TMUX_TMPDIR override must be in ttyd's
+        # own environment for it to reach the tmux client it spawns.
+        env=tmux_env(),
     )
 
     # Write PID file (create parent dirs if needed)

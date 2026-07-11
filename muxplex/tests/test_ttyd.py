@@ -83,6 +83,35 @@ async def test_spawn_ttyd_uses_correct_command():
     ]
 
 
+async def test_spawn_ttyd_passes_tmux_env_override_to_subprocess():
+    """spawn_ttyd() must pass tmux_env()'s override as the subprocess `env` kwarg.
+
+    ttyd itself execs `tmux attach -t <name>`, so the TMUX_TMPDIR override
+    (see sessions.tmux_env) must reach ttyd's own environment for it to
+    propagate to the tmux client ttyd spawns -- otherwise a configured
+    tmux_socket_dir would fix session *listing* but not actual terminal
+    attachment.
+    """
+    mock_proc = _make_mock_ttyd_process(pid=22222)
+
+    with (
+        patch(
+            "muxplex.ttyd.tmux_env",
+            return_value={"TMUX_TMPDIR": "/custom/socket/dir", "PATH": "/usr/bin"},
+        ),
+        patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=mock_proc),
+        ) as mock_create,
+    ):
+        await spawn_ttyd("test-session")
+
+    assert mock_create.call_args.kwargs["env"] == {
+        "TMUX_TMPDIR": "/custom/socket/dir",
+        "PATH": "/usr/bin",
+    }
+
+
 async def test_spawn_ttyd_returns_process_object():
     """spawn_ttyd() must return the process object from create_subprocess_exec."""
     mock_proc = _make_mock_ttyd_process(pid=11111)

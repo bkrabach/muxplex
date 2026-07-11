@@ -252,6 +252,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `auto_open_created` | `true` | Auto-open newly created sessions |
 | `new_session_template` | `tmux new-session -d -s {name}` | Command template for creating sessions |
 | `delete_session_template` | `tmux kill-session -t {name}` | Command template for deleting sessions |
+| `tmux_socket_dir` | `""` | Override tmux's socket directory (maps to `TMUX_TMPDIR`). Set this if your tmux sessions live somewhere other than `/tmp/tmux-$UID` (e.g. a custom `TMUX_TMPDIR` in your shell rc) -- a systemd/launchd service does not inherit your login shell's environment, so without this the service can't see sessions created with a custom socket directory. |
 | `device_name` | `""` (hostname) | Display name for this device |
 | `federation_key` | `""` | Server-to-server authentication key for federation |
 | `remote_instances` | `[]` | Remote muxplex instances to aggregate |
