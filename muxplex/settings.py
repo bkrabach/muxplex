@@ -41,6 +41,15 @@ DEFAULT_SETTINGS: dict = {
     "remote_instances": [],
     "device_name": "",
     "delete_session_template": "tmux kill-session -t {name}",
+    # Explicit override for tmux's socket directory (maps to the TMUX_TMPDIR
+    # env var). Empty string = inherit whatever TMUX_TMPDIR (if any) is in
+    # the muxplex process's own environment. Needed because a systemd/launchd
+    # service does NOT inherit the interactive login shell's environment --
+    # if a user sets TMUX_TMPDIR in their shell rc (e.g. to keep sockets out
+    # of the shared, world-writable /tmp), the muxplex *service* process
+    # never sees it and falls back to tmux's compiled-in default
+    # (/tmp/tmux-$UID), silently missing every session the user actually has.
+    "tmux_socket_dir": "",
     "multi_device_enabled": False,
     "federation_key": "",
     "tls_cert": "",
