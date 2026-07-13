@@ -54,6 +54,7 @@ from muxplex.sessions import (
     get_snapshots,
     run_tmux,
     snapshot_all,
+    tmux_env,
     update_session_cache,
 )
 from muxplex.state import (
@@ -642,6 +643,7 @@ async def create_session(payload: CreateSessionPayload) -> dict:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=tmux_env(),
         )
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=30
@@ -769,6 +771,7 @@ async def delete_session(name: str) -> dict:
             capture_output=True,
             text=True,
             timeout=30,
+            env=tmux_env(),
         )
         if result.returncode == 0:
             _log.info("Session '%s' deleted successfully", name)

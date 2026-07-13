@@ -2427,6 +2427,103 @@ def test_delete_session_passes_stdin_y_to_subprocess(client, monkeypatch, tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# Bug fix: create_session/delete_session must honor tmux_socket_dir (tmux_env())
+# ---------------------------------------------------------------------------
+#
+# When muxplex runs as a systemd/launchd service, its process environment does
+# NOT include TMUX_TMPDIR even if the user's interactive shell sets it (e.g. to
+# keep tmux sockets out of the shared, world-writable /tmp). run_tmux() in
+# sessions.py already compensates for this via tmux_env(). These two endpoints
+# spawn user-configured command templates (which often invoke external tools
+# like `amplifier-workspace` that call bare `tmux` themselves) and must pass the
+# same env, or those subprocess-spawned tmux calls silently target the default
+# socket (/tmp/tmux-$UID) instead of the configured tmux_socket_dir -- making
+# newly created sessions invisible to muxplex, and deletes silent no-ops
+# against the real running session.
+
+
+def test_create_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_path):
+    """POST /api/sessions must pass tmux_env() as env= to create_subprocess_shell.
+
+    Regression guard: without this, a custom tmux_socket_dir setting is
+    silently ignored by whatever tmux calls the session command template makes,
+    so sessions created via this endpoint can end up on a different tmux socket
+    than the one muxplex itself reads from (enumerate_sessions/capture_pane).
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
+
+    sentinel_env = {"TMUX_TMPDIR": "/custom/tmux/socket/dir", "SENTINEL": "1"}
+    monkeypatch.setattr("muxplex.main.tmux_env", lambda: sentinel_env)
+
+    captured_kwargs = []
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+
+    async def mock_create_subprocess(cmd, **kwargs):
+        captured_kwargs.append(kwargs)
+        return mock_proc
+
+    monkeypatch.setattr(
+        "muxplex.main.asyncio.create_subprocess_shell", mock_create_subprocess
+    )
+
+    response = client.post("/api/sessions", json={"name": "env-check"})
+    assert response.status_code == 200
+
+    assert len(captured_kwargs) == 1, (
+        "create_subprocess_shell must be called exactly once"
+    )
+    assert captured_kwargs[0].get("env") == sentinel_env, (
+        "create_session must pass env=tmux_env() to create_subprocess_shell, "
+        f"got env={captured_kwargs[0].get('env')!r}"
+    )
+
+
+def test_delete_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_path):
+    """DELETE /api/sessions/{name} must pass tmux_env() as env= to subprocess.run.
+
+    Regression guard: without this, the delete command (which may itself
+    invoke `tmux kill-session` or an external tool that does) silently targets
+    the default tmux socket instead of the configured tmux_socket_dir --
+    causing the real session to survive while muxplex reports it as deleted.
+    """
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["my-session"])
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
+
+    sentinel_env = {"TMUX_TMPDIR": "/custom/tmux/socket/dir", "SENTINEL": "1"}
+    monkeypatch.setattr("muxplex.main.tmux_env", lambda: sentinel_env)
+
+    captured_kwargs = []
+
+    def mock_run(cmd, **kwargs):
+        captured_kwargs.append(kwargs)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        response = client.delete("/api/sessions/my-session")
+
+    assert response.status_code == 200
+    assert len(captured_kwargs) == 1, "subprocess.run must be called exactly once"
+    assert captured_kwargs[0].get("env") == sentinel_env, (
+        "delete_session must pass env=tmux_env() to subprocess.run, "
+        f"got env={captured_kwargs[0].get('env')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Bug fix: request-level INFO logging for session operations
 # ---------------------------------------------------------------------------
 
