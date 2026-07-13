@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.10 (2026-07-13)
+
+### Bug Fixes
+
+- **tmux_socket_dir not honored by create_session and delete_session** — When a custom
+  `tmux_socket_dir` was configured (to support non-default socket directories via
+  `TMUX_TMPDIR`), the muxplex service's session create and delete operations were still
+  hitting the default tmux socket location because the subprocess environment was not
+  being passed the overridden socket settings. Fixed by wiring the shared `tmux_env()`
+  helper (already in use for session enumeration) into the create and delete code paths,
+  ensuring all subprocess calls honor the configured socket directory.
+
 ## v0.6.9 (2026-07-11)
 
 ### Bug Fixes
