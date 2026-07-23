@@ -4376,8 +4376,12 @@ test('updatePageTitle function exists and uses activity count', () => {
 
 test('updatePageTitle is called from pollSessions', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  // Use 700 chars — the call is ~562 chars into the function after comments/whitespace
-  const pollFn = source.substring(source.indexOf('async function pollSessions'), source.indexOf('async function pollSessions') + 700);
+  // Scan to pollSessions' own closing brace (same pattern as the updateFaviconBadge
+  // test) — robust to the function growing, unlike a fixed char window.
+  const pollStart = source.indexOf('async function pollSessions()');
+  assert.ok(pollStart !== -1, 'pollSessions must exist');
+  const pollEnd = source.indexOf('\n}', pollStart);
+  const pollFn = source.substring(pollStart, pollEnd + 2);
   assert.ok(pollFn.includes('updatePageTitle'), 'pollSessions must call updatePageTitle');
 });
 
@@ -5969,4 +5973,178 @@ test('v0.6.3: empty-state still appears when every device has zero visible sessi
   app._setGridViewMode('flat');
   app._setServerSettings(null);
   app._setActiveView('all');
+});
+
+// --- followRemoteActiveSession (PWA follows external session switch) ---
+// active_session is server-global; when another device (Stream Deck, agent)
+// switches it via POST /connect, the poll loop must detect the change and
+// re-open the new session through the same path restoreState() uses.
+
+test('pollSessions reads /api/state and wires followRemoteActiveSession', () => {
+  const src = app.pollSessions.toString();
+  assert.ok(src.includes("'/api/state'"), 'pollSessions must fetch /api/state each cycle');
+  assert.ok(src.includes('followRemoteActiveSession'), 'pollSessions must call followRemoteActiveSession');
+});
+
+test('followRemoteActiveSession uses restoreState opts shape (skipAnimation + remoteId)', () => {
+  const src = app.followRemoteActiveSession.toString();
+  assert.ok(src.includes('skipAnimation: true'), 'must pass skipAnimation: true like restoreState');
+  assert.ok(src.includes('remoteId'), 'must pass remoteId like restoreState');
+});
+
+test('poll detects remote active_session change and switches via openSession path', async () => {
+  const calls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  const origOpenTerminal = globalThis.window._openTerminal;
+  let openTerminalName = null;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.window._openTerminal = (name) => { openTerminalName = name; };
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/state') {
+      return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
+    }
+    return { ok: true, json: async () => [] };
+  };
+
+  // Session already open in fullscreen (option a precondition)
+  app._setViewMode('fullscreen');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+
+  await app.pollSessions();
+  // openSession is fired without awaiting inside the poll loop — flush it
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.ok(
+    calls.includes('POST /api/sessions/beta/connect'),
+    'remote switch must trigger the existing openSession /connect path; calls: ' + JSON.stringify(calls),
+  );
+  assert.strictEqual(openTerminalName, 'beta', 'terminal must be re-attached to the new session');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.window._openTerminal = origOpenTerminal;
+  globalThis.fetch = undefined;
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+});
+
+test('self-initiated switch does not double-switch (state matches viewing session)', async () => {
+  const calls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/state') {
+      return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
+    }
+    return { ok: true, json: async () => [] };
+  };
+
+  // openSession() already set these synchronously before its PATCH landed
+  app._setViewMode('fullscreen');
+  app._setViewingSession('beta');
+  app._setViewingRemoteId('');
+
+  await app.pollSessions();
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.ok(
+    !calls.some((c) => c.startsWith('POST ')),
+    'no POST may fire when active_session already matches the viewed session; calls: ' + JSON.stringify(calls),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.fetch = undefined;
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+});
+
+test('remote switch is NOT followed from the grid (no session open — option a)', async () => {
+  const calls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/state') {
+      return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
+    }
+    return { ok: true, json: async () => [] };
+  };
+
+  // Grid/overview: no session open
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+
+  await app.pollSessions();
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.ok(
+    !calls.some((c) => c.startsWith('POST ')),
+    'must not force-open a session from the grid on a remote switch; calls: ' + JSON.stringify(calls),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.fetch = undefined;
+  app._setViewingSession(null);
+});
+
+test('same session name on a different remote device is followed (remote_id differs)', async () => {
+  const calls = [];
+  const origQSA = globalThis.document.querySelectorAll;
+  const origOpenTerminal = globalThis.window._openTerminal;
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.window._openTerminal = () => {};
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setViewMode('fullscreen');
+  app._setViewingSession('beta');
+  app._setViewingRemoteId('');
+
+  app.followRemoteActiveSession({ active_session: 'beta', active_remote_id: 'dev1' });
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.ok(
+    calls.includes('POST /api/federation/dev1/connect/beta'),
+    'differing remote_id must route through the federation connect path; calls: ' + JSON.stringify(calls),
+  );
+
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.window._openTerminal = origOpenTerminal;
+  globalThis.fetch = undefined;
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+});
+
+test('followRemoteActiveSession no-ops on null state or null active_session', () => {
+  // Would throw on fetch if it tried to openSession — fetch is undefined here
+  app._setViewMode('fullscreen');
+  app._setViewingSession('alpha');
+  app.followRemoteActiveSession(null);
+  app.followRemoteActiveSession({ active_session: null, active_remote_id: null });
+  app._setViewMode('grid');
+  app._setViewingSession(null);
 });
