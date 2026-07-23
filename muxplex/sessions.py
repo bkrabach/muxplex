@@ -4,21 +4,51 @@ tmux session enumeration and snapshot helpers for the tmux-web muxplex.
 In-memory cache:
     _session_list  — most-recently-enumerated list of session names.
     _snapshots     — most-recently-captured pane text, keyed by session name.
+    _activity      — most-recently-enumerated last-output-activity timestamp
+                     (unix epoch seconds), keyed by session name.
 
 Public API:
     get_session_list()                    → list[str]
     get_snapshots()                       → dict[str, str]
+    get_session_activity()                → dict[str, float]
     update_session_cache(names, snapshots) → None
     run_tmux(*args)                       → str   (raises RuntimeError on nonzero exit)
     enumerate_sessions()                  → list[str]
     capture_pane(name, lines)             → str
     snapshot_all(names)                   → dict[str, str]
+
+Note on _activity: unlike _session_list/_snapshots (which are only ever
+swapped together, atomically, via update_session_cache), _activity is
+populated directly by enumerate_sessions() as a side effect of parsing
+tmux's output. It comes from the exact same `tmux list-sessions` call that
+produces the name list, so there's no second subprocess round trip and no
+consistency dependency on the (separately captured) pane snapshots. Each
+call fully replaces _activity, so entries for sessions that have since
+closed are dropped on the next poll, same as the other caches.
+
+Why `#{window_activity}` and not `#{session_activity}`: tmux's session-level
+`session_activity` only advances when a *client is attached* to the session
+(verified empirically: sending real output to a headless, never-attached
+session left `session_activity` frozen at its creation time indefinitely,
+while `window_activity` advanced immediately). Since muxplex's whole point
+is surfacing sessions producing output *unattended* -- e.g. a build running
+in a session nobody has open in a browser tab right now -- `session_activity`
+would silently fail to track exactly the sessions this feature most needs to
+surface. `window_activity` tracks real pane output regardless of client
+attachment. It resolves correctly (matching `list-windows -a` for the same
+window) when queried in a `list-sessions -F` context, which implicitly
+selects each session's active window -- consistent with capture_pane()
+elsewhere in this module, which likewise only ever looks at a session's
+active window/pane.
 """
 
 import asyncio
+import logging
 import os
 
 from muxplex.settings import load_settings
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # In-memory cache
@@ -26,6 +56,7 @@ from muxplex.settings import load_settings
 
 _session_list: list[str] = []
 _snapshots: dict[str, str] = {}
+_activity: dict[str, float] = {}
 
 
 def get_session_list() -> list[str]:
@@ -36,6 +67,18 @@ def get_session_list() -> list[str]:
 def get_snapshots() -> dict[str, str]:
     """Return a copy of the cached pane-snapshot dict."""
     return dict(_snapshots)
+
+
+def get_session_activity() -> dict[str, float]:
+    """Return a copy of the cached session-activity dict.
+
+    Values are unix epoch seconds (tmux's `#{window_activity}` for each
+    session's active window), the last time the session's pane produced
+    output -- tracked regardless of whether a client is currently attached.
+    Sessions tmux didn't report an activity value for are simply absent
+    from the dict.
+    """
+    return dict(_activity)
 
 
 def update_session_cache(names: list[str], snapshots: dict[str, str]) -> None:
@@ -125,17 +168,58 @@ async def run_tmux(*args: str) -> str:
 async def enumerate_sessions() -> list[str]:
     """Return the list of currently running tmux session names.
 
-    Calls ``tmux list-sessions -F #{session_name}``, splits on newlines,
-    and strips whitespace from each entry.
+    Calls ``tmux list-sessions -F #{session_name}<TAB>#{window_activity}``,
+    splits on newlines, and strips whitespace from each entry. As a side
+    effect, caches each session's last-activity epoch timestamp (see
+    get_session_activity()) -- parsed from the same tmux call, so no second
+    subprocess round trip is needed just to learn activity times.
+
+    Uses `#{window_activity}` (the session's active window), NOT
+    `#{session_activity}`: empirically, tmux only advances session_activity
+    while a client is attached, so a headless session producing output with
+    nobody watching would appear permanently frozen at its creation time.
+    window_activity tracks real pane output unconditionally. See the module
+    docstring for the full rationale.
+
+    A line with no tab (unexpected tmux output, or a caller/mock still using
+    the old single-field format) is tolerated: the name is still returned,
+    just with no activity entry. A non-numeric activity field is dropped and
+    logged rather than raising -- one malformed session must not break
+    enumeration of the rest.
 
     Returns [] if tmux is not running (RuntimeError from run_tmux).
     """
     try:
-        output = await run_tmux("list-sessions", "-F", "#{session_name}")
+        output = await run_tmux(
+            "list-sessions", "-F", "#{session_name}\t#{window_activity}"
+        )
     except (RuntimeError, FileNotFoundError):
         return []
 
-    names = [line.strip() for line in output.splitlines() if line.strip()]
+    names: list[str] = []
+    activity: dict[str, float] = {}
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        name, _, activity_field = line.partition("\t")
+        name = name.strip()
+        if not name:
+            continue
+        names.append(name)
+        activity_field = activity_field.strip()
+        if activity_field:
+            try:
+                activity[name] = float(activity_field)
+            except ValueError:
+                _log.warning(
+                    "enumerate_sessions: malformed window_activity for %r: %r",
+                    name,
+                    activity_field,
+                )
+
+    global _activity
+    _activity = activity
     return names
 
 
