@@ -47,7 +47,7 @@ from muxplex.auth import (
     pam_available,
     verify_session_cookie,
 )
-from muxplex.bells import apply_bell_clear_rule, process_bell_flags
+from muxplex.bells import apply_bell_clear_rule, needs_attention, process_bell_flags
 from muxplex.sessions import (
     enumerate_sessions,
     get_session_activity,
@@ -76,7 +76,7 @@ from muxplex.settings import (
     save_settings,
 )
 from muxplex.pruning import load_pruning_state, save_pruning_state
-from muxplex.views import normalize_session_keys, prune_stale_keys
+from muxplex.views import filter_visible, normalize_session_keys, prune_stale_keys
 from muxplex.identity import load_device_id
 from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
@@ -601,6 +601,143 @@ async def get_sessions() -> list[dict]:
             }
         )
     return result
+
+
+def _attention_order(sessions: list[dict]) -> list[dict]:
+    """Tiered ordering for GET /api/view?sort=attention.
+
+    Tier 1: needs_attention sessions, ordered by bell.last_fired_at desc.
+    Tier 2: the active session, if it wasn't already placed in tier 1
+        (at most one entry).
+    Tier 3: everything else, ordered by last_activity_at desc (sessions
+        with no known activity timestamp sort last).
+
+    All ties (including "all None") preserve the incoming order -- Python's
+    sort is stable, and remains so with reverse=True.
+    """
+    tier1 = sorted(
+        (s for s in sessions if s["needs_attention"]),
+        key=lambda s: s["bell"].get("last_fired_at") or 0,
+        reverse=True,
+    )
+    tier1_names = {s["name"] for s in tier1}
+    remaining = [s for s in sessions if s["name"] not in tier1_names]
+
+    tier2 = [s for s in remaining if s["active"]]
+    tier2_names = {s["name"] for s in tier2}
+    tier3_source = [s for s in remaining if s["name"] not in tier2_names]
+
+    tier3 = sorted(
+        tier3_source,
+        key=lambda s: (s["last_activity_at"] is not None, s["last_activity_at"] or 0),
+        reverse=True,
+    )
+    return tier1 + tier2 + tier3
+
+
+@app.get("/api/view")
+async def get_view(sort: str | None = None) -> dict:
+    """Return the server-resolved current view: filtered, sorted sessions
+    plus view metadata.
+
+    This is the canonical home for view-resolution semantics that the PWA,
+    muxplex-deck, and future agent clients would otherwise each have to
+    re-implement: `filter_visible` membership/hidden rules, the
+    needs-attention bell predicate, and sort ordering. See AGENTS.md
+    "Semantics external clients re-implement" for the rationale; new
+    clients should prefer this endpoint over re-deriving these rules.
+
+    Query params:
+        sort: omitted -> honor `settings.sort_order` the same way the PWA
+            does today (`"alphabetical"` sorts by name; any other value
+            preserves /api/sessions enumeration order, reported back as
+            `"server"`). `"attention"` requests tiered ordering: sessions
+            needing attention first (freshest bell first), then the active
+            session (if not already surfaced), then the rest ordered by
+            last_activity_at descending (unknown activity sorts last). Any
+            other value is rejected with 400 -- no silent fallback.
+
+    Response shape:
+        {
+          "view": <active_view, echoed verbatim>,
+          "views": ["all", <user view names, settings order>],
+          "sort": "server" | "alphabetical" | "attention",
+          "sessions": [
+            {"name", "active", "needs_attention", "bell", "last_activity_at"}
+          ],
+        }
+
+    `views` deliberately excludes "hidden": it remains addressable as an
+    active_view value (GET /api/state, PATCH /api/state), but it is not a
+    browsable/cyclable view alongside "all" and user-defined views.
+
+    Deliberately light: no pane snapshots here (those stay on
+    GET /api/sessions) so this endpoint stays cheap for frequent polling
+    (e.g. a Stream Deck dial).
+
+    Scope: local sessions only. Unlike GET /api/federation/sessions, this
+    answers "what does *this* device's current view look like" -- remote
+    peers are not merged in. The shape is additive, so a federated variant
+    can be added later without changing it.
+
+    An unknown/deleted active_view is not an error: `sessions` comes back
+    empty while `view` still echoes the (now unresolvable) name, matching
+    current PWA behavior for this case.
+    """
+    if sort is not None and sort != "attention":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported sort value: {sort!r}. Use 'attention' or omit the parameter.",
+        )
+
+    settings = load_settings()
+    state = await read_state()
+    active_view: str = state.get("active_view", "all")
+    active_session = state.get("active_session")
+
+    device_id = load_device_id()
+    names = get_session_list()
+    activity = get_session_activity()
+    raw_sessions = [
+        {
+            "name": name,
+            "sessionKey": f"{device_id}:{name}",
+            "bell": state.get("sessions", {}).get(name, {}).get("bell", empty_bell()),
+            "last_activity_at": activity.get(name),
+        }
+        for name in names
+    ]
+
+    visible = filter_visible(raw_sessions, settings, active_view)
+
+    resolved = [
+        {
+            "name": s["name"],
+            "active": s["name"] == active_session,
+            "needs_attention": needs_attention(s["bell"]),
+            "bell": s["bell"],
+            "last_activity_at": s["last_activity_at"],
+        }
+        for s in visible
+    ]
+
+    if sort == "attention":
+        resolved = _attention_order(resolved)
+        applied_sort = "attention"
+    elif settings.get("sort_order") == "alphabetical":
+        resolved = sorted(resolved, key=lambda s: s["name"])
+        applied_sort = "alphabetical"
+    else:
+        applied_sort = "server"
+
+    views = ["all"] + [v.get("name", "") for v in (settings.get("views") or [])]
+
+    return {
+        "view": active_view,
+        "views": views,
+        "sort": applied_sort,
+        "sessions": resolved,
+    }
 
 
 @app.post("/api/sessions")
