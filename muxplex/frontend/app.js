@@ -347,6 +347,10 @@ async function pollSessions() {
     var endpoint = (_serverSettings && _serverSettings.multi_device_enabled)
       ? '/api/federation/sessions'
       : '/api/sessions';
+    // Parallel /api/state read — see followRemoteActiveSession. Failures → null.
+    var statePromise = api('GET', '/api/state')
+      .then(function (r) { return r.json(); })
+      .catch(function () { return null; });
     const res = await api('GET', endpoint);
     const sessions = await res.json();
     const prev = _currentSessions;
@@ -359,10 +363,46 @@ async function pollSessions() {
     updateSessionPill(sessions);
     updateFaviconBadge();
     updatePageTitle();
+    followRemoteActiveSession(await statePromise);
   } catch (err) {
     _pollFailCount++;
     setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
   }
+}
+
+/**
+ * Follow a session switch made by another device (Stream Deck, agent, another
+ * browser). active_session/active_remote_id are server-global (last writer
+ * wins); when they change remotely we re-open the new session through the
+ * exact path restoreState() uses on page load — openSession() with
+ * skipAnimation — which re-renders the sidebar selection and re-attaches the
+ * terminal directly (no "Reconnecting…" overlay).
+ *
+ * Conservative policy (option a): only auto-follow when a session is already
+ * open in fullscreen (_viewingSession non-null). If the user is on the
+ * grid/overview, a remote switch does NOT yank them into fullscreen.
+ * Alternative (option b), if remote devices should fully drive the view:
+ * drop the _viewingSession guard so the grid also follows.
+ *
+ * Self-initiated switches naturally no-op: openSession() updates
+ * _viewingSession/_viewingRemoteId synchronously before its PATCH lands, so
+ * the next poll sees no difference.
+ *
+ * @param {object|null} state - GET /api/state body, or null on fetch failure
+ */
+function followRemoteActiveSession(state) {
+  if (!state || !state.active_session) return;
+  if (_viewingSession == null) return; // option (a): never force-open from the grid
+  var remoteId = state.active_remote_id || '';
+  if (state.active_session === _viewingSession && remoteId === _viewingRemoteId) return;
+  // Same opts shape restoreState() uses (app.js restoreState) — skip the tile zoom animation.
+  // Fire-and-forget: must not delay the poll loop or count as a poll failure.
+  openSession(state.active_session, {
+    skipAnimation: true,
+    remoteId: remoteId,
+  }).catch(function (err) {
+    console.warn('[followRemoteActiveSession] could not follow remote switch:', err);
+  });
 }
 
 /**
@@ -3138,6 +3178,14 @@ function _setViewingSession(name) {
   _viewingSession = name;
 }
 
+/**
+ * Test helper: set _viewingRemoteId directly.
+ * @param {string} remoteId
+ */
+function _setViewingRemoteId(remoteId) {
+  _viewingRemoteId = remoteId;
+}
+
 // ─── Server settings ─────────────────────────────────────────────────────────
 
 /**
@@ -4520,6 +4568,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildHeartbeatPayload,
     setConnectionStatus,
     pollSessions,
+    followRemoteActiveSession,
     startPolling,
     escapeHtml,
     buildTileHTML,
@@ -4541,6 +4590,7 @@ if (typeof module !== 'undefined' && module.exports) {
     openSession,
     closeSession,
     _setViewingSession,
+    _setViewingRemoteId,
     handleGlobalKeydown,
     bindStaticEventListeners,
     openBottomSheet,
