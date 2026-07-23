@@ -1822,6 +1822,238 @@ def test_delete_session_not_found(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Security: session-name allowlist, fail-closed gate, injection defense
+#
+# Regression guards for the live remote-code-execution hardening:
+#   1. create/delete substituted a client-supplied name into a shell command
+#      with only a .strip() -- `name="x; touch FILE; true"` executed FILE.
+#   2. delete had no name validator at all (the wider hole).
+#   3. the known-session gate (`if known and name not in known`) failed OPEN
+#      whenever the session cache was empty -- the guard evaporated exactly
+#      when the system was least healthy.
+# ---------------------------------------------------------------------------
+
+
+def test_create_session_rejects_shell_injection(client, monkeypatch):
+    """POST /api/sessions rejects an injection payload with 400 and never spawns."""
+    from unittest.mock import AsyncMock
+
+    spawned = AsyncMock()
+    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", spawned)
+
+    response = client.post(
+        "/api/sessions", json={"name": "x; touch /tmp/deckdev-should-not-exist; true"}
+    )
+
+    assert response.status_code == 400
+    assert spawned.call_count == 0, (
+        "create_subprocess_shell must NOT run when the name fails the allowlist"
+    )
+
+
+def test_delete_session_rejects_shell_injection(client, monkeypatch):
+    """DELETE /api/sessions/{name} rejects an injection payload with 400 and never runs."""
+    from unittest.mock import MagicMock, patch
+
+    # A populated cache proves the 400 is the allowlist, not the fail-closed gate.
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+    run = MagicMock()
+
+    # Note: DELETE takes the name as a path segment, so `/` can't appear here --
+    # the injection surface is the remaining shell metacharacters (`;`, spaces).
+    with patch("muxplex.main.subprocess.run", run):
+        response = client.delete("/api/sessions/x;%20id;%20true")
+
+    assert response.status_code == 400
+    assert run.call_count == 0, (
+        "subprocess.run must NOT run when the name fails the allowlist"
+    )
+
+
+def test_create_session_rejects_invalid_charset(client, monkeypatch):
+    """POST /api/sessions rejects names with spaces/metacharacters (400), not a subprocess."""
+    from unittest.mock import AsyncMock
+
+    spawned = AsyncMock()
+    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", spawned)
+
+    for bad in ["has space", "back`tick`", "pipe|it", "dollar$ign", "a" * 65, "co:lon"]:
+        response = client.post("/api/sessions", json={"name": bad})
+        assert response.status_code == 400, f"expected 400 for {bad!r}"
+    assert spawned.call_count == 0
+
+
+def test_create_and_delete_accept_ordinary_names(client, monkeypatch, tmp_path):
+    """Valid names (letters/digits/_.-) still create and delete normally."""
+    import json
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"new_session_template": "echo {name}"}))
+
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"", b""))
+    proc.returncode = 0
+    monkeypatch.setattr(
+        "muxplex.main.asyncio.create_subprocess_shell", AsyncMock(return_value=proc)
+    )
+
+    # Representative of real live session names (dots, underscores, hyphens).
+    for name in ["amplifier-wiki", "a2a", "my_project.v2", "AAA-claw"]:
+        resp = client.post("/api/sessions", json={"name": name})
+        assert resp.status_code == 200, f"valid name {name!r} must be accepted"
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["amplifier-wiki"])
+    run_result = MagicMock()
+    run_result.returncode = 0
+    run_result.stderr = ""
+    with patch("muxplex.main.subprocess.run", return_value=run_result):
+        resp = client.delete("/api/sessions/amplifier-wiki")
+    assert resp.status_code == 200
+
+
+def test_delete_session_fails_closed_on_empty_cache(client, monkeypatch):
+    """DELETE rejects (404) when the session cache is empty -- never allow-through."""
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    run = MagicMock()
+
+    with patch("muxplex.main.subprocess.run", run):
+        response = client.delete("/api/sessions/alpha")
+
+    assert response.status_code == 404, (
+        "empty cache must fail closed, not allow the delete through"
+    )
+    assert run.call_count == 0, "no subprocess may run when the target is unknown"
+
+
+def test_connect_session_fails_closed_on_empty_cache(client, monkeypatch):
+    """POST connect rejects (404) when the session cache is empty -- never allow-through."""
+
+    async def _fail_kill():
+        raise AssertionError("kill_ttyd must not run when target is unknown")
+
+    async def _fail_spawn(name):
+        raise AssertionError("spawn_ttyd must not run when target is unknown")
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.kill_ttyd", _fail_kill)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", _fail_spawn)
+
+    response = client.post("/api/sessions/alpha/connect")
+    assert response.status_code == 404
+
+
+def test_delete_session_exact_match_not_prefix(client, monkeypatch):
+    """DELETE 'foo' with only 'foobar' known must 404 (no tmux -t prefix match)."""
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["foobar"])
+    run = MagicMock()
+
+    with patch("muxplex.main.subprocess.run", run):
+        response = client.delete("/api/sessions/foo")
+
+    assert response.status_code == 404
+    assert run.call_count == 0
+
+
+def test_connect_session_exact_match_not_prefix(client, monkeypatch):
+    """POST connect 'foo' with only 'foobar' known must 404 (exact membership)."""
+
+    async def _fail_kill():
+        raise AssertionError("kill_ttyd must not run for a prefix-only match")
+
+    async def _fail_spawn(name):
+        raise AssertionError("spawn_ttyd must not run for a prefix-only match")
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["foobar"])
+    monkeypatch.setattr("muxplex.main.kill_ttyd", _fail_kill)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", _fail_spawn)
+
+    response = client.post("/api/sessions/foo/connect")
+    assert response.status_code == 404
+
+
+def test_delete_session_shlex_quote_defense_in_depth(client, monkeypatch, tmp_path):
+    """If the allowlist is ever loosened, shlex.quote() still neutralizes the name.
+
+    Simulates a regressed allowlist by forcing is_valid_session_name True, then
+    proves the substituted name is shlex-quoted (metacharacters inert) in the
+    shell command that would run.
+    """
+    import shlex
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
+    monkeypatch.setattr("muxplex.main.is_valid_session_name", lambda name: True)
+
+    # No `/` -- the name is a DELETE path segment. `;` and spaces are the shell
+    # metacharacters we prove shlex.quote() neutralizes.
+    payload = "x; id; true"
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [payload])
+
+    captured = []
+
+    def mock_run(cmd, **kwargs):
+        captured.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        client.delete(f"/api/sessions/{payload}")
+
+    assert len(captured) == 1
+    assert shlex.quote(payload) in captured[0], (
+        f"delete must shlex.quote the substituted name, got: {captured[0]!r}"
+    )
+    # The raw, unquoted metacharacter sequence must NOT appear un-neutralized.
+    assert f"-t {payload}" not in captured[0]
+
+
+def test_create_session_shlex_quote_defense_in_depth(client, monkeypatch, tmp_path):
+    """If the allowlist is ever loosened, create still shlex.quotes the name."""
+    import json
+    import shlex
+    from unittest.mock import AsyncMock, MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"new_session_template": "echo {name}"}))
+    monkeypatch.setattr("muxplex.main.is_valid_session_name", lambda name: True)
+
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"", b""))
+    proc.returncode = 0
+
+    captured = []
+
+    async def mock_shell(cmd, **kwargs):
+        captured.append(cmd)
+        return proc
+
+    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", mock_shell)
+
+    payload = "x; touch /tmp/deckdev-quote; true"
+    resp = client.post("/api/sessions", json={"name": payload})
+    assert resp.status_code == 200
+    assert len(captured) == 1
+    assert shlex.quote(payload) in captured[0], (
+        f"create must shlex.quote the substituted name, got: {captured[0]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Issue 1: Static assets exempt from auth middleware
 # ---------------------------------------------------------------------------
 

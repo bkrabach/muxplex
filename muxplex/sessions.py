@@ -45,10 +45,55 @@ active window/pane.
 import asyncio
 import logging
 import os
+import re
 
 from muxplex.settings import load_settings
 
 _log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Session-name validation (security boundary)
+# ---------------------------------------------------------------------------
+
+# Canonical allowlist for client-supplied session names. A name that matches
+# this pattern contains no shell metacharacters, whitespace, or the tmux target
+# separator (`:`), so it is safe to substitute into a shell template
+# (create/delete session commands) and safe as a `tmux -t` target.
+#
+# This is the PRIMARY defense against shell injection via session names. Every
+# API endpoint that accepts a client-supplied session name and forwards it to a
+# subprocess (create, delete, connect, and any future input endpoint) MUST run
+# the name through `is_valid_session_name()` at the boundary, BEFORE any
+# substitution or subprocess call.
+#
+# Charset rationale: tmux forbids `:` in session names (it's the
+# session:window.pane target separator), so excluding it costs nothing. All 68
+# of the deployment's live session names pass this pattern; it does not reject
+# any legitimate existing name.
+# The first character MUST be alphanumeric or underscore. This is deliberate and
+# security-load-bearing: a leading ``-`` would let a valid name be parsed as an
+# OPTION by tmux or by a user-configurable template command (argument injection),
+# and ``shlex.quote`` does NOT neutralize that -- quoting stops shell-metacharacter
+# interpretation, but a quoted ``-C`` or ``--destroy`` is still a flag to the
+# invoked program. Forbidding a leading ``-`` (and leading ``.``/``..`` path
+# traversal) closes that class. ``\A...\Z`` (not ``^...$``) is required because
+# ``$`` also matches just before a trailing newline, so ``"name\n"`` would slip
+# through ``^...$``. All 68 live session names pass this pattern.
+SESSION_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\Z")
+
+
+def is_valid_session_name(name: str) -> bool:
+    """Return True if *name* is a safe session name per ``SESSION_NAME_RE``.
+
+    Safe means: 1-64 chars drawn only from ASCII letters, digits, and the
+    ``_ . -`` set, with an alphanumeric-or-underscore FIRST character -- no
+    whitespace (including a trailing newline), no shell metacharacters, no
+    ``:``, and no leading ``-`` (argument injection) or leading ``.``/``..``
+    (path traversal). Callers at the API boundary reject names that fail this
+    check with HTTP 400 before the name reaches any subprocess.
+    """
+    return bool(SESSION_NAME_RE.match(name))
+
 
 # ---------------------------------------------------------------------------
 # In-memory cache

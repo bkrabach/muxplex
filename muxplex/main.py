@@ -18,6 +18,7 @@ import os
 import pathlib
 import pwd
 import re
+import shlex
 import socket
 import ssl
 import shutil
@@ -53,6 +54,7 @@ from muxplex.sessions import (
     get_session_activity,
     get_session_list,
     get_snapshots,
+    is_valid_session_name,
     run_tmux,
     snapshot_all,
     tmux_env,
@@ -740,6 +742,29 @@ async def get_view(sort: str | None = None) -> dict:
     }
 
 
+def _require_valid_session_name(name: str) -> None:
+    """Reject a client-supplied session name that fails the safe-charset allowlist.
+
+    This is the security boundary for every endpoint that forwards a
+    client-supplied session name to a subprocess (create/delete/connect, and any
+    future terminal-input endpoint). A name that passes ``is_valid_session_name``
+    contains no shell metacharacters, whitespace, or ``:`` -- so it cannot break
+    out of a shell template or mis-target a ``tmux -t`` argument.
+
+    Raises HTTPException(400) BEFORE any substitution or subprocess call. The raw
+    name is deliberately NOT echoed back in the error detail (an invalid name may
+    contain a payload we don't want to reflect).
+    """
+    if not is_valid_session_name(name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid session name. Allowed characters: letters, digits, "
+                "and _ . - (1-64 characters)."
+            ),
+        )
+
+
 @app.post("/api/sessions")
 async def create_session(payload: CreateSessionPayload) -> dict:
     """Create a new session using the new_session_template from settings.
@@ -759,6 +784,8 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     a success.
     """
     name = payload.name
+    # Security boundary: reject unsafe names before they reach the shell.
+    _require_valid_session_name(name)
     settings = load_settings()
     template = settings["new_session_template"]
 
@@ -776,7 +803,16 @@ async def create_session(payload: CreateSessionPayload) -> dict:
             "Ensure it is installed and in the server's PATH.",
         )
 
-    command = template.replace("{name}", name)
+    # new_session_template is an arbitrary user shell command with a {name}
+    # placeholder (default `tmux new-session -d -s {name}`, but users configure
+    # e.g. `amplifier-workspace {name}`), so this path stays shell-based to
+    # preserve that feature -- switching to a fixed argv list would break every
+    # custom template. Injection is closed by two layers: (1) the allowlist
+    # (_require_valid_session_name) guarantees the name has no shell
+    # metacharacters; (2) shlex.quote() is applied as defense-in-depth in case
+    # the allowlist is ever loosened. For an allowlist-valid name shlex.quote()
+    # is a no-op, so existing custom templates behave identically.
+    command = template.replace("{name}", shlex.quote(name))
     _log.info("Creating session '%s' with command: %s", name, command)
     try:
         proc = await asyncio.create_subprocess_shell(
@@ -845,10 +881,17 @@ async def connect_session(name: str) -> dict:
     and updates the active_session in persistent state.
 
     Returns {active_session: name, ttyd_port: 7682}.
-    Raises HTTP 404 if *name* is not in the known session list (when non-empty).
+    Raises HTTP 400 if *name* fails the session-name allowlist.
+    Raises HTTP 404 if *name* is not an exact match in the known session list.
     """
+    _require_valid_session_name(name)
+    # Fail closed: reject unless *name* is an exact member of the known set. An
+    # empty/unavailable cache means "no known sessions", so every target is
+    # rejected -- the guard must not evaporate when the session list is empty
+    # (startup or a list-sessions hiccup). Exact `in` membership also prevents
+    # tmux `-t` prefix-matching a different session.
     known = get_session_list()
-    if known and name not in known:
+    if name not in known:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     _log.info("Connecting to session '%s'", name)
@@ -890,17 +933,32 @@ async def delete_session(name: str) -> dict:
 
     Returns {ok: True, name: name}. Errors are logged as warnings — the endpoint
     always returns 200 so the UI can refresh and reflect the gone session.
-    404 if session is not in the known session list (when non-empty).
+    400 if *name* fails the session-name allowlist.
+    404 if session is not an exact match in the known session list.
     Must be declared after DELETE /api/sessions/current so "current" routes correctly.
     """
+    # Security boundary: reject unsafe names before they reach the shell.
+    _require_valid_session_name(name)
+    # Fail closed: reject unless *name* is an exact member of the known set. The
+    # previous `if known and name not in known` skipped the guard whenever the
+    # cache was empty -- allowing a delete against an unvalidated target exactly
+    # when the session list was unavailable. Exact `in` membership also prevents
+    # tmux `-t` prefix-matching a neighbouring session.
     known = get_session_list()
-    if known and name not in known:
+    if name not in known:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     settings = load_settings()
+    # create/delete templates are BOTH arbitrary user shell commands with a
+    # {name} placeholder (default `tmux kill-session -t {name}`, but users
+    # configure e.g. `amplifier-dev --destroy {name}`), so this path stays
+    # shell-based to preserve that feature. Injection is closed by two layers:
+    # (1) the allowlist above guarantees the name has no shell metacharacters;
+    # (2) shlex.quote() is applied as defense-in-depth in case the allowlist is
+    # ever loosened. For an allowlist-valid name shlex.quote() is a no-op.
     command = settings.get(
         "delete_session_template", "tmux kill-session -t {name}"
-    ).replace("{name}", name)
+    ).replace("{name}", shlex.quote(name))
 
     _log.info("Deleting session '%s' with command: %s", name, command)
     try:
