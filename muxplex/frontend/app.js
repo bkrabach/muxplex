@@ -1684,8 +1684,19 @@ function renderGrid(sessions) {
   var ordered;
   if (sortOrder === 'alphabetical') {
     ordered = visible.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+  } else if (sortOrder === 'recent' && !mobile) {
+    // Sort by last_activity_at descending (most recently active first); sessions
+    // with no known activity timestamp sort last. Array.prototype.sort is stable,
+    // so ties (including sessions that are all null) preserve server-provided order.
+    ordered = visible.slice().sort(function(a, b) {
+      var aTime = a.last_activity_at;
+      var bTime = b.last_activity_at;
+      if (aTime == null) return bTime == null ? 0 : 1;
+      if (bTime == null) return -1;
+      return bTime - aTime;
+    });
   } else {
-    // 'recent', 'manual', and default use server-provided order; priority sort on mobile
+    // 'recent' (mobile), 'manual', and default use server-provided order; priority sort on mobile
     ordered = mobile ? sortByPriority(visible) : visible;
   }
 

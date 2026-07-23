@@ -362,6 +362,37 @@ def test_get_sessions_returns_empty_list_when_no_sessions(client, monkeypatch):
     assert response.json() == []
 
 
+def test_get_sessions_includes_last_activity_at(client, monkeypatch):
+    """GET /api/sessions must include last_activity_at with the cached
+    session-activity epoch timestamp."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["epsilon"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"epsilon": "pane"})
+    monkeypatch.setattr(
+        "muxplex.main.get_session_activity", lambda: {"epsilon": 1700000000.0}
+    )
+
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert items[0]["last_activity_at"] == 1700000000.0
+
+
+def test_get_sessions_last_activity_at_null_when_unknown(client, monkeypatch):
+    """GET /api/sessions must return last_activity_at: null for a session
+    tmux reported no activity value for, rather than omitting the field."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["zeta"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"zeta": "pane"})
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert "last_activity_at" in items[0]
+    assert items[0]["last_activity_at"] is None
+
+
 # ---------------------------------------------------------------------------
 # POST /api/sessions/{name}/connect
 # ---------------------------------------------------------------------------

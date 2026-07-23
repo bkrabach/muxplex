@@ -12,6 +12,7 @@ from muxplex.sessions import (
     capture_pane,
     enumerate_sessions,
     get_snapshots,
+    get_session_activity,
     get_session_list,
     run_tmux,
     snapshot_all,
@@ -195,6 +196,96 @@ async def test_enumerate_sessions_handles_tmux_error(mock_subprocess):
         result = await enumerate_sessions()
 
     assert result == []
+
+
+async def test_enumerate_sessions_requests_activity_field(mock_subprocess):
+    """enumerate_sessions() must ask tmux for #{window_activity} alongside
+    #{session_name} so activity data comes from the same subprocess call
+    (no second round trip).
+
+    Deliberately NOT #{session_activity}: verified empirically against a
+    real tmux server that session_activity only advances while a client is
+    attached, so it stays frozen forever for headless/unwatched sessions --
+    exactly the sessions this feature most needs to surface. window_activity
+    tracks real pane output unconditionally. See the sessions.py module
+    docstring for the full rationale.
+    """
+    with mock_subprocess("alpha\t1700000000\n") as mock_create:
+        await enumerate_sessions()
+
+    call_args = mock_create.call_args[0]
+    assert call_args[0] == "tmux"
+    assert call_args[1] == "list-sessions"
+    assert call_args[2] == "-F"
+    assert "#{session_name}" in call_args[3]
+    assert "#{window_activity}" in call_args[3]
+    assert "#{session_activity}" not in call_args[3]
+
+
+# ---------------------------------------------------------------------------
+# session-activity tests (sourced from tmux's #{window_activity})
+# ---------------------------------------------------------------------------
+
+
+async def test_enumerate_sessions_caches_activity(mock_subprocess):
+    """enumerate_sessions() parses the tab-separated activity field and
+    caches it, keyed by session name, exposed via get_session_activity()."""
+    with mock_subprocess("alpha\t1700000000\nbeta\t1700000050\n"):
+        names = await enumerate_sessions()
+
+    assert names == ["alpha", "beta"]
+    assert get_session_activity() == {"alpha": 1700000000.0, "beta": 1700000050.0}
+
+
+async def test_enumerate_sessions_activity_replaced_wholesale(mock_subprocess):
+    """A later enumerate_sessions() call fully replaces _activity -- a session
+    that has since closed must not linger in get_session_activity()."""
+    with mock_subprocess("alpha\t1700000000\nbeta\t1700000050\n"):
+        await enumerate_sessions()
+    assert "beta" in get_session_activity()
+
+    with mock_subprocess("alpha\t1700000100\n"):
+        await enumerate_sessions()
+
+    assert get_session_activity() == {"alpha": 1700000100.0}
+
+
+async def test_enumerate_sessions_missing_activity_field_is_tolerated(
+    mock_subprocess,
+):
+    """A line with no tab (older tmux output, or a mocked test) must not crash
+    -- the session name is still returned, just with no activity entry."""
+    with mock_subprocess("alpha\nbeta\n"):
+        names = await enumerate_sessions()
+
+    assert names == ["alpha", "beta"]
+    assert get_session_activity() == {}
+
+
+async def test_enumerate_sessions_malformed_activity_value_is_skipped_and_logged(
+    mock_subprocess, caplog
+):
+    """A non-numeric activity field is dropped (not crashed on) and logged --
+    the session name itself is still returned."""
+    with caplog.at_level("WARNING"):
+        with mock_subprocess("alpha\tnot-a-number\nbeta\t1700000050\n"):
+            names = await enumerate_sessions()
+
+    assert names == ["alpha", "beta"]
+    assert get_session_activity() == {"beta": 1700000050.0}
+    assert "alpha" in caplog.text
+
+
+def test_get_session_activity_returns_copy():
+    """get_session_activity() must return a copy -- mutating the result must
+    not corrupt the module's internal cache."""
+    sessions_mod._activity = {"alpha": 1700000000.0}
+
+    result = get_session_activity()
+    result["alpha"] = 0.0
+    result["injected"] = 999.0
+
+    assert get_session_activity() == {"alpha": 1700000000.0}
 
 
 # ---------------------------------------------------------------------------

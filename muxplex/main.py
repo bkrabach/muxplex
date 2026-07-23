@@ -50,6 +50,7 @@ from muxplex.auth import (
 from muxplex.bells import apply_bell_clear_rule, process_bell_flags
 from muxplex.sessions import (
     enumerate_sessions,
+    get_session_activity,
     get_session_list,
     get_snapshots,
     run_tmux,
@@ -581,9 +582,10 @@ async def patch_state(patch: StatePatch) -> dict:
 
 @app.get("/api/sessions")
 async def get_sessions() -> list[dict]:
-    """Return list of sessions with name, snapshot, and bell data."""
+    """Return list of sessions with name, snapshot, bell, and last-activity data."""
     names = get_session_list()
     snapshots = get_snapshots()
+    activity = get_session_activity()
     state = await read_state()
 
     result = []
@@ -595,6 +597,7 @@ async def get_sessions() -> list[dict]:
                 "name": name,
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
+                "last_activity_at": activity.get(name),
             }
         )
     return result
@@ -1329,6 +1332,7 @@ async def federation_sessions(request: Request) -> list[dict]:
     # Build local sessions with deviceId/deviceName/remoteId/sessionKey tags
     names = get_session_list()
     snapshots = get_snapshots()
+    activity = get_session_activity()
     state = await read_state()
     local_sessions: list[dict] = []
     for name in names:
@@ -1339,6 +1343,7 @@ async def federation_sessions(request: Request) -> list[dict]:
                 "name": name,
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
+                "last_activity_at": activity.get(name),
                 "deviceId": local_device_id,
                 "deviceName": local_device_name,
                 "remoteId": None,

@@ -2736,6 +2736,112 @@ test('_setGridViewMode and renderGroupedGrid are exported', () => {
   assert.strictEqual(typeof app.renderGroupedGrid, 'function', 'renderGroupedGrid should be exported');
 });
 
+// --- renderGrid 'recent' sort (session-activity feature) ---
+
+function renderGridToHTML(sessions) {
+  const collectedHTML = [];
+  const mockGrid = {
+    get innerHTML() { return collectedHTML[0] || ''; },
+    set innerHTML(v) { collectedHTML[0] = v; },
+  };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-grid') return mockGrid;
+    if (id === 'empty-state') return mockEmpty;
+    return null;
+  };
+
+  app.renderGrid(sessions);
+
+  globalThis.document.getElementById = origGetById;
+  return mockGrid.innerHTML;
+}
+
+test("renderGrid sort_order 'recent' orders sessions by last_activity_at descending", () => {
+  app._setServerSettings({ sort_order: 'recent' });
+  const sessions = [
+    { name: 'oldest', last_activity_at: 100 },
+    { name: 'newest', last_activity_at: 300 },
+    { name: 'middle', last_activity_at: 200 },
+  ];
+
+  const html = renderGridToHTML(sessions);
+  const iNewest = html.indexOf('data-session="newest"');
+  const iMiddle = html.indexOf('data-session="middle"');
+  const iOldest = html.indexOf('data-session="oldest"');
+  assert.ok(iNewest > -1 && iMiddle > -1 && iOldest > -1, 'all three tiles should render');
+  assert.ok(iNewest < iMiddle, 'most recently active session must come first');
+  assert.ok(iMiddle < iOldest, 'middle activity must come before oldest');
+
+  app._setServerSettings(null);
+});
+
+test("renderGrid sort_order 'recent' sorts sessions with no last_activity_at last", () => {
+  app._setServerSettings({ sort_order: 'recent' });
+  const sessions = [
+    { name: 'unknown-activity' },
+    { name: 'has-activity', last_activity_at: 500 },
+  ];
+
+  const html = renderGridToHTML(sessions);
+  const iKnown = html.indexOf('data-session="has-activity"');
+  const iUnknown = html.indexOf('data-session="unknown-activity"');
+  assert.ok(iKnown > -1 && iUnknown > -1, 'both tiles should render');
+  assert.ok(iKnown < iUnknown, 'session with a known activity timestamp must sort before one without');
+
+  app._setServerSettings(null);
+});
+
+test("renderGrid sort_order 'recent' is stable for ties (preserves server-provided order)", () => {
+  app._setServerSettings({ sort_order: 'recent' });
+  const sessions = [
+    { name: 'first-no-activity' },
+    { name: 'second-no-activity' },
+    { name: 'third-tied', last_activity_at: 100 },
+    { name: 'fourth-tied', last_activity_at: 100 },
+  ];
+
+  const html = renderGridToHTML(sessions);
+  // Ties among timestamped sessions preserve original relative order.
+  const iThird = html.indexOf('data-session="third-tied"');
+  const iFourth = html.indexOf('data-session="fourth-tied"');
+  assert.ok(iThird < iFourth, 'equal-timestamp sessions must preserve original order');
+  // Ties among null-timestamp sessions (both sorted last) also preserve original order.
+  const iFirst = html.indexOf('data-session="first-no-activity"');
+  const iSecond = html.indexOf('data-session="second-no-activity"');
+  assert.ok(iFirst < iSecond, 'null-timestamp sessions must preserve original order among themselves');
+
+  app._setServerSettings(null);
+});
+
+test("renderGrid sort_order 'recent' on mobile still uses sortByPriority (untouched)", () => {
+  const origInnerWidth = globalThis.window.innerWidth;
+  globalThis.window.innerWidth = 480; // below MOBILE_THRESHOLD (600)
+
+  app._setServerSettings({ sort_order: 'recent' });
+  const sessions = [
+    { name: 'idle-recent', last_activity_at: 999, bell: { unseen_count: 0 } },
+    {
+      name: 'needs-attention',
+      last_activity_at: 1,
+      bell: { unseen_count: 1, last_fired_at: 2, seen_at: null },
+    },
+  ];
+
+  const html = renderGridToHTML(sessions);
+  const iBell = html.indexOf('data-session="needs-attention"');
+  const iIdle = html.indexOf('data-session="idle-recent"');
+  assert.ok(iBell > -1 && iIdle > -1, 'both tiles should render');
+  assert.ok(
+    iBell < iIdle,
+    'mobile priority sort (bell first) must still apply, ignoring last_activity_at ordering'
+  );
+
+  globalThis.window.innerWidth = origInnerWidth;
+  app._setServerSettings(null);
+});
+
 // --- renderFilterBar (task-12) ---
 
 test('renderFilterBar produces pill buttons for each device plus All', () => {
