@@ -13,6 +13,7 @@ Public API:
     process_bell_flags(session_names, state) → bool
     should_clear_bell(session_name, state)   → bool
     apply_bell_clear_rule(state)             → list[str]
+    needs_attention(bell)                    → bool
 """
 
 import time
@@ -145,6 +146,41 @@ def should_clear_bell(session_name: str, state: dict) -> bool:
 # ---------------------------------------------------------------------------
 # apply_bell_clear_rule
 # ---------------------------------------------------------------------------
+
+
+def needs_attention(bell: dict) -> bool:
+    """Return True if a bell sub-dict represents a session needing attention.
+
+    Canonical predicate (previously ported into three identical call sites
+    in frontend/app.js -- see AGENTS.md "Semantics external clients
+    re-implement"):
+
+        unseen_count > 0 and (seen_at is None or last_fired_at > seen_at)
+
+    A session needs attention when it has at least one unseen bell AND
+    that bell fired more recently than the last time any device
+    acknowledged it (or it has never been acknowledged at all).
+
+    Args:
+        bell: a bell sub-dict as stored at state["sessions"][name]["bell"]
+            (see state.empty_bell() for shape/defaults). Missing keys are
+            treated the same as empty_bell()'s defaults.
+
+    Returns:
+        bool. Defensive on a `last_fired_at is None` combined with a
+        non-None `seen_at` (should not occur in practice -- last_fired_at
+        is always set in the same update that increments unseen_count --
+        but is treated as "not newer than seen_at" rather than raising).
+    """
+    if bell.get("unseen_count", 0) <= 0:
+        return False
+    seen_at = bell.get("seen_at")
+    if seen_at is None:
+        return True
+    last_fired_at = bell.get("last_fired_at")
+    if last_fired_at is None:
+        return False
+    return last_fired_at > seen_at
 
 
 def apply_bell_clear_rule(state: dict) -> list[str]:

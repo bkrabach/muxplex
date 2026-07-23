@@ -11,6 +11,7 @@ import pytest
 from muxplex.bells import (
     _bell_seen,
     apply_bell_clear_rule,
+    needs_attention,
     poll_bell_flag,
     process_bell_flags,
     should_clear_bell,
@@ -316,3 +317,56 @@ def test_apply_bell_clear_rule_resets_bell_seen_tracking():
     apply_bell_clear_rule(state)
 
     assert _bell_seen.get("session-a") is False
+
+
+# ---------------------------------------------------------------------------
+# needs_attention tests
+# ---------------------------------------------------------------------------
+
+
+def test_needs_attention_false_when_unseen_count_zero():
+    """needs_attention is False when unseen_count is 0, regardless of timestamps."""
+    bell = {"unseen_count": 0, "last_fired_at": time.time(), "seen_at": None}
+    assert needs_attention(bell) is False
+
+
+def test_needs_attention_true_when_unseen_and_never_seen():
+    """needs_attention is True when unseen_count > 0 and seen_at is None."""
+    bell = {"unseen_count": 1, "last_fired_at": time.time(), "seen_at": None}
+    assert needs_attention(bell) is True
+
+
+def test_needs_attention_true_when_fired_after_last_seen():
+    """needs_attention is True when last_fired_at is newer than seen_at."""
+    now = time.time()
+    bell = {"unseen_count": 1, "last_fired_at": now, "seen_at": now - 30.0}
+    assert needs_attention(bell) is True
+
+
+def test_needs_attention_false_when_seen_after_last_fired():
+    """needs_attention is False when seen_at is newer than (or equal to) last_fired_at."""
+    now = time.time()
+    bell = {"unseen_count": 1, "last_fired_at": now - 30.0, "seen_at": now}
+    assert needs_attention(bell) is False
+
+
+def test_needs_attention_false_when_last_fired_equals_seen_at():
+    """needs_attention is False on the boundary: last_fired_at == seen_at (not '>')."""
+    now = time.time()
+    bell = {"unseen_count": 1, "last_fired_at": now, "seen_at": now}
+    assert needs_attention(bell) is False
+
+
+def test_needs_attention_defaults_missing_keys_like_empty_bell():
+    """A bare {} (no keys at all) is treated as unseen_count=0 -> not needing attention."""
+    assert needs_attention({}) is False
+
+
+def test_needs_attention_false_when_last_fired_at_missing_but_seen_at_set():
+    """Defensive case: unseen_count > 0, seen_at set, but last_fired_at missing/None.
+
+    This should not occur in practice (last_fired_at is always set alongside
+    an unseen_count increment), but must not raise -- treated as not newer.
+    """
+    bell = {"unseen_count": 1, "last_fired_at": None, "seen_at": time.time() - 10.0}
+    assert needs_attention(bell) is False

@@ -36,6 +36,13 @@ Preferred direction as semantics grow: move resolution **server-side** (e.g. a
 resolved-current-view endpoint) rather than expecting each client to port more
 logic — duplication across PWA/sidecar/agents is where drift bugs come from.
 
+- **`GET /api/view`** is now the canonical server-side resolution of the
+  above: view membership (via `filter_visible`), the needs-attention
+  predicate (`bells.needs_attention`), and sort ordering (`?sort=attention`
+  for tiered bell/active/recency ordering, or the default that mirrors
+  `settings.sort_order`). New clients should prefer it over re-deriving
+  these rules; local sessions only in v1.
+
 ## Running a second instance on one box (scratch/testing)
 
 - All config/state paths derive from `Path.home()` — **XDG env vars are

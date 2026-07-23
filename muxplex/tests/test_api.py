@@ -394,6 +394,318 @@ def test_get_sessions_last_activity_at_null_when_unknown(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/view
+# ---------------------------------------------------------------------------
+
+
+def _view_settings(**overrides) -> dict:
+    """Build a minimal settings dict for /api/view tests; merge overrides."""
+    base = {"sort_order": "manual", "hidden_sessions": [], "views": []}
+    base.update(overrides)
+    return base
+
+
+def test_get_view_default_shape_and_all_view(client, monkeypatch):
+    """GET /api/view with no views defined returns view='all', views=['all'],
+    sort='server', and all sessions (no hidden_sessions/views configured)."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["view"] == "all"
+    assert data["views"] == ["all"]
+    assert data["sort"] == "server"
+    names = [s["name"] for s in data["sessions"]]
+    assert names == ["alpha", "beta"]
+    for s in data["sessions"]:
+        assert "active" in s
+        assert "needs_attention" in s
+        assert "bell" in s
+        assert "last_activity_at" in s
+
+
+def test_get_view_named_view_filters_membership(client, monkeypatch):
+    """GET /api/view with active_view set to a user view only returns member sessions."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["alpha", "beta", "gamma"]
+    )
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr(
+        "muxplex.main.load_settings",
+        lambda: _view_settings(
+            views=[{"name": "Work", "sessions": ["alpha", "gamma"]}]
+        ),
+    )
+
+    state = load_state()
+    state["active_view"] = "Work"
+    save_state(state)
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["view"] == "Work"
+    assert data["views"] == ["all", "Work"]
+    names = {s["name"] for s in data["sessions"]}
+    assert names == {"alpha", "gamma"}
+
+
+def test_get_view_unknown_view_returns_empty_but_echoes_name(client, monkeypatch):
+    """GET /api/view with an active_view that matches no user view returns an
+    empty sessions list while still echoing the (unresolvable) view name."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    state = load_state()
+    state["active_view"] = "Ghost"
+    save_state(state)
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["view"] == "Ghost"
+    assert data["sessions"] == []
+
+
+def test_get_view_all_excludes_hidden_sessions(client, monkeypatch):
+    """GET /api/view for 'all' excludes sessions in settings.hidden_sessions."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr(
+        "muxplex.main.load_settings",
+        lambda: _view_settings(hidden_sessions=["beta"]),
+    )
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    names = [s["name"] for s in data["sessions"]]
+    assert names == ["alpha"]
+
+
+def test_get_view_views_list_excludes_hidden_reserved_name(client, monkeypatch):
+    """The 'views' list is 'all' + user views in settings order; 'hidden' never appears."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr(
+        "muxplex.main.load_settings",
+        lambda: _view_settings(
+            views=[{"name": "Work", "sessions": []}, {"name": "Play", "sessions": []}]
+        ),
+    )
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["views"] == ["all", "Work", "Play"]
+    assert "hidden" not in data["views"]
+
+
+def test_get_view_sort_omitted_alphabetical_setting_sorts_by_name(client, monkeypatch):
+    """When sort is omitted and settings.sort_order == 'alphabetical', sessions
+    are sorted by name and 'sort' echoes 'alphabetical'."""
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["zeta", "alpha", "mu"]
+    )
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr(
+        "muxplex.main.load_settings",
+        lambda: _view_settings(sort_order="alphabetical"),
+    )
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sort"] == "alphabetical"
+    assert [s["name"] for s in data["sessions"]] == ["alpha", "mu", "zeta"]
+
+
+def test_get_view_sort_omitted_manual_setting_preserves_enumeration_order(
+    client, monkeypatch
+):
+    """When sort is omitted and settings.sort_order != 'alphabetical', the
+    /api/sessions enumeration order is preserved and 'sort' echoes 'server'."""
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["zeta", "alpha", "mu"]
+    )
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr(
+        "muxplex.main.load_settings", lambda: _view_settings(sort_order="manual")
+    )
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sort"] == "server"
+    assert [s["name"] for s in data["sessions"]] == ["zeta", "alpha", "mu"]
+
+
+def test_get_view_bad_sort_value_returns_400(client, monkeypatch):
+    """GET /api/view?sort=bogus returns 400 (fail loud, no silent fallback)."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    response = client.get("/api/view", params={"sort": "bogus"})
+    assert response.status_code == 400
+
+
+def test_get_view_sort_attention_bell_tier_ordered_by_last_fired_desc(
+    client, monkeypatch
+):
+    """?sort=attention puts needs_attention sessions first, freshest bell first."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["quiet", "older-bell", "newer-bell"]
+    )
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    state = load_state()
+    state["sessions"]["older-bell"] = {
+        "bell": {"unseen_count": 1, "last_fired_at": 1000.0, "seen_at": None}
+    }
+    state["sessions"]["newer-bell"] = {
+        "bell": {"unseen_count": 1, "last_fired_at": 2000.0, "seen_at": None}
+    }
+    save_state(state)
+
+    response = client.get("/api/view", params={"sort": "attention"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sort"] == "attention"
+    names = [s["name"] for s in data["sessions"]]
+    assert names[0] == "newer-bell"
+    assert names[1] == "older-bell"
+    assert names[2] == "quiet"
+    assert data["sessions"][0]["needs_attention"] is True
+    assert data["sessions"][1]["needs_attention"] is True
+    assert data["sessions"][2]["needs_attention"] is False
+
+
+def test_get_view_sort_attention_active_session_second_tier(client, monkeypatch):
+    """?sort=attention places the active session right after any bell tier,
+    ahead of plain recency-ordered sessions."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["recent", "active-one", "old"]
+    )
+    monkeypatch.setattr(
+        "muxplex.main.get_session_activity",
+        lambda: {"recent": 2000.0, "active-one": 500.0, "old": 100.0},
+    )
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    state = load_state()
+    state["active_session"] = "active-one"
+    save_state(state)
+
+    response = client.get("/api/view", params={"sort": "attention"})
+    assert response.status_code == 200
+    data = response.json()
+    names = [s["name"] for s in data["sessions"]]
+    # No bells fired -> tier 1 empty. active-one is tier 2 (first), then
+    # recency-ordered tier 3: recent (2000) before old (100).
+    assert names == ["active-one", "recent", "old"]
+    assert data["sessions"][0]["active"] is True
+
+
+def test_get_view_sort_attention_active_session_already_in_bell_tier_not_duplicated(
+    client, monkeypatch
+):
+    """If the active session also needs attention, it appears once (in tier 1),
+    not duplicated in tier 2."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["bell-and-active"])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    state = load_state()
+    state["active_session"] = "bell-and-active"
+    state["sessions"]["bell-and-active"] = {
+        "bell": {"unseen_count": 1, "last_fired_at": 1000.0, "seen_at": None}
+    }
+    save_state(state)
+
+    response = client.get("/api/view", params={"sort": "attention"})
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["sessions"]) == 1
+    assert data["sessions"][0]["name"] == "bell-and-active"
+    assert data["sessions"][0]["active"] is True
+    assert data["sessions"][0]["needs_attention"] is True
+
+
+def test_get_view_sort_attention_third_tier_recency_nulls_last(client, monkeypatch):
+    """?sort=attention orders the remaining (non-bell, non-active) sessions by
+    last_activity_at descending, with unknown activity (None) sorting last."""
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["no-activity", "old", "recent"]
+    )
+    monkeypatch.setattr(
+        "muxplex.main.get_session_activity",
+        lambda: {"old": 100.0, "recent": 2000.0},
+    )
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    response = client.get("/api/view", params={"sort": "attention"})
+    assert response.status_code == 200
+    data = response.json()
+    names = [s["name"] for s in data["sessions"]]
+    assert names == ["recent", "old", "no-activity"]
+
+
+def test_get_view_active_field_reflects_active_session(client, monkeypatch):
+    """The 'active' field on each session is True only for state.active_session."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["one", "two"])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    state = load_state()
+    state["active_session"] = "two"
+    save_state(state)
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    by_name = {s["name"]: s["active"] for s in data["sessions"]}
+    assert by_name == {"one": False, "two": True}
+
+
+def test_get_view_needs_attention_false_when_bell_already_seen(client, monkeypatch):
+    """needs_attention is False (via the endpoint) once seen_at >= last_fired_at."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["acked"])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    state = load_state()
+    state["sessions"]["acked"] = {
+        "bell": {"unseen_count": 1, "last_fired_at": 1000.0, "seen_at": 2000.0}
+    }
+    save_state(state)
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sessions"][0]["needs_attention"] is False
+
+
+# ---------------------------------------------------------------------------
 # POST /api/sessions/{name}/connect
 # ---------------------------------------------------------------------------
 
