@@ -10,6 +10,7 @@ Background poll loop reconciles tmux session state every POLL_INTERVAL seconds.
 import asyncio
 import contextlib
 import copy
+import hashlib
 import hmac
 import importlib.metadata
 import json
@@ -35,7 +36,8 @@ from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
+from starlette.types import Scope
 
 from muxplex.auth import (
     AuthMiddleware,
@@ -365,6 +367,14 @@ async def _poll_loop() -> None:
 async def lifespan(app: FastAPI):
     global _poll_task
     global _federation_client
+
+    # One-line frontend identity so "which JS is this server serving?" is a
+    # glance at the startup log, not a debugging session.
+    _app_js = _FRONTEND_DIR / "app.js"
+    _log.info(
+        "frontend: app.js %s",
+        hashlib.md5(_app_js.read_bytes(), usedforsecurity=False).hexdigest()[:8],
+    )
 
     # Startup: kill any orphaned ttyd from a previous muxplex run, then
     # start the background poll loop.
@@ -893,6 +903,20 @@ async def connect_session(name: str) -> dict:
     known = get_session_list()
     if name not in known:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    # Same-session short-circuit: if *name* is already the active session and
+    # ttyd is still accepting connections, kill+respawn would only churn a PTY
+    # every attached client already works against. Return current state (~2ms)
+    # so redundant client re-connects (PWA follow-open, deck double-press) are
+    # free. The <1ms TCP listening probe keeps this restart-safe: a truly-dead
+    # ttyd still falls through to a full respawn.
+    async with state_lock:
+        current = load_state().get("active_session")
+    if name == current and _ttyd_is_listening():
+        _log.info(
+            "Session '%s' already active and ttyd listening; skipping respawn", name
+        )
+        return {"active_session": name, "ttyd_port": TTYD_PORT}
 
     _log.info("Connecting to session '%s'", name)
     await kill_ttyd()
@@ -1431,7 +1455,10 @@ async def index_page():
         lambda m: f"{m.group(1)}{m.group(2)}?v={_UI_VERSION}",
         html,
     )
-    return HTMLResponse(html)
+    # no-cache = "revalidate before use", NOT "don't cache" — installed PWAs
+    # otherwise keep serving a stale app shell across deploys (see the static
+    # mount below for the same treatment of app.js and friends).
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -1850,4 +1877,25 @@ async def federation_delete_session(
 # Static file serving — MUST come after all API routes (first-match-wins)
 # ---------------------------------------------------------------------------
 
-app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that forces revalidation on every request.
+
+    Without a Cache-Control header, installed PWAs (Edge/Chrome app windows)
+    keep serving a stale cached app shell indefinitely after a deploy —
+    ``?v=<version>`` busting only helps on release version bumps, not
+    git-main deploys. ``no-cache`` (deliberately NOT ``no-store``) keeps
+    caching but requires revalidation; with StaticFiles' built-in
+    ETag/Last-Modified support an unchanged file costs a cheap 304.
+    API routes are registered before this mount and are unaffected.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount(
+    "/", _NoCacheStaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend"
+)

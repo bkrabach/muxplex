@@ -113,6 +113,7 @@ function buildHeartbeatPayload(device_id, viewing_session, view_mode, last_inter
 
 // ─── Runtime constants ────────────────────────────────────────────────────────
 const POLL_MS = 2000;
+const STATE_POLL_MS = 1000;
 const HEARTBEAT_MS = 5000;
 const MOBILE_THRESHOLD = 600;
 
@@ -124,6 +125,7 @@ let _viewingRemoteId = '';
 let _viewMode = 'grid';
 let _lastInteractionAt = Date.now() / 1000;
 let _pollingTimer;
+let _statePollTimer;
 let _heartbeatTimer;
 let _notificationPermission = 'default';
 let _pollFailCount = 0;
@@ -347,10 +349,10 @@ async function pollSessions() {
     var endpoint = (_serverSettings && _serverSettings.multi_device_enabled)
       ? '/api/federation/sessions'
       : '/api/sessions';
-    // Parallel /api/state read — see followRemoteActiveSession. Failures → null.
-    var statePromise = api('GET', '/api/state')
-      .then(function (r) { return r.json(); })
-      .catch(function () { return null; });
+    // NOTE: session-follow (followRemoteActiveSession) deliberately does NOT
+    // live here. The federation fetch can take seconds when remotes are down
+    // (per-remote timeout x gather), which made deck->PWA follows ~8s late.
+    // The dedicated pollActiveState() loop owns following on a fresh snapshot.
     const res = await api('GET', endpoint);
     const sessions = await res.json();
     const prev = _currentSessions;
@@ -363,7 +365,6 @@ async function pollSessions() {
     updateSessionPill(sessions);
     updateFaviconBadge();
     updatePageTitle();
-    followRemoteActiveSession(await statePromise);
   } catch (err) {
     _pollFailCount++;
     setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
@@ -419,6 +420,45 @@ function startPolling() {
     _pollingTimer = setTimeout(pollLoop, POLL_MS);
   }
   pollLoop();
+}
+
+/**
+ * Dedicated lightweight follow poll: fetch ONLY /api/state (~3ms server-side)
+ * and hand the FRESH snapshot to followRemoteActiveSession().
+ *
+ * Deliberately independent of pollSessions(): when multi_device_enabled, the
+ * sessions poll fetches /api/federation/sessions, which blocks for the full
+ * per-remote timeout (seconds) whenever a federation remote is down. Following
+ * on that cadence made deck->PWA session switches take ~8s. This poll never
+ * touches federation, so a remote switch is detected within ~STATE_POLL_MS.
+ *
+ * Errors are swallowed (skip the tick): connection-status UI is owned by
+ * pollSessions(), and a transient /api/state failure just delays the follow
+ * by one tick.
+ * @returns {Promise<void>}
+ */
+async function pollActiveState() {
+  try {
+    const res = await api('GET', '/api/state');
+    followRemoteActiveSession(await res.json());
+  } catch (err) {
+    // Transient failure: skip this tick; next one retries in STATE_POLL_MS.
+  }
+}
+
+/**
+ * Start the dedicated /api/state follow-poll loop. Guards against
+ * double-start. Self-scheduling setTimeout (same pattern as startPolling)
+ * so a slow response never overlaps the next tick.
+ */
+function startStatePolling() {
+  if (_statePollTimer) return;
+  _statePollTimer = true; // sentinel: prevents double-start before first setTimeout fires
+  async function statePollLoop() {
+    await pollActiveState();
+    _statePollTimer = setTimeout(statePollLoop, STATE_POLL_MS);
+  }
+  statePollLoop();
 }
 
 // ─── Grid rendering ──────────────────────────────────────────────────────────
@@ -4538,6 +4578,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   restoreState()
     .then(function() {
       startPolling();
+      startStatePolling();
       updatePageTitle();
       startHeartbeat();
       bindStaticEventListeners();
@@ -4552,7 +4593,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     })
     .catch(function(err) {
       console.error('[init] restoreState failed, retrying in 5s:', err);
-      setTimeout(function() { startPolling(); }, POLL_MS);
+      setTimeout(function() { startPolling(); startStatePolling(); }, POLL_MS);
     });
 });
 
@@ -4569,7 +4610,9 @@ if (typeof module !== 'undefined' && module.exports) {
     setConnectionStatus,
     pollSessions,
     followRemoteActiveSession,
+    pollActiveState,
     startPolling,
+    startStatePolling,
     escapeHtml,
     buildTileHTML,
     buildSidebarHTML,
