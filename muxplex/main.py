@@ -79,6 +79,7 @@ from muxplex.settings import (
     patch_settings,
     save_settings,
 )
+from muxplex.breaker import CircuitBreaker
 from muxplex.pruning import load_pruning_state, save_pruning_state
 from muxplex.views import filter_visible, normalize_session_keys, prune_stale_keys
 from muxplex.identity import load_device_id
@@ -1536,6 +1537,20 @@ async def auth_mode_endpoint():
 _federation_cache: dict[str, dict] = {}
 _FEDERATION_GRACE_FAILURES = 3  # consecutive failures before marking unreachable
 
+# Per-remote poll timeout (seconds). The shared federation client keeps its 5s
+# default for one-off write proxies (connect/bell/create/delete); the sessions
+# poll fan-out uses this tighter cap so one slow remote can't lag the whole UI.
+_FEDERATION_POLL_TIMEOUT = 2.0
+
+# Circuit breaker: after 3 consecutive connection failures a remote is skipped
+# (no network call, no fan-out latency) for 60s, then probed once per window.
+# Threshold matches _FEDERATION_GRACE_FAILURES so the circuit opens exactly when
+# the grace window is exhausted — cached-session semantics are unchanged.
+# Keyed by remote URL — the network endpoint is the thing that's unreachable.
+_federation_breaker = CircuitBreaker(
+    threshold=_FEDERATION_GRACE_FAILURES, cooldown=60.0
+)
+
 
 @app.get("/api/federation/sessions")
 async def federation_sessions(request: Request) -> list[dict]:
@@ -1590,11 +1605,28 @@ async def federation_sessions(request: Request) -> list[dict]:
         key: str = remote.get("key", "")
         remote_name: str = remote.get("name", url)
         remote_device_id: str = remote.get("device_id", str(i))
+        if not _federation_breaker.should_attempt(url):
+            # Circuit open: remote is known-unreachable; skip the network call
+            # entirely so it costs the fan-out nothing. Honest status entry,
+            # same shape as a fresh connection failure.
+            return [
+                {
+                    "status": "unreachable",
+                    "deviceId": remote_device_id,
+                    "remoteId": remote_device_id,
+                    "deviceName": remote_name,
+                }
+            ]
         try:
             resp = await http_client.get(
                 f"{url.rstrip('/')}/api/sessions",
                 headers={"Authorization": f"Bearer {key}"} if key else {},
+                timeout=_FEDERATION_POLL_TIMEOUT,
             )
+            # Any HTTP response means the remote is reachable — reset the breaker
+            # (auth/HTTP errors are honest states, not connection failures).
+            if _federation_breaker.record_success(url):
+                _log.info("federation remote %s reachable again; resuming", remote_name)
             if resp.status_code in (401, 403):
                 # Auth failure — clear cache so stale data is not served
                 _federation_cache.pop(remote_device_id, None)
@@ -1634,6 +1666,35 @@ async def federation_sessions(request: Request) -> list[dict]:
                 ]
             return tagged
         except httpx.HTTPStatusError:
+            # The remote responded (reachable) with an HTTP error — honest
+            # error state, NOT a connection failure: never circuit-break it.
+            cached = _federation_cache.get(remote_device_id)
+            if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
+                cached["fail_count"] += 1
+                return cached["sessions"]
+            return [
+                {
+                    "status": "unreachable",
+                    "deviceId": remote_device_id,
+                    "remoteId": remote_device_id,
+                    "deviceName": remote_name,
+                }
+            ]
+        except httpx.TransportError as exc:
+            # Connection-level failure (refused, timeout, DNS): the remote is
+            # unreachable. Count it toward the circuit breaker so a
+            # persistently-dead remote stops costing the fan-out a timeout on
+            # every poll.
+            if _federation_breaker.record_failure(url):
+                _log.warning(
+                    "federation remote %s unreachable; skipping for %.0fs",
+                    remote_name,
+                    _federation_breaker.cooldown,
+                )
+            else:
+                _log.debug(
+                    "federation remote %s connection failed: %s", remote_name, exc
+                )
             cached = _federation_cache.get(remote_device_id)
             if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
                 cached["fail_count"] += 1

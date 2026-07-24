@@ -53,8 +53,10 @@ def reset_federation_cache():
     import muxplex.main as main_mod
 
     main_mod._federation_cache.clear()
+    main_mod._federation_breaker.reset()
     yield
     main_mod._federation_cache.clear()
+    main_mod._federation_breaker.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -2808,6 +2810,192 @@ def test_federation_sessions_includes_remote_failure_status(
     assert (
         entry.get("remoteId") == "0"
     )  # device_id string (fallback to str(index) when no device_id)
+
+
+# ---------------------------------------------------------------------------
+# Federation circuit breaker (dead remote must not lag every fan-out)
+# ---------------------------------------------------------------------------
+
+
+def _write_single_remote_settings(settings_path, url="http://dead-host:9"):
+    import json
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "device_name": "local-host",
+                "remote_instances": [
+                    {"url": url, "key": "abc123", "name": "dead-host"}
+                ],
+            }
+        )
+    )
+
+
+def test_federation_circuit_breaker_skips_dead_remote_after_threshold(
+    client, monkeypatch, tmp_path, caplog
+):
+    """After 3 consecutive connection failures (the grace window) the dead
+    remote is SKIPPED: no network call is made, the honest 'unreachable' entry
+    is still returned, and the circuit-open transition is logged exactly once."""
+    import logging
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    _write_single_remote_settings(settings_path)
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    from unittest.mock import MagicMock
+
+    call_count = 0
+
+    async def mock_get(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise httpx.ConnectError("Connection refused")
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    with caplog.at_level(logging.WARNING, logger="muxplex.main"):
+        # Requests 1-3: real attempts (failures count toward the breaker;
+        # threshold matches the _FEDERATION_GRACE_FAILURES window of 3)
+        for _ in range(3):
+            response = client.get("/api/federation/sessions")
+            assert response.status_code == 200
+        assert call_count == 3
+
+        # Requests 4-6: circuit open — NO further network calls
+        for _ in range(3):
+            response = client.get("/api/federation/sessions")
+            assert response.status_code == 200
+            data = response.json()
+            entries = [s for s in data if s.get("status") == "unreachable"]
+            assert len(entries) == 1, (
+                f"Circuit-open remote must still appear as unreachable, got: {data}"
+            )
+        assert call_count == 3, (
+            f"Open circuit must skip the network call entirely, "
+            f"but the client was called {call_count} times"
+        )
+
+    open_logs = [r for r in caplog.records if "unreachable; skipping" in r.getMessage()]
+    assert len(open_logs) == 1, (
+        f"Circuit-open must be logged exactly once (no per-poll spam), "
+        f"got {len(open_logs)}: {[r.getMessage() for r in open_logs]}"
+    )
+
+
+def test_federation_reachable_error_remote_is_never_circuit_broken(
+    client, monkeypatch, tmp_path
+):
+    """A remote that RESPONDS with an auth error is reachable: it must keep
+    being polled (no circuit break) and keep reporting its honest auth_failed
+    status on every request."""
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    _write_single_remote_settings(settings_path, url="http://badkey-host:8088")
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    from unittest.mock import MagicMock
+
+    call_count = 0
+
+    async def mock_get(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    for i in range(4):
+        response = client.get("/api/federation/sessions")
+        assert response.status_code == 200
+        data = response.json()
+        entries = [s for s in data if s.get("status") == "auth_failed"]
+        assert len(entries) == 1, (
+            f"Request {i + 1}: reachable-but-erroring remote must still be "
+            f"reported as auth_failed, got: {data}"
+        )
+    assert call_count == 4, (
+        f"Reachable remote must be polled on every request (never circuit-broken), "
+        f"expected 4 calls, got {call_count}"
+    )
+
+
+def test_federation_circuit_breaker_recovers_after_cooldown(
+    client, monkeypatch, tmp_path
+):
+    """End-to-end recovery: circuit opens on a dead remote, then after the
+    cooldown a half-open probe succeeds and the remote's sessions reappear."""
+    import httpx
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+    from muxplex.breaker import CircuitBreaker
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    _write_single_remote_settings(settings_path, url="http://flaky-host:8088")
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    # Deterministic clock so the test doesn't sleep through a real cooldown
+    fake_now = [1000.0]
+    breaker = CircuitBreaker(threshold=2, cooldown=60.0, clock=lambda: fake_now[0])
+    monkeypatch.setattr(main_mod, "_federation_breaker", breaker)
+
+    from unittest.mock import MagicMock
+
+    remote_up = [False]
+
+    async def mock_get(url, **kwargs):
+        if not remote_up[0]:
+            raise httpx.ConnectError("Connection refused")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.json = lambda: [{"name": "revived", "snapshot": "", "bell": {}}]
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    # Open the circuit
+    client.get("/api/federation/sessions")
+    client.get("/api/federation/sessions")
+    assert breaker.is_open("http://flaky-host:8088")
+
+    # Remote comes back up; cooldown elapses; half-open probe succeeds
+    remote_up[0] = True
+    fake_now[0] += 61.0
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+    names = [s.get("name") for s in data]
+    assert "revived" in names, (
+        f"After recovery the remote's sessions must reappear, got: {data}"
+    )
+    assert not breaker.is_open("http://flaky-host:8088"), (
+        "Successful half-open probe must close the circuit"
+    )
 
 
 # ---------------------------------------------------------------------------
