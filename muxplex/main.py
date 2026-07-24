@@ -103,6 +103,12 @@ _poll_task: asyncio.Task | None = None
 _federation_client: httpx.AsyncClient | None = None
 _settings_sync_counter: int = 0
 
+# Tasks currently running a terminal WebSocket proxy relay.  Tracked so the
+# lifespan shutdown can cancel any still-open relays: a relay blocked on
+# ttyd output would otherwise keep uvicorn's "waiting for connections to
+# close" phase alive until systemd's stop timeout SIGKILLs the process.
+_ws_proxy_tasks: set[asyncio.Task] = set()
+
 
 # ---------------------------------------------------------------------------
 # Settings sync
@@ -406,21 +412,47 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Shutdown — ordered and bounded so a SIGTERM (systemctl stop/restart)
+    # completes in ~1s instead of hanging past systemd's 10s TimeoutStopSec
+    # and getting SIGKILLed.  Order: cancel background work first (the poll
+    # loop may be mid federation request on the shared client), unblock any
+    # open terminal relays (they otherwise keep uvicorn's "waiting for
+    # connections to close" phase alive forever), then stop the ttyd child,
+    # then close the shared HTTP client.
+    to_cancel: list[asyncio.Task] = []
+    if _poll_task is not None:
+        _poll_task.cancel()
+        to_cancel.append(_poll_task)
+    n_relays = len(_ws_proxy_tasks)
+    for task in list(_ws_proxy_tasks):
+        task.cancel()
+        to_cancel.append(task)
+    if to_cancel:
+        # Bounded: cancellation normally completes in milliseconds; don't
+        # wait forever on a task stuck in un-cancellable cleanup.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(*to_cancel, return_exceptions=True), timeout=2.0
+            )
+    _poll_task = None
+
+    try:
+        await asyncio.wait_for(kill_ttyd(), timeout=3.0)
+    except Exception:
+        _log.exception("ttyd shutdown error")
+
     try:
         client = getattr(app.state, "federation_client", None)
         if client is not None:
             await client.aclose()
-            _federation_client = None
     except Exception:
         _log.exception("federation_client aclose error")
-    finally:
-        # Cleanup: cancel the poll loop task and wait for it to finish.
-        if _poll_task is not None:
-            _poll_task.cancel()
-            try:
-                await _poll_task
-            except (asyncio.CancelledError, Exception):
-                pass
+    _federation_client = None
+
+    _log.info(
+        "shutdown: cancelled poll loop, closed %d terminal relay(s), stopped ttyd",
+        n_relays,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1247,6 +1279,11 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
     if not await _ws_auth_check(websocket):
         return
 
+    # Register this connection's task so lifespan shutdown can cancel it.
+    _task = asyncio.current_task()
+    if _task is not None:
+        _ws_proxy_tasks.add(_task)
+
     # Ensure ttyd is reachable BEFORE accepting the browser WS.
     # After a service restart ttyd is dead but clients reconnect immediately.
     # Auto-spawn from active_session so the browser's 'open' event only fires
@@ -1279,6 +1316,8 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
                 try:
                     while True:
                         msg = await websocket.receive()
+                        if msg["type"] == "websocket.disconnect":
+                            return
                         if msg.get("bytes"):
                             await ttyd_ws.send(msg["bytes"])
                         elif msg.get("text"):
@@ -1296,10 +1335,28 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
                 except Exception as exc:
                     _log.debug("ws relay closed (ttyd_to_client): %s", exc)
 
-            await asyncio.gather(client_to_ttyd(), ttyd_to_client())
+            # Relay until EITHER side closes, then cancel the other.
+            # gather() (wait for both) would hang shutdown: when the browser
+            # side disconnects (e.g. uvicorn closing connections on SIGTERM),
+            # ttyd_to_client keeps streaming from the still-live ttyd, the
+            # handler never returns, and uvicorn waits on this connection
+            # until systemd SIGKILLs the process.
+            relay_tasks = [
+                asyncio.create_task(client_to_ttyd()),
+                asyncio.create_task(ttyd_to_client()),
+            ]
+            _done, pending = await asyncio.wait(
+                relay_tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            for p in pending:
+                p.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
     except Exception as exc:
         _log.debug("ws proxy closed: %s", exc)
     finally:
+        if _task is not None:
+            _ws_proxy_tasks.discard(_task)
         try:
             await websocket.close()
         except Exception:

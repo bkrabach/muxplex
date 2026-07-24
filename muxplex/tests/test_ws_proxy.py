@@ -92,12 +92,18 @@ class FakeTtydWs:
     """Mock ttyd WebSocket that stores sent messages and yields pre-loaded responses.
 
     Supports send(), close(), async iterator, and async context manager.
+
+    ``stay_open=True`` models a real ttyd: after yielding its responses the
+    stream stays open (blocks) until close() — required for browser→ttyd relay
+    tests, because the proxy correctly ends the relay as soon as the ttyd side
+    closes (FIRST_COMPLETED semantics; a closed ttyd means the terminal is gone).
     """
 
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, stay_open=False):
         self.sent = []
         self._responses = list(responses or [])
         self._closed = False
+        self._stay_open = stay_open
 
     async def send(self, message):
         self.sent.append(message)
@@ -109,8 +115,12 @@ class FakeTtydWs:
         return self._async_gen()
 
     async def _async_gen(self):
+        import asyncio
+
         for msg in self._responses:
             yield msg
+        while self._stay_open and not self._closed:
+            await asyncio.sleep(0.01)
 
     async def __aenter__(self):
         return self
@@ -282,7 +292,7 @@ def test_ws_bearer_auth_accepted(monkeypatch):
 
 def test_browser_text_relayed_to_ttyd(monkeypatch):
     """Text message from browser is forwarded to ttyd via FakeTtydWs.send()."""
-    fake_ws = FakeTtydWs()
+    fake_ws = FakeTtydWs(stay_open=True)
     monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
 
     with _make_authed_client() as c:
@@ -295,7 +305,7 @@ def test_browser_text_relayed_to_ttyd(monkeypatch):
 
 def test_browser_bytes_relayed_to_ttyd(monkeypatch):
     """Binary message from browser is forwarded to ttyd via FakeTtydWs.send()."""
-    fake_ws = FakeTtydWs()
+    fake_ws = FakeTtydWs(stay_open=True)
     monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
 
     with _make_authed_client() as c:
@@ -388,7 +398,7 @@ def test_ttyd_unreachable_closes_browser_ws(monkeypatch):
 def test_concurrent_ws_sessions(monkeypatch):
     """Two simultaneous proxy sessions relay to separate FakeTtydWs instances."""
     # Create two separate FakeTtydWs instances, one per connection
-    ws_pool = [FakeTtydWs(), FakeTtydWs()]
+    ws_pool = [FakeTtydWs(stay_open=True), FakeTtydWs(stay_open=True)]
     call_count = 0
     lock = threading.Lock()
 
