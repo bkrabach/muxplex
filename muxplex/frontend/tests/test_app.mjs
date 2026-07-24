@@ -5980,10 +5980,26 @@ test('v0.6.3: empty-state still appears when every device has zero visible sessi
 // switches it via POST /connect, the poll loop must detect the change and
 // re-open the new session through the same path restoreState() uses.
 
-test('pollSessions reads /api/state and wires followRemoteActiveSession', () => {
+test('pollActiveState fetches ONLY /api/state and wires followRemoteActiveSession', () => {
+  const src = app.pollActiveState.toString();
+  assert.ok(src.includes("'/api/state'"), 'pollActiveState must fetch /api/state');
+  assert.ok(src.includes('followRemoteActiveSession'), 'pollActiveState must call followRemoteActiveSession');
+  assert.ok(!src.includes('federation'), 'pollActiveState must never touch federation endpoints');
+});
+
+test('pollSessions no longer drives session-follow (superseded by dedicated state poll)', () => {
   const src = app.pollSessions.toString();
-  assert.ok(src.includes("'/api/state'"), 'pollSessions must fetch /api/state each cycle');
-  assert.ok(src.includes('followRemoteActiveSession'), 'pollSessions must call followRemoteActiveSession');
+  assert.ok(
+    !src.includes('followRemoteActiveSession('),
+    'pollSessions must not call followRemoteActiveSession — the slow federation fetch would make the follow snapshot seconds stale',
+  );
+});
+
+test('startStatePolling self-schedules independently of startPolling', () => {
+  const src = app.startStatePolling.toString();
+  assert.ok(src.includes('pollActiveState'), 'startStatePolling must drive pollActiveState');
+  assert.ok(src.includes('setTimeout'), 'startStatePolling must self-schedule via setTimeout (no overlap)');
+  assert.ok(src.includes('STATE_POLL_MS'), 'startStatePolling must use its own dedicated interval');
 });
 
 test('followRemoteActiveSession uses restoreState opts shape (skipAnimation + remoteId)', () => {
@@ -5992,7 +6008,7 @@ test('followRemoteActiveSession uses restoreState opts shape (skipAnimation + re
   assert.ok(src.includes('remoteId'), 'must pass remoteId like restoreState');
 });
 
-test('poll detects remote active_session change and switches via openSession path', async () => {
+test('dedicated state poll detects remote active_session change and switches via openSession path', async () => {
   const calls = [];
   const mockEl = { textContent: '', className: '' };
   const origGetById = globalThis.document.getElementById;
@@ -6016,7 +6032,7 @@ test('poll detects remote active_session change and switches via openSession pat
   app._setViewingSession('alpha');
   app._setViewingRemoteId('');
 
-  await app.pollSessions();
+  await app.pollActiveState();
   // openSession is fired without awaiting inside the poll loop — flush it
   await new Promise((r) => setTimeout(r, 25));
 
@@ -6056,7 +6072,7 @@ test('self-initiated switch does not double-switch (state matches viewing sessio
   app._setViewingSession('beta');
   app._setViewingRemoteId('');
 
-  await app.pollSessions();
+  await app.pollActiveState();
   await new Promise((r) => setTimeout(r, 25));
 
   assert.ok(
@@ -6093,7 +6109,7 @@ test('remote switch is NOT followed from the grid (no session open — option a)
   app._setViewingSession(null);
   app._setViewingRemoteId('');
 
-  await app.pollSessions();
+  await app.pollActiveState();
   await new Promise((r) => setTimeout(r, 25));
 
   assert.ok(
@@ -6147,4 +6163,59 @@ test('followRemoteActiveSession no-ops on null state or null active_session', ()
   app.followRemoteActiveSession({ active_session: null, active_remote_id: null });
   app._setViewMode('grid');
   app._setViewingSession(null);
+});
+
+test('dedicated state poll follows on a FRESH snapshot while the federation fetch is still pending', async () => {
+  // Regression guard for the 8-10s deck->PWA latency: with 2 federation
+  // remotes hard-down, /api/federation/sessions blocks for the full
+  // per-remote timeout. The follow must NOT wait on it.
+  const calls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  const origOpenTerminal = globalThis.window._openTerminal;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.window._openTerminal = () => {};
+
+  let releaseFederation;
+  const federationGate = new Promise((r) => { releaseFederation = r; });
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/federation/sessions') {
+      await federationGate; // simulate down remotes: blocks until released
+      return { ok: true, json: async () => [] };
+    }
+    if (method === 'GET' && url === '/api/state') {
+      return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setServerSettings({ multi_device_enabled: true });
+  app._setViewMode('fullscreen');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+
+  const sessionsPoll = app.pollSessions(); // kicks off the blocked federation fetch
+  await app.pollActiveState();             // dedicated poll must complete regardless
+  await new Promise((r) => setTimeout(r, 25)); // flush fire-and-forget openSession
+
+  assert.ok(
+    calls.includes('POST /api/sessions/beta/connect'),
+    'follow-connect must fire while /api/federation/sessions is still pending; calls: ' + JSON.stringify(calls),
+  );
+
+  releaseFederation();
+  await sessionsPoll; // clean up: let the blocked poll finish
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.window._openTerminal = origOpenTerminal;
+  globalThis.fetch = undefined;
+  app._setServerSettings(null);
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
 });

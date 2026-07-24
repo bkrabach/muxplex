@@ -774,6 +774,108 @@ def test_connect_session_kills_existing_ttyd(client, monkeypatch):
     assert call_order == ["kill", ("spawn", "alpha")]
 
 
+def test_connect_same_active_session_short_circuits(client, monkeypatch):
+    """POST /connect to the already-active session with ttyd listening must NOT kill/respawn.
+
+    The PWA's follow-openSession and deck double-presses re-connect to the
+    session that is already active; kill+respawn there churns a healthy PTY
+    for ~300ms. With ttyd listening, the endpoint must return current state
+    immediately.
+    """
+    from muxplex.state import save_state
+
+    save_state(
+        {
+            "active_session": "alpha",
+            "session_order": ["alpha"],
+            "sessions": {},
+            "devices": {},
+        }
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: True)
+
+    async def _fail_kill():
+        raise AssertionError("kill_ttyd must not run for a same-session connect")
+
+    async def _fail_spawn(name):
+        raise AssertionError("spawn_ttyd must not run for a same-session connect")
+
+    monkeypatch.setattr("muxplex.main.kill_ttyd", _fail_kill)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", _fail_spawn)
+
+    response = client.post("/api/sessions/alpha/connect")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["active_session"] == "alpha"
+    assert data["ttyd_port"] == 7682
+
+
+def test_connect_same_active_session_respawns_when_ttyd_dead(client, monkeypatch):
+    """Same-session connect must still respawn when ttyd is NOT listening (restart safety)."""
+    from muxplex.state import save_state
+
+    save_state(
+        {
+            "active_session": "alpha",
+            "session_order": ["alpha"],
+            "sessions": {},
+            "devices": {},
+        }
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: False)
+
+    call_order = []
+
+    async def mock_kill():
+        call_order.append("kill")
+        return True
+
+    async def mock_spawn(name):
+        call_order.append(("spawn", name))
+
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", mock_spawn)
+
+    response = client.post("/api/sessions/alpha/connect")
+    assert response.status_code == 200
+    assert call_order == ["kill", ("spawn", "alpha")]
+
+
+def test_connect_different_session_respawns_even_if_ttyd_listening(client, monkeypatch):
+    """A genuine switch (different session) must kill+respawn even with ttyd healthy."""
+    from muxplex.state import load_state, save_state
+
+    save_state(
+        {
+            "active_session": "alpha",
+            "session_order": ["alpha", "beta"],
+            "sessions": {},
+            "devices": {},
+        }
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
+    monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: True)
+
+    call_order = []
+
+    async def mock_kill():
+        call_order.append("kill")
+        return True
+
+    async def mock_spawn(name):
+        call_order.append(("spawn", name))
+
+    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", mock_spawn)
+
+    response = client.post("/api/sessions/beta/connect")
+    assert response.status_code == 200
+    assert call_order == ["kill", ("spawn", "beta")]
+    assert load_state()["active_session"] == "beta"
+
+
 def test_connect_nonexistent_session_returns_404(client, monkeypatch):
     """POST /api/sessions/{name}/connect returns 404 when session is not in list."""
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
@@ -2080,6 +2182,48 @@ def test_css_asset_accessible_from_non_localhost_without_auth(monkeypatch):
     assert response.status_code == 200, (
         f"Expected 200 for CSS from non-localhost, got {response.status_code}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Frontend cache policy: no-cache (forced revalidation) on frontend responses
+# ---------------------------------------------------------------------------
+
+
+def test_frontend_responses_carry_no_cache_header(client):
+    """Frontend responses (app shell + static assets) must carry
+    Cache-Control: no-cache so installed PWAs revalidate on every load
+    instead of serving stale JS across deploys. With ETag/Last-Modified
+    this costs a cheap 304 when nothing changed."""
+    for path in ("/", "/index.html", "/app.js", "/style.css"):
+        response = client.get(path)
+        assert response.status_code == 200, f"GET {path} -> {response.status_code}"
+        assert response.headers.get("cache-control") == "no-cache", (
+            f"GET {path}: expected 'Cache-Control: no-cache', "
+            f"got {response.headers.get('cache-control')!r}"
+        )
+
+
+def test_api_responses_do_not_carry_no_cache_header(client):
+    """/api responses must NOT be affected by the frontend cache policy."""
+    response = client.get("/api/state")
+    assert response.status_code == 200
+    assert "no-cache" not in response.headers.get("cache-control", ""), (
+        f"/api/state unexpectedly carries "
+        f"Cache-Control: {response.headers.get('cache-control')!r}"
+    )
+
+
+def test_startup_logs_frontend_identity(caplog):
+    """Lifespan startup emits one line identifying the served app.js
+    (short md5) so 'which JS is this server serving?' is a glance."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="muxplex.main"):
+        with TestClient(app):
+            pass
+    assert any(
+        "frontend: app.js " in record.getMessage() for record in caplog.records
+    ), "expected startup log line 'frontend: app.js <md5-8>'"
 
 
 # ---------------------------------------------------------------------------
