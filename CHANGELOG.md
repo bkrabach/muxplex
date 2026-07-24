@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.7.0 (2026-07-24)
+
+### Features
+
+- **Per-session `last_activity_at` in `GET /api/sessions`** (#11) — exposed for local and
+  federation sessions, derived from tmux `#{window_activity}` (deliberately not
+  `#{session_activity}`, which freezes for unattended sessions). The PWA's "Recent" sort
+  now reflects real activity.
+- **`GET /api/view` — server-side resolved view** (#13) — returns the current view with
+  membership/hidden filtering, the canonical needs-attention predicate, and sorting
+  applied (`?sort=attention` for bells-first / active / recency ordering). New clients
+  (Stream Deck sidecar, agents) consume the resolved view instead of re-porting the
+  PWA's rules.
+
+### Bug Fixes
+
+- **Session-name shell-injection RCE closed** (#14, security) — session names are
+  validated against a strict allowlist (`is_valid_session_name`) at create, delete, and
+  connect; `shlex.quote` added as defense-in-depth; matching is fail-closed exact-match.
+- **PWA now follows remote `active_session` changes** (#15) — switches made from another
+  device (Stream Deck, another browser, an agent) move the sidebar highlight and
+  re-attach the terminal automatically — no more stale terminal stuck on
+  "Reconnecting…" until you interact.
+- **Remote-driven session switch ~8.8s → ~0.7s** (#16) — session-follow now runs on a
+  dedicated ~1s `/api/state` poll (decoupled from the slow federation fetch), with a
+  same-session connect short-circuit. The frontend is now served with
+  `Cache-Control: no-cache` (ETag revalidation) so deploys reach installed PWAs without
+  manual cache-clearing, and startup logs the served `app.js` md5.
+- **Federation circuit breaker** (#17) — a dead/unreachable federation remote no longer
+  drags every `/api/federation/sessions` call to the full timeout (~5s → ~0.02s steady
+  state): 3 consecutive connection failures skip the remote for 60s, then re-probe;
+  per-remote timeout reduced to 2s. Reachable-but-erroring remotes still report their
+  honest status.
+- **Clean, fast shutdown** (#18) — SIGTERM now completes in ~0.5s instead of hanging 10s
+  and being SIGKILLed by systemd: shutdown cancels the poll loop and WebSocket relays
+  first, then kills ttyd, then closes the HTTP client; the terminal WS relay no longer
+  blocks on a live ttyd reader.
+
+### Docs
+
+- **`AGENTS.md`** (#12) — conventions for agents and contributors: `/api/*` is a public
+  control surface with multiple consumers, additive evolution, API-first-frontend-second,
+  and scratch-instance testing gotchas.
+
 ## v0.6.10 (2026-07-13)
 
 ### Bug Fixes
