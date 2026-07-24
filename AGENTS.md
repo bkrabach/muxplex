@@ -31,6 +31,11 @@ consumers in ways this repo's tests won't catch:
   and empirical evidence documented in `sessions.py`).
 - **`active_view` / `active_session` are server-global** — last writer wins,
   across every connected client (browsers, deck, agents).
+- **The read model is eventually consistent**: GET endpoints serve a ~2s poll
+  cache. POST create/delete aren't visible until the next cycle, and `connect`
+  on a just-created session 404s until the cache catches up — clients/agents
+  must wait ~3s after writes. (Candidate future fix: write-through cache
+  refresh on create/delete.)
 
 Preferred direction as semantics grow: move resolution **server-side** (e.g. a
 resolved-current-view endpoint) rather than expecting each client to port more
@@ -42,6 +47,39 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   for tiered bell/active/recency ordering, or the default that mirrors
   `settings.sort_order`). New clients should prefer it over re-deriving
   these rules; local sessions only in v1.
+
+## Frontend delivery: the no-cache header is load-bearing
+
+- `app.js`/`index.html` are served with `Cache-Control: no-cache` (revalidate
+  via ETag — cheap 304s) because installed PWAs (Edge/Chrome on macOS) cache
+  the app shell and **don't quit on window-close** — without the header,
+  deployed frontend JS never reaches the user. Never remove it, and never ship
+  a frontend change assuming the PWA will pick it up.
+- Startup logs the served `app.js` md5, so "which frontend is live" is a
+  glance, not a debugging session.
+
+## Federation is fault-isolated
+
+- A dead/unreachable remote must never gate the aggregate. `breaker.py` is a
+  per-remote circuit breaker: 3 consecutive connection failures → skip for
+  60s → half-open re-probe. Per-remote poll timeout is 2.0s (`fetch_remote`).
+- Only `httpx.TransportError` trips the breaker; any HTTP response (incl.
+  401/5xx) counts as reachable and is reported honestly.
+- Symptom if regressed: every `/api/federation/sessions` call takes ~5s and
+  lags the whole PWA (grid, previews, bells).
+- Owner preference: when a dead dependency degrades the app, fix it with
+  graceful degradation in the service (circuit breaker), not by asking the
+  user to prune config.
+
+## Clean shutdown ordering
+
+- On lifespan shutdown: cancel the poll loop + open WS-relay tasks FIRST
+  (bounded gather), THEN `kill_ttyd()`, THEN `aclose()` the httpx client.
+  Target: ~0.5s wall time.
+- The terminal WS relay must use `asyncio.wait(FIRST_COMPLETED)` + cancel the
+  other direction (never gather-both) and return on `websocket.disconnect` —
+  otherwise a reader blocked on a live ttyd hangs uvicorn until systemd
+  SIGKILLs at the 10s stop timeout.
 
 ## Running a second instance on one box (scratch/testing)
 
@@ -62,3 +100,6 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
 - CI: `.github/workflows/ci.yml` (Python 3.11/3.12/3.13).
 - PRs are squash-merged. `CHANGELOG.md` and version bumps happen at release
   time, by the owner — don't bump them in feature PRs.
+- **Release hygiene is part of the fix**: a fix isn't done until it's
+  versioned and on PyPI (tag `v*` → Trusted-Publishing workflow). Don't leave
+  main N PRs ahead of the published version.
