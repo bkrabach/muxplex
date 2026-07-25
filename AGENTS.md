@@ -48,6 +48,67 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   `settings.sort_order`). New clients should prefer it over re-deriving
   these rules; local sessions only in v1.
 
+## Terminal input: `POST /api/sessions/{name}/input` (RCE by design, fenced)
+
+Lets a remote agent **type into** a session over the API. Typing into a shell
+pane runs whatever is typed — this is remote code execution on purpose — so it
+ships **fenced, default-CLOSED**. Every fence must pass, in this order:
+
+1. `is_valid_session_name({name})` at the boundary → 400 (same guard as
+   connect/delete; no `:`, no leading `-`, no shell metacharacters).
+2. **Global opt-in** `settings.input_enabled` (default `false`) → 403 when off.
+3. **Per-session allowlist** `settings.input_allowed_sessions` (default `[]`,
+   exact names, no globs) → 403 if `{name}` isn't listed, *even when enabled*.
+   This is how a human's own working panes stay un-typeable: don't list them.
+   Checked BEFORE existence, so it never leaks whether a non-listed session
+   exists. **Both keys are LOCAL-FILE-ONLY** (`settings.LOCAL_ONLY_KEYS`):
+   they can only be changed by editing `~/.config/muxplex/settings.json` on
+   disk — `PATCH /api/settings` silently ignores them (with a warning log),
+   and they are deliberately NOT in `SYNCABLE_KEYS`. Rationale: the federation
+   Bearer key satisfies the shared auth on PATCH and is the SAME credential
+   handed to the remote agents that call `/input` — if these keys were
+   PATCHable, a Bearer-key holder could self-authorize typing into the
+   human's own panes. Widening the fence must be a local-operator action.
+   Fence reads are strict-typed and fail CLOSED: only boolean `true` enables
+   (`is not True` check), and a non-list allowlist is treated as empty (a
+   string value would substring-match via `in`).
+4. **Fail-closed target gate**: exact `{name} in get_session_list()` → 404
+   (empty/unavailable cache rejects everything; same pattern as connect/delete).
+
+Auth is the **shared middleware** (federation Bearer key / localhost bypass /
+session cookie) — deliberately NOT a second key (the council rejected that as
+theater).
+
+**Contract.** Body `{ "text": str, "enter": bool=false, "keys": [str] }`
+(at least one of the three required, else 400). Send order is **text → keys →
+enter**:
+- `text` is typed **literally** via `tmux send-keys -l -t <name> -- <text>`
+  through `create_subprocess_exec` (argv, **never a shell**). Shell
+  metacharacters in `text` are typed as characters, never interpreted by
+  anything muxplex spawns. `--` stops tmux option parsing (leading-`-` guard).
+- `keys` is a **closed allowlist** of named tmux keys (`Enter, Escape, Tab,
+  C-c, C-d, Up, Down, Left, Right, PageUp, PageDown` — see
+  `terminal_input.ALLOWED_KEYS`); anything else → 400. Lets an agent send
+  Ctrl-C without a shell.
+- Target is the **plain** session name (tmux's `=name` exact-match form is not
+  valid for a `send-keys` pane target). The fail-closed exact-membership check
+  above makes plain `-t name` exact-safe (tmux resolves an exact name to itself
+  before prefix-matching).
+
+**Read-back in the same call**: after a ~400ms settle the pane is re-captured
+(`capture_pane`, same source as `/api/sessions`) and returned, so a typing
+agent isn't guessing: `{ "ok": true, "session": name, "snapshot": "<text>" }`.
+
+**Audit**: exactly one `logger.info` per accepted action (session, char count,
+enter/keys flags, a ≤16-char redacted preview). Full text only at `debug` (may
+contain secrets). Rejections log at `warning`.
+
+Implementation: endpoint in `main.py` (`send_session_input`); argv/key-allowlist
+helpers in `terminal_input.py`. Injection-safety is proven by an E2E that sends
+`; touch <canary>` to a `cat` (non-shell) pane and asserts the canary file is
+never created — the text is typed literally, our subprocess layer never spawns a
+shell.
+
 ## Frontend delivery: the no-cache header is load-bearing
 
 - `app.js`/`index.html` are served with `Cache-Control: no-cache` (revalidate
@@ -91,6 +152,32 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
 - tmux isolation needs `env -u TMUX` plus an isolated `TMUX_TMPDIR` (a set
   `$TMUX` silently overrides `TMUX_TMPDIR`).
 - Candidate future fixes: honor XDG paths; make the ttyd port configurable.
+
+### ⚠️ NEVER broad-kill by process name on a host running a live muxplex
+
+A scratch test's cleanup must NEVER use process-name matching to kill
+things, because the live server's command line is literally `... muxplex
+serve` and its ttyd is `ttyd ... -p 7682`. These patterns are landmines that
+reach across and kill the production service (this bit us repeatedly — the
+service kept "mysteriously" going down, and it was always a scratch cleanup):
+
+- ❌ `pkill -f muxplex`, `pkill -f uvicorn`, `pkill -f ttyd`, `killall ...`
+  — matches the live `muxplex serve` / live ttyd. **Forbidden.**
+- ❌ bare `tmux kill-server` — with an unset/leaked `TMUX_TMPDIR` this kills
+  the user's real tmux server (the live muxplex socket is
+  `~/.tmux`, not the default). **Forbidden.**
+
+Instead:
+- Kill ONLY the exact PIDs your harness spawned (capture `proc.pid` at spawn,
+  signal that PID and no other). Port-scope any sweep to the SCRATCH port
+  (17682), never a name.
+- Use an explicit named tmux socket: `tmux -L <unique-scratch-name> ...` and
+  clean up with `tmux -L <unique-scratch-name> kill-server` (socket-scoped),
+  never a bare `kill-server`.
+- Prefer in-process `TestClient(app)` (no separate uvicorn process to kill) or
+  a full DTU/container for true isolation over an ad-hoc host uvicorn.
+- After any scratch run, VERIFY the live server is still up
+  (`GET :8088/api/instance-info` → 200) as the last step.
 
 ## Testing & workflow
 

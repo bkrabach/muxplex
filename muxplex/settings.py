@@ -6,10 +6,13 @@ Settings are stored at ~/.config/muxplex/settings.json.
 
 import copy
 import json
+import logging
 import os
 import socket
 import time
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 SETTINGS_PATH = Path.home() / ".config" / "muxplex" / "settings.json"
 FEDERATION_KEY_PATH = Path.home() / ".config" / "muxplex" / "federation_key"
@@ -51,6 +54,20 @@ DEFAULT_SETTINGS: dict = {
     # (/tmp/tmux-$UID), silently missing every session the user actually has.
     "tmux_socket_dir": "",
     "multi_device_enabled": False,
+    # Terminal input over the API (POST /api/sessions/{name}/input).
+    # SECURITY: this is remote-code-execution by design -- an agent typing
+    # into a shell pane runs whatever it types. Both fences default CLOSED:
+    #   input_enabled          -- global opt-in; False means the endpoint is
+    #                             a hard 403 regardless of any other config.
+    #   input_allowed_sessions -- exact session names input may target. A
+    #                             session not on this list is a 403 even when
+    #                             input_enabled is True. Keeping a human's
+    #                             own working panes OFF this list is how they
+    #                             stay un-typeable. No globs -- exact names.
+    # Deliberately NOT in SYNCABLE_KEYS: a security fence must never be
+    # widened by a federation peer's settings sync.
+    "input_enabled": False,
+    "input_allowed_sessions": [],
     "federation_key": "",
     "tls_cert": "",
     "tls_key": "",
@@ -72,6 +89,24 @@ DEFAULT_SETTINGS: dict = {
     # the actual prune is local-only (pruning.json, never synced).
     "stale_key_grace_hours": 24.0,
 }
+
+# Keys that can ONLY be changed by editing the settings file on disk
+# (~/.config/muxplex/settings.json) -- never via any API path.
+#
+# SECURITY: PATCH /api/settings sits behind the same shared auth as the rest
+# of the API, and the federation Bearer key satisfies it -- the SAME
+# credential handed to remote agents that call the terminal-input endpoint.
+# If these fence keys were PATCHable, a Bearer-key holder could self-authorize
+# typing into any session (including the human's own panes), defeating the
+# per-session allowlist entirely. Requiring a local file edit makes widening
+# the fence a deliberate local-operator action. These keys are also
+# deliberately NOT in SYNCABLE_KEYS (federation sync must never widen them).
+LOCAL_ONLY_KEYS: frozenset[str] = frozenset(
+    {
+        "input_enabled",
+        "input_allowed_sessions",
+    }
+)
 
 SYNCABLE_KEYS: frozenset[str] = frozenset(
     {
@@ -174,6 +209,18 @@ def patch_settings(patch: dict) -> dict:
 
     for key in DEFAULT_SETTINGS:
         if key in patch:
+            if key in LOCAL_ONLY_KEYS:
+                # Security fence: these keys can only be widened by editing
+                # settings.json on disk (a local-operator action) -- never
+                # via the API, whose Bearer key is held by the same remote
+                # agents the fence is meant to contain. Skip the key but
+                # apply the rest of the patch (don't fail the whole request).
+                _log.warning(
+                    "settings: %r is local-only (edit settings.json directly); "
+                    "ignoring value in PATCH",
+                    key,
+                )
+                continue
             current[key] = patch[key]
 
     # Restore keys that were stripped by redaction.
