@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.11.0 (2026-07-25)
+
+### Bug Fixes
+
+- **Settings clobber protection via rotating snapshots and optimistic concurrency** — a browser tab holding a stale copy of the settings PATCHed it back wholesale and destroyed 7 of 8 views in a single request — recovered only because a manual file backup happened to exist. Two defenses added: (1) Rotating snapshots in `<config_dir>/settings-history/` (20 most recent kept, monotonic sequence numbering for coarse-grained ordering, best-effort so a snapshot failure never blocks the real write). All writers (API PATCH, federation sync, internal code) covered at the lowest choke point. (2) Optimistic concurrency: `PATCH /api/settings` accepts optional `expected_settings_updated_at`; on mismatch returns 409 with the current value and makes no write. Omitting the field preserves existing behavior (federation sync and other clients keep working). PWA now routes all 14 settings-writing call sites through `patchSettingsGuarded()` which sends the precondition, re-fetches on 409, re-applies the mutation to fresh state, and retries exactly once; a second conflict re-renders from server truth. Successful writes update the client's baseline timestamp.
+
+### Features
+
+- **tmux socket directory discoverability** — muxplex manages tmux on a configurable socket dir (e.g. `~/.tmux`) while tmux itself defaults to `$TMUX_TMPDIR` or `/tmp` — so any tool creating a session without that variable set lands on a DIFFERENT tmux server and its sessions are invisible to muxplex. That knowledge was tribal and cost real debugging time. Now discoverable: (1) `settings.resolve_tmux_socket_dir()` resolves configured value, then `$TMUX_TMPDIR`, then `/tmp/tmux-<uid>`; (2) `GET /api/instance-info` returns the resolved `tmux_socket_dir`; (3) new `muxplex env` subcommand prints exactly `export TMUX_TMPDIR="..."` on stdout (human notes to stderr) for `eval "$(muxplex env)"`, following the ssh-agent/direnv convention; (4) README gains a "tmux socket" section explaining the two-server hazard and the one-line fix.
+
 ## v0.10.0 (2026-07-25)
 
 ### Bug Fixes
