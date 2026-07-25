@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.13.0 (2026-07-25)
+
+### Bug Fixes
+
+- **Test-suite pollution of production settings** — `test_get_state_settings_updated_at_changes_after_settings_write` never redirected `SETTINGS_PATH` to a tmp directory, so running the test suite on a machine hosting a live muxplex instance read and wrote the real `~/.config/muxplex/settings.json`. On the dev box this repeatedly overwrote a production 8-view configuration with test fixture data — the exact `{"name": "Focus", "sessions": ["alpha"]}` payload from test_api.py that had to be recovered from backups. Test now monkeypatches SETTINGS_PATH into tmp_path like all sibling settings-writing tests. Also fixed three stale assertions in test_frontend_js.py that were matching literal `api('PATCH'` strings inside function bodies; v0.11.0 correctly refactored those call sites to route through `patchSettingsGuarded()`. Assertions now verify the guarded call; a new pinning test ensures end-to-end coverage of `/api/settings` is preserved rather than silenced. These three were the only real CI failures across 9 GitHub Actions job runs (3 commits × 3 Python versions).
+
+- **Federation-aware stale-key pruning** — `prune_stale_keys()` built its live_keys set from local sessions only, while views entries are canonical `device_id:name` and routinely reference sessions on other devices. Every peer saw every other device's keys as dead and deleted them after grace period, then LWW-synced the deletion fleet-wide — a latent mutual eraser. Now the pruner takes optional `local_device_id` and `known_remote_device_ids`, and only prunes keys where the owning device's sessions are actually known: own-device keys are always evaluable, remote keys only when that device is currently reachable (checked via existing `_federation_cache`, gated on the same `fail_count` threshold used by `/api/federation/sessions`). Devices unreachable or unknown have their grace period clock reset (not paused) — a laptop offline for a week starts fresh when it returns instead of getting pruned on arrival. Legacy bare-name entries keep existing local evaluation. Also closed a gap: the poll-cycle prune bypassed v0.12.0's destructive-write backstop; it now runs `assess_views_destruction()` and refuses to persist if a mass prune would collapse views. Default-None params preserve legacy behavior exactly. 1480 tests passed; 435 frontend.
+
 ## v0.12.0 (2026-07-25)
 
 ### Bug Fixes
