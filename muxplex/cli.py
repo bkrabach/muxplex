@@ -896,6 +896,41 @@ def upgrade(*, force: bool = False) -> None:
     doctor()
 
 
+def cmd_env() -> None:
+    """Print a shell-eval-able TMUX_TMPDIR export for THIS muxplex instance.
+
+    Designed for `eval "$(muxplex env)"` (the ssh-agent/direnv convention).
+    Prints ONLY the export line to stdout -- no banners, no extra output --
+    so `eval` is always safe. Any human-facing notes go to stderr.
+
+    Why this exists: muxplex looks for tmux sessions under a specific
+    socket directory (`tmux_socket_dir` setting, mapped to tmux's
+    TMUX_TMPDIR env var). Any OTHER tool that creates a tmux session
+    without setting the same TMUX_TMPDIR lands on a DIFFERENT tmux server
+    and is silently invisible to this muxplex instance -- see AGENTS.md's
+    "tmux socket" section and settings.py's tmux_socket_dir comment. Running
+    `eval "$(muxplex env)"` before creating a session is the one-line fix.
+
+    Best-effort resolution: this CLI process's own environment is not
+    necessarily the same as the running muxplex *service* process's
+    environment (a systemd/launchd unit's env commonly differs from an
+    interactive shell's). When `tmux_socket_dir` is explicitly configured
+    in settings.json, that value is authoritative and this caveat doesn't
+    apply. When it's unset, the printed value is inferred from this
+    process's own TMUX_TMPDIR (or tmux's compiled-in default) and may not
+    exactly match what the service resolves -- see
+    settings.resolve_tmux_socket_dir()'s docstring for the full precedence.
+    """
+    from muxplex.settings import resolve_tmux_socket_dir  # noqa: PLC0415
+
+    print(f'export TMUX_TMPDIR="{resolve_tmux_socket_dir()}"')
+    print(
+        'Run `eval "$(muxplex env)"` before creating tmux sessions you want '
+        'this muxplex instance to see. See AGENTS.md\'s "tmux socket" section.',
+        file=sys.stderr,
+    )
+
+
 def config_list() -> None:
     """Show all settings with current values."""
     from muxplex.settings import DEFAULT_SETTINGS, SETTINGS_PATH, load_settings  # noqa: PLC0415
@@ -1319,6 +1354,11 @@ def main() -> None:
 
     sub.add_parser("doctor", help="Check dependencies and system status")
 
+    sub.add_parser(
+        "env",
+        help='Print `eval`-able TMUX_TMPDIR export (use: eval "$(muxplex env)")',
+    )
+
     upgrade_parser = sub.add_parser(
         "upgrade",
         aliases=["update"],
@@ -1373,6 +1413,8 @@ def main() -> None:
         generate_federation_key()
     elif args.command == "doctor":
         doctor()
+    elif args.command == "env":
+        cmd_env()
     elif args.command in ("upgrade", "update"):
         upgrade(force=getattr(args, "force", False))
     elif args.command == "config":

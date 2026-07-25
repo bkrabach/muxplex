@@ -161,6 +161,7 @@ muxplex show-password                Show current auth password
 muxplex reset-secret                 Regenerate signing secret
 muxplex setup-tls [--method auto]   Set up TLS certs (Tailscale/mkcert/self-signed)
 muxplex setup-tls --status          Show current TLS configuration
+muxplex env                          Print `eval`-able TMUX_TMPDIR export
 ```
 
 ### Service management
@@ -230,6 +231,35 @@ It generates a persistent root CA in `~/.config/muxplex/ca/` and signs a 13-mont
 Not part of the `auto` cascade — must be opted into explicitly.
 
 > **→ See [docs/TRUSTING_THE_LOCAL_CA.md](docs/TRUSTING_THE_LOCAL_CA.md)** for per-platform install instructions (Windows, macOS, Linux, iOS, Android, Firefox).
+
+### tmux socket (the "invisible session" hazard)
+
+muxplex looks for tmux sessions under a specific socket directory (the
+`tmux_socket_dir` setting, mapped to tmux's `TMUX_TMPDIR` environment
+variable). **Any other tool or script that creates a tmux session without
+setting the same `TMUX_TMPDIR` lands on a *different* tmux server** and is
+silently invisible to muxplex — `tmux list-sessions` from your interactive
+shell will show it, but muxplex's dashboard, API, and Stream Deck sidecar
+never will, because they're watching a different socket. This bites hardest
+when `tmux_socket_dir` is left at its default (`""`): a systemd/launchd
+*service* process doesn't inherit your login shell's `TMUX_TMPDIR`, so the
+service quietly falls back to tmux's compiled-in default
+(`/tmp/tmux-$UID`) even if your shell rc sets something else.
+
+The one-line fix — run this before creating a session you want muxplex to see:
+
+```bash
+eval "$(muxplex env)"
+tmux new-session -d -s my-session   # now lands where muxplex can see it
+```
+
+`muxplex env` prints a single `export TMUX_TMPDIR=...` line (nothing else,
+so `eval` is always safe) resolved from the configured `tmux_socket_dir` —
+or, if that's unset, your shell's own `TMUX_TMPDIR` — or, failing both,
+tmux's own default. `GET /api/instance-info` also exposes `tmux_socket_dir`
+(the exact value the *running server* resolves, since that endpoint runs
+inside the server process itself) so remote tools/agents can discover it
+without SSH access or tribal knowledge.
 
 ---
 

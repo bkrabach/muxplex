@@ -378,6 +378,78 @@ def test_main_dispatches_to_doctor(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# `muxplex env` subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_main_dispatches_to_env(monkeypatch):
+    """main() with 'env' subcommand must invoke cmd_env()."""
+    from muxplex.cli import main
+
+    calls = []
+    monkeypatch.setattr("muxplex.cli.cmd_env", lambda: calls.append(True))
+
+    with patch("sys.argv", ["muxplex", "env"]):
+        main()
+
+    assert len(calls) == 1, (
+        "cmd_env() must be called once when 'env' subcommand is used"
+    )
+
+
+def test_cmd_env_prints_only_the_export_line_on_stdout(tmp_path, monkeypatch, capsys):
+    """cmd_env() prints exactly the export line on stdout -- nothing else (eval-safety)."""
+    import muxplex.settings as settings_mod
+    from muxplex.cli import cmd_env
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setenv("TMUX_TMPDIR", "/configured/via/env")
+
+    cmd_env()
+
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert lines == ['export TMUX_TMPDIR="/configured/via/env"']
+    # Human-facing notes go to stderr, not stdout.
+    assert captured.out.count("\n") == 1
+
+
+def test_cmd_env_uses_configured_tmux_socket_dir(tmp_path, monkeypatch, capsys):
+    """cmd_env() prefers the explicit tmux_socket_dir setting over the environment."""
+    import json
+
+    import muxplex.settings as settings_mod
+    from muxplex.cli import cmd_env
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"tmux_socket_dir": "/configured/socket/dir"}))
+    monkeypatch.setenv("TMUX_TMPDIR", "/should/be/ignored")
+
+    cmd_env()
+
+    captured = capsys.readouterr()
+    assert captured.out == 'export TMUX_TMPDIR="/configured/socket/dir"\n'
+
+
+def test_cmd_env_falls_back_to_tmux_default_when_nothing_configured(
+    tmp_path, monkeypatch, capsys
+):
+    """cmd_env() never prints an empty TMUX_TMPDIR -- falls back to tmux's own default."""
+    import muxplex.settings as settings_mod
+    from muxplex.cli import cmd_env
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+
+    cmd_env()
+
+    captured = capsys.readouterr()
+    assert captured.out.startswith('export TMUX_TMPDIR="/tmp/tmux-')
+    assert captured.out.strip() != 'export TMUX_TMPDIR=""'
+
+
+# ---------------------------------------------------------------------------
 # upgrade / update subcommand tests
 # ---------------------------------------------------------------------------
 
@@ -2889,7 +2961,9 @@ def test_find_uv_probes_known_locations_when_which_returns_none(tmp_path, monkey
     import muxplex.cli as cli_mod
 
     # Simulate shutil.which returning None for "uv"
-    monkeypatch.setattr(shutil, "which", lambda name: None if name == "uv" else f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        shutil, "which", lambda name: None if name == "uv" else f"/usr/bin/{name}"
+    )
 
     # Create a fake uv binary in a location that _find_uv() probes
     fake_uv = tmp_path / "uv"
@@ -2988,8 +3062,6 @@ def test_find_pip_probes_known_locations_when_which_returns_none(monkeypatch):
 
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
-    import muxplex.cli as cli_mod
-
     def patched_find_pip():
         for name in ("pip", "pip3"):
             found = shutil.which(name)
@@ -3021,7 +3093,9 @@ def test_find_pip_returns_none_when_no_candidate_exists(monkeypatch):
     monkeypatch.setattr(_os, "access", lambda path, mode: False)
 
     result = cli_mod._find_pip()
-    assert result is None, "_find_pip must return None when pip cannot be found anywhere"
+    assert result is None, (
+        "_find_pip must return None when pip cannot be found anywhere"
+    )
 
 
 def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
@@ -3043,7 +3117,9 @@ def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     # shutil.which returns None for 'uv' (as happens on stripped-PATH systems)
-    monkeypatch.setattr(shutil, "which", lambda name: None if name == "uv" else f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        shutil, "which", lambda name: None if name == "uv" else f"/usr/bin/{name}"
+    )
     # but _find_uv() returns a path via the known-location fallback
     monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/snap/bin/uv")
     monkeypatch.setattr(subprocess, "run", mock_run)
@@ -3058,7 +3134,9 @@ def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
 
-    uv_calls = [c for c in calls if isinstance(c, list) and c and "/snap/bin/uv" in c[0]]
+    uv_calls = [
+        c for c in calls if isinstance(c, list) and c and "/snap/bin/uv" in c[0]
+    ]
     assert len(uv_calls) > 0, (
         "upgrade() must invoke the uv binary found by _find_uv() even when shutil.which returns None"
     )
@@ -3088,9 +3166,14 @@ def test_upgrade_exits_1_after_finally_recovers_stopped_service(monkeypatch, cap
         cmd_list = list(cmd) if isinstance(cmd, list) else [cmd]
         # Simulate pip install failing
         if cmd_list and "pip" in str(cmd_list[0]):
-            return type("R", (), {"returncode": 1, "stdout": "", "stderr": "pip install failed"})()
+            return type(
+                "R", (), {"returncode": 1, "stdout": "", "stderr": "pip install failed"}
+            )()
         # Simulate all other subprocess calls succeeding (systemctl is-active, start, etc.)
-        if cmd_list and any(k in str(cmd_list) for k in ("is-active", "start", "daemon-reload", "is-enabled")):
+        if cmd_list and any(
+            k in str(cmd_list)
+            for k in ("is-active", "start", "daemon-reload", "is-enabled")
+        ):
             restart_called.append(cmd_list)
             return type("R", (), {"returncode": 0, "stdout": "active", "stderr": ""})()
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -3098,9 +3181,11 @@ def test_upgrade_exits_1_after_finally_recovers_stopped_service(monkeypatch, cap
     # uv absent so we reach the pip path
     monkeypatch.setattr(cli_mod, "_find_uv", lambda: None)
     monkeypatch.setattr(cli_mod, "_find_pip", lambda: "/usr/bin/pip")
-    monkeypatch.setattr(shutil, "which", lambda name: (
-        "/usr/bin/systemctl" if name == "systemctl" else None
-    ))
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
+    )
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(
         cli_mod,
@@ -3178,7 +3263,9 @@ def test_upgrade_exits_1_if_service_fails_to_restart(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli_mod, "_check_for_update", lambda info: (True, "update available"))
+    monkeypatch.setattr(
+        cli_mod, "_check_for_update", lambda info: (True, "update available")
+    )
     monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
     monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
     # Service never becomes active (simulates the spark-1 dead-service scenario)
@@ -3211,7 +3298,9 @@ def test_upgrade_calls_daemon_reload_before_start(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli_mod, "_check_for_update", lambda info: (True, "update available"))
+    monkeypatch.setattr(
+        cli_mod, "_check_for_update", lambda info: (True, "update available")
+    )
     monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
     monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
     monkeypatch.setattr(cli_mod, "_verify_service_started", lambda timeout_s=10: True)
@@ -3275,9 +3364,7 @@ def test_doctor_reports_launchd_registered_but_not_serving(
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **kw: type(
-            "R", (), {"returncode": 0, "stdout": "", "stderr": ""}
-        )(),
+        lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
 
     # Port is NOT responding

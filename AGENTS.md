@@ -68,6 +68,36 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   for tiered bell/active/recency ordering, or the default that mirrors
   `settings.sort_order`). New clients should prefer it over re-deriving
   these rules; local sessions only in v1.
+- **`PATCH /api/settings` accepts an OPTIONAL `expected_settings_updated_at`
+  precondition** (compare-and-swap). When present, it must equal the
+  server's current `settings_updated_at` or the request is rejected with
+  409 (body includes the current `settings_updated_at`) and NO write is
+  made; when omitted, behavior is unchanged (existing clients, including
+  federation sync, keep working without it). This closes a real incident:
+  a PWA tab holding a STALE `_serverSettings.views` snapshot PATCHed the
+  entire array back and destroyed 7 of 8 views in one request. The PWA's
+  `patchSettingsGuarded()` (`frontend/app.js`) is the reference consumer —
+  it attaches the precondition, and on a single 409 re-fetches settings,
+  re-applies the same mutation to the fresh copy, and retries exactly
+  once (a second consecutive 409 re-renders from server truth instead of
+  looping). New clients that write `views`/`hidden_sessions` SHOULD send
+  this field; see `main.py`'s `update_settings()` for the exact-equality
+  rationale (no epsilon — the value round-trips through JSON unmodified).
+- **Every settings write is snapshotted first**, regardless of writer (API
+  PATCH, federation sync, internal code): `settings.save_settings()` copies
+  whatever is CURRENTLY on disk to
+  `~/.config/muxplex/settings-history/settings-<unix_ts>.json` (mode 0700
+  dir) before overwriting, keeping the most recent
+  `settings.SETTINGS_HISTORY_KEEP` (20) snapshots. This is the automatic
+  recovery path the incident above needed — previously recovery only
+  worked because a manual file backup happened to exist. Best-effort: a
+  snapshot failure is logged and swallowed, never blocks or corrupts the
+  real write.
+- **`GET /api/instance-info` includes `tmux_socket_dir`** — the resolved
+  (not raw) socket directory this instance's tmux sessions live under (see
+  `settings.resolve_tmux_socket_dir()`). Lets remote tools/agents discover
+  where sessions need to land to be visible to this instance without
+  tribal knowledge; see the "tmux socket" section below and README.md.
 
 ## Terminal input: `POST /api/sessions/{name}/input` (RCE by design, fenced)
 
@@ -187,6 +217,13 @@ shell.
   ttyd. Monkeypatch `muxplex.ttyd.TTYD_PORT` before importing `muxplex.main`.
 - tmux isolation needs `env -u TMUX` plus an isolated `TMUX_TMPDIR` (a set
   `$TMUX` silently overrides `TMUX_TMPDIR`).
+- **`muxplex env`** prints the resolved `TMUX_TMPDIR` export for the
+  instance sharing this box's config (`eval "$(muxplex env)"`) — this is
+  the one-line fix for the "invisible session" hazard described in
+  README.md's "tmux socket" section: any session created without matching
+  `TMUX_TMPDIR` lands on a different tmux server and is invisible to this
+  instance. Prints ONLY the export line to stdout (safe to `eval`); human
+  notes go to stderr.
 - Candidate future fixes: honor XDG paths; make the ttyd port configurable.
 
 ### ⚠️ NEVER broad-kill by process name on a host running a live muxplex
