@@ -1992,6 +1992,114 @@ def test_instance_info_includes_device_id(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/ca
+# ---------------------------------------------------------------------------
+
+
+def test_ca_endpoint_returns_pem_when_ca_present(client, tmp_path, monkeypatch):
+    """GET /api/ca returns 200, the CA PEM, correct content-type, never a private key."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    response = client.get("/api/ca")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-pem-file")
+    body = response.content
+    assert b"BEGIN CERTIFICATE" in body, (
+        f"Response body must contain a PEM certificate, got: {body[:80]!r}"
+    )
+    assert b"PRIVATE KEY" not in body, (
+        "Response must NEVER include private key material"
+    )
+
+
+def test_ca_endpoint_404_when_no_ca_configured(client, tmp_path, monkeypatch):
+    """GET /api/ca returns 404 with a helpful detail when no local CA exists."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.get("/api/ca")
+    assert response.status_code == 404
+    detail = response.json().get("detail", "")
+    assert detail, "404 response must include a non-empty, helpful 'detail' message"
+
+
+def test_ca_endpoint_no_auth_required(tmp_path, monkeypatch):
+    """GET /api/ca returns 200 even without an auth cookie/credentials."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    with TestClient(app) as c:
+        # No auth cookie set — endpoint must be accessible without one.
+        response = c.get("/api/ca")
+    assert response.status_code == 200
+    assert b"BEGIN CERTIFICATE" in response.content
+
+
+def test_ca_endpoint_404_for_leaf_not_ca(client, tmp_path, monkeypatch):
+    """GET /api/ca returns 404 (never serves the file) when a non-CA leaf cert sits at the CA path."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_self_signed
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_dir = tmp_path / "ca"
+    ca_dir.mkdir(parents=True)
+    # A plain self-signed leaf has no BasicConstraints CA:TRUE — wrong content
+    # accidentally left at the CA path.
+    leaf_cert_path = ca_dir / "muxplex-ca.crt"
+    leaf_key_path = ca_dir / "leaf-only.key"
+    generate_self_signed(leaf_cert_path, leaf_key_path)
+
+    response = client.get("/api/ca")
+    assert response.status_code == 404
+
+
+def test_ca_endpoint_ignores_query_params(client, tmp_path, monkeypatch):
+    """No query parameter can redirect the read — the endpoint takes no request input at all."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+    expected_body = ca_cert_path.read_bytes()
+
+    # Attempted path-traversal / arbitrary-file-read style query params must
+    # be silently ignored — same CA is served regardless.
+    response = client.get(
+        "/api/ca", params={"path": "/etc/passwd", "file": "../../../etc/passwd"}
+    )
+    assert response.status_code == 200
+    assert response.content == expected_body
+
+
+def test_ca_endpoint_handler_accepts_no_parameters():
+    """The handler itself takes no parameters — the structural guarantee that
+    no request input (path/query/body/header) can reach the filesystem read."""
+    import inspect
+
+    from muxplex.main import get_ca_certificate
+
+    sig = inspect.signature(get_ca_certificate)
+    assert len(sig.parameters) == 0, (
+        f"get_ca_certificate must take zero parameters, got: {list(sig.parameters)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # POST /api/sessions (create new session)
 # ---------------------------------------------------------------------------
 

@@ -232,6 +232,22 @@ Not part of the `auto` cascade — must be opted into explicitly.
 
 > **→ See [docs/TRUSTING_THE_LOCAL_CA.md](docs/TRUSTING_THE_LOCAL_CA.md)** for per-platform install instructions (Windows, macOS, Linux, iOS, Android, Firefox).
 
+#### Fetching the CA over the network: `GET /api/ca`
+
+Installing the CA on each client previously required `scp`-ing it off the server, which needs SSH access the client may not have — and it's easy to grab the wrong file (`muxplex.crt`, the **leaf** the server presents on the wire) instead of the CA, producing "unable to get local issuer certificate". `GET /api/ca` serves the CA's public certificate directly over HTTP(S) — no SSH, no auth (a CA public cert isn't a secret; it's the trust anchor clients are meant to install), and no ambiguity about which file it is:
+
+```bash
+curl -k https://my-host:8088/api/ca -o muxplex-ca.crt
+```
+
+`-k` is acceptable **only** for this one bootstrap fetch of a public trust anchor (there's nothing sensitive to expose by skipping verification here). For high-trust setups, confirm the fingerprint out-of-band before trusting it:
+
+```bash
+openssl x509 -in muxplex-ca.crt -noout -fingerprint -sha256
+```
+
+Returns 404 if this server isn't using `setup-tls --method ca` (e.g. it's on Tailscale, mkcert, or self-signed instead).
+
 ### tmux socket (the "invisible session" hazard)
 
 muxplex looks for tmux sessions under a specific socket directory (the

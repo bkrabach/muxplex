@@ -661,6 +661,56 @@ def generate_mkcert(
     }
 
 
+def get_local_ca_cert_bytes(ca_cert_path) -> bytes | None:
+    """Return the raw PEM bytes of a local CA certificate, if valid.
+
+    Used to serve the CA's PUBLIC certificate to clients that need to trust
+    it (see main.py's `GET /api/ca`). Deliberately conservative: returns None
+    (never raises) for every condition that means "don't hand this out",
+    including the case that motivated this function existing at all \u2014
+    someone's local-CA path pointing at something that is NOT actually a CA
+    certificate (e.g. a leaf cert left there by mistake), which would hand
+    the client a file that fails verification and reproduces the exact
+    confusion this endpoint exists to prevent.
+
+    Args:
+        ca_cert_path: Path to the candidate CA certificate PEM file.
+
+    Returns:
+        The raw PEM bytes if the file exists, parses as an X.509 certificate,
+        and has `BasicConstraints.ca == True`. None if the file is missing,
+        unreadable, unparseable, or not a CA certificate.
+    """
+    from cryptography import x509
+    from cryptography.x509.extensions import ExtensionNotFound
+
+    ca_cert_path = Path(ca_cert_path)
+
+    try:
+        pem_data = ca_cert_path.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+    try:
+        cert = x509.load_pem_x509_certificate(pem_data)
+    except Exception:
+        return None
+
+    try:
+        basic_constraints = cert.extensions.get_extension_for_class(
+            x509.BasicConstraints
+        )
+    except ExtensionNotFound:
+        # No BasicConstraints extension at all \u2014 cannot confirm CA:TRUE, so
+        # refuse rather than guess.
+        return None
+
+    if not basic_constraints.value.ca:
+        return None
+
+    return pem_data
+
+
 def get_cert_info(cert_path) -> dict | None:
     """Inspect a PEM certificate and return metadata.
 

@@ -84,6 +84,7 @@ from muxplex.state import (
 from muxplex.settings import (
     DestructiveSettingsWriteRejected,
     apply_synced_settings,
+    get_local_ca_cert_path,
     get_syncable_settings,
     load_federation_key,
     load_settings,
@@ -93,6 +94,7 @@ from muxplex.settings import (
 )
 from muxplex.breaker import CircuitBreaker
 from muxplex.pruning import load_pruning_state, save_pruning_state
+from muxplex.tls import get_local_ca_cert_bytes
 from muxplex.views import (
     assess_views_destruction,
     filter_visible,
@@ -1615,6 +1617,50 @@ async def instance_info() -> dict:
         # from its own separate process environment).
         "tmux_socket_dir": resolve_tmux_socket_dir(),
     }
+
+
+@app.get("/api/ca")
+async def get_ca_certificate() -> Response:
+    """Serve the local CA's public certificate PEM, when the local-CA TLS
+    method (`muxplex setup-tls --method ca`) is in use.
+
+    Unauthenticated by design — see auth.py's `_AUTH_EXEMPT_PATHS` comment.
+    A CA *public* certificate is not a secret: it contains no private key
+    material, and it is precisely the trust anchor clients (muxplex-deck,
+    browsers, agents) are meant to install so they can verify this server's
+    TLS leaf. Requiring auth here would be circular — a client can't
+    authenticate over TLS it doesn't yet trust — and would defeat the one
+    job this endpoint exists to do.
+
+    This closes a real onboarding gap: previously the only way to get this
+    file was `scp` from the server (requiring SSH access a client may not
+    have), and users reliably grabbed the wrong file — `muxplex.crt` (the
+    LEAF the server presents on the wire) instead of the CA — producing
+    "unable to get local issuer certificate" on the client. See AGENTS.md.
+
+    Reads ONLY the single fixed path `settings.get_local_ca_cert_path()`
+    resolves to (`<config_dir>/ca/muxplex-ca.crt`, mirroring cli.py's
+    `setup_tls()`); no request input (path/query/body/header) influences
+    which file is read — there is no way to turn this into an
+    arbitrary-file-read.
+    """
+    pem_bytes = get_local_ca_cert_bytes(get_local_ca_cert_path())
+    if pem_bytes is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No local CA certificate is available. This server may not "
+                "be using 'muxplex setup-tls --method ca' (e.g. it's on "
+                "Tailscale, mkcert, or self-signed instead), or the file at "
+                "the expected CA path is missing or not a valid CA "
+                "certificate."
+            ),
+        )
+    return Response(
+        content=pem_bytes,
+        media_type="application/x-pem-file",
+        headers={"Content-Disposition": 'attachment; filename="muxplex-ca.crt"'},
+    )
 
 
 # ---------------------------------------------------------------------------

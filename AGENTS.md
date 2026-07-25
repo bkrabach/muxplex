@@ -161,6 +161,28 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   `settings.resolve_tmux_socket_dir()`). Lets remote tools/agents discover
   where sessions need to land to be visible to this instance without
   tribal knowledge; see the "tmux socket" section below and README.md.
+- **`GET /api/ca`** serves the local CA's PUBLIC certificate PEM (200,
+  `Content-Type: application/x-pem-file`, `Content-Disposition: attachment`)
+  when `muxplex setup-tls --method ca` is in use; 404 otherwise (no local CA
+  configured, the file is missing, or the file at the CA path is not
+  actually a CA cert — `BasicConstraints CA:TRUE` is checked via
+  `tls.get_local_ca_cert_bytes()` before serving, so a leaf accidentally
+  left at the CA path is refused rather than handed out). **Unauthenticated**
+  — added to `auth._AUTH_EXEMPT_PATHS` alongside `/api/instance-info`: a CA
+  public certificate is not a secret (no private key material; it's the
+  trust anchor clients are meant to install), and requiring auth would be
+  circular (a client can't authenticate over TLS it doesn't yet trust).
+  Reads ONLY the single fixed path `settings.get_local_ca_cert_path()`
+  resolves to (`<config_dir>/ca/muxplex-ca.crt`, mirroring cli.py's
+  `setup_tls()`) — the handler takes no request parameters at all, so no
+  path/query/body/header can redirect the read to an arbitrary file. Exists
+  to close a real onboarding gap: the only prior way to get this file was
+  `scp` from the server (needs SSH access a client may not have), and users
+  reliably grabbed `muxplex.crt` (the LEAF the server presents on the wire)
+  instead, producing "unable to get local issuer certificate" downstream —
+  the exact mistake that cost real debugging time in the muxplex-deck
+  onboarding flow. See README.md's "Fetching the CA over the network"
+  subsection for the client one-liner.
 - **Stale-key pruning (`views.prune_stale_keys`) is federation-aware and
   prunes ONLY on positive knowledge, never on ignorance.** A settings key
   `"<device_id>:<name>"` in `views`/`hidden_sessions` may be evaluated for

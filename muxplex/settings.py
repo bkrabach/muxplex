@@ -603,6 +603,20 @@ def resolve_tmux_socket_dir() -> str:
     return f"/tmp/tmux-{os.getuid()}"
 
 
+def get_local_ca_cert_path() -> Path:
+    """Return the fixed path `muxplex setup-tls --method ca` writes the
+    local CA certificate to: `<config_dir>/ca/muxplex-ca.crt`, where
+    `config_dir` is `SETTINGS_PATH.parent` (see cli.py's `setup_tls()`).
+
+    Computed fresh from the current `SETTINGS_PATH` on every call (not
+    cached) so it tracks any override of `SETTINGS_PATH` -- including test
+    monkeypatching. No caller ever supplies or overrides this path with
+    external input; it exists so `GET /api/ca` (main.py) has exactly one
+    file it can ever read.
+    """
+    return SETTINGS_PATH.parent / "ca" / "muxplex-ca.crt"
+
+
 def load_federation_key() -> str:
     """Load the federation key from disk or env-overridden path.
 

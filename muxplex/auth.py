@@ -139,8 +139,21 @@ def authenticate_pam(username: str, password: str) -> bool:
 # Auth middleware
 # ---------------------------------------------------------------------------
 
-# Paths that bypass auth (login page itself, static assets it needs)
-_AUTH_EXEMPT_PATHS = {"/login", "/auth/mode", "/auth/logout", "/api/instance-info"}
+# Paths that bypass auth (login page itself, static assets it needs).
+# /api/ca is exempt for the same reason /api/instance-info is: it serves a
+# CA *public* certificate, which is not a secret (no private key material,
+# and it's the trust anchor clients are meant to install to verify this
+# server's TLS leaf) \u2014 see main.py's get_ca_certificate() for the full
+# rationale. Do not "harden" this into requiring auth; that would defeat
+# the endpoint's purpose (a client can't authenticate over TLS it doesn't
+# yet trust).
+_AUTH_EXEMPT_PATHS = {
+    "/login",
+    "/auth/mode",
+    "/auth/logout",
+    "/api/instance-info",
+    "/api/ca",
+}
 
 # File extensions that are always served without auth — the login page needs
 # its own CSS, JS, images, and fonts before the user has a session cookie.
