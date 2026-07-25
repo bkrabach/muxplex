@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.8.0 (2026-07-24)
+
+### Features
+
+- **Remote-agent terminal input endpoint** — `POST /api/sessions/{name}/input` allows remote agents
+  (which cannot reach tmux directly) to send keystrokes to running sessions and receive a read-back
+  snapshot. The endpoint is RCE-by-design and ships with eight hardened fences: (1) global
+  `input_enabled` opt-in defaulting to False; (2) per-session `input_allowed_sessions` exact-match
+  allowlist defaulting to empty; (3) both keys are LOCAL-FILE-ONLY (excluded from SYNCABLE_KEYS,
+  rejected by PATCH /api/settings) so neither federation peers nor Bearer-key agents can
+  self-authorize; (4) fail-closed target matching (empty allowlist rejects all) plus
+  `is_valid_session_name` boundary validation; (5) keystrokes sent via `tmux send-keys -l`
+  (literal text, never shell) through argv subprocess, with named keys restricted to an explicit
+  allowlist; (6) payload caps: 8KiB text / 64 key events per request; (7) audit logging (one
+  redacted line per action, full text at debug); (8) ~400ms settle + capture_pane read-back so
+  agents aren't typing blind. Injection-safety proven end-to-end against real tmux with a hostile
+  `; touch` payload — it appeared literally in the pane and never executed. 39 new tests; 1412
+  pass. **Deployed default-off** — no behavior change until an operator sets `input_enabled: true`
+  and populates `input_allowed_sessions` on the host machine.
+
 ## v0.7.1 (2026-07-24)
 
 ### Bug Fixes
