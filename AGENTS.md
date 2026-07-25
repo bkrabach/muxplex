@@ -57,9 +57,20 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
 1. `is_valid_session_name({name})` at the boundary → 400 (same guard as
    connect/delete; no `:`, no leading `-`, no shell metacharacters).
 2. **Global opt-in** `settings.input_enabled` (default `false`) → 403 when off.
-3. **Per-session allowlist** `settings.input_allowed_sessions` (default `[]`,
-   exact names, no globs) → 403 if `{name}` isn't listed, *even when enabled*.
-   This is how a human's own working panes stay un-typeable: don't list them.
+3. **Per-session allowlist** `settings.input_allowed_sessions` (default `[]`)
+   → 403 if `{name}` matches none of the entries, *even when enabled*.
+   Entries are **glob patterns**, matched case-sensitively via
+   `fnmatch.fnmatchcase` (see `terminal_input.session_matches_allowlist`):
+   `"*"` allows every session, `"amplifier-*"` allows a prefix family, and a
+   literal name with no glob metacharacters matches only itself (backward
+   compatible with pre-glob exact-name configs). Deliberately
+   `fnmatchcase`, not `fnmatch` — the latter normcases on macOS/Windows,
+   which would make matching case-*insensitive* on those platforms and
+   silently widen the fence; tmux session names are case-sensitive
+   everywhere. An empty list still denies everything (fail-closed); a
+   non-list value is treated as `[]`; non-string entries in the list are
+   skipped rather than crashing the endpoint. This is how a human's own
+   working panes stay un-typeable: don't list (or pattern-match) them.
    Checked BEFORE existence, so it never leaks whether a non-listed session
    exists. **Both keys are LOCAL-FILE-ONLY** (`settings.LOCAL_ONLY_KEYS`):
    they can only be changed by editing `~/.config/muxplex/settings.json` on

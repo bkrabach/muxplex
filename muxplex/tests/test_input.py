@@ -21,6 +21,7 @@ from muxplex.terminal_input import (
     MAX_TEXT_BYTES,
     build_send_key_argv,
     build_send_text_argv,
+    session_matches_allowlist,
     session_target,
     redact_preview,
 )
@@ -100,7 +101,7 @@ def tmux_calls(monkeypatch):
     return calls
 
 
-def _enable(monkeypatch, allowed: list[str], known: list[str]) -> None:
+def _enable(monkeypatch, allowed: list, known: list[str]) -> None:
     """Enable the feature with *allowed* sessions and a known-session set."""
     monkeypatch.setattr(
         "muxplex.main.load_settings",
@@ -170,10 +171,76 @@ def test_empty_allowlist_rejects_everything(client, monkeypatch, tmux_calls):
     assert tmux_calls == []
 
 
-def test_allowlist_is_exact_names_no_prefix_or_glob(client, monkeypatch, tmux_calls):
-    """Allowlist matching is exact: neither prefix nor glob may match."""
-    _enable(monkeypatch, allowed=["alpha*", "alph"], known=["alpha"])
-    resp = client.post("/api/sessions/alpha/input", json={"text": "hi"})
+def test_allowlist_exact_entry_matches_only_itself(client, monkeypatch, tmux_calls):
+    """A literal (non-glob) entry is backward compatible: matches only that name."""
+    _enable(monkeypatch, allowed=["alpha"], known=["alpha", "alphabet"])
+    ok = client.post("/api/sessions/alpha/input", json={"text": "hi"})
+    assert ok.status_code == 200
+    other = client.post("/api/sessions/alphabet/input", json={"text": "hi"})
+    assert other.status_code == 403
+
+
+def test_allowlist_star_allows_any_valid_session(client, monkeypatch, tmux_calls):
+    """ "*" is a valid pattern that allows every known session."""
+    _enable(monkeypatch, allowed=["*"], known=["alpha", "amplifier-foo", "z"])
+    for name in ("alpha", "amplifier-foo", "z"):
+        resp = client.post(f"/api/sessions/{name}/input", json={"text": "hi"})
+        assert resp.status_code == 200
+
+
+def test_allowlist_prefix_glob_matches_family_only(client, monkeypatch, tmux_calls):
+    """ "amplifier-*" matches the prefix family, not lookalikes or unrelated names."""
+    _enable(
+        monkeypatch,
+        allowed=["amplifier-*"],
+        known=["amplifier-foo", "amplifier-test-input", "other-foo", "xamplifier-foo"],
+    )
+    for name in ("amplifier-foo", "amplifier-test-input"):
+        resp = client.post(f"/api/sessions/{name}/input", json={"text": "hi"})
+        assert resp.status_code == 200, name
+    for name in ("other-foo", "xamplifier-foo"):
+        resp = client.post(f"/api/sessions/{name}/input", json={"text": "hi"})
+        assert resp.status_code == 403, name
+
+
+def test_allowlist_matching_is_case_sensitive(client, monkeypatch, tmux_calls):
+    """ "Amplifier-*" (capital A) must NOT match "amplifier-foo" -- fnmatchcase guard."""
+    _enable(monkeypatch, allowed=["Amplifier-*"], known=["amplifier-foo"])
+    resp = client.post("/api/sessions/amplifier-foo/input", json={"text": "hi"})
+    assert resp.status_code == 403
+    assert tmux_calls == []
+
+
+def test_allowlist_junk_entries_skipped_valid_pattern_still_works(
+    client, monkeypatch, tmux_calls
+):
+    """Non-string junk in the allowlist is skipped, not fatal; valid patterns still match."""
+    _enable(
+        monkeypatch,
+        allowed=[123, None, "amplifier-*"],
+        known=["amplifier-foo"],
+    )
+    resp = client.post("/api/sessions/amplifier-foo/input", json={"text": "hi"})
+    assert resp.status_code == 200
+
+
+def test_allowlist_multiple_patterns_any_match_allows(client, monkeypatch, tmux_calls):
+    """Any pattern in the list matching is sufficient -- not just the first."""
+    _enable(monkeypatch, allowed=["zzz-*", "amplifier-*"], known=["amplifier-foo"])
+    resp = client.post("/api/sessions/amplifier-foo/input", json={"text": "hi"})
+    assert resp.status_code == 200
+
+
+def test_nonallowlisted_and_nonexistent_session_returns_403_not_404(
+    client, monkeypatch, tmux_calls
+):
+    """A name that is BOTH unmatched by any pattern AND unknown -> 403, never 404.
+
+    Proves the allowlist check still runs before the existence check, so the
+    endpoint never leaks whether a non-allowlisted session exists.
+    """
+    _enable(monkeypatch, allowed=["amplifier-*"], known=[])
+    resp = client.post("/api/sessions/ghost/input", json={"text": "hi"})
     assert resp.status_code == 403
     assert tmux_calls == []
 
@@ -380,6 +447,61 @@ def test_redact_preview_truncates_and_flattens_newlines():
     out = redact_preview(long)
     assert out.startswith("x" * 16) and out.endswith("…")
     assert "\n" not in redact_preview("a\nb\r\nc")
+
+
+# ---------------------------------------------------------------------------
+# session_matches_allowlist -- the pure glob-matching helper, unit-tested
+# directly (no HTTP/TestClient overhead needed for these).
+# ---------------------------------------------------------------------------
+
+
+def test_matches_allowlist_exact_pattern_matches_only_itself():
+    assert session_matches_allowlist("alpha", ["alpha"]) is True
+    assert session_matches_allowlist("alphabet", ["alpha"]) is False
+
+
+def test_matches_allowlist_star_matches_any_name():
+    assert session_matches_allowlist("anything-goes", ["*"]) is True
+    assert session_matches_allowlist("x", ["*"]) is True
+
+
+def test_matches_allowlist_prefix_glob():
+    assert session_matches_allowlist("amplifier-foo", ["amplifier-*"]) is True
+    assert session_matches_allowlist("amplifier-test-input", ["amplifier-*"]) is True
+    assert session_matches_allowlist("other-foo", ["amplifier-*"]) is False
+    assert session_matches_allowlist("xamplifier-foo", ["amplifier-*"]) is False
+
+
+def test_matches_allowlist_is_case_sensitive():
+    """fnmatchcase, not fnmatch -- case must never be folded on any platform."""
+    assert session_matches_allowlist("amplifier-foo", ["Amplifier-*"]) is False
+    assert session_matches_allowlist("Amplifier-foo", ["Amplifier-*"]) is True
+
+
+def test_matches_allowlist_empty_list_denies_everything():
+    assert session_matches_allowlist("alpha", []) is False
+
+
+def test_matches_allowlist_skips_non_string_entries():
+    """Junk entries (int/None/dict) are skipped, not fatal; valid entries still match."""
+    assert (
+        session_matches_allowlist("amplifier-foo", [123, None, "amplifier-*"]) is True
+    )
+    assert session_matches_allowlist("alpha", [123, None, {}]) is False
+
+
+def test_matches_allowlist_multiple_patterns_any_match_wins():
+    assert session_matches_allowlist("amplifier-foo", ["zzz-*", "amplifier-*"]) is True
+    assert session_matches_allowlist("amplifier-foo", ["amplifier-*", "zzz-*"]) is True
+    assert session_matches_allowlist("neither", ["zzz-*", "amplifier-*"]) is False
+
+
+def test_matches_allowlist_question_and_bracket_glob_forms():
+    """`?` and `[abc]` glob forms come free with fnmatch -- document, don't assume."""
+    assert session_matches_allowlist("job1", ["job?"]) is True
+    assert session_matches_allowlist("job12", ["job?"]) is False
+    assert session_matches_allowlist("joba", ["job[abc]"]) is True
+    assert session_matches_allowlist("jobd", ["job[abc]"]) is False
 
 
 # ---------------------------------------------------------------------------

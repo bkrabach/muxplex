@@ -25,7 +25,14 @@ Security model (see the endpoint in main.py for the enforcement order):
   exact ``name in known_sessions`` membership check, and tmux resolves an
   exact session name to itself before any prefix match -- so ``-t name``
   cannot land on a neighbouring session.
+- The per-session allowlist (``settings.input_allowed_sessions``) is matched
+  as **glob patterns** (see ``session_matches_allowlist``), not exact
+  strings -- ``"*"`` allows every session, ``"amplifier-*"`` allows a
+  prefix family. A literal name with no glob metacharacters still matches
+  only itself, so existing exact-name configs behave unchanged.
 """
+
+import fnmatch
 
 # Closed allowlist of named special keys an agent may send. These are tmux
 # key names (see tmux(1) "KEY BINDINGS"). Kept deliberately small: enough to
@@ -78,6 +85,48 @@ def session_target(name: str) -> str:
     (no ``:``), so it is always a session-only target.
     """
     return name
+
+
+def session_matches_allowlist(name: str, patterns: list) -> bool:
+    """Return True if *name* matches at least one glob pattern in *patterns*.
+
+    This is the entire security boundary for who a remote agent may type
+    into, so its matching rules are deliberate and non-negotiable:
+
+    - Uses ``fnmatch.fnmatchcase``, **never** ``fnmatch.fnmatch``.
+      ``fnmatch.fnmatch`` runs the pattern and name through
+      ``os.path.normcase`` first, which is case-INSENSITIVE on macOS and
+      Windows -- on those platforms it would silently widen the fence (e.g.
+      a pattern of ``"Alpha"`` would match a session named ``"alpha"``).
+      tmux session names are case-sensitive on every platform, so matching
+      must be deterministic and case-sensitive everywhere muxplex runs. Do
+      not "simplify" this to ``fnmatch.fnmatch`` -- that reintroduces a
+      platform-dependent hole in the allowlist.
+    - Empty *patterns* returns False for every *name* (fail-closed): an
+      empty allowlist must deny everything, never be silently treated as
+      "no restriction" / allow-all.
+    - Non-string entries are skipped rather than raising, so a malformed
+      settings.json (e.g. a stray int or null in the list) degrades to
+      "that one entry never matches" instead of a 500 on every input call.
+    - A literal pattern with no glob metacharacters (``*``, ``?``, ``[...]``)
+      matches only that exact name, so pre-existing exact-name configs keep
+      working unchanged.
+
+    Patterns are operator-supplied from a local settings.json file (see
+    ``settings.LOCAL_ONLY_KEYS`` -- never PATCHable, never federation-synced),
+    not untrusted network input, so fnmatch's glob-to-regex translation is
+    not a ReDoS surface here. *name* has already passed
+    ``is_valid_session_name`` (charset restricted to
+    ``[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}``) before this function ever runs, so
+    there are no path-separator or traversal edge cases for the glob to
+    interact with.
+    """
+    for pattern in patterns:
+        if not isinstance(pattern, str):
+            continue
+        if fnmatch.fnmatchcase(name, pattern):
+            return True
+    return False
 
 
 def build_send_text_argv(name: str, text: str) -> list[str]:
