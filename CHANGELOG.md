@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.14.0 (2026-07-25)
+
+### Features
+
+- **TLS bootstrap endpoint: GET /api/ca** — Clients that verify TLS against muxplex's locally-generated CA previously had no programmatic way to obtain it without SSH access, and the most natural approach (pointing ca_file at the server's own certificate) is reliably wrong: the server presents only the leaf certificate on the wire, producing "unable to get local issuer certificate" when a client tries to validate against it. GET /api/ca now returns the CA certificate PEM, unauthenticated (added to _AUTH_EXEMPT_PATHS alongside /api/instance-info) — a trust anchor is not a secret, and requiring auth would be circular since a client cannot authenticate over TLS it does not yet trust. The path is derived internally from settings.get_local_ca_cert_path(); no client-supplied path, query, or header reaches the filesystem. tls.get_local_ca_cert_bytes() fails closed: missing files, unreadable paths, unparseable content, missing BasicConstraints extension, or CA:FALSE all return None → 404 with a helpful detail. Never serves private key material. Addresses a recurrent TLS onboarding friction point.
+
 ## v0.13.0 (2026-07-25)
 
 ### Bug Fixes
