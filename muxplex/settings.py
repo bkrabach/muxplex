@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -165,6 +166,98 @@ def load_settings() -> dict:
     return result
 
 
+# Rotating snapshot safety net for settings.json -- see _snapshot_current_settings().
+#
+# Incident that motivated this: PATCH /api/settings replaces whole values
+# (e.g. the entire `views` array). A browser tab holding a STALE in-memory
+# copy of `views` PATCHed it back wholesale and destroyed 7 of 8 views in
+# one request. Recovery only worked because a manual file backup happened
+# to exist. This makes that recovery path automatic and always-on,
+# regardless of which writer (API, federation sync, internal code) is
+# responsible.
+SETTINGS_HISTORY_DIRNAME = "settings-history"
+SETTINGS_HISTORY_KEEP = 20
+
+# Monotonic tie-breaker for snapshot filenames. time.time()'s resolution is
+# platform-dependent and, empirically, coarse enough on some hosts that two
+# snapshots taken microseconds apart (e.g. in a tight test loop, or two rapid
+# API writes) can produce the IDENTICAL formatted timestamp -- silently
+# overwriting one snapshot with another instead of retaining both. An
+# incrementing counter appended to the filename guarantees uniqueness and a
+# stable chronological sort regardless of clock resolution.
+_snapshot_counter_lock = threading.Lock()
+_snapshot_counter = 0
+
+
+def _settings_history_dir() -> Path:
+    return SETTINGS_PATH.parent / SETTINGS_HISTORY_DIRNAME
+
+
+def _next_snapshot_seq() -> int:
+    global _snapshot_counter
+    with _snapshot_counter_lock:
+        _snapshot_counter += 1
+        return _snapshot_counter
+
+
+def _snapshot_current_settings() -> None:
+    """Copy the CURRENT on-disk settings.json into settings-history/ before
+    it gets overwritten by a new write.
+
+    Best-effort and non-blocking: this is a safety net, not a transactional
+    requirement. Any failure (permissions, disk full, race) is logged as a
+    warning and swallowed -- it must NEVER prevent or corrupt the real write
+    that triggered it. No-op if settings.json doesn't exist yet (first run,
+    nothing to snapshot).
+
+    The history directory is created lazily with mode 0700 (settings can
+    contain secrets -- federation keys, TLS material -- so history copies
+    need the same protection as the live file).
+    """
+    if not SETTINGS_PATH.exists():
+        return
+    try:
+        history_dir = _settings_history_dir()
+        history_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(history_dir, 0o700)
+        except OSError:
+            pass  # best-effort permission tightening; don't fail the snapshot over it
+        # High-resolution timestamp for human readability, PLUS a zero-padded
+        # monotonic sequence number for guaranteed uniqueness and correct
+        # chronological sort even when time.time() ties across rapid calls
+        # (see _next_snapshot_seq's docstring-adjacent comment above).
+        seq = _next_snapshot_seq()
+        snapshot_path = history_dir / f"settings-{seq:012d}-{time.time():.6f}.json"
+        snapshot_path.write_text(SETTINGS_PATH.read_text())
+        _prune_settings_history(history_dir)
+    except Exception:
+        _log.warning("settings: failed to write history snapshot", exc_info=True)
+
+
+def _prune_settings_history(history_dir: Path) -> None:
+    """Keep only the SETTINGS_HISTORY_KEEP most recent snapshot files.
+
+    Filenames sort lexicographically in chronological order (fixed-width
+    fractional-second formatting), so a plain sorted() is sufficient --
+    no need to parse timestamps back out of the filename.
+    """
+    try:
+        snapshots = sorted(history_dir.glob("settings-*.json"))
+        excess = len(snapshots) - SETTINGS_HISTORY_KEEP
+        # Guard against negative `excess`: a bare `snapshots[:excess]` with a
+        # negative excess is NOT "nothing to remove" -- Python slice
+        # semantics treat a negative stop as counting from the end (e.g.
+        # `snapshots[:-1]` = "all but the last one"), which would delete
+        # perfectly recent snapshots well before the KEEP threshold is even
+        # reached. Only prune when there is a genuine surplus.
+        if excess > 0:
+            for old in snapshots[:excess]:
+                old.unlink(missing_ok=True)
+    except Exception:
+        _log.warning("settings: failed to prune history snapshots", exc_info=True)
+
+
 def save_settings(data: dict) -> None:
     """Save settings to disk, merging *data* with defaults first.
 
@@ -175,12 +268,19 @@ def save_settings(data: dict) -> None:
     SCHEMA_VERSION regardless of *data*. Clients do not get to write older
     versions — that would defeat the version field's purpose as a marker for
     federated peers.
+
+    Before writing, snapshots whatever is CURRENTLY on disk to
+    settings-history/ (see _snapshot_current_settings()) -- this is the
+    single lowest choke point where the settings file is actually written,
+    so every caller (API PATCH, federation sync, internal code) gets the
+    safety net for free.
     """
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     for key in DEFAULT_SETTINGS:
         if key in data:
             merged[key] = data[key]
     merged["_schema_version"] = SCHEMA_VERSION
+    _snapshot_current_settings()
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(merged, indent=2) + "\n")
 
@@ -307,6 +407,33 @@ def get_syncable_settings() -> dict:
     result = {key: settings[key] for key in SYNCABLE_KEYS if key in settings}
     result["settings_updated_at"] = settings.get("settings_updated_at", 0.0)
     return result
+
+
+def resolve_tmux_socket_dir() -> str:
+    """Best-effort resolution of the tmux socket directory sessions actually
+    live under, for THIS process's environment.
+
+    Mirrors the precedence in sessions.tmux_env(): an explicit
+    `tmux_socket_dir` setting is authoritative. If unset, a process just
+    inherits `TMUX_TMPDIR` from its own environment -- which, for a
+    systemd/launchd *service* process, is typically NOT set (services don't
+    inherit the interactive login shell's rc-file exports). Absent both,
+    fall back to tmux's own compiled-in default (`/tmp/tmux-<uid>`) so
+    callers always get an actionable, non-empty path instead of "".
+
+    Used by GET /api/instance-info (where this runs inside the live server
+    process, so os.environ is that process's actual environment -- exact)
+    and by the `muxplex env` CLI command (a separate process; see that
+    command's docstring for why its resolution is a best-effort inference
+    rather than a guarantee).
+    """
+    configured = load_settings().get("tmux_socket_dir", "")
+    if configured:
+        return configured
+    env_value = os.environ.get("TMUX_TMPDIR", "")
+    if env_value:
+        return env_value
+    return f"/tmp/tmux-{os.getuid()}"
 
 
 def load_federation_key() -> str:

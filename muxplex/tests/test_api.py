@@ -1707,6 +1707,114 @@ def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# PATCH /api/settings -- expected_settings_updated_at (optimistic concurrency)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_settings_cas_omitted_behaves_as_before(client, tmp_path, monkeypatch):
+    """Omitting expected_settings_updated_at is fully backward compatible: 200, write applies."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"sort_order": "alphabetical"})
+    assert response.status_code == 200
+    assert response.json()["sort_order"] == "alphabetical"
+
+
+def test_patch_settings_cas_match_applies_write(client, tmp_path, monkeypatch):
+    """A correct expected_settings_updated_at (matching current) returns 200 and applies the write."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    current_ts = client.get("/api/settings").json()["settings_updated_at"]
+
+    response = client.patch(
+        "/api/settings",
+        json={
+            "sort_order": "alphabetical",
+            "expected_settings_updated_at": current_ts,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["sort_order"] == "alphabetical"
+
+
+def test_patch_settings_cas_mismatch_returns_409_no_write(
+    client, tmp_path, monkeypatch
+):
+    """A stale expected_settings_updated_at returns 409 and makes NO write."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    # Bump settings_updated_at once so the "current" timestamp is nonzero,
+    # then attempt a PATCH with a deliberately stale (older) expectation.
+    client.patch("/api/settings", json={"sort_order": "alphabetical"})
+    stale_ts = -1.0  # guaranteed not to equal the real settings_updated_at
+
+    response = client.patch(
+        "/api/settings",
+        json={
+            "sort_order": "recent",
+            "expected_settings_updated_at": stale_ts,
+        },
+    )
+    assert response.status_code == 409
+    body = response.json()
+    assert "settings_updated_at" in body
+
+    # No write happened: sort_order must still be the prior value, not "recent".
+    after = client.get("/api/settings").json()
+    assert after["sort_order"] == "alphabetical"
+
+
+def test_patch_settings_cas_response_includes_current_timestamp(
+    client, tmp_path, monkeypatch
+):
+    """A 409 response body's settings_updated_at equals the server's actual current value."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    real_ts = client.get("/api/settings").json()["settings_updated_at"]
+
+    response = client.patch(
+        "/api/settings",
+        json={"sort_order": "recent", "expected_settings_updated_at": real_ts - 1.0},
+    )
+    assert response.status_code == 409
+    assert response.json()["settings_updated_at"] == real_ts
+
+
+def test_patch_settings_cas_field_not_written_as_a_setting(
+    client, tmp_path, monkeypatch
+):
+    """expected_settings_updated_at never leaks into the persisted/response settings."""
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    current_ts = client.get("/api/settings").json()["settings_updated_at"]
+    response = client.patch(
+        "/api/settings",
+        json={
+            "sort_order": "alphabetical",
+            "expected_settings_updated_at": current_ts,
+        },
+    )
+    assert response.status_code == 200
+    assert "expected_settings_updated_at" not in response.json()
+
+    import json as json_mod
+
+    on_disk = json_mod.loads(settings_path.read_text())
+    assert "expected_settings_updated_at" not in on_disk
+
+
+# ---------------------------------------------------------------------------
 # GET /api/instance-info
 # ---------------------------------------------------------------------------
 
@@ -1813,6 +1921,39 @@ def test_instance_info_federation_enabled_true_when_key_exists(
     assert data["federation_enabled"] is True, (
         f"federation_enabled must be True when a key file exists, got: {data['federation_enabled']}"
     )
+
+
+def test_instance_info_includes_tmux_socket_dir_configured(
+    client, tmp_path, monkeypatch
+):
+    """GET /api/instance-info returns the configured tmux_socket_dir value verbatim."""
+    import json as json_mod
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json_mod.dumps({"tmux_socket_dir": "/custom/tmux/socket/dir"})
+    )
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    assert response.json()["tmux_socket_dir"] == "/custom/tmux/socket/dir"
+
+
+def test_instance_info_tmux_socket_dir_falls_back_when_unset(
+    client, tmp_path, monkeypatch
+):
+    """With tmux_socket_dir unset, instance-info still returns a non-empty resolved path."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    assert response.json()["tmux_socket_dir"]  # non-empty fallback, never ""
 
 
 def test_instance_info_includes_device_id(client, tmp_path, monkeypatch):

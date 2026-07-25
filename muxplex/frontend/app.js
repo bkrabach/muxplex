@@ -1427,9 +1427,9 @@ function showNewViewInput() {
 
       // Create view and PATCH /api/settings
       var updatedViews = views.concat([{ name: name, sessions: [] }]);
-      api('PATCH', '/api/settings', { views: updatedViews })
-        .then(function() {
-          if (_serverSettings) _serverSettings.views = updatedViews;
+      patchSettingsGuarded(function() { return { views: updatedViews }; })
+        .then(function(body) {
+          if (_serverSettings) _serverSettings.views = body.views;
           switchView(name);
           openManageViewPanel();
         })
@@ -1511,9 +1511,9 @@ function showSidebarNewViewInput() {
 
       // Create view and PATCH /api/settings
       var updatedViews = views.concat([{ name: name, sessions: [] }]);
-      api('PATCH', '/api/settings', { views: updatedViews })
-        .then(function() {
-          if (_serverSettings) _serverSettings.views = updatedViews;
+      patchSettingsGuarded(function() { return { views: updatedViews }; })
+        .then(function(body) {
+          if (_serverSettings) _serverSettings.views = body.views;
           closeSidebarDropdown();
           switchView(name);
           openManageViewPanel();
@@ -1541,9 +1541,9 @@ function showSidebarNewViewInput() {
  * @param {Array} updatedViews - New views array to save.
  */
 function _saveViewsAndRerender(updatedViews) {
-  return api('PATCH', '/api/settings', { views: updatedViews })
-    .then(function() {
-      if (_serverSettings) _serverSettings.views = updatedViews;
+  return patchSettingsGuarded(function() { return { views: updatedViews }; })
+    .then(function(body) {
+      if (_serverSettings) _serverSettings.views = body.views;
       renderViewsSettingsTab();
       renderViewDropdown();
     })
@@ -1759,9 +1759,9 @@ function renderViewsSettingsTab() {
         return;
       }
       var updatedViews = views.concat([{ name: newName, sessions: [] }]);
-      api('PATCH', '/api/settings', { views: updatedViews })
-        .then(function() {
-          if (_serverSettings) _serverSettings.views = updatedViews;
+      patchSettingsGuarded(function() { return { views: updatedViews }; })
+        .then(function(body) {
+          if (_serverSettings) _serverSettings.views = body.views;
           renderViewsSettingsTab();
           renderViewDropdown();
           // Close settings and open Manage View panel for the new view
@@ -2270,11 +2270,15 @@ function _openMobileViewPicker(sessionKey, sessionName, unhideFirst) {
       var checkEl = viewBtn.querySelector('span');
       if (checkEl) checkEl.textContent = nowIn ? '\u2713' : '\u00a0\u00a0';
 
-      api('PATCH', '/api/settings', patch)
-        .then(function() {
+      patchSettingsGuarded(function(fresh) {
+        return isAlreadyInView
+          ? removeSessionFromViewOp(fresh, view.name, sessionKey)
+          : addSessionToViewOp(fresh, view.name, sessionKey);
+      })
+        .then(function(body) {
           if (_serverSettings) {
-            _serverSettings.views = patch.views;
-            if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+            _serverSettings.views = body.views;
+            if (body.hidden_sessions) _serverSettings.hidden_sessions = body.hidden_sessions;
           }
           if (nowIn && patch.hidden_sessions) renderGrid(_currentSessions || []);
         })
@@ -2416,18 +2420,20 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
       // New-view creation: addSessionToViewOp doesn't model view creation, but
       // we use it on a temp settings (with the new view already appended) so
       // that the hidden_sessions update is expressed via the op layer.
-      var newView = { name: newName, sessions: [capturedKey] };
-      var newViews = existViews.concat([newView]);
-      var tempSettings = {
-        hidden_sessions: (_serverSettings && _serverSettings.hidden_sessions) || [],
-        views: newViews
-      };
-      var flyoutPatch = addSessionToViewOp(tempSettings, newName, capturedKey);
-      api('PATCH', '/api/settings', flyoutPatch)
-        .then(function() {
+      patchSettingsGuarded(function(fresh) {
+        var freshExistViews = (fresh && fresh.views) || [];
+        var newView = { name: newName, sessions: [capturedKey] };
+        var newViews = freshExistViews.concat([newView]);
+        var tempSettings = {
+          hidden_sessions: (fresh && fresh.hidden_sessions) || [],
+          views: newViews
+        };
+        return addSessionToViewOp(tempSettings, newName, capturedKey);
+      })
+        .then(function(body) {
           if (_serverSettings) {
-            _serverSettings.views = flyoutPatch.views;
-            _serverSettings.hidden_sessions = flyoutPatch.hidden_sessions;
+            _serverSettings.views = body.views;
+            _serverSettings.hidden_sessions = body.hidden_sessions;
           }
           switchView(newName);
         })
@@ -2448,18 +2454,15 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
     var sessions = view.sessions || [];
     var isAlreadyInView = sessions.indexOf(sessionKey) !== -1;
 
-    var patch;
-    if (isAlreadyInView) {
-      patch = removeSessionFromViewOp(_serverSettings, view.name, sessionKey);
-    } else {
-      patch = addSessionToViewOp(_serverSettings, view.name, sessionKey);
-    }
-
-    api('PATCH', '/api/settings', patch)
-      .then(function() {
+    patchSettingsGuarded(function(fresh) {
+      return isAlreadyInView
+        ? removeSessionFromViewOp(fresh, view.name, sessionKey)
+        : addSessionToViewOp(fresh, view.name, sessionKey);
+    })
+      .then(function(body) {
         if (_serverSettings) {
-          _serverSettings.views = patch.views;
-          if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+          _serverSettings.views = body.views;
+          if (body.hidden_sessions) _serverSettings.hidden_sessions = body.hidden_sessions;
         }
         // Update checkmarks in submenu
         if (_flyoutSubmenuEl) {
@@ -2473,7 +2476,7 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
             }
           }
         }
-        if (!isAlreadyInView && patch.hidden_sessions) {
+        if (!isAlreadyInView && body.hidden_sessions) {
           renderGrid(_currentSessions || []);
         }
       })
@@ -2492,15 +2495,13 @@ function _doHideSession() {
   var sessionKey = _flyoutSessionKey;
   if (!sessionKey) return;
 
-  var patch = hideSessionOp(_serverSettings, sessionKey);
-
   closeFlyoutMenu();
 
-  api('PATCH', '/api/settings', patch)
-    .then(function() {
+  patchSettingsGuarded(function(fresh) { return hideSessionOp(fresh, sessionKey); })
+    .then(function(body) {
       if (_serverSettings) {
-        _serverSettings.hidden_sessions = patch.hidden_sessions;
-        _serverSettings.views = patch.views;
+        _serverSettings.hidden_sessions = body.hidden_sessions;
+        _serverSettings.views = body.views;
       }
       renderGrid(_currentSessions || []);
       renderViewDropdown();
@@ -2523,13 +2524,11 @@ function _doUnhideSession() {
   var hidden = (_serverSettings && _serverSettings.hidden_sessions) || [];
   if (hidden.indexOf(sessionKey) === -1) { closeFlyoutMenu(); return; }
 
-  var patch = unhideSessionOp(_serverSettings, sessionKey);
-
   closeFlyoutMenu();
 
-  api('PATCH', '/api/settings', patch)
-    .then(function() {
-      if (_serverSettings) _serverSettings.hidden_sessions = patch.hidden_sessions;
+  patchSettingsGuarded(function(fresh) { return unhideSessionOp(fresh, sessionKey); })
+    .then(function(body) {
+      if (_serverSettings) _serverSettings.hidden_sessions = body.hidden_sessions;
       renderGrid(_currentSessions || []);
       renderViewDropdown();
     })
@@ -2547,13 +2546,11 @@ function _doRemoveFromView() {
   var sessionKey = _flyoutSessionKey;
   if (!sessionKey || _activeView === 'all' || _activeView === 'hidden') return;
 
-  var patch = removeSessionFromViewOp(_serverSettings, _activeView, sessionKey);
-
   closeFlyoutMenu();
 
-  api('PATCH', '/api/settings', patch)
-    .then(function() {
-      if (_serverSettings) _serverSettings.views = patch.views;
+  patchSettingsGuarded(function(fresh) { return removeSessionFromViewOp(fresh, _activeView, sessionKey); })
+    .then(function(body) {
+      if (_serverSettings) _serverSettings.views = body.views;
       renderGrid(_currentSessions || []);
     })
     .catch(function(err) {
@@ -2706,12 +2703,16 @@ function openManageViewPanel() {
           input.focus(); return;
         }
         _committed = true;
-        var updatedViews = views.map(function(v) {
-          return v.name === currentName ? { name: newName, sessions: v.sessions || [] } : v;
-        });
-        api('PATCH', '/api/settings', { views: updatedViews })
-          .then(function() {
-            if (_serverSettings) _serverSettings.views = updatedViews;
+        patchSettingsGuarded(function(fresh) {
+          var freshViews = (fresh && fresh.views) || [];
+          return {
+            views: freshViews.map(function(v) {
+              return v.name === currentName ? { name: newName, sessions: v.sessions || [] } : v;
+            })
+          };
+        })
+          .then(function(body) {
+            if (_serverSettings) _serverSettings.views = body.views;
             _activeView = newName;
             api('PATCH', '/api/state', { active_view: newName }).catch(function() {});
             renderViewDropdown();
@@ -2764,11 +2765,12 @@ function openManageViewPanel() {
       if (yesBtn) {
         yesBtn.onclick = function() {
           var viewToDelete = _activeView;
-          var views = (_serverSettings && _serverSettings.views) || [];
-          var updatedViews = views.filter(function(v) { return v.name !== viewToDelete; });
-          api('PATCH', '/api/settings', { views: updatedViews })
-            .then(function() {
-              if (_serverSettings) _serverSettings.views = updatedViews;
+          patchSettingsGuarded(function(fresh) {
+            var freshViews = (fresh && fresh.views) || [];
+            return { views: freshViews.filter(function(v) { return v.name !== viewToDelete; }) };
+          })
+            .then(function(body) {
+              if (_serverSettings) _serverSettings.views = body.views;
               closeManageViewPanel();
               switchView('all');
               showToast('View \'' + viewToDelete + '\' deleted');
@@ -2881,18 +2883,15 @@ function renderManageViewList() {
     var sessionKey = cb.dataset.sessionKey;
     var isChecked = cb.checked;
 
-    var patch;
-    if (isChecked) {
-      patch = addSessionToViewOp(_serverSettings, _activeView, sessionKey);
-    } else {
-      patch = removeSessionFromViewOp(_serverSettings, _activeView, sessionKey);
-    }
-
-    api('PATCH', '/api/settings', patch)
-      .then(function() {
+    patchSettingsGuarded(function(fresh) {
+      return isChecked
+        ? addSessionToViewOp(fresh, _activeView, sessionKey)
+        : removeSessionFromViewOp(fresh, _activeView, sessionKey);
+    })
+      .then(function(body) {
         if (_serverSettings) {
-          _serverSettings.views = patch.views;
-          if (patch.hidden_sessions) _serverSettings.hidden_sessions = patch.hidden_sessions;
+          _serverSettings.views = body.views;
+          if (body.hidden_sessions) _serverSettings.hidden_sessions = body.hidden_sessions;
         }
         // Update summary count in-place — do NOT re-render the full list (avoids layout thrash)
         var summaryEl = $('manage-view-summary');
@@ -3340,6 +3339,86 @@ async function loadServerSettings() {
 }
 
 /**
+ * Re-render every view-dependent surface from current _serverSettings.
+ * Shared by followRemoteViewDefinitions() and the guarded-PATCH conflict
+ * path below -- both situations are "server truth changed out from under
+ * us, redraw everything that depends on view membership."
+ */
+function _rerenderViewDependentUI() {
+  renderViewDropdown();
+  renderGrid(_currentSessions || []);
+  renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
+  if (_settingsOpen) renderViewsSettingsTab();
+  var manageViewPanel = $('manage-view-panel');
+  if (manageViewPanel && !manageViewPanel.classList.contains('hidden')) {
+    renderManageViewList();
+  }
+}
+
+/**
+ * PATCH /api/settings with optimistic-concurrency protection against the
+ * settings-clobber bug: a tab holding a STALE `_serverSettings` snapshot
+ * (e.g. an old copy of the entire `views` array) building a patch from
+ * that stale data and overwriting a concurrent edit from another
+ * device/tab. This is exactly how a real incident destroyed 7 of 8 views
+ * in one PATCH request.
+ *
+ * The server (as of the `expected_settings_updated_at` PATCH precondition)
+ * rejects the write with 409 when the caller's expectation is stale,
+ * making NO write -- see main.py's update_settings(). This helper is the
+ * one place that precondition is attached and the 409 retry is handled,
+ * so every call site gets the protection for free instead of re-deriving
+ * it per call site.
+ *
+ * @param {function(object): object} mutateFn - Given a deep copy of the
+ *   CURRENT `_serverSettings` (fresh on retry), returns the PATCH BODY to
+ *   send, e.g. `{ views: [...] }`. May be called twice: once with the
+ *   snapshot taken at call time, and -- only on exactly one 409 -- again
+ *   with a freshly re-fetched snapshot.
+ * @param {object} [opts]
+ * @param {boolean} [opts.retry=true] - Internal: false on the retry attempt
+ *   itself, so a second consecutive 409 does not loop.
+ * @returns {Promise<object>} the parsed PATCH response body (redacted
+ *   settings, same shape GET /api/settings returns).
+ */
+async function patchSettingsGuarded(mutateFn, opts) {
+  var retry = !opts || opts.retry !== false;
+  var baseline = _serverSettings ? JSON.parse(JSON.stringify(_serverSettings)) : {};
+  var patch = mutateFn(baseline);
+  patch.expected_settings_updated_at = _lastSettingsUpdatedAt;
+
+  try {
+    const res = await api('PATCH', '/api/settings', patch);
+    const responseBody = await res.json();
+    if (typeof responseBody.settings_updated_at === 'number') {
+      _lastSettingsUpdatedAt = responseBody.settings_updated_at;
+    }
+    return responseBody;
+  } catch (err) {
+    if (err.status === 409 && retry) {
+      // Stale baseline: re-fetch server truth, re-apply the SAME intent to
+      // the FRESH copy, and retry exactly once (retry:false below means a
+      // second consecutive 409 falls to the else-branch, not another retry).
+      await loadServerSettings();
+      _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
+      return patchSettingsGuarded(mutateFn, { retry: false });
+    }
+    if (err.status === 409) {
+      // Second consecutive 409: don't loop. Re-render from server truth and
+      // surface a brief non-blocking notice (no dedicated toast text here --
+      // this is an edge case a normal user is unlikely to hit twice in a
+      // row -- console.warn is the existing fallback pattern used elsewhere
+      // in this file, e.g. loadServerSettings()'s own catch).
+      await loadServerSettings();
+      _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
+      _rerenderViewDependentUI();
+      console.warn('[patchSettingsGuarded] conflict persisted after retry; reloaded from server');
+    }
+    throw err;
+  }
+}
+
+/**
  * Send a PATCH to /api/settings with a single key/value update.
  * Shows a toast on success or failure.
  * @param {string} key
@@ -3348,7 +3427,7 @@ async function loadServerSettings() {
  */
 async function patchServerSetting(key, value) {
   try {
-    await api('PATCH', '/api/settings', { [key]: value });
+    await patchSettingsGuarded(function() { return { [key]: value }; });
     _serverSettings = Object.assign({}, _serverSettings, { [key]: value });
     showToast('Setting saved');
   } catch (err) {
@@ -3615,7 +3694,7 @@ function onDisplaySettingChange() {
     activityIndicator: ds.activityIndicator,
   };
   Object.assign(_serverSettings, patch);
-  api('PATCH', '/api/settings', patch)
+  patchSettingsGuarded(function() { return patch; })
     .then(function() { showToast('Settings saved'); })
     .catch(function(err) { console.warn('[onDisplaySettingChange] failed:', err); });
   applyDisplaySettings(ds);
@@ -4164,14 +4243,23 @@ async function createNewSession(name, remoteId) {
         if (!remoteId && _localDeviceId) {
           newSessionKey = _localDeviceId + ':' + sessionName;
         }
-        var updatedViews = JSON.parse(JSON.stringify(views));
-        if (!updatedViews[viewIdx].sessions.includes(newSessionKey)) {
-          updatedViews[viewIdx].sessions.push(newSessionKey);
-          api('PATCH', '/api/settings', { views: updatedViews }).catch(function(err) {
+        patchSettingsGuarded(function(fresh) {
+          var freshViews = JSON.parse(JSON.stringify((fresh && fresh.views) || []));
+          var freshIdx = -1;
+          for (var fi = 0; fi < freshViews.length; fi++) {
+            if (freshViews[fi].name === _activeView) { freshIdx = fi; break; }
+          }
+          if (freshIdx >= 0 && !freshViews[freshIdx].sessions.includes(newSessionKey)) {
+            freshViews[freshIdx].sessions.push(newSessionKey);
+          }
+          return { views: freshViews };
+        })
+          .then(function(body) {
+            if (_serverSettings) _serverSettings.views = body.views;
+          })
+          .catch(function(err) {
             console.warn('[createNewSession] auto-add to view failed:', err);
           });
-          if (_serverSettings) _serverSettings.views = updatedViews;
-        }
       }
     }
 
@@ -4763,6 +4851,7 @@ if (typeof module !== 'undefined' && module.exports) {
     // Server settings
     loadServerSettings,
     patchServerSetting,
+    patchSettingsGuarded,
     // Fetch wrapper
     api,
     // Header + button with inline name input

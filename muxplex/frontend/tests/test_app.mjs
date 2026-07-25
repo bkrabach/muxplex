@@ -3069,11 +3069,17 @@ test('buildStatusTileHTML renders statusText in badge span', () => {
 
 // --- Issue 1: Loading placeholder tile ---
 
+// Window generous enough to cover the whole createNewSession body -- the
+// auto-add-to-view block (patchSettingsGuarded-based, since v0.11 CAS work)
+// pushed the loading-tile logic further from the function start than a
+// tighter window would capture.
+const CREATE_NEW_SESSION_WINDOW = 4500;
+
 test('createNewSession injects tile--loading placeholder after POST succeeds', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const start = source.indexOf('async function createNewSession(');
   assert.ok(start !== -1, 'createNewSession must exist');
-  const snippet = source.slice(start, start + 2500);
+  const snippet = source.slice(start, start + CREATE_NEW_SESSION_WINDOW);
   assert.ok(snippet.includes('tile--loading'), 'createNewSession must inject tile--loading placeholder class');
   assert.ok(snippet.includes('loading-tile-'), 'createNewSession must use loading-tile- id prefix for the placeholder');
 });
@@ -3081,7 +3087,7 @@ test('createNewSession injects tile--loading placeholder after POST succeeds', (
 test('createNewSession removes loading placeholder when session is found', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const start = source.indexOf('async function createNewSession(');
-  const snippet = source.slice(start, start + 2500);
+  const snippet = source.slice(start, start + CREATE_NEW_SESSION_WINDOW);
   assert.ok(
     snippet.includes('loadingTile') && snippet.includes('.remove()'),
     'createNewSession must remove the loading tile (loadingTile.remove()) when session is found'
@@ -6491,5 +6497,169 @@ test('after refresh, a session newly added to a view on another device is reflec
   );
 
   globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+// --- patchSettingsGuarded (settings-clobber CAS protection) ---
+// Real incident this fixes: a PWA tab holding a STALE _serverSettings.views
+// snapshot PATCHed the entire array back over the server's newer state,
+// destroying 7 of 8 views in one request. The server now accepts an
+// OPTIONAL expected_settings_updated_at precondition (see main.py's
+// update_settings()) and rejects a stale write with 409, no mutation.
+// patchSettingsGuarded is the one place that precondition is attached and
+// the 409 retry is handled.
+
+test('patchSettingsGuarded attaches expected_settings_updated_at to the PATCH body', async () => {
+  const patchBodies = [];
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'PATCH' && url === '/api/settings') {
+      patchBodies.push(JSON.parse(opts.body));
+      return { ok: true, json: async () => ({ views: [], settings_updated_at: 42 }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setServerSettings({ views: [], settings_updated_at: 42 });
+  await app.patchSettingsGuarded(() => ({ views: [{ name: 'X', sessions: [] }] }));
+
+  assert.strictEqual(patchBodies.length, 1);
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(patchBodies[0], 'expected_settings_updated_at'),
+    'PATCH body must include expected_settings_updated_at: ' + JSON.stringify(patchBodies[0]),
+  );
+
+  globalThis.fetch = undefined;
+});
+
+test('a single 409 triggers exactly one re-fetch, one re-apply, and one retry', async () => {
+  const calls = [];
+  let patchAttempts = 0;
+  const serverViews = [{ name: 'Focus', sessions: ['a', 'b', 'c'] }];
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/settings') {
+      return { ok: true, json: async () => ({ views: serverViews, settings_updated_at: 100 }) };
+    }
+    if (method === 'PATCH' && url === '/api/settings') {
+      patchAttempts += 1;
+      if (patchAttempts === 1) {
+        return { ok: false, status: 409, statusText: 'Conflict', json: async () => ({ settings_updated_at: 100 }) };
+      }
+      return { ok: true, json: async () => ({ views: JSON.parse(opts.body).views, settings_updated_at: 101 }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  // Seed a STALE baseline (different from what the "GET" mock returns).
+  app._setServerSettings({ views: [{ name: 'Focus', sessions: ['a'] }], settings_updated_at: 1 });
+
+  const mutateCalls = [];
+  const result = await app.patchSettingsGuarded((fresh) => {
+    mutateCalls.push(JSON.parse(JSON.stringify(fresh)));
+    const views = (fresh && fresh.views) || [];
+    return { views: views.map((v) => ({ name: v.name, sessions: v.sessions.concat(['d']) })) };
+  });
+
+  assert.strictEqual(
+    calls.filter((c) => c === 'PATCH /api/settings').length, 2,
+    'must attempt PATCH exactly twice (original + one retry); calls: ' + JSON.stringify(calls),
+  );
+  assert.strictEqual(
+    calls.filter((c) => c === 'GET /api/settings').length, 1,
+    'must re-fetch settings exactly once after the 409; calls: ' + JSON.stringify(calls),
+  );
+  assert.strictEqual(mutateCalls.length, 2, 'mutateFn must be called once per attempt');
+  assert.deepStrictEqual(
+    mutateCalls[1].views, serverViews,
+    'the retry must re-apply the mutation to the FRESH (re-fetched) snapshot, not the stale one',
+  );
+  assert.deepStrictEqual(result.views, [{ name: 'Focus', sessions: ['a', 'b', 'c', 'd'] }]);
+
+  globalThis.fetch = undefined;
+});
+
+test('a second consecutive 409 does not loop -- exactly two PATCH attempts, then rejects', async () => {
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/settings') {
+      return { ok: true, json: async () => ({ views: [], settings_updated_at: 5 }) };
+    }
+    if (method === 'PATCH' && url === '/api/settings') {
+      return { ok: false, status: 409, statusText: 'Conflict', json: async () => ({ settings_updated_at: 5 }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setServerSettings({ views: [], settings_updated_at: 1 });
+
+  await assert.rejects(
+    () => app.patchSettingsGuarded(() => ({ views: [] })),
+    (err) => err.status === 409,
+    'a persisting conflict must reject with the 409 error, not loop forever',
+  );
+
+  assert.strictEqual(
+    calls.filter((c) => c === 'PATCH /api/settings').length, 2,
+    'must not attempt a third PATCH after a second consecutive 409; calls: ' + JSON.stringify(calls),
+  );
+  assert.strictEqual(
+    calls.filter((c) => c === 'GET /api/settings').length, 2,
+    'each 409 (including the second) re-fetches server truth for re-rendering/baseline; calls: ' + JSON.stringify(calls),
+  );
+
+  globalThis.fetch = undefined;
+});
+
+test('a successful PATCH updates the baseline used by the NEXT guarded write', async () => {
+  const patchBodies = [];
+  let responseTs = 200;
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'PATCH' && url === '/api/settings') {
+      patchBodies.push(JSON.parse(opts.body));
+      return { ok: true, json: async () => ({ views: [], settings_updated_at: responseTs }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setServerSettings({ views: [], settings_updated_at: 1 });
+
+  await app.patchSettingsGuarded(() => ({ views: [] }));
+  responseTs = 201;
+  await app.patchSettingsGuarded(() => ({ views: [] }));
+
+  assert.strictEqual(patchBodies.length, 2);
+  assert.strictEqual(
+    patchBodies[1].expected_settings_updated_at, 200,
+    'the second guarded write must send the baseline from the FIRST write\'s response, not the original seed',
+  );
+
+  globalThis.fetch = undefined;
+});
+
+test('a view-membership toggle through _saveViewsAndRerender produces the correct merged views array', async () => {
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'PATCH' && url === '/api/settings') {
+      const body = JSON.parse(opts.body);
+      return { ok: true, json: async () => ({ views: body.views, settings_updated_at: 999 }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setServerSettings({ views: [{ name: 'Focus', sessions: ['a'] }], settings_updated_at: 1 });
+
+  await app._saveViewsAndRerender([{ name: 'Focus', sessions: ['a', 'b'] }, { name: 'Other', sessions: [] }]);
+
+  const after = app._getServerSettings();
+  assert.deepStrictEqual(after.views, [
+    { name: 'Focus', sessions: ['a', 'b'] },
+    { name: 'Other', sessions: [] },
+  ]);
+
   globalThis.fetch = undefined;
 });

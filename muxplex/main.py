@@ -87,6 +87,7 @@ from muxplex.settings import (
     load_federation_key,
     load_settings,
     patch_settings,
+    resolve_tmux_socket_dir,
     save_settings,
 )
 from muxplex.breaker import CircuitBreaker
@@ -1298,13 +1299,53 @@ async def get_settings() -> dict:
 
 
 @app.patch("/api/settings")
-async def update_settings(request: Request) -> dict:
+async def update_settings(request: Request):
     """Merge known keys from the request body into settings and return updated settings.
 
     The response is redacted in the same way as ``GET /api/settings`` so that
     sensitive keys are never leaked to the browser.
+
+    Optimistic concurrency (compare-and-swap): the body MAY include an
+    ``expected_settings_updated_at`` float. When present, it must equal the
+    server's CURRENT ``settings_updated_at`` or the request is rejected with
+    409 and NO write is made. This closes the clobber hazard where a client
+    holding a stale in-memory settings snapshot (e.g. an old copy of the
+    entire ``views`` array) builds a patch from that stale data and
+    overwrites a concurrent edit made by another device/tab -- this is
+    exactly how a real incident destroyed 7 of 8 views in one request.
+    When omitted, behavior is unchanged (backward compatible with existing
+    clients, including federation sync, which don't send it yet). New
+    clients SHOULD send it -- see frontend/app.js's ``patchSettingsGuarded``
+    for the reference implementation.
+
+    The precondition field is popped out of the body before it reaches
+    ``patch_settings()`` -- it's a precondition, not a setting, and isn't a
+    key ``patch_settings`` would recognize anyway (it's not in
+    DEFAULT_SETTINGS), but popping it explicitly documents the intent and
+    avoids depending on that incidental behavior.
+
+    NOTE: there's no Pydantic model backing this endpoint's body today (it
+    reads raw JSON because the patch is an open-ended subset of
+    DEFAULT_SETTINGS keys) -- this field is handled the same way, as a
+    plain dict key, rather than introducing a new model just for one field.
     """
     body = await request.json()
+    expected = body.pop("expected_settings_updated_at", None)
+    if expected is not None:
+        current_ts = load_settings().get("settings_updated_at", 0.0)
+        # Exact float equality (not an epsilon comparison): the expected
+        # value is always a settings_updated_at we ourselves emitted on a
+        # prior GET/PATCH response, round-tripped through JSON with no
+        # arithmetic applied to it -- so there's no floating-point drift to
+        # tolerate. An epsilon would only paper over a real mismatch.
+        if expected != current_ts:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "Settings have changed since you last loaded them.",
+                    "settings_updated_at": current_ts,
+                },
+            )
     updated = patch_settings(body)
     result = copy.deepcopy(updated)
     result["federation_key"] = ""
@@ -1374,6 +1415,23 @@ async def instance_info() -> dict:
         "device_id": load_device_id(),
         "version": app.version,
         "federation_enabled": bool(fed_key),
+        # Local filesystem path this instance's tmux sessions live under
+        # (see settings.tmux_socket_dir / sessions.tmux_env). Any tool that
+        # creates tmux sessions on this host (muxplex-deck, agents, ad-hoc
+        # scripts) needs this to land sessions where THIS instance can see
+        # them -- otherwise they land on a different tmux server and are
+        # silently invisible (see AGENTS.md's "tmux socket" section).
+        # Exposing it here is a deliberate judgment call: this endpoint is
+        # already unauthenticated and already returns other local-host
+        # identifiers (device_name/hostname), and a filesystem path is not
+        # a secret in the way federation_key or TLS material would be.
+        # Resolved (not the raw setting, which may be "" meaning "inherit
+        # from environment") via resolve_tmux_socket_dir() -- and since this
+        # code runs INSIDE the live server process, os.environ here is the
+        # server's own actual environment, so the resolution is exact (not
+        # a best-effort guess, unlike the CLI's `muxplex env`, which infers
+        # from its own separate process environment).
+        "tmux_socket_dir": resolve_tmux_socket_dir(),
     }
 
 

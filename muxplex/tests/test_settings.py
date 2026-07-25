@@ -74,6 +74,93 @@ def test_save_creates_file_and_dirs(tmp_path, monkeypatch):
     assert nested_path.exists()
 
 
+# ---------------------------------------------------------------------------
+# Rotating settings-history snapshots (settings clobber safety net)
+# ---------------------------------------------------------------------------
+
+
+def test_save_first_write_creates_no_snapshot(tmp_path, monkeypatch):
+    """The very first save_settings() call (no prior file) creates no history dir."""
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+
+    save_settings({"sort_order": "alpha"})
+
+    history_dir = tmp_path / settings_mod.SETTINGS_HISTORY_DIRNAME
+    assert not history_dir.exists()
+
+
+def test_save_snapshots_previous_content_before_overwrite(tmp_path, monkeypatch):
+    """A second save_settings() call snapshots the PREVIOUS on-disk content."""
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+
+    save_settings({"sort_order": "first"})
+    save_settings({"sort_order": "second"})
+
+    history_dir = tmp_path / settings_mod.SETTINGS_HISTORY_DIRNAME
+    snapshots = sorted(history_dir.glob("settings-*.json"))
+    assert len(snapshots) == 1
+    snapshotted = json.loads(snapshots[0].read_text())
+    assert snapshotted["sort_order"] == "first"
+    # The live file has moved on to the new value.
+    assert json.loads(fake_path.read_text())["sort_order"] == "second"
+
+
+def test_save_history_dir_created_with_restrictive_permissions(tmp_path, monkeypatch):
+    """The settings-history dir is created mode 0700 (settings may hold secrets)."""
+    import stat
+
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+
+    save_settings({"sort_order": "first"})
+    save_settings({"sort_order": "second"})
+
+    history_dir = tmp_path / settings_mod.SETTINGS_HISTORY_DIRNAME
+    mode = stat.S_IMODE(history_dir.stat().st_mode)
+    assert mode == 0o700
+
+
+def test_save_rotation_keeps_only_most_recent_n(tmp_path, monkeypatch):
+    """Only the most recent SETTINGS_HISTORY_KEEP snapshots are retained."""
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+    monkeypatch.setattr(settings_mod, "SETTINGS_HISTORY_KEEP", 3)
+
+    # N+2 writes -> N+1 snapshot opportunities (first write has nothing to
+    # snapshot), so with KEEP=3 we expect exactly 3 retained afterwards.
+    for i in range(5):
+        save_settings({"sort_order": f"value-{i}"})
+
+    history_dir = tmp_path / settings_mod.SETTINGS_HISTORY_DIRNAME
+    snapshots = sorted(history_dir.glob("settings-*.json"))
+    assert len(snapshots) == 3
+    # The retained snapshots are the most recent ones (values 1, 2, 3 -- the
+    # snapshot taken just before writing value-4 is of value-3's content).
+    contents = [json.loads(p.read_text())["sort_order"] for p in snapshots]
+    assert contents == ["value-1", "value-2", "value-3"]
+
+
+def test_save_snapshot_failure_does_not_break_the_write(tmp_path, monkeypatch):
+    """A snapshot failure (e.g. mkdir raising) must not prevent the real write."""
+    fake_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", fake_path)
+
+    # First write establishes a file to snapshot on the second write.
+    save_settings({"sort_order": "first"})
+
+    def _boom(*args, **kwargs):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(settings_mod, "_settings_history_dir", _boom)
+
+    # Must not raise, and the real settings write must still succeed.
+    save_settings({"sort_order": "second"})
+
+    assert json.loads(fake_path.read_text())["sort_order"] == "second"
+
+
 def test_save_merges_with_defaults(tmp_path, monkeypatch):
     """save_settings() merges data with defaults before writing."""
     fake_path = tmp_path / "settings.json"
