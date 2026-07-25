@@ -203,12 +203,12 @@ def test_allowlist_prefix_glob_matches_family_only(client, monkeypatch, tmux_cal
         assert resp.status_code == 403, name
 
 
-def test_allowlist_matching_is_case_sensitive(client, monkeypatch, tmux_calls):
-    """ "Amplifier-*" (capital A) must NOT match "amplifier-foo" -- fnmatchcase guard."""
+def test_allowlist_matching_is_case_insensitive(client, monkeypatch, tmux_calls):
+    """ "Amplifier-*" (capital A) DOES match "amplifier-foo" -- casefold + fnmatchcase."""
     _enable(monkeypatch, allowed=["Amplifier-*"], known=["amplifier-foo"])
     resp = client.post("/api/sessions/amplifier-foo/input", json={"text": "hi"})
-    assert resp.status_code == 403
-    assert tmux_calls == []
+    assert resp.status_code == 200
+    assert tmux_calls == [("send-keys", "-l", "-t", "amplifier-foo", "--", "hi")]
 
 
 def test_allowlist_junk_entries_skipped_valid_pattern_still_works(
@@ -472,10 +472,17 @@ def test_matches_allowlist_prefix_glob():
     assert session_matches_allowlist("xamplifier-foo", ["amplifier-*"]) is False
 
 
-def test_matches_allowlist_is_case_sensitive():
-    """fnmatchcase, not fnmatch -- case must never be folded on any platform."""
-    assert session_matches_allowlist("amplifier-foo", ["Amplifier-*"]) is False
-    assert session_matches_allowlist("Amplifier-foo", ["Amplifier-*"]) is True
+def test_matches_allowlist_is_case_insensitive():
+    """casefold() + fnmatchcase -- matching folds case deterministically on every platform."""
+    # pattern upper, name lower
+    assert session_matches_allowlist("amplifier-foo", ["Amplifier-*"]) is True
+    # pattern lower, name upper
+    assert session_matches_allowlist("AMPLIFIER-Foo", ["amplifier-*"]) is True
+    # exact-name entries are also case-insensitive now
+    assert session_matches_allowlist("mysession", ["MySession"]) is True
+    assert session_matches_allowlist("MYSESSION", ["MySession"]) is True
+    # mixed case on both sides
+    assert session_matches_allowlist("aMpLiFiEr-test", ["AmPlIfIeR-*"]) is True
 
 
 def test_matches_allowlist_empty_list_denies_everything():

@@ -93,15 +93,21 @@ def session_matches_allowlist(name: str, patterns: list) -> bool:
     This is the entire security boundary for who a remote agent may type
     into, so its matching rules are deliberate and non-negotiable:
 
-    - Uses ``fnmatch.fnmatchcase``, **never** ``fnmatch.fnmatch``.
-      ``fnmatch.fnmatch`` runs the pattern and name through
-      ``os.path.normcase`` first, which is case-INSENSITIVE on macOS and
-      Windows -- on those platforms it would silently widen the fence (e.g.
-      a pattern of ``"Alpha"`` would match a session named ``"alpha"``).
-      tmux session names are case-sensitive on every platform, so matching
-      must be deterministic and case-sensitive everywhere muxplex runs. Do
-      not "simplify" this to ``fnmatch.fnmatch`` -- that reintroduces a
-      platform-dependent hole in the allowlist.
+    - Matching is **case-INSENSITIVE** (operator preference), but achieved
+      deterministically: both *name* and *pattern* are explicitly
+      ``.casefold()``-ed, then compared with ``fnmatch.fnmatchcase``. Do
+      not "simplify" this to plain ``fnmatch.fnmatch`` for the
+      case-insensitivity -- ``fnmatch.fnmatch`` gets its case-folding as a
+      side effect of ``os.path.normcase``, which is a no-op on Linux and
+      case-folding on macOS/Windows. That makes ``fnmatch.fnmatch``'s
+      behavior *platform-dependent* (case-sensitive on Linux, insensitive
+      on macOS/Windows) -- exactly the kind of environment-dependent
+      security fence that must never exist. Explicit ``casefold()`` +
+      ``fnmatchcase`` gives the same, deliberately case-insensitive result
+      on every platform muxplex runs on. (``.casefold()`` rather than
+      ``.lower()``: it's the correct Unicode-aware case-normalization;
+      session names are ASCII-restricted by ``is_valid_session_name`` so
+      the two coincide here, but casefold is the right habit.)
     - Empty *patterns* returns False for every *name* (fail-closed): an
       empty allowlist must deny everything, never be silently treated as
       "no restriction" / allow-all.
@@ -109,8 +115,8 @@ def session_matches_allowlist(name: str, patterns: list) -> bool:
       settings.json (e.g. a stray int or null in the list) degrades to
       "that one entry never matches" instead of a 500 on every input call.
     - A literal pattern with no glob metacharacters (``*``, ``?``, ``[...]``)
-      matches only that exact name, so pre-existing exact-name configs keep
-      working unchanged.
+      matches only that exact name (case-insensitively), so pre-existing
+      exact-name configs keep working, just no longer case-sensitive.
 
     Patterns are operator-supplied from a local settings.json file (see
     ``settings.LOCAL_ONLY_KEYS`` -- never PATCHable, never federation-synced),
@@ -121,10 +127,11 @@ def session_matches_allowlist(name: str, patterns: list) -> bool:
     there are no path-separator or traversal edge cases for the glob to
     interact with.
     """
+    folded_name = name.casefold()
     for pattern in patterns:
         if not isinstance(pattern, str):
             continue
-        if fnmatch.fnmatchcase(name, pattern):
+        if fnmatch.fnmatchcase(folded_name, pattern.casefold()):
             return True
     return False
 
