@@ -52,6 +52,7 @@ from muxplex.auth import (
 )
 from muxplex.bells import apply_bell_clear_rule, needs_attention, process_bell_flags
 from muxplex.sessions import (
+    capture_pane,
     enumerate_sessions,
     get_session_activity,
     get_session_list,
@@ -61,6 +62,14 @@ from muxplex.sessions import (
     snapshot_all,
     tmux_env,
     update_session_cache,
+)
+from muxplex.terminal_input import (
+    ALLOWED_KEYS,
+    MAX_KEYS,
+    MAX_TEXT_BYTES,
+    build_send_key_argv,
+    build_send_text_argv,
+    redact_preview,
 )
 from muxplex.state import (
     empty_bell,
@@ -560,6 +569,24 @@ class CreateSessionPayload(BaseModel):
         return stripped
 
 
+class SessionInputPayload(BaseModel):
+    """Body for POST /api/sessions/{name}/input.
+
+    text  -- literal text typed into the pane via `tmux send-keys -l`
+             (never interpreted by tmux or a shell; see terminal_input.py).
+    enter -- press Enter after text/keys (default False).
+    keys  -- named special keys from terminal_input.ALLOWED_KEYS, sent in
+             order after *text*. Anything outside the allowlist is a 400.
+
+    Send order: text -> keys -> enter. At least one of the three must be
+    provided (empty text + no keys + enter=False is a 400).
+    """
+
+    text: str = ""
+    enter: bool = False
+    keys: list[str] = []
+
+
 class SettingsSyncPayload(BaseModel):
     settings: dict
     settings_updated_at: float
@@ -961,6 +988,129 @@ async def connect_session(name: str) -> dict:
         save_state(state)
 
     return {"active_session": name, "ttyd_port": TTYD_PORT}
+
+
+@app.post("/api/sessions/{name}/input")
+async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
+    """Type into a tmux session over the API (remote-agent terminal input).
+
+    SECURITY: this is remote code execution by design -- typing into a shell
+    pane runs whatever gets typed. It is fenced accordingly; every fence must
+    pass, in order:
+
+    1. ``is_valid_session_name`` on the path param (400) -- same boundary as
+       connect/delete.
+    2. Global opt-in: settings ``input_enabled`` (default False) -- 403 when
+       off, regardless of anything else.
+    3. Per-session allowlist: settings ``input_allowed_sessions`` (default
+       empty) -- exact names only; a session not on the list is 403 even
+       when the feature is enabled. Checked BEFORE existence so the endpoint
+       never leaks whether a non-allowlisted session exists.
+    4. Fail closed on the known-session set (exact membership, same pattern
+       as connect/delete): unknown name or empty/unavailable cache -> 404.
+
+    Auth is the shared middleware (federation Bearer key / localhost /
+    session cookie) -- deliberately NOT a second key.
+
+    Input is sent via ``tmux send-keys`` through
+    ``asyncio.create_subprocess_exec`` (argv, never a shell); *text* uses
+    literal mode (``-l``) so shell metacharacters are typed as characters,
+    never interpreted by anything muxplex spawns. Send order:
+    text -> keys -> enter.
+
+    After a short settle (~400ms) the session's pane is re-captured and
+    returned, so the caller immediately sees the effect of what it typed:
+    ``{"ok": true, "session": name, "snapshot": "<pane text>"}``.
+    """
+    _require_valid_session_name(name)
+
+    settings = load_settings()
+    # Strict-typed fence reads, fail CLOSED. Only the boolean True enables
+    # the endpoint: a hand-edited settings.json with `"input_enabled":
+    # "false"` (a truthy string) must disable, not enable. Likewise the
+    # allowlist must be a real list -- a string value would turn `name in
+    # allowed` into substring matching and silently widen the fence.
+    if settings.get("input_enabled") is not True:
+        _log.warning("input: rejected for %r -- input_enabled is false", name)
+        raise HTTPException(
+            status_code=403,
+            detail="Session input is disabled (settings.input_enabled=false)",
+        )
+    allowed = settings.get("input_allowed_sessions")
+    if not isinstance(allowed, list):
+        allowed = []
+    if name not in allowed:
+        _log.warning("input: rejected for %r -- not in input_allowed_sessions", name)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Session '{name}' is not in input_allowed_sessions",
+        )
+
+    # Fail closed: exact membership in the known set; an empty/unavailable
+    # cache rejects everything (same rationale as connect/delete).
+    known = get_session_list()
+    if name not in known:
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    # Size/quantity caps: bound a single action well below platform failure
+    # modes (a >~128 KiB argv element raises OSError/E2BIG from exec) and
+    # stop a huge keys list from forking one subprocess per element.
+    if len(payload.text.encode("utf-8")) > MAX_TEXT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"text too large (max {MAX_TEXT_BYTES} bytes UTF-8)",
+        )
+    if len(payload.keys) > MAX_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many keys (max {MAX_KEYS})",
+        )
+    invalid_keys = [k for k in payload.keys if k not in ALLOWED_KEYS]
+    if invalid_keys:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported key(s): {invalid_keys!r}. Allowed: {sorted(ALLOWED_KEYS)}"
+            ),
+        )
+    if not payload.text and not payload.keys and not payload.enter:
+        raise HTTPException(
+            status_code=400,
+            detail="No input provided (need text, keys, or enter)",
+        )
+
+    try:
+        if payload.text:
+            await run_tmux(*build_send_text_argv(name, payload.text))
+        for key in payload.keys:
+            await run_tmux(*build_send_key_argv(name, key))
+        if payload.enter:
+            await run_tmux(*build_send_key_argv(name, "Enter"))
+    except (RuntimeError, OSError) as exc:
+        # RuntimeError: tmux exited non-zero (e.g. session vanished
+        # mid-flight). OSError: the exec itself failed (e.g. E2BIG for an
+        # oversized argv, ENOENT for a missing tmux binary) -- return a
+        # clean 500 instead of an unhandled traceback.
+        _log.warning("input: send-keys failed for %r: %s", name, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to send input: {exc}")
+
+    # Audit: exactly one info line per accepted action. Short redacted
+    # preview only -- the full text may contain secrets and goes to debug.
+    _log.info(
+        "input: session=%r chars=%d enter=%s keys=%s preview=%r",
+        name,
+        len(payload.text),
+        payload.enter,
+        payload.keys,
+        redact_preview(payload.text),
+    )
+    _log.debug("input: session=%r full text=%r", name, payload.text)
+
+    # Read-back: settle briefly, then capture the pane so the caller sees
+    # the effect of its input (same capture used by the /api/sessions cache).
+    await asyncio.sleep(0.4)
+    snapshot = await capture_pane(name)
+    return {"ok": True, "session": name, "snapshot": snapshot}
 
 
 @app.delete("/api/sessions/current")
