@@ -27,6 +27,16 @@ State schema (all values are plain JSON-serialisable dicts):
             }
         },
     }
+
+GET /api/state additionally merges in ``settings_updated_at: float`` (mirrors
+``settings.settings_updated_at`` from settings.py) into the response at
+request time -- it is NOT part of the on-disk state.json schema above, so
+empty_state()/load_state()/save_state() are unaffected and unaware of it.
+This lets pollers detect any SYNCABLE_KEYS settings change (including view
+membership edits) via the same ~1s /api/state poll that already carries
+active_session/active_view, without a dedicated settings re-fetch every
+tick. See main.py's get_state() and AGENTS.md's "API is a public control
+surface" section for the contract.
 """
 
 import asyncio

@@ -262,6 +262,47 @@ def test_patch_state_active_view_defaults_to_all(client):
     assert data["active_view"] == "all"
 
 
+def test_get_state_includes_settings_updated_at(client):
+    """GET /api/state carries settings_updated_at (mirrors settings.py) so
+    pollers can detect a settings/view-membership change via the same poll
+    that already carries active_session/active_view -- see main.py get_state().
+    """
+    response = client.get("/api/state")
+    assert response.status_code == 200
+    data = response.json()
+    assert "settings_updated_at" in data
+    assert isinstance(data["settings_updated_at"], float)
+
+
+def test_get_state_settings_updated_at_changes_after_settings_write(client):
+    """A settings write (PATCH /api/settings, e.g. editing view membership)
+    bumps settings_updated_at, and the NEXT GET /api/state reflects the new
+    value -- this is the change signal followRemoteViewDefinitions() polls
+    for on the frontend.
+    """
+    before = client.get("/api/state").json()["settings_updated_at"]
+
+    patch_response = client.patch(
+        "/api/settings", json={"views": [{"name": "Focus", "sessions": ["alpha"]}]}
+    )
+    assert patch_response.status_code == 200
+
+    after = client.get("/api/state").json()["settings_updated_at"]
+    assert after > before
+
+
+def test_get_state_settings_updated_at_not_persisted_in_state_json(client):
+    """settings_updated_at is merged into the API response at read time --
+    it must NOT be written into state.json itself (that's settings.py's
+    field). Confirms the two schemas stay decoupled.
+    """
+    from muxplex.state import load_state
+
+    client.get("/api/state")
+    on_disk = load_state()
+    assert "settings_updated_at" not in on_disk
+
+
 # ---------------------------------------------------------------------------
 # GET /api/sessions
 # ---------------------------------------------------------------------------

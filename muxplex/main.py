@@ -626,8 +626,19 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/state")
 async def get_state() -> dict:
-    """Return the full persistent state."""
-    return await read_state()
+    """Return the full persistent state, plus settings_updated_at.
+
+    settings_updated_at mirrors settings.settings_updated_at (settings.py) --
+    it is merged in here at request time, NOT persisted in state.json. This
+    lets any client already polling /api/state (PWA, muxplex-deck, agents)
+    detect a settings change -- including view membership edits, which are
+    otherwise only visible via a dedicated GET /api/settings fetch -- without
+    adding a second poll. Purely additive: existing consumers that don't look
+    for this key are unaffected.
+    """
+    state = await read_state()
+    state["settings_updated_at"] = load_settings().get("settings_updated_at", 0.0)
+    return state
 
 
 @app.patch("/api/state")

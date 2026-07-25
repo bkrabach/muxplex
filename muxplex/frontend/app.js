@@ -219,6 +219,13 @@ function _buildFlyoutMenuItems() {
 // ─── Settings state ───────────────────────────────────────────────────────────
 let _settingsOpen = false;
 let _serverSettings = null;
+// Last-seen settings_updated_at (from /api/state's poll payload), used by
+// followRemoteViewDefinitions() to detect a settings change (e.g. view
+// membership edited on another device) without re-fetching /api/settings
+// every tick. Seeded from the initial loadServerSettings() at page load so
+// the very first poll doesn't trigger a redundant re-fetch. null means
+// "not yet seeded" (only true before the DOMContentLoaded init runs).
+let _lastSettingsUpdatedAt = null;
 let _gridViewMode = 'flat';
 let _activeFilterDevice = 'all';
 let _activeView = 'all';
@@ -428,6 +435,58 @@ function followRemoteActiveView(state) {
 }
 
 /**
+ * Follow a settings/view-DEFINITION change made by another device or tab \u2014
+ * e.g. a session added to (or removed from) a view via PATCH /api/settings.
+ * Same class of bug as followRemoteActiveView() (which follows the active
+ * *selection*), one layer deeper: this follows the view *membership data*
+ * itself, which previously was fetched exactly once at page load
+ * (loadServerSettings() in the DOMContentLoaded handler) and never refreshed,
+ * so _serverSettings.views went stale until a hard page reload.
+ *
+ * Uses settings_updated_at (now carried on every /api/state poll response,
+ * see main.py get_state()) as an efficient change signal instead of
+ * re-fetching /api/settings every tick: only when the timestamp actually
+ * differs from the last-seen value do we re-fetch (via the existing
+ * loadServerSettings(), no duplicated fetch logic) and re-render the
+ * view-dependent UI. An unchanged timestamp is a no-op \u2014 no fetch, no
+ * re-render, no per-second churn.
+ *
+ * Render-only, like followRemoteActiveView(): it NEVER PATCHes anything
+ * back. We are applying a settings snapshot we just received FROM the
+ * server, so writing it back would be redundant and a feedback-loop hazard.
+ * A tab's own settings PATCH also bumps settings_updated_at server-side, so
+ * the next poll re-fetches and re-renders once more \u2014 that's correct/
+ * idempotent (the server is authoritative) and matches what a second tab
+ * would see.
+ *
+ * Robust to an older server that doesn't send settings_updated_at: absence
+ * is treated as "no signal" \u2014 no fetch, no crash, no behavior change from
+ * before this function existed.
+ *
+ * @param {object|null} state - GET /api/state body, or null on fetch failure
+ * @returns {Promise<void>|undefined}
+ */
+function followRemoteViewDefinitions(state) {
+  if (!state) return;
+  var ts = state.settings_updated_at;
+  if (ts === undefined || ts === null) return; // older server: no signal
+  if (_lastSettingsUpdatedAt !== null && ts === _lastSettingsUpdatedAt) return; // unchanged
+  _lastSettingsUpdatedAt = ts;
+  return loadServerSettings().then(function() {
+    renderViewDropdown();
+    renderGrid(_currentSessions || []);
+    renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
+    if (_settingsOpen) renderViewsSettingsTab();
+    var manageViewPanel = $('manage-view-panel');
+    if (manageViewPanel && !manageViewPanel.classList.contains('hidden')) {
+      renderManageViewList();
+    }
+  }).catch(function(err) {
+    console.warn('[followRemoteViewDefinitions] could not refresh settings:', err);
+  });
+}
+
+/**
  * Start the session polling loop. Guards against double-start.
  * Uses self-scheduling setTimeout so at most one poll is in-flight at a time.
  * If a poll takes longer than POLL_MS, the next poll starts POLL_MS after it
@@ -464,6 +523,7 @@ async function pollActiveState() {
     const state = await res.json();
     followRemoteActiveSession(state);
     followRemoteActiveView(state);
+    followRemoteViewDefinitions(state);
   } catch (err) {
     // Transient failure: skip this tick; next one retries in STATE_POLL_MS.
   }
@@ -4590,6 +4650,9 @@ document.addEventListener('DOMContentLoaded', async function() {
 
   // Load ALL settings (now includes display + sidebar) before first render
   await loadServerSettings();
+  // Seed the change-detection baseline so the first /api/state poll doesn't
+  // trigger a redundant re-fetch in followRemoteViewDefinitions().
+  _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || 0;
 
   // Cache local device_id from /api/instance-info for session key construction
   api('GET', '/api/instance-info').then(function(res) {
@@ -4646,6 +4709,7 @@ if (typeof module !== 'undefined' && module.exports) {
     pollSessions,
     followRemoteActiveSession,
     followRemoteActiveView,
+    followRemoteViewDefinitions,
     pollActiveState,
     startPolling,
     startStatePolling,

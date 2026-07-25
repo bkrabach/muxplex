@@ -36,6 +36,27 @@ consumers in ways this repo's tests won't catch:
   on a just-created session 404s until the cache catches up — clients/agents
   must wait ~3s after writes. (Candidate future fix: write-through cache
   refresh on create/delete.)
+- **`GET /api/state` carries `settings_updated_at: float`**, merged in at
+  request time from `settings.settings_updated_at` (settings.py) — it is
+  NOT persisted in state.json; `empty_state()`/`load_state()`/`save_state()`
+  are unaware of it (see `state.py`'s module docstring for the split).
+  Purpose: any client already polling `/api/state` (PWA, muxplex-deck,
+  agents) can detect a settings change — including view-membership edits
+  made by another device, which are otherwise only visible via a dedicated
+  `GET /api/settings` fetch — without adding a second poll. The PWA's
+  `followRemoteViewDefinitions()` (`frontend/app.js`) is the reference
+  consumer: it compares this timestamp against the last-seen value and only
+  re-fetches `/api/settings` (via the existing `loadServerSettings()`) and
+  re-renders view-dependent UI when it actually changed — an unchanged
+  value is a no-op, so this does not become a second per-second settings
+  fetch. This closed a real staleness bug: a session added to a view via
+  `PATCH /api/settings` appeared immediately on the deck sidecar's own poll,
+  but the PWA's `_serverSettings` cache — populated once at page load —
+  never refreshed, so the view dropdown / filtered list / manage-view
+  membership UI all stayed wrong until a hard reload. Same class of bug as
+  `active_view` being server-global above, one layer deeper: that fix
+  follows the active *selection*; this one follows the view *definitions*
+  (membership data) themselves.
 
 Preferred direction as semantics grow: move resolution **server-side** (e.g. a
 resolved-current-view endpoint) rather than expecting each client to port more
@@ -59,15 +80,19 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
 2. **Global opt-in** `settings.input_enabled` (default `false`) → 403 when off.
 3. **Per-session allowlist** `settings.input_allowed_sessions` (default `[]`)
    → 403 if `{name}` matches none of the entries, *even when enabled*.
-   Entries are **glob patterns**, matched case-sensitively via
-   `fnmatch.fnmatchcase` (see `terminal_input.session_matches_allowlist`):
-   `"*"` allows every session, `"amplifier-*"` allows a prefix family, and a
-   literal name with no glob metacharacters matches only itself (backward
-   compatible with pre-glob exact-name configs). Deliberately
-   `fnmatchcase`, not `fnmatch` — the latter normcases on macOS/Windows,
-   which would make matching case-*insensitive* on those platforms and
-   silently widen the fence; tmux session names are case-sensitive
-   everywhere. An empty list still denies everything (fail-closed); a
+   Entries are **glob patterns**, matched case-**insensitively** (see
+   `terminal_input.session_matches_allowlist`): `"*"` allows every session,
+   `"amplifier-*"` (or `"Amplifier-*"`, `"AMPLIFIER-*"`, ...) allows a
+   prefix family regardless of case, and a literal name with no glob
+   metacharacters matches only that name, also case-insensitively (backward
+   compatible with pre-glob exact-name configs, just no longer
+   case-sensitive). Implemented as explicit `.casefold()` on both the
+   session name and each pattern, then `fnmatch.fnmatchcase` — deliberately
+   NOT plain `fnmatch.fnmatch`, whose case-folding is a side effect of
+   `os.path.normcase` and therefore *platform-dependent* (no-op on Linux,
+   case-folding on macOS/Windows). Explicit casefold + fnmatchcase gives the
+   same case-insensitive result deterministically on every platform. An
+   empty list still denies everything (fail-closed); a
    non-list value is treated as `[]`; non-string entries in the list are
    skipped rather than crashing the endpoint. This is how a human's own
    working panes stay un-typeable: don't list (or pattern-match) them.

@@ -6357,3 +6357,139 @@ test('user-initiated switchView still PATCHes /api/state (local switches must pr
   globalThis.fetch = undefined;
   app._setActiveView('all');
 });
+
+// --- followRemoteViewDefinitions (PWA follows external view-MEMBERSHIP change) ---
+// Same class of bug as followRemoteActiveView (which follows the active
+// *selection*), one layer deeper: view membership data (_serverSettings.views)
+// was fetched exactly once at page load and never refreshed, so adding a
+// session to a view on another device (deck, agent, another tab) never
+// showed up until a hard page reload. settings_updated_at (now carried on
+// every /api/state poll) is the efficient change signal used instead of a
+// blind per-second /api/settings re-fetch.
+
+test('pollActiveState wires followRemoteViewDefinitions alongside the other two follows', () => {
+  const src = app.pollActiveState.toString();
+  assert.ok(src.includes('followRemoteViewDefinitions'), 'pollActiveState must call followRemoteViewDefinitions');
+  assert.ok(src.includes('followRemoteActiveSession'), 'session-follow must remain wired');
+  assert.ok(src.includes('followRemoteActiveView'), 'view-follow must remain wired');
+});
+
+test('followRemoteViewDefinitions never PATCHes (render-only, no re-PATCH contract)', () => {
+  assert.ok(
+    !app.followRemoteViewDefinitions.toString().includes('PATCH'),
+    'followRemoteViewDefinitions must not PATCH -- it applies a settings snapshot it just received FROM the server',
+  );
+});
+
+test('changed settings_updated_at triggers exactly one /api/settings re-fetch and re-renders view-dependent UI', async () => {
+  const calls = [];
+  const idsRequested = [];
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => { idsRequested.push(id); return null; };
+  const updatedSettings = { views: [{ name: 'Focus', sessions: ['test-input-session'] }], hidden_sessions: [] };
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/settings') {
+      return { ok: true, json: async () => updatedSettings };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setActiveView('Focus');
+
+  await app.followRemoteViewDefinitions({ settings_updated_at: 12345 });
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.strictEqual(
+    calls.filter((c) => c === 'GET /api/settings').length, 1,
+    'exactly one settings re-fetch must fire; calls: ' + JSON.stringify(calls),
+  );
+  assert.ok(
+    !calls.some((c) => c.startsWith('PATCH ')),
+    'the refresh path must never PATCH; calls: ' + JSON.stringify(calls),
+  );
+  assert.ok(
+    idsRequested.includes('view-dropdown-menu'),
+    'the view dropdown must be re-rendered on a settings change; ids: ' + JSON.stringify(idsRequested),
+  );
+  assert.ok(
+    idsRequested.includes('session-grid'),
+    'the grid (filtered session list) must be re-rendered on a settings change; ids: ' + JSON.stringify(idsRequested),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+  app._setActiveView('all');
+});
+
+test('unchanged settings_updated_at is a no-op (no fetch, no re-render, no churn)', async () => {
+  const calls = [];
+  const idsRequested = [];
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => { idsRequested.push(id); return null; };
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    return { ok: true, json: async () => ({}) };
+  };
+
+  // Seed baseline, then poll with the SAME timestamp.
+  await app.followRemoteViewDefinitions({ settings_updated_at: 999 });
+  calls.length = 0;
+  idsRequested.length = 0;
+
+  await app.followRemoteViewDefinitions({ settings_updated_at: 999 });
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.strictEqual(calls.length, 0, 'unchanged timestamp must not fetch anything; calls: ' + JSON.stringify(calls));
+  assert.strictEqual(idsRequested.length, 0, 'unchanged timestamp must not re-render; ids: ' + JSON.stringify(idsRequested));
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('missing settings_updated_at (older server) is treated as no signal -- no crash, no fetch', async () => {
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    calls.push(((opts && opts.method) || 'GET') + ' ' + url);
+    return { ok: true, json: async () => ({}) };
+  };
+
+  assert.doesNotThrow(() => { app.followRemoteViewDefinitions({ active_session: null, active_view: 'all' }); });
+  assert.doesNotThrow(() => { app.followRemoteViewDefinitions(null); });
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.strictEqual(calls.length, 0, 'absent settings_updated_at must not trigger any fetch; calls: ' + JSON.stringify(calls));
+
+  globalThis.fetch = undefined;
+});
+
+test('after refresh, a session newly added to a view on another device is reflected in the filtered/membership view (the reported symptom)', async () => {
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  const updatedSettings = { views: [{ name: 'Focus', sessions: ['device1:test-input-session'] }], hidden_sessions: [] };
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'GET' && url === '/api/settings') {
+      return { ok: true, json: async () => updatedSettings };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  // Simulate stale state: the session is NOT in the cached view before the follow fires.
+  app._setServerSettings({ views: [{ name: 'Focus', sessions: [] }], hidden_sessions: [] });
+
+  await app.followRemoteViewDefinitions({ settings_updated_at: 55555 });
+  await new Promise((r) => setTimeout(r, 10));
+
+  const refreshed = app._getServerSettings();
+  const focusView = refreshed.views.find((v) => v.name === 'Focus');
+  assert.ok(
+    focusView && focusView.sessions.indexOf('device1:test-input-session') !== -1,
+    'the newly-added session must appear in the refreshed view membership without a page reload',
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
