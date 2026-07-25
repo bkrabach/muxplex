@@ -12,6 +12,7 @@ import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
     SYNCABLE_KEYS,
+    DestructiveSettingsWriteRejected,
     apply_synced_settings,
     get_syncable_settings,
     load_federation_key,
@@ -1045,12 +1046,15 @@ def test_apply_synced_settings_ignores_nonsyncable_keys():
 
 
 def test_get_syncable_settings_returns_only_syncable_keys():
-    """get_syncable_settings returns only SYNCABLE_KEYS + settings_updated_at."""
+    """get_syncable_settings returns only SYNCABLE_KEYS + metadata timestamps
+    (settings_updated_at, views_updated_at)."""
     result = get_syncable_settings()
+    metadata_keys = {"settings_updated_at", "views_updated_at"}
     for key in result:
-        assert key in SYNCABLE_KEYS or key == "settings_updated_at"
+        assert key in SYNCABLE_KEYS or key in metadata_keys
     assert "host" not in result
     assert "settings_updated_at" in result
+    assert "views_updated_at" in result
 
 
 def test_apply_synced_settings_does_not_use_time_now():
@@ -1258,3 +1262,234 @@ def test_stale_key_grace_hours_is_not_pruning_state():
     assert "first_missed_at" not in SYNCABLE_KEYS, (
         "first_missed_at must never be in SYNCABLE_KEYS (it is local-only bookkeeping)"
     )
+
+
+# ============================================================
+# Destructive-write backstop (settings clobber incident, 2026-07)
+# ============================================================
+
+
+def _views(n, sessions_per_view=1):
+    return [
+        {"name": f"v{i}", "sessions": [f"s{i}-{j}" for j in range(sessions_per_view)]}
+        for i in range(n)
+    ]
+
+
+def test_patch_settings_rejects_destructive_views_collapse(redirect_settings_path):
+    """8 views -> 1 via patch_settings() is rejected; NO write is made."""
+    save_settings({"views": _views(8, sessions_per_view=2)})
+
+    with pytest.raises(DestructiveSettingsWriteRejected) as excinfo:
+        patch_settings({"views": [_views(8, sessions_per_view=2)[0]]})
+
+    assert excinfo.value.counts["before_views"] == 8
+    assert excinfo.value.counts["after_views"] == 1
+
+    # No write happened -- views on disk are untouched.
+    reloaded = load_settings()
+    assert len(reloaded["views"]) == 8
+
+
+def test_patch_settings_allows_single_view_deletion(redirect_settings_path):
+    """Deleting exactly one view out of 8 via PATCH must succeed normally."""
+    save_settings({"views": _views(8, sessions_per_view=2)})
+    remaining = _views(8, sessions_per_view=2)[1:]
+
+    result = patch_settings({"views": remaining})
+
+    assert len(result["views"]) == 7
+    assert load_settings()["views"] == remaining
+
+
+def test_patch_settings_allows_removing_one_member(redirect_settings_path):
+    """Removing a single session from a view (view count unchanged) must succeed."""
+    save_settings(
+        {"views": [{"name": "Focus", "sessions": [f"s{i}" for i in range(17)]}]}
+    )
+    trimmed = [{"name": "Focus", "sessions": [f"s{i}" for i in range(16)]}]
+
+    result = patch_settings({"views": trimmed})
+
+    assert len(result["views"][0]["sessions"]) == 16
+
+
+def test_patch_settings_allow_destructive_true_permits_collapse(redirect_settings_path):
+    """allow_destructive=True lets an intentional 8 -> 1 collapse through."""
+    save_settings({"views": _views(8, sessions_per_view=2)})
+    collapsed = [_views(8, sessions_per_view=2)[0]]
+
+    result = patch_settings({"views": collapsed}, allow_destructive=True)
+
+    assert len(result["views"]) == 1
+    assert load_settings()["views"] == collapsed
+
+
+def test_patch_settings_no_views_key_never_triggers_backstop(redirect_settings_path):
+    """A patch that never mentions `views` cannot trip the backstop or touch views."""
+    save_settings({"views": _views(8, sessions_per_view=2)})
+
+    # Must not raise, and must not touch views at all.
+    result = patch_settings({"fontSize": 22})
+
+    assert result["fontSize"] == 22
+    assert len(load_settings()["views"]) == 8
+
+
+def test_patch_settings_views_none_or_garbage_does_not_crash_or_wipe(
+    redirect_settings_path,
+):
+    """A patch with views=None or a non-list garbage value never crashes and never
+    trips the destructive-write backstop (assess_views_destruction treats it as
+    'not changing views', per its docstring)."""
+    save_settings({"views": _views(8, sessions_per_view=2)})
+
+    for garbage in (None, "not-a-list", 12345):
+        # Must not raise DestructiveSettingsWriteRejected.
+        result = patch_settings({"views": garbage})
+        assert result["views"] == garbage
+
+
+def test_apply_synced_settings_rejects_destructive_views_collapse(
+    redirect_settings_path,
+):
+    """8 views -> 1 via federation sync is rejected; NO write is made."""
+    save_settings({"views": _views(8, sessions_per_view=2), "views_updated_at": 100.0})
+
+    with pytest.raises(DestructiveSettingsWriteRejected):
+        apply_synced_settings(
+            {"views": [_views(8, sessions_per_view=2)[0]]},
+            incoming_timestamp=200.0,
+            incoming_views_updated_at=300.0,  # strictly newer -- would otherwise apply
+        )
+
+    reloaded = load_settings()
+    assert len(reloaded["views"]) == 8
+    # settings_updated_at must also be untouched -- the rejection makes NO write.
+    assert reloaded["settings_updated_at"] == 0.0
+
+
+def test_apply_synced_settings_never_gets_allow_destructive_override(
+    redirect_settings_path,
+):
+    """apply_synced_settings has no allow_destructive parameter at all -- a peer
+    can never bypass the backstop, unlike the PATCH path."""
+    import inspect
+
+    sig = inspect.signature(apply_synced_settings)
+    assert "allow_destructive" not in sig.parameters
+
+
+def test_apply_synced_settings_incoming_views_absent_does_not_trigger_backstop(
+    redirect_settings_path,
+):
+    """A sync payload that never mentions `views` cannot trip the backstop."""
+    save_settings({"views": _views(8, sessions_per_view=2)})
+
+    result = apply_synced_settings({"fontSize": 18}, incoming_timestamp=500.0)
+
+    assert result["fontSize"] == 18
+    assert len(load_settings()["views"]) == 8
+
+
+# ============================================================
+# views_updated_at (Change C -- decoupled from settings_updated_at)
+# ============================================================
+
+
+def test_views_updated_at_default_is_zero():
+    assert DEFAULT_SETTINGS["views_updated_at"] == 0.0
+
+
+def test_views_updated_at_not_bumped_by_unrelated_patch(redirect_settings_path):
+    """A fontSize-only PATCH must NOT advance views_updated_at."""
+    patch_settings({"fontSize": 20})
+    assert load_settings()["views_updated_at"] == 0.0
+
+
+def test_views_updated_at_bumped_by_views_patch(redirect_settings_path):
+    """A views-touching PATCH DOES advance views_updated_at."""
+    patch_settings({"views": [{"name": "Work", "sessions": []}]})
+    assert load_settings()["views_updated_at"] > 0.0
+
+
+def test_views_updated_at_bumped_by_hidden_sessions_patch(redirect_settings_path):
+    """A hidden_sessions-touching PATCH also advances views_updated_at."""
+    patch_settings({"hidden_sessions": ["abc:dev"]})
+    assert load_settings()["views_updated_at"] > 0.0
+
+
+def test_views_updated_at_not_in_syncable_keys():
+    """views_updated_at is metadata (like settings_updated_at), not itself syncable."""
+    assert "views_updated_at" not in SYNCABLE_KEYS
+
+
+def test_get_syncable_settings_includes_views_updated_at():
+    save_settings({"views": [{"name": "A", "sessions": []}], "views_updated_at": 42.0})
+    result = get_syncable_settings()
+    assert result["views_updated_at"] == 42.0
+
+
+def test_apply_synced_settings_legacy_peer_without_views_updated_at_still_applies(
+    redirect_settings_path,
+):
+    """A peer payload lacking incoming_views_updated_at (None, the default) must
+    still interoperate: views/hidden_sessions apply unconditionally, gated only
+    by the backstop -- exactly the pre-existing behavior."""
+    save_settings({"views": [], "views_updated_at": 0.0})
+
+    result = apply_synced_settings(
+        {"views": [{"name": "Work", "sessions": ["a"]}]},
+        incoming_timestamp=1000.0,
+        # incoming_views_updated_at omitted -> None -> legacy peer.
+    )
+
+    assert result["views"] == [{"name": "Work", "sessions": ["a"]}]
+    # Local views_updated_at falls back to the overall incoming_timestamp.
+    assert result["views_updated_at"] == 1000.0
+
+
+def test_apply_synced_settings_stale_views_updated_at_is_skipped_but_other_keys_apply(
+    redirect_settings_path,
+):
+    """A peer whose views_updated_at is NOT newer than ours must not overwrite our
+    views/hidden_sessions, even if the overall incoming_timestamp is newer --
+    this is the exact race an unrelated fontSize bump used to win. Every OTHER
+    present key still applies (the sync is not all-or-nothing)."""
+    save_settings(
+        {
+            "views": [{"name": "Local", "sessions": ["x"]}],
+            "views_updated_at": 500.0,
+            "fontSize": 14,
+        }
+    )
+
+    result = apply_synced_settings(
+        {"views": [{"name": "PeerStale", "sessions": ["y"]}], "fontSize": 30},
+        incoming_timestamp=999.0,  # overall blob looks newer...
+        incoming_views_updated_at=100.0,  # ...but views_updated_at is stale
+    )
+
+    # views untouched (peer's views_updated_at lost the race).
+    assert result["views"] == [{"name": "Local", "sessions": ["x"]}]
+    # ...but fontSize (unrelated key) still applies from the newer overall sync.
+    assert result["fontSize"] == 30
+    assert result["settings_updated_at"] == 999.0
+    # local views_updated_at is unchanged (we didn't apply the peer's views).
+    assert result["views_updated_at"] == 500.0
+
+
+def test_apply_synced_settings_newer_views_updated_at_applies(redirect_settings_path):
+    """A peer whose views_updated_at IS newer than ours applies normally."""
+    save_settings(
+        {"views": [{"name": "Local", "sessions": ["x"]}], "views_updated_at": 100.0}
+    )
+
+    result = apply_synced_settings(
+        {"views": [{"name": "PeerNewer", "sessions": ["y"]}]},
+        incoming_timestamp=999.0,
+        incoming_views_updated_at=200.0,
+    )
+
+    assert result["views"] == [{"name": "PeerNewer", "sessions": ["y"]}]
+    assert result["views_updated_at"] == 200.0

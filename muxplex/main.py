@@ -82,6 +82,7 @@ from muxplex.state import (
     state_lock,
 )
 from muxplex.settings import (
+    DestructiveSettingsWriteRejected,
     apply_synced_settings,
     get_syncable_settings,
     load_federation_key,
@@ -160,10 +161,21 @@ async def _sync_settings_with_remotes(
             resp.raise_for_status()
             remote_data = resp.json()
             remote_ts = remote_data.get("settings_updated_at", 0.0)
+            # Absent on a peer that predates views_updated_at (see
+            # SettingsSyncPayload) -- None here means the same thing it means
+            # in apply_synced_settings(): "no signal, fall back to
+            # pre-existing behavior."
+            remote_views_ts = remote_data.get("views_updated_at")
 
             if remote_ts > local_ts:
-                # Remote is newer — adopt.
-                apply_synced_settings(remote_data.get("settings", {}), remote_ts)
+                # Remote is newer — adopt. The destructive-write backstop
+                # inside apply_synced_settings() runs unconditionally here
+                # too, and a rejection is just another per-remote failure
+                # caught by the except below (leaves local untouched, next
+                # cycle retries).
+                apply_synced_settings(
+                    remote_data.get("settings", {}), remote_ts, remote_views_ts
+                )
                 # Refresh local state so subsequent remotes see the updated ts.
                 local_sync = get_syncable_settings()
                 local_ts = local_sync.get("settings_updated_at", 0.0)
@@ -173,9 +185,10 @@ async def _sync_settings_with_remotes(
                     "settings": {
                         k: local_sync[k]
                         for k in local_sync
-                        if k != "settings_updated_at"
+                        if k not in ("settings_updated_at", "views_updated_at")
                     },
                     "settings_updated_at": local_ts,
+                    "views_updated_at": local_sync.get("views_updated_at", 0.0),
                 }
                 put_resp = await http_client.put(
                     f"{url}/api/settings/sync",
@@ -184,8 +197,15 @@ async def _sync_settings_with_remotes(
                     timeout=5.0,
                 )
                 if put_resp.status_code == 409:
-                    # Remote is newer — let the next sync cycle pull.
-                    _log.debug("Settings sync push to %s: 409 (remote is newer)", url)
+                    # Remote is newer, or rejected our push as destructive —
+                    # either way, let the next sync cycle sort it out.
+                    _log.debug(
+                        "Settings sync push to %s: 409 (%s)",
+                        url,
+                        "backstop rejection"
+                        if put_resp.json().get("backstop")
+                        else "remote is newer",
+                    )
                 else:
                     put_resp.raise_for_status()
             # If equal: no action.
@@ -592,6 +612,11 @@ class SessionInputPayload(BaseModel):
 class SettingsSyncPayload(BaseModel):
     settings: dict
     settings_updated_at: float
+    # Additive, optional: a legacy peer's request simply omits it and
+    # apply_synced_settings() falls back to pre-existing behavior (see that
+    # function's docstring for the full views-specific-conflict-resolution
+    # story). Never required -- Pydantic defaults it to None.
+    views_updated_at: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1328,9 +1353,24 @@ async def update_settings(request: Request):
     reads raw JSON because the patch is an open-ended subset of
     DEFAULT_SETTINGS keys) -- this field is handled the same way, as a
     plain dict key, rather than introducing a new model just for one field.
+
+    Destructive-write backstop: independent of the CAS precondition above,
+    any patch containing ``views`` is assessed for catastrophic shrinkage
+    (see ``views.assess_views_destruction`` / ``settings.patch_settings``).
+    A catastrophic write is rejected with 409 -- ``{"detail": <reason>,
+    "settings_updated_at": <current>, "backstop": true, "counts": {...}}``
+    -- and NO write is made, regardless of whether the CAS precondition
+    passed. This is a SEPARATE 409 cause from the CAS mismatch above; the
+    response body's ``backstop: true`` field is how a client distinguishes
+    them (a CAS 409 means "reload and retry your intent"; a backstop 409
+    means "this intent itself is destructive -- do not blindly retry it").
+    Pass ``allow_destructive: true`` in the body (also popped before
+    reaching ``patch_settings()``, same pattern as the CAS field) to perform
+    an intentional bulk deletion.
     """
     body = await request.json()
     expected = body.pop("expected_settings_updated_at", None)
+    allow_destructive = bool(body.pop("allow_destructive", False))
     if expected is not None:
         current_ts = load_settings().get("settings_updated_at", 0.0)
         # Exact float equality (not an epsilon comparison): the expected
@@ -1346,7 +1386,19 @@ async def update_settings(request: Request):
                     "settings_updated_at": current_ts,
                 },
             )
-    updated = patch_settings(body)
+    try:
+        updated = patch_settings(body, allow_destructive=allow_destructive)
+    except DestructiveSettingsWriteRejected as exc:
+        current_ts = load_settings().get("settings_updated_at", 0.0)
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": exc.reason,
+                "settings_updated_at": current_ts,
+                "backstop": True,
+                "counts": exc.counts,
+            },
+        )
     result = copy.deepcopy(updated)
     result["federation_key"] = ""
     for inst in result.get("remote_instances", []):
@@ -1357,35 +1409,87 @@ async def update_settings(request: Request):
 
 @app.get("/api/settings/sync")
 async def get_settings_sync() -> dict:
-    """Return syncable settings + timestamp for federation sync.
+    """Return syncable settings + timestamps for federation sync.
 
     Authenticated via federation Bearer token (same auth middleware as all other
     non-exempt endpoints). Returns only the keys in SYNCABLE_KEYS plus the
-    settings_updated_at timestamp; infrastructure keys (host, port, federation_key,
-    etc.) are never included.
+    settings_updated_at and views_updated_at timestamps; infrastructure keys
+    (host, port, federation_key, etc.) are never included.
+
+    `views_updated_at` is an additive field (see SettingsSyncPayload /
+    apply_synced_settings): a peer that predates it simply doesn't look for
+    it in this response.
     """
     syncable = get_syncable_settings()
     ts = syncable.get("settings_updated_at", 0.0)
-    settings = {k: v for k, v in syncable.items() if k != "settings_updated_at"}
-    return {"settings": settings, "settings_updated_at": ts}
+    views_ts = syncable.get("views_updated_at", 0.0)
+    settings = {
+        k: v
+        for k, v in syncable.items()
+        if k not in ("settings_updated_at", "views_updated_at")
+    }
+    return {
+        "settings": settings,
+        "settings_updated_at": ts,
+        "views_updated_at": views_ts,
+    }
 
 
 @app.put("/api/settings/sync")
 async def put_settings_sync(payload: SettingsSyncPayload):
     """Accept synced settings from a remote server (newer-wins).
 
-    Compares the incoming timestamp against the local settings_updated_at.
-    If the incoming timestamp is strictly newer, applies only the syncable
-    keys via apply_synced_settings() and returns 200 with the final state.
-    If the incoming timestamp is equal to or older than the local one, returns
-    409 (Conflict) with the current local state so the caller can see what
-    this instance has.
+    Compares the incoming timestamp against the local settings_updated_at --
+    this IS the sync path's precondition discipline: a peer only gets to
+    write when its view of the world (`settings_updated_at`) is strictly
+    newer than ours, exactly analogous to the PATCH path's
+    `expected_settings_updated_at` CAS check. If the incoming timestamp is
+    equal to or older than the local one, returns 409 (Conflict) with the
+    current local state so the caller can see what this instance has and
+    resync from there -- its view IS stale/inconsistent with ours.
+
+    If strictly newer, applies via apply_synced_settings(), passing through
+    `views_updated_at` for the views-specific conflict resolution described
+    in that function's docstring (an older peer simply omits the field --
+    Pydantic defaults it to None -- and apply_synced_settings() falls back
+    to its pre-existing, fully-interoperable behavior).
+
+    The destructive-write backstop is NOT optional here and has no override:
+    apply_synced_settings() runs it unconditionally as its first act, before
+    any key is applied, for every caller including this endpoint AND the
+    periodic background sync loop (_sync_settings_with_remotes). A
+    catastrophic incoming `views` -- however the timestamp comparison above
+    came out -- is rejected with 409 (`{"backstop": true, ...}`, same shape
+    as update_settings()'s equivalent branch) and NO write is made. Unlike
+    the PATCH path, a peer can never supply `allow_destructive` to bypass
+    this -- see apply_synced_settings()'s docstring for the rationale.
     """
     current = load_settings()
     local_ts: float = current.get("settings_updated_at", 0.0)
 
     if payload.settings_updated_at > local_ts:
-        apply_synced_settings(payload.settings, payload.settings_updated_at)
+        try:
+            apply_synced_settings(
+                payload.settings,
+                payload.settings_updated_at,
+                payload.views_updated_at,
+            )
+        except DestructiveSettingsWriteRejected as exc:
+            syncable = get_syncable_settings()
+            ts = syncable.get("settings_updated_at", 0.0)
+            settings_out = {
+                k: v for k, v in syncable.items() if k != "settings_updated_at"
+            }
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": exc.reason,
+                    "settings": settings_out,
+                    "settings_updated_at": ts,
+                    "backstop": True,
+                    "counts": exc.counts,
+                },
+            )
         syncable = get_syncable_settings()
         ts = syncable.get("settings_updated_at", 0.0)
         settings_out = {k: v for k, v in syncable.items() if k != "settings_updated_at"}

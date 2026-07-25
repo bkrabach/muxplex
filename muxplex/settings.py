@@ -89,6 +89,26 @@ DEFAULT_SETTINGS: dict = {
     "gridViewMode": "flat",
     "sidebarOpen": None,
     "settings_updated_at": 0.0,
+    # Timestamp of the last change to `views` or `hidden_sessions` SPECIFICALLY.
+    # Metadata, like settings_updated_at -- not itself a "setting" a client
+    # would ever want to overwrite -- so it lives outside SYNCABLE_KEYS and is
+    # threaded through the federation sync payload the same way
+    # settings_updated_at is (see get_syncable_settings/apply_synced_settings).
+    #
+    # WHY THIS EXISTS: settings_updated_at covers the ENTIRE syncable blob, so
+    # an unrelated PATCH (e.g. fontSize) bumps the same timestamp a views edit
+    # would. In a federation LWW race, that let a peer's stale `views` win
+    # over a genuinely newer edit just because ITS settings_updated_at had
+    # been bumped more recently by something else entirely. views_updated_at
+    # is scoped to exactly the fields it needs to arbitrate.
+    #
+    # BACKWARD COMPATIBILITY: a peer that doesn't know about this field sends
+    # nothing for it; apply_synced_settings() treats that as "no signal" and
+    # falls back to applying views/hidden_sessions unconditionally (gated
+    # only by the destructive-write backstop, never by a per-field
+    # timestamp), so old (pre-this-field) peers keep interoperating exactly
+    # as before.
+    "views_updated_at": 0.0,
     "_schema_version": SCHEMA_VERSION,
     # Grace period (hours) before a session key missing from all live sessions
     # is removed from views/hidden_sessions. Syncable so the operator can tune
@@ -285,7 +305,28 @@ def save_settings(data: dict) -> None:
     SETTINGS_PATH.write_text(json.dumps(merged, indent=2) + "\n")
 
 
-def patch_settings(patch: dict) -> dict:
+class DestructiveSettingsWriteRejected(Exception):
+    """Raised by patch_settings()/apply_synced_settings() when a write would
+    catastrophically shrink `views` (see views.assess_views_destruction) and
+    the caller is not permitted to override the backstop.
+
+    No write has been made when this is raised -- the check runs before any
+    mutation of the in-memory settings dict, let alone save_settings().
+
+    Attributes:
+        reason: human-readable explanation, safe to log or return in an API
+            error body (e.g. "views would collapse from 8 to 1 ...").
+        counts: dict with before_views/after_views/before_members/after_members
+            (see views.ViewsDestructionAssessment.as_counts_dict()).
+    """
+
+    def __init__(self, reason: str, counts: dict):
+        self.reason = reason
+        self.counts = counts
+        super().__init__(reason)
+
+
+def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
     """Merge known keys from *patch* into the current settings, save, and return result.
 
     Unknown keys in *patch* are silently ignored.
@@ -297,8 +338,40 @@ def patch_settings(patch: dict) -> dict:
     a subsequent PATCH would silently overwrite real keys with empty strings.
     Only a patch that supplies a *non-empty* key value is treated as an
     intentional key rotation and actually written to disk.
+
+    Destructive-write backstop: when *patch* contains ``views``, the incoming
+    value is assessed via ``views.assess_views_destruction`` against the
+    CURRENT on-disk ``views`` before anything else happens. A catastrophic
+    shrinkage (see that function's docstring for the exact thresholds) raises
+    ``DestructiveSettingsWriteRejected`` and makes NO write at all -- not even
+    to unrelated keys in the same patch. Pass ``allow_destructive=True`` to
+    perform an intentional bulk deletion anyway (the API surfaces this as an
+    ``allow_destructive: true`` field in the PATCH body; see main.py's
+    ``update_settings()``). A patch that omits ``views`` entirely, or whose
+    ``views`` value isn't a list (None, a stray string, etc.), never triggers
+    this check -- see assess_views_destruction's docstring for why that's
+    always treated as "not changing views."
     """
     current = load_settings()
+
+    if "views" in patch:
+        # Lazy import: avoids potential circular import between settings and views.
+        from muxplex.views import assess_views_destruction
+
+        assessment = assess_views_destruction(current.get("views"), patch["views"])
+        if assessment.destructive and not allow_destructive:
+            _log.warning(
+                "settings: rejected destructive views write (PATCH): %s "
+                "(before=%d views/%d members, after=%d views/%d members)",
+                assessment.reason,
+                assessment.before_views,
+                assessment.before_members,
+                assessment.after_views,
+                assessment.after_members,
+            )
+            raise DestructiveSettingsWriteRejected(
+                assessment.reason, assessment.as_counts_dict()
+            )
 
     # Snapshot existing remote keys by URL *and* by position *before* applying
     # the patch so we can restore them if the patch contains redacted (empty)
@@ -350,11 +423,24 @@ def patch_settings(patch: dict) -> dict:
     if any(key in SYNCABLE_KEYS for key in patch if key in DEFAULT_SETTINGS):
         current["settings_updated_at"] = time.time()
 
+    # views_updated_at is scoped to exactly the fields it arbitrates -- see
+    # DEFAULT_SETTINGS's comment for why this is separate from
+    # settings_updated_at above. Bumped whenever the patch touches either
+    # key, regardless of whether the new value differs from the old one
+    # (matching the presence-based semantics of the settings_updated_at bump
+    # just above, for consistency).
+    if "views" in patch or "hidden_sessions" in patch:
+        current["views_updated_at"] = time.time()
+
     save_settings(current)
     return current
 
 
-def apply_synced_settings(incoming_settings: dict, incoming_timestamp: float) -> dict:
+def apply_synced_settings(
+    incoming_settings: dict,
+    incoming_timestamp: float,
+    incoming_views_updated_at: float | None = None,
+) -> dict:
     """Apply synced settings from a remote server.
 
     Only applies keys that are in SYNCABLE_KEYS. Sets settings_updated_at
@@ -368,17 +454,89 @@ def apply_synced_settings(incoming_settings: dict, incoming_timestamp: float) ->
     After applying synced keys, enforces the mutual exclusion invariant:
     any session key that appears in both hidden_sessions and a view's sessions
     is removed from hidden_sessions (visibility wins over hiding).
+
+    Destructive-write backstop: whenever `views` or `hidden_sessions` is about
+    to be applied, the incoming `views` is assessed via
+    `views.assess_views_destruction` against the CURRENT on-disk `views`. A
+    catastrophic shrinkage raises `DestructiveSettingsWriteRejected` and makes
+    NO write at all. Unlike patch_settings(), there is no override here --
+    federation sync NEVER gets `allow_destructive`. Rationale: a peer must
+    never be able to force a destructive change onto another device just by
+    sending the right flag; only a local operator editing settings.json
+    directly can perform an intentional bulk deletion that a peer disagrees
+    with.
+
+    views-specific conflict resolution (`views_updated_at`): `views` and
+    `hidden_sessions` are gated by `incoming_views_updated_at`, NOT by the
+    overall `incoming_timestamp`/settings_updated_at LWW comparison the
+    caller used to decide whether to invoke this function at all. This
+    closes the race where an unrelated field (e.g. fontSize) bumped a peer's
+    settings_updated_at more recently than a genuine views edit, letting the
+    peer's stale views win a sync purely because the BLOB looked newer. If
+    `incoming_views_updated_at` is strictly newer than our local
+    `views_updated_at`, the incoming views/hidden_sessions are applied
+    (subject to the backstop above); otherwise they are left untouched and
+    every OTHER present key is still applied normally (the overall sync is
+    not all-or-nothing).
+
+    Backward compatibility: `incoming_views_updated_at=None` (the default)
+    means the peer doesn't know about this field -- e.g. a pre-this-feature
+    muxplex instance. In that case views/hidden_sessions are applied
+    unconditionally (gated only by the backstop, never by a per-field
+    timestamp), which is exactly the pre-existing behavior, so older peers
+    keep interoperating without any change on their end.
     """
     # Lazy import: avoids potential circular import between settings and views
-    from muxplex.views import enforce_mutual_exclusion
+    from muxplex.views import assess_views_destruction, enforce_mutual_exclusion
 
     current = load_settings()
+
+    views_keys_present = (
+        "views" in incoming_settings or "hidden_sessions" in incoming_settings
+    )
+    local_views_updated_at = current.get("views_updated_at", 0.0)
+    apply_views_fields = (
+        incoming_views_updated_at is None
+        or incoming_views_updated_at > local_views_updated_at
+    )
+
+    if views_keys_present and apply_views_fields:
+        assessment = assess_views_destruction(
+            current.get("views"), incoming_settings.get("views")
+        )
+        if assessment.destructive:
+            _log.warning(
+                "settings: rejected destructive views write (federation sync): %s "
+                "(before=%d views/%d members, after=%d views/%d members)",
+                assessment.reason,
+                assessment.before_views,
+                assessment.before_members,
+                assessment.after_views,
+                assessment.after_members,
+            )
+            raise DestructiveSettingsWriteRejected(
+                assessment.reason, assessment.as_counts_dict()
+            )
+
     for key in SYNCABLE_KEYS:
         if key == "_schema_version":
             # Never downgrade local schema version from sync.
             continue
-        if key in incoming_settings:
-            current[key] = incoming_settings[key]
+        if key not in incoming_settings:
+            continue
+        if key in ("views", "hidden_sessions") and not apply_views_fields:
+            # Incoming views-related data is stale by views_updated_at --
+            # keep ours, but still apply every other syncable key below.
+            continue
+        current[key] = incoming_settings[key]
+
+    if views_keys_present and apply_views_fields:
+        current["views_updated_at"] = (
+            incoming_views_updated_at
+            if incoming_views_updated_at is not None
+            else incoming_timestamp
+        )
+
     enforce_mutual_exclusion(current)
     current["settings_updated_at"] = incoming_timestamp
     save_settings(current)
@@ -402,10 +560,19 @@ def peer_supports_v2(peer_settings: dict) -> bool:
 
 
 def get_syncable_settings() -> dict:
-    """Return only syncable settings + the settings_updated_at timestamp."""
+    """Return only syncable settings + metadata timestamps.
+
+    `settings_updated_at` and `views_updated_at` are metadata, not
+    themselves syncable "settings" -- they're timestamps used by the
+    receiving peer to arbitrate conflicts (see apply_synced_settings), which
+    is why they're merged in here explicitly rather than living in
+    SYNCABLE_KEYS. A peer that doesn't understand `views_updated_at` simply
+    ignores the extra field (additive wire change; see AGENTS.md).
+    """
     settings = load_settings()
     result = {key: settings[key] for key in SYNCABLE_KEYS if key in settings}
     result["settings_updated_at"] = settings.get("settings_updated_at", 0.0)
+    result["views_updated_at"] = settings.get("views_updated_at", 0.0)
     return result
 
 

@@ -6532,7 +6532,7 @@ test('patchSettingsGuarded attaches expected_settings_updated_at to the PATCH bo
   globalThis.fetch = undefined;
 });
 
-test('a single 409 triggers exactly one re-fetch, one re-apply, and one retry', async () => {
+test('a views-touching patch pre-fetches once, then a single 409 triggers one more re-fetch, one re-apply, and one retry', async () => {
   const calls = [];
   let patchAttempts = 0;
   const serverViews = [{ name: 'Focus', sessions: ['a', 'b', 'c'] }];
@@ -6566,14 +6566,32 @@ test('a single 409 triggers exactly one re-fetch, one re-apply, and one retry', 
     calls.filter((c) => c === 'PATCH /api/settings').length, 2,
     'must attempt PATCH exactly twice (original + one retry); calls: ' + JSON.stringify(calls),
   );
+  // Two GETs total: one PROACTIVE re-fetch because the patch touches `views`
+  // (detected from the mutateFn's own draft output, before the first PATCH
+  // is ever sent), and one more after the 409 (the pre-existing CAS-retry
+  // re-fetch). Never operating on the stale seeded baseline is exactly the
+  // point of the fix -- see patchSettingsGuarded's docstring.
   assert.strictEqual(
-    calls.filter((c) => c === 'GET /api/settings').length, 1,
-    'must re-fetch settings exactly once after the 409; calls: ' + JSON.stringify(calls),
+    calls.filter((c) => c === 'GET /api/settings').length, 2,
+    'a views-touching patch re-fetches once proactively and once after the 409; calls: ' + JSON.stringify(calls),
   );
-  assert.strictEqual(mutateCalls.length, 2, 'mutateFn must be called once per attempt');
+  // mutateFn runs 3 times: once against the stale seed (to detect that the
+  // draft touches `views`, discarded), once against the freshly re-fetched
+  // copy (the actual first PATCH attempt), and once more on the retry
+  // (which reuses the already-fresh copy from the 409 handler, so no third
+  // re-fetch is needed).
+  assert.strictEqual(mutateCalls.length, 3, 'mutateFn is called once to detect intent, once fresh, once on retry');
+  assert.deepStrictEqual(
+    mutateCalls[0].views, [{ name: 'Focus', sessions: ['a'] }],
+    'the first (detection) call sees whatever baseline was on hand, stale or not',
+  );
   assert.deepStrictEqual(
     mutateCalls[1].views, serverViews,
-    'the retry must re-apply the mutation to the FRESH (re-fetched) snapshot, not the stale one',
+    'the proactive re-fetch rebuilds the patch from the FRESH snapshot before ever sending it',
+  );
+  assert.deepStrictEqual(
+    mutateCalls[2].views, serverViews,
+    'the retry after the 409 also uses fresh data (unchanged from the proactive fetch in this scenario)',
   );
   assert.deepStrictEqual(result.views, [{ name: 'Focus', sessions: ['a', 'b', 'c', 'd'] }]);
 
@@ -6606,9 +6624,13 @@ test('a second consecutive 409 does not loop -- exactly two PATCH attempts, then
     calls.filter((c) => c === 'PATCH /api/settings').length, 2,
     'must not attempt a third PATCH after a second consecutive 409; calls: ' + JSON.stringify(calls),
   );
+  // Three GETs: one proactive (patch touches `views`), one after the first
+  // 409 (CAS-retry re-fetch), one after the second/final 409 (re-render
+  // from server truth). The retry attempt itself does not proactively
+  // re-fetch again since it already has fresh data from the 409 handler.
   assert.strictEqual(
-    calls.filter((c) => c === 'GET /api/settings').length, 2,
-    'each 409 (including the second) re-fetches server truth for re-rendering/baseline; calls: ' + JSON.stringify(calls),
+    calls.filter((c) => c === 'GET /api/settings').length, 3,
+    'a views-touching patch that keeps conflicting re-fetches proactively once, then once per 409; calls: ' + JSON.stringify(calls),
   );
 
   globalThis.fetch = undefined;

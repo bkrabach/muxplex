@@ -4441,6 +4441,179 @@ def test_put_settings_sync_ignores_nonsyncable_keys(client, tmp_path, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# Destructive-write backstop (settings clobber incident, 2026-07)
+# ---------------------------------------------------------------------------
+
+
+def _views(n, sessions_per_view=2):
+    return [
+        {"name": f"v{i}", "sessions": [f"s{i}-{j}" for j in range(sessions_per_view)]}
+        for i in range(n)
+    ]
+
+
+def test_patch_settings_rejects_destructive_views_collapse_via_api(
+    client, tmp_path, monkeypatch
+):
+    """PATCH /api/settings with an 8->1 views collapse returns 409, no write."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    client.patch("/api/settings", json={"views": _views(8)})
+
+    response = client.patch("/api/settings", json={"views": [_views(8)[0]]})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["backstop"] is True
+    assert "counts" in body
+    assert body["counts"]["before_views"] == 8
+    assert body["counts"]["after_views"] == 1
+
+    # No write happened.
+    after = client.get("/api/settings").json()
+    assert len(after["views"]) == 8
+
+
+def test_patch_settings_allow_destructive_true_permits_collapse_via_api(
+    client, tmp_path, monkeypatch
+):
+    """PATCH /api/settings with allow_destructive: true permits an intentional collapse."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    client.patch("/api/settings", json={"views": _views(8)})
+
+    response = client.patch(
+        "/api/settings",
+        json={"views": [_views(8)[0]], "allow_destructive": True},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["views"]) == 1
+
+
+def test_patch_settings_single_view_deletion_via_api_is_unaffected(
+    client, tmp_path, monkeypatch
+):
+    """Deleting one of 8 views via the real API endpoint is not flagged destructive."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    client.patch("/api/settings", json={"views": _views(8)})
+
+    response = client.patch("/api/settings", json={"views": _views(8)[1:]})
+
+    assert response.status_code == 200
+    assert len(response.json()["views"]) == 7
+
+
+def test_patch_settings_backstop_response_includes_current_timestamp(
+    client, tmp_path, monkeypatch
+):
+    """A backstop 409's settings_updated_at reflects the server's actual (unwritten) value."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    client.patch("/api/settings", json={"views": _views(8)})
+    real_ts = client.get("/api/settings").json()["settings_updated_at"]
+
+    response = client.patch("/api/settings", json={"views": [_views(8)[0]]})
+
+    assert response.status_code == 409
+    assert response.json()["settings_updated_at"] == real_ts
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/settings/sync -- destructive-write backstop + views_updated_at
+# ---------------------------------------------------------------------------
+
+
+def test_put_settings_sync_rejects_destructive_views_collapse(
+    client, tmp_path, monkeypatch
+):
+    """A sync payload with an 8->1 views collapse is rejected with 409/backstop, no write."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "views": _views(8),
+                "settings_updated_at": 100.0,
+                "views_updated_at": 100.0,
+            }
+        )
+    )
+
+    response = client.put(
+        "/api/settings/sync",
+        json={
+            "settings": {"views": [_views(8)[0]]},
+            "settings_updated_at": 200.0,
+            "views_updated_at": 300.0,
+        },
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["backstop"] is True
+    assert body["counts"]["before_views"] == 8
+    assert body["counts"]["after_views"] == 1
+
+    reloaded = settings_mod.load_settings()
+    assert len(reloaded["views"]) == 8
+    assert reloaded["settings_updated_at"] == 100.0, (
+        "no write must have happened at all"
+    )
+
+
+def test_put_settings_sync_legacy_peer_without_views_updated_at_interoperates(
+    client, tmp_path, monkeypatch
+):
+    """A sync payload omitting views_updated_at (legacy peer) still applies normally."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"settings_updated_at": 100.0}))
+
+    response = client.put(
+        "/api/settings/sync",
+        json={
+            "settings": {"views": [{"name": "Work", "sessions": ["a"]}]},
+            "settings_updated_at": 200.0,
+            # views_updated_at omitted entirely -- legacy peer.
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["settings"]["views"] == [{"name": "Work", "sessions": ["a"]}]
+
+
+def test_get_settings_sync_includes_views_updated_at(client, tmp_path, monkeypatch):
+    """GET /api/settings/sync response includes views_updated_at as a top-level field."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    settings_mod.save_settings({"views": [{"name": "A", "sessions": []}]})
+
+    response = client.get("/api/settings/sync")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "views_updated_at" in body
+    assert "views_updated_at" not in body["settings"], (
+        "views_updated_at is metadata, must not appear inside the nested settings dict"
+    )
+
+
+# ---------------------------------------------------------------------------
 # fetch_remote: zero-session visibility and flapping grace period
 # ---------------------------------------------------------------------------
 

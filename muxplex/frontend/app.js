@@ -270,6 +270,16 @@ async function api(method, path, body) {
   if (!res.ok) {
     const err = new Error(`HTTP ${res.status}: ${res.statusText}`);
     err.status = res.status;
+    // Best-effort: attach the parsed error body so callers can distinguish
+    // WHY a 409 happened (e.g. patchSettingsGuarded telling a stale-baseline
+    // CAS conflict apart from a destructive-write backstop rejection --
+    // they require different recovery behavior). A non-JSON or empty body
+    // just leaves err.body undefined; callers already tolerate that.
+    try {
+      err.body = await res.json();
+    } catch (parseErr) {
+      // no-op: no usable JSON body on this error response
+    }
     throw err;
   }
   return res;
@@ -3370,11 +3380,34 @@ function _rerenderViewDependentUI() {
  * so every call site gets the protection for free instead of re-deriving
  * it per call site.
  *
+ * ALSO re-fetches settings from the server IMMEDIATELY BEFORE building any
+ * patch that touches `views`/`hidden_sessions` -- never trusting a possibly
+ * long-lived `_serverSettings` cache as the baseline for a views mutation.
+ * This is the frontend half of closing the settings-clobber incident: the
+ * CAS precondition above stops a stale write from being ACCEPTED, but a page
+ * left open for hours would still keep BUILDING views patches from ancient
+ * data until it happened to 409 and recover. Detection is a cheap two-step:
+ * call `mutateFn` once against whatever baseline is on hand to see what it
+ * WOULD write; if that draft touches `views`/`hidden_sessions`, re-fetch and
+ * call `mutateFn` again against the fresh copy, discarding the draft. A
+ * patch that never touches those keys (e.g. a plain `fontSize` change) skips
+ * the extra round-trip entirely.
+ *
+ * A second, distinct failure mode gets different treatment: a 409 whose
+ * body has `backstop: true` (see main.py's update_settings()) means the
+ * write was rejected by the destructive-write backstop, not a stale
+ * baseline -- the intent itself (e.g. "replace views with this array")
+ * would catastrophically shrink view definitions. Retrying would just
+ * resend the same destructive payload, so this case never retries: it
+ * reloads server truth, re-renders, and logs a warning instead.
+ *
  * @param {function(object): object} mutateFn - Given a deep copy of the
- *   CURRENT `_serverSettings` (fresh on retry), returns the PATCH BODY to
- *   send, e.g. `{ views: [...] }`. May be called twice: once with the
- *   snapshot taken at call time, and -- only on exactly one 409 -- again
- *   with a freshly re-fetched snapshot.
+ *   CURRENT `_serverSettings` (freshly re-fetched when the resulting patch
+ *   touches views/hidden_sessions; see above), returns the PATCH BODY to
+ *   send, e.g. `{ views: [...] }`. May be called up to three times: once to
+ *   detect intent, once (only if that intent touches views/hidden_sessions)
+ *   against a freshly re-fetched snapshot, and -- only on exactly one
+ *   stale-baseline 409 -- once more with an even-fresher snapshot.
  * @param {object} [opts]
  * @param {boolean} [opts.retry=true] - Internal: false on the retry attempt
  *   itself, so a second consecutive 409 does not loop.
@@ -3383,8 +3416,25 @@ function _rerenderViewDependentUI() {
  */
 async function patchSettingsGuarded(mutateFn, opts) {
   var retry = !opts || opts.retry !== false;
+  // The retry attempt (opts.retry === false) already has a guaranteed-fresh
+  // baseline -- the 409 handler below just re-fetched it moments ago
+  // specifically so the retry could rebuild against server truth. Skip the
+  // detection re-fetch in that case; doing it anyway would just be a
+  // redundant extra round-trip against data that hasn't changed.
+  var isRetryAttempt = !!(opts && opts.retry === false);
   var baseline = _serverSettings ? JSON.parse(JSON.stringify(_serverSettings)) : {};
   var patch = mutateFn(baseline);
+
+  if (!isRetryAttempt &&
+      (Object.prototype.hasOwnProperty.call(patch, 'views') ||
+       Object.prototype.hasOwnProperty.call(patch, 'hidden_sessions'))) {
+    // This patch touches view membership/visibility -- never build it from
+    // a baseline that might be stale. Re-fetch and rebuild before sending.
+    await loadServerSettings();
+    _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
+    baseline = _serverSettings ? JSON.parse(JSON.stringify(_serverSettings)) : {};
+    patch = mutateFn(baseline);
+  }
   patch.expected_settings_updated_at = _lastSettingsUpdatedAt;
 
   try {
@@ -3395,6 +3445,20 @@ async function patchSettingsGuarded(mutateFn, opts) {
     }
     return responseBody;
   } catch (err) {
+    if (err.status === 409 && err.body && err.body.backstop === true) {
+      // Destructive-write backstop rejection: NOT a stale baseline -- the
+      // mutation itself would catastrophically shrink `views`. Retrying
+      // would just resend the same destructive payload, so reload from
+      // server truth and stop here instead of recursing.
+      await loadServerSettings();
+      _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
+      _rerenderViewDependentUI();
+      console.warn(
+        '[patchSettingsGuarded] destructive write rejected by server backstop:',
+        err.body.detail,
+      );
+      throw err;
+    }
     if (err.status === 409 && retry) {
       // Stale baseline: re-fetch server truth, re-apply the SAME intent to
       // the FRESH copy, and retry exactly once (retry:false below means a

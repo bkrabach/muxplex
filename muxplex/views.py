@@ -18,9 +18,153 @@ Other invariants:
 """
 
 import time
+from typing import NamedTuple
 
 RESERVED_VIEW_NAMES = frozenset({"all", "hidden"})
 MAX_VIEW_NAME_LENGTH = 30
+
+
+# ---------------------------------------------------------------------------
+# Destructive-write backstop (settings clobber incident, 2026-07)
+#
+# Real incident: `views` is replaced WHOLESALE by both settings write paths
+# (PATCH /api/settings and federation sync). A client holding a stale
+# in-memory copy of `views` -- a browser tab, a phone PWA, or a federation
+# peer with a momentarily-fresher timestamp -- can PATCH/sync that stale
+# copy back over the server's current state, destroying view definitions in
+# one request. This happened twice: 7 of 8 views destroyed by a stale PWA
+# tab, then a fleet-wide collapse to 1 view replicated via federation LWW.
+#
+# This is a single-sided backstop: it inspects what's ABOUT to be written
+# and refuses catastrophic shrinkage, regardless of which writer (API PATCH,
+# federation sync, internal code) is responsible and regardless of whether
+# that writer's timestamp/precondition logic says the write should proceed.
+# ---------------------------------------------------------------------------
+
+# A write is catastrophic if ANY of these hold. Thresholds are deliberately
+# conservative -- a real, intentional bulk deletion (e.g. an operator
+# clearing out a handful of views) should also be rare enough that requiring
+# `allow_destructive: true` (PATCH-path only; see settings.py) is a
+# reasonable speed bump, not a workflow blocker.
+DESTRUCTIVE_VIEW_DROP_RATIO = 0.5  # >= 50% of existing views removed
+DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD = 1  # >1 views -> <= this many is destructive
+DESTRUCTIVE_MEMBER_DROP_RATIO = 0.5  # >= 50% of total session-member entries removed
+
+
+class ViewsDestructionAssessment(NamedTuple):
+    """Result of assess_views_destruction(). `reason` is human-readable and
+    safe to log or return in an API error body; empty when not destructive.
+    """
+
+    destructive: bool
+    reason: str
+    before_views: int
+    after_views: int
+    before_members: int
+    after_members: int
+
+    def as_counts_dict(self) -> dict:
+        """Compact dict form for logging/API responses."""
+        return {
+            "before_views": self.before_views,
+            "after_views": self.after_views,
+            "before_members": self.before_members,
+            "after_members": self.after_members,
+        }
+
+
+def _view_member_count(views: list) -> int:
+    total = 0
+    for v in views:
+        if isinstance(v, dict):
+            sessions = v.get("sessions")
+            if isinstance(sessions, list):
+                total += len(sessions)
+    return total
+
+
+def assess_views_destruction(
+    current_views: object, incoming_views: object
+) -> ViewsDestructionAssessment:
+    """Assess whether replacing `current_views` with `incoming_views` would be
+    a catastrophic, likely-unintended shrinkage of view definitions.
+
+    Pure and side-effect-free -- callers (settings.patch_settings,
+    settings.apply_synced_settings) decide what to do with the result
+    (reject the write, log, etc.).
+
+    Robust to malformed input on EITHER side: a non-list `current_views` is
+    treated as an empty starting point (nothing to lose -> never
+    destructive); a non-list `incoming_views` (including None -- i.e. the
+    key is absent or explicitly null) is treated as "not changing views",
+    NEVER as "delete all", and is therefore never destructive. This means
+    callers may invoke this function unconditionally without first checking
+    whether the incoming payload actually intends to touch `views`.
+
+    Catastrophic (destructive=True) when ANY of:
+      1. Collapse: more than DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD views exist
+         and the incoming count would drop to that threshold or below.
+      2. Bulk view removal: the incoming view count is <= (1 -
+         DESTRUCTIVE_VIEW_DROP_RATIO) of the current count.
+      3. Bulk member removal: the incoming total session-member count
+         (summed across all views) is <= (1 - DESTRUCTIVE_MEMBER_DROP_RATIO)
+         of the current total.
+
+    A single view deletion, or removing a handful of members from one view,
+    stays well under all three thresholds and is never flagged.
+    """
+    current = current_views if isinstance(current_views, list) else []
+    before_views = len(current)
+    before_members = _view_member_count(current)
+
+    if not isinstance(incoming_views, list):
+        # Absent, None, or a garbage type: not a views-changing write at all.
+        return ViewsDestructionAssessment(False, "", before_views, 0, before_members, 0)
+
+    after_views = len(incoming_views)
+    after_members = _view_member_count(incoming_views)
+
+    if before_views == 0:
+        # Nothing to lose.
+        return ViewsDestructionAssessment(
+            False, "", before_views, after_views, before_members, after_members
+        )
+
+    if (
+        before_views > DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD
+        and after_views <= DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD
+    ):
+        reason = (
+            f"views would collapse from {before_views} to {after_views} "
+            f"(<= collapse threshold {DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD})"
+        )
+        return ViewsDestructionAssessment(
+            True, reason, before_views, after_views, before_members, after_members
+        )
+
+    if after_views <= before_views * (1 - DESTRUCTIVE_VIEW_DROP_RATIO):
+        reason = (
+            f"views would drop from {before_views} to {after_views} "
+            f"(>= {DESTRUCTIVE_VIEW_DROP_RATIO:.0%} removed)"
+        )
+        return ViewsDestructionAssessment(
+            True, reason, before_views, after_views, before_members, after_members
+        )
+
+    if before_members > 0 and after_members <= before_members * (
+        1 - DESTRUCTIVE_MEMBER_DROP_RATIO
+    ):
+        reason = (
+            f"view session-member entries would drop from {before_members} to "
+            f"{after_members} (>= {DESTRUCTIVE_MEMBER_DROP_RATIO:.0%} removed)"
+        )
+        return ViewsDestructionAssessment(
+            True, reason, before_views, after_views, before_members, after_members
+        )
+
+    return ViewsDestructionAssessment(
+        False, "", before_views, after_views, before_members, after_members
+    )
 
 
 # ---------------------------------------------------------------------------

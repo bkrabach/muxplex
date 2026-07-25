@@ -93,6 +93,69 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   worked because a manual file backup happened to exist. Best-effort: a
   snapshot failure is logged and swallowed, never blocks or corrupts the
   real write.
+- **Destructive-write backstop on `views`** (`views.assess_views_destruction`,
+  called from BOTH `settings.patch_settings()` and
+  `settings.apply_synced_settings()` — the single lowest choke point each
+  write path shares before `views` is replaced wholesale). The CAS
+  precondition above stops a *stale* write from being accepted, but does
+  nothing if the writer's timestamp genuinely looks newer — which is
+  exactly what happened next: a phone PWA tab resubmitted an
+  already-collapsed 1-view array 12 times over 7 minutes, and separately,
+  federation LWW replicated a collapsed state fleet-wide because `views`
+  shared `settings_updated_at` with unrelated fields (see `views_updated_at`
+  below). The backstop is a second, independent line of defense: it
+  inspects what's about to be written and refuses catastrophic shrinkage
+  regardless of whether the CAS/LWW timestamp said the write should
+  proceed. Catastrophic (thresholds are named module constants in
+  `views.py`, not magic numbers): more than
+  `DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD` (1) views collapsing to that
+  threshold or below; incoming view count <= (1 -
+  `DESTRUCTIVE_VIEW_DROP_RATIO` (0.5)) of current; or incoming total
+  session-member count (summed across all views) <= (1 -
+  `DESTRUCTIVE_MEMBER_DROP_RATIO` (0.5)) of current. A single view
+  deletion, or trimming a handful of members from one view, stays under all
+  three and is never flagged. Rejection makes NO write (not even to
+  unrelated keys in the same request) and returns 409 with `{"backstop":
+  true, "detail": <reason>, "settings_updated_at": <current>, "counts":
+  {...}}` — `backstop: true` is how a client tells this apart from an
+  ordinary CAS 409 (see `frontend/app.js`'s `patchSettingsGuarded` below).
+  `PATCH /api/settings` accepts an `allow_destructive: true` body field to
+  perform an intentional bulk deletion; **federation sync NEVER gets this
+  override** — a peer must not be able to force a destructive change onto
+  another device, only a local operator editing `settings.json` directly
+  can. Guard is robust to `views` being absent/None/non-list on either side
+  (never crashes; never treats "no incoming `views` key" as "delete all").
+- **`views_updated_at`** (metadata alongside `settings_updated_at`; both are
+  threaded through the `/api/settings/sync` GET/PUT payload but neither is
+  itself in `SYNCABLE_KEYS`): a SEPARATE timestamp that advances ONLY when a
+  PATCH/sync actually touches `views` or `hidden_sessions`, decoupled from
+  `settings_updated_at`, which advances on ANY syncable key (`fontSize`,
+  `sidebarOpen`, etc.). This closes the race that let a fleet-wide views
+  collapse replicate: because everything shared one timestamp, an unrelated
+  field edit on a peer could bump its `settings_updated_at` past ours and
+  win a federation LWW race for `views` too, even though that peer's actual
+  view data was stale or already-destroyed. `apply_synced_settings()` now
+  takes an optional third argument `incoming_views_updated_at` and, when a
+  peer supplies it, applies incoming `views`/`hidden_sessions` ONLY if it's
+  strictly newer than our local `views_updated_at` — every OTHER present
+  key still applies normally from the overall (newer) sync, so this is
+  never all-or-nothing. **Backward compatible**:
+  `incoming_views_updated_at=None` (the default, and what any
+  pre-this-field peer's payload implies) falls back to the pre-existing
+  behavior — apply views/hidden_sessions unconditionally, gated only by the
+  backstop above — so older peers keep interoperating with zero changes on
+  their end.
+- **`PUT /api/settings/sync`'s existing `payload.settings_updated_at >
+  local_ts` comparison IS this endpoint's CAS/precondition discipline** — a
+  peer only gets to write when its view of the world is strictly newer than
+  ours, the sync-path analogue of `PATCH`'s
+  `expected_settings_updated_at`. What changed: `apply_synced_settings()`
+  now runs the destructive-write backstop unconditionally as its first act
+  for EVERY caller — this endpoint AND the periodic background
+  `_sync_settings_with_remotes()` poll loop — so a catastrophic incoming
+  `views`, however the timestamp comparison came out, is rejected with 409
+  (`{"backstop": true, ...}`) and no write happens, with no override
+  available on this path.
 - **`GET /api/instance-info` includes `tmux_socket_dir`** — the resolved
   (not raw) socket directory this instance's tmux sessions live under (see
   `settings.resolve_tmux_socket_dir()`). Lets remote tools/agents discover
