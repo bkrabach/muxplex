@@ -59,11 +59,15 @@ DEFAULT_SETTINGS: dict = {
     # into a shell pane runs whatever it types. Both fences default CLOSED:
     #   input_enabled          -- global opt-in; False means the endpoint is
     #                             a hard 403 regardless of any other config.
-    #   input_allowed_sessions -- exact session names input may target. A
-    #                             session not on this list is a 403 even when
-    #                             input_enabled is True. Keeping a human's
-    #                             own working panes OFF this list is how they
-    #                             stay un-typeable. No globs -- exact names.
+    #   input_allowed_sessions -- GLOB PATTERNS (fnmatch.fnmatchcase) naming
+    #                             sessions input may target, e.g. "*" for all,
+    #                             "amplifier-*" for a prefix family, or an
+    #                             exact name (which matches only itself). A
+    #                             session matching none of these is a 403
+    #                             even when input_enabled is True. Keeping a
+    #                             human's own working panes off every pattern
+    #                             is how they stay un-typeable. See
+    #                             terminal_input.session_matches_allowlist.
     # Deliberately NOT in SYNCABLE_KEYS: a security fence must never be
     # widened by a federation peer's settings sync.
     "input_enabled": False,

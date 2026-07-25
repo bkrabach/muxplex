@@ -70,6 +70,7 @@ from muxplex.terminal_input import (
     build_send_key_argv,
     build_send_text_argv,
     redact_preview,
+    session_matches_allowlist,
 )
 from muxplex.state import (
     empty_bell,
@@ -1039,11 +1040,11 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
     allowed = settings.get("input_allowed_sessions")
     if not isinstance(allowed, list):
         allowed = []
-    if name not in allowed:
+    if not session_matches_allowlist(name, allowed):
         _log.warning("input: rejected for %r -- not in input_allowed_sessions", name)
         raise HTTPException(
             status_code=403,
-            detail=f"Session '{name}' is not in input_allowed_sessions",
+            detail=f"Session '{name}' does not match any input_allowed_sessions pattern",
         )
 
     # Fail closed: exact membership in the known set; an empty/unavailable
