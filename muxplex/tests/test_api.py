@@ -274,12 +274,27 @@ def test_get_state_includes_settings_updated_at(client):
     assert isinstance(data["settings_updated_at"], float)
 
 
-def test_get_state_settings_updated_at_changes_after_settings_write(client):
+def test_get_state_settings_updated_at_changes_after_settings_write(
+    client, tmp_path, monkeypatch
+):
     """A settings write (PATCH /api/settings, e.g. editing view membership)
     bumps settings_updated_at, and the NEXT GET /api/state reflects the new
     value -- this is the change signal followRemoteViewDefinitions() polls
     for on the frontend.
+
+    Isolates SETTINGS_PATH to a tmp file like every other settings-writing
+    test in this file: without it, this test reads/writes whatever
+    ~/.config/muxplex/settings.json happens to exist on the machine running
+    the suite (on a box that also runs a live muxplex instance, that is the
+    LIVE production config). A pre-existing on-disk `views` list longer than
+    one entry would trip the destructive-write backstop (views.py) against
+    this test's single-view patch and turn the expected 200 into a 409 --
+    entirely an artifact of ambient state, not a real product bug.
     """
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
     before = client.get("/api/state").json()["settings_updated_at"]
 
     patch_response = client.patch(

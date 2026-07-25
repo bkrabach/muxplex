@@ -471,7 +471,15 @@ def test_get_display_settings_uses_display_defaults() -> None:
 
 
 def test_on_display_setting_change_uses_api_patch() -> None:
-    """onDisplaySettingChange must write display settings via API PATCH, not localStorage."""
+    """onDisplaySettingChange must write display settings via the server, not localStorage.
+
+    Writes go through patchSettingsGuarded() (the CAS/backstop-guarded wrapper
+    added for the settings-clobber incident -- see AGENTS.md), which is itself
+    proven (below) to always PATCH '/api/settings'. Calling directly into
+    patchSettingsGuarded rather than a raw api('PATCH', ...) is the current,
+    correct implementation -- this assertion follows that, not a literal
+    string match on the old direct-call form.
+    """
     match = re.search(
         r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// |\n/\*)",
         _JS,
@@ -479,8 +487,9 @@ def test_on_display_setting_change_uses_api_patch() -> None:
     )
     assert match, "onDisplaySettingChange function not found"
     body = match.group(1)
-    assert "api('PATCH'" in body or 'api("PATCH"' in body, (
-        "onDisplaySettingChange must write display settings via api('PATCH', '/api/settings', patch)"
+    assert "patchSettingsGuarded(" in body, (
+        "onDisplaySettingChange must write display settings via patchSettingsGuarded() "
+        "(the guarded wrapper around api('PATCH', '/api/settings', patch))"
     )
     assert "localStorage" not in body, (
         "onDisplaySettingChange must not use localStorage for display settings"
@@ -971,7 +980,9 @@ def test_on_display_setting_change_reads_grid_columns() -> None:
 
 
 def test_on_display_setting_change_calls_save_display_settings() -> None:
-    """onDisplaySettingChange must save display settings via api('PATCH', '/api/settings', ...)."""
+    """onDisplaySettingChange must save display settings via patchSettingsGuarded()
+    (the guarded wrapper around api('PATCH', '/api/settings', patch) -- see
+    test_on_display_setting_change_uses_api_patch for the rationale)."""
     match = re.search(
         r"function onDisplaySettingChange\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
         _JS,
@@ -979,8 +990,8 @@ def test_on_display_setting_change_calls_save_display_settings() -> None:
     )
     assert match, "onDisplaySettingChange function not found"
     body = match.group(1)
-    assert "api('PATCH'" in body or 'api("PATCH"' in body, (
-        "onDisplaySettingChange must save display settings via api('PATCH', '/api/settings', patch)"
+    assert "patchSettingsGuarded(" in body, (
+        "onDisplaySettingChange must save display settings via patchSettingsGuarded()"
     )
 
 
@@ -1181,7 +1192,11 @@ def test_patch_server_setting_function_exists() -> None:
 
 
 def test_patch_server_setting_sends_patch_request() -> None:
-    """patchServerSetting must send PATCH to /api/settings."""
+    """patchServerSetting must send its write via patchSettingsGuarded(), the
+    guarded wrapper around api('PATCH', '/api/settings', patch) -- see
+    test_patch_settings_guarded_sends_patch_to_api_settings below, which pins
+    that patchSettingsGuarded itself always PATCHes '/api/settings'.
+    """
     match = re.search(
         r"async function patchServerSetting\s*\(.*?\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
@@ -1189,8 +1204,27 @@ def test_patch_server_setting_sends_patch_request() -> None:
     )
     assert match, "patchServerSetting function not found"
     body = match.group(1)
-    assert "/api/settings" in body, "patchServerSetting must send to /api/settings"
-    assert "PATCH" in body, "patchServerSetting must use PATCH method"
+    assert "patchSettingsGuarded(" in body, (
+        "patchServerSetting must send its write via patchSettingsGuarded()"
+    )
+
+
+def test_patch_settings_guarded_sends_patch_to_api_settings() -> None:
+    """patchSettingsGuarded (the shared guarded write path used by
+    onDisplaySettingChange, patchServerSetting, and every other settings
+    mutator) must itself PATCH '/api/settings'. This is the pinning test
+    that lets callers assert only "goes through patchSettingsGuarded"
+    without each re-checking the literal endpoint/method.
+    """
+    match = re.search(
+        r"async function patchSettingsGuarded\s*\(.*?\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "patchSettingsGuarded function not found"
+    body = match.group(1)
+    assert "/api/settings" in body, "patchSettingsGuarded must send to /api/settings"
+    assert "PATCH" in body, "patchSettingsGuarded must use the PATCH method"
 
 
 def test_patch_server_setting_shows_toast() -> None:
