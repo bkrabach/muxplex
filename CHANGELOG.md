@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.12.0 (2026-07-25)
+
+### Bug Fixes
+
+- **Catastrophic views destruction via stale clients and federation sync** — A PWA tab holding an hours-old snapshot of the settings blob could send 12 PATCHes in 7 minutes resubmitting a collapsed `views` array (8 views → 1), destroying your configuration; simultaneously an older federation peer could delete view members not stored locally, then LWW-broadcast the loss to every device. Root cause: `settings_updated_at` is a single scalar covering the whole syncable blob (views, sidebarOpen, fontSize, etc.), views is replaced wholesale (never merged) by both `patch_settings()` and `apply_synced_settings()`, and any PATCH re-stamps that timestamp — so a stale views value + unrelated fontSize write + federation race = cascade failure. Four defenses: (1) **Destructive-write backstop** — a single choke point (`assess_views_destruction()`) rejects any write that collapses >1 view to ≤1, removes ≥50% of views, or removes ≥50% of total members; returns 409 with `backstop:true` and makes NO write. Protects spark-1 fleet-wide even from unupgraded 0.6.7 peers and live stale browser tabs. Single-view and single-member edits stay far below thresholds. (2) **Federation sync now runs the backstop** and gains CAS discipline it previously lacked (`PUT /api/settings/sync` now uses the same optimistic concurrency as PATCH, never overwrites destructively). Deliberately NO force override on sync — only local config file edits can collapse a view now. (3) **Separate `views_updated_at`** — advances only when `views` or `hidden_sessions` actually change, so unrelated field writes can no longer re-arm a stale views value in a race. Absent on legacy peers (v0.6.7 compat); they fall back to prior behavior still gated by the backstop. (4) **PWA re-fetches settings before views mutations** instead of trusting cached blob; on 409 treats backstop and CAS distinctly — backstop 409 reloads from server (stale client), CAS 409 retries once with fresh state (lost race).
+
+### Features
+
+- **Settings snapshot history** — Every write to settings creates a time-stamped backup in `<config_dir>/settings-history/` (20 most recent kept). Enables instant forensics and recovery; monotonic sequence numbering for coarse-grained ordering independent of clock skew.
+
+
 ## v0.11.0 (2026-07-25)
 
 ### Bug Fixes
