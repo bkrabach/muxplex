@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.0 (2026-07-25)
+
+### Bug Fixes
+
+- **PWA now follows remote view-membership changes** — when a session is added to or removed from a view via `PUT /api/views/{name}` (on the server or another device), the PWA's 1s poll now detects the change and re-renders all view-related UI (dropdown, grid filters, sidebar, membership checkboxes). Root cause was that `_serverSettings` was fetched once at page load and cached forever, while the session list itself refreshed every second via `/api/sessions` — so "All" updated but "Focus" did not. Fix adds `settings_updated_at` to `GET /api/state` as a change signal (render-only, not persisted), then wires a new `followRemoteViewDefinitions()` into the 1s poll alongside the existing session and active_view followers. Absent field on older servers is treated as no-op. Completes the follow-the-remote-device family: `active_session`, `active_view`, and `view_definitions`.
+
+### Features
+
+- **Case-insensitive glob patterns for `input_allowed_sessions`** — the remote-agent input endpoint's session allowlist now matches case-insensitive. `"Amplifier-*"` matches `amplifier-foo`, `"amplifier-*"` matches `AMPLIFIER-Foo`, exact entries like `"Agent-Sbx"` match `agent-sbx`. Implemented by explicit `casefold()` on both sides rather than `fnmatch.fnmatch` (which would be case-insensitive on macOS/Windows as a side effect of `os.path.normcase`, silently widening the fence per-platform). All other fence properties unchanged: empty list denies all, pattern order preserved, LOCAL-FILE-ONLY still enforced, boundary validation intact.
+
+
 ## v0.9.0 (2026-07-24)
 
 ### Features
