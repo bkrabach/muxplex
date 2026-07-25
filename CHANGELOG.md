@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.0 (2026-07-24)
+
+### Features
+
+- **Glob pattern support in `input_allowed_sessions`** — the remote-agent input endpoint's session allowlist now accepts glob patterns instead of exact literals. `"*"` allows every session; `"amplifier-*"` matches a prefix family; bare names like `"agent-sbx"` work exactly as before (backward compatible). Matching uses `fnmatch.fnmatchcase` (case-sensitive, deterministic across all platforms) rather than `fnmatch.fnmatch`, which is case-insensitive on macOS/Windows and would silently widen the fence. Fail-closed guarantees preserved: empty list denies all, non-list values normalize to deny-all before matching, non-string entries are skipped, and the fence ORDER is unchanged (is_valid_session_name 400 → input_enabled 403 → allowlist 403 → fail-closed existence 404). Patterns remain LOCAL-FILE-ONLY — not settable via PATCH /api/settings or federation sync. 15 new tests; 1426 pass.
+
 ## v0.8.0 (2026-07-24)
 
 ### Features
