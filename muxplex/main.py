@@ -93,7 +93,12 @@ from muxplex.settings import (
 )
 from muxplex.breaker import CircuitBreaker
 from muxplex.pruning import load_pruning_state, save_pruning_state
-from muxplex.views import filter_visible, normalize_session_keys, prune_stale_keys
+from muxplex.views import (
+    assess_views_destruction,
+    filter_visible,
+    normalize_session_keys,
+    prune_stale_keys,
+)
 from muxplex.identity import load_device_id
 from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
@@ -340,19 +345,37 @@ async def _run_poll_cycle() -> None:
 
     # 14. Prune stale session keys from views and hidden_sessions.
     #
-    #     Each device only knows its own live sessions natively.  The live_keys
-    #     set below includes both the bare session name (legacy bare-name entries)
-    #     and the canonical device_id:name form.  Remote-device keys tracked in
-    #     views/hidden_sessions are also covered: if this device has not seen a
-    #     remote key for the full grace period the key is pruned locally; the
-    #     remote device handles pruning for its own keys independently.  The grace
-    #     period prevents thrash when sessions briefly disappear during restarts
-    #     or sync gaps.
+    #     Federation-aware, positive-knowledge pruning (see views.py's
+    #     prune_stale_keys docstring for the full rule). A key
+    #     "<device_id>:<name>" is only ever evaluated for pruning when the
+    #     owning device's session list is CURRENTLY KNOWN to this instance:
+    #       - our own local_device_id: always evaluable (names is authoritative).
+    #       - a remote device_id: evaluable ONLY if that device currently has a
+    #         fresh entry in _federation_cache (the same cache that backs
+    #         GET /api/federation/sessions -- populated whenever any client,
+    #         PWA/deck/agent, polls that endpoint) AND its fail streak hasn't
+    #         exceeded the reachability grace threshold used elsewhere in this
+    #         module. If reachable, its live session keys are merged into
+    #         live_keys so "reachable and genuinely absent" starts the grace
+    #         clock; "reachable and present" clears it.
+    #       - a remote device with NO current cache entry (never polled, or
+    #         its entry was popped on auth failure) is UNKNOWN, not dead: its
+    #         keys are never pruned and never accrue grace-clock time. This is
+    #         what prevents an offline laptop's view membership from being
+    #         silently erased by every OTHER device in the fleet, each of
+    #         which would otherwise see only ITS OWN local sessions and
+    #         conclude (wrongly) that the offline device's sessions are gone.
+    #       - legacy bare-name entries (no device_id: prefix) have no
+    #         determinable owner and keep the pre-existing behavior
+    #         unconditionally (evaluated directly against live_keys).
     #
     #     Pruning bookkeeping (first-missed-at timestamps) is NEVER written to
     #     settings.json and is NEVER sent to peers — it lives in pruning.json.
     #     The prune action (removing dead keys from settings) IS a normal
-    #     settings write that syncs via the existing LWW mechanism.
+    #     settings write that syncs via the existing LWW mechanism, and is
+    #     still subject to the destructive-write backstop (views.py) like any
+    #     other settings write — a mass-prune that would collapse views is
+    #     rejected, not silently applied.
     try:
         _prune_settings = load_settings()
         _prune_state = load_pruning_state()
@@ -367,16 +390,71 @@ async def _run_poll_cycle() -> None:
             _live_keys.add(_name)
             _live_keys.add(f"{_local_device_id}:{_name}")
 
+        # Merge in live session keys for every remote device CURRENTLY KNOWN
+        # to us via the federation session cache, and record which device_ids
+        # those are. A device absent from _federation_cache, or whose fail
+        # streak has exceeded the reachability grace threshold (same signal
+        # GET /api/federation/sessions uses to report "unreachable"), is
+        # excluded -- its keys stay "unknown" to the pruner below.
+        _known_remote_device_ids: set[str] = set()
+        for _remote_device_id, _cache_entry in _federation_cache.items():
+            if _cache_entry.get("fail_count", 0) >= _FEDERATION_GRACE_FAILURES:
+                continue
+            _known_remote_device_ids.add(_remote_device_id)
+            for _remote_sess in _cache_entry.get("sessions") or []:
+                _remote_key = _remote_sess.get("sessionKey")
+                if _remote_key:
+                    _live_keys.add(_remote_key)
+
+        # Snapshot pre-prune views so a mass prune can be assessed against the
+        # SAME destructive-write backstop that guards PATCH /api/settings and
+        # federation sync (views.assess_views_destruction). The prune ACTION
+        # writes settings directly via save_settings() -- it does not go
+        # through patch_settings()/apply_synced_settings(), so it must run
+        # this check itself rather than inherit it for free.
+        _views_before_prune = _prune_settings.get("views")
+
         _prune_settings, _prune_state, _prune_changed = prune_stale_keys(
             _prune_settings,
             _live_keys,
             pruning_state=_prune_state,
             grace_seconds=_grace_seconds,
+            local_device_id=_local_device_id,
+            known_remote_device_ids=_known_remote_device_ids,
         )
-        save_pruning_state(_prune_state)
+
+        _prune_destructive = False
         if _prune_changed:
-            # Stale keys were removed — persist (triggers LWW sync on next cycle).
-            save_settings(_prune_settings)
+            _prune_assessment = assess_views_destruction(
+                _views_before_prune, _prune_settings.get("views")
+            )
+            _prune_destructive = _prune_assessment.destructive
+            if _prune_destructive:
+                # Refuse to persist ANYTHING this cycle -- not settings, not
+                # pruning_state. Automatic background pruning must never be
+                # the thing that collapses views; unlike PATCH /api/settings,
+                # there is no `allow_destructive` override on this path (a
+                # background loop cannot consent to a bulk deletion on a
+                # human's behalf). Leaving pruning_state untouched means the
+                # exact same situation reproduces next cycle -- visible in
+                # logs, not silently applied and not silently dropped into a
+                # half-written state.
+                _log.error(
+                    "stale-key prune: refusing catastrophic prune (backstop): %s "
+                    "(before=%d views/%d members, after=%d views/%d members)",
+                    _prune_assessment.reason,
+                    _prune_assessment.before_views,
+                    _prune_assessment.before_members,
+                    _prune_assessment.after_views,
+                    _prune_assessment.after_members,
+                )
+
+        if not _prune_destructive:
+            save_pruning_state(_prune_state)
+            if _prune_changed:
+                # Stale keys were removed and passed the backstop check —
+                # persist (triggers LWW sync on next cycle).
+                save_settings(_prune_settings)
     except Exception:
         _log.exception("stale-key prune cycle error")
 

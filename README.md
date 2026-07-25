@@ -277,7 +277,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `sort_order` | `manual` | Session ordering: `manual`, `alphabetical`, `recent` |
 | `hidden_sessions` | `[]` | Sessions hidden from the dashboard |
 | `views` | `[]` | Named session views for grouping and filtering sessions |
-| `stale_key_grace_hours` | `24.0` | Hours before a session key absent from all live sessions is pruned from views/hidden_sessions (syncable; per-device bookkeeping is local-only) |
+| `stale_key_grace_hours` | `24.0` | Hours before a session key absent from all *known* live sessions is pruned from views/hidden_sessions (syncable; per-device bookkeeping is local-only). Federation-aware: a remote device's keys are only ever evaluated for pruning while that device is currently reachable (see "Stale-key pruning" below) -- an offline device's view membership is never touched. |
 | `window_size_largest` | `false` | Auto-set tmux `window-size largest` on connect |
 | `auto_open_created` | `true` | Auto-open newly created sessions |
 | `new_session_template` | `tmux new-session -d -s {name}` | Command template for creating sessions |

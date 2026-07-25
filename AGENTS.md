@@ -161,6 +161,54 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   `settings.resolve_tmux_socket_dir()`). Lets remote tools/agents discover
   where sessions need to land to be visible to this instance without
   tribal knowledge; see the "tmux socket" section below and README.md.
+- **Stale-key pruning (`views.prune_stale_keys`) is federation-aware and
+  prunes ONLY on positive knowledge, never on ignorance.** A settings key
+  `"<device_id>:<name>"` in `views`/`hidden_sessions` may be evaluated for
+  removal ONLY when the owning device's session list is CURRENTLY KNOWN to
+  this instance:
+  - Own-device keys (`device_id == local_device_id`) are always evaluable —
+    local `names` is authoritative.
+  - Remote-device keys are evaluable ONLY if that device currently has a
+    fresh entry in `main.py`'s `_federation_cache` (the same cache backing
+    `GET /api/federation/sessions`, populated whenever any client — PWA,
+    deck sidecar, agent — polls it) whose `fail_count` hasn't reached
+    `_FEDERATION_GRACE_FAILURES` (the same reachability threshold that
+    endpoint uses to report `status: "unreachable"`). When reachable, that
+    device's live session keys are merged into the `live_keys` set passed
+    to `prune_stale_keys`, so "reachable and genuinely absent" starts the
+    grace clock and "reachable and present" clears it.
+  - A remote device with NO current cache entry (never polled, evicted on
+    auth failure, or past the reachability grace threshold) is **unknown,
+    not dead**: its keys are never pruned and never accrue grace-clock
+    time — `prune_stale_keys` actively clears (never advances) their
+    `first_missed_at` bookkeeping while unknown, via the
+    `local_device_id`/`known_remote_device_ids` parameters. **This is the
+    offline-device guarantee**: a laptop that's closed/offline for days —
+    far past `stale_key_grace_hours` — never has its view membership
+    erased by every OTHER device in the fleet (each of which, before this
+    fix, only knew ITS OWN local sessions and wrongly concluded the
+    offline device's keys were gone — a real latent eraser, confirmed
+    during the 2026-07 views-collapse incident investigation, though not
+    its proximate cause). The key survives untouched no matter how long
+    the device stays unknown, and resumes a **fresh** grace window (not a
+    stale partial count) once the device is known again.
+  - Legacy bare-name entries (no `device_id:` prefix) have no determinable
+    owner and keep the pre-fix behavior unconditionally: evaluated directly
+    against `live_keys`.
+  - The whole positive-knowledge gate is opt-in via `local_device_id`
+    (`known_remote_device_ids` defaults to empty): omitting it reproduces
+    the exact pre-fix behavior for callers/tests that don't supply device
+    identity, but `main.py`'s `_run_poll_cycle` (the only real caller)
+    always supplies both.
+  - The prune ACTION still goes through the v0.12.0 destructive-write
+    backstop (`views.assess_views_destruction`) even though it writes via
+    `save_settings()` directly rather than `patch_settings()` — the poll
+    cycle assesses before/after `views` itself and refuses to persist (both
+    `settings.json` and `pruning.json` left untouched, so the same
+    situation reproduces visibly next cycle) if a mass prune would collapse
+    views. Automatic pruning has no `allow_destructive` override — only a
+    local operator editing `settings.json` directly can authorize a bulk
+    deletion.
 
 ## Terminal input: `POST /api/sessions/{name}/input` (RCE by design, fenced)
 

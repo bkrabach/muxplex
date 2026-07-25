@@ -843,6 +843,311 @@ def test_prune_does_not_touch_unrelated_keys():
 
 
 # ---------------------------------------------------------------------------
+# Federation-aware pruning: positive-knowledge rule
+#
+# A key "<device_id>:<name>" is only ever evaluated for pruning when the
+# owning device's session list is CURRENTLY KNOWN to this instance -- see
+# prune_stale_keys's docstring. These tests opt in via local_device_id /
+# known_remote_device_ids; the tests above (which omit both) prove the
+# legacy/backward-compatible behavior is unchanged when a caller doesn't
+# supply them.
+# ---------------------------------------------------------------------------
+
+_LOCAL = "local-dev"
+_REMOTE = "remote-dev"
+
+
+def _fed_settings(key: str) -> dict:
+    """Minimal settings with a single view containing exactly one key."""
+    return {
+        "hidden_sessions": [],
+        "views": [{"name": "Work", "sessions": [key]}],
+    }
+
+
+# 10. Local dead session past grace -> pruned (existing behavior preserved
+#     when local_device_id/known_remote_device_ids are supplied explicitly).
+def test_prune_local_dead_session_past_grace_is_pruned():
+    """A LOCAL key missing past grace is pruned even with the positive-knowledge
+    gate active, because own-device keys are always evaluable."""
+    key = f"{_LOCAL}:dead-session"
+    settings = _fed_settings(key)
+    pruning_state = {"first_missed_at": {key: _T0 - _GRACE - 1.0}}
+
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys=set(),  # local session is gone
+        pruning_state=pruning_state,
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids=set(),
+    )
+
+    assert changed is True
+    assert key not in updated["views"][0]["sessions"]
+    assert key not in ps["first_missed_at"]
+
+
+# 11. Local live session -> never pruned.
+def test_prune_local_live_session_never_pruned():
+    """A LOCAL key that is live is never pruned and accrues no bookkeeping."""
+    key = f"{_LOCAL}:alive-session"
+    settings = _fed_settings(key)
+
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys={key},
+        pruning_state={"first_missed_at": {}},
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids=set(),
+    )
+
+    assert changed is False
+    assert key in updated["views"][0]["sessions"]
+    assert key not in ps["first_missed_at"]
+
+
+# 12. Remote key, owning device REACHABLE, session absent -> pruned after grace.
+def test_prune_remote_key_reachable_device_session_absent_pruned_after_grace():
+    """A remote-owned key is pruned once grace expires IF the owning device is
+    reachable and its (empty, in this case) live keys don't include it."""
+    key = f"{_REMOTE}:gone-session"
+    settings = _fed_settings(key)
+    pruning_state = {"first_missed_at": {key: _T0 - _GRACE - 1.0}}
+
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys=set(),  # remote device reachable, but this session absent
+        pruning_state=pruning_state,
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids={_REMOTE},
+    )
+
+    assert changed is True
+    assert key not in updated["views"][0]["sessions"]
+    assert key not in ps["first_missed_at"]
+
+
+# 13. Remote key, owning device REACHABLE, session present -> never pruned,
+#     clock cleared.
+def test_prune_remote_key_reachable_device_session_present_never_pruned():
+    """A remote-owned key is never pruned, and any stale clock is cleared, when
+    the owning device is reachable and reports the session as still live."""
+    key = f"{_REMOTE}:alive-session"
+    settings = _fed_settings(key)
+    # Pretend it was previously seen missing (should be forgiven now).
+    pruning_state = {"first_missed_at": {key: _T0 - 100.0}}
+
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys={key},  # remote device reachable, session present
+        pruning_state=pruning_state,
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids={_REMOTE},
+    )
+
+    assert changed is False
+    assert key in updated["views"][0]["sessions"]
+    assert key not in ps["first_missed_at"]
+
+
+# 14. Remote key, owning device UNREACHABLE/unknown -> never pruned, no clock
+#     accrues, regardless of elapsed time.
+def test_prune_remote_key_unknown_device_never_pruned_no_clock_accrues():
+    """A remote-owned key whose owning device is NOT in known_remote_device_ids
+    is 'unknown, not dead': never pruned, and first_missed_at never starts or
+    advances for it -- even with an empty live_keys and a huge elapsed time."""
+    key = f"{_REMOTE}:maybe-alive"
+    settings = _fed_settings(key)
+
+    # First cycle: no prior bookkeeping at all.
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys=set(),  # irrelevant -- device is unknown, key isn't evaluated
+        pruning_state={"first_missed_at": {}},
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids=set(),  # _REMOTE NOT known/reachable
+    )
+    assert changed is False
+    assert key in updated["views"][0]["sessions"]
+    assert key not in ps["first_missed_at"], (
+        "an unknown device's key must never start a first_missed_at clock"
+    )
+
+    # Second cycle: even with an already-expired clock somehow present (e.g.
+    # left over from before this device went dark), it must be cleared, not
+    # honored, and the key must survive.
+    pruning_state_with_stale_clock = {"first_missed_at": {key: _T0 - _GRACE - 1.0}}
+    updated2, ps2, changed2 = prune_stale_keys(
+        settings,
+        live_keys=set(),
+        pruning_state=pruning_state_with_stale_clock,
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids=set(),
+    )
+    assert changed2 is False
+    assert key in updated2["views"][0]["sessions"]
+    assert key not in ps2["first_missed_at"]
+
+
+# 15. Device offline for > grace then returns with the session still present
+#     -> key survives (the regression this fix exists to prevent).
+def test_prune_device_offline_past_grace_then_returns_with_session_intact():
+    """The core regression scenario: a laptop goes offline for well over the
+    grace period (during which every OTHER device in the fleet would, under
+    the OLD bug, see the offline device's keys as permanently missing and
+    prune them). With the fix, the key must survive the entire offline
+    window and remain intact once the device reappears with the session
+    still present.
+    """
+    key = f"{_REMOTE}:still-there"
+    settings = _fed_settings(key)
+    pruning_state: dict = {"first_missed_at": {}}
+
+    # Simulate many poll cycles while the remote device is offline/unknown,
+    # spanning well past the grace period.
+    offline_cycle_times = [_T0, _T0 + _GRACE / 2, _T0 + _GRACE + 1.0, _T0 + 2 * _GRACE]
+    for t in offline_cycle_times:
+        settings, pruning_state, changed = prune_stale_keys(
+            settings,
+            live_keys=set(),
+            pruning_state=pruning_state,
+            grace_seconds=_GRACE,
+            now=t,
+            local_device_id=_LOCAL,
+            known_remote_device_ids=set(),  # offline: not known
+        )
+        assert changed is False
+        assert key in settings["views"][0]["sessions"]
+        assert key not in pruning_state["first_missed_at"]
+
+    # Device comes back online, reachable, and its session is still present.
+    settings, pruning_state, changed = prune_stale_keys(
+        settings,
+        live_keys={key},
+        pruning_state=pruning_state,
+        grace_seconds=_GRACE,
+        now=_T0 + 2 * _GRACE + 10.0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids={_REMOTE},
+    )
+    assert changed is False
+    assert key in settings["views"][0]["sessions"], (
+        "an offline device's view membership must survive the outage -- "
+        "this is the exact regression the federation-aware pruning fix "
+        "exists to prevent"
+    )
+    assert key not in pruning_state["first_missed_at"]
+
+
+# 16. Bare-name legacy entry -> unchanged behavior regardless of
+#     local_device_id/known_remote_device_ids.
+def test_prune_bare_name_legacy_entry_unchanged_behavior():
+    """A legacy bare-name key (no device_id: prefix) has no determinable
+    owner and is always evaluated directly against live_keys, even when the
+    positive-knowledge gate is active via local_device_id."""
+    settings = {"hidden_sessions": ["bare-gone"], "views": []}
+    pruning_state = {"first_missed_at": {"bare-gone": _T0 - _GRACE - 1.0}}
+
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys=set(),  # bare name absent -- evaluated normally, no owner gate
+        pruning_state=pruning_state,
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids=set(),
+    )
+
+    assert changed is True
+    assert "bare-gone" not in updated["hidden_sessions"]
+    assert "bare-gone" not in ps["first_missed_at"]
+
+
+def test_prune_bare_name_legacy_entry_live_is_preserved():
+    """A legacy bare-name key that IS live is preserved, positive-knowledge
+    gate notwithstanding."""
+    settings = {"hidden_sessions": ["bare-alive"], "views": []}
+
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys={"bare-alive"},
+        pruning_state={"first_missed_at": {}},
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids=set(),
+    )
+
+    assert changed is False
+    assert "bare-alive" in updated["hidden_sessions"]
+    assert "bare-alive" not in ps["first_missed_at"]
+
+
+# 17. A prune large enough to collapse views trips the destructive-write
+#     backstop and makes no write. This mirrors main.py's _run_poll_cycle
+#     step 14, which must assess prune_stale_keys' output the same way
+#     patch_settings()/apply_synced_settings() do before persisting it.
+def test_mass_prune_that_would_collapse_views_is_refused_by_backstop():
+    """prune_stale_keys() itself is a pure function and will happily remove
+    every dead key it's asked to -- the backstop lives one layer up, in the
+    caller that decides whether to persist the result (main.py's poll cycle,
+    mirrored here). A prune that would collapse views from many down to the
+    collapse threshold must be assessed via assess_views_destruction and
+    the write skipped, exactly like a catastrophic PATCH or federation sync.
+    """
+    from muxplex.views import assess_views_destruction
+
+    # 8 views, each with one now-dead remote key, all past grace.
+    views_before = [
+        {"name": f"v{i}", "sessions": [f"{_REMOTE}:dead-{i}"]} for i in range(8)
+    ]
+    settings = {"hidden_sessions": [], "views": views_before}
+    views_before_snapshot = [
+        dict(v, sessions=list(v["sessions"])) for v in views_before
+    ]
+
+    pruning_state = {
+        "first_missed_at": {f"{_REMOTE}:dead-{i}": _T0 - _GRACE - 1.0 for i in range(8)}
+    }
+
+    updated, ps, changed = prune_stale_keys(
+        settings,
+        live_keys=set(),  # remote device reachable, but ALL its sessions gone
+        pruning_state=pruning_state,
+        grace_seconds=_GRACE,
+        now=_T0,
+        local_device_id=_LOCAL,
+        known_remote_device_ids={_REMOTE},
+    )
+
+    # The pure function itself performs the prune -- it has no knowledge of
+    # the backstop (that's the caller's responsibility, exercised below).
+    assert changed is True
+    assert all(v["sessions"] == [] for v in updated["views"])
+
+    # The caller-side backstop check (mirrors main.py's _run_poll_cycle):
+    # a 8-views-worth-of-members-to-0 collapse must be flagged destructive,
+    # meaning the caller must refuse to persist `updated` to settings.json.
+    assessment = assess_views_destruction(views_before_snapshot, updated["views"])
+    assert assessment.destructive is True, (
+        "a mass prune that empties every view's membership must trip the "
+        "destructive-write backstop so the caller refuses to persist it"
+    )
+
+
+# ---------------------------------------------------------------------------
 # End-to-end: normalize → prune pipeline (wired into _run_poll_cycle)
 # Verifies that normalize_session_keys and prune_stale_keys compose correctly,
 # mirroring the logic added to _run_poll_cycle in main.py (step 13b + step 14).

@@ -444,6 +444,15 @@ def validate_view_name(name: str, existing_views: list[dict]) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _key_owner_device_id(key: str) -> str | None:
+    """Return the device_id prefix of a canonical `device_id:name` key, or
+    None for a legacy bare-name entry (no determinable owner).
+    """
+    if ":" not in key:
+        return None
+    return key.split(":", 1)[0]
+
+
 def prune_stale_keys(
     settings: dict,
     live_keys: set[str],
@@ -451,24 +460,47 @@ def prune_stale_keys(
     pruning_state: dict | None = None,
     grace_seconds: float = 86400.0,  # 24 hours
     now: float | None = None,
+    local_device_id: str | None = None,
+    known_remote_device_ids: set[str] | None = None,
 ) -> tuple[dict, dict, bool]:
     """Drop session keys that have been missing past the grace period.
 
     Args:
         settings: settings dict (will be mutated if pruning happens).
-        live_keys: the set of session keys that currently exist (live).
+        live_keys: the set of session keys that currently exist (live). For
+            federation-aware pruning, this must include not only this
+            device's own live keys but also the live keys of every device
+            in `known_remote_device_ids` (see below) — callers assemble
+            this union before calling.
         pruning_state: local bookkeeping dict of the form
             {"first_missed_at": {key: timestamp}}. Defaults to an empty
             structure if None. Mutated in place.
         grace_seconds: how long a key may be missing before it's pruned.
         now: current time (for testing). Defaults to time.time().
+        local_device_id: this instance's own device_id. When provided
+            (together to opt in to the positive-knowledge rule below),
+            keys owned by this device are always evaluable. When None
+            (the default), device ownership is ignored entirely and every
+            key is evaluated directly against `live_keys` — this is the
+            pre-federation-aware behavior, preserved for callers that
+            don't (or can't) supply device/reachability info.
+        known_remote_device_ids: device_ids of remote peers whose session
+            list is CURRENTLY KNOWN to this instance (e.g. has a fresh
+            entry in the federation session cache backing
+            `/api/federation/sessions`). Only meaningful when
+            `local_device_id` is also provided. Defaults to empty set.
 
     Returns:
         (settings, pruning_state, settings_changed) — settings_changed is True
         iff any key was actually removed from view.sessions or hidden_sessions.
 
     Behavior:
-      1. For each key in settings.hidden_sessions or any view.sessions:
+      1. For each key in settings.hidden_sessions or any view.sessions,
+         first determine whether it is EVALUABLE (see "Positive-knowledge
+         rule" below). A key that is not evaluable is treated exactly like
+         a live key for bookkeeping purposes — any stale first_missed_at
+         clock is cleared — but it is never pruned.
+      2. For an evaluable key:
          - If key in live_keys: drop the key from pruning_state["first_missed_at"]
            (it's alive, nothing to prune).
          - If key not in live_keys:
@@ -477,17 +509,30 @@ def prune_stale_keys(
                key from hidden_sessions and from every view's sessions list;
                drop the bookkeeping entry for it.
              - Else: leave both alone (within grace).
-      2. The pruning_state dict is the source of truth for "when did we first
+      3. The pruning_state dict is the source of truth for "when did we first
          miss this key" — never check live_keys against pruning_state's keys
          that aren't actually in stored settings (clean up bookkeeping for
          keys that are no longer referenced anywhere).
 
-    Federation note: each device only knows its own live sessions natively.
-    If remote-device keys are also tracked in hidden_sessions or view.sessions,
-    this function will start their grace timer on the pruning device.  Because
-    the grace period is 24 hours by default, brief sync gaps will not cause
-    thrash.  A remote device's keys are also pruned by that remote device from
-    its own perspective; a deletion syncs back via the LWW mechanism.
+    Positive-knowledge rule (federation-aware pruning):
+      A remote-owned key (`"<device_id>:<name>"` where device_id != our own)
+      may only be evaluated for pruning when that owning device's session
+      list is CURRENTLY KNOWN to us — i.e. `local_device_id` was supplied
+      AND the key's device_id is either `local_device_id` itself or present
+      in `known_remote_device_ids`. If the owning device is unreachable, or
+      we simply have no current data for it, the key is treated as "unknown,
+      not dead": pruning never fires and the first_missed_at clock never
+      starts or advances for it — the clock is actively cleared instead, so
+      a device that goes offline for a week and then comes back online with
+      its sessions intact does not resume a partially-elapsed countdown
+      (or worse, get pruned instantly) the moment we regain knowledge of it.
+      Legacy bare-name entries (no `device_id:` prefix, `_key_owner_device_id`
+      returns None) have no determinable owner at all — they preserve
+      today's behavior unconditionally and are always evaluated directly
+      against `live_keys`, regardless of `local_device_id`.
+      When `local_device_id` is None, this whole rule is bypassed and every
+      key is evaluated directly against `live_keys` (full backward
+      compatibility with pre-federation-aware callers/tests).
     """
     if pruning_state is None:
         pruning_state = {}
@@ -498,6 +543,8 @@ def prune_stale_keys(
 
     if now is None:
         now = time.time()
+
+    known_remote_device_ids = known_remote_device_ids or set()
 
     # Collect all session keys currently referenced in settings.
     all_settings_keys: set[str] = set()
@@ -511,6 +558,28 @@ def prune_stale_keys(
 
     # Evaluate each referenced key.
     for key in all_settings_keys:
+        owner = _key_owner_device_id(key)
+        # Positive-knowledge gate: only meaningful for device-owned keys
+        # (owner is not None) when the caller opted in by supplying
+        # local_device_id. Bare-name keys (owner is None) and callers that
+        # don't supply local_device_id always fall through as "evaluable",
+        # preserving today's behavior exactly.
+        evaluable = (
+            local_device_id is None
+            or owner is None
+            or owner == local_device_id
+            or owner in known_remote_device_ids
+        )
+
+        if not evaluable:
+            # Owning device's session list is not currently known to us.
+            # Treat as "unknown, not dead": never prune, and clear (rather
+            # than advance) any stale bookkeeping clock so a later cycle
+            # where the device IS known starts a fresh grace window instead
+            # of inheriting a stale partial count.
+            first_missed.pop(key, None)
+            continue
+
         if key in live_keys:
             # Session is alive — clear any stale bookkeeping for it.
             first_missed.pop(key, None)
