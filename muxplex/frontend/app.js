@@ -407,6 +407,27 @@ function followRemoteActiveSession(state) {
 }
 
 /**
+ * Follow a view switch made by another device — Stream Deck, agent, another
+ * browser — detected via the same /api/state poll that drives session-follow.
+ * active_view is server-global (last writer wins); this tab applies the
+ * received value locally and does NOT PATCH it back: we are echoing a value
+ * we just received FROM the server, so re-PATCHing would be redundant (and a
+ * feedback-loop hazard). User-initiated switches still PATCH via switchView().
+ *
+ * Self-initiated switches naturally no-op: switchView() updates _activeView
+ * synchronously before its PATCH lands, so the next poll sees no difference.
+ * An unknown/deleted view renders as honestly empty (filterVisible returns
+ * [] for a view it can't resolve) — same behavior as everywhere else.
+ *
+ * @param {object|null} state - GET /api/state body, or null on fetch failure
+ */
+function followRemoteActiveView(state) {
+  if (!state || !state.active_view) return;
+  if (state.active_view === _activeView) return;
+  applyViewLocally(state.active_view);
+}
+
+/**
  * Start the session polling loop. Guards against double-start.
  * Uses self-scheduling setTimeout so at most one poll is in-flight at a time.
  * If a poll takes longer than POLL_MS, the next poll starts POLL_MS after it
@@ -440,7 +461,9 @@ function startPolling() {
 async function pollActiveState() {
   try {
     const res = await api('GET', '/api/state');
-    followRemoteActiveSession(await res.json());
+    const state = await res.json();
+    followRemoteActiveSession(state);
+    followRemoteActiveView(state);
   } catch (err) {
     // Transient failure: skip this tick; next one retries in STATE_POLL_MS.
   }
@@ -1695,13 +1718,14 @@ function renderViewsSettingsTab() {
 }
 
 /**
- * Switch to a named view. Updates _activeView, re-renders the grid and sidebar,
- * updates the dropdown label, and persists the change via PATCH /api/state.
+ * Apply a view change locally: update _activeView, re-render the grid and
+ * sidebar, and update the dropdown/sidebar labels. Does NOT touch the server.
+ * Shared by switchView() (user-initiated: PATCHes afterwards) and
+ * followRemoteActiveView() (server-initiated: must NOT PATCH back).
  * @param {string} viewName - 'all', 'hidden', or a user view name.
  */
-function switchView(viewName) {
+function applyViewLocally(viewName) {
   _activeView = viewName;
-  closeViewDropdown();
   renderGrid(_currentSessions || []);
   renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
   renderViewDropdown();
@@ -1716,6 +1740,17 @@ function switchView(viewName) {
       sidebarLabel.textContent = viewName;
     }
   }
+}
+
+/**
+ * Switch to a named view (user-initiated). Applies the change locally via
+ * applyViewLocally() and persists it via PATCH /api/state — active_view is
+ * server-global, so this propagates to every other device (deck, other tabs).
+ * @param {string} viewName - 'all', 'hidden', or a user view name.
+ */
+function switchView(viewName) {
+  closeViewDropdown();
+  applyViewLocally(viewName);
   // Persist active view — fire and forget
   api('PATCH', '/api/state', { active_view: viewName }).catch(function() {});
 }
@@ -4610,6 +4645,7 @@ if (typeof module !== 'undefined' && module.exports) {
     setConnectionStatus,
     pollSessions,
     followRemoteActiveSession,
+    followRemoteActiveView,
     pollActiveState,
     startPolling,
     startStatePolling,
@@ -4687,6 +4723,7 @@ if (typeof module !== 'undefined' && module.exports) {
     closeViewDropdown,
     showNewViewInput,
     switchView,
+    applyViewLocally,
     // Sidebar view dropdown
     renderSidebarViewDropdown,
     toggleSidebarViewDropdown,

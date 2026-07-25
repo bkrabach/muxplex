@@ -6219,3 +6219,141 @@ test('dedicated state poll follows on a FRESH snapshot while the federation fetc
   app._setViewingSession(null);
   app._setViewingRemoteId('');
 });
+
+// --- followRemoteActiveView (PWA follows external view switch) ---
+// active_view is server-global (last writer wins); when another device
+// (Stream Deck, agent, another browser) switches it via PATCH /api/state,
+// the dedicated state poll must detect the change and apply it locally.
+// CONTRACT: the remote-apply path must NOT re-PATCH the server — it is
+// echoing a value just received FROM the server (re-PATCHing is redundant
+// and a feedback-loop hazard). Only user-initiated switchView() PATCHes.
+
+test('pollActiveState hands the same fresh snapshot to followRemoteActiveView', () => {
+  const src = app.pollActiveState.toString();
+  assert.ok(src.includes('followRemoteActiveView'), 'pollActiveState must call followRemoteActiveView');
+  assert.ok(src.includes('followRemoteActiveSession'), 'session-follow must remain wired alongside view-follow');
+});
+
+test('followRemoteActiveView and applyViewLocally never PATCH (no re-PATCH contract)', () => {
+  assert.ok(
+    !app.followRemoteActiveView.toString().includes('PATCH'),
+    'followRemoteActiveView must not PATCH — it applies server state, it does not set it',
+  );
+  assert.ok(
+    !app.applyViewLocally.toString().includes('PATCH'),
+    'applyViewLocally must be purely local — the PATCH belongs to switchView only',
+  );
+});
+
+test('dedicated state poll applies a remote active_view change locally without re-PATCHing', async () => {
+  const calls = [];
+  const idsRequested = [];
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => { idsRequested.push(id); return null; };
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/state') {
+      return { ok: true, json: async () => ({ active_session: null, active_remote_id: null, active_view: 'focus' }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setActiveView('all');
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+
+  await app.pollActiveState();
+  await new Promise((r) => setTimeout(r, 25)); // flush any stray fire-and-forget
+
+  assert.strictEqual(app._getActiveView(), 'focus', 'local view must follow the server-global active_view');
+  assert.ok(
+    !calls.some((c) => c.startsWith('PATCH ')),
+    'remote-apply must NOT re-PATCH /api/state; calls: ' + JSON.stringify(calls),
+  );
+  assert.ok(
+    idsRequested.includes('view-dropdown-menu'),
+    'the view dropdown must be re-rendered on a remote view change; ids: ' + JSON.stringify(idsRequested),
+  );
+  assert.ok(
+    idsRequested.includes('session-grid'),
+    'the grid must be re-rendered on a remote view change; ids: ' + JSON.stringify(idsRequested),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+  app._setActiveView('all');
+});
+
+test('unchanged remote active_view is a no-op (no re-render churn, no PATCH)', async () => {
+  const calls = [];
+  const idsRequested = [];
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => { idsRequested.push(id); return null; };
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'GET' && url === '/api/state') {
+      return { ok: true, json: async () => ({ active_session: null, active_remote_id: null, active_view: 'all' }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setActiveView('all');
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+
+  await app.pollActiveState();
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.strictEqual(app._getActiveView(), 'all', 'view must stay unchanged');
+  assert.ok(
+    !calls.some((c) => c.startsWith('PATCH ')),
+    'no PATCH may fire on an unchanged view; calls: ' + JSON.stringify(calls),
+  );
+  assert.strictEqual(
+    idsRequested.length, 0,
+    'no DOM re-render may occur on an unchanged view; ids: ' + JSON.stringify(idsRequested),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+});
+
+test('followRemoteActiveView no-ops on null state or missing active_view', () => {
+  app._setActiveView('all');
+  // Would throw if it tried to render/apply — fetch is undefined here
+  app.followRemoteActiveView(null);
+  app.followRemoteActiveView({ active_session: 'beta', active_remote_id: null });
+  assert.strictEqual(app._getActiveView(), 'all', 'view must remain unchanged when active_view is absent');
+});
+
+test('user-initiated switchView still PATCHes /api/state (local switches must propagate)', async () => {
+  const calls = [];
+  const bodies = [];
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (opts && opts.body) bodies.push(opts.body);
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app.switchView('focus');
+  await new Promise((r) => setTimeout(r, 25)); // flush fire-and-forget PATCH
+
+  assert.strictEqual(app._getActiveView(), 'focus', 'switchView must apply locally');
+  assert.ok(
+    calls.includes('PATCH /api/state'),
+    'switchView must persist the view server-globally; calls: ' + JSON.stringify(calls),
+  );
+  assert.ok(
+    bodies.some((b) => b.includes('"active_view":"focus"')),
+    'the PATCH body must carry the new active_view; bodies: ' + JSON.stringify(bodies),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+  app._setActiveView('all');
+});
