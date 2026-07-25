@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.7.1 (2026-07-24)
+
+### Bug Fixes
+
+- **PWA now follows remote `active_view` changes** — when another device (a Stream
+  Deck sidecar, an agent, or another browser tab) changes the active view via
+  `PATCH /api/state {active_view}`, the PWA's 1s state poll now applies it and
+  re-renders, instead of only reflecting the view this tab itself last set. New
+  `followRemoteActiveView()` mirrors the existing `followRemoteActiveSession()`
+  follow path; the remote-apply is render-only (no re-`PATCH`), so it cannot echo.
+  This completes view-switch parity with session-switch: both now propagate to
+  every surface.
+
 ## v0.7.0 (2026-07-24)
 
 ### Features
