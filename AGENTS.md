@@ -443,9 +443,11 @@ guard is inconvenient.
 
 - Python (inside an isolated env only): `uv sync --extra dev && uv run pytest`
   (tests marked `integration` need a real tmux binary).
-- Frontend: `node --test frontend/tests/test_app.mjs`.
-- CI: `.github/workflows/ci.yml` runs TWO jobs, testing two DIFFERENT
-  dependency stacks on purpose:
+- Frontend: `node --test frontend/tests/*.mjs`. Use the glob, not a single
+  file — the previously-documented `test_app.mjs`-only command silently
+  never ran `test_terminal.mjs`.
+- CI: `.github/workflows/ci.yml` runs THREE jobs. The first two test the
+  Python code against two DIFFERENT dependency stacks on purpose:
   - `test` (Python 3.11/3.12/3.13) installs via `uv sync`, i.e. `uv.lock`'s
     pinned versions -- a stable, reproducible dev baseline.
   - `test-latest-deps` installs via a fresh `uv pip install -e ".[dev]"`
@@ -453,6 +455,16 @@ guard is inconvenient.
     what a real `uv tool install muxplex` resolves (it never reads the
     lock; it re-resolves against `pyproject.toml`'s version floors against
     whatever is newest on PyPI at install time).
+
+  The third job covers the frontend, which neither Python job executes a
+  line of:
+  - `test-frontend` runs `node --test tests/*.mjs` in `muxplex/frontend`
+    (Node 22, no install step — these suites have zero package
+    dependencies and use only `node:` builtins, which is why there is no
+    `package.json`). Added after v0.15.1 shipped a frontend-only fix whose
+    new regression test CI never executed: all four Python jobs went green
+    without running a line of it. Same shape as the `uv.lock` drift above —
+    CI green while not testing the thing that changed.
 
   **Why both exist (2026-07 incident):** `uv.lock` was pinned to uvicorn
   0.42.0 / websockets 16.0 (uvicorn's legacy websocket ASGI
