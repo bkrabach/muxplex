@@ -124,6 +124,18 @@ let _viewingSession = null;
 let _viewingRemoteId = '';
 let _viewMode = 'grid';
 let _lastInteractionAt = Date.now() / 1000;
+// Count of LOCAL session switches (sidebar/grid/sheet click, auto-open after
+// create) whose server-side write hasn't been confirmed yet. openSession()
+// sets _viewingSession synchronously, but the server's active_session doesn't
+// catch up until the /connect POST resolves AND the follow-up PATCH
+// /api/state settles -- a real window in which the dedicated ~1s state poll
+// (STATE_POLL_MS) can read the OLD value and, without this guard, mistake it
+// for a genuine remote switch and yank the user back to the session they just
+// switched away from. Incremented when a local switch begins, decremented
+// when its own write attempt settles (success or failure) -- driven by
+// actual completion, not a wall-clock guess, so it can't outlive the switch
+// it guards nor leak between unrelated switches.
+let _pendingLocalSwitches = 0;
 let _pollingTimer;
 let _statePollTimer;
 let _heartbeatTimer;
@@ -331,6 +343,7 @@ async function restoreState() {
       await openSession(state.active_session, {
         skipAnimation: true,
         remoteId: state.active_remote_id || '',
+        isFollow: true, // adopting server truth on load, not a fresh local decision
       });
     }
   } catch (err) {
@@ -417,11 +430,18 @@ function followRemoteActiveSession(state) {
   if (_viewingSession == null) return; // option (a): never force-open from the grid
   var remoteId = state.active_remote_id || '';
   if (state.active_session === _viewingSession && remoteId === _viewingRemoteId) return;
+  // A local switch may still be in flight (see _pendingLocalSwitches' comment):
+  // the server hasn't confirmed it yet, so THIS divergence is stale, not a
+  // genuine remote switch. Suppress until every in-flight local switch
+  // settles; once the server does catch up, the equality check above exits
+  // early on its own, so this guard never needs to be cleared explicitly.
+  if (_pendingLocalSwitches > 0) return;
   // Same opts shape restoreState() uses (app.js restoreState) — skip the tile zoom animation.
   // Fire-and-forget: must not delay the poll loop or count as a poll failure.
   openSession(state.active_session, {
     skipAnimation: true,
     remoteId: remoteId,
+    isFollow: true,
   }).catch(function (err) {
     console.warn('[followRemoteActiveSession] could not follow remote switch:', err);
   });
@@ -3195,6 +3215,15 @@ function updatePageTitle() {
  */
 async function openSession(name, opts = {}) {
   if (!name || !name.trim()) return;
+  // A LOCAL switch (as opposed to adopting a value the server already told us
+  // about -- restoreState() on page load, or followRemoteActiveSession()
+  // echoing a remote switch, both of which pass isFollow:true). Mark this
+  // switch pending until its own server write settles (see the two places
+  // below that decrement), so a stale /api/state read that lands before then
+  // isn't mistaken for a genuine remote switch and doesn't yank the user back
+  // to the session they just switched away from.
+  var isLocal = !opts.isFollow;
+  if (isLocal) _pendingLocalSwitches++;
   hidePreview();
   _viewingSession = name;
   _viewingRemoteId = opts.remoteId != null ? opts.remoteId : '';
@@ -3274,12 +3303,19 @@ async function openSession(name, opts = {}) {
       await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/connect');
     }
   } catch (err) {
+    if (isLocal) _pendingLocalSwitches--;
     showToast(err.message || 'Connection failed');
     return closeSession();
   }
 
-  // Persist active_remote_id so restoreState() can reopen remote sessions after page refresh
-  api('PATCH', '/api/state', { active_session: name, active_remote_id: _deviceId || null }).catch(function() {});
+  // Persist active_remote_id so restoreState() can reopen remote sessions after page refresh.
+  // Fire-and-forget for the caller (never awaited -- must not delay terminal mount below), but
+  // still tracked so a LOCAL switch's pending flag clears the moment the server confirms this
+  // write (success or failure), rather than lingering indefinitely.
+  var statePatch = api('PATCH', '/api/state', { active_session: name, active_remote_id: _deviceId || null }).catch(function() {});
+  if (isLocal) {
+    statePatch.then(function() { _pendingLocalSwitches--; });
+  }
 
   // Fire-and-forget bell-clear for remote sessions — acknowledge bells on the remote server
   if (_deviceId !== '') {
@@ -3350,6 +3386,14 @@ function _setViewingSession(name) {
  */
 function _setViewingRemoteId(remoteId) {
   _viewingRemoteId = remoteId;
+}
+
+/**
+ * Test helper: set _pendingLocalSwitches directly (bypasses openSession's
+ * real increment/decrement so tests can exercise the guard deterministically).
+ */
+function _setPendingLocalSwitches(n) {
+  _pendingLocalSwitches = n;
 }
 
 // ─── Server settings ─────────────────────────────────────────────────────────
@@ -4976,6 +5020,7 @@ if (typeof module !== 'undefined' && module.exports) {
     closeSession,
     _setViewingSession,
     _setViewingRemoteId,
+    _setPendingLocalSwitches,
     handleGlobalKeydown,
     bindStaticEventListeners,
     openBottomSheet,

@@ -2080,9 +2080,13 @@ test('openSession mounts terminal AFTER connect POST, not inside animation timer
     new URL('../app.js', import.meta.url), 'utf8'
   );
 
-  // Find the openSession function body
+  // Find the openSession function body. Window is intentionally generous
+  // (not just enough for the CURRENT source) so a legitimate addition near
+  // the top of the function (e.g. a guard/comment block) doesn't push
+  // _openTerminal outside the window and produce a false failure here --
+  // that exact false failure is what widened this from 4000 to 5000.
   const fnStart = source.indexOf('async function openSession');
-  const fnBody = source.substring(fnStart, fnStart + 4000);
+  const fnBody = source.substring(fnStart, fnStart + 5000);
 
   // _openTerminal must NOT appear inside setTimeout
   const setTimeoutIdx = fnBody.indexOf('setTimeout');
@@ -6345,6 +6349,105 @@ test('self-initiated switch does not double-switch (state matches viewing sessio
   app._setViewMode('grid');
   app._setViewingSession(null);
   app._setViewingRemoteId('');
+});
+
+// --- Regression: local switch must not be reverted by a stale poll ---
+// A local sidebar/grid click sets _viewingSession synchronously, but the
+// server's active_session doesn't catch up until the /connect POST resolves
+// and the fire-and-forget PATCH /api/state settles. A poll landing inside
+// that window used to see the OLD active_session, conclude a REMOTE device
+// had switched away, and snap the user back to the session they just left.
+
+test('local switch pends the guard: a stale poll before the PATCH settles does not snap back', async () => {
+  const calls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  const origOpenTerminal = globalThis.window._openTerminal;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.window._openTerminal = () => {};
+  // The connect POST resolves immediately, but the PATCH /api/state never
+  // settles during this test (a never-resolving promise) -- this pins the
+  // pending-local-switch window open so the assertion below is deterministic
+  // regardless of real microtask timing.
+  globalThis.fetch = (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    if (method === 'PATCH' && url === '/api/state') {
+      return new Promise(function () {}); // never settles
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  };
+
+  app._setViewMode('fullscreen');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+
+  // Local switch: user clicks 'beta'. This is the real openSession() path —
+  // it increments _pendingLocalSwitches synchronously and only decrements it
+  // once the PATCH above settles (which, in this test, it never does).
+  await app.openSession('beta', { skipAnimation: true });
+
+  // Simulate the exact stale read: a poll landing right now still sees the
+  // server's OLD active_session ('alpha') because our own PATCH is still
+  // in flight.
+  calls.length = 0;
+  app.followRemoteActiveSession({ active_session: 'alpha', active_remote_id: null });
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.ok(
+    !calls.some((c) => c.startsWith('POST ')),
+    'a stale poll while our own switch is still pending must not revert it; calls: ' + JSON.stringify(calls),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.window._openTerminal = origOpenTerminal;
+  globalThis.fetch = undefined;
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  app._setPendingLocalSwitches(0);
+});
+
+test('no pending local switch: a genuinely stale remote switch is still followed', async () => {
+  const calls = [];
+  const mockEl = { textContent: '', className: '' };
+  const origGetById = globalThis.document.getElementById;
+  const origQSA = globalThis.document.querySelectorAll;
+  const origOpenTerminal = globalThis.window._openTerminal;
+  globalThis.document.getElementById = (id) => (id === 'connection-status' ? mockEl : null);
+  globalThis.document.querySelectorAll = () => [];
+  globalThis.window._openTerminal = () => {};
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setViewMode('fullscreen');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+  // No local switch in flight -- a genuine remote switch must still be followed.
+  app._setPendingLocalSwitches(0);
+
+  app.followRemoteActiveSession({ active_session: 'gamma', active_remote_id: null });
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.ok(
+    calls.includes('POST /api/sessions/gamma/connect'),
+    'with no pending local switch, a genuine remote switch must not be suppressed; calls: ' + JSON.stringify(calls),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelectorAll = origQSA;
+  globalThis.window._openTerminal = origOpenTerminal;
+  globalThis.fetch = undefined;
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  app._setPendingLocalSwitches(0);
 });
 
 test('remote switch is NOT followed from the grid (no session open — option a)', async () => {
