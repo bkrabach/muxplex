@@ -2,9 +2,12 @@
 Comprehensive tests for the WebSocket proxy in muxplex/main.py.
 """
 
+import asyncio
 import inspect
 import threading
 import time
+import types
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -468,4 +471,145 @@ def test_federation_ws_proxy_uses_ssl_context_for_wss():
     assert "ssl" in source and ("CERT_NONE" in source or "ssl_context" in source), (
         "Federation WS proxy must configure an SSL context (CERT_NONE / ssl_context) "
         "for self-signed cert support on wss:// connections"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression: client disconnect during the pre-accept ttyd auto-spawn window
+# must never reach websocket.accept().
+#
+# Root cause (reproduced against a real uvicorn server forced onto the
+# 'websockets-sansio' protocol implementation, matching what production's
+# actual dependency resolution selects): uvicorn's ASGI websocket connection
+# object flips its internal "handshake complete" bookkeeping to True the
+# moment the underlying TCP connection is lost -- via the generic
+# asyncio.Protocol.connection_lost() callback -- regardless of whether a
+# real WebSocket handshake ever happened. If terminal_ws_proxy's pre-accept
+# ttyd auto-spawn wait (kill_ttyd + spawn_ttyd + asyncio.sleep(0.8)) is still
+# in flight when that happens, the LATER call to websocket.accept() looks to
+# uvicorn like a stray 'websocket.accept' message on an already-established
+# connection, and it raises:
+#     RuntimeError: Expected ASGI message 'websocket.send' or
+#     'websocket.close', but got 'websocket.accept'.
+# This is what production's journal showed recurring several times per hour
+# under "Exception in ASGI application".
+#
+# These tests use a minimal fake WebSocket (no TestClient/uvicorn -- the
+# TestClient's in-memory ASGI transport does not reproduce uvicorn's real
+# handshake-state bookkeeping) that can simulate a disconnect arriving
+# mid-wait, and assert accept() is never called when that happens.
+# ---------------------------------------------------------------------------
+
+
+class FakeWebSocketForRace:
+    """Minimal WebSocket test double for the pre-accept disconnect race.
+
+    receive() returns 'websocket.connect' on the first call (matching real
+    ASGI ordering), then blocks for `disconnect_after` seconds before
+    returning 'websocket.disconnect' -- simulating a client that vanishes
+    WHILE the ttyd auto-spawn wait is in flight.  If `disconnect_after` is
+    None, receive() blocks "forever" (long enough to never win the race in
+    these tests) so the auto-spawn path can complete normally instead.
+
+    accept()/close() just record whether they were called -- the regression
+    assertion is that accept() must NOT be called when the client
+    disconnects before the auto-spawn wait finishes.
+    """
+
+    def __init__(self, disconnect_after: float | None = None):
+        self._disconnect_after = disconnect_after
+        self._connect_sent = False
+        self.accept_called = False
+        self.close_called = False
+        self.cookies: dict[str, str] = {}
+        self.headers: dict[str, str] = {}
+        self.client = types.SimpleNamespace(host="127.0.0.1")  # localhost auth bypass
+
+    async def receive(self):
+        if not self._connect_sent:
+            self._connect_sent = True
+            return {"type": "websocket.connect"}
+        # "Never" is stood in by a long real delay so the type stays a plain
+        # float; tests always finish (or cancel this task) well before then.
+        delay = self._disconnect_after if self._disconnect_after is not None else 3600.0
+        await asyncio.sleep(delay)
+        return {"type": "websocket.disconnect", "code": 1006}
+
+    async def accept(self, subprotocol=None):
+        self.accept_called = True
+
+    async def close(self, code: int = 1000):
+        self.close_called = True
+
+
+def _patch_ttyd_auto_spawn(monkeypatch):
+    """Patch ttyd/tmux process management to no-ops (so
+    _prepare_ttyd_for_reconnect() never touches real processes) while
+    leaving its real 0.8s settle delay (asyncio.sleep(0.8)) untouched.
+
+    Deliberately does NOT monkeypatch asyncio.sleep itself: asyncio.sleep is
+    a single process-wide function, so patching it here would also hijack
+    FakeWebSocketForRace's own timing in the same test, defeating the race
+    it's meant to model. The real 0.8s delay makes the "stays connected"
+    control-case test slightly slower but keeps both timings independent
+    and honest.
+    """
+
+    async def _mock_kill_ttyd():
+        return False
+
+    async def _mock_spawn_ttyd(name: str):
+        return None
+
+    monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: False)
+    monkeypatch.setattr("muxplex.main.kill_ttyd", _mock_kill_ttyd)
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", _mock_spawn_ttyd)
+    monkeypatch.setattr(
+        "muxplex.main.load_state",
+        lambda: {"active_session": "test-session", "sessions": {}, "session_order": []},
+    )
+
+
+def test_ws_proxy_skips_accept_when_client_disconnects_during_auto_spawn(monkeypatch):
+    """Regression: a client that disconnects WHILE ttyd is being auto-spawned
+    must never reach websocket.accept() -- doing so raises the production
+    RuntimeError (see module-level comment above).
+    """
+    _patch_ttyd_auto_spawn(monkeypatch)
+    # Disconnects well within the real 0.8s auto-spawn settle delay.
+    fake_ws = FakeWebSocketForRace(disconnect_after=0.05)
+
+    asyncio.run(terminal_ws_proxy(cast(Any, fake_ws)))
+
+    assert not fake_ws.accept_called, (
+        "terminal_ws_proxy must NOT call websocket.accept() when the client "
+        "disconnected during the ttyd auto-spawn wait"
+    )
+
+
+def test_ws_proxy_still_accepts_when_client_stays_connected_during_auto_spawn(
+    monkeypatch,
+):
+    """Control case: when the client does NOT disconnect during the
+    auto-spawn wait, terminal_ws_proxy must still reach websocket.accept()
+    as before -- the fix must not break the normal auto-spawn path.
+    """
+    _patch_ttyd_auto_spawn(monkeypatch)
+    fake_ws = FakeWebSocketForRace(disconnect_after=None)  # never disconnects
+
+    # ttyd connect will fail (nothing real listening) -- that's fine, we only
+    # care whether accept() was reached before the (harmless) relay failure.
+    # NOT async: websockets.connect() is used as `async with websockets.connect(...)`,
+    # so the mock itself must raise synchronously on call (matching the
+    # pattern used by test_ttyd_unreachable_closes_browser_ws above).
+    def _mock_connect_raises(*args, **kwargs):
+        raise OSError("Connection refused — no real ttyd in this test")
+
+    monkeypatch.setattr("muxplex.main.websockets.connect", _mock_connect_raises)
+
+    asyncio.run(terminal_ws_proxy(cast(Any, fake_ws)))
+
+    assert fake_ws.accept_called, (
+        "terminal_ws_proxy must still call websocket.accept() when the "
+        "client stays connected through the auto-spawn wait"
     )

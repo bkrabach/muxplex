@@ -1709,6 +1709,63 @@ async def _ws_auth_check(websocket: WebSocket) -> bool:
     return True
 
 
+async def _client_disconnected(websocket: WebSocket) -> None:
+    """Resolve as soon as the client disconnects (or the connection becomes
+    otherwise unusable).
+
+    Raced (via asyncio.wait/FIRST_COMPLETED) against the ttyd auto-spawn wait
+    in terminal_ws_proxy.  Root cause this guards against: uvicorn's ASGI
+    websocket implementation sets its internal "handshake complete"
+    bookkeeping to True the moment the underlying TCP connection is lost —
+    regardless of whether a real WebSocket handshake ever happened — because
+    connection_lost() is a generic asyncio.Protocol callback that doesn't
+    know our app hasn't called accept() yet. If terminal_ws_proxy then calls
+    websocket.accept() on a connection that died during the pre-accept
+    ttyd-respawn wait, uvicorn sees a stray 'websocket.accept' message on
+    what it now considers an established connection and raises:
+        RuntimeError: Expected ASGI message 'websocket.send' or
+        'websocket.close', but got 'websocket.accept'.
+    This surfaced in production as recurring "Exception in ASGI application"
+    log spam with no user-visible symptom (the browser had already given up
+    on the socket). Reproduced with a real uvicorn server (forced onto the
+    'websockets-sansio' protocol impl to match the production dependency
+    resolution) plus a raw socket that aborts mid-handshake during the
+    kill_ttyd/spawn_ttyd/sleep(0.8) window — see test_ws_proxy.py.
+    Never raises: any receive() failure is treated the same as an explicit
+    disconnect, since either way accept() must not be attempted.
+    """
+    try:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+    except Exception:
+        return
+
+
+async def _prepare_ttyd_for_reconnect() -> None:
+    """Kill and respawn ttyd (best-effort) if it isn't listening, then wait
+    briefly for it to bind its port.
+
+    Loads active_session from state itself so it can run as an independent
+    task, raced against _client_disconnected() by terminal_ws_proxy.
+    """
+    try:
+        async with state_lock:
+            state = load_state()
+        session_name = state.get("active_session")
+        if session_name:
+            _log.info(
+                "WS proxy: ttyd not listening, auto-spawning for '%s'",
+                session_name,
+            )
+            await kill_ttyd()
+            await spawn_ttyd(session_name)
+            await asyncio.sleep(0.8)  # wait for ttyd to bind its port
+    except Exception as exc:
+        _log.warning("WS proxy: failed to auto-spawn ttyd: %s", exc)
+
+
 @app.websocket("/terminal/ws")
 async def terminal_ws_proxy(websocket: WebSocket) -> None:
     """Proxy WebSocket frames between the browser and ttyd.
@@ -1722,6 +1779,14 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
     relay is possible.  This prevents the reconnect-counter bounce bug where
     the proxy accepted immediately (resetting _reconnectAttempts to 0) and
     then closed as soon as it couldn't reach the dead ttyd.
+
+    The ttyd auto-spawn wait (kill_ttyd + spawn_ttyd + a fixed 0.8s settle
+    delay) is real wall-clock time during which the browser can disconnect
+    (tab closed, navigation, network drop, PWA backgrounding). Calling
+    websocket.accept() after that happens raises RuntimeError — see
+    _client_disconnected()'s docstring for the exact mechanism — so that wait
+    is raced against a disconnect watcher and accept() is skipped entirely if
+    the client is already gone.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
     if not await _ws_auth_check(websocket):
@@ -1737,20 +1802,39 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
     # Auto-spawn from active_session so the browser's 'open' event only fires
     # when a real relay is possible — eliminates the 0→1→0→1 counter bounce.
     if not _ttyd_is_listening():
+        # Consume the ASGI 'websocket.connect' handshake message up front —
+        # this is what websocket.accept() would otherwise do internally —
+        # so _client_disconnected() below can observe a 'websocket.disconnect'
+        # arriving during the (potentially slow) auto-spawn wait.
         try:
-            async with state_lock:
-                state = load_state()
-            session_name = state.get("active_session")
-            if session_name:
-                _log.info(
-                    "WS proxy: ttyd not listening, auto-spawning for '%s'",
-                    session_name,
-                )
-                await kill_ttyd()
-                await spawn_ttyd(session_name)
-                await asyncio.sleep(0.8)  # wait for ttyd to bind its port
-        except Exception as exc:
-            _log.warning("WS proxy: failed to auto-spawn ttyd: %s", exc)
+            await websocket.receive()
+        except Exception:
+            if _task is not None:
+                _ws_proxy_tasks.discard(_task)
+            return
+
+        prep_task = asyncio.create_task(_prepare_ttyd_for_reconnect())
+        disconnect_task = asyncio.create_task(_client_disconnected(websocket))
+        done, pending = await asyncio.wait(
+            {prep_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for p in pending:
+            p.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if disconnect_task in done:
+            # Client vanished before ttyd was confirmed alive. uvicorn has
+            # already torn the connection down and will raise RuntimeError on
+            # any accept() attempt now — bail out instead of crashing the
+            # ASGI app (see _client_disconnected()'s docstring).
+            _log.debug(
+                "WS proxy: client disconnected during ttyd auto-spawn wait, "
+                "skipping accept()"
+            )
+            if _task is not None:
+                _ws_proxy_tasks.discard(_task)
+            return
 
     await websocket.accept(subprotocol="tty")
 
