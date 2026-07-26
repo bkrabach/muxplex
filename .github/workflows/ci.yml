@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   test:
+    # Tests against uv.lock's pinned versions -- a stable, reproducible dev
+    # baseline. This is NOT a proxy for "what ships to users" -- see the
+    # test-latest-deps job below for why a second job exists for that.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -33,3 +36,46 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -v
+
+  test-latest-deps:
+    # Real incident this closes (2026-07): uv.lock pinned uvicorn 0.42.0 /
+    # websockets 16.0 (uvicorn's legacy websocket ASGI implementation), so
+    # this job's sibling above -- and the DTU, which also installs from
+    # uv.lock -- stayed green. Every real `uv tool install muxplex` (how
+    # this project is actually shipped and installed) does NOT read
+    # uv.lock at all: it re-resolves against pyproject.toml's version
+    # floors and picks whatever is newest on PyPI, which resolved uvicorn
+    # 0.51.0 / websockets 16.1.1 (the newer 'sansio' ASGI implementation).
+    # A WebSocket RuntimeError reproduced ONLY on the sansio impl, so CI
+    # and the DTU were both green while production threw it hourly for a
+    # full day before anyone traced it to the version split.
+    #
+    # This job installs the same way `uv tool install` does -- a fresh
+    # resolution with NO lock file involved -- so that class of drift is
+    # caught here instead of discovered in production. Do not "simplify"
+    # this into `uv sync`; that reintroduces exactly the blind spot above.
+    # One Python version is enough (the point is catching dependency
+    # drift, not re-running the full version matrix); see AGENTS.md ->
+    # "Testing & workflow" for the full incident writeup.
+    name: test (latest resolvable deps, mirrors `uv tool install`)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies (fresh resolve, no lock -- mirrors `uv tool install`)
+        run: |
+          uv venv .venv-latest --python 3.13
+          uv pip install --python .venv-latest/bin/python -e ".[dev]"
+          .venv-latest/bin/python -c "import uvicorn, websockets; print('uvicorn', uvicorn.__version__); print('websockets', websockets.__version__)"
+
+      - name: Run tests
+        run: .venv-latest/bin/python -m pytest -v

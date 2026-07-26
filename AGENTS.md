@@ -444,7 +444,37 @@ guard is inconvenient.
 - Python (inside an isolated env only): `uv sync --extra dev && uv run pytest`
   (tests marked `integration` need a real tmux binary).
 - Frontend: `node --test frontend/tests/test_app.mjs`.
-- CI: `.github/workflows/ci.yml` (Python 3.11/3.12/3.13).
+- CI: `.github/workflows/ci.yml` runs TWO jobs, testing two DIFFERENT
+  dependency stacks on purpose:
+  - `test` (Python 3.11/3.12/3.13) installs via `uv sync`, i.e. `uv.lock`'s
+    pinned versions -- a stable, reproducible dev baseline.
+  - `test-latest-deps` installs via a fresh `uv pip install -e ".[dev]"`
+    into a plain venv, deliberately bypassing `uv.lock` entirely -- this is
+    what a real `uv tool install muxplex` resolves (it never reads the
+    lock; it re-resolves against `pyproject.toml`'s version floors against
+    whatever is newest on PyPI at install time).
+
+  **Why both exist (2026-07 incident):** `uv.lock` was pinned to uvicorn
+  0.42.0 / websockets 16.0 (uvicorn's legacy websocket ASGI
+  implementation), while every real `uv tool install` -- including the
+  user's production install -- resolved uvicorn 0.51.0 / websockets 16.1.1
+  (the newer 'sansio' implementation). A WebSocket `RuntimeError`
+  (`terminal_ws_proxy`'s pre-accept disconnect race, see `test_ws_proxy.py`)
+  reproduced ONLY on the sansio impl. Because both the `test` job above AND
+  the DTU (`make test`) install from `uv.lock`, they stayed green for a full
+  day while production threw the error hourly -- **CI green did not imply
+  production worked.** `test-latest-deps` closes that blind spot by testing
+  the same dependency stack users actually get. Do not remove it as
+  "redundant with `test`" -- that redundancy is the point; if you find
+  yourself wanting to, refresh `uv.lock` instead (see below).
+
+  **Deliberately NOT chosen:** pinning a floor on `uvicorn`/`websockets` in
+  `pyproject.toml` to force the sansio impl everywhere. That would only
+  patch this ONE known instance -- the next dependency to drift between
+  `uv.lock` and a fresh resolve (fastapi, starlette, httpx, ...) would
+  reopen the identical blind spot silently. `test-latest-deps` catches ANY
+  future drift, not just this one, which is why it's the fix and a version
+  floor isn't.
 - PRs are squash-merged. `CHANGELOG.md` and version bumps happen at release
   time, by the owner — don't bump them in feature PRs.
 - **Release hygiene is part of the fix**: a fix isn't done until it's
