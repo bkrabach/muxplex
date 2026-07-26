@@ -234,6 +234,14 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
 
 ## Terminal input: `POST /api/sessions/{name}/input` (RCE by design, fenced)
 
+> **This file is conventions for *developing* muxplex.** The guidance for
+> *driving* a running muxplex from outside — auth, read endpoints, session
+> lifecycle, the input contract, threat model, and the two configuration
+> postures — lives in [`docs/AGENT_GUIDE.md`](docs/AGENT_GUIDE.md), which is
+> deliberately vendor-neutral and safe to point any agent or script at. Keep the
+> two in sync: a change to the fences or status-code ordering below is a change
+> to that guide's security claims.
+
 Lets a remote agent **type into** a session over the API. Typing into a shell
 pane runs whatever is typed — this is remote code execution on purpose — so it
 ships **fenced, default-CLOSED**. Every fence must pass, in this order:
@@ -303,10 +311,12 @@ enter/keys flags, a ≤16-char redacted preview). Full text only at `debug` (may
 contain secrets). Rejections log at `warning`.
 
 Implementation: endpoint in `main.py` (`send_session_input`); argv/key-allowlist
-helpers in `terminal_input.py`. Injection-safety is proven by an E2E that sends
-`; touch <canary>` to a `cat` (non-shell) pane and asserts the canary file is
-never created — the text is typed literally, our subprocess layer never spawns a
-shell.
+helpers in `terminal_input.py`. Injection-safety is verified by `test_input.py:316`
+(`test_text_sent_literally_via_argv`), which posts a hostile payload
+`; rm -rf / && $(reboot) `id` | tee /etc/passwd` and asserts the exact argv is
+`("send-keys", "-l", "-t", name, "--", payload)` — `-l` literal mode and `--`
+end-of-options prevent shell interpretation, text goes as a single uninterpreted
+argv element.
 
 ## Frontend delivery: the no-cache header is load-bearing
 

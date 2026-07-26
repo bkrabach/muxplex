@@ -64,6 +64,12 @@
 - `muxplex upgrade` — smart version check + auto-update + service restart
 - `muxplex config` — CLI settings management
 
+### Agents & Automation
+
+- **Public HTTP API** — the contract is discoverable at `/openapi.json` and `/docs`; headless clients authenticate with a Bearer federation key
+- **Terminal input over the API** — `POST /api/sessions/{name}/input` lets an agent type into a live session (RCE by design, default-CLOSED, fenced by `input_enabled` + `input_allowed_sessions`)
+- **Vendor-neutral guide** — point any agent (or a `curl` script) at [Driving muxplex from an agent](docs/AGENT_GUIDE.md)
+
 ### HTTPS / TLS
 
 - `muxplex setup-tls` — auto-detect and set up TLS certificates
@@ -334,6 +340,13 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `views_updated_at` | `0.0` | Unix timestamp of last change to `views`/`hidden_sessions` specifically. Metadata like `settings_updated_at`, used to arbitrate views-specific federation sync conflicts independently of unrelated field changes (e.g. a `fontSize` edit no longer bumps this). Not itself a syncable setting -- see AGENTS.md's federation section. |
 
 **Priority:** CLI flags > `settings.json` > defaults.
+
+> **→ Writing something that drives muxplex?** The rows above define
+> `input_enabled` / `input_allowed_sessions` as *configuration*. For the
+> operational side — auth, the read endpoints, session lifecycle, the terminal-input
+> contract and its threat model, and copy-pasteable `curl` examples — see
+> [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md). It's vendor-neutral: point any agent
+> or script at it.
 
 ---
 
