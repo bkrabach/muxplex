@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.16.1 (2026-07-26)
+
+### Bug Fixes
+
+- **Autofill suppression extended from one input to every input where it belongs.** v0.15.1 fixed the new-session name field; the rest of the PWA's text inputs were still bare. Now covered: the "+ New View" name inputs in both the header and sidebar view dropdowns, the inline view-rename input, the remote-instance URL and display-name inputs, and — in `index.html` markup — the terminal search box and the device-name setting. The seven attributes (`autocomplete`, `autocorrect`, `autocapitalize`, `data-1p-ignore`, `data-lpignore`, `data-bwignore`, `data-form-type`) now live in one `AUTOFILL_SUPPRESSION_ATTRS` constant applied by one `_suppressAutofill()` helper, rather than being copy-pasted per call site. The two static inputs carry the attributes as literal markup rather than via the helper, deliberately: Chrome scans the DOM for autofill targets at parse time, before app.js runs, so markup is the only placement early enough to matter. That markup/JS duplication is held in sync by a test that derives its expectations from the exported constant, so adding an eighth vendor attribute without updating the markup fails CI instead of silently drifting.
+
+  Three exclusions are deliberate and each is now pinned by a test, so a future "apply it everywhere" sweep cannot quietly break them: **login.html** (both inputs keep `autocomplete="username"` / `current-password` — it is the one form where password managers are wanted, and it was left byte-for-byte untouched), the **federation key** input in `_buildRemoteInstanceRow` (`type="password"` — a genuine secret a user may legitimately keep in their password manager), and the six **settings checkboxes** (autofill does not target checkboxes).
+
+  Scope note: this sends every documented opt-out signal each vendor publishes. It does not, and cannot, prove a given password manager honors them — that is vendor behavior no test here can exercise.
+
+### Internal
+
+- **Four frontend assertions in `test_frontend_js.py` were pinning implementation shape, not behavior.** They regex-extracted the body of `_createSessionInput` and asserted the literal strings "autocomplete" and "spellcheck" appeared inside *that function*. Factoring the attributes into the shared `_suppressAutofill` helper moved those literals one call away and failed all four Python jobs, while the behavior was not merely intact but extended to five more inputs — a false negative, and the same class of stale-source-assertion breakage recorded in v0.13.0. They now follow the indirection and assert both halves of the chain: that the factory delegates to `_suppressAutofill()`, and that the helper/constant is what actually sets the attribute. The guarantee is unchanged; only the shape it is pinned to moved. Caught by CI, which is the only place the Python suite can run when the dev host is also serving muxplex.
+
 ## v0.16.0 (2026-07-26)
 
 ### Features
