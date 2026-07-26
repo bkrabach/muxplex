@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.17.0 (2026-07-26)
+
+### Bug Fixes
+
+- **Selecting a session no longer snaps back to the previous one.** `openSession()` sets the local viewing session synchronously on a sidebar click, then fires `PATCH /api/state` fire-and-forget. A dedicated 1-second `/api/state` poll (added in `2f50c22`) meant a poll frequently landed in the window before that PATCH reached the server, read the server's still-stale `active_session`, concluded a *remote* device had switched away, and force-reopened the previous session. The 1s poll did not create the race; it made it common. A pending-write counter now tracks genuine local switches — incremented on a real user switch (not on `restoreState()` or the follow logic's own re-opens), decremented when that switch's PATCH actually settles rather than after a guessed timeout — and a divergent remote read is ignored while any local switch is in flight. Cross-device following is unchanged; that feature is the entire reason the PWA watches remote state.
+
+- **TMUX_TMPDIR now propagates into the installed service environment.** A user who set `TMUX_TMPDIR` in their shell, ran `muxplex service install`, and never set the `tmux_socket_dir` setting got a service pointed at the default socket directory — `GET /api/sessions` returned an empty list with no error, and live sessions were simply invisible. Reproduced end-to-end in an isolated container: a real session under a custom socket dir was completely absent while `/api/instance-info` reported `/tmp/tmux-0`. The installer now bakes its own `TMUX_TMPDIR` into the systemd `Environment=` line and the launchd plist, mirroring the existing PATH propagation, and re-installs restart (systemd) or bootout-then-bootstrap (launchd) so a changed value actually applies. An explicit `tmux_socket_dir` setting remains authoritative; only the fallback changed.
+
+### Documentation
+
+- **A vendor-neutral agent usage guide.** `docs/AGENT_GUIDE.md` is a document any agent can be pointed at — Amplifier, Claude Code, Codex, or a shell script with curl. It carries the reasoning that is not derivable from the source: that the asset protected by the input fences is the operator's own live pane rather than the host, that the endpoint's intended caller holds the same Bearer key as its most capable attacker, why the allowlist check runs before the existence check (so a 403 cannot be used as an existence oracle), why glob matching casefolds both sides rather than relying on platform-varying `fnmatch`, and why an empty allowlist denies rather than permits. It states plainly that the security boundary is the allowlist and not the content — typing an executable line into a shell pane will run it, by design — and documents both the scoped and wide-open postures honestly, including which protections remain in each. It also documents the ~2s poll-cache race that makes a just-created session 404 on `/input`, as a known race with a retry pattern rather than a mystery.
+
+### Internal
+
+- Source-text assertion tripwires in the frontend test suite were deduped and documented.
+- A doc claim in AGENTS.md asserting an end-to-end canary test that does not exist was corrected to cite the test that does (`test_input.py` `test_text_sent_literally_via_argv`, which asserts the exact argv). A doc claiming evidence it does not have is the same fabricated-attestation failure this repo's testing rails exist to prevent.
+
 ## v0.16.1 (2026-07-26)
 
 ### Bug Fixes
