@@ -1645,26 +1645,12 @@ def _autofill_suppression_source() -> str:
     return attrs.group(1) + helper.group(1)
 
 
-def test_show_new_session_input_disables_autocomplete() -> None:
-    """The session input must end up with autocomplete off (via _suppressAutofill)."""
-    assert "_suppressAutofill(" in _create_session_input_body(), (
-        "_createSessionInput must apply suppression via _suppressAutofill()"
-    )
-    source = _autofill_suppression_source()
-    assert "autocomplete" in source.lower() and "off" in source.lower(), (
-        "_suppressAutofill must set autocomplete off"
-    )
-
-
-def test_show_new_session_input_disables_spellcheck() -> None:
-    """The session input must end up with spellcheck false (via _suppressAutofill)."""
-    assert "_suppressAutofill(" in _create_session_input_body(), (
-        "_createSessionInput must apply suppression via _suppressAutofill()"
-    )
-    source = _autofill_suppression_source()
-    assert "spellcheck" in source.lower() and "false" in source.lower(), (
-        "_suppressAutofill must set spellcheck false"
-    )
+# NOTE: the autocomplete/spellcheck assertions for the session input live with the
+# other _createSessionInput factory tests further down
+# (test_js_create_session_input_factory_disables_*). A byte-identical second copy
+# used to sit here under `test_show_new_session_input_*` names, which was doubly
+# misleading -- it tested the factory, not showNewSessionInput -- and meant a
+# single refactor had to be chased through four tests instead of two.
 
 
 def test_show_new_session_input_hides_button() -> None:
