@@ -4110,7 +4110,17 @@ function updateSessionPill(sessions) {
 /**
  * Create a new session name input element with shared base configuration.
  * Used by both showNewSessionInput (inline) and showFabSessionInput (overlay)
- * to avoid duplicating the five setup properties.
+ * to avoid duplicating the setup properties.
+ *
+ * Autofill suppression is load-bearing here, and `autocomplete="off"` alone is
+ * NOT enough. This is a bare, form-less text field whose placeholder reads
+ * "Session name" on an origin that also serves a real login form (login.html) —
+ * which is exactly the shape password managers heuristically treat as a
+ * username field, and they ignore `autocomplete="off"` by design. So we also
+ * send each vendor's documented per-field opt-out attribute. The autocorrect /
+ * autocapitalize pair is for the mobile PWA path (the FAB overlay), where iOS
+ * otherwise capitalizes and "corrects" tmux session names as you type them.
+ *
  * @returns {HTMLInputElement}
  */
 function _createSessionInput() {
@@ -4118,8 +4128,14 @@ function _createSessionInput() {
   input.type = 'text';
   input.className = 'new-session-input';
   input.placeholder = 'Session name\u2026';
-  input.autocomplete = 'off';
   input.spellcheck = false;
+  input.setAttribute('autocomplete', 'off');
+  input.setAttribute('autocorrect', 'off');
+  input.setAttribute('autocapitalize', 'off');
+  input.setAttribute('data-1p-ignore', 'true');   // 1Password
+  input.setAttribute('data-lpignore', 'true');    // LastPass
+  input.setAttribute('data-bwignore', 'true');    // Bitwarden
+  input.setAttribute('data-form-type', 'other');  // Dashlane
   return input;
 }
 
