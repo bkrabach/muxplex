@@ -4460,6 +4460,8 @@ test('showNewSessionInput creates device select when multi_device_enabled with r
       value: '',
       style: {},
       options: [],
+      attrs: {},
+      setAttribute(name, value) { this.attrs[name] = value; },
       appendChild: () => {},
       addEventListener: () => {},
       focus: () => {},
@@ -4477,6 +4479,51 @@ test('showNewSessionInput creates device select when multi_device_enabled with r
   globalThis.document.createElement = origCE;
 
   assert.ok(createdTags.includes('select'), 'showNewSessionInput must create a <select> element when multi_device_enabled');
+});
+
+test('new session input suppresses browser and password-manager autofill', () => {
+  // No remotes -> no <select>, so the only element created is the name input.
+  app._setServerSettings({ multi_device_enabled: false, remote_instances: [] });
+
+  const origCE = globalThis.document.createElement;
+  let inputEl = null;
+
+  globalThis.document.createElement = (tag) => {
+    const el = {
+      tagName: tag.toUpperCase(),
+      className: '',
+      type: '',
+      placeholder: '',
+      spellcheck: true,
+      value: '',
+      style: {},
+      attrs: {},
+      setAttribute(name, value) { this.attrs[name] = value; },
+      appendChild: () => {},
+      addEventListener: () => {},
+      focus: () => {},
+    };
+    if (tag === 'input') inputEl = el;
+    return el;
+  };
+
+  const btn = { style: {}, parentNode: { insertBefore: () => {} } };
+  app.showNewSessionInput(btn);
+  globalThis.document.createElement = origCE;
+
+  assert.ok(inputEl !== null, 'showNewSessionInput must create an <input>');
+
+  // autocomplete="off" alone is ignored by password managers on a bare,
+  // form-less text field whose placeholder reads "Session name" — each vendor
+  // opt-out below is load-bearing, not redundant.
+  assert.strictEqual(inputEl.attrs['autocomplete'], 'off', 'autocomplete must be off');
+  assert.strictEqual(inputEl.attrs['autocorrect'], 'off', 'autocorrect must be off (mobile PWA)');
+  assert.strictEqual(inputEl.attrs['autocapitalize'], 'off', 'autocapitalize must be off (mobile PWA)');
+  assert.strictEqual(inputEl.attrs['data-1p-ignore'], 'true', '1Password must be told to ignore this field');
+  assert.strictEqual(inputEl.attrs['data-lpignore'], 'true', 'LastPass must be told to ignore this field');
+  assert.strictEqual(inputEl.attrs['data-bwignore'], 'true', 'Bitwarden must be told to ignore this field');
+  assert.strictEqual(inputEl.attrs['data-form-type'], 'other', 'Dashlane must be told this is not a credential field');
+  assert.strictEqual(inputEl.spellcheck, false, 'spellcheck must be disabled');
 });
 
 test('showNewSessionInput passes remoteId from device select to createNewSession', () => {
