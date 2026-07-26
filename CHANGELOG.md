@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.15.1 (2026-07-26)
+
+### Bug Fixes
+
+- **Browser and password-manager autofill triggering on the new-session name input.** The field already set `autocomplete="off"`, which is not sufficient for this field's shape: it is a bare, form-less text input whose placeholder reads "Session name", served from an origin that also hosts a real login form (`frontend/login.html`) — exactly the shape password managers heuristically classify as a username field, and one they ignore `autocomplete="off"` on by design. `_createSessionInput()` — the single factory feeding all three creation entry points (header `+`, sidebar `+ New`, and the mobile FAB overlay) — now also sends each vendor's documented per-field opt-out: `data-1p-ignore` (1Password), `data-lpignore` (LastPass), `data-bwignore` (Bitwarden), and `data-form-type="other"` (Dashlane). It additionally sets `autocorrect="off"` and `autocapitalize="off"` for the mobile PWA path, where iOS otherwise capitalizes and "corrects" tmux session names as they are typed. Wrapping the input in a `<form>` was considered and rejected: a form containing exactly one text input is the canonical username-first login step, so it would make the field a *larger* autofill target, and native submit-on-Enter would race the existing keydown handler and risk a full page reload in the installed PWA. A doc comment on the factory records why `autocomplete="off"` alone is insufficient, so the attributes are not later removed as redundant. Frontend-only; no API or Python changes. 436 frontend tests pass, including a new regression test pinning every suppression attribute.
+
 ## v0.15.0 (2026-07-26)
 
 ### Bug Fixes
