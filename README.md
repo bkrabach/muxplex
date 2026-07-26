@@ -95,7 +95,7 @@
 Run muxplex directly without installing anything permanently:
 
 ```bash
-uvx --from git+https://github.com/bkrabach/muxplex muxplex
+uvx muxplex
 ```
 
 Then open **http://localhost:8088** in your browser.
@@ -107,9 +107,22 @@ Then open **http://localhost:8088** in your browser.
 ## Install Permanently
 
 ```bash
-uv tool install git+https://github.com/bkrabach/muxplex
+uv tool install muxplex
 muxplex doctor  # verify dependencies
 ```
+
+Upgrade later with either:
+
+```bash
+uv tool upgrade muxplex   # standard uv workflow
+muxplex upgrade           # also restarts the service if installed
+```
+
+> **Installing from git instead?** `uv tool install git+https://github.com/bkrabach/muxplex`
+> tracks the default branch and gets unreleased commits. Do **not** pin a tag
+> (`...@v1.2.3`) unless you mean it: `uv tool upgrade` resolves strictly within the
+> recorded requirement, so a pinned rev reports "Nothing to upgrade" forever. Released
+> versions on PyPI are the recommended path.
 
 Then run it any time with:
 
