@@ -257,30 +257,36 @@ curl -sS -X DELETE -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: applicati
 `DELETE /api/sessions/current` is different: it disconnects the web terminal
 without killing anything.
 
-### The read model is eventually consistent — wait ~3s after writes
+### The read model is eventually consistent — poll on a short interval, not a long sleep
 
 ⚠️ **This is the single most common way an agent gets confused.** GET endpoints
 serve a **~2 second poll cache**. A session you just created via
 `POST /api/sessions` does not appear in `GET /api/sessions` — and **404s on
 `/connect` and `/input`** — until the next poll cycle catches up.
 
-That 404 is not "your session failed to create." It is the cache. Sleep ~3
-seconds after any create/delete before acting on the result, or poll
-`GET /api/sessions` until the name appears:
+That 404 is not "your session failed to create." It is the cache.
+
+**Measured, not assumed:** in traced runs, the new session was visible well
+under 1 second after create — one trace resolved on the 3rd poll attempt at
+0.3-second spacing (~0.9s elapsed total). A flat `sleep 3` wastes most of that
+time waiting on a race that's usually already over. Poll on a short interval
+with a generous ceiling instead:
 
 ```bash
 curl -sS -X POST … -d '{"name":"agent-build"}' "$MUXPLEX_URL/api/sessions"
 
-for _ in $(seq 10); do
-  sleep 1
+for _ in $(seq 1 20); do
+  sleep 0.3
   curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
        "$MUXPLEX_URL/api/sessions" | grep -q '"agent-build"' && break
 done
 ```
 
-This is a known limitation, documented in `AGENTS.md`, with a candidate fix
+20 attempts at 0.3s is a 6-second ceiling — comfortably above the ~1s typical
+case, so a genuinely slow poll cycle still resolves without a rewrite. This is
+a known limitation, documented in `AGENTS.md`, with a candidate fix
 (write-through cache refresh on create/delete) on the roadmap. It is a race, not
-a mystery — code against it.
+a mystery — poll for it, don't guess a fixed delay.
 
 ### `active_view` / `active_session` are server-global, last-writer-wins
 
@@ -521,9 +527,240 @@ text goes to `debug` only, because typed input may contain secrets. Rejections
 log at `warning`. If you are the operator, this log is your record of what your
 agents typed.
 
+**This is verified working, not just asserted.** For a stretch of time the
+audit line above was silently discarded: `uvicorn.run(..., log_level="info")`
+only configures uvicorn's *own* loggers (`uvicorn`, `uvicorn.error`,
+`uvicorn.access`) — it never touches the root logger or any `muxplex.*`
+logger, so every accepted call's `_log.info(...)` had nowhere to go. The
+tell was asymmetry: a *rejected* call's `_log.warning` reached the terminal
+(Python's handler-of-last-resort surfaces WARNING and above), while every
+*accepted* call's line vanished. `cli.configure_logging()` now sets the
+`muxplex` package logger to INFO with its own handler before `uvicorn.run()`
+starts, so every module under `muxplex.*` (via normal logger propagation)
+reaches a real handler. Traced directly: after this fix, a run of 12 accepted
+`/input` calls produced exactly 12 matching audit lines in the server log —
+one per call, in the documented format, e.g.:
+
+```
+2026-07-26 22:59:37,161 INFO muxplex.main: input: session='agent-build' chars=11 enter=True keys=[] preview="printf '\a'"
+```
+
+If you operate muxplex yourself: this log only appears when the server was
+started via `muxplex serve` (which calls `configure_logging()`). A server
+started some other way (e.g. importing `muxplex.main` directly without going
+through the CLI) won't have a handler attached and the audit line will be
+silently lost — the same failure mode this fix closed.
+
 ---
 
-## 6. What an agent may *not* do
+## 6. Running sessions unattended: completion, attention, and depth
+
+Everything above lets you type into a session and read back what happened
+~400ms later. That's enough for a quick command. It is **not** enough to run
+something long — a build, a test suite, a deploy — and know when it's done.
+This section covers three capabilities together because they're meant to be
+composed: a **completion sentinel** (know when a command finished, and how),
+a **bell convention** (surface only what needs a human), and **`lines`**
+(recover output the default read-back window drops). All three are proven
+below against a live instance, with real traces, not asserted.
+
+### 6.1 Why `last_activity_at` alone can't tell you "done"
+
+`last_activity_at` (§3, `GET /api/sessions`) advances on tmux pane output and
+freezes when a pane goes quiet. That sounds like a completion signal, but it
+isn't one, and the reason is structural, not a bug: **a silent pane and a
+finished pane look identical.** A command that's still running but has
+produced no new output in the last 10 seconds (waiting on a lock, a slow
+network call, a `read` with no prompt echoed) freezes `last_activity_at`
+exactly the same way a command that finished 10 seconds ago and is sitting
+idle at a shell prompt does. There is no exit code, no "idle-at-a-prompt"
+flag, no `pane_dead` — just a timestamp that stopped moving, for reasons
+`last_activity_at` structurally cannot distinguish between. Don't build a
+completion check on it. Use §6.2 instead.
+
+### 6.2 The completion sentinel (recommended, primary pattern)
+
+The pattern: append a marker to whatever you're running, so the shell prints
+it — with the real exit code — only once the command has actually finished.
+Poll for the marker, not for silence.
+
+```
+<your command>; echo "MUXPLEX_DONE_<unique-token>_EXIT_$?"
+```
+
+Send that whole line as `text` with `enter: true`, then poll
+`GET /api/sessions/{name}?lines=N` (§6.3) until a regex like
+`MUXPLEX_DONE_<token>_EXIT_(\d+)` matches, and read the captured digit as the
+real exit code.
+
+**The one sharp edge, and why this exact shape is robust against it:** tmux
+echoes back what you typed *before* the shell runs it — so the pane briefly
+contains the literal text `MUXPLEX_DONE_<token>_EXIT_$?` (the `$?` typed
+character-for-character, not yet expanded). If your poll only checked for the
+token substring, that echoed, unexecuted input line would look like a false
+"done" the instant you sent it. The fix is built into the shape above, not
+bolted on: search for the token **followed by a digit**. Shell variable
+expansion doesn't happen in the terminal's input echo, only when the command
+actually runs — so `..._EXIT_$?` (literal, unexpanded) never matches a
+`\d+`-anchored pattern, and `..._EXIT_0` / `..._EXIT_1` (the real, substituted
+exit code) only ever appears once the command has genuinely completed.
+
+**Proven, with real traces.** Two cases, run against a live instance:
+
+*A long-running command that succeeds* (`sleep 8 && echo mid-output-line`):
+
+```
+sent at T+0.00, /input responded at T+0.43s (the ~400ms settle, §5.6)
+immediate read-back: digit-suffixed marker present? False   <- confirms no false positive
+  (tail of immediate snapshot showed the literal, unexpanded "...EXIT_$?")
+polled every 0.5s; MATCHED after 16 polls at T+8.15s, exit_code=0
+```
+
+*A command that fails* (`sleep 3; false`):
+
+```
+sent, /input responded 0.43s later (same settle)
+immediate read-back: digit-suffixed marker present? False   <- again, no false positive
+polled every 0.5s; MATCHED after 6 polls at T+3.03s, exit_code=1
+```
+
+Both traces confirm the pattern end-to-end: the immediate `/input` read-back
+never falsely matches (it only ever shows the unexpanded echo), and the poll
+loop correctly recovers **both** a zero and a nonzero real exit code, at
+timing that tracks the actual command duration (~8.15s for an 8s sleep,
+~3.03s for a 3s sleep) rather than some fixed guess.
+
+```bash
+TOKEN="build-$$-$RANDOM"
+CMD="make test; echo \"MUXPLEX_DONE_${TOKEN}_EXIT_\$?\""
+
+# jq builds the JSON body so the shell doesn't have to hand-escape quotes.
+curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" \
+     -H "Content-Type: application/json" -H "Accept: application/json" \
+     -d "$(jq -n --arg t "$CMD" '{text: $t, enter: true}')" \
+     "$MUXPLEX_URL/api/sessions/agent-build/input" > /dev/null
+
+for _ in $(seq 1 120); do
+  sleep 2
+  SNAP=$(curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
+              "$MUXPLEX_URL/api/sessions/agent-build?lines=500" | jq -r '.snapshot')
+  if [[ "$SNAP" =~ MUXPLEX_DONE_${TOKEN}_EXIT_([0-9]+) ]]; then
+    echo "done, exit code ${BASH_REMATCH[1]}"
+    break
+  fi
+done
+```
+
+### 6.3 Recovering deep output: `lines` and `GET /api/sessions/{name}`
+
+The default read-back window (`/input`'s settle-and-capture, and the shared
+`GET /api/sessions` cache) is **30 lines** — fine for a short command, not
+enough for `pytest -v`, `make`, or any real build log. Two ways to ask for
+more:
+
+* **`POST /api/sessions/{name}/input`** accepts an optional `lines` field
+  that overrides the read-back depth **for that one call**:
+
+  ```json
+  { "text": "make test", "enter": true, "lines": 500 }
+  ```
+
+* **`GET /api/sessions/{name}?lines=N`** — a new, single-session, always-live
+  capture, independent of typing anything. This is what you poll in the
+  completion-sentinel loop above: `/input`'s read-back settles for only
+  ~400ms, long before a real build finishes, so the *polling* has to happen
+  against a separate live read, not the one-shot `/input` response.
+  Response shape: `{"name", "snapshot", "lines", "bell", "last_activity_at"}`
+  — same `bell`/`last_activity_at` fields as `GET /api/sessions`, plus
+  `lines` echoing back the depth actually used.
+
+  Deliberately **not** added to the existing bulk `GET /api/sessions` — that
+  endpoint serves one shared ~2s-cycle cache consumed simultaneously by the
+  PWA, muxplex-deck, and every agent; a per-request depth there would mean
+  either forking that shared contract or forking a live tmux call per
+  session in the list on every poll (the exact "unbounded value against 38
+  sessions" DoS bounds exist to prevent — see below). A separate
+  single-target endpoint sidesteps both.
+
+**Bounds are real, and enforced identically on both entry points** — traced
+directly against a live instance:
+
+| Request | Result |
+|---|---|
+| `lines` omitted | 30 (`DEFAULT_CAPTURE_LINES`, unchanged from before this existed) |
+| `lines=0` | **400** — `"lines must be between 1 and 2000 (got 0)"` |
+| `lines=2000` | 200 — the exact ceiling is accepted |
+| `lines=2001` | **400** — `"lines must be between 1 and 2000 (got 2001)"` |
+
+Out-of-range is always a 400, **never a silent clamp** — an agent that
+thinks it got 2000 lines but actually got fewer would be a worse surprise
+than an explicit rejection. Traced proof of the recovery itself: a
+`seq 1 100` command, then the default (omitted `lines`) read-back started at
+line **48** — lines 1–47 genuinely gone — while `?lines=200` recovered the
+full range, containing lines `1`, `47`, and `100`. Sessions also get their
+tmux `history-limit` raised to 5000 on creation specifically so a max-depth
+request has real scrollback behind it, rather than tmux's own (possibly much
+lower) default silently truncating what you asked for.
+
+### 6.4 Bell-on-completion: an attention convention
+
+`unseen_count` / `needs_attention` (§3's `GET /api/view`) drive the actual
+human-facing attention signal — the amber ring on a Stream Deck's VIEW key,
+the bell-sorted tier in `?sort=attention`. **Nothing an agent naturally runs
+trips it.** Traced directly: `echo`, `sleep`, and `false` all left
+`unseen_count` at `0` throughout. A bell only fires from an **actual BEL
+byte** (`\a`, 0x07) reaching the pane — which means if you want a background
+job to surface on the human's radar, you have to make it ring the bell
+yourself:
+
+```bash
+your-long-command
+[ $? -ne 0 ] && printf '\a'
+```
+
+**Recommended convention: ring on nonzero exit only, not on every
+completion.** Reasoning: the bell is a scarce, human-facing attention
+channel — its entire purpose is telling the operator "look at this one."
+An agent running many background jobs that all ring on *every* completion
+turns that channel into noise indistinguishable from a real problem: ten
+successful builds finishing ring the bell exactly as insistently as one
+failure that actually needs a decision. Routine success doesn't need a
+human — that's the point of running it unattended — and it's already
+discoverable via the completion-sentinel your own poll loop is watching
+for (§6.2). Reserve the bell for outcomes that genuinely warrant a look.
+
+Composed with the sentinel pattern from §6.2, one command line does both:
+
+```
+<your command>; rc=$?; [ $rc -ne 0 ] && printf '\a'; echo "MUXPLEX_DONE_<token>_EXIT_$rc"
+```
+
+**Proven, both directions:**
+
+* An explicit bell reliably registers: `printf '\a'` moved `unseen_count`
+  from `0` to `1` and set `last_fired_at`, traced directly against a live
+  session.
+* Repeated bells accumulate once the detection path is active: three
+  further `printf '\a'` calls in sequence advanced `unseen_count`
+  `2 → 3 → 4 → 5`, one increment per event.
+
+**Operational note, if bells don't seem to fire at all:** muxplex detects
+bells two ways — a tmux `alert-bell` hook (fires on every bell,
+unconditionally) and a `window_bell_flag` poll fallback (only active when no
+tmux client is attached to the pane, and it only detects a fresh 0→1
+transition, not every repeat). The hook is registered at server startup, but
+that registration is best-effort against a tmux server that may not be
+running yet (e.g. a brand new install, before any session has ever been
+created) — and it is **not automatically retried**. If you suspect bells
+aren't registering, call `POST /api/internal/setup-hooks` once (safe to call
+anytime; it's idempotent) to (re-)register it — this was reproduced directly
+during this investigation: the hook was silently unregistered in a fresh
+instance, and one call to this endpoint fixed it for the rest of the
+session.
+
+---
+
+## 7. What an agent may *not* do
 
 `input_enabled` and `input_allowed_sessions` are **local-file-only**
 (`settings.LOCAL_ONLY_KEYS`). They can be changed **only** by editing
@@ -546,7 +783,7 @@ around it, and attempting one is a signal that something has gone wrong.
 
 ---
 
-## 7. Configuration postures — read this before assuming you're safe
+## 8. Configuration postures — read this before assuming you're safe
 
 There are two legitimate ways to run this, and they give you very different
 guarantees. Know which one you're on.
@@ -593,7 +830,7 @@ sessions you created, and don't send input to a pane you can't account for.
 
 ---
 
-## 8. The full contract
+## 9. The full contract
 
 This guide covers the endpoints an agent needs day to day. The complete,
 authoritative, machine-readable contract is served by the running instance:
@@ -613,15 +850,16 @@ invariants behind them for anyone changing the server.
 
 ---
 
-## 9. Checklist for agent authors
+## 10. Checklist for agent authors
 
 - [ ] Send `Authorization: Bearer <key>` **and** `Accept: application/json` on
       every request.
 - [ ] Read `GET /api/instance-info` once at startup — cheap, unauthenticated,
       gives you the version to feature-gate against.
 - [ ] Prefer `GET /api/view` over re-implementing view/sort/bell rules.
-- [ ] **Wait ~3s (or poll) after every create/delete** before acting on the
-      result. A 404 right after a create is the cache, not a failure.
+- [ ] **Poll on a short interval (e.g. 0.3s) after every create/delete**,
+      not a flat multi-second sleep. A 404 right after a create is the cache,
+      not a failure — see §4; typical resolution is under 1s.
 - [ ] Treat any 403 from `/input` as "the operator must edit `settings.json`" —
       never try to route around it.
 - [ ] **Check the read-back `snapshot`** after every input. Don't fire blind.
@@ -631,3 +869,10 @@ invariants behind them for anyone changing the server.
       human is looking at — those fields are server-global.
 - [ ] Assume the pane is a shell and that what you type will run. Read first,
       type second.
+- [ ] **For anything long-running, use the completion-sentinel pattern**
+      (§6.2) — don't infer completion from `last_activity_at` going quiet.
+- [ ] **Request `lines=` (or poll `GET /api/sessions/{name}?lines=N`)** for
+      any command whose output might exceed 30 lines (§6.3).
+- [ ] **If a background job needs a human's attention, ring the bell
+      yourself on nonzero exit** (§6.4) — nothing an agent naturally runs
+      trips it, and routine success shouldn't spend that channel.
