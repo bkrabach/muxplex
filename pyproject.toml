@@ -60,6 +60,7 @@ asyncio_mode = "auto"
 addopts = "--import-mode=importlib -m 'not integration'"
 markers = [
     "integration: marks tests as integration tests requiring real tmux (deselect with '-m not integration')",
+    "allow_real_port_killer: test intentionally exercises the real _kill_stale_port_holder (see tests/conftest.py)",
 ]
 
 [dependency-groups]

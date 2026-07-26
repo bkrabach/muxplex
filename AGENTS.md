@@ -387,8 +387,62 @@ Instead:
 
 ## Testing & workflow
 
-- Python: `uv sync --extra dev && uv run pytest` (tests marked `integration`
-  need a real tmux binary).
+### ⚠️ NEVER run the test suite on a host running a live muxplex
+
+`uv run pytest` on a developer box that is also serving muxplex has caused real
+production damage, twice in one session:
+
+1. A test that wrote settings without redirecting `SETTINGS_PATH` overwrote the
+   host's real `~/.config/muxplex/settings.json`, replacing an 8-view production
+   config with fixture data.
+2. Six tests called the real `serve()` without mocking `_kill_stale_port_holder`
+   and without pinning a port, so the port resolved to `DEFAULT_SETTINGS["port"]`
+   (8088). The real killer ran `lsof -ti :8088`, found the live server, and
+   SIGTERMed it — repeatedly. Symptom: a server that "keeps resetting," with
+   clean graceful shutdowns, no crash, and no systemd `Stopping` line. Nearly
+   undiagnosable from logs.
+
+Both were invisible from inside the suite: **a test that destroys its host still
+passes.**
+
+`muxplex/tests/conftest.py` now makes this fail loud instead. Read its docstring
+before changing anything there; `test_safety_rails.py` fails if a guard is
+removed. The rails:
+
+| Rail | Stops |
+|---|---|
+| `pytest_sessionstart` guard | Running at all when something serves the default port |
+| autouse `SETTINGS_PATH` → tmp | Tests reaching the real user config |
+| autouse killer-neutering | Tests SIGTERMing whatever owns the port |
+| `test_safety_rails.py` | Silent removal of any of the above |
+
+To reach the real port killer a test must opt in explicitly with
+`@pytest.mark.allow_real_port_killer` — visible in review.
+
+### Run it in an isolated environment
+
+```
+make test          # runs the suite inside a Digital Twin Universe container
+```
+
+The workflow, in this order — the commit is a **checkpoint**, so a bad DTU run
+costs you nothing:
+
+1. **Commit locally first.** This is what makes `git archive HEAD` correct: the
+   DTU then tests exactly the artifact you would push, with no divergence
+   between "what I tested" and "what I'm pushing."
+2. **Test in the DTU.** Iterate there until green.
+3. **Then push / open the PR.**
+
+Skipping step 1 means the DTU tests something that exists only in your working
+tree — and a green run there proves nothing about what lands.
+
+`MUXPLEX_TEST_ALLOW_LIVE_HOST=1` overrides the guard. Legitimate on a CI runner
+or a fresh container with no muxplex. Not legitimate on your dev box because the
+guard is inconvenient.
+
+- Python (inside an isolated env only): `uv sync --extra dev && uv run pytest`
+  (tests marked `integration` need a real tmux binary).
 - Frontend: `node --test frontend/tests/test_app.mjs`.
 - CI: `.github/workflows/ci.yml` (Python 3.11/3.12/3.13).
 - PRs are squash-merged. `CHANGELOG.md` and version bumps happen at release

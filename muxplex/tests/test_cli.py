@@ -40,6 +40,7 @@ def test_main_calls_serve_by_default(mock_check_deps):
             session_ttl=None,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -57,6 +58,7 @@ def test_main_passes_custom_host_and_port(mock_check_deps):
             session_ttl=None,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -85,6 +87,7 @@ def test_main_passes_auth_flag(mock_check_deps):
             session_ttl=None,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -102,6 +105,7 @@ def test_main_passes_session_ttl_flag(mock_check_deps):
             session_ttl=3600,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -803,6 +807,7 @@ def test_main_passes_none_for_unset_flags(mock_check_deps):
             session_ttl=None,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -820,6 +825,7 @@ def test_main_passes_explicit_host_only(mock_check_deps):
             session_ttl=None,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -839,6 +845,7 @@ def test_main_serve_subcommand_accepts_flags(mock_check_deps):
             session_ttl=None,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -1200,6 +1207,7 @@ def test_kill_stale_port_holder_exists():
     from muxplex.cli import _kill_stale_port_holder  # noqa: F401
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_runs_lsof(monkeypatch):
     """_kill_stale_port_holder must invoke lsof -ti :<port> to find occupying PIDs."""
     import subprocess
@@ -1223,6 +1231,7 @@ def test_kill_stale_port_holder_runs_lsof(monkeypatch):
     )
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_kills_foreign_pid(monkeypatch):
     """_kill_stale_port_holder must send SIGTERM to PIDs that are not our own."""
     import os
@@ -1262,6 +1271,7 @@ def test_kill_stale_port_holder_kills_foreign_pid(monkeypatch):
     )
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_skips_own_pid(monkeypatch):
     """_kill_stale_port_holder must NOT kill its own PID."""
     import os
@@ -1287,6 +1297,7 @@ def test_kill_stale_port_holder_skips_own_pid(monkeypatch):
     assert my_pid not in killed, "_kill_stale_port_holder must not kill its own PID"
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_survives_lsof_not_available(monkeypatch):
     """_kill_stale_port_holder must not raise when lsof is unavailable."""
     import subprocess
@@ -1523,6 +1534,7 @@ def test_main_passes_tls_cert_and_key_flags(mock_check_deps):
             session_ttl=None,
             tls_cert="/path/cert.pem",
             tls_key="/path/key.pem",
+            force_take_port=False,
         )
 
 
@@ -1540,6 +1552,7 @@ def test_main_passes_none_for_unset_tls_flags(mock_check_deps):
             session_ttl=None,
             tls_cert=None,
             tls_key=None,
+            force_take_port=False,
         )
 
 
@@ -1652,6 +1665,7 @@ def test_serve_subcommand_accepts_tls_flags(mock_check_deps):
             session_ttl=None,
             tls_cert="/path/cert.pem",
             tls_key="/path/key.pem",
+            force_take_port=False,
         )
 
 
@@ -3404,6 +3418,7 @@ def _fake_lsof(pid_out: str):
     return fake_run
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_refuses_to_kill_healthy_server(monkeypatch, capsys):
     """A responding muxplex must NOT be killed; startup must abort instead."""
     import os
@@ -3429,6 +3444,7 @@ def test_kill_stale_port_holder_refuses_to_kill_healthy_server(monkeypatch, caps
     assert "--force-take-port" in err, "message must offer the override"
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_kills_unresponsive_holder(monkeypatch):
     """A holder that does not answer the probe is stale — kill it as before."""
     import os
@@ -3451,6 +3467,7 @@ def test_kill_stale_port_holder_kills_unresponsive_holder(monkeypatch):
     assert (4242, signal.SIGTERM) in killed
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_force_overrides_healthy_check(monkeypatch):
     """--force-take-port must kill even a healthy server."""
     import os
@@ -3473,6 +3490,7 @@ def test_kill_stale_port_holder_force_overrides_healthy_check(monkeypatch):
     assert (4242, signal.SIGTERM) in killed
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_no_holder_never_probes(monkeypatch):
     """With nobody on the port there must be no probe and no signal."""
     import os
@@ -3498,6 +3516,7 @@ def test_kill_stale_port_holder_no_holder_never_probes(monkeypatch):
     assert killed == []
 
 
+@pytest.mark.allow_real_port_killer
 def test_kill_stale_port_holder_survives_missing_lsof(monkeypatch):
     """A missing/raising lsof must never prevent startup."""
     import subprocess
