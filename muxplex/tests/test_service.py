@@ -674,6 +674,203 @@ def test_service_install_hides_tls_tip_on_localhost(capsys, tmp_path, monkeypatc
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# TMUX_TMPDIR propagation \u2014 systemd/launchd services don't inherit shell rc
+# exports, so a customized tmux socket dir must be baked into the unit/plist
+# (mirroring the existing PATH propagation) or the service can't see any
+# tmux sessions.
+# ---------------------------------------------------------------------------
+
+
+def test_tmux_tmpdir_env_line_empty_when_unset(monkeypatch):
+    """_tmux_tmpdir_env_line() returns '' when TMUX_TMPDIR is not set."""
+    import os
+
+    import muxplex.service as svc
+
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    assert svc._tmux_tmpdir_env_line() == ""
+    assert os.environ.get("TMUX_TMPDIR") is None
+
+
+def test_tmux_tmpdir_env_line_set_when_present(monkeypatch):
+    """_tmux_tmpdir_env_line() returns the Environment= line when TMUX_TMPDIR is set."""
+    import muxplex.service as svc
+
+    monkeypatch.setenv("TMUX_TMPDIR", "/home/user/.tmux")
+    assert svc._tmux_tmpdir_env_line() == "Environment=TMUX_TMPDIR=/home/user/.tmux"
+
+
+def test_tmux_tmpdir_plist_xml_empty_when_unset(monkeypatch):
+    """_tmux_tmpdir_plist_xml() returns '' when TMUX_TMPDIR is not set."""
+    import muxplex.service as svc
+
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    assert svc._tmux_tmpdir_plist_xml() == ""
+
+
+def test_tmux_tmpdir_plist_xml_set_when_present(monkeypatch):
+    """_tmux_tmpdir_plist_xml() returns the key/string XML block when set."""
+    import muxplex.service as svc
+
+    monkeypatch.setenv("TMUX_TMPDIR", "/home/user/.tmux")
+    xml = svc._tmux_tmpdir_plist_xml()
+    assert "<key>TMUX_TMPDIR</key>" in xml
+    assert "<string>/home/user/.tmux</string>" in xml
+
+
+def test_systemd_install_omits_tmux_tmpdir_when_unset(monkeypatch, tmp_path):
+    """Unit file must NOT contain a TMUX_TMPDIR line when the installer's
+    environment doesn't have one set."""
+    import muxplex.service as svc
+
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_path = unit_dir / "muxplex.service"
+
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._systemd_install()
+
+    content = unit_path.read_text()
+    assert "TMUX_TMPDIR" not in content, (
+        f"Unit file must not mention TMUX_TMPDIR when unset, got: {content!r}"
+    )
+
+
+def test_systemd_install_propagates_custom_tmux_tmpdir(monkeypatch, tmp_path):
+    """Unit file must contain Environment=TMUX_TMPDIR=<value> when the
+    installer's environment has a customized tmux socket directory.
+
+    Root cause this guards against: systemd --user services do not inherit
+    shell rc-file exports, so a user who moved TMUX_TMPDIR away from tmux's
+    compiled-in /tmp/tmux-$(id -u) default would have a service-mode muxplex
+    silently look at the wrong socket dir and see zero sessions.
+    """
+    import muxplex.service as svc
+
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_path = unit_dir / "muxplex.service"
+
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+    monkeypatch.setenv("TMUX_TMPDIR", "/home/user/.tmux")
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._systemd_install()
+
+    content = unit_path.read_text()
+    assert "Environment=TMUX_TMPDIR=/home/user/.tmux" in content, (
+        f"Unit file must propagate TMUX_TMPDIR, got: {content!r}"
+    )
+
+
+def test_systemd_install_restarts_so_reinstall_applies_new_env(monkeypatch, tmp_path):
+    """_systemd_install must call restart (not just enable --now), because
+    enable --now is a no-op on an already-running service and would leave a
+    re-install's updated environment (e.g. a changed TMUX_TMPDIR) unapplied."""
+    import muxplex.service as svc
+
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_path = unit_dir / "muxplex.service"
+
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._systemd_install()
+
+    assert ["systemctl", "--user", "restart", "muxplex"] in calls, (
+        f"_systemd_install must call restart to apply env changes on re-install, got: {calls}"
+    )
+
+
+def test_launchd_install_omits_tmux_tmpdir_when_unset(monkeypatch, tmp_path):
+    """Plist must NOT contain a TMUX_TMPDIR key when unset in the environment."""
+    import os
+
+    import muxplex.service as svc
+
+    plist_dir = tmp_path / "LaunchAgents"
+    plist_path = plist_dir / "com.muxplex.plist"
+
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._launchd_install()
+
+    content = plist_path.read_text()
+    assert "TMUX_TMPDIR" not in content, (
+        f"Plist must not mention TMUX_TMPDIR when unset, got: {content!r}"
+    )
+
+
+def test_launchd_install_propagates_custom_tmux_tmpdir(monkeypatch, tmp_path):
+    """Plist's EnvironmentVariables dict must contain TMUX_TMPDIR when the
+    installer's environment has a customized tmux socket directory."""
+    import os
+    import plistlib
+
+    import muxplex.service as svc
+
+    plist_dir = tmp_path / "LaunchAgents"
+    plist_path = plist_dir / "com.muxplex.plist"
+
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+    monkeypatch.setenv("TMUX_TMPDIR", "/Users/user/.tmux")
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._launchd_install()
+
+    plist_data = plistlib.loads(plist_path.read_bytes())
+    env_vars = plist_data.get("EnvironmentVariables", {})
+    assert env_vars.get("TMUX_TMPDIR") == "/Users/user/.tmux", (
+        f"Plist EnvironmentVariables must include TMUX_TMPDIR, got: {env_vars!r}"
+    )
+
+
+def test_launchd_install_boots_out_before_bootstrap(monkeypatch, tmp_path):
+    """_launchd_install must bootout any existing load before bootstrap, so a
+    re-install's updated plist environment (e.g. a changed TMUX_TMPDIR)
+    actually takes effect instead of being ignored by an already-loaded job."""
+    import os
+
+    import muxplex.service as svc
+
+    plist_dir = tmp_path / "LaunchAgents"
+    plist_path = plist_dir / "com.muxplex.plist"
+
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
+    monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
+    monkeypatch.setattr(os, "getuid", lambda: 501)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+
+    svc._launchd_install()
+
+    bootout_index = next(i for i, c in enumerate(calls) if "bootout" in c)
+    bootstrap_index = next(i for i, c in enumerate(calls) if "bootstrap" in c)
+    assert bootout_index < bootstrap_index, (
+        "bootout must be called before bootstrap so re-install applies new env"
+    )
+
+
 def test_launchd_plist_program_arguments_are_separate_strings(monkeypatch, tmp_path):
     """_launchd_install emits each argv token as its own <string> in ProgramArguments.
 

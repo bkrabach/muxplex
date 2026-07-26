@@ -30,7 +30,7 @@ RestartSec=5s
 TimeoutStopSec=10
 KillMode=mixed
 Environment=PATH={safe_path}
-
+{extra_environment_lines}
 [Install]
 WantedBy=default.target
 """
@@ -50,6 +50,7 @@ _LAUNCHD_PLIST_TEMPLATE = """\
     <dict>
         <key>PATH</key>
         <string>{safe_path}</string>
+{extra_environment_variables_xml}
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -143,6 +144,42 @@ def _prompt_host_if_localhost() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Environment propagation — TMUX_TMPDIR
+# ---------------------------------------------------------------------------
+#
+# systemd --user and launchd services do NOT inherit the installer's shell
+# rc-file exports (.bashrc/.zshrc). If a user has moved their tmux socket
+# directory via `TMUX_TMPDIR` (e.g. to avoid a world-writable /tmp), a
+# service-mode muxplex silently falls back to tmux's compiled-in
+# /tmp/tmux-$(id -u) default and can no longer see any of the user's
+# sessions — with no error, just an empty session list. Baking TMUX_TMPDIR
+# into the unit/plist (mirroring the existing PATH propagation) closes that
+# gap the same way for both service managers.
+
+
+def _tmux_tmpdir_env_line() -> str:
+    """Return a systemd `Environment=TMUX_TMPDIR=...` line, or '' if unset.
+
+    Reads TMUX_TMPDIR from the installer's current environment so a
+    customized tmux socket directory survives into the systemd unit.
+    """
+    tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
+    if not tmux_tmpdir:
+        return ""
+    return f"Environment=TMUX_TMPDIR={tmux_tmpdir}"
+
+
+def _tmux_tmpdir_plist_xml() -> str:
+    """Return a launchd EnvironmentVariables <key>/<string> XML block for
+    TMUX_TMPDIR, or '' if unset. Mirrors _tmux_tmpdir_env_line() for launchd.
+    """
+    tmux_tmpdir = os.environ.get("TMUX_TMPDIR")
+    if not tmux_tmpdir:
+        return ""
+    return f"        <key>TMUX_TMPDIR</key>\n        <string>{tmux_tmpdir}</string>"
+
+
+# ---------------------------------------------------------------------------
 # Private implementations — systemd (Linux)
 # ---------------------------------------------------------------------------
 
@@ -164,12 +201,19 @@ def _systemd_install() -> None:
     safe_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     exec_start = f"{muxplex_bin} serve"
     unit_content = _SYSTEMD_UNIT_TEMPLATE.format(
-        exec_start=exec_start, safe_path=safe_path
+        exec_start=exec_start,
+        safe_path=safe_path,
+        extra_environment_lines=_tmux_tmpdir_env_line(),
     )
     _SYSTEMD_UNIT_DIR.mkdir(parents=True, exist_ok=True)
     _SYSTEMD_UNIT_PATH.write_text(unit_content)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "--now", "muxplex"], check=True)
+    # `enable --now` is a no-op on an already-running service, so re-installing
+    # (e.g. after TMUX_TMPDIR or PATH changed) would silently keep the stale
+    # environment without this restart. `restart` starts a stopped unit too,
+    # so it is safe on both first install and re-install.
+    subprocess.run(["systemctl", "--user", "restart", "muxplex"], check=True)
     _prompt_host_if_localhost()
     _show_tls_nudge_if_needed()
 
@@ -215,19 +259,23 @@ def _launchd_install() -> None:
     # Each argv token is its own <string> element.  launchd does NOT
     # shell-split inside a <string>, so we must NOT put the whole command
     # (e.g. "python3 -m muxplex") into a single element.
-    program_arguments_xml = "\n".join(
-        f"        <string>{arg}</string>" for arg in argv
-    )
+    program_arguments_xml = "\n".join(f"        <string>{arg}</string>" for arg in argv)
     base_path = os.environ.get("PATH", "/usr/bin:/bin")
     safe_path = f"/opt/homebrew/bin:/usr/local/bin:{base_path}"
     plist_content = _LAUNCHD_PLIST_TEMPLATE.format(
         label=_LAUNCHD_LABEL,
         program_arguments_xml=program_arguments_xml,
         safe_path=safe_path,
+        extra_environment_variables_xml=_tmux_tmpdir_plist_xml(),
     )
     _LAUNCHD_PLIST_DIR.mkdir(parents=True, exist_ok=True)
     _LAUNCHD_PLIST_PATH.write_text(plist_content)
     uid = os.getuid()
+    # bootstrap on an already-loaded label fails with EEXIST-style errors, so
+    # bootout first (ignore failure if it wasn't loaded) to force the new
+    # plist's environment (e.g. an updated TMUX_TMPDIR) to actually apply on
+    # re-install, not just on first install.
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"])
     subprocess.run(
         ["launchctl", "bootstrap", f"gui/{uid}", str(_LAUNCHD_PLIST_PATH)], check=True
     )
