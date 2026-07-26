@@ -272,11 +272,40 @@ async def enumerate_sessions() -> list[str]:
 # Pane capture
 # ---------------------------------------------------------------------------
 
+# Default read depth -- unchanged from muxplex's original behavior. Every
+# existing caller that doesn't pass `lines` explicitly (the background poll
+# cycle's snapshot_all(), and any pre-existing /input read-back) keeps this
+# exact shape.
+DEFAULT_CAPTURE_LINES = 30
 
-async def capture_pane(session_name: str, lines: int = 30) -> str:
+# Upper bound on a caller-controlled `lines` request (GET
+# /api/sessions/{name} and POST /api/sessions/{name}/input's `lines` field).
+# Callers asking for more than this get a 400, not a silently-clamped
+# result -- an unbounded value would let a single request capture arbitrarily
+# large scrollback (CPU/memory cost proportional to the request), which is a
+# denial-of-service surface against a server the same process also has to
+# keep polling ~38 other sessions on.
+MAX_CAPTURE_LINES = 2000
+
+# tmux `history-limit` applied to every session muxplex creates (see
+# ensure_history_retention()). Deliberately set well above MAX_CAPTURE_LINES:
+# tmux's own compiled-in default is 2000 lines, and a host's ~/.tmux.conf may
+# set it lower still -- if a caller's max-depth request (2000 lines) landed
+# on a session whose retained scrollback was smaller than that, tmux would
+# silently return fewer lines than asked for, which would be a worse lie
+# than the original 30-line ceiling this fix replaces (an explicit ceiling
+# you can raise vs. an invisible one you can't). Setting this explicitly per
+# session decouples the read-depth contract from whatever tmux.conf happens
+# to be on the host.
+SESSION_HISTORY_LIMIT = 5000
+
+
+async def capture_pane(session_name: str, lines: int = DEFAULT_CAPTURE_LINES) -> str:
     """Capture the last *lines* lines of output from *session_name*.
 
-    Returns the captured text, or '' on any error.
+    Returns the captured text, or '' on any error. *lines* is caller-trusted
+    here (bounds enforcement lives at the API boundary in main.py, alongside
+    the other /input size caps) -- this function only performs the tmux call.
     """
     try:
         return await run_tmux(
@@ -290,6 +319,32 @@ async def capture_pane(session_name: str, lines: int = 30) -> str:
         )
     except RuntimeError:
         return ""
+
+
+async def ensure_history_retention(session_name: str) -> None:
+    """Raise *session_name*'s tmux `history-limit` to SESSION_HISTORY_LIMIT.
+
+    Called once, right after a new session is confirmed to exist (see
+    main.py's create_session()). Best-effort: a failure (e.g. the session
+    vanished between creation and this call, or tmux is momentarily
+    unavailable) is logged and swallowed -- this is a scrollback-depth
+    improvement, not a correctness requirement, and must never fail session
+    creation itself.
+    """
+    try:
+        await run_tmux(
+            "set-option",
+            "-t",
+            session_name,
+            "history-limit",
+            str(SESSION_HISTORY_LIMIT),
+        )
+    except RuntimeError as exc:
+        _log.warning(
+            "ensure_history_retention: failed to set history-limit for %r: %s",
+            session_name,
+            exc,
+        )
 
 
 async def snapshot_all(names: list[str]) -> dict[str, str]:

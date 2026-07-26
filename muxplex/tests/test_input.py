@@ -368,6 +368,85 @@ def test_tmux_failure_returns_500(client, monkeypatch, tmux_calls):
 
 
 # ---------------------------------------------------------------------------
+# `lines` -- caller-controlled read-back depth (no-scrollback fix)
+# ---------------------------------------------------------------------------
+
+
+def test_lines_omitted_uses_default_capture_lines(client, monkeypatch):
+    """Omitting `lines` must preserve the original read-back depth exactly."""
+    from muxplex.sessions import DEFAULT_CAPTURE_LINES
+
+    _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
+
+    captured_args = []
+
+    async def fake_run_tmux(*args: str) -> str:
+        return ""
+
+    async def fake_capture(name: str, lines: int = 30) -> str:
+        captured_args.append((name, lines))
+        return f"pane-of-{name}"
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("muxplex.main.run_tmux", fake_run_tmux)
+    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture)
+    monkeypatch.setattr("muxplex.main.asyncio.sleep", fake_sleep)
+
+    resp = client.post("/api/sessions/alpha/input", json={"text": "hi"})
+    assert resp.status_code == 200
+    assert captured_args == [("alpha", DEFAULT_CAPTURE_LINES)]
+
+
+def test_lines_override_forwarded_to_readback_capture(client, monkeypatch):
+    """An explicit `lines` value must be forwarded to the read-back capture_pane() call."""
+    _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
+
+    captured_args = []
+
+    async def fake_run_tmux(*args: str) -> str:
+        return ""
+
+    async def fake_capture(name: str, lines: int = 30) -> str:
+        captured_args.append((name, lines))
+        return f"pane-of-{name}"
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("muxplex.main.run_tmux", fake_run_tmux)
+    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture)
+    monkeypatch.setattr("muxplex.main.asyncio.sleep", fake_sleep)
+
+    resp = client.post("/api/sessions/alpha/input", json={"text": "hi", "lines": 500})
+    assert resp.status_code == 200
+    assert captured_args == [("alpha", 500)]
+
+
+def test_lines_above_max_returns_400(client, monkeypatch, tmux_calls):
+    """`lines` above MAX_CAPTURE_LINES must be a 400 -- never silently clamped."""
+    from muxplex.sessions import MAX_CAPTURE_LINES
+
+    _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
+    resp = client.post(
+        "/api/sessions/alpha/input",
+        json={"text": "hi", "lines": MAX_CAPTURE_LINES + 1},
+    )
+    assert resp.status_code == 400
+    assert "lines" in resp.json()["detail"]
+    assert tmux_calls == [], "nothing must reach tmux when validation fails"
+
+
+def test_lines_zero_or_negative_returns_400(client, monkeypatch, tmux_calls):
+    """`lines` <= 0 must be a 400."""
+    _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
+    resp = client.post("/api/sessions/alpha/input", json={"text": "hi", "lines": 0})
+    assert resp.status_code == 400
+    assert tmux_calls == []
+
+
+# ---------------------------------------------------------------------------
 # Audit logging
 # ---------------------------------------------------------------------------
 

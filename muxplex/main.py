@@ -52,7 +52,10 @@ from muxplex.auth import (
 )
 from muxplex.bells import apply_bell_clear_rule, needs_attention, process_bell_flags
 from muxplex.sessions import (
+    DEFAULT_CAPTURE_LINES,
+    MAX_CAPTURE_LINES,
     capture_pane,
+    ensure_history_retention,
     enumerate_sessions,
     get_session_activity,
     get_session_list,
@@ -679,6 +682,13 @@ class SessionInputPayload(BaseModel):
     enter -- press Enter after text/keys (default False).
     keys  -- named special keys from terminal_input.ALLOWED_KEYS, sent in
              order after *text*. Anything outside the allowlist is a 400.
+    lines -- optional read-back depth override for the pane snapshot
+             returned in the same response. None (the default) preserves
+             the original behavior (sessions.DEFAULT_CAPTURE_LINES, i.e.
+             30). Must be within [1, sessions.MAX_CAPTURE_LINES] or the
+             request is a 400 -- an agent that just ran a long command
+             (e.g. `pytest -v`) can ask for deeper scrollback in the same
+             call that triggered it.
 
     Send order: text -> keys -> enter. At least one of the three must be
     provided (empty text + no keys + enter=False is a 400).
@@ -687,6 +697,7 @@ class SessionInputPayload(BaseModel):
     text: str = ""
     enter: bool = False
     keys: list[str] = []
+    lines: int | None = None
 
 
 class SettingsSyncPayload(BaseModel):
@@ -791,6 +802,54 @@ async def get_sessions() -> list[dict]:
             }
         )
     return result
+
+
+@app.get("/api/sessions/{name}")
+async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) -> dict:
+    """Return a single session's pane content at a caller-chosen depth.
+
+    Unlike GET /api/sessions -- a shared, ~2s-cycle poll cache fixed at
+    DEFAULT_CAPTURE_LINES, consumed simultaneously by the PWA, muxplex-deck,
+    and agents alike -- this does ONE fresh, live `capture-pane` call scoped
+    to *name*. It exists so a caller (typically an agent that just ran a
+    long command via POST .../input, e.g. `pytest -v`) can read deep
+    scrollback on demand without waiting for the next poll cycle and without
+    changing what every other client sees from the bulk cache.
+
+    `lines` must be within [1, MAX_CAPTURE_LINES] (400 otherwise) -- an
+    unbounded value here would let a single request pull arbitrarily large
+    scrollback, a real cost on a server that's also polling every other
+    session on its own cycle. Sessions are created with their tmux
+    `history-limit` raised well above MAX_CAPTURE_LINES (see
+    sessions.ensure_history_retention) specifically so a max-depth request
+    has real backing data instead of tmux's own, possibly much lower,
+    default silently truncating it.
+
+    Raises 404 if *name* is not an exact member of the known session set
+    (same fail-closed pattern as connect/delete/input).
+    """
+    _require_valid_session_name(name)
+    if not (1 <= lines <= MAX_CAPTURE_LINES):
+        raise HTTPException(
+            status_code=400,
+            detail=f"lines must be between 1 and {MAX_CAPTURE_LINES} (got {lines})",
+        )
+    known = get_session_list()
+    if name not in known:
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    snapshot = await capture_pane(name, lines)
+    activity = get_session_activity()
+    state = await read_state()
+    session_state = state.get("sessions", {}).get(name, {})
+    bell = session_state.get("bell", empty_bell())
+    return {
+        "name": name,
+        "snapshot": snapshot,
+        "lines": lines,
+        "bell": bell,
+        "last_activity_at": activity.get(name),
+    }
 
 
 def _attention_order(sessions: list[dict]) -> list[dict]:
@@ -1058,6 +1117,14 @@ async def create_session(payload: CreateSessionPayload) -> dict:
             status_code=500,
             detail=f"Failed to launch command: {exc}",
         )
+
+    # Raise this session's tmux history-limit so a later caller-controlled
+    # deep read (GET /api/sessions/{name}?lines=..., or /input's `lines`
+    # field) has real scrollback to return instead of silently truncating
+    # at whatever this host's tmux.conf happens to default to. Best-effort:
+    # never fails session creation itself (see ensure_history_retention's
+    # docstring).
+    await ensure_history_retention(name)
     return {"name": name, "ok": True}
 
 
@@ -1196,6 +1263,11 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
             status_code=400,
             detail="No input provided (need text, keys, or enter)",
         )
+    if payload.lines is not None and not (1 <= payload.lines <= MAX_CAPTURE_LINES):
+        raise HTTPException(
+            status_code=400,
+            detail=f"lines must be between 1 and {MAX_CAPTURE_LINES} (got {payload.lines})",
+        )
 
     try:
         if payload.text:
@@ -1225,9 +1297,11 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
     _log.debug("input: session=%r full text=%r", name, payload.text)
 
     # Read-back: settle briefly, then capture the pane so the caller sees
-    # the effect of its input (same capture used by the /api/sessions cache).
+    # the effect of its input. Depth defaults to DEFAULT_CAPTURE_LINES (same
+    # as the /api/sessions cache) unless the caller asked for more via
+    # payload.lines (validated above).
     await asyncio.sleep(0.4)
-    snapshot = await capture_pane(name)
+    snapshot = await capture_pane(name, payload.lines or DEFAULT_CAPTURE_LINES)
     return {"ok": True, "session": name, "snapshot": snapshot}
 
 

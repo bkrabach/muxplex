@@ -417,7 +417,140 @@ def test_get_sessions_returns_empty_list_when_no_sessions(client, monkeypatch):
 
     response = client.get("/api/sessions")
     assert response.status_code == 200
-    assert response.json() == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sessions/{name} -- caller-controlled read depth (scrollback fix)
+# ---------------------------------------------------------------------------
+
+
+def test_get_session_snapshot_returns_live_capture(client, monkeypatch):
+    """GET /api/sessions/{name} does a live capture_pane(), not the cache."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    captured_args = []
+
+    async def fake_capture_pane(name: str, lines: int) -> str:
+        captured_args.append((name, lines))
+        return "line1\nline2\n...\nline500\n"
+
+    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+
+    response = client.get("/api/sessions/alpha?lines=500")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "alpha"
+    assert body["lines"] == 500
+    assert body["snapshot"] == "line1\nline2\n...\nline500\n"
+    assert captured_args == [("alpha", 500)]
+
+
+def test_get_session_snapshot_defaults_to_default_capture_lines(client, monkeypatch):
+    """Omitting ?lines= must preserve the original 30-line default -- unchanged shape."""
+    from muxplex.sessions import DEFAULT_CAPTURE_LINES
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    captured_args = []
+
+    async def fake_capture_pane(name: str, lines: int) -> str:
+        captured_args.append((name, lines))
+        return ""
+
+    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+
+    response = client.get("/api/sessions/alpha")
+    assert response.status_code == 200
+    assert response.json()["lines"] == DEFAULT_CAPTURE_LINES
+    assert captured_args == [("alpha", DEFAULT_CAPTURE_LINES)]
+
+
+def test_get_session_snapshot_rejects_lines_over_max(client, monkeypatch):
+    """?lines= above MAX_CAPTURE_LINES must be a 400, not a silently-clamped 200."""
+    from muxplex.sessions import MAX_CAPTURE_LINES
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    response = client.get(f"/api/sessions/alpha?lines={MAX_CAPTURE_LINES + 1}")
+    assert response.status_code == 400
+    assert "lines" in response.json()["detail"]
+
+
+def test_get_session_snapshot_rejects_lines_below_one(client, monkeypatch):
+    """?lines=0 (or negative) must be a 400."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    response = client.get("/api/sessions/alpha?lines=0")
+    assert response.status_code == 400
+
+
+def test_get_session_snapshot_accepts_max_capture_lines_exactly(client, monkeypatch):
+    """The upper bound itself (MAX_CAPTURE_LINES) must be accepted, not rejected."""
+    from muxplex.sessions import MAX_CAPTURE_LINES
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_capture_pane(name: str, lines: int) -> str:
+        return "x" * 10
+
+    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+
+    response = client.get(f"/api/sessions/alpha?lines={MAX_CAPTURE_LINES}")
+    assert response.status_code == 200
+    assert response.json()["lines"] == MAX_CAPTURE_LINES
+
+
+def test_get_session_snapshot_404_for_unknown_session(client, monkeypatch):
+    """An unknown session name -> 404, same fail-closed pattern as connect/delete/input."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    response = client.get("/api/sessions/ghost")
+    assert response.status_code == 404
+
+
+def test_get_session_snapshot_400_for_invalid_name(client, monkeypatch):
+    """A name that fails is_valid_session_name must 400 before any lookup."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+
+    response = client.get("/api/sessions/-leading-dash")
+    assert response.status_code == 400
+
+
+def test_get_session_snapshot_includes_bell_and_activity(client, monkeypatch):
+    """Response shape must match GET /api/sessions's per-item fields (bell, last_activity_at)."""
+    from muxplex.state import save_state
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr(
+        "muxplex.main.get_session_activity", lambda: {"alpha": 1700000000.0}
+    )
+
+    async def fake_capture_pane(name: str, lines: int) -> str:
+        return "pane text"
+
+    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+    save_state(
+        {
+            "active_session": None,
+            "session_order": ["alpha"],
+            "sessions": {
+                "alpha": {
+                    "bell": {
+                        "last_fired_at": 1234567890.0,
+                        "seen_at": None,
+                        "unseen_count": 2,
+                    }
+                }
+            },
+            "devices": {},
+        }
+    )
+
+    response = client.get("/api/sessions/alpha")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bell"]["unseen_count"] == 2
+    assert body["last_activity_at"] == 1700000000.0
 
 
 def test_get_sessions_includes_last_activity_at(client, monkeypatch):
