@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.18.0 (2026-07-26)
+
+### Bug Fixes
+
+- **Accepted `/input` calls are now actually audited.** `uvicorn.run(..., log_level="info")` configures only uvicorn's own loggers; it never touched the root logger or any `muxplex.*` logger, so every module logger sat at WARNING with no handler attached. Every `_log.info` audit line for an accepted terminal-input call was silently discarded — while the *rejected*-input warning appeared normally, since Python's handler-of-last-resort surfaces WARNING and above. That asymmetry hid the defect. `configure_logging()` now scopes the `muxplex` package logger to INFO with a single idempotent handler, deliberately not configuring the root logger, which would drag every third-party dependency to INFO and bury the audit trail. This matters beyond tidiness: the agent guide documents this log as the operator's record of what their agents typed, and lists it as one of only three protections remaining in the wide-open `input_allowed_sessions: ["*"]` posture. The guarantee was documented but not delivered. Notably a test already covered this line and stayed green throughout, because it used `caplog.at_level(logging.INFO, logger="muxplex.main")` — forcing the very level it was meant to verify. The replacement starts from an unconfigured logger, asserts the broken state is real, then proves a record reaches an independently attached handler.
+
+- **The tmux bell hook now self-heals.** Startup registration was wrapped in `except Exception: pass` with a comment promising the hook would be set on the first poll — but nothing anywhere re-registered it. The failure it names, tmux not yet running at startup, is the normal case on a fresh boot, so the most likely path left bells permanently dead with no error, no log, and no signal. Confirmed in a clean container: bell counts frozen until `/api/internal/setup-hooks` was called by hand. Registration is now a single shared helper called from startup, the poll cycle, and the manual endpoint, retried from the poll cycle only while genuinely unarmed — so it heals on the next 2-second cycle and costs a boolean read thereafter rather than a subprocess every cycle forever. Failures log at WARNING with the real tmux error, and `GET /api/instance-info` exposes `bell_hook_armed` so the state can be queried rather than inferred.
+
+### Features
+
+- **Caller-controlled read depth for pane snapshots.** `capture_pane()` hardcoded a 30-line window, so `seq 1 100` returned only lines 48 onward with no API able to recover the rest — a hard ceiling for any agent running `pytest -v`, a build, or anything else output-heavy. `POST /api/sessions/{name}/input` now accepts an optional `lines`, and a new `GET /api/sessions/{name}?lines=N` performs a live single-session capture without typing anything, covering the case the read-back structurally cannot: polling a long job started earlier. The default stays 30 so existing callers are unchanged; the maximum is 2000, and an out-of-range value is a 400 rather than a silent clamp, because a caller believing it received 5000 lines while getting 2000 is worse than an explicit rejection. tmux `history-limit` is now set explicitly per session, since sessions are created through an operator-configurable template and muxplex never controlled retained scrollback — without it a deep request could return fewer lines than asked for, a worse lie than the original honest ceiling. The bulk `GET /api/sessions` deliberately does *not* take a depth parameter: it serves one shared poll cache consumed simultaneously by the PWA, the Stream Deck sidecar, and agents, and a per-request override there would either fork that contract or fan out one live tmux call per session on every request.
+
+### Documentation
+
+- **The agent guide now documents proven unattended-operation patterns.** A completion-sentinel convention is the primary recommendation, verified end-to-end against a live instance for both a successful long command and a nonzero exit — `last_activity_at` alone cannot distinguish a command running silently from one finished at an idle prompt, and that ambiguity is the actual blocker on unattended operation. A bell-on-nonzero-exit convention is documented alongside it, with the explicit warning that nothing an agent naturally runs will ring a bell otherwise. The poll-cache guidance was corrected from a guessed "sleep ~3s" to the measured reality — a just-created session resolved on the third attempt at 0.3s spacing, under one second — with a retry loop rather than a blind sleep. AGENTS.md's copy of the same claim was corrected to match.
+
+### Verification
+
+- 1546 tests passed / 5 deselected in an isolated Digital Twin Universe container (baseline v0.17.0: 1522 passed, +24 new tests covering the audit-log fix, bell self-heal, and sentinel completion patterns).
+- All five CI jobs green: frontend (node:test), Python 3.11/3.12/3.13, and test-latest-deps (mirrors user install behavior).
+- Sentinel completion detection verified end-to-end against a live instance: `sleep 8 && echo` matched at 8.15s with exit_code=0, `sleep 3; false` matched at 3.03s with exit_code=1.
+- Bell hook self-heal verified: fresh DTU with hook registration failure, then polled until hook healed on the next cycle.
+- Audit log verified: 12 accepted `/input` calls → 12 matching INFO lines in audit log.
+
 ## v0.17.0 (2026-07-26)
 
 ### Bug Fixes
