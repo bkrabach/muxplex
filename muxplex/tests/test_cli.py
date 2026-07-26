@@ -1244,6 +1244,11 @@ def test_kill_stale_port_holder_kills_foreign_pid(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(os, "kill", fake_kill)
     monkeypatch.setattr(os, "getpid", lambda: 12345)  # not the same as foreign_pid
+    # Deterministic: never probe the real network. Without this the test would
+    # hit 127.0.0.1:8088 and flip its outcome on a machine actually running muxplex.
+    monkeypatch.setattr(
+        cli_mod, "_port_holder_is_healthy_muxplex", lambda *a, **k: False
+    )
 
     # Patch time.sleep so test doesn't actually sleep
     import time
@@ -1305,7 +1310,9 @@ def test_serve_calls_kill_stale_port_holder(tmp_path, monkeypatch):
 
     killed_ports = []
     monkeypatch.setattr(
-        cli_mod, "_kill_stale_port_holder", lambda port: killed_ports.append(port)
+        cli_mod,
+        "_kill_stale_port_holder",
+        lambda port, force=False: killed_ports.append(port),
     )
 
     with patch("uvicorn.run"):
@@ -3377,3 +3384,190 @@ def test_doctor_reports_launchd_registered_but_not_serving(
         f"doctor() must warn 'not serving' when launchd is registered but port is down;"
         f" got: {out!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# task: never SIGTERM a HEALTHY muxplex — probe before kill
+#
+# A silent kill of a live server is indistinguishable from a mystery outage:
+# it produces a clean graceful shutdown with no crash and no systemd "Stopping"
+# line. These tests pin the refusal behaviour.
+# ---------------------------------------------------------------------------
+
+
+def _fake_lsof(pid_out: str):
+    """subprocess.run stub returning *pid_out* as lsof stdout."""
+
+    def fake_run(cmd, **kw):
+        return type("R", (), {"returncode": 0, "stdout": pid_out, "stderr": ""})()
+
+    return fake_run
+
+
+def test_kill_stale_port_holder_refuses_to_kill_healthy_server(monkeypatch, capsys):
+    """A responding muxplex must NOT be killed; startup must abort instead."""
+    import os
+    import subprocess
+    import muxplex.cli as cli_mod
+
+    killed = []
+    monkeypatch.setattr(subprocess, "run", _fake_lsof("4242\n"))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(os, "getpid", lambda: 12345)
+    monkeypatch.setattr(
+        cli_mod, "_port_holder_is_healthy_muxplex", lambda *a, **k: True
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_mod._kill_stale_port_holder(8088)
+
+    assert exc.value.code != 0, "must exit non-zero rather than start"
+    assert killed == [], f"must NOT signal a healthy server, but sent: {killed}"
+    err = capsys.readouterr().err
+    assert "8088" in err, "message must name the port"
+    assert "4242" in err, "message must name the holder PID"
+    assert "--force-take-port" in err, "message must offer the override"
+
+
+def test_kill_stale_port_holder_kills_unresponsive_holder(monkeypatch):
+    """A holder that does not answer the probe is stale — kill it as before."""
+    import os
+    import signal
+    import subprocess
+    import time
+    import muxplex.cli as cli_mod
+
+    killed = []
+    monkeypatch.setattr(subprocess, "run", _fake_lsof("4242\n"))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(os, "getpid", lambda: 12345)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        cli_mod, "_port_holder_is_healthy_muxplex", lambda *a, **k: False
+    )
+
+    cli_mod._kill_stale_port_holder(8088)
+
+    assert (4242, signal.SIGTERM) in killed
+
+
+def test_kill_stale_port_holder_force_overrides_healthy_check(monkeypatch):
+    """--force-take-port must kill even a healthy server."""
+    import os
+    import signal
+    import subprocess
+    import time
+    import muxplex.cli as cli_mod
+
+    killed = []
+    monkeypatch.setattr(subprocess, "run", _fake_lsof("4242\n"))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(os, "getpid", lambda: 12345)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        cli_mod, "_port_holder_is_healthy_muxplex", lambda *a, **k: True
+    )
+
+    cli_mod._kill_stale_port_holder(8088, force=True)
+
+    assert (4242, signal.SIGTERM) in killed
+
+
+def test_kill_stale_port_holder_no_holder_never_probes(monkeypatch):
+    """With nobody on the port there must be no probe and no signal."""
+    import os
+    import subprocess
+    import muxplex.cli as cli_mod
+
+    probed, killed = [], []
+
+    def fake_run(cmd, **kw):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(
+        cli_mod,
+        "_port_holder_is_healthy_muxplex",
+        lambda *a, **k: probed.append(True) or False,
+    )
+
+    cli_mod._kill_stale_port_holder(8088)
+
+    assert probed == [], "must not probe when no process holds the port"
+    assert killed == []
+
+
+def test_kill_stale_port_holder_survives_missing_lsof(monkeypatch):
+    """A missing/raising lsof must never prevent startup."""
+    import subprocess
+    import muxplex.cli as cli_mod
+
+    def boom(cmd, **kw):
+        raise FileNotFoundError("lsof")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    cli_mod._kill_stale_port_holder(8088)  # must not raise
+
+
+def test_port_holder_probe_true_for_real_instance_info(monkeypatch):
+    """200 + device_id + version => a healthy muxplex."""
+    import muxplex.cli as cli_mod
+
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return b'{"device_id": "abc", "version": "0.14.0", "name": "spark-1"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResp())
+    assert cli_mod._port_holder_is_healthy_muxplex(8088) is True
+
+
+def test_port_holder_probe_false_for_non_muxplex_json(monkeypatch):
+    """200 but the wrong shape => not a muxplex; do not treat as healthy."""
+    import muxplex.cli as cli_mod
+
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return b'{"hello": "world"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResp())
+    assert cli_mod._port_holder_is_healthy_muxplex(8088) is False
+
+
+def test_port_holder_probe_false_when_connection_fails(monkeypatch):
+    """Refused/timeout on both schemes => stale holder, safe to kill."""
+    import muxplex.cli as cli_mod
+
+    def boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert cli_mod._port_holder_is_healthy_muxplex(8088) is False
+
+
+def test_serve_parser_exposes_force_take_port():
+    """The --force-take-port escape hatch must exist on serve."""
+    import argparse
+    import muxplex.cli as cli_mod
+
+    parser = argparse.ArgumentParser()
+    cli_mod._add_serve_flags(parser)
+    args = parser.parse_args(["--force-take-port"])
+    assert args.force_take_port is True
+    assert parser.parse_args([]).force_take_port is False

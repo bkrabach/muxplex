@@ -314,8 +314,48 @@ def show_password() -> None:
         print("No password file found. Start muxplex to auto-generate one.")
 
 
-def _kill_stale_port_holder(port: int) -> None:
-    """Kill any existing process on *port* to prevent EADDRINUSE crash-loops.
+def _port_holder_is_healthy_muxplex(port: int, timeout: float = 2.0) -> bool:
+    """Return True if a live, responding muxplex is serving *port*.
+
+    Probes ``/api/instance-info`` -- a public, unauthenticated endpoint -- over
+    https then http (TLS is optional in muxplex, so the scheme cannot be
+    assumed).  Certificate verification is disabled deliberately: we are talking
+    to ourselves on loopback and may not have the local CA installed.
+
+    WHY THIS EXISTS -- do not "simplify" it away:
+    Without this probe, :func:`_kill_stale_port_holder` cannot tell a hung/stale
+    holder apart from a perfectly healthy running server, so ANY second
+    invocation of the startup path silently SIGTERMs the live service.  A silent
+    kill of a healthy server is indistinguishable from a mystery outage -- it
+    produces a clean graceful shutdown in the logs with no crash and no
+    ``Stopping`` line from systemd, which is extremely hard to diagnose.  This
+    probe converts that silent kill into a loud, actionable refusal.
+    """
+    import json
+    import ssl
+    import urllib.request
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    for scheme in ("https", "http"):
+        url = f"{scheme}://127.0.0.1:{port}/api/instance-info"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:  # noqa: S310
+                if resp.status != 200:
+                    continue
+                data = json.loads(resp.read().decode("utf-8"))
+                # A real muxplex always reports both of these.
+                if isinstance(data, dict) and "device_id" in data and "version" in data:
+                    return True
+        except Exception:
+            continue  # refused / timeout / TLS mismatch / garbage -> not a healthy muxplex
+    return False
+
+
+def _kill_stale_port_holder(port: int, force: bool = False) -> None:
+    """Free *port* from a STALE holder, refusing to kill a healthy server.
 
     On service restart (``systemctl restart muxplex``), the old process may still
     be holding the port in TIME_WAIT state or simply not have exited yet.  Without
@@ -323,9 +363,26 @@ def _kill_stale_port_holder(port: int) -> None:
     restarts it in an infinite loop (observed: 2075+ restarts before manual
     intervention).
 
-    Uses ``lsof -ti :<port>`` to find occupants, sends SIGTERM, then waits 1 s
-    for the port to free.  Silently swallows all errors so that a missing ``lsof``
-    or a permission error never prevents the server from starting.
+    The original implementation killed *whatever* held the port, which meant a
+    stray invocation of the startup path would silently terminate a healthy,
+    serving muxplex.  Now the holder is probed first
+    (:func:`_port_holder_is_healthy_muxplex`) and killed ONLY on positive
+    evidence that it is not serving.  If it *is* serving, this raises
+    ``SystemExit(1)`` with an actionable message instead of starting.
+
+    Restart-race reasoning: during a legitimate ``systemctl restart``, systemd
+    waits for the old process to exit before starting the new one, so normally no
+    holder exists and the probe never runs.  If an old instance is still draining
+    and answers the probe, the new process exits non-zero and systemd retries
+    after ``RestartSec`` -- a bounded retry that resolves as soon as the old
+    instance finishes draining.  That is strictly better than killing a healthy
+    server, and cannot become a tight loop because each attempt costs a full
+    ``RestartSec`` delay.
+
+    Pass ``force=True`` (``muxplex serve --force-take-port``) to restore the old
+    unconditional behaviour.
+
+    A missing ``lsof`` or a permission error never prevents startup.
     """
     import signal
     import time
@@ -337,18 +394,45 @@ def _kill_stale_port_holder(port: int) -> None:
             text=True,
             timeout=5,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            my_pid = os.getpid()
-            for pid_str in result.stdout.strip().split("\n"):
-                try:
-                    pid = int(pid_str.strip())
-                    if pid != my_pid:
-                        os.kill(pid, signal.SIGTERM)
-                except (ValueError, ProcessLookupError, PermissionError):
-                    pass
-            time.sleep(1)  # Brief wait for the port to be released
     except Exception:
-        pass  # lsof not available or other error — proceed; uvicorn will fail naturally
+        return  # lsof not available or other error — proceed; uvicorn will fail naturally
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return  # nobody is holding the port
+
+    my_pid = os.getpid()
+    holders: list[int] = []
+    for pid_str in result.stdout.strip().split("\n"):
+        try:
+            pid = int(pid_str.strip())
+        except ValueError:
+            continue
+        if pid != my_pid:
+            holders.append(pid)
+
+    if not holders:
+        return
+
+    if not force and _port_holder_is_healthy_muxplex(port):
+        pids = ", ".join(str(p) for p in holders)
+        print(
+            f"ERROR: port {port} is already served by a healthy muxplex (pid {pids}).\n"
+            f"       Refusing to terminate it.\n"
+            f"\n"
+            f"       To restart the service properly:\n"
+            f"           systemctl --user restart muxplex\n"
+            f"       To take the port anyway (kills the running server):\n"
+            f"           muxplex serve --force-take-port",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    for pid in holders:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    time.sleep(1)  # Brief wait for the port to be released
 
 
 def serve(
@@ -358,6 +442,7 @@ def serve(
     session_ttl: int | None = None,
     tls_cert: str | None = None,
     tls_key: str | None = None,
+    force_take_port: bool = False,
 ) -> None:
     """Start the muxplex server.
 
@@ -381,8 +466,9 @@ def serve(
     os.environ["MUXPLEX_AUTH"] = auth
     os.environ["MUXPLEX_SESSION_TTL"] = str(session_ttl)
 
-    # Prevent crash-loop on restart: kill any stale process holding the port
-    _kill_stale_port_holder(port)
+    # Prevent crash-loop on restart: free the port from a STALE holder only.
+    # Refuses to terminate a healthy running server -- see _kill_stale_port_holder.
+    _kill_stale_port_holder(port, force=force_take_port)
 
     from muxplex.main import app  # noqa: PLC0415
 
@@ -1309,6 +1395,15 @@ def _add_serve_flags(parser: argparse.ArgumentParser) -> None:
         dest="tls_key",
         help="Path to TLS private key file (default: from settings.json)",
     )
+    parser.add_argument(
+        "--force-take-port",
+        action="store_true",
+        dest="force_take_port",
+        help=(
+            "Terminate whatever holds the port, even a healthy running muxplex. "
+            "Without this, startup refuses rather than killing a live server."
+        ),
+    )
 
 
 def main() -> None:
@@ -1470,4 +1565,5 @@ def main() -> None:
             session_ttl=args.session_ttl,
             tls_cert=args.tls_cert,
             tls_key=args.tls_key,
+            force_take_port=getattr(args, "force_take_port", False),
         )
