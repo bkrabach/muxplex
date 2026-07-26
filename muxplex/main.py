@@ -125,6 +125,15 @@ _poll_task: asyncio.Task | None = None
 _federation_client: httpx.AsyncClient | None = None
 _settings_sync_counter: int = 0
 
+# Bell-hook self-healing state (see _arm_bell_hook()). Starts unarmed;
+# _run_poll_cycle() retries registration each cycle ONLY while this is False,
+# so a startup failure is retried until it heals, but a steady-state success
+# costs nothing further -- no per-cycle tmux subprocess once armed. Exposed
+# via GET /api/instance-info so an operator/agent can tell bells are (not)
+# armed without grepping logs.
+_bell_hook_armed: bool = False
+_bell_hook_last_error: str | None = None
+
 # Tasks currently running a terminal WebSocket proxy relay.  Tracked so the
 # lifespan shutdown can cancel any still-open relays: a relay blocked on
 # ttyd output would otherwise keep uvicorn's "waiting for connections to
@@ -224,6 +233,56 @@ async def _sync_settings_with_remotes(
 
 
 # ---------------------------------------------------------------------------
+# Bell hook registration
+# ---------------------------------------------------------------------------
+
+
+async def _arm_bell_hook() -> bool:
+    """(Re-)register tmux's ``alert-bell`` hook so a bell forwards to
+    ``POST /api/sessions/{name}/bell`` (see ``receive_bell()``).
+
+    Idempotent: ``set-hook -g`` simply overwrites whatever hook is already
+    set, so calling this repeatedly is always safe.
+
+    Self-healing without a steady-state tax: this is retried by
+    ``_run_poll_cycle`` every cycle *only while unarmed* (see
+    ``_bell_hook_armed``), which is what actually heals the common failure
+    -- tmux not running yet when muxplex starts. Once armed, callers stop
+    retrying, so a healthy process pays this subprocess cost once, not every
+    2s for its lifetime.
+
+    Failure is never silent: every failure is logged at WARNING with the
+    tmux error (unlike the previous ``except Exception: pass``), and the
+    outcome is recorded in ``_bell_hook_armed`` / ``_bell_hook_last_error``
+    so ``GET /api/instance-info`` reflects it without grepping logs.
+
+    Returns:
+        True if tmux accepted the hook registration, False otherwise.
+    """
+    global _bell_hook_armed, _bell_hook_last_error
+    try:
+        await run_tmux(
+            "set-hook",
+            "-g",
+            "alert-bell",
+            f"run-shell 'curl -sfo /dev/null -X POST http://localhost:{SERVER_PORT}/api/sessions/#{{session_name}}/bell || true'",
+        )
+    except Exception as exc:
+        _bell_hook_last_error = str(exc)
+        _log.warning(
+            "bell hook registration failed, bells will not fire until this "
+            "heals (retried each poll cycle while unarmed): %s",
+            exc,
+        )
+        _bell_hook_armed = False
+        return False
+
+    _bell_hook_last_error = None
+    _bell_hook_armed = True
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Poll cycle
 # ---------------------------------------------------------------------------
 
@@ -231,6 +290,13 @@ async def _sync_settings_with_remotes(
 async def _run_poll_cycle() -> None:
     """Perform one full poll cycle, all operations executed under state_lock."""
     global _settings_sync_counter
+
+    # Self-healing bell hook: retry registration only while unarmed, so the
+    # cost is paid only during the (typically single 2s cycle) window before
+    # tmux comes up -- never a per-cycle tax once armed. See _arm_bell_hook().
+    if not _bell_hook_armed:
+        await _arm_bell_hook()
+
     async with state_lock:
         # 1. Enumerate live tmux sessions
         names = await enumerate_sessions()
@@ -502,17 +568,14 @@ async def lifespan(app: FastAPI):
     await kill_orphan_ttyd()
     _poll_task = asyncio.create_task(_poll_loop())
 
-    # Register tmux alert-bell hook so bells are detected even when clients are attached.
-    # window_bell_flag is only set when no client watches the window; the hook fires always.
-    try:
-        await run_tmux(
-            "set-hook",
-            "-g",
-            "alert-bell",
-            f"run-shell 'curl -sfo /dev/null -X POST http://localhost:{SERVER_PORT}/api/sessions/#{{session_name}}/bell || true'",
-        )
-    except Exception:
-        pass  # tmux not running at startup is OK; hook will be set on first poll
+    # Register tmux alert-bell hook so bells are detected even when clients are
+    # attached (window_bell_flag is only set when no client is watching; the
+    # hook fires always). tmux commonly isn't running yet at this exact point
+    # in a fresh boot, so this failing here is the expected common case, not
+    # an edge case -- _arm_bell_hook() records the outcome and logs loudly on
+    # failure instead of swallowing it, and _run_poll_cycle() retries every
+    # cycle until it heals (self-healing, no per-cycle tax once armed).
+    await _arm_bell_hook()
 
     app.state.federation_client = httpx.AsyncClient(
         timeout=5.0,
@@ -1452,17 +1515,16 @@ async def clear_bell(name: str) -> dict:
 
 @app.post("/api/internal/setup-hooks")
 async def setup_hooks() -> dict:
-    """Re-register tmux hooks. Call after tmux server restarts."""
-    try:
-        await run_tmux(
-            "set-hook",
-            "-g",
-            "alert-bell",
-            f"run-shell 'curl -sfo /dev/null -X POST http://localhost:{SERVER_PORT}/api/sessions/#{{session_name}}/bell || true'",
-        )
+    """Re-register tmux hooks. Call after tmux server restarts.
+
+    Delegates to the same _arm_bell_hook() the poll loop's self-healing
+    retry uses, so a manual call here and the automatic retry always agree
+    on the recorded armed state (_bell_hook_armed, surfaced at
+    GET /api/instance-info).
+    """
+    if await _arm_bell_hook():
         return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": _bell_hook_last_error}
 
 
 @app.get("/api/settings")
@@ -1690,6 +1752,12 @@ async def instance_info() -> dict:
         # a best-effort guess, unlike the CLI's `muxplex env`, which infers
         # from its own separate process environment).
         "tmux_socket_dir": resolve_tmux_socket_dir(),
+        # Whether the tmux alert-bell hook is currently registered (see
+        # _arm_bell_hook()). False means bells are not firing -- e.g. tmux
+        # wasn't up yet at startup, and _run_poll_cycle()'s self-healing
+        # retry hasn't succeeded yet. This is how an operator/agent tells
+        # bells are unarmed without grepping logs.
+        "bell_hook_armed": _bell_hook_armed,
     }
 
 

@@ -1431,6 +1431,141 @@ def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Bell hook self-healing (regression: startup registration used to fail
+# silently -- `except Exception: pass` -- and nothing ever retried it)
+# ---------------------------------------------------------------------------
+
+
+async def test_bell_hook_self_heals_after_startup_failure(monkeypatch):
+    """Regression test for the silently-dead bell hook.
+
+    The original bug: the startup call to `set-hook` could fail (tmux not up
+    yet at boot -- the *common* case, per the comment it left behind), the
+    failure was swallowed by a bare `except Exception: pass`, and nothing in
+    the poll loop ever re-registered it. Bells were then dead for the life of
+    the process with no error, no log, no signal.
+
+    A test that only asserted "_arm_bell_hook gets called" or that itself
+    called the recovery path would pass against the ORIGINAL broken code too
+    (which also called run_tmux once, just never again) -- exactly the trap
+    that let `test_audit_log_line_present_and_redacted` stay green for weeks
+    while the audit log emitted nothing. This test instead:
+
+      1. Forces the startup-equivalent call to genuinely fail.
+      2. Asserts the module is left in a genuinely unarmed state as a
+         *result* of that real failure -- not a mocked assertion.
+      3. Runs a REAL `_run_poll_cycle()` (production's own retry path, not a
+         second manual call this test makes itself) with tmux available
+         again, and proves THAT heals it.
+
+    Against the pre-fix code this test fails at step 3: nothing in
+    `_run_poll_cycle` ever called `run_tmux` for the hook, so `call_count`
+    would stay at 1 and the hook would never be proven armed.
+    """
+    from unittest.mock import AsyncMock
+
+    import muxplex.main as main_mod
+
+    # Start from a genuinely-unarmed state (a prior test may have left
+    # module-level state armed).
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", False)
+    monkeypatch.setattr(main_mod, "_bell_hook_last_error", None)
+
+    # First call (the startup-equivalent) fails, simulating "tmux not up yet
+    # at boot"; second call (inside the poll cycle, tmux now up) succeeds.
+    mock_run_tmux = AsyncMock(
+        side_effect=[RuntimeError("no server running on /tmp/tmux-0/default"), ""]
+    )
+    monkeypatch.setattr(main_mod, "run_tmux", mock_run_tmux)
+
+    # Step 1: the real startup call must genuinely fail here.
+    startup_result = await main_mod._arm_bell_hook()
+    assert startup_result is False
+    assert main_mod._bell_hook_armed is False
+    assert main_mod._bell_hook_last_error is not None
+    assert mock_run_tmux.call_count == 1
+
+    # Step 2: drive a REAL poll cycle. Everything else it touches is mocked
+    # out to isolate the hook-arming behavior -- crucially, the self-healing
+    # check inside _run_poll_cycle itself is NOT mocked.
+    async def mock_enumerate():
+        return []
+
+    async def mock_snapshot_all(names):
+        return {}
+
+    monkeypatch.setattr(main_mod, "enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr(main_mod, "snapshot_all", mock_snapshot_all)
+    monkeypatch.setattr(main_mod, "update_session_cache", lambda names, snapshots: None)
+    monkeypatch.setattr(main_mod, "process_bell_flags", AsyncMock())
+    monkeypatch.setattr(main_mod, "apply_bell_clear_rule", lambda state: None)
+    monkeypatch.setattr(main_mod, "prune_devices", lambda state: None)
+
+    await main_mod._run_poll_cycle()
+
+    # The poll cycle's self-healing retry is what fixed it.
+    assert mock_run_tmux.call_count == 2, (
+        "expected _run_poll_cycle to retry bell-hook registration while unarmed"
+    )
+    assert main_mod._bell_hook_armed is True
+    assert main_mod._bell_hook_last_error is None
+
+
+async def test_bell_hook_not_retried_once_armed(monkeypatch):
+    """Once armed, `_run_poll_cycle()` must NOT call tmux again every cycle.
+
+    This is the other half of the design constraint: self-healing must not
+    become an unconditional per-cycle `tmux set-hook` call -- a subprocess
+    every ~2s for the life of the process to re-set something already set.
+    """
+    from unittest.mock import AsyncMock
+
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", True)
+    monkeypatch.setattr(main_mod, "_bell_hook_last_error", None)
+
+    mock_run_tmux = AsyncMock(return_value="")
+    monkeypatch.setattr(main_mod, "run_tmux", mock_run_tmux)
+
+    async def mock_enumerate():
+        return []
+
+    async def mock_snapshot_all(names):
+        return {}
+
+    monkeypatch.setattr(main_mod, "enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr(main_mod, "snapshot_all", mock_snapshot_all)
+    monkeypatch.setattr(main_mod, "update_session_cache", lambda names, snapshots: None)
+    monkeypatch.setattr(main_mod, "process_bell_flags", AsyncMock())
+    monkeypatch.setattr(main_mod, "apply_bell_clear_rule", lambda state: None)
+    monkeypatch.setattr(main_mod, "prune_devices", lambda state: None)
+
+    await main_mod._run_poll_cycle()
+
+    assert mock_run_tmux.call_count == 0, (
+        "an already-armed hook must not be re-registered every poll cycle"
+    )
+    assert main_mod._bell_hook_armed is True
+
+
+def test_instance_info_reports_bell_hook_armed(client, monkeypatch):
+    """GET /api/instance-info surfaces bell_hook_armed, so a dead hook is
+    observable without grepping logs -- the previous `except Exception: pass`
+    left no externally-visible signal at all."""
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", False)
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    assert response.json()["bell_hook_armed"] is False
+
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", True)
+    response = client.get("/api/instance-info")
+    assert response.json()["bell_hook_armed"] is True
+
+
+# ---------------------------------------------------------------------------
 # Static file serving tests
 # ---------------------------------------------------------------------------
 
