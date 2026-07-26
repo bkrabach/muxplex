@@ -4481,6 +4481,22 @@ test('showNewSessionInput creates device select when multi_device_enabled with r
   assert.ok(createdTags.includes('select'), 'showNewSessionInput must create a <select> element when multi_device_enabled');
 });
 
+test('_suppressAutofill sets every AUTOFILL_SUPPRESSION_ATTRS key and disables spellcheck', () => {
+  const attrs = {};
+  const stubInput = {
+    spellcheck: true,
+    setAttribute(name, value) { attrs[name] = value; },
+  };
+
+  const returned = app._suppressAutofill(stubInput);
+
+  for (const [key, value] of Object.entries(app.AUTOFILL_SUPPRESSION_ATTRS)) {
+    assert.strictEqual(attrs[key], value, `_suppressAutofill must set ${key}="${value}"`);
+  }
+  assert.strictEqual(stubInput.spellcheck, false, '_suppressAutofill must disable spellcheck');
+  assert.strictEqual(returned, stubInput, '_suppressAutofill must return the same input (for chaining)');
+});
+
 test('new session input suppresses browser and password-manager autofill', () => {
   // No remotes -> no <select>, so the only element created is the name input.
   app._setServerSettings({ multi_device_enabled: false, remote_instances: [] });
@@ -4513,17 +4529,138 @@ test('new session input suppresses browser and password-manager autofill', () =>
 
   assert.ok(inputEl !== null, 'showNewSessionInput must create an <input>');
 
-  // autocomplete="off" alone is ignored by password managers on a bare,
-  // form-less text field whose placeholder reads "Session name" — each vendor
-  // opt-out below is load-bearing, not redundant.
-  assert.strictEqual(inputEl.attrs['autocomplete'], 'off', 'autocomplete must be off');
-  assert.strictEqual(inputEl.attrs['autocorrect'], 'off', 'autocorrect must be off (mobile PWA)');
-  assert.strictEqual(inputEl.attrs['autocapitalize'], 'off', 'autocapitalize must be off (mobile PWA)');
-  assert.strictEqual(inputEl.attrs['data-1p-ignore'], 'true', '1Password must be told to ignore this field');
-  assert.strictEqual(inputEl.attrs['data-lpignore'], 'true', 'LastPass must be told to ignore this field');
-  assert.strictEqual(inputEl.attrs['data-bwignore'], 'true', 'Bitwarden must be told to ignore this field');
-  assert.strictEqual(inputEl.attrs['data-form-type'], 'other', 'Dashlane must be told this is not a credential field');
+  // Assert through the shared AUTOFILL_SUPPRESSION_ATTRS contract rather than
+  // duplicating the literal attribute list here -- that constant is the single
+  // source of truth, and _suppressAutofill's own test above covers the mechanism.
+  for (const [key, value] of Object.entries(app.AUTOFILL_SUPPRESSION_ATTRS)) {
+    assert.strictEqual(inputEl.attrs[key], value, `${key} must be set to "${value}"`);
+  }
   assert.strictEqual(inputEl.spellcheck, false, 'spellcheck must be disabled');
+});
+
+// --- _suppressAutofill applied to the other five JS-created inputs ---
+//
+// Source-text assertions are used here (rather than exercising each DOM path,
+// several of which are deeply nested in dropdown/panel UI) to confirm each
+// function calls _suppressAutofill on the right variable.
+
+test('showNewViewInput (header "+ New View" dropdown) applies _suppressAutofill', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function showNewViewInput(');
+  assert.ok(fnStart !== -1, 'showNewViewInput function must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd !== -1 ? fnEnd : fnStart + 2000);
+  assert.match(fnBody, /_suppressAutofill\(input\)/, 'showNewViewInput must call _suppressAutofill(input)');
+});
+
+test('showSidebarNewViewInput (sidebar "+ New View" dropdown) applies _suppressAutofill', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function showSidebarNewViewInput(');
+  assert.ok(fnStart !== -1, 'showSidebarNewViewInput function must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd !== -1 ? fnEnd : fnStart + 2000);
+  assert.match(fnBody, /_suppressAutofill\(input\)/, 'showSidebarNewViewInput must call _suppressAutofill(input)');
+});
+
+test('openManageViewPanel inline view-rename input applies _suppressAutofill', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function openManageViewPanel(');
+  assert.ok(fnStart !== -1, 'openManageViewPanel function must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd !== -1 ? fnEnd : fnStart + 4000);
+  assert.match(
+    fnBody,
+    /manage-view-panel__name-input[\s\S]*?_suppressAutofill\(input\)/,
+    'the rename input inside openManageViewPanel must call _suppressAutofill(input)',
+  );
+});
+
+test('_buildRemoteInstanceRow applies _suppressAutofill to urlInput and nameInput', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function _buildRemoteInstanceRow(');
+  assert.ok(fnStart !== -1, '_buildRemoteInstanceRow function must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd !== -1 ? fnEnd : fnStart + 2000);
+  assert.match(fnBody, /_suppressAutofill\(urlInput\)/, '_buildRemoteInstanceRow must call _suppressAutofill(urlInput)');
+  assert.match(fnBody, /_suppressAutofill\(nameInput\)/, '_buildRemoteInstanceRow must call _suppressAutofill(nameInput)');
+});
+
+// --- Deliberate exclusion: federation key input must NOT be suppressed ---
+//
+// keyInput is a genuine secret (type="password") a user may deliberately want
+// their password manager to remember. If a future refactor "helpfully" sweeps
+// _suppressAutofill across every input in this function, this test must fail.
+
+test('_buildRemoteInstanceRow does NOT apply _suppressAutofill to keyInput (deliberate exclusion)', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const fnStart = source.indexOf('function _buildRemoteInstanceRow(');
+  assert.ok(fnStart !== -1, '_buildRemoteInstanceRow function must exist');
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
+  const fnBody = source.substring(fnStart, fnEnd !== -1 ? fnEnd : fnStart + 2000);
+  assert.doesNotMatch(
+    fnBody,
+    /_suppressAutofill\(keyInput\)/,
+    'keyInput is a real secret field (type="password") -- it must NOT be autofill-suppressed',
+  );
+});
+
+// --- Sync test: index.html static inputs must mirror AUTOFILL_SUPPRESSION_ATTRS ---
+//
+// Chrome scans the DOM for autofill targets at parse time, before our JS runs,
+// so these two inputs carry the suppression attributes as literal markup
+// instead of getting them from _suppressAutofill. This test derives the
+// expected attribute list from the constant (not a hardcoded copy) so it FAILS
+// if someone adds a key to AUTOFILL_SUPPRESSION_ATTRS without updating the
+// markup in index.html.
+
+function _extractInputTag(html, id) {
+  const idIdx = html.indexOf(`id="${id}"`);
+  assert.ok(idIdx !== -1, `index.html must contain an input with id="${id}"`);
+  const tagStart = html.lastIndexOf('<input', idIdx);
+  const tagEnd = html.indexOf('/>', idIdx);
+  assert.ok(tagStart !== -1 && tagEnd !== -1, `could not locate full <input> tag for id="${id}"`);
+  return html.substring(tagStart, tagEnd);
+}
+
+test('index.html #terminal-search-input mirrors AUTOFILL_SUPPRESSION_ATTRS', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const tag = _extractInputTag(html, 'terminal-search-input');
+
+  for (const [key, value] of Object.entries(app.AUTOFILL_SUPPRESSION_ATTRS)) {
+    assert.ok(tag.includes(`${key}="${value}"`), `#terminal-search-input must carry ${key}="${value}"`);
+  }
+  assert.ok(tag.includes('spellcheck="false"'), '#terminal-search-input must carry spellcheck="false"');
+});
+
+test('index.html #setting-device-name mirrors AUTOFILL_SUPPRESSION_ATTRS', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const tag = _extractInputTag(html, 'setting-device-name');
+
+  for (const [key, value] of Object.entries(app.AUTOFILL_SUPPRESSION_ATTRS)) {
+    assert.ok(tag.includes(`${key}="${value}"`), `#setting-device-name must carry ${key}="${value}"`);
+  }
+  assert.ok(tag.includes('spellcheck="false"'), '#setting-device-name must carry spellcheck="false"');
+});
+
+// --- Deliberate exclusion: login.html must NEVER get autofill suppression ---
+//
+// login.html is the ONE form where password managers are wanted. Applying any
+// suppression attribute here would be a real bug, not a fix. This guards
+// against a future "apply it everywhere" sweep breaking login.
+
+test('login.html inputs are NOT autofill-suppressed (deliberate exclusion)', () => {
+  const html = fs.readFileSync(new URL('../login.html', import.meta.url), 'utf8');
+  const usernameTag = _extractInputTag(html, 'username');
+  const passwordTag = _extractInputTag(html, 'password');
+
+  const suppressionOnlyKeys = ['data-1p-ignore', 'data-lpignore', 'data-bwignore', 'data-form-type'];
+  for (const key of suppressionOnlyKeys) {
+    assert.ok(!usernameTag.includes(key), `login.html #username must NOT carry ${key}`);
+    assert.ok(!passwordTag.includes(key), `login.html #password must NOT carry ${key}`);
+  }
+
+  assert.ok(usernameTag.includes('autocomplete="username"'), '#username must keep autocomplete="username"');
+  assert.ok(passwordTag.includes('autocomplete="current-password"'), '#password must keep autocomplete="current-password"');
 });
 
 test('showNewSessionInput passes remoteId from device select to createNewSession', () => {

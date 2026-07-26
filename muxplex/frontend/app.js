@@ -1410,6 +1410,7 @@ function showNewViewInput() {
   input.placeholder = 'View name';
   input.maxLength = 30;
   input.setAttribute('aria-label', 'New view name');
+  _suppressAutofill(input);
 
   // Replace the '+ New View' button with the input
   newViewBtn.parentNode.replaceChild(input, newViewBtn);
@@ -1488,6 +1489,7 @@ function showSidebarNewViewInput() {
   input.placeholder = 'View name';
   input.maxLength = 30;
   input.setAttribute('aria-label', 'New view name');
+  _suppressAutofill(input);
 
   // Replace the '+ New View' button with the input
   newViewBtn.parentNode.replaceChild(input, newViewBtn);
@@ -2693,6 +2695,7 @@ function openManageViewPanel() {
       input.value = currentName;
       input.maxLength = 30;
       input.setAttribute('aria-label', 'View name');
+      _suppressAutofill(input);
       if (nameEl.parentNode) nameEl.parentNode.replaceChild(input, nameEl);
       input.focus();
       input.select();
@@ -3516,12 +3519,17 @@ function _buildRemoteInstanceRow(url, name, key) {
   urlInput.placeholder = 'http://192.168.1.x:8000';
   urlInput.value = url || '';
   urlInput.setAttribute('aria-label', 'Remote instance URL');
+  _suppressAutofill(urlInput);
   var nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.className = 'settings-remote-name';
   nameInput.placeholder = 'Device name';
   nameInput.value = name || '';
   nameInput.setAttribute('aria-label', 'Remote instance display name');
+  _suppressAutofill(nameInput);
+  // keyInput intentionally does NOT get _suppressAutofill: it's a real secret
+  // (type="password") a user may deliberately want their password manager to
+  // remember, unlike the name-ish fields above.
   var keyInput = document.createElement('input');
   keyInput.type = 'password';
   keyInput.className = 'settings-remote-key';
@@ -4108,18 +4116,64 @@ function updateSessionPill(sessions) {
 // ─── Header + button with inline name input ────────────────────────────────────
 
 /**
+ * Attribute/value pairs that suppress browser and password-manager autofill
+ * on a bare, form-less text input.
+ *
+ * `autocomplete="off"` alone is NOT enough. These fields are form-less text
+ * inputs with name-ish placeholders (a session name, a view name, a device
+ * name) served from an origin that also serves a real login form
+ * (login.html) — which is exactly the shape password managers heuristically
+ * treat as a username field, and they ignore `autocomplete="off"` on that
+ * shape by design. So we also send each vendor's documented per-field
+ * opt-out attribute. The autocorrect / autocapitalize pair additionally
+ * covers the mobile PWA path (e.g. the FAB new-session overlay), where iOS
+ * otherwise capitalizes and "corrects" names as you type them.
+ *
+ * This object is the single source of truth for the attribute list. The two
+ * static inputs in index.html (terminal search, device name) duplicate this
+ * list as literal HTML attributes ON PURPOSE — Chrome scans the DOM for
+ * autofill targets at parse time, before any of our JS runs, so attributes
+ * applied later via `_suppressAutofill` would be too late for those two
+ * fields. A test pins the markup copies in sync with this constant so they
+ * can't silently drift apart.
+ *
+ * Do NOT apply this to genuine credential fields — the federation key input
+ * in `_buildRemoteInstanceRow` and both inputs on login.html are the
+ * deliberate exceptions where a password manager is wanted.
+ *
+ * @type {Record<string, string>}
+ */
+const AUTOFILL_SUPPRESSION_ATTRS = {
+  autocomplete: 'off',
+  autocorrect: 'off',
+  autocapitalize: 'off',
+  'data-1p-ignore': 'true',   // 1Password
+  'data-lpignore': 'true',    // LastPass
+  'data-bwignore': 'true',    // Bitwarden
+  'data-form-type': 'other',  // Dashlane
+};
+
+/**
+ * Apply autofill suppression to a form-less text input by setting every
+ * attribute in AUTOFILL_SUPPRESSION_ATTRS plus disabling spellcheck (these
+ * fields hold names/URLs, not prose). See AUTOFILL_SUPPRESSION_ATTRS for why
+ * `autocomplete="off"` alone isn't sufficient.
+ *
+ * @param {HTMLInputElement} input
+ * @returns {HTMLInputElement} the same input, for chaining
+ */
+function _suppressAutofill(input) {
+  for (const attr of Object.keys(AUTOFILL_SUPPRESSION_ATTRS)) {
+    input.setAttribute(attr, AUTOFILL_SUPPRESSION_ATTRS[attr]);
+  }
+  input.spellcheck = false;
+  return input;
+}
+
+/**
  * Create a new session name input element with shared base configuration.
  * Used by both showNewSessionInput (inline) and showFabSessionInput (overlay)
  * to avoid duplicating the setup properties.
- *
- * Autofill suppression is load-bearing here, and `autocomplete="off"` alone is
- * NOT enough. This is a bare, form-less text field whose placeholder reads
- * "Session name" on an origin that also serves a real login form (login.html) —
- * which is exactly the shape password managers heuristically treat as a
- * username field, and they ignore `autocomplete="off"` by design. So we also
- * send each vendor's documented per-field opt-out attribute. The autocorrect /
- * autocapitalize pair is for the mobile PWA path (the FAB overlay), where iOS
- * otherwise capitalizes and "corrects" tmux session names as you type them.
  *
  * @returns {HTMLInputElement}
  */
@@ -4128,15 +4182,7 @@ function _createSessionInput() {
   input.type = 'text';
   input.className = 'new-session-input';
   input.placeholder = 'Session name\u2026';
-  input.spellcheck = false;
-  input.setAttribute('autocomplete', 'off');
-  input.setAttribute('autocorrect', 'off');
-  input.setAttribute('autocapitalize', 'off');
-  input.setAttribute('data-1p-ignore', 'true');   // 1Password
-  input.setAttribute('data-lpignore', 'true');    // LastPass
-  input.setAttribute('data-bwignore', 'true');    // Bitwarden
-  input.setAttribute('data-form-type', 'other');  // Dashlane
-  return input;
+  return _suppressAutofill(input);
 }
 
 /**
@@ -4935,6 +4981,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // Fetch wrapper
     api,
     // Header + button with inline name input
+    AUTOFILL_SUPPRESSION_ATTRS,
+    _suppressAutofill,
     _createDeviceSelect,
     showNewSessionInput,
     showFabSessionInput,

@@ -65,7 +65,13 @@
       </div>
       <div class="terminal-wrapper">
         <div id="terminal-search-bar" class="terminal-search-bar hidden">
-          <input id="terminal-search-input" type="text" class="terminal-search-input" placeholder="Find..." />
+          <!-- Mirrors AUTOFILL_SUPPRESSION_ATTRS in app.js. Set in markup, not via
+               _suppressAutofill, because Chrome scans the DOM for autofill targets
+               at parse time, before our JS runs. Kept in sync by a test. -->
+          <input id="terminal-search-input" type="text" class="terminal-search-input" placeholder="Find..."
+            autocomplete="off" autocorrect="off" autocapitalize="off"
+            data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
+            spellcheck="false" />
           <span id="terminal-search-count" class="terminal-search-count"></span>
           <button id="terminal-search-prev" class="terminal-search-btn" title="Previous (Shift+Enter)">&#9650;</button>
           <button id="terminal-search-next" class="terminal-search-btn" title="Next (Enter)">&#9660;</button>
@@ -134,7 +140,13 @@
         <div class="settings-panel" data-tab="display">
           <div class="settings-field">
             <label class="settings-label" for="setting-device-name">Device Name</label>
-            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device" />
+            <!-- Mirrors AUTOFILL_SUPPRESSION_ATTRS in app.js. Set in markup, not via
+                 _suppressAutofill, because Chrome scans the DOM for autofill targets
+                 at parse time, before our JS runs. Kept in sync by a test. -->
+            <input type="text" id="setting-device-name" class="settings-input" placeholder="This device"
+              autocomplete="off" autocorrect="off" autocapitalize="off"
+              data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
+              spellcheck="false" />
           </div>
           <div class="settings-field">
             <label class="settings-label" for="setting-font-size">Font Size</label>
