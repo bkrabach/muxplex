@@ -487,6 +487,29 @@ guard is inconvenient.
   reopen the identical blind spot silently. `test-latest-deps` catches ANY
   future drift, not just this one, which is why it's the fix and a version
   floor isn't.
+- **`test_frontend_js.py` asserts on JS SOURCE TEXT, and that is a tripwire for
+  any frontend refactor.** It is 4,821 lines / 332 tests, of which 229 are
+  regex matches against `app.js` source rather than checks of behavior. That
+  style pins the *shape* of the code, so a legitimate refactor that preserves
+  behavior can still fail it — which has now happened twice: v0.13.0 (three
+  stale assertions matching literal `api('PATCH'` strings after those call
+  sites moved into `patchSettingsGuarded()`) and v0.16.1 (four assertions
+  requiring `autocomplete`/`spellcheck` literals inside `_createSessionInput`
+  after they moved into the shared `_suppressAutofill` helper). Both times the
+  behavior was correct and the test was wrong.
+
+  When one of these fails after a refactor, first ask whether the BEHAVIOR
+  changed. If it didn't, fix the assertion to follow the new structure (assert
+  the delegation *and* the delegate) rather than loosening it to pass — a
+  weakened assertion is worse than the stale one it replaced.
+
+  Behavior-level coverage of the same code now lives in the node suite
+  (`frontend/tests/*.mjs`, 8,173 lines, run by the `test-frontend` CI job
+  since v0.15.1+), which exercises the real DOM contract instead of matching
+  source strings. **Retiring the redundant source-scraping assertions in favor
+  of the node suite is worth doing, but it is a project, not a cleanup:** it
+  needs a per-assertion coverage comparison first, because deleting one that
+  has no node equivalent silently removes real protection.
 - PRs are squash-merged. `CHANGELOG.md` and version bumps happen at release
   time, by the owner — don't bump them in feature PRs.
 - **Release hygiene is part of the fix**: a fix isn't done until it's
