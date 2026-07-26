@@ -33,9 +33,14 @@ consumers in ways this repo's tests won't catch:
   across every connected client (browsers, deck, agents).
 - **The read model is eventually consistent**: GET endpoints serve a ~2s poll
   cache. POST create/delete aren't visible until the next cycle, and `connect`
-  on a just-created session 404s until the cache catches up — clients/agents
-  must wait ~3s after writes. (Candidate future fix: write-through cache
-  refresh on create/delete.)
+  on a just-created session 404s until the cache catches up. **Measured, not
+  assumed**: traced runs resolved well under 1s (one trace: 3rd attempt at a
+  0.3s poll spacing, ~0.9s elapsed) — a flat `sleep 3` wastes most of that
+  waiting on a race that's usually already over. Clients/agents should poll
+  on a short interval (e.g. 0.3s) with a generous ceiling (e.g. 20 attempts /
+  6s) rather than sleep a fixed delay; see `docs/AGENT_GUIDE.md`'s "read
+  model is eventually consistent" section for the reference pattern.
+  (Candidate future fix: write-through cache refresh on create/delete.)
 - **`GET /api/state` carries `settings_updated_at: float`**, merged in at
   request time from `settings.settings_updated_at` (settings.py) — it is
   NOT persisted in state.json; `empty_state()`/`load_state()`/`save_state()`
