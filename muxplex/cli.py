@@ -1,6 +1,7 @@
 """muxplex CLI — web-based tmux session dashboard."""
 
 import argparse
+import logging
 import os
 import platform
 import shutil
@@ -457,6 +458,46 @@ def _kill_stale_port_holder(port: int, force: bool = False) -> None:
     time.sleep(1)  # Brief wait for the port to be released
 
 
+def configure_logging(level: int = logging.INFO) -> None:
+    """Ensure muxplex's own log records reach a real handler when serving.
+
+    ``uvicorn.run(..., log_level="info")`` only configures uvicorn's OWN
+    loggers (``uvicorn``, ``uvicorn.error``, ``uvicorn.access``) via its
+    internal dictConfig -- it never touches the root logger or any
+    ``muxplex.*`` logger. Without a handler here, an accepted ``/input``
+    call's audit line (``main.py``'s ``_log.info(...)`` in
+    ``send_session_input``) is silently discarded: the root logger has no
+    handlers and Python's handler-of-last-resort only surfaces WARNING and
+    above -- which is exactly why a *rejected* input's ``_log.warning``
+    reached the terminal while every *accepted* call's audit line vanished.
+
+    Deliberately scoped to the ``muxplex`` logger namespace, not the root
+    logger. Every module does ``logging.getLogger(__name__)`` (e.g.
+    ``muxplex.main``, ``muxplex.sessions``), so all of them are children of
+    the ``muxplex`` logger and pick up this level/handler via normal
+    propagation -- one handler covers the whole package. Configuring root
+    instead would also raise every third-party dependency's logger (httpx,
+    websockets, etc.) to INFO, turning the operator's audit trail into a
+    noisy firehose instead of the targeted signal it's meant to be.
+
+    Idempotent: safe to call more than once (e.g. across multiple ``serve()``
+    invocations in one process, as tests do) without installing duplicate
+    handlers -- checked by handler name rather than by clearing/reassigning
+    ``package_logger.handlers``, so a caller that added its own handler
+    beforehand is left alone.
+    """
+    package_logger = logging.getLogger("muxplex")
+    package_logger.setLevel(level)
+    if not any(h.name == "muxplex-audit" for h in package_logger.handlers):
+        handler = logging.StreamHandler()
+        handler.name = "muxplex-audit"
+        handler.setLevel(level)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        package_logger.addHandler(handler)
+
+
 def serve(
     host: str | None = None,
     port: int | None = None,
@@ -473,6 +514,10 @@ def serve(
     import uvicorn  # noqa: PLC0415
 
     from muxplex.settings import load_settings  # noqa: PLC0415
+
+    # Must happen before uvicorn.run(): see configure_logging()'s docstring --
+    # uvicorn's own log_level="info" below does not configure muxplex's loggers.
+    configure_logging()
 
     settings = load_settings()
     host = host if host is not None else settings.get("host", "127.0.0.1")

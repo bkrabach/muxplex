@@ -3754,3 +3754,156 @@ def test_serve_parser_exposes_force_take_port():
     args = parser.parse_args(["--force-take-port"])
     assert args.force_take_port is True
     assert parser.parse_args([]).force_take_port is False
+
+
+# ---------------------------------------------------------------------------
+# configure_logging() -- the accepted-/input-audit-line-never-fires fix
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _isolated_muxplex_logger():
+    """Snapshot/restore the real "muxplex" logger's handlers+level.
+
+    These tests deliberately mutate the actual "muxplex" package logger
+    (the same one every muxplex.* module logs through) to prove
+    configure_logging()'s real effect on it -- not a mock or a substitute
+    logger. Restoring afterward keeps this test isolated from every other
+    test in the suite that logs through muxplex.* loggers.
+    """
+    import logging as logging_mod
+
+    package_logger = logging_mod.getLogger("muxplex")
+    original_handlers = package_logger.handlers[:]
+    original_level = package_logger.level
+    package_logger.handlers.clear()
+    package_logger.setLevel(logging_mod.NOTSET)
+    try:
+        yield package_logger
+    finally:
+        package_logger.handlers.clear()
+        package_logger.handlers.extend(original_handlers)
+        package_logger.setLevel(original_level)
+
+
+def test_configure_logging_lets_accepted_audit_line_reach_a_real_handler(
+    _isolated_muxplex_logger,
+):
+    """Regression test for the audit-log-never-fires bug.
+
+    Before this fix, uvicorn.run(log_level="info") configured only
+    uvicorn's OWN loggers, never touching root or any muxplex.* logger.
+    An accepted /input call's audit `_log.info(...)` line therefore never
+    passed the effective-level gate and reached no handler at all.
+
+    This test deliberately does NOT use caplog.set_level()/at_level() --
+    that API forces the level itself and would pass even against the
+    broken code (see muxplex/tests/test_input.py's
+    test_audit_log_line_present_and_redacted, which does exactly that and
+    would not have caught this bug). Instead it starts from a pristine,
+    unconfigured "muxplex" logger, proves the pre-fix state is actually
+    broken, then calls the real production configure_logging() and proves
+    a log record travels all the way to an independently-attached handler
+    -- not just that isEnabledFor() flips.
+    """
+    import logging as logging_mod
+
+    from muxplex.cli import configure_logging
+
+    main_logger = logging_mod.getLogger("muxplex.main")
+
+    # Pre-fix state: nothing has configured this logger, so INFO records
+    # never pass the gate -- this is the actual bug, reproduced.
+    assert not main_logger.isEnabledFor(logging_mod.INFO), (
+        "test setup invalid: muxplex.main must start unconfigured"
+    )
+
+    configure_logging()
+
+    assert main_logger.isEnabledFor(logging_mod.INFO), (
+        "configure_logging() must raise muxplex.main's effective level to INFO"
+    )
+
+    captured: list[str] = []
+
+    class _Capture(logging_mod.Handler):
+        def emit(self, record: logging_mod.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    probe = _Capture()
+    _isolated_muxplex_logger.addHandler(probe)
+    try:
+        # Exercise the exact call shape used by the /input audit line.
+        main_logger.info("input: session=%r chars=%d", "alpha", 4)
+    finally:
+        _isolated_muxplex_logger.removeHandler(probe)
+
+    assert any("input: session='alpha' chars=4" in msg for msg in captured), (
+        f"accepted-input audit line must reach a real handler, got: {captured!r}"
+    )
+
+
+def test_configure_logging_does_not_widen_third_party_loggers(
+    _isolated_muxplex_logger,
+):
+    """Deliberately scoped to the "muxplex" namespace, not the root logger.
+
+    Configuring root wholesale would also raise unrelated dependency
+    loggers (httpx, websockets, ...) to INFO, turning the audit trail into
+    a noisy firehose. A sibling top-level logger must be unaffected.
+    """
+    import logging as logging_mod
+
+    from muxplex.cli import configure_logging
+
+    unrelated = logging_mod.getLogger("some_unrelated_dependency")
+    original_level = unrelated.level
+    unrelated.setLevel(logging_mod.NOTSET)
+    try:
+        configure_logging()
+        assert not unrelated.isEnabledFor(logging_mod.INFO), (
+            "configure_logging() must not raise unrelated loggers to INFO"
+        )
+    finally:
+        unrelated.setLevel(original_level)
+
+
+def test_configure_logging_is_idempotent(_isolated_muxplex_logger):
+    """Calling configure_logging() twice must not install duplicate handlers.
+
+    serve() may run more than once in a single process (e.g. across tests
+    or a supervised restart loop) -- repeated calls must not accumulate
+    handlers and duplicate every log line.
+    """
+    from muxplex.cli import configure_logging
+
+    configure_logging()
+    configure_logging()
+
+    audit_handlers = [
+        h for h in _isolated_muxplex_logger.handlers if h.name == "muxplex-audit"
+    ]
+    assert len(audit_handlers) == 1, (
+        f"expected exactly one audit handler, got {len(audit_handlers)}"
+    )
+
+
+def test_serve_calls_configure_logging(tmp_path, monkeypatch):
+    """serve() must configure logging before starting uvicorn.
+
+    Without this call, muxplex's own INFO-level logging (including the
+    /input audit line) is silently discarded once uvicorn.run() takes over.
+    """
+    import muxplex.cli as cli_mod
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", settings_file)
+
+    calls = []
+    monkeypatch.setattr(cli_mod, "configure_logging", lambda: calls.append(True))
+
+    with patch("uvicorn.run"):
+        with patch.dict("sys.modules", {"muxplex.main": MagicMock()}):
+            cli_mod.serve()
+
+    assert len(calls) == 1, "serve() must call configure_logging() exactly once"
