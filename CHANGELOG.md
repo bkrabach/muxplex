@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.15.0 (2026-07-26)
+
+### Bug Fixes
+
+- **Refuse to terminate a healthy muxplex when taking the port.** `_kill_stale_port_holder()` ran on every `muxplex serve` startup, called `lsof -ti :<port>`, and SIGTERMed whatever it found — unable to distinguish a stale holder from a healthy running server. Any second invocation of the startup path silently killed the live service, producing a clean graceful shutdown with no crash and no systemd `Stopping` line: nearly undiagnosable from logs. It now probes the holder via `GET /api/instance-info` first and kills only on positive evidence the holder is not serving; a healthy holder yields an actionable error naming the port and PID, and exit 1 instead of starting. `--force-take-port` restores the old unconditional behavior. A missing or erroring `lsof` still never blocks startup. The restart race is bounded: if an old instance is still draining, the new process exits non-zero and systemd retries after `RestartSec`.
+
+- **Never accept() a WebSocket the client already abandoned.** `terminal_ws_proxy` performs real awaited work before accepting — killing and respawning ttyd, then waiting for it to bind. If the browser disconnected during that window, uvicorn's `connection_lost()` had already flipped its handshake-complete flag, so the subsequent `accept()` raised `RuntimeError: Expected ASGI message 'websocket.send' or 'websocket.close', but got 'websocket.accept'`, several times per hour in production. The wait is now raced against a disconnect watcher and `accept()` is skipped entirely when the client is already gone. Notably this only manifests on uvicorn's newer sansio WebSocket implementation, which is what a fresh `uv tool install` resolves — see Internal.
+
+### Internal
+
+- **Test-suite safety rails.** Running the suite on a host also serving muxplex destroyed real state twice in one day: a test overwrote a live `~/.config/muxplex/settings.json`, and six tests SIGTERMed the running server. Both were invisible from inside the suite, because a test that damages its host still passes. Four rails now close the class: a `pytest_sessionstart` guard that refuses to run when anything serves the default port, autouse isolation of `SETTINGS_PATH`, autouse neutering of `_kill_stale_port_holder` behind an explicit `@pytest.mark.allow_real_port_killer` opt-in, and `test_safety_rails.py` pinning all of it so removing a rail fails loudly. `make test` now runs the suite inside a Digital Twin Universe container, making the safe path the default path.
+
+- **Dependency-drift CI job.** `uv.lock` pinned uvicorn 0.42.0 while a fresh `uv tool install` resolves 0.51.0 — and the WebSocket bug above existed only on the newer sansio implementation, so CI was green for weeks while production threw errors hourly. A new `test-latest-deps` job installs the way users install, ignoring the lockfile, so this class of drift fails CI instead of hiding.
+
 ## v0.14.0 (2026-07-25)
 
 ### Features
