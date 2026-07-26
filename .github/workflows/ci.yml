@@ -79,3 +79,39 @@ jobs:
 
       - name: Run tests
         run: .venv-latest/bin/python -m pytest -v
+
+  test-frontend:
+    # The two Python jobs above never execute a line of frontend code. All PWA
+    # logic lives in muxplex/frontend/ (app.js, terminal.js) and is covered by
+    # node:test suites under muxplex/frontend/tests/ -- which, until this job
+    # existed, ran ONLY when a human remembered to run them by hand.
+    #
+    # Concrete gap this closes (v0.15.1): a frontend-only fix shipped with a
+    # new regression test, and CI went green across all four Python jobs
+    # without ever executing that test. Same shape as the uv.lock drift that
+    # test-latest-deps exists to catch -- CI green while not testing the thing
+    # that actually changed.
+    #
+    # The glob is deliberate. `node --test tests/*.mjs` picks up every suite in
+    # the directory, so a newly added suite is covered the moment it lands
+    # rather than whenever someone remembers to list it here. It also fixes a
+    # silent gap in the previously-documented command
+    # (`node --test frontend/tests/test_app.mjs`), which named one file and so
+    # never ran test_terminal.mjs at all.
+    #
+    # No install step and no package.json by design: these suites have zero
+    # package dependencies and use only node: builtins.
+    name: test (frontend, node:test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run frontend tests
+        working-directory: muxplex/frontend
+        run: node --test tests/*.mjs
