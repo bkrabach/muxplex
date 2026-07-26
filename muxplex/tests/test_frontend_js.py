@@ -1606,31 +1606,64 @@ def test_show_new_session_input_sets_placeholder() -> None:
     )
 
 
-def test_show_new_session_input_disables_autocomplete() -> None:
-    """Input setup must set autocomplete off (via _createSessionInput factory)."""
+def _create_session_input_body() -> str:
+    """Body of the _createSessionInput factory."""
     match = re.search(
         r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
         _JS,
         re.DOTALL,
     )
     assert match, "_createSessionInput function not found"
-    body = match.group(1)
-    assert "autocomplete" in body.lower() and "off" in body.lower(), (
-        "_createSessionInput must set autocomplete off"
+    return match.group(1)
+
+
+def _autofill_suppression_source() -> str:
+    """Source of the shared autofill-suppression machinery.
+
+    These attributes used to be set inline in `_createSessionInput`. They now
+    live in an `AUTOFILL_SUPPRESSION_ATTRS` constant plus a `_suppressAutofill`
+    helper, so the view-name, view-rename, and remote-instance inputs all get
+    identical treatment from ONE definition.
+
+    The assertions below deliberately follow that indirection -- factory
+    delegates to helper, helper sets the attribute -- rather than pinning the
+    literals to any single factory body. Pinning the old shape is exactly what
+    made these tests fail the refactor while the behavior was in fact intact.
+    """
+    attrs = re.search(
+        r"const AUTOFILL_SUPPRESSION_ATTRS\s*=\s*\{(.*?)\n\};",
+        _JS,
+        re.DOTALL,
+    )
+    assert attrs, "AUTOFILL_SUPPRESSION_ATTRS constant not found"
+    helper = re.search(
+        r"function _suppressAutofill\s*\(\s*\w+\s*\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert helper, "_suppressAutofill function not found"
+    return attrs.group(1) + helper.group(1)
+
+
+def test_show_new_session_input_disables_autocomplete() -> None:
+    """The session input must end up with autocomplete off (via _suppressAutofill)."""
+    assert "_suppressAutofill(" in _create_session_input_body(), (
+        "_createSessionInput must apply suppression via _suppressAutofill()"
+    )
+    source = _autofill_suppression_source()
+    assert "autocomplete" in source.lower() and "off" in source.lower(), (
+        "_suppressAutofill must set autocomplete off"
     )
 
 
 def test_show_new_session_input_disables_spellcheck() -> None:
-    """Input setup must set spellcheck false (via _createSessionInput factory)."""
-    match = re.search(
-        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
-        _JS,
-        re.DOTALL,
+    """The session input must end up with spellcheck false (via _suppressAutofill)."""
+    assert "_suppressAutofill(" in _create_session_input_body(), (
+        "_createSessionInput must apply suppression via _suppressAutofill()"
     )
-    assert match, "_createSessionInput function not found"
-    body = match.group(1)
-    assert "spellcheck" in body.lower() and "false" in body.lower(), (
-        "_createSessionInput must set spellcheck false"
+    source = _autofill_suppression_source()
+    assert "spellcheck" in source.lower() and "false" in source.lower(), (
+        "_suppressAutofill must set spellcheck false"
     )
 
 
@@ -2029,30 +2062,24 @@ def test_js_create_session_input_factory_sets_placeholder() -> None:
 
 
 def test_js_create_session_input_factory_disables_autocomplete() -> None:
-    """_createSessionInput must set autocomplete off."""
-    match = re.search(
-        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
-        _JS,
-        re.DOTALL,
+    """_createSessionInput must end up with autocomplete off (via _suppressAutofill)."""
+    assert "_suppressAutofill(" in _create_session_input_body(), (
+        "_createSessionInput must apply suppression via _suppressAutofill()"
     )
-    assert match, "_createSessionInput function not found"
-    body = match.group(1)
-    assert "autocomplete" in body.lower() and "off" in body.lower(), (
-        "_createSessionInput must set autocomplete off"
+    source = _autofill_suppression_source()
+    assert "autocomplete" in source.lower() and "off" in source.lower(), (
+        "_suppressAutofill must set autocomplete off"
     )
 
 
 def test_js_create_session_input_factory_disables_spellcheck() -> None:
-    """_createSessionInput must set spellcheck false."""
-    match = re.search(
-        r"function _createSessionInput\s*\(\s*\)\s*\{(.*?)(?=\nasync function |\nfunction |\n// )",
-        _JS,
-        re.DOTALL,
+    """_createSessionInput must end up with spellcheck false (via _suppressAutofill)."""
+    assert "_suppressAutofill(" in _create_session_input_body(), (
+        "_createSessionInput must apply suppression via _suppressAutofill()"
     )
-    assert match, "_createSessionInput function not found"
-    body = match.group(1)
-    assert "spellcheck" in body.lower() and "false" in body.lower(), (
-        "_createSessionInput must set spellcheck false"
+    source = _autofill_suppression_source()
+    assert "spellcheck" in source.lower() and "false" in source.lower(), (
+        "_suppressAutofill must set spellcheck false"
     )
 
 
