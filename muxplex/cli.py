@@ -314,22 +314,28 @@ def show_password() -> None:
         print("No password file found. Start muxplex to auto-generate one.")
 
 
-def _port_holder_is_healthy_muxplex(port: int, timeout: float = 2.0) -> bool:
-    """Return True if a live, responding muxplex is serving *port*.
+def _fetch_local_instance_info(port: int, timeout: float = 2.0) -> dict | None:
+    """Fetch ``/api/instance-info`` from whatever is serving *port* on localhost.
 
-    Probes ``/api/instance-info`` -- a public, unauthenticated endpoint -- over
-    https then http (TLS is optional in muxplex, so the scheme cannot be
+    Probes https then http (TLS is optional in muxplex, so the scheme cannot be
     assumed).  Certificate verification is disabled deliberately: we are talking
-    to ourselves on loopback and may not have the local CA installed.
+    to ourselves on loopback and may not have the local CA installed. Returns
+    the parsed JSON dict on the first 200 response that decodes as a dict, or
+    None if nothing answered (port free, wrong service, refused, timeout, TLS
+    mismatch, garbage body).
 
-    WHY THIS EXISTS -- do not "simplify" it away:
-    Without this probe, :func:`_kill_stale_port_holder` cannot tell a hung/stale
-    holder apart from a perfectly healthy running server, so ANY second
-    invocation of the startup path silently SIGTERMs the live service.  A silent
-    kill of a healthy server is indistinguishable from a mystery outage -- it
-    produces a clean graceful shutdown in the logs with no crash and no
-    ``Stopping`` line from systemd, which is extremely hard to diagnose.  This
-    probe converts that silent kill into a loud, actionable refusal.
+    DELIBERATELY SHARED, RAW FETCH ONLY -- do not add decision logic here.
+    Two callers use this:
+      - :func:`_port_holder_is_healthy_muxplex` (safety-critical: decides
+        whether the startup path is allowed to SIGTERM the port holder).
+      - ``muxplex doctor`` (cosmetic: reports the running version alongside
+        the installed one).
+    Sharing the network probe avoids duplicating the finicky
+    https-then-http-with-cert-bypass dance in two places, but each caller
+    still makes its OWN decision about what the response means. A change to
+    doctor's reporting must never be able to alter the port-kill safety
+    logic, so that logic stays entirely in
+    :func:`_port_holder_is_healthy_muxplex`, not here.
     """
     import json
     import ssl
@@ -346,12 +352,28 @@ def _port_holder_is_healthy_muxplex(port: int, timeout: float = 2.0) -> bool:
                 if resp.status != 200:
                     continue
                 data = json.loads(resp.read().decode("utf-8"))
-                # A real muxplex always reports both of these.
-                if isinstance(data, dict) and "device_id" in data and "version" in data:
-                    return True
+                if isinstance(data, dict):
+                    return data
         except Exception:
-            continue  # refused / timeout / TLS mismatch / garbage -> not a healthy muxplex
-    return False
+            continue  # refused / timeout / TLS mismatch / garbage -> nothing there
+    return None
+
+
+def _port_holder_is_healthy_muxplex(port: int, timeout: float = 2.0) -> bool:
+    """Return True if a live, responding muxplex is serving *port*.
+
+    WHY THIS EXISTS -- do not "simplify" it away:
+    Without this probe, :func:`_kill_stale_port_holder` cannot tell a hung/stale
+    holder apart from a perfectly healthy running server, so ANY second
+    invocation of the startup path silently SIGTERMs the live service.  A silent
+    kill of a healthy server is indistinguishable from a mystery outage -- it
+    produces a clean graceful shutdown in the logs with no crash and no
+    ``Stopping`` line from systemd, which is extremely hard to diagnose.  This
+    probe converts that silent kill into a loud, actionable refusal.
+    """
+    data = _fetch_local_instance_info(port, timeout=timeout)
+    # A real muxplex always reports both of these.
+    return isinstance(data, dict) and "device_id" in data and "version" in data
 
 
 def _kill_stale_port_holder(port: int, force: bool = False) -> None:
@@ -579,6 +601,32 @@ def doctor() -> None:
         f"  {ok_mark} Serve config: {cfg['host']}:{cfg['port']}"
         f" (auth={cfg['auth']}, ttl={cfg['session_ttl']}s)"
     )
+
+    # Running vs installed version. `_get_install_info`/`_check_for_update`
+    # above only ever look at what's INSTALLED -- they cannot see that a
+    # `uv tool install`/`upgrade` has not yet been picked up by the actual
+    # running service, which needs a restart to load the new code. This is
+    # exactly the gap that left a live server on v0.14.0 for hours after the
+    # install moved to v0.15.0, with nothing anywhere saying so.
+    running_info = _fetch_local_instance_info(cfg["port"])
+    if running_info is None:
+        # A perfectly normal state (muxplex not started, or started on a
+        # different port) -- NOT an error, so it must read differently from
+        # the "running but stale" case below.
+        print(
+            f"  {warn_mark} Running: not serving on {cfg['host']}:{cfg['port']}"
+            " (nothing to compare against the installed version)"
+        )
+    else:
+        running_version = running_info.get("version") or "unknown"
+        if running_version == muxplex_version:
+            print(f"  {ok_mark} Running: v{running_version} (matches installed)")
+        else:
+            print(
+                f"  {warn_mark} Running: v{running_version}"
+                f" (installed v{muxplex_version} \u2014 restart the service to pick up the new install)"
+            )
+            print("    Run: muxplex upgrade   (or) systemctl --user restart muxplex")
 
     # TLS status
     tls_cert = cfg.get("tls_cert", "")

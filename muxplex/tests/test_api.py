@@ -3158,11 +3158,16 @@ def test_federation_circuit_breaker_skips_dead_remote_after_threshold(
 
     from unittest.mock import MagicMock
 
+    # Count only /api/sessions attempts -- the breaker gates the SESSIONS poll.
+    # fetch_remote also makes a concurrent, independent /api/instance-info
+    # probe (for deviceVersion) that this test isn't about; it fails the same
+    # way (ConnectError) and is swallowed by _fetch_remote_version regardless.
     call_count = 0
 
     async def mock_get(url, **kwargs):
         nonlocal call_count
-        call_count += 1
+        if url.endswith("/api/sessions"):
+            call_count += 1
         raise httpx.ConnectError("Connection refused")
 
     mock_client = MagicMock()
@@ -3215,11 +3220,14 @@ def test_federation_reachable_error_remote_is_never_circuit_broken(
 
     from unittest.mock import MagicMock
 
+    # Count only /api/sessions attempts -- see the sibling breaker test above
+    # for why the concurrent /api/instance-info version probe isn't counted.
     call_count = 0
 
     async def mock_get(url, **kwargs):
         nonlocal call_count
-        call_count += 1
+        if url.endswith("/api/sessions"):
+            call_count += 1
         mock_resp = MagicMock()
         mock_resp.status_code = 401
         return mock_resp
@@ -5133,6 +5141,153 @@ def test_federation_sessions_tags_local_with_device_id(client, monkeypatch, tmp_
     )
     assert local.get("sessionKey") == "local-uuid:dev", (
         f"Local session must have sessionKey='local-uuid:dev', got: {local.get('sessionKey')!r}"
+    )
+
+
+def test_federation_sessions_tags_local_with_device_version(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/sessions: local sessions carry deviceVersion == app.version.
+
+    This is what lets a client compare "this device" against federated peers
+    using a single response, without a second /api/instance-info fetch.
+    """
+    import json
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps({"device_name": "my-machine", "remote_instances": []})
+    )
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["dev"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"dev": ""})
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    local_sessions = [s for s in data if s.get("remoteId") is None]
+    assert len(local_sessions) == 1
+    assert local_sessions[0].get("deviceVersion") == main_mod.app.version, (
+        f"Local session deviceVersion must equal app.version, got: {local_sessions[0].get('deviceVersion')!r}"
+    )
+
+
+def test_federation_sessions_remote_sessions_have_device_version(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/sessions: remote sessions carry deviceVersion from the
+    remote's own /api/instance-info, fetched alongside /api/sessions."""
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "device_name": "local-host",
+                "remote_instances": [
+                    {"url": "http://spark-2:8088", "key": "abc123", "name": "spark-2"}
+                ],
+            }
+        )
+    )
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        if url.endswith("/api/instance-info"):
+            mock_resp.json = lambda: {
+                "name": "spark-2",
+                "device_id": "spark-2-uuid",
+                "version": "0.16.0",
+                "federation_enabled": True,
+            }
+        else:
+            mock_resp.json = lambda: [{"name": "work", "snapshot": "", "bell": {}}]
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    remote_sessions = [s for s in data if s.get("remoteId") is not None and "name" in s]
+    assert len(remote_sessions) == 1
+    assert remote_sessions[0].get("deviceVersion") == "0.16.0", (
+        f"Remote session deviceVersion must be '0.16.0', got: {remote_sessions[0].get('deviceVersion')!r}"
+    )
+
+
+def test_federation_sessions_device_version_unknown_when_remote_lacks_it(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/sessions: when the remote's /api/instance-info fails or
+    is too old to serve version, deviceVersion must be None -- never defaulted to
+    a real-looking version string that could be mistaken for agreement."""
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "device_name": "local-host",
+                "remote_instances": [
+                    {
+                        "url": "http://spark-old:8088",
+                        "key": "abc123",
+                        "name": "spark-old",
+                    }
+                ],
+            }
+        )
+    )
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {})
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/api/instance-info"):
+            raise httpx.ConnectError("connection refused")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.json = lambda: [{"name": "work", "snapshot": "", "bell": {}}]
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+
+    remote_sessions = [s for s in data if s.get("remoteId") is not None and "name" in s]
+    assert len(remote_sessions) == 1
+    assert remote_sessions[0].get("deviceVersion") is None, (
+        f"deviceVersion must be None when the remote's instance-info is unreachable, "
+        f"got: {remote_sessions[0].get('deviceVersion')!r}"
     )
 
 

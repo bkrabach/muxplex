@@ -2667,6 +2667,72 @@ test('buildTileHTML places device-badge inline in tile-header (before tile-meta)
   app._setServerSettings(null);
 });
 
+// --- device version surfacing (running/installed version QoL) ---
+
+test('formatDeviceVersion renders a known version with a leading v', () => {
+  assert.strictEqual(app.formatDeviceVersion('0.15.0'), 'v0.15.0');
+});
+
+test('formatDeviceVersion renders "version unknown" for null, undefined, and empty string', () => {
+  assert.strictEqual(app.formatDeviceVersion(null), 'version unknown');
+  assert.strictEqual(app.formatDeviceVersion(undefined), 'version unknown');
+  assert.strictEqual(app.formatDeviceVersion(''), 'version unknown');
+});
+
+test('formatDeviceVersion never renders "version unknown" as if it agreed with a real version', () => {
+  // An unknown remote must never be confused with "same version as me" -- the
+  // rendered string for unknown must not itself look like a version string.
+  const rendered = app.formatDeviceVersion(null);
+  assert.ok(!/^v[0-9]/.test(rendered), 'unknown-version rendering must not look like a real version');
+});
+
+test('buildTileHTML device-badge title attribute carries the known deviceVersion', () => {
+  app._setServerSettings({ multi_device_enabled: true });
+  const session = { name: 'work', deviceName: 'Laptop', deviceVersion: '0.15.0', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('title="v0.15.0"'), 'device-badge title should show the known deviceVersion');
+  app._setServerSettings(null);
+});
+
+test('buildTileHTML device-badge title says "version unknown" when deviceVersion is missing', () => {
+  app._setServerSettings({ multi_device_enabled: true });
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('title="version unknown"'), 'device-badge title should say version unknown, not a guessed value');
+  app._setServerSettings(null);
+});
+
+test('buildSidebarHTML device-badge title attribute carries the known deviceVersion', () => {
+  app._setServerSettings({ multi_device_enabled: true });
+  const session = { name: 'work', deviceName: 'Laptop', deviceVersion: '0.16.1', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(html.includes('title="v0.16.1"'), 'device-badge title should show the known deviceVersion');
+  app._setServerSettings(null);
+});
+
+test('buildSidebarHTML device-badge title says "version unknown" when deviceVersion is missing', () => {
+  app._setServerSettings({ multi_device_enabled: true });
+  const session = { name: 'work', deviceName: 'Laptop', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null);
+  assert.ok(html.includes('title="version unknown"'), 'device-badge title should say version unknown, not a guessed value');
+  app._setServerSettings(null);
+});
+
+test('buildStatusTileHTML shows the known deviceVersion for an unreachable remote', () => {
+  const html = app.buildStatusTileHTML('spark-2', 'Offline', 'offline', '0.15.0');
+  assert.ok(html.includes('v0.15.0'), 'status tile should show the known deviceVersion');
+});
+
+test('buildStatusTileHTML shows "version unknown" when deviceVersion is null', () => {
+  const html = app.buildStatusTileHTML('spark-2', 'Offline', 'offline', null);
+  assert.ok(html.includes('version unknown'), 'status tile must render unknown distinctly, never a guessed value');
+});
+
+test('buildStatusTileHTML omits deviceVersion argument still renders "version unknown" (backward compatible call)', () => {
+  const html = app.buildStatusTileHTML('spark-2', 'Auth required', 'auth');
+  assert.ok(html.includes('version unknown'), 'a caller that omits deviceVersion must still get an honest unknown, not a crash or blank');
+});
+
 test('buildTileHTML badge and options-btn are siblings in tile-header when badge present', () => {
   // Since the badge moved out of tile-meta into tile-header directly, tile-meta-sep is removed.
   // The tile-options-btn is also now inside tile-header as a flex sibling.
@@ -4159,7 +4225,10 @@ test('buildSidebarHTML shows content from top of 40-row terminal (trim BEFORE sl
 test('buildTileHTML trim happens BEFORE slice in source (structural order check)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('function buildTileHTML');
-  const fnBody = source.substring(fnStart, fnStart + 2000);
+  // Window sized generously past the device-badge title-attribute line (which
+  // legitimately grew the head of this function) so this keeps checking the
+  // real trim/slice ordering rather than an arbitrary byte offset.
+  const fnBody = source.substring(fnStart, fnStart + 2500);
   const trimIdx = fnBody.indexOf('.pop()');
   const sliceIdx = fnBody.indexOf('.slice(');
   assert.ok(

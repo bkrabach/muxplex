@@ -2141,6 +2141,35 @@ _federation_breaker = CircuitBreaker(
 )
 
 
+async def _fetch_remote_version(
+    http_client: httpx.AsyncClient, url: str, key: str
+) -> str | None:
+    """Best-effort fetch of a remote's version via its own /api/instance-info.
+
+    Never raises: an unreachable remote, a too-old version that doesn't serve
+    this endpoint, or a malformed response all yield None ("unknown"). Callers
+    must render None distinctly from "matches the local version" -- an
+    unknown that looks like agreement is worse than showing no data.
+
+    /api/instance-info is unauthenticated (see auth._AUTH_EXEMPT_PATHS), so
+    this succeeds even when the /api/sessions call it runs alongside is
+    auth-rejected.
+    """
+    try:
+        resp = await http_client.get(
+            f"{url.rstrip('/')}/api/instance-info",
+            headers={"Authorization": f"Bearer {key}"} if key else {},
+            timeout=_FEDERATION_POLL_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        version = data.get("version") if isinstance(data, dict) else None
+        return version if isinstance(version, str) and version else None
+    except Exception:
+        return None
+
+
 @app.get("/api/federation/sessions")
 async def federation_sessions(request: Request) -> list[dict]:
     """Fetch sessions from all instances (local + remotes) and merge.
@@ -2172,6 +2201,10 @@ async def federation_sessions(request: Request) -> list[dict]:
                 "last_activity_at": activity.get(name),
                 "deviceId": local_device_id,
                 "deviceName": local_device_name,
+                # This process's own version -- same value /api/instance-info
+                # reports. Included so clients can compare local vs remote
+                # versions using this single response, without a second fetch.
+                "deviceVersion": app.version,
                 "remoteId": None,
                 "sessionKey": f"{local_device_id}:{name}",
             }
@@ -2189,6 +2222,15 @@ async def federation_sessions(request: Request) -> list[dict]:
         On success: cache the result and return tagged sessions (or {status: 'empty'} if none).
         On transient failure: return cached sessions for up to _FEDERATION_GRACE_FAILURES
         consecutive failures before promoting to {status: 'unreachable'}.
+
+        Every returned entry also carries deviceVersion: the remote's
+        self-reported version from its own /api/instance-info, fetched
+        concurrently with (never blocking on, and never causing this
+        function to raise for) the /api/sessions call above. None means
+        "unknown" (unreachable, too old to serve the endpoint, or malformed
+        response) — deliberately never defaulted to a real version string,
+        since an unknown that looked like agreement with the local version
+        would be worse than showing no data.
         """
         url: str = remote.get("url", "")
         key: str = remote.get("key", "")
@@ -2204,8 +2246,14 @@ async def federation_sessions(request: Request) -> list[dict]:
                     "deviceId": remote_device_id,
                     "remoteId": remote_device_id,
                     "deviceName": remote_name,
+                    "deviceVersion": None,
                 }
             ]
+        # Started immediately (not merely scheduled) so it runs concurrently
+        # with the /api/sessions call below rather than sequentially after
+        # it. Never raises — see _fetch_remote_version — so every exit path
+        # from this function can safely await it.
+        version_task = asyncio.create_task(_fetch_remote_version(http_client, url, key))
         try:
             resp = await http_client.get(
                 f"{url.rstrip('/')}/api/sessions",
@@ -2217,7 +2265,9 @@ async def federation_sessions(request: Request) -> list[dict]:
             if _federation_breaker.record_success(url):
                 _log.info("federation remote %s reachable again; resuming", remote_name)
             if resp.status_code in (401, 403):
-                # Auth failure — clear cache so stale data is not served
+                # Auth failure — clear cache so stale data is not served.
+                # /api/instance-info is unauthenticated, so the version probe
+                # can still succeed even though /api/sessions was rejected.
                 _federation_cache.pop(remote_device_id, None)
                 return [
                     {
@@ -2225,16 +2275,19 @@ async def federation_sessions(request: Request) -> list[dict]:
                         "deviceId": remote_device_id,
                         "remoteId": remote_device_id,
                         "deviceName": remote_name,
+                        "deviceVersion": await version_task,
                     }
                 ]
             resp.raise_for_status()
             sessions = resp.json()
-            # Tag each session with deviceId, deviceName, remoteId, and unique sessionKey
+            remote_version = await version_task
+            # Tag each session with deviceId, deviceName, remoteId, deviceVersion, and sessionKey
             tagged = [
                 {
                     **s,
                     "deviceId": remote_device_id,
                     "deviceName": remote_name,
+                    "deviceVersion": remote_version,
                     "remoteId": remote_device_id,
                     "sessionKey": f"{remote_device_id}:{s.get('name', '')}",
                 }
@@ -2251,6 +2304,7 @@ async def federation_sessions(request: Request) -> list[dict]:
                         "deviceId": remote_device_id,
                         "remoteId": remote_device_id,
                         "deviceName": remote_name,
+                        "deviceVersion": remote_version,
                     }
                 ]
             return tagged
@@ -2267,6 +2321,7 @@ async def federation_sessions(request: Request) -> list[dict]:
                     "deviceId": remote_device_id,
                     "remoteId": remote_device_id,
                     "deviceName": remote_name,
+                    "deviceVersion": await version_task,
                 }
             ]
         except httpx.TransportError as exc:
@@ -2294,6 +2349,7 @@ async def federation_sessions(request: Request) -> list[dict]:
                     "deviceId": remote_device_id,
                     "remoteId": remote_device_id,
                     "deviceName": remote_name,
+                    "deviceVersion": await version_task,
                 }
             ]
         except Exception as exc:
@@ -2308,6 +2364,7 @@ async def federation_sessions(request: Request) -> list[dict]:
                     "deviceId": remote_device_id,
                     "remoteId": remote_device_id,
                     "deviceName": remote_name,
+                    "deviceVersion": await version_task,
                 }
             ]
 

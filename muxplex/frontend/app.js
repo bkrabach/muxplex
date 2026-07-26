@@ -230,6 +230,10 @@ let _gridViewMode = 'flat';
 let _activeFilterDevice = 'all';
 let _activeView = 'all';
 let _localDeviceId = null;
+// This server's own reported version (from /api/instance-info), for the
+// read-only "Version" field in Settings > Display. null until that fetch
+// resolves; never falls back to a guessed value.
+let _localVersion = null;
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
   hoverPreviewDelay: 1500,
@@ -660,6 +664,18 @@ function ansi256Color(n) {
 }
 
 /**
+ * Format a device's version for display (tooltip/badge text).
+ * Returns 'version unknown' for null/undefined/empty rather than falling
+ * back to any guessed value -- an unknown that looked like agreement with
+ * the local version would be worse than showing no data at all.
+ * @param {string|null|undefined} version
+ * @returns {string}
+ */
+function formatDeviceVersion(version) {
+  return version ? ('v' + version) : 'version unknown';
+}
+
+/**
  * Build the HTML string for a single session tile.
  * @param {object} session
  * @param {number} index
@@ -688,7 +704,7 @@ function buildTileHTML(session, index, mobile) {
   // Shown when multiple sources configured AND session has a device name
   let badgeHtml = '';
   if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
-    badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
+    badgeHtml = `<span class="device-badge" title="${escapeHtml(formatDeviceVersion(session.deviceVersion))}">${escapeHtml(session.deviceName)}</span>`;
   }
 
   // Last N lines of snapshot — show more in fit mode so tall tiles fill
@@ -751,7 +767,7 @@ function buildSidebarHTML(session, currentSession, currentRemoteId) {
   // Device badge — shown in header line when multi_device_enabled
   let badgeHtml = '';
   if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
-    badgeHtml = `<span class="device-badge">${escapeHtml(session.deviceName)}</span>`;
+    badgeHtml = `<span class="device-badge" title="${escapeHtml(formatDeviceVersion(session.deviceVersion))}">${escapeHtml(session.deviceName)}</span>`;
   }
 
   // Last 20 lines of snapshot — trim trailing blanks from the FULL snapshot FIRST,
@@ -786,13 +802,15 @@ function buildSidebarHTML(session, currentSession, currentRemoteId) {
  * @param {string} deviceName
  * @param {string} statusText
  * @param {string} statusClass
+ * @param {string|null} [deviceVersion] - remote's reported version, or null/undefined if unknown
  * @returns {string}
  */
-function buildStatusTileHTML(deviceName, statusText, statusClass) {
+function buildStatusTileHTML(deviceName, statusText, statusClass, deviceVersion) {
   return (
     '<article class="source-tile source-tile--' + statusClass + '">' +
     '<span class="source-tile__name">' + escapeHtml(deviceName || '') + '</span>' +
     '<span class="source-tile__badge">' + escapeHtml(statusText || '') + '</span>' +
+    '<span class="source-tile__version">' + escapeHtml(formatDeviceVersion(deviceVersion)) + '</span>' +
     '</article>'
   );
 }
@@ -1054,7 +1072,8 @@ function renderSidebar(sessions, currentSession, currentRemoteId) {
     }
 
     for (const [deviceName, deviceSessions] of groups) {
-      html += `<h4 class="sidebar-device-header">${escapeHtml(deviceName)}</h4>`;
+      const groupVersion = deviceSessions.length > 0 ? deviceSessions[0].deviceVersion : null;
+      html += `<h4 class="sidebar-device-header">${escapeHtml(deviceName)} <span class="sidebar-device-header__version">${escapeHtml(formatDeviceVersion(groupVersion))}</span></h4>`;
       html += deviceSessions.map((session) => buildSidebarHTML(session, currentSession, currentRemoteId)).join('');
     }
   } else {
@@ -1848,8 +1867,8 @@ function renderGrid(sessions) {
     // produces no visible tile in any view mode (flat, grouped, or otherwise).
     var statusTilesHtml = '';
     (sessions || []).forEach(function(session) {
-      if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth');
-      else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
+      if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth', session.deviceVersion);
+      else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline', session.deviceVersion);
     });
     if (grid) grid.innerHTML = statusTilesHtml;
     // Only show empty-state when there are truly no tiles at all
@@ -1897,8 +1916,8 @@ function renderGrid(sessions) {
   // visible tile.  auth_failed and unreachable are actionable error states and are always shown.
   var statusTilesHtml = '';
   (sessions || []).forEach(function(session) {
-    if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth');
-    else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline');
+    if (session.status === 'auth_failed') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Auth required', 'auth', session.deviceVersion);
+    else if (session.status === 'unreachable') statusTilesHtml += buildStatusTileHTML(session.deviceName, 'Offline', 'offline', session.deviceVersion);
   });
   if (grid) grid.innerHTML = html + statusTilesHtml;
 
@@ -4822,11 +4841,19 @@ document.addEventListener('DOMContentLoaded', async function() {
   // trigger a redundant re-fetch in followRemoteViewDefinitions().
   _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || 0;
 
-  // Cache local device_id from /api/instance-info for session key construction
+  // Cache local device_id + version from /api/instance-info. device_id feeds
+  // session key construction; version populates the read-only Settings >
+  // Display "Version" field (reference info, not fetched again on dialog
+  // open — set directly on the element the moment this resolves).
   api('GET', '/api/instance-info').then(function(res) {
     return res.json();
   }).then(function(info) {
     if (info && info.device_id) _localDeviceId = info.device_id;
+    if (info && info.version) {
+      _localVersion = info.version;
+      var versionEl = $('setting-app-version');
+      if (versionEl) versionEl.textContent = 'v' + info.version;
+    }
   }).catch(function() { /* non-critical — local session key falls back to plain name */ });
 
   var _initDs = getDisplaySettings();
@@ -4882,6 +4909,7 @@ if (typeof module !== 'undefined' && module.exports) {
     startPolling,
     startStatePolling,
     escapeHtml,
+    formatDeviceVersion,
     buildTileHTML,
     buildSidebarHTML,
     getVisibleSessions,

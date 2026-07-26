@@ -895,6 +895,88 @@ def test_doctor_shows_serve_config(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# doctor(): running vs installed version
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_shows_running_version_match(tmp_path, monkeypatch, capsys):
+    """doctor() must report the running version matches installed when they're equal."""
+    import json
+    from importlib.metadata import version as pkg_version
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    installed_version = pkg_version("muxplex")
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {"device_id": "abc", "version": installed_version},
+    )
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "matches installed" in out
+
+
+def test_doctor_shows_running_version_mismatch(tmp_path, monkeypatch, capsys):
+    """doctor() must warn and point at a restart when running != installed version.
+
+    This is the exact gap that left a live server on v0.14.0 for hours after
+    the install moved to v0.15.0, with nothing anywhere saying so.
+    """
+    import json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {"device_id": "abc", "version": "0.0.1-stale"},
+    )
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "0.0.1-stale" in out
+    assert "restart the service" in out
+    assert "muxplex upgrade" in out
+
+
+def test_doctor_shows_running_not_serving_distinctly(tmp_path, monkeypatch, capsys):
+    """doctor() must report 'not serving' plainly -- a normal state, not an error --
+    and that message must never be confused with the version-mismatch wording."""
+    import json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(
+        cli_mod, "_fetch_local_instance_info", lambda port, timeout=2.0: None
+    )
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "not serving" in out
+    assert "restart the service" not in out
+
+
+# ---------------------------------------------------------------------------
 # service subcommand dispatch tests
 # ---------------------------------------------------------------------------
 
@@ -3527,6 +3609,88 @@ def test_kill_stale_port_holder_survives_missing_lsof(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", boom)
     cli_mod._kill_stale_port_holder(8088)  # must not raise
+
+
+def test_fetch_local_instance_info_returns_parsed_dict_on_200(monkeypatch):
+    """200 + JSON object body => the parsed dict is returned verbatim."""
+    import muxplex.cli as cli_mod
+
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return b'{"device_id": "abc", "version": "0.15.0", "name": "spark-1"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResp())
+    result = cli_mod._fetch_local_instance_info(8088)
+    assert result == {"device_id": "abc", "version": "0.15.0", "name": "spark-1"}
+
+
+def test_fetch_local_instance_info_returns_none_when_nothing_answers(monkeypatch):
+    """Refused/timeout on both schemes => None, not an exception."""
+    import muxplex.cli as cli_mod
+
+    def boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert cli_mod._fetch_local_instance_info(8088) is None
+
+
+def test_fetch_local_instance_info_returns_none_for_non_dict_body(monkeypatch):
+    """A 200 response whose body isn't a JSON object (e.g. a bare list) => None."""
+    import muxplex.cli as cli_mod
+
+    class FakeResp:
+        status = 200
+
+        def read(self):
+            return b"[1, 2, 3]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResp())
+    assert cli_mod._fetch_local_instance_info(8088) is None
+
+
+def test_port_holder_is_healthy_muxplex_uses_shared_fetch_decision_only(monkeypatch):
+    """After sharing the raw fetch, the healthy/unhealthy DECISION must be unchanged:
+    device_id + version present => healthy; either missing, or no data => not healthy.
+
+    This pins the deliberate design: _fetch_local_instance_info is a shared raw
+    fetch, but the safety-critical decision stays entirely in
+    _port_holder_is_healthy_muxplex.
+    """
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {"device_id": "x", "version": "1.0.0"},
+    )
+    assert cli_mod._port_holder_is_healthy_muxplex(8088) is True
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {"hello": "world"},
+    )
+    assert cli_mod._port_holder_is_healthy_muxplex(8088) is False
+
+    monkeypatch.setattr(
+        cli_mod, "_fetch_local_instance_info", lambda port, timeout=2.0: None
+    )
+    assert cli_mod._port_holder_is_healthy_muxplex(8088) is False
 
 
 def test_port_holder_probe_true_for_real_instance_info(monkeypatch):
