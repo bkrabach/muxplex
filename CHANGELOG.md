@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.16.0 (2026-07-26)
+
+### Features
+
+- **Surface the running version, not just the installed one.** `muxplex doctor` reported only the INSTALLED version, so a machine that had been upgraded but whose service had not been restarted looked perfectly healthy while still serving stale code — the exact situation that stranded a live server on 0.14.0 while 0.15.0 sat installed. Doctor now probes the locally-configured host and port and reports three distinct states: matching (`Running: v0.16.0 (matches installed)`), mismatched (naming both versions plus how to restart), and not serving (a normal state, worded so it can never be confused with staleness). The PWA gained a read-only Version field under Settings → Display, populated from the `/api/instance-info` fetch it already makes — no additional network call. Federated devices now carry `deviceVersion` through the existing federation path, surfaced in device-badge tooltips, the grouped sidebar's per-device header, and federation status tiles. A remote that is unreachable, too old to serve `/api/instance-info`, or returns a malformed body renders as "version unknown", deliberately formatted so it can never be mistaken for a real version — an unknown that looks like agreement is worse than no data. The remote probe runs concurrently with the existing `/api/sessions` poll, so it adds no latency, and it still works when that poll returns 401 because `/api/instance-info` is unauthenticated.
+
+### Documentation
+
+- **Recommend the PyPI install.** The README's `uvx` and `uv tool install` commands pointed at the git URL, predating publication to PyPI; both now use the published package. It also documents how to upgrade, and warns about the trap that prompted this: `uv tool upgrade` resolves strictly within the recorded requirement, so an install pinned to a tag (`...@v1.2.3`) reports "Nothing to upgrade" indefinitely — which is precisely how a local install sat on 0.14.0 while 0.15.0 was published. Unpinned git tracking remains documented for anyone wanting unreleased commits.
+
+### Verification
+
+- 1514 tests passed / 5 deselected in an isolated Digital Twin Universe container.
+- 491 frontend tests via `node --test tests/*.mjs` (including the previously-undiscovered `test_terminal.mjs`).
+- All five CI jobs green: frontend (node:test), Python 3.11/3.12/3.13, and test-latest-deps (mirrors user install behavior).
+- Running vs installed version mismatch rendered end-to-end against real muxplex 0.14.0 server in container.
+
 ## v0.15.1 (2026-07-26)
 
 ### Bug Fixes
