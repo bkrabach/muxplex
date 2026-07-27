@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
+[manifest]
+members = [
+    "muxplex",
+    "muxplex-client",
+]
+
 [[package]]
 name = "aiofiles"
 version = "25.1.0"
@@ -332,7 +338,7 @@ wheels = [
 
 [[package]]
 name = "muxplex"
-version = "0.14.0"
+version = "0.18.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -356,6 +362,7 @@ dev = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "muxplex-client" },
     { name = "pytest-timeout" },
 ]
 
@@ -378,7 +385,32 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest-timeout", specifier = ">=2.4.0" }]
+dev = [
+    { name = "muxplex-client", editable = "client" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
+]
+
+[[package]]
+name = "muxplex-client"
+version = "0.18.0"
+source = { editable = "client" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "packaging"

@@ -66,4 +66,16 @@ markers = [
 [dependency-groups]
 dev = [
     "pytest-timeout>=2.4.0",
+    # Workspace-editable, dev-only. NEVER a runtime dependency of the server
+    # (see client/pyproject.toml and muxplex-client-design.md §1/§7) --
+    # needed here only so muxplex/tests/test_client_contract.py can import
+    # muxplex_client and drive it over httpx.ASGITransport against the real
+    # app in-process.
+    "muxplex-client",
 ]
+
+[tool.uv.workspace]
+members = ["client"]
+
+[tool.uv.sources]
+muxplex-client = { workspace = true }
