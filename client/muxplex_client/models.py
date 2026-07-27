@@ -102,7 +102,7 @@ class ServerState:
 
     active_session: str | None
     active_view: str  # defaults to "all" when absent/empty
-    settings_updated_at: float | None
+    settings_updated_at: float | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
