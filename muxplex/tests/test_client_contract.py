@@ -34,6 +34,34 @@ from muxplex.sessions import DEFAULT_CAPTURE_LINES as SERVER_DEFAULT_CAPTURE_LIN
 from muxplex.sessions import MAX_CAPTURE_LINES as SERVER_MAX_CAPTURE_LINES
 from muxplex.terminal_input import ALLOWED_KEYS as SERVER_ALLOWED_KEYS
 
+# `muxplex-client` is only installed when `uv sync` resolves the uv workspace
+# (this project's `[dependency-groups]` -- see pyproject.toml and the module
+# docstring above). CI's `test-latest-deps` job deliberately installs via a
+# bare `uv pip install -e ".[dev]"` with NO workspace involved, on purpose --
+# that mirrors exactly what a real `uv tool install muxplex` resolves for an
+# end user (see ci.yml's comment on that job), and muxplex-client is NEVER a
+# runtime dependency of the muxplex server package. Installing it into that
+# job just to make this file collectible would defeat the job's entire
+# premise: it exists to catch resolution drift in the SERVER's own
+# dependencies against a real user's install, not to test a hybrid
+# environment no real user has.
+#
+# So: skip this whole contract-test module when muxplex_client isn't
+# installed, rather than fail collection. This checks ONLY package presence,
+# deliberately kept separate from the `from muxplex_client import ...` below:
+# if muxplex_client IS installed but a specific name has genuinely drifted
+# (the exact regression this file exists to catch -- see module docstring),
+# that must surface as a real ImportError everywhere the package is present,
+# not get silently absorbed into this skip.
+try:
+    import muxplex_client as _muxplex_client_probe  # noqa: F401
+except ImportError:
+    pytest.skip(
+        "muxplex_client not installed (expected outside the uv workspace, "
+        "e.g. CI's test-latest-deps job -- see comment above)",
+        allow_module_level=True,
+    )
+
 from muxplex_client import (
     AsyncMuxplexClient,
     AuthError,
