@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.19.0 (2026-07-26)
+
+### Features
+
+- **A first-class Python client, published as `muxplex-client`.** The Stream Deck sidecar had been hand-rolling 264 lines of httpx against four endpoints, and the Amplifier tool module planned next would have written a second copy — while AGENTS.md already carried a section titled "Semantics external clients re-implement today (change with care)," a standing admission that this duplication was a known drift hazard. The client ships as a separate distribution from the same repo and the same tag, depending only on httpx: consumers install a laptop-friendly package rather than an ASGI server, a PAM binding, and a `muxplex` console script that would collide with a real server's config directory. Sync and async clients share one I/O-free core holding all parsing, error mapping, and sentinel logic, so the two transports differ only in the shape of their awaits — both are genuinely required, since converting the deck's threaded HID architecture to async would be a rewrite while a synchronous call inside an Amplifier tool would block the event loop. The surface is twelve methods against roughly twenty-nine endpoints, deliberately excluding `PATCH /api/settings`: a convenience wrapper there is exactly the shape of the views-collapse incident, and doing it safely needs compare-and-swap plus 409 backstop discrimination built in, which is a v2 design rather than a v1 convenience. `run_shell_command()` composes the completion-sentinel convention over public primitives, carrying the digit-anchor rule that keeps tmux's input echo — which shows the literal unexpanded `$?` before the shell runs — from producing an instant false "done" with a bogus exit code.
+
+- **A contract test that makes the second distribution safe.** Living in the server's own suite and driving the real ASGI app in-process, it asserts that the client's parsed fields match the raw endpoint JSON, that its key allowlist equals `terminal_input.ALLOWED_KEYS`, that its capture-depth constants match `sessions.py`, and that `Bell.needs_attention` agrees with the server's implementation across an eight-row truth table. This is what a separate repo structurally could not do: it catches a client/server break in the same pull request that introduces it, rather than against the last published server.
+
+### Internal
+
+- **The release path now knows the second distribution exists.** A bare `uv build` builds only the root package, so a tag would have published half the release behind a green workflow; the publish step now uses `--all-packages`. Root `testpaths` confined collection to the server's tests, so the client's suite would never have run in CI; a dedicated `test-client` job now runs it across all three supported Python versions. A contract test asserts both `pyproject.toml` versions match, so a release that bumps one and forgets the other fails in the same pull request instead of publishing mismatched wheels.
+
+### Verification
+
+- 1570 tests passed / 5 deselected in muxplex server suite (baseline v0.18.0: 1546 passed, +24 new tests for client integration). The new `muxplex-client` package runs 44 pure-contract tests across Python 3.11/3.12/3.13 in CI.
+- All six CI jobs green on the feature commit: frontend (node:test), Python 3.11/3.12/3.13, test-latest-deps, and the new test-client matrix (3 versions).
+- Contract test verified: `test_client_version_matches_server_version`, `test_client_fields_match_endpoints`, `test_client_allowlist_matches_server`, and `test_bell_needs_attention_consistency` all pass.
+- Both distributions published to PyPI from the same v0.19.0 tag: muxplex and muxplex-client.
+
+
 ## v0.18.0 (2026-07-26)
 
 ### Bug Fixes
