@@ -109,6 +109,16 @@ def _sync_asgi_client(
     internal portal), so it is the correct sync transport for driving
     `MuxplexClient` against the app with no network, no port, no live host.
 
+    Deliberately NOT entered as a context manager (`with TestClient(...) as
+    c:`): doing so runs the real ASGI lifespan (startup/shutdown), which for
+    this app means the real background poll loop and `kill_orphan_ttyd()` --
+    exactly the live-process side effects this in-process contract test
+    must never trigger, and which hung indefinitely in the DTU (no real
+    tmux-adjacent environment for it to settle in). Used bare, `TestClient`
+    spins an ephemeral per-request portal with no lifespan involved, which
+    is exactly the "no network, no port, no live host" shape this test
+    needs -- confirmed against a minimal repro before landing this fixture.
+
     `client_addr` sets the ASGI scope's client address; ("127.0.0.1", ...)
     triggers `AuthMiddleware`'s localhost bypass (the default for every test
     here except the explicit non-localhost 401 test below).
@@ -137,9 +147,14 @@ def sync_client():
 @pytest.fixture
 def raw_http():
     """Undecorated sync client over the same app, for asserting the
-    client's parsed fields against the server's actual raw JSON."""
-    with _sync_asgi_client() as c:
-        yield c
+    client's parsed fields against the server's actual raw JSON.
+
+    Bare (not entered as a context manager) -- see `_sync_asgi_client`'s
+    docstring for why.
+    """
+    c = _sync_asgi_client()
+    yield c
+    c.close()
 
 
 @pytest.fixture
