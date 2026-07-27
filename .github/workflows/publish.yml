@@ -21,7 +21,24 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Build package
-        run: uv build
+        # --all-packages builds every uv workspace member, not just the root
+        # project. Without it, `uv build` only produces the `muxplex` sdist +
+        # wheel and silently drops `muxplex-client` (client/) -- verified
+        # locally: a bare `uv build` produces 2 files in dist/, this produces
+        # 4. See client/pyproject.toml + muxplex-client-design.md for why the
+        # client is a separate workspace member/distribution.
+        run: uv build --all-packages
 
       - name: Publish to PyPI
+        # Uploads every file under dist/ (both muxplex-* and muxplex_client-*
+        # artifacts) in one call. This works with OIDC Trusted Publishing only
+        # because BOTH PyPI projects ("muxplex" and "muxplex-client") have a
+        # trusted publisher registered for this exact repo/workflow/environment
+        # triple -- each project's trust config is independent, and PyPI scopes
+        # the minted token to every project whose config matches the OIDC
+        # claims in this run, so one exchange covers both. If a future
+        # workspace member's project name does NOT have its own trusted
+        # publisher configured here, its files in dist/ will fail to upload
+        # (403) even though the build step succeeds -- add the pending
+        # publisher on PyPI before adding a new distribution to this workflow.
         uses: pypa/gh-action-pypi-publish@release/v1

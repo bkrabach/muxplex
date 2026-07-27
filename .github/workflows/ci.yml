@@ -37,6 +37,59 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  test-client:
+    # muxplex-client (client/) is a separate uv workspace member and PyPI
+    # distribution (see client/pyproject.toml, muxplex-client-design.md) with
+    # its OWN pytest config (`testpaths = ["tests"]`, scoped to client/tests).
+    # The `test` job above runs from the repo root, whose testpaths is
+    # `["muxplex/tests"]` -- it NEVER collects client/tests, so the client's
+    # 44 pure unit tests (test_protocol.py, test_sentinel.py) silently never
+    # ran in CI. This is the same shape of blind spot `test-frontend` closed
+    # for the JS suite: a real, dedicated test suite that nothing executed.
+    #
+    # A dedicated job (not a widened root `testpaths`) is deliberate:
+    # - Keeps each package's pytest config authoritative for its own tests
+    #   (root `addopts = "-m 'not integration'"` and the `integration`
+    #   marker are muxplex-server concerns; the client suite is pure/networkless
+    #   and has no markers of its own -- mixing configs would couple them for
+    #   no benefit).
+    # - Mirrors `test-frontend`'s pattern: one job per distribution/ecosystem,
+    #   named for what it covers, independently green/red in the Actions UI.
+    # - Orthogonal to `test-latest-deps`: that job exists to catch dependency
+    #   *resolution* drift between `uv.lock` and a fresh `uv tool install`-style
+    #   resolve for the SERVER's heavier dependency set (fastapi/uvicorn/etc).
+    #   The client's only dependency is `httpx`, resolved from the same
+    #   `uv sync` as this job already uses -- there is no comparable drift
+    #   surface here, so this job runs against `uv.lock` only, same as `test`.
+    #
+    # Matrixed across the same Python versions as `test` because
+    # muxplex-client is itself a published PyPI package supporting 3.11-3.13
+    # (see client/pyproject.toml's classifiers) -- its own compatibility
+    # promise, independent of the server's.
+    name: test (muxplex-client package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies (workspace sync, includes client/)
+        run: uv sync --extra dev
+
+      - name: Run muxplex-client tests
+        run: uv run --directory client pytest -v
+
   test-latest-deps:
     # Real incident this closes (2026-07): uv.lock pinned uvicorn 0.42.0 /
     # websockets 16.0 (uvicorn's legacy websocket ASGI implementation), so

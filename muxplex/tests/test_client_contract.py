@@ -21,6 +21,9 @@ never a runtime dependency of the `muxplex` server package itself.
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import httpx
 import pytest
 from starlette.testclient import TestClient as ASGITestClient
@@ -373,3 +376,38 @@ async def test_async_client_sessions_matches_sync(async_client, seeded_session):
 async def test_async_client_instance_info(async_client):
     info = await async_client.instance_info()
     assert info.version  # non-empty; exact value not pinned across releases
+
+
+# ---------------------------------------------------------------------------
+# Version lockstep -- muxplex-client-design.md §2: one vX.Y.Z tag publishes
+# both wheels at that version. This is a MANUAL discipline at release time
+# (the two pyproject.toml `version` fields are independent strings; nothing
+# in the build derives one from the other) -- this test is the same-PR
+# tripwire for that manual step being forgotten, the same shape of guard the
+# mirrored-constant assertions above already provide for
+# KNOWN_KEYS/MAX_CAPTURE_LINES/etc.
+# ---------------------------------------------------------------------------
+
+
+def test_client_version_matches_server_version():
+    """`client/pyproject.toml`'s version must equal the repo root's.
+
+    Lockstep version is a deliberate design decision (muxplex-client-design.md
+    §2), not a build-system guarantee: `uv build --all-packages` will happily
+    publish two DIFFERENT version numbers from one tag if a release bumps one
+    pyproject.toml and forgets the other. This turns that omission into a
+    failing test in the SAME PR that bumps the version, rather than a
+    published PyPI release where the client wheel's version claims to be
+    "cut against" a server release it doesn't actually match.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    server_toml = tomllib.loads((repo_root / "pyproject.toml").read_text())
+    client_toml = tomllib.loads((repo_root / "client" / "pyproject.toml").read_text())
+    server_version = server_toml["project"]["version"]
+    client_version = client_toml["project"]["version"]
+    assert client_version == server_version, (
+        f"muxplex-client version ({client_version}) must match muxplex version "
+        f"({server_version}) -- see muxplex-client-design.md §2 (lockstep "
+        "version). Bump client/pyproject.toml's version to match at release "
+        "time."
+    )
