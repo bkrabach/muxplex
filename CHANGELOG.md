@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.20.0 (2026-07-29)
+
+### Features
+
+- **A new `/deck/` page turns a phone or tablet into a session switcher.** Propped beside the laptop, it shows the sessions in the current view as tiles; tapping one switches the laptop to that session. It can be installed to a phone's home screen as its own app. Scope is deliberately narrow — switch session and change view, nothing else.
+
+- **The deck shows what it actually knows.** A tap shows a distinct in-flight state rather than claiming success before the server has answered, and reverts visibly if the request fails. If the server stops responding, the whole grid dims rather than continuing to present stale tiles as current.
+
+- **The screen is kept awake while the deck is open**, with a control that reports the true state rather than an assumption, and can be toggled.
+
+### Bug Fixes
+
+- **Logging in no longer discards where you were going.** The login form always redirected to the site root, so a deep link was lost and — for anyone running the deck as an installed app — logging in ejected them out of their app into a browser tab showing the terminal. The intended destination is now preserved and validated as a same-origin path, rejecting absolute URLs, protocol-relative URLs, embedded schemes, and path traversal.
+
+### Verification
+
+- 1604 tests passed (baseline v0.19.0: 1412 passed, +192 new tests covering the deck route and authentication validation).
+- All eight CI jobs green: Python 3.11/3.12/3.13 (muxplex and muxplex-client), test-latest-deps, and test-frontend (node:test).
+- Deck functionality verified end-to-end in a real browser against a scratch-instance muxplex server: session tile tap confirmed active_session changed on the server, and visual state transitions (in-flight, success, error, stale-server dim) all verified.
+- Link preservation validated: deep links like `/deck?view=2&session=work` survive login and redirect correctly.
+
 ## v0.19.0 (2026-07-26)
 
 ### Features
