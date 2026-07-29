@@ -558,33 +558,51 @@ test('registerServiceWorker does not throw when `navigator.serviceWorker` is abs
 
 test('registerServiceWorker registers /deck/sw.js when serviceWorker is available', () => {
   let registeredPath = null;
-  const originalNavigator = globalThis.navigator;
-  globalThis.navigator = {
-    serviceWorker: {
-      register: (path) => {
-        registeredPath = path;
-        return Promise.resolve({});
+  // Node 21+ ships a built-in read-only `navigator` global (Web platform
+  // compat), so a plain assignment throws `Cannot set property navigator of
+  // #<Object> which has only a getter`. Redefine it via defineProperty for
+  // the duration of this test, then restore the original descriptor.
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      serviceWorker: {
+        register: (path) => {
+          registeredPath = path;
+          return Promise.resolve({});
+        },
       },
     },
-  };
+  });
   try {
     deck.registerServiceWorker();
     assert.strictEqual(registeredPath, '/deck/sw.js');
   } finally {
-    globalThis.navigator = originalNavigator;
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', originalDescriptor);
+    } else {
+      delete globalThis.navigator;
+    }
   }
 });
 
 test('registerServiceWorker does not throw when registration rejects', async () => {
-  const originalNavigator = globalThis.navigator;
-  globalThis.navigator = {
-    serviceWorker: { register: () => Promise.reject(new Error('nope')) },
-  };
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      serviceWorker: { register: () => Promise.reject(new Error('nope')) },
+    },
+  });
   try {
     assert.doesNotThrow(() => deck.registerServiceWorker());
     await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
-    globalThis.navigator = originalNavigator;
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', originalDescriptor);
+    } else {
+      delete globalThis.navigator;
+    }
   }
 });
 
