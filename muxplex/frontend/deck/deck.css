@@ -275,7 +275,20 @@ html, body {
   flex: 1 1 auto;
   overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr));
+  /* auto-fit, NOT auto-fill (a deliberate deviation from the literal
+     `repeat(auto-fill, minmax(...))` snippet all three design docs give —
+     found during browser verification against a real, sparsely-populated
+     view). auto-fill reserves empty tracks for however many WOULD fit at
+     --tile-min, even with fewer real sessions than that — so a 2-session
+     view on a wide viewport renders two narrow tiles squeezed to the left
+     with dead empty columns eating the rest of the width. auto-fit
+     collapses those empty tracks to 0, letting 1fr redistribute across
+     only the real tiles. The two are IDENTICAL whenever the view is full
+     enough to actually fill the available columns (the case the docs'
+     worked tables assume, 5-30 sessions) -- auto-fit is a strict
+     improvement with no downside for the case they modeled, and fixes the
+     case they didn't (a small/focused view on a large screen). */
+  grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
   gap: var(--gap);
   padding: var(--gap);
   padding-left: max(var(--gap), env(safe-area-inset-left, 0px));
@@ -340,14 +353,36 @@ html, body {
   background: var(--bg-tile-hover);
 }
 
-/* Active — resolution #4: box-shadow inset, never outline. */
-.session-tile.is-active {
+/* State ring — a ::after overlay, NOT a box-shadow directly on
+   .session-tile. Found during browser verification (a real /deck/ session
+   on a scratch server, not just a mock): box-shadow paints as part of the
+   element's OWN background/border layer, which is BELOW its children in
+   normal stacking order — so a box-shadow on .session-tile was rendered
+   UNDERNEATH .tile-name's opaque background (and to a lesser extent
+   .tile-state's), breaking the ring into disconnected fragments wherever
+   an opaque child overlapped it instead of a clean unbroken outline. A
+   ::after pseudo-element positioned above every real child (z-index 5 >
+   tile-state's 3 > tile-name's 2 > tile-preview's 1) paints on top of all
+   of them, so the ring is always a complete, unbroken rectangle regardless
+   of what's underneath it. pointer-events:none keeps it from intercepting
+   the tap. Resolution #4 (box-shadow not outline) still holds — this only
+   changes WHICH box the box-shadow is drawn on. */
+.session-tile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
+.session-tile.is-active::after {
   box-shadow: inset 0 0 0 3px var(--accent);
 }
 
 /* Pending — resolution #5: visually distinct from confirmed-active via a
    pulsing opacity animation on the same box-shadow mechanism. */
-.session-tile.is-pending {
+.session-tile.is-pending::after {
   box-shadow: inset 0 0 0 3px var(--accent);
   animation: deck-pending-pulse 900ms ease-in-out infinite;
 }
@@ -356,8 +391,10 @@ html, body {
   50% { box-shadow: inset 0 0 0 3px rgba(0, 217, 245, 1); }
 }
 
-.session-tile.is-failed {
+.session-tile.is-failed::after {
   box-shadow: inset 0 0 0 3px var(--err);
+}
+.session-tile.is-failed {
   animation: deck-fail-shake 300ms ease-in-out 1;
 }
 @keyframes deck-fail-shake {
