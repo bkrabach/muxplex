@@ -458,29 +458,29 @@ test('pickerOptionContent: STATE carries a session count when known, singular/pl
 
 test('viewSessionCounts: counts local sessions matching the ":name" suffix rule', () => {
   const names = ['alpha', 'beta', 'gamma'];
-  const membership = {
-    work: ['device-1:alpha', 'device-1:beta'],
-    personal: ['device-1:gamma'],
-  };
-  const counts = deck.viewSessionCounts(names, membership);
+  const viewsList = [
+    { name: 'work', sessions: ['device-1:alpha', 'device-1:beta'] },
+    { name: 'personal', sessions: ['device-1:gamma'] },
+  ];
+  const counts = deck.viewSessionCounts(names, viewsList);
   assert.strictEqual(counts.work, 2);
   assert.strictEqual(counts.personal, 1);
 });
 
 test('viewSessionCounts: bare (unprefixed) legacy entries also match', () => {
   const names = ['alpha'];
-  const membership = { work: ['alpha'] };
-  assert.strictEqual(deck.viewSessionCounts(names, membership).work, 1);
+  const viewsList = [{ name: 'work', sessions: ['alpha'] }];
+  assert.strictEqual(deck.viewSessionCounts(names, viewsList).work, 1);
 });
 
 test('viewSessionCounts: sessions not present locally are not counted', () => {
   const names = ['alpha'];
-  const membership = { work: ['device-1:alpha', 'device-1:missing'] };
-  assert.strictEqual(deck.viewSessionCounts(names, membership).work, 1);
+  const viewsList = [{ name: 'work', sessions: ['device-1:alpha', 'device-1:missing'] }];
+  assert.strictEqual(deck.viewSessionCounts(names, viewsList).work, 1);
 });
 
 test('viewSessionCounts: empty/missing membership returns an empty map, never throws', () => {
-  assert.deepStrictEqual(deck.viewSessionCounts(['a'], {}), {});
+  assert.deepStrictEqual(deck.viewSessionCounts(['a'], []), {});
   assert.deepStrictEqual(deck.viewSessionCounts(['a'], null), {});
   assert.deepStrictEqual(deck.viewSessionCounts(null, null), {});
 });
