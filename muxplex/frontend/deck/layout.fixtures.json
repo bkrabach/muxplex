@@ -1,0 +1,139 @@
+{
+  "spec_version": "1",
+  "description": "Layer B golden fixture (DECK_PARITY_ARCHITECTURE.md \u00a76.2): reserved-control-key geometry as a pure function of (key_rows, key_cols), degenerate-grid handling, session/view paging, and the control-key content table. Cannot differ legitimately between the soft deck (frontend/deck/deck.js) and the muxplex-deck hardware sidecar -- if a client's own implementation disagrees with a case here, that disagreement is a bug, not a deliberate per-device choice (the test for which is DECK_PARITY_ARCHITECTURE.md \u00a75's 'would that be a bug?' question).",
+  "owner": "muxplex (frontend/deck/deck.js) -- this repo authors the file today. The muxplex-deck sidecar should adopt this exact path/schema as its own `spec/deck-layout.fixtures.json` and assert the SAME cases from its Python test suite; whichever repo edits a case first bumps spec_version and the other repo re-syncs a byte-identical copy. See DECK_PARITY_ARCHITECTURE.md \u00a76.2 for the full ownership rationale.",
+  "served_at": "/deck/layout.fixtures.json",
+  "asserted_by": {
+    "soft_deck": "frontend/tests/test_deck.mjs (reservedControlKeys, sessionSlotIndices, pageCount, pageSlice, clampPage, controlKeyContent)",
+    "hardware_sidecar": "muxplex-deck/tests/test_layout.py (layout.py's _reserved_control_keys and interaction.py's Pager) -- NOT YET WIRED to this file; out of scope for this change, tracked separately"
+  },
+  "cases": [
+    {
+      "id": "xl-4x8-corners",
+      "description": "Stream Deck XL geometry (32 keys, 4 rows x 8 cols) -- also the soft deck's own N_MAX ceiling.",
+      "applies_to": ["soft-deck", "sidecar"],
+      "caps": { "key_rows": 4, "key_cols": 8 },
+      "expect": {
+        "mode": "corners",
+        "view_key": 0,
+        "prev_key": 24,
+        "next_key": 31,
+        "session_slots": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 28, 29, 30],
+        "sessions_per_page": 29
+      }
+    },
+    {
+      "id": "original-3x5-corners",
+      "description": "Stream Deck Original V2 geometry (15 keys, 3 rows x 5 cols).",
+      "applies_to": ["soft-deck", "sidecar"],
+      "caps": { "key_rows": 3, "key_cols": 5 },
+      "expect": {
+        "mode": "corners",
+        "view_key": 0,
+        "prev_key": 10,
+        "next_key": 14,
+        "session_slots": [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13],
+        "sessions_per_page": 12
+      }
+    },
+    {
+      "id": "mini-2x3-bottom-row",
+      "description": "3-column grid: the corners layout would put VIEW/PREV/NEXT too close together, so cols===3 && rows>=2 gets a dedicated bottom row instead (PREV, VIEW, NEXT left to right).",
+      "applies_to": ["soft-deck", "sidecar"],
+      "caps": { "key_rows": 2, "key_cols": 3 },
+      "expect": {
+        "mode": "bottom-row",
+        "prev_key": 3,
+        "view_key": 4,
+        "next_key": 5,
+        "session_slots": [0, 1, 2],
+        "sessions_per_page": 3
+      }
+    },
+    {
+      "id": "single-row-degenerate",
+      "description": "A single row: the corners formula collapses VIEW and PREV onto the same index (both 0) -- no controls fit, every key becomes a session tile.",
+      "applies_to": ["soft-deck", "sidecar"],
+      "caps": { "key_rows": 1, "key_cols": 5 },
+      "expect": {
+        "mode": "degenerate",
+        "view_key": null,
+        "prev_key": null,
+        "next_key": null,
+        "session_slots": [0, 1, 2, 3, 4],
+        "sessions_per_page": 5
+      }
+    },
+    {
+      "id": "single-col-degenerate",
+      "description": "A single column: the corners formula collapses PREV and NEXT onto the same index -- same degenerate handling as single-row.",
+      "applies_to": ["soft-deck", "sidecar"],
+      "caps": { "key_rows": 4, "key_cols": 1 },
+      "expect": {
+        "mode": "degenerate",
+        "view_key": null,
+        "prev_key": null,
+        "next_key": null,
+        "session_slots": [0, 1, 2, 3],
+        "sessions_per_page": 4
+      }
+    },
+    {
+      "id": "below-minimum-degenerate",
+      "description": "Fewer than 4 keys total: no room for 3 reserved controls plus at least one session slot.",
+      "applies_to": ["soft-deck", "sidecar"],
+      "caps": { "key_rows": 1, "key_cols": 3 },
+      "expect": {
+        "mode": "degenerate",
+        "view_key": null,
+        "prev_key": null,
+        "next_key": null,
+        "session_slots": [0, 1, 2],
+        "sessions_per_page": 3
+      }
+    },
+    {
+      "id": "plus-full-mode",
+      "description": "Stream Deck+ FULL layout (8 keys + 4 dials + touch strip) -- HARDWARE ONLY. The soft deck has no dials/touch-strip concept (DESIGN_SOFTDECK.md: a phone is always dial_count=0, is_touch=false) and its reservedControlKeys(rows, cols) takes no dial_count/is_touch input, so this case is structurally inapplicable to the JS harness -- it exists only for the sidecar's own test suite to assert against.",
+      "applies_to": ["sidecar"],
+      "caps": { "key_rows": 2, "key_cols": 4, "dial_count": 4, "is_touch": true },
+      "expect": { "mode": "full", "sessions_per_page": 8 }
+    }
+  ],
+  "paging": [
+    { "id": "zero-items-always-one-page", "items": 0, "per_page": 12, "expect_page_count": 1, "expect_page_0": [] },
+    { "id": "exact-fit-one-page", "items": 12, "per_page": 12, "expect_page_count": 1 },
+    { "id": "one-over-two-pages", "items": 13, "per_page": 12, "expect_page_count": 2, "expect_page_1_len": 1 },
+    { "id": "worked-example-43-over-29", "items": 43, "per_page": 29, "expect_page_count": 2 },
+    { "id": "clamp-prev-floors-at-zero", "page": 0, "delta": -1, "count": 3, "expect": 0 },
+    { "id": "clamp-next-ceilings-at-count-minus-one", "page": 2, "delta": 1, "count": 3, "expect": 2 },
+    { "id": "clamp-next-does-not-wrap", "page": 1, "delta": 1, "count": 3, "expect": 2 },
+    { "id": "clamp-prev-does-not-wrap", "page": 1, "delta": -1, "count": 3, "expect": 0 }
+  ],
+  "control_key_content": [
+    {
+      "id": "view-key-grid-mode",
+      "role": "view",
+      "ctx": { "viewName": "work", "pagePosition": "2/3" },
+      "expect": { "name": "VIEW", "body": "work", "state": "2/3" }
+    },
+    {
+      "id": "prev-key",
+      "role": "prev",
+      "ctx": { "pagePosition": "2/3" },
+      "expect": { "name": "< PREV", "body": "PAGE", "state": "2/3" }
+    },
+    {
+      "id": "next-key",
+      "role": "next",
+      "ctx": { "pagePosition": "2/3" },
+      "expect": { "name": "NEXT >", "body": "PAGE", "state": "2/3" }
+    },
+    {
+      "id": "back-key-picker-mode",
+      "role": "back",
+      "ctx": {},
+      "expect": { "name": "< BACK", "body": "VIEW", "state": "" }
+    }
+  ]
+}
