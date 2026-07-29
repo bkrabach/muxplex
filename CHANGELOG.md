@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.21.0 (2026-07-29)
+
+### Features
+
+- **Installing the certificate is now a link, not a chore.** A new setup page at `/setup` offers the certificate authority for download with step-by-step instructions for the device you're on, and `/ca.crt` serves it with the content type Android recognises. Until the certificate is installed a browser marks the site untrusted, which — beyond the warning — silently prevents installing the deck as a real app, because browsers refuse to install from an origin they consider insecure. Both pages are reachable without logging in; only the public certificate is served, never the private key.
+
+- **The deck now installs as a genuine fullscreen app in landscape.** It previously asked to be a standalone window, which is not enough for a browser to honour a fixed orientation — the deck now declares fullscreen, so it locks to landscape on its own instead of requiring the phone's rotation lock to be toggled by hand. A minimal service worker was added purely to satisfy the install requirement; it caches nothing, deliberately.
+
+### Verification
+
+- 1625 tests passed (baseline v0.20.1: 1604 passed, +21 new tests covering PWA setup and service worker integration).
+- All eight CI jobs green: Python 3.11/3.12/3.13 (muxplex and muxplex-client), test-latest-deps, and test-frontend (node:test).
+- Deck installability validated end-to-end on Android Edge: setup page accessible without login, CA certificate downloadable with correct MIME type, app installs fullscreen and locks to landscape, no scroll or dropdown menus, control grid responsive to phone form factor (3×7 on compact, 4×8 on flagship).
+
 ## v0.20.1 (2026-07-29)
 
 ### Bug Fixes
