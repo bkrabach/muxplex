@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.20.1 (2026-07-29)
+
+### Bug Fixes
+
+- **Deck tiles overlapped each other on a phone held upright.** Rows in the tile grid were sized from the longest unbroken word in each tile rather than from the tile's actual rendered size, so every tile was drawn taller than the space reserved for it and painted over the one below — leaving terminal previews stacked on top of each other and unreadable. Rows are now sized from the tiles themselves. Landscape and tablet layouts were unaffected and are unchanged.
+
+
 ## v0.20.0 (2026-07-29)
 
 ### Features
