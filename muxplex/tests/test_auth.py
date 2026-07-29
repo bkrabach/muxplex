@@ -643,14 +643,16 @@ def test_validate_next_path_rejects_uppercase_scheme():
     assert validate_next_path("HTTP://evil.com") == "/"
 
 
-def test_validate_next_path_query_value_containing_a_url_is_still_safe():
-    """A scheme appearing only inside a query VALUE (not the outer path/
-    netloc) is not itself an open redirect and is accepted -- urlsplit on
-    the whole string still reports no scheme/netloc for the value overall."""
-    assert (
-        validate_next_path("/x?redirect=http://evil.com")
-        == "/x?redirect=http://evil.com"
-    )
+def test_validate_next_path_rejects_scheme_anywhere_including_query_values():
+    """The '://' substring check is deliberately conservative: it rejects a
+    scheme appearing ANYWHERE in the value, including inside a query
+    parameter's own value, even though that specific case is not itself an
+    open redirect (urlsplit on the whole string reports no scheme/netloc
+    for the value overall). A next= value legitimately needing an embedded
+    absolute URL in its own query string is not a real deck/PWA use case,
+    so over-rejecting here is the safe trade -- simpler than special-casing
+    "safe" positions for a scheme substring to appear in."""
+    assert validate_next_path("/x?redirect=http://evil.com") == "/"
 
 
 def test_validate_next_path_rejects_path_traversal():
