@@ -68,20 +68,30 @@ _INSTRUCTIONS = {
     "android": """
       <ol>
         <li>Tap <strong>Download muxplex-ca.crt</strong> above.</li>
-        <li>If your browser shows a download notification, tap it &mdash; it may
-            open the certificate installer directly.</li>
-        <li>Otherwise, open <strong>Downloads</strong> (or your notification
-            shade) and tap the downloaded <code>muxplex-ca.crt</code> file.</li>
-        <li>Give it any name, and when asked what it's for, choose
-            <strong>VPN and apps</strong> (or <strong>Wi-Fi</strong>, depending
-            on your Android version).</li>
-        <li>Reload this page &mdash; you should see a padlock instead of a
-            warning shield.</li>
+        <li>Open <strong>Downloads</strong> (or your notification shade) and
+            tap the downloaded <code>muxplex-ca.crt</code> file. If Android
+            says <em>"Can't install CA certificates &mdash; this certificate
+            must be installed in Settings,"</em> that's expected on some
+            versions &mdash; use the manual route below instead.</li>
+        <li>When asked what to use it for, Android offers two options.
+            Choose <strong>CA certificate</strong>.
+            <strong>Do not choose "VPN and app user certificate"</strong>
+            &mdash; that option is for a different file format (one bundled
+            with a private key) and will fail with <em>"This file can't be
+            used as a VPN or app certificate."</em></li>
+        <li>You'll see a warning that only mentions installing certificates
+            from organizations you trust &mdash; that's expected for any CA
+            certificate. Tap <strong>Install anyway</strong>.</li>
+        <li><strong>Fully close and reopen your browser</strong> (not just
+            reload the page) &mdash; swipe it away from Recent Apps, or
+            force-stop it in Settings, then relaunch and come back here.
+            You should now see a padlock instead of a warning shield.</li>
       </ol>
       <p class="alt-path">Prefer the manual route? <strong>Settings &rarr;
         Security &amp; privacy &rarr; More security settings &rarr; Encryption
         &amp; credentials &rarr; Install a certificate &rarr; CA
-        certificate</strong>, then pick the downloaded file.</p>
+        certificate</strong> (not "VPN and app user certificate"), then pick
+        the downloaded file.</p>
     """,
     "ios": """
       <ol>
