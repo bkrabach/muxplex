@@ -1,100 +1,25 @@
-/* muxplex soft deck — styles.
+/* muxplex soft deck -- styles.
  *
- * Isolated from style.css on purpose (SOFT_DECK_DESIGN.md §7: "stays out of
- * app.js" / reversibility — `rm -rf frontend/deck/` must remove the whole
- * surface). The small palette below is duplicated from style.css's :root,
- * not imported, so this file has zero dependency on the PWA stylesheet.
- * Keep these six values in sync with style.css by convention if the brand
- * palette ever changes — DESIGN_TILE.md §8 and KEY_DESIGN_SYSTEM.md §7 both
- * make the same call for the same reason (a design-token layer is not
- * warranted for six values in one file).
+ * Governed by DESIGN_SOFTDECK.md, which supersedes DESIGN_LAYOUT.md
+ * entirely and DESIGN_TILE.md / DESIGN_RESPONSIVE.md in part -- see that
+ * document's \u00a712 disposition table for exactly which prior decisions
+ * carry over. Isolated from style.css on purpose: `rm -rf frontend/deck/`
+ * must remove the whole surface.
  *
- * ---------------------------------------------------------------------
- * DESIGN CONFLICT RESOLUTIONS (the three the brief called out, plus one
- * more found during implementation). Full reasoning in the delivery report;
- * summarized here so the numbers below are traceable to a decision.
- *
- * 1. Tile minimum width: DESIGN_LAYOUT.md said 164px, DESIGN_RESPONSIVE.md
- *    said 136px, DESIGN_TILE.md said 8.75rem (140px). Resolved to
- *    DESIGN_TILE's number and unit: it is the only one of the three derived
- *    from this project's REAL session names (including the worst case,
- *    `amplifier-provider-load`, 23 chars, sharing a prefix with
- *    `amplifier-main` — which is exactly the case that breaks naive
- *    front-truncation). It is also the only one in `rem`, which is the
- *    correct unit: a `px` minimum with `rem` type means the grid does not
- *    grow when the user scales OS text, and the name overflows precisely
- *    for the users who most need it not to.
- *
- * 2. Tile shape: DESIGN_LAYOUT.md's min-height:128px, DESIGN_RESPONSIVE.md's
- *    aspect-ratio:4/3, and DESIGN_TILE.md's aspect-ratio:1 (square) all
- *    disagreed. Resolved to square for the Regular class: DESIGN_TILE.md is
- *    the only one of the three with an arithmetic derivation tying the
- *    choice to an observable outcome (140px square → NAME 37px + STATE 14px
- *    + 16px padding = 67px, leaving ~73px of preview ≈ 5 lines of 11px mono
- *    — closely matching the physical deck's hardware-VERIFIED 4 lines at
- *    72px). Square also produces a regular grid at any column count with
- *    zero extra rules, which is the "ruthless simplicity" standard all
- *    three documents otherwise hold each other to. DESIGN_LAYOUT's
- *    min-height:128px is not actually a competing shape (it's a zone-model
- *    floor from the same document, not an aspect-ratio claim) and is
- *    compatible with the square outcome at the 140px floor.
- *
- * 3. Height classes: DESIGN_LAYOUT.md does not address them; DESIGN_
- *    RESPONSIVE.md proposes an explicit Short class
- *    (`@media (max-height:520px)`, fixed 72px, preview dropped). Adopted
- *    as an ADDITIVE layer on top of resolution #2, not a competing
- *    resolution — the two are orthogonal (shape-in-Regular vs.
- *    height-triggered-override), and DESIGN_LAYOUT's OWN worked table
- *    independently flags 844×390 (phone landscape) as "the worst case"
- *    without proposing a fix, which is exactly the gap RESPONSIVE's Short
- *    class closes.
- *
- * 4. (Not asked, found during implementation.) The active-state ring:
- *    DESIGN_LAYOUT.md's tile sketch used `outline` with a negative offset;
- *    DESIGN_TILE.md explicitly rejects `outline` for the active ring in
- *    favor of `box-shadow: inset` (§4.1), reserving `outline` for
- *    `:focus-visible` only. Resolved to DESIGN_TILE's box-shadow approach:
- *    an element has exactly one `outline`, so if a tile is BOTH keyboard-
- *    focused and active/pending at once (a real case — tab to the active
- *    tile), an outline-based active ring and a focus outline would collide.
- *    box-shadow (active/pending/failed) and outline (focus only) never
- *    contend for the same CSS property.
- *
- * 5. (Not asked, found during implementation.) The optimistic "pending"
- *    ring: DESIGN_RESPONSIVE.md §6.2 argues for a ring that is VISUALLY
- *    DISTINCT from confirmed-active (a pulsing ring, "the optimistic state
- *    is visually distinct from the confirmed state" — so a failure is a
- *    resolution, not a contradiction). DESIGN_TILE.md §6.2 explicitly
- *    argues the opposite: pending should be "deliberately identical to
- *    genuine active," rejecting a distinct 3rd appearance as a 4th thing to
- *    learn. Resolved in RESPONSIVE's favor: the assignment's own
- *    non-negotiable #3 ("never show a success state it hasn't observed")
- *    settles this independently of either document's aesthetic argument —
- *    an identical-to-active ring during the pending window IS a success
- *    state ("this session is active") shown before it's been observed.
- *    Implemented as a pulsing opacity animation on the same inset
- *    box-shadow mechanism (not literally dashed — box-shadow can't dash —
- *    but frame-to-frame distinct from the solid confirmed ring).
- * --------------------------------------------------------------------- */
+ * THE CORE DIFFERENCE FROM THE PREVIOUS DESIGN: this is a FIXED grid, not a
+ * responsive one. There is no `repeat(auto-fit, minmax(...))`, no scroll
+ * container, no header, no slide-up sheet. deck.js computes an exact R x C
+ * grid from the viewport (DESIGN_SOFTDECK.md \u00a71.3) and sets it as CSS
+ * custom properties (--cols, --rows, --cell-w, --cell-h, --gap, plus the
+ * f(S) typographic tokens --b/--m/--name-h/--state-h/--body-h/--primary/
+ * --secondary/--texture) on #deck-root; every rule below just reads them.
+ * Nothing here computes a size -- deck.js is the only source of layout
+ * arithmetic, matching KEY_DESIGN_SYSTEM.md's rule that geometry is a
+ * formula on S, never a per-viewport CSS breakpoint table.
+ */
 
 :root {
-  --bg: #0D1117;
-  --bg-tile: #10131C;
-  --bg-tile-hover: #1A1F2B;
-  --text: #F0F6FF;
-  --text-muted: #8E95A3;
-  --text-preview: #7D8590;
-  --border: #2A3040;
-  --accent: #00D9F5;
-  --bell: #F1A640;
-  --err: #f85149;
-  --warn: #d29922;
-  --radius: 4px;
-
-  --header-height: 56px;   /* RESPONSIVE §2.2: 44px can't hold a 48px target */
-  --strip-height: 44px;
-  --tile-min: 8.75rem;     /* resolution #1 above — 140px, in rem */
-  --gap: 8px;
+  color-scheme: dark;
 }
 
 * , *::before, *::after {
@@ -105,320 +30,150 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--bg);
-  color: var(--text);
+  background: #000000;
+  color: #FFFFFF;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  overscroll-behavior-y: contain; /* RESPONSIVE §6.4 — kill accidental pull-to-refresh reload */
+  overflow: hidden; /* no scrolling anywhere on this surface, ever */
+  overscroll-behavior: none;
+  touch-action: manipulation;
 }
+
+/* ─── Root: fullscreen, safe-area-aware, centers the grid (letterbox) ────── */
 
 #deck-root {
-  display: flex;
-  flex-direction: column;
-  height: 100dvh;
-  height: 100vh; /* fallback, dvh not universal */
-}
-
-/* ─── Header ──────────────────────────────────────────────────────────── */
-
-.deck-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: var(--header-height);
-  padding: 0 8px;
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-left: max(8px, env(safe-area-inset-left, 0px));
-  padding-right: max(8px, env(safe-area-inset-right, 0px));
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 10;
-}
-
-.liveness-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: 0 0 auto;
-  transition: background-color 0.3s ease;
-}
-.liveness-dot.warn { background: var(--warn); }
-.liveness-dot.err { background: var(--err); }
-
-.staleness-age {
-  font-size: 0.6875rem;
-  color: var(--text-muted);
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-.staleness-age:empty { display: none; }
-
-.view-button {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 48px;
-  background: none;
-  border: none;
-  color: var(--text);
-  font-size: 0.9375rem;
-  font-weight: 600;
-  padding: 0 4px;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  max-width: 40vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.view-button.unknown-view { color: var(--warn); }
-.view-button .caret { color: var(--text-muted); font-size: 0.75rem; }
-
-.wake-indicator {
-  margin-left: auto;
-  flex: 0 0 auto;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 0.6875rem;
-  min-height: 48px;
-  min-width: 48px;
-  padding: 0 6px;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-.wake-indicator.held { color: var(--accent); }
-.wake-indicator.hidden { display: none; }
-
-.toggle-last-chip {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 34vw;
-  min-height: 48px;
-  background: var(--bg-tile);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-muted);
-  font-size: 0.8125rem;
-  padding: 0 12px;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.toggle-last-chip.hidden { display: none; }
-
-/* ─── Attention strip (overflow-conditional, LAYOUT §1.2) ────────────── */
-
-.attention-strip {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: var(--strip-height);
-  padding: 0 8px;
-  overflow-x: auto;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: var(--header-height);
-  z-index: 9;
-}
-.attention-strip.hidden { display: none; }
-
-.attention-chip {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  min-height: 36px;
-  background: var(--bell);
-  color: #000;
-  border: none;
-  border-radius: 999px;
-  padding: 0 12px;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  max-width: 40vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* ─── Grid + states ───────────────────────────────────────────────────── */
-
-.deck-body {
-  flex: 1 1 auto;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-}
-
-.deck-body.stale .deck-grid {
-  filter: grayscale(0.7) opacity(0.45);
-  transition: filter 0.4s ease;
-}
-
-.deck-grid {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  display: grid;
-  /* auto-fit, NOT auto-fill (a deliberate deviation from the literal
-     `repeat(auto-fill, minmax(...))` snippet all three design docs give —
-     found during browser verification against a real, sparsely-populated
-     view). auto-fill reserves empty tracks for however many WOULD fit at
-     --tile-min, even with fewer real sessions than that — so a 2-session
-     view on a wide viewport renders two narrow tiles squeezed to the left
-     with dead empty columns eating the rest of the width. auto-fit
-     collapses those empty tracks to 0, letting 1fr redistribute across
-     only the real tiles. The two are IDENTICAL whenever the view is full
-     enough to actually fill the available columns (the case the docs'
-     worked tables assume, 5-30 sessions) -- auto-fit is a strict
-     improvement with no downside for the case they modeled, and fixes the
-     case they didn't (a small/focused view on a large screen). */
-  grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
-  /* grid-auto-rows: min-content (NOT the implicit default `auto`) — found on
-     LIVE, phone portrait, real DOM measurement, not a mock. With the default
-     `auto` keyword, Chromium sizes an implicit row track from each item's
-     max-content contribution measured at the item's OWN unstretched inline
-     size (roughly its longest unbreakable text segment, e.g. "provider-load"
-     ≈ 96.5px) — NOT the column track's final stretched width (175.5px+ once
-     `minmax(var(--tile-min), 1fr)` distributes space). `.session-tile`'s
-     square comes from `aspect-ratio: 1` applied to that final stretched
-     width, so the RENDERED tile (175.5px tall) silently overflows the row
-     track auto-sizing computed for it (96.5px), and tile N+1 renders
-     partially underneath tile N. `min-content` (equivalently `max-content`
-     here) forces the row-track sizing pass to use the item's actual laid-out
-     content size — which for an aspect-ratio box IS the post-stretch square
-     — so the track matches the tile exactly. Verified empirically (isolated
-     repro across baseline vs. four alternatives, see delivery report): the
-     `auto` default and `align-items: start` both left the mismatch; a
-     `minmax(var(--tile-min), auto)` floor still under-sized rows to 140px
-     against a 183px tile; only `min-content`/`max-content` produced an exact
-     track-to-tile match at every measured width. Confirmed harmless for the
-     Short class (`@media max-height:520px`, fixed `height:72px` below) —
-     min-content of a definite-height box is that same definite height, so
-     landscape is unaffected; this rule only changes behavior for the
-     aspect-ratio-driven Regular class where the mismatch exists. */
-  grid-auto-rows: min-content;
-  gap: var(--gap);
-  padding: var(--gap);
-  padding-left: max(var(--gap), env(safe-area-inset-left, 0px));
-  padding-right: max(var(--gap), env(safe-area-inset-right, 0px));
-  padding-bottom: max(var(--gap), env(safe-area-inset-bottom, 0px));
-  align-content: start;
-}
-
-.deck-empty,
-.deck-loading {
-  flex: 1 1 auto;
+  position: fixed;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
-  font-size: 0.9375rem;
-  text-align: center;
-  padding: 24px;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
-.deck-empty.hidden,
-.deck-loading.hidden { display: none; }
 
-.deck-empty .view-name-warn { color: var(--warn); }
+/* Guard state: the box couldn't reach S_MIN even at 1x1 (DESIGN_SOFTDECK.md
+   \u00a71.2) -- deck.js also switches to the disconnected/message takeover in
+   this case, so this class exists only as a CSS hook if that ever needs its
+   own treatment; it currently inherits the disconnected styling. */
+#deck-root.too-small #deck-surface {
+  display: none;
+}
 
-/* ─── Session tile ────────────────────────────────────────────────────── */
+/* ─── The grid itself -- every key visible at once, no scroll ────────────── */
 
-.session-tile {
+#deck-surface {
+  display: contents;
+}
+#deck-surface.hidden {
+  display: none;
+}
+
+#deck-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols), var(--cell-w));
+  grid-template-rows: repeat(var(--rows), var(--cell-h));
+  gap: var(--gap);
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+
+/* Stale (poll late but not failed): every face dims -- a global VALUE
+   change, the same channel \u00a74 uses for attention. Zero keys spent.
+   (DESIGN_SOFTDECK.md \u00a77) */
+#deck-grid.is-stale {
+  filter: grayscale(0.6) opacity(0.55);
+}
+
+/* ─── Key face: the zone model (NAME / BODY / STATE), uniform margin ─────── */
+/*
+ * KEY_DESIGN_SYSTEM.md \u00a71: every face -- session tile, control key, picker
+ * option -- is the same three horizontal bands inside a uniform margin,
+ * reserved whether or not they hold ink. Everything horizontally centred.
+ */
+
+.deck-key {
   position: relative;
-  aspect-ratio: 1;
-  background: var(--bg-tile);
-  border: none;
-  border-radius: var(--radius);
-  color: var(--text);
+  width: var(--cell-w);
+  height: var(--cell-h);
+  background: #0A0A0A; /* session category (KEY_DESIGN_SYSTEM.md \u00a74) */
+  /* Every face gets a 1px outline -- glass has no bezel to separate
+     adjacent faces the way hardware plastic does (DESIGN_SOFTDECK.md \u00a74.2). */
+  border: 1px solid #1C1C22;
+  border-radius: 0; /* KEY_DESIGN_SYSTEM.md \u00a77: no rounded corners */
+  color: #FFFFFF;
   overflow: hidden;
   padding: 0;
-  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   cursor: pointer;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
   -webkit-touch-callout: none;
   transform: scale(1);
-  transition: transform 0.08s ease, background-color 0.08s ease;
+  /* Press feedback: scale(0.96) + brightness(1.15), 100ms, the one thing
+     glass genuinely owes a physical key's travel (DESIGN_SOFTDECK.md \u00a74.2). */
+  transition: transform 100ms ease, filter 100ms ease;
 }
 
-/* Short class — RESPONSIVE §1.2. Additive on top of the square Regular
-   default (resolution #3 above): triggers on viewport HEIGHT, independent
-   of the width-driven column count. */
-@media (max-height: 520px) {
-  .session-tile { aspect-ratio: unset; height: 72px; }
-  .session-tile .tile-preview { display: none; }
-  .session-tile .tile-name { -webkit-line-clamp: 1; }
+.deck-key.is-control,
+.deck-key.is-picker-option {
+  background: #101036; /* control/chooser category */
 }
 
-.session-tile:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: 2px;
+.deck-key.is-empty {
+  background: #000000; /* nothing here */
+  cursor: default;
 }
 
-.session-tile.is-pressed {
-  transform: scale(0.97);
-  background: var(--bg-tile-hover);
+.deck-key.is-pressed {
+  transform: scale(0.96);
+  filter: brightness(1.15);
 }
 
-/* State ring — a ::after overlay, NOT a box-shadow directly on
-   .session-tile. Found during browser verification (a real /deck/ session
-   on a scratch server, not just a mock): box-shadow paints as part of the
-   element's OWN background/border layer, which is BELOW its children in
-   normal stacking order — so a box-shadow on .session-tile was rendered
-   UNDERNEATH .tile-name's opaque background (and to a lesser extent
-   .tile-state's), breaking the ring into disconnected fragments wherever
-   an opaque child overlapped it instead of a clean unbroken outline. A
-   ::after pseudo-element positioned above every real child (z-index 5 >
-   tile-state's 3 > tile-name's 2 > tile-preview's 1) paints on top of all
-   of them, so the ring is always a complete, unbroken rectangle regardless
-   of what's underneath it. pointer-events:none keeps it from intercepting
-   the tap. Resolution #4 (box-shadow not outline) still holds — this only
-   changes WHICH box the box-shadow is drawn on. */
-.session-tile::after {
+@media (prefers-reduced-motion: reduce) {
+  .deck-key {
+    transition: filter 80ms ease;
+  }
+  .deck-key.is-pressed {
+    transform: none;
+    filter: brightness(1.4); /* 1-frame brightness flash replaces scale */
+  }
+}
+
+/* State ring -- a ::after overlay above every child (z-index 5), never a
+   box-shadow directly on .deck-key, so it always paints as a complete,
+   unbroken rectangle regardless of opaque children beneath it (verified
+   against a real /deck/ session in the prior design; the same defect would
+   recur here since NAME/BODY/STATE bands are opaque-backed). */
+.deck-key::after {
   content: '';
   position: absolute;
   inset: 0;
   z-index: 5;
-  border-radius: var(--radius);
   pointer-events: none;
 }
 
-.session-tile.is-active::after {
-  box-shadow: inset 0 0 0 3px var(--accent);
+/* Active = ring at the face edge, B px. Lives entirely in the margin --
+   costs zero content pixels (KEY_DESIGN_SYSTEM.md \u00a73). */
+.deck-key.is-active::after {
+  box-shadow: inset 0 0 0 var(--b) #00D9F5;
 }
 
-/* Pending — resolution #5: visually distinct from confirmed-active via a
-   pulsing opacity animation on the same box-shadow mechanism. */
-.session-tile.is-pending::after {
-  box-shadow: inset 0 0 0 3px var(--accent);
+.deck-key.is-pending::after {
+  box-shadow: inset 0 0 0 var(--b) #00D9F5;
   animation: deck-pending-pulse 900ms ease-in-out infinite;
 }
 @keyframes deck-pending-pulse {
-  0%, 100% { box-shadow: inset 0 0 0 3px rgba(0, 217, 245, 0.35); }
-  50% { box-shadow: inset 0 0 0 3px rgba(0, 217, 245, 1); }
+  0%, 100% { box-shadow: inset 0 0 0 var(--b) rgba(0, 217, 245, 0.35); }
+  50% { box-shadow: inset 0 0 0 var(--b) rgba(0, 217, 245, 1); }
 }
 
-.session-tile.is-failed::after {
-  box-shadow: inset 0 0 0 3px var(--err);
+.deck-key.is-failed::after {
+  box-shadow: inset 0 0 0 var(--b) #f85149;
 }
-.session-tile.is-failed {
+.deck-key.is-failed {
   animation: deck-fail-shake 300ms ease-in-out 1;
 }
 @keyframes deck-fail-shake {
@@ -429,128 +184,188 @@ html, body {
   80% { transform: translateX(3px); }
 }
 
-.tile-name {
+@media (prefers-reduced-motion: reduce) {
+  .deck-key.is-pending::after,
+  .deck-key.is-failed {
+    animation: none !important;
+  }
+}
+
+.deck-key:focus-visible {
+  outline: 2px solid #FFFFFF;
+  outline-offset: -2px;
+}
+
+/* ─── Zone bands: NAME / (BODY+preview) / STATE ──────────────────────────── */
+
+.key-name {
   position: relative;
   z-index: 2;
-  background: var(--bg-tile);
-  padding: 6px 8px;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  line-height: 1.25;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  flex: 0 0 var(--name-h);
+  height: var(--name-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 var(--m);
+  font-size: var(--secondary);
+  font-weight: 500; /* SECONDARY weight -- \u00a74.2: weight becomes available */
+  color: #8888AA;
+  white-space: nowrap;
   overflow: hidden;
-  overflow-wrap: break-word;
-  hyphens: none;
-  min-height: calc(2 * 1.25 * 0.9375rem + 12px);
+  text-overflow: ellipsis;
 }
 
-.session-tile.needs-attention .tile-name {
-  background: var(--bell);
-  color: #000;
+/* Attention = NAME band fills amber, ink inverts to black -- 10.4:1
+   contrast. Outranks active. (KEY_DESIGN_SYSTEM.md \u00a73) */
+.deck-key.needs-attention .key-name {
+  background: #F1A640;
+  color: #000000;
 }
 
-.tile-preview {
+/* Session tile: NAME is the PRIMARY read (the only face where NAME is
+   PRIMARY -- KEY_DESIGN_SYSTEM.md \u00a76.1), on a translucent band over the
+   preview field. */
+.deck-key.is-session .key-name {
+  font-size: var(--primary);
+  font-weight: 600; /* PRIMARY weight */
+  color: #FFFFFF;
+  background: rgba(0, 0, 0, 0.76);
+}
+.deck-key.is-session.needs-attention .key-name {
+  background: #F1A640;
+  color: #000000;
+}
+
+.key-preview {
   position: absolute;
   inset: 0;
   z-index: 1;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  padding: 4px 8px;
-  padding-bottom: 20px; /* leave room for STATE */
+  padding: 0 var(--m) var(--state-h);
   font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
-  font-size: 0.6875rem;
+  font-size: var(--texture); /* TEXTURE: fixed 11px, never scales with S */
   line-height: 1.3;
-  color: var(--text-preview);
+  color: #7A7A7A; /* least important thing on the face; not the highest-contrast */
   white-space: pre;
   overflow: hidden;
   pointer-events: none;
 }
 
-.tile-state {
-  position: absolute;
-  right: 8px;
-  bottom: 4px;
-  z-index: 3;
-  font-size: 0.6875rem;
-  color: var(--text-muted);
-  padding: 2px 4px 2px 24px;
-  background: linear-gradient(to left, var(--bg-tile) 55%, transparent);
-  pointer-events: none;
-}
-
-.session-tile.is-failed .tile-state {
-  color: var(--err);
-  font-weight: 600;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .session-tile,
-  .session-tile.is-pending,
-  .session-tile.is-failed {
-    animation: none !important;
-    transition: background-color 0.08s ease !important;
-  }
-  .session-tile.is-pressed { transform: none; }
-}
-
-/* ─── View sheet ──────────────────────────────────────────────────────── */
-
-.view-sheet-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 20;
-}
-.view-sheet-backdrop.hidden { display: none; }
-
-.view-sheet {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 21;
-  max-height: 70vh;
-  overflow-y: auto;
-  background: var(--bg-tile);
-  border-radius: 12px 12px 0 0;
-  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
-}
-.view-sheet.hidden { display: none; }
-
-.view-sheet-row {
+.key-body {
+  position: relative;
+  z-index: 2;
+  flex: 1 1 var(--body-h);
   display: flex;
   align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 var(--m);
+  font-size: var(--primary);
+  font-weight: 600; /* PRIMARY weight */
+  color: #FFFFFF;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.key-state {
+  position: relative;
+  z-index: 3;
+  flex: 0 0 var(--state-h);
+  height: var(--state-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 var(--m);
+  font-size: var(--secondary);
+  font-weight: 400; /* SECONDARY/TEXTURE weight */
+  color: #8888AA;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: linear-gradient(to top, rgba(10, 10, 10, 0.55), transparent);
+}
+
+.deck-key.is-failed .key-state {
+  color: #f85149;
+  font-weight: 600;
+}
+
+/* Session tiles render BODY+STATE as one field (the terminal preview,
+   field-underlaid, bottom-anchored, full content box) rather than two
+   strings -- KEY_DESIGN_SYSTEM.md \u00a71/\u00a76.1. The .key-body element stays in
+   the DOM (zone reserved) but empty; .key-state carries the last-activity/
+   FAILED text as a small overlay in the corner, matching the prior
+   hardware-verified session tile. */
+.deck-key.is-session .key-body {
+  display: none;
+}
+.deck-key.is-session .key-state {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  height: auto;
+  padding: 2px calc(var(--m)) 2px 24px;
+  background: linear-gradient(to left, #0A0A0A 55%, transparent);
+}
+
+/* Picker option: NAME stays reserved-but-empty (every option is the same
+   category -- KEY_DESIGN_SYSTEM.md \u00a76.3); ring cyan if this is the current
+   view. */
+.deck-key.is-picker-option.is-active::after {
+  box-shadow: inset 0 0 0 var(--b) #00D9F5;
+}
+
+/* ─── Disconnected / too-small takeover ──────────────────────────────────── */
+/*
+ * Identical mechanism to the picker: the grid is replaced by one message
+ * face plus a RETRY key (DESIGN_SOFTDECK.md \u00a77). No header, no toast --
+ * the two whole-surface signals (dim for stale, takeover for disconnected)
+ * are the entire vocabulary.
+ */
+
+#deck-disconnected {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
   width: 100%;
-  min-height: 56px;
-  padding: 0 16px;
-  background: none;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-  font-size: 0.9375rem;
-  text-align: left;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+}
+#deck-disconnected.hidden {
+  display: none;
+}
+
+#deck-disconnected-message {
+  font-size: 1.05rem;
+  color: #8888AA;
+  max-width: 32rem;
+}
+
+#deck-retry {
+  /* Styled as a single key face, at a fixed, readable size regardless of
+     the grid's own token values -- there may be no valid grid at all when
+     this is shown. */
+  width: 160px;
+  height: 160px;
+  background: #101036;
+  border: 1px solid #1C1C22;
+  color: #FFFFFF;
+  font-size: 22px;
+  font-weight: 600;
   cursor: pointer;
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 100ms ease, filter 100ms ease;
 }
-.view-sheet-row.current { color: var(--accent); font-weight: 600; }
-
-/* ─── Toast (failure notice) ──────────────────────────────────────────── */
-
-.deck-toast {
-  position: fixed;
-  left: 50%;
-  bottom: max(16px, env(safe-area-inset-bottom, 0px));
-  transform: translateX(-50%);
-  background: var(--err);
-  color: #fff;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  padding: 8px 16px;
-  border-radius: 8px;
-  z-index: 30;
-  max-width: 90vw;
+#deck-retry:active {
+  transform: scale(0.96);
+  filter: brightness(1.15);
 }
-.deck-toast.hidden { display: none; }

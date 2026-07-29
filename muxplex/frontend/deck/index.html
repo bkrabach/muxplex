@@ -30,36 +30,22 @@
 </head>
 <body>
   <div id="deck-root">
-    <header class="deck-header">
-      <span id="liveness-dot" class="liveness-dot" role="status" aria-label="connection status"></span>
-      <span id="staleness-age" class="staleness-age"></span>
+    <!-- A fixed R x C grid of keys, sized and populated entirely by deck.js
+         (DESIGN_SOFTDECK.md \u00a71.3). No header, no scroll container, no
+         slide-up sheet -- everything reachable is visible right now, exactly
+         like the hardware. -->
+    <div id="deck-surface">
+      <div id="deck-grid" role="list" aria-label="deck keys"></div>
+    </div>
 
-      <button type="button" id="view-button" class="view-button" aria-haspopup="true">
-        <span class="caret" aria-hidden="true">&#9662;</span>
-        <span id="view-button-label">all</span>
-      </button>
-
-      <button type="button" id="wake-indicator" class="wake-indicator hidden"></button>
-
-      <button type="button" id="toggle-last-chip" class="toggle-last-chip hidden">
-        <span aria-hidden="true">&#8644;</span>
-        <span class="chip-name"></span>
-      </button>
-    </header>
-
-    <div id="attention-strip" class="attention-strip hidden" aria-label="sessions needing attention"></div>
-
-    <div id="deck-body" class="deck-body">
-      <div id="deck-loading" class="deck-loading">&#8230;</div>
-      <div id="deck-empty" class="deck-empty hidden"></div>
-      <div id="deck-grid" class="deck-grid hidden" role="list" aria-label="sessions in current view"></div>
+    <!-- Whole-surface takeover for the disconnected state (identical
+         mechanism to the view picker, \u00a77) -- shown instead of the grid,
+         never alongside it. -->
+    <div id="deck-disconnected" class="hidden">
+      <p id="deck-disconnected-message"></p>
+      <button type="button" id="deck-retry">RETRY</button>
     </div>
   </div>
-
-  <div id="view-sheet-backdrop" class="view-sheet-backdrop hidden"></div>
-  <div id="view-sheet" class="view-sheet hidden" role="menu" aria-label="Switch view"></div>
-
-  <div id="deck-toast" class="deck-toast hidden" role="alert"></div>
 
   <script src="/deck/deck.js"></script>
 </body>
