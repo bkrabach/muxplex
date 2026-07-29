@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.22.0 (2026-07-29)
+
+### Features
+
+- **The deck is now a software Stream Deck rather than a web page.** It draws a fixed grid of keys sized so every key is legible at arm's length, fits as many as the screen allows, and shows them all at once — there is no scrolling. Extra sessions move to further pages reached by dedicated previous and next keys, exactly as the hardware does, and choosing a view takes over the whole surface with a back key instead of sliding a panel over the grid. The key faces, the three-zone layout, and the control vocabulary are the same ones the physical decks use, so the two surfaces behave alike. On a phone in landscape this works out to a four-by-eight grid — the same geometry as the largest hardware deck.
+
+- **Installed apps now carry proper names** — "Muxplex" and "Muxplex Deck" — instead of lowercase placeholders.
+
+### Bug Fixes
+
+- **The Android certificate instructions sent people to the wrong place.** Android offers two ways to install a certificate and only one of them accepts a certificate authority; the instructions did not say which, so following them produced a refusal with no explanation. The steps now name the correct choice, warn about the one that looks right and is not, and note that the browser must be fully closed and reopened rather than merely reloaded.
+
+### Verification
+
+- 1625 Python + 567 frontend tests passed.
+- All eight CI jobs green: Python 3.11/3.12/3.13 (muxplex and muxplex-client), test-latest-deps, and test-frontend (node:test).
+- Deck grid responsive to phone form factor: 4×8 keys on flagship (915×412), 3×7 on compact (780×360), no scroll and no overlap at either resolution.
+
 ## v0.21.0 (2026-07-29)
 
 ### Features
