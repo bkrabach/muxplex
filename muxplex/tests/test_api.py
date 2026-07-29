@@ -682,8 +682,17 @@ def test_get_view_all_excludes_hidden_sessions(client, monkeypatch):
     assert names == ["alpha"]
 
 
-def test_get_view_views_list_excludes_hidden_reserved_name(client, monkeypatch):
-    """The 'views' list is 'all' + user views in settings order; 'hidden' never appears."""
+def test_get_view_views_list_is_all_plus_user_views_plus_hidden_last(client, monkeypatch):
+    """The 'views' list is 'all' + user views (settings order) + 'hidden' last.
+
+    'hidden' is appended (not omitted) so clients that build a browsable
+    view list from this field alone -- the soft deck's picker
+    (frontend/deck/deck.js) is the first such consumer -- can reach it, the
+    same as the hardware sidecar's dial-0 cycle list and the PWA's
+    hardcoded-last "Hidden" dropdown entry. See main.py's get_view()
+    docstring for the full rationale, including why this does NOT change
+    the PWA (it never reads this field for its own dropdown).
+    """
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
     monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
     monkeypatch.setattr(
@@ -696,8 +705,20 @@ def test_get_view_views_list_excludes_hidden_reserved_name(client, monkeypatch):
     response = client.get("/api/view")
     assert response.status_code == 200
     data = response.json()
-    assert data["views"] == ["all", "Work", "Play"]
-    assert "hidden" not in data["views"]
+    assert data["views"] == ["all", "Work", "Play", "hidden"]
+
+
+def test_get_view_views_list_hidden_is_always_last_even_with_no_user_views(
+    client, monkeypatch
+):
+    """With zero user-defined views, 'views' is exactly ['all', 'hidden']."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    assert response.json()["views"] == ["all", "hidden"]
 
 
 def test_get_view_sort_omitted_alphabetical_setting_sorts_by_name(client, monkeypatch):

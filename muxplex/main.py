@@ -974,16 +974,28 @@ async def get_view(sort: str | None = None) -> dict:
     Response shape:
         {
           "view": <active_view, echoed verbatim>,
-          "views": ["all", <user view names, settings order>],
+          "views": ["all", <user view names, settings order>, "hidden"],
           "sort": "server" | "alphabetical" | "attention",
           "sessions": [
             {"name", "active", "needs_attention", "bell", "last_activity_at"}
           ],
         }
 
-    `views` deliberately excludes "hidden": it remains addressable as an
-    active_view value (GET /api/state, PATCH /api/state), but it is not a
-    browsable/cyclable view alongside "all" and user-defined views.
+    `views` is "all" + user-defined views (settings order) + "hidden" last.
+    "hidden" is a reserved pseudo-view -- never a member of settings.views
+    (validate_view_name rejects it as a user view name) -- but it is
+    already addressable as an active_view value (GET/PATCH /api/state) and
+    `filter_visible` already treats it as a first-class case. Appending it
+    here (rather than continuing to omit it) makes it discoverable to
+    clients that build a browsable/cyclable list from this field alone --
+    the soft deck's view picker (frontend/deck/deck.js) is the first such
+    consumer, and previously had no way to reach "hidden" at all. Ordering
+    mirrors the PWA's own view dropdown, which hardcodes "All Sessions"
+    first and "Hidden" always last (see `renderViewDropdown()` in
+    frontend/app.js) -- that dropdown does NOT read this field (it builds
+    from `_serverSettings.views`/`hidden_sessions` directly), so this change
+    does not alter the PWA's UI; it only extends what THIS endpoint reports
+    to clients that do consume it.
 
     Deliberately light: no pane snapshots here (those stay on
     GET /api/sessions) so this endpoint stays cheap for frequent polling
@@ -1044,7 +1056,11 @@ async def get_view(sort: str | None = None) -> dict:
     else:
         applied_sort = "server"
 
-    views = ["all"] + [v.get("name", "") for v in (settings.get("views") or [])]
+    views = (
+        ["all"]
+        + [v.get("name", "") for v in (settings.get("views") or [])]
+        + ["hidden"]
+    )
 
     return {
         "view": active_view,
