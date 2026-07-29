@@ -20,24 +20,24 @@ import pathlib
 import pwd
 import re
 import shlex
+import shutil
 import socket
 import ssl
-import shutil
 import subprocess
 import sys
 import time
 from typing import Literal
+from urllib.parse import quote
 
 import httpx
 import websockets
-from websockets.typing import Subprotocol
-
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
 from starlette.types import Scope
+from websockets.typing import Subprotocol
 
 from muxplex.auth import (
     AuthMiddleware,
@@ -48,9 +48,13 @@ from muxplex.auth import (
     load_or_create_secret,
     load_password,
     pam_available,
+    validate_next_path,
     verify_session_cookie,
 )
 from muxplex.bells import apply_bell_clear_rule, needs_attention, process_bell_flags
+from muxplex.breaker import CircuitBreaker
+from muxplex.identity import load_device_id
+from muxplex.pruning import load_pruning_state, save_pruning_state
 from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
@@ -66,24 +70,6 @@ from muxplex.sessions import (
     tmux_env,
     update_session_cache,
 )
-from muxplex.terminal_input import (
-    ALLOWED_KEYS,
-    MAX_KEYS,
-    MAX_TEXT_BYTES,
-    build_send_key_argv,
-    build_send_text_argv,
-    redact_preview,
-    session_matches_allowlist,
-)
-from muxplex.state import (
-    empty_bell,
-    load_state,
-    prune_devices,
-    read_state,
-    register_device,
-    save_state,
-    state_lock,
-)
 from muxplex.settings import (
     DestructiveSettingsWriteRejected,
     apply_synced_settings,
@@ -95,17 +81,32 @@ from muxplex.settings import (
     resolve_tmux_socket_dir,
     save_settings,
 )
-from muxplex.breaker import CircuitBreaker
-from muxplex.pruning import load_pruning_state, save_pruning_state
+from muxplex.state import (
+    empty_bell,
+    load_state,
+    prune_devices,
+    read_state,
+    register_device,
+    save_state,
+    state_lock,
+)
+from muxplex.terminal_input import (
+    ALLOWED_KEYS,
+    MAX_KEYS,
+    MAX_TEXT_BYTES,
+    build_send_key_argv,
+    build_send_text_argv,
+    redact_preview,
+    session_matches_allowlist,
+)
 from muxplex.tls import get_local_ca_cert_bytes
+from muxplex.ttyd import TTYD_PORT, kill_orphan_ttyd, kill_ttyd, spawn_ttyd
 from muxplex.views import (
     assess_views_destruction,
     filter_visible,
     normalize_session_keys,
     prune_stale_keys,
 )
-from muxplex.identity import load_device_id
-from muxplex.ttyd import kill_orphan_ttyd, kill_ttyd, spawn_ttyd, TTYD_PORT
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -2194,13 +2195,26 @@ async def index_page():
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page():
-    """Serve branded login.html with injected window.MUXPLEX_AUTH containing auth mode and username."""
+async def login_page(next: str | None = None):
+    """Serve branded login.html with injected window.MUXPLEX_AUTH containing auth mode and username.
+
+    ``next`` (query param) is a same-origin, path-only redirect target to
+    carry through the login form -- see validate_next_path() for the full
+    validation contract. It is injected as window.MUXPLEX_NEXT (JSON, not
+    string-interpolated into an HTML attribute) so login.html's script can
+    set it on a hidden form field via a JS property assignment rather than
+    an innerHTML/attribute substitution, which would otherwise reopen an
+    XSS path for a value we already treat as untrusted input.
+    """
     html = (_FRONTEND_DIR / "login.html").read_text()
     username = pwd.getpwuid(os.getuid()).pw_name if _auth_mode == "pam" else ""
     mode_data = json.dumps({"mode": _auth_mode, "user": username})
+    safe_next = validate_next_path(next)
+    next_data = json.dumps(safe_next)
     html = html.replace(
-        "</head>", f"<script>window.MUXPLEX_AUTH = {mode_data};</script></head>"
+        "</head>",
+        f"<script>window.MUXPLEX_AUTH = {mode_data}; "
+        f"window.MUXPLEX_NEXT = {next_data};</script></head>",
     )
     html = html.replace(
         "<title>Sign in \u2014 muxplex</title>",
@@ -2214,14 +2228,20 @@ async def post_login(
     request: Request,
     username: str = Form(default=""),
     password: str = Form(default=""),
+    next: str = Form(default=""),
 ) -> RedirectResponse:
     """Validate credentials and issue a session cookie on success.
 
     In PAM mode, delegates to authenticate_pam(username, password).
     In password mode, compares the submitted password to _auth_password.
 
-    On success: redirect to / with a signed muxplex_session cookie.
-    On failure: redirect to /login?error=1.
+    On success: redirect to the validated ``next`` target (default "/") with
+    a signed muxplex_session cookie. ``next`` comes from a hidden form field
+    (see login.html) populated from the ?next= query param on the GET
+    request that rendered this form -- itself either the page the user
+    originally tried to reach (via AuthMiddleware's redirect) or omitted.
+    On failure: redirect to /login?error=1, preserving ``next`` so a wrong
+    first attempt doesn't lose the intended destination on retry.
     """
     # Validate credentials
     if _auth_mode == "pam":
@@ -2230,11 +2250,16 @@ async def post_login(
         valid = password == _auth_password
 
     if not valid:
-        return RedirectResponse("/login?error=1", status_code=303)
+        error_redirect = "/login?error=1"
+        safe_next_on_failure = validate_next_path(next)
+        if safe_next_on_failure != "/":
+            error_redirect += f"&next={quote(safe_next_on_failure, safe='')}"
+        return RedirectResponse(error_redirect, status_code=303)
 
     # Issue session cookie
     cookie_value = create_session_cookie(_auth_secret, _auth_ttl)
-    response = RedirectResponse("/", status_code=303)
+    safe_next = validate_next_path(next)
+    response = RedirectResponse(safe_next, status_code=303)
     response.set_cookie(
         "muxplex_session",
         cookie_value,
@@ -2531,6 +2556,7 @@ async def federation_generate_key() -> dict:
     Returns {key: str, path: str}.
     """
     import secrets as _secrets
+
     from muxplex.settings import FEDERATION_KEY_PATH
 
     key = _secrets.token_urlsafe(32)

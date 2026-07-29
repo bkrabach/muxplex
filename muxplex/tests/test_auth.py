@@ -10,8 +10,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import PlainTextResponse
 
-from muxplex.auth import AuthMiddleware, create_session_cookie
-
+from muxplex.auth import (
+    AuthMiddleware,
+    build_login_redirect_url,
+    create_session_cookie,
+    validate_next_path,
+)
 
 # ---------------------------------------------------------------------------
 # Password file management
@@ -172,6 +176,7 @@ def test_verify_session_cookie_wrong_secret():
 def test_verify_session_cookie_expired():
     """A cookie verified with a very short TTL fails (simulates expiry)."""
     import time
+
     from muxplex.auth import create_session_cookie, verify_session_cookie
 
     cookie = create_session_cookie("test-secret", ttl_seconds=1)
@@ -567,3 +572,150 @@ def test_dispatch_does_not_use_stale_self_federation_key_for_bearer():
         "dispatch() must not use self.federation_key (stale cached value); "
         "use load_federation_key() instead so generate-key takes effect immediately"
     )
+
+
+# ---------------------------------------------------------------------------
+# validate_next_path() -- the ?next= open-redirect guard
+# ---------------------------------------------------------------------------
+
+
+def test_validate_next_path_none_returns_root():
+    """None input degrades to the pre-existing default destination."""
+    assert validate_next_path(None) == "/"
+
+
+def test_validate_next_path_empty_string_returns_root():
+    """Empty string degrades to the default destination."""
+    assert validate_next_path("") == "/"
+
+
+def test_validate_next_path_accepts_simple_path():
+    """A same-origin, path-only value passes through unchanged."""
+    assert validate_next_path("/deck/") == "/deck/"
+
+
+def test_validate_next_path_accepts_path_with_query():
+    """A path with a query string passes through unchanged."""
+    assert validate_next_path("/deck/?foo=bar") == "/deck/?foo=bar"
+
+
+def test_validate_next_path_rejects_bare_relative_path():
+    """A value not starting with '/' (bare host, relative path) is rejected."""
+    assert validate_next_path("evil.com/x") == "/"
+    assert validate_next_path("deck") == "/"
+
+
+def test_validate_next_path_rejects_absolute_url_http():
+    """An absolute http:// URL is rejected."""
+    assert validate_next_path("http://evil.com/") == "/"
+
+
+def test_validate_next_path_rejects_absolute_url_https():
+    """An absolute https:// URL is rejected."""
+    assert validate_next_path("https://evil.com/phish") == "/"
+
+
+def test_validate_next_path_rejects_protocol_relative():
+    """A protocol-relative '//host' value is rejected (resolves to another origin)."""
+    assert validate_next_path("//evil.com") == "/"
+    assert validate_next_path("//evil.com/deck/") == "/"
+
+
+def test_validate_next_path_rejects_backslash_bypass():
+    """A leading '/\\' (some browsers normalize to '//') is rejected."""
+    assert validate_next_path("/\\evil.com") == "/"
+    assert validate_next_path("/\\/evil.com") == "/"
+
+
+def test_validate_next_path_rejects_javascript_scheme():
+    """A javascript: pseudo-scheme anywhere in the value is rejected."""
+    assert validate_next_path("/javascript:alert(1)") == "/"
+
+
+def test_validate_next_path_rejects_data_scheme():
+    """A data: URL is rejected."""
+    assert validate_next_path("/data:text/html,<script>alert(1)</script>") == "/"
+
+
+def test_validate_next_path_rejects_uppercase_scheme():
+    """Scheme matching is case-insensitive -- 'HTTP://' is rejected too."""
+    assert validate_next_path("/HTTP://evil.com") == "/"
+    assert validate_next_path("HTTP://evil.com") == "/"
+
+
+def test_validate_next_path_query_value_containing_a_url_is_still_safe():
+    """A scheme appearing only inside a query VALUE (not the outer path/
+    netloc) is not itself an open redirect and is accepted -- urlsplit on
+    the whole string still reports no scheme/netloc for the value overall."""
+    assert (
+        validate_next_path("/x?redirect=http://evil.com")
+        == "/x?redirect=http://evil.com"
+    )
+
+
+def test_validate_next_path_rejects_path_traversal():
+    """A literal '..' path segment (path traversal) is rejected."""
+    assert validate_next_path("/../etc/passwd") == "/"
+    assert validate_next_path("/deck/../../etc/passwd") == "/"
+    assert validate_next_path("/a/../b") == "/"
+
+
+def test_validate_next_path_rejects_control_characters():
+    """Control characters (e.g. CR/LF/NUL) anywhere in the value are rejected."""
+    assert validate_next_path("/deck/\r\nSet-Cookie: evil=1") == "/"
+    assert validate_next_path("/deck/\x00") == "/"
+    assert validate_next_path("/deck/\t") == "/"
+
+
+def test_validate_next_path_rejects_non_string():
+    """A non-string input degrades to the default rather than raising."""
+    assert validate_next_path(123) == "/"  # type: ignore[arg-type]
+    assert validate_next_path([]) == "/"  # type: ignore[arg-type]
+
+
+def test_build_login_redirect_url_default_is_bare_login():
+    """An invalid/absent next value produces a bare '/login' (no dead query string)."""
+    assert build_login_redirect_url(None) == "/login"
+    assert build_login_redirect_url("http://evil.com") == "/login"
+
+
+def test_build_login_redirect_url_appends_validated_next():
+    """A valid next value is URL-encoded and appended as ?next=."""
+    assert build_login_redirect_url("/deck/") == "/login?next=%2Fdeck%2F"
+
+
+def test_build_login_redirect_url_encodes_hostile_query_value():
+    """A rejected next value never reaches the redirect URL, even partially."""
+    url = build_login_redirect_url("//evil.com/deck/")
+    assert url == "/login"
+    assert "evil.com" not in url
+
+
+# ---------------------------------------------------------------------------
+# AuthMiddleware redirect carries ?next= for the originally-requested path
+# ---------------------------------------------------------------------------
+
+
+def test_middleware_redirect_carries_next_for_requested_path():
+    """An unauthenticated redirect to /login includes ?next=<original path>."""
+    app = _make_test_app()
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get("/protected")
+    assert response.status_code == 307
+    location = response.headers["location"]
+    assert location == "/login?next=%2Fprotected"
+
+
+def test_middleware_redirect_next_includes_query_string():
+    """The carried ?next= preserves the original request's own query string."""
+    app = _make_test_app()
+
+    @app.get("/protected/deep")
+    async def protected_deep():
+        return PlainTextResponse("OK")
+
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    response = client.get("/protected/deep?foo=bar")
+    assert response.status_code == 307
+    location = response.headers["location"]
+    assert location == "/login?next=%2Fprotected%2Fdeep%3Ffoo%3Dbar"

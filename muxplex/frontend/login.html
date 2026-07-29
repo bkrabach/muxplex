@@ -160,6 +160,13 @@
         />
       </div>
 
+      <!-- Value is set from window.MUXPLEX_NEXT via a JS property assignment
+           below, never via server-side HTML/attribute interpolation -- the
+           value is untrusted input (though already validated server-side by
+           validate_next_path()), and a property assignment cannot be used to
+           break out of the attribute the way string-substituted HTML could. -->
+      <input type="hidden" id="next-field" name="next" value="" />
+
       <button type="submit" class="login-btn">Sign in</button>
     </form>
   </div>
@@ -184,6 +191,18 @@
         var banner = document.getElementById('error-banner');
         if (banner) {
           banner.classList.add('visible');
+        }
+      }
+
+      // Redirect target injection point -- server sets window.MUXPLEX_NEXT
+      // (already validated by validate_next_path()) before this script runs.
+      // Set via a JS property assignment, never HTML interpolation, so an
+      // untrusted value cannot break out of an attribute.
+      var next = window.MUXPLEX_NEXT || '/';
+      if (next && next !== '/') {
+        var nextField = document.getElementById('next-field');
+        if (nextField) {
+          nextField.value = next;
         }
       }
     })();

@@ -7,6 +7,7 @@ import hmac
 import logging
 import secrets
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -16,6 +17,79 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 from muxplex.settings import load_federation_key
 
 _log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ?next= redirect validation
+# ---------------------------------------------------------------------------
+
+
+def validate_next_path(next_value: str | None) -> str:
+    """Validate a client-or-request-supplied ``?next=`` redirect target.
+
+    This is the sole guard standing between /login's post-auth redirect and
+    becoming an open redirect, so it fails CLOSED: anything that isn't
+    unambiguously a same-origin, path-only value degrades to "/" (the
+    pre-existing unconditional destination) rather than erroring or
+    redirecting anywhere unexpected.
+
+    Rejects:
+    - empty / missing / non-string input
+    - control characters (defense-in-depth against header/response-splitting
+      style tricks riding in on the value)
+    - backslashes anywhere -- some browsers normalize a leading "/\\" to
+      "//", which is the protocol-relative bypass below via a different
+      character
+    - anything not starting with a single "/" (relative paths, bare hosts,
+      e.g. "evil.com/x")
+    - "//..." (protocol-relative -- browsers resolve this as an absolute URL
+      to another host, e.g. "//evil.com")
+    - any value containing "://" or a known URL scheme prefix
+      ("javascript:", "data:", "http:", "https:", "vbscript:", "file:")
+    - a parsed scheme or netloc (belt-and-suspenders on the two rules above,
+      via ``urllib.parse.urlsplit``)
+    - path traversal: a literal ".." path segment
+
+    Returns the original value unchanged when it passes every check --
+    callers must not re-derive or loosen this, since accepting an unsafe
+    ``next`` would let an attacker redirect an authenticated user's browser
+    off-origin after they enter their password.
+    """
+    if not next_value or not isinstance(next_value, str):
+        return "/"
+    if any(ord(c) < 0x20 for c in next_value):
+        return "/"
+    if "\\" in next_value:
+        return "/"
+    if not next_value.startswith("/") or next_value.startswith("//"):
+        return "/"
+    lowered = next_value.lower()
+    if "://" in lowered:
+        return "/"
+    for scheme in ("javascript:", "data:", "http:", "https:", "vbscript:", "file:"):
+        if scheme in lowered:
+            return "/"
+    parsed = urlsplit(next_value)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    if ".." in parsed.path.split("/"):
+        return "/"
+    return next_value
+
+
+def build_login_redirect_url(next_value: str | None) -> str:
+    """Build the ``/login`` redirect target, appending a validated ``?next=``.
+
+    Used both by AuthMiddleware (redirecting an unauthenticated browser
+    request to /login) and by post_login's failure path (preserving the
+    intended destination across a wrong-password retry). Returns a bare
+    ``/login`` when *next_value* validates to the default "/" -- no reason to
+    carry a no-op query string on the common case.
+    """
+    safe_next = validate_next_path(next_value)
+    if safe_next == "/":
+        return "/login"
+    return f"/login?next={quote(safe_next, safe='')}"
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +323,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         accept = request.headers.get("accept", "")
         if "application/json" in accept:
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
-        return RedirectResponse(url="/login", status_code=307)
+        # Carry the originally-requested path (+ query) through as ?next= so
+        # a cold, unauthenticated deep link (e.g. an installed /deck/ PWA
+        # launching straight into scope) lands back where it was headed
+        # after login, instead of unconditionally at "/". Built from the
+        # CURRENT request's own path -- already same-origin by construction
+        # -- but still routed through validate_next_path for defense-in-depth
+        # and to share one code path with post_login's failure retry.
+        requested = request.url.path
+        if request.url.query:
+            requested = f"{requested}?{request.url.query}"
+        login_url = build_login_redirect_url(requested)
+        return RedirectResponse(url=login_url, status_code=307)
 
     def _check_credentials(self, username: str, password: str) -> bool:
         """Validate credentials against the configured auth mode."""
