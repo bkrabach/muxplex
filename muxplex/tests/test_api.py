@@ -607,7 +607,7 @@ def test_get_view_default_shape_and_all_view(client, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["view"] == "all"
-    assert data["views"] == ["all"]
+    assert data["views"] == ["all", "hidden"]
     assert data["sort"] == "server"
     names = [s["name"] for s in data["sessions"]]
     assert names == ["alpha", "beta"]
@@ -641,7 +641,7 @@ def test_get_view_named_view_filters_membership(client, monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["view"] == "Work"
-    assert data["views"] == ["all", "Work"]
+    assert data["views"] == ["all", "Work", "hidden"]
     names = {s["name"] for s in data["sessions"]}
     assert names == {"alpha", "gamma"}
 
