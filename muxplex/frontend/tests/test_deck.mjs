@@ -36,6 +36,10 @@ test('deck.js exports all pure functions', () => {
     'controlKeyContent',
     'pickerOptionContent',
     'viewSessionCounts',
+    'fitLabel',
+    'computeKeyPlan',
+    'faceClassName',
+    'findBlankControlFaces',
     'lockLandscapeOrientation',
     'registerServiceWorker',
   ];
@@ -483,6 +487,242 @@ test('viewSessionCounts: empty/missing membership returns an empty map, never th
   assert.deepStrictEqual(deck.viewSessionCounts(['a'], []), {});
   assert.deepStrictEqual(deck.viewSessionCounts(['a'], null), {});
   assert.deepStrictEqual(deck.viewSessionCounts(null, null), {});
+});
+
+// ─── fitLabel -- pixel-measured truncation (port of rendering.py's _fit_label) ─
+//
+// `measureWidth` is a fake: N characters -> N "pixels". This is enough to
+// exercise the ALGORITHM (drop from the end until `text + ellipsis` fits)
+// without needing a real Canvas, matching this file's no-DOM-dependency
+// convention for pure-logic tests.
+
+function charWidthMeasure(text) {
+  return text.length;
+}
+
+test('fitLabel: returns the text unchanged when it already fits', () => {
+  assert.strictEqual(deck.fitLabel('short', 10, charWidthMeasure), 'short');
+});
+
+test('fitLabel: drops characters from the END, keeping a stable prefix, and appends a trailing ellipsis', () => {
+  // maxWidth 5 -- "abcdefghij" (10 chars) must shrink to fit "prefix\u2026" <= 5.
+  const result = deck.fitLabel('abcdefghij', 5, charWidthMeasure);
+  assert.strictEqual(result, 'abcd\u2026');
+  assert.ok(result.length <= 5);
+  assert.ok(result.endsWith('\u2026'));
+});
+
+test('fitLabel: a longer name with the same short prefix truncates to the SAME prefix (deterministic)', () => {
+  const a = deck.fitLabel('amplifier-session-one', 5, charWidthMeasure);
+  const b = deck.fitLabel('amplifier-session-two-longer', 5, charWidthMeasure);
+  assert.strictEqual(a, 'ampl\u2026');
+  assert.strictEqual(b, 'ampl\u2026');
+});
+
+test('fitLabel: empty text returns empty text, never a bare ellipsis', () => {
+  assert.strictEqual(deck.fitLabel('', 5, charWidthMeasure), '');
+});
+
+test('fitLabel: falls back to just the ellipsis when even one character does not fit', () => {
+  assert.strictEqual(deck.fitLabel('abcdef', 0, charWidthMeasure), '\u2026');
+});
+
+// ─── computeKeyPlan -- the ONE decision point for "what is on key N" ─────
+//
+// DECK_PARITY_ARCHITECTURE.md \u00a72.2: `controlKeyContent` had nine green tests
+// and zero call sites. These tests assert on the PLAN a real render would
+// produce, which is exactly the layer that bug lived one hop above --
+// asserting the plan is what would have caught it (a unit test on
+// `controlKeyContent` alone cannot).
+
+function basePlanParams(overrides) {
+  const grid = { rows: 4, cols: 8 };
+  const reserved = deck.reservedControlKeys(grid.rows, grid.cols);
+  const base = {
+    grid: grid,
+    reserved: reserved,
+    mode: 'grid',
+    sessions: [],
+    viewName: 'all',
+    viewsList: ['all'],
+    page: 0,
+    pickerPage: 0,
+    viewCounts: {},
+    pendingName: null,
+    failedByName: {},
+    snapshots: {},
+    previewLinesMax: 20,
+    nowMs: 1000,
+  };
+  return Object.assign(base, overrides);
+}
+
+test('computeKeyPlan: grid mode -- the three control keys are never blank (regression guard for the historical wiring bug)', () => {
+  const result = deck.computeKeyPlan(basePlanParams({ viewName: 'work' }));
+  const offenders = deck.findBlankControlFaces(result.plan);
+  assert.deepStrictEqual(offenders, [], 'no control-role key should have both empty NAME and empty BODY');
+
+  const reserved = deck.reservedControlKeys(4, 8);
+  const viewFace = result.plan[reserved.view];
+  assert.strictEqual(viewFace.role, 'view');
+  assert.strictEqual(viewFace.name, 'VIEW');
+  assert.strictEqual(viewFace.body, 'work');
+
+  const prevFace = result.plan[reserved.prev];
+  assert.strictEqual(prevFace.name, '< PREV');
+  const nextFace = result.plan[reserved.next];
+  assert.strictEqual(nextFace.name, 'NEXT >');
+});
+
+test('computeKeyPlan: picker mode -- BACK replaces VIEW, view-options fill session slots, current view is flagged', () => {
+  const result = deck.computeKeyPlan(
+    basePlanParams({ mode: 'picker', viewName: 'work', viewsList: ['all', 'work', 'hidden'] })
+  );
+  const offenders = deck.findBlankControlFaces(result.plan);
+  assert.deepStrictEqual(offenders, []);
+
+  const reserved = deck.reservedControlKeys(4, 8);
+  assert.strictEqual(result.plan[reserved.view].role, 'back');
+  assert.strictEqual(result.plan[reserved.view].name, '< BACK');
+
+  const slots = deck.sessionSlotIndices(4, 8, reserved);
+  const optionFaces = slots.map((i) => result.plan[i]).filter((f) => f.role === 'view-option');
+  const names = optionFaces.map((f) => f.body);
+  assert.deepStrictEqual(names, ['all', 'work', 'hidden'], '"hidden" flows through untouched -- the deck does no special-casing of its own');
+  const workFace = optionFaces.find((f) => f.body === 'work');
+  assert.strictEqual(workFace.flags.currentView, true);
+  const allFace = optionFaces.find((f) => f.body === 'all');
+  assert.strictEqual(allFace.flags.currentView, false);
+});
+
+test('computeKeyPlan: session tiles carry name/state/target straight from the sessions array', () => {
+  const result = deck.computeKeyPlan(
+    basePlanParams({
+      sessions: [
+        { name: 'alpha', active: true, needs_attention: false, last_activity_at: null },
+        { name: 'beta', active: false, needs_attention: true, last_activity_at: 500 },
+      ],
+    })
+  );
+  const reserved = deck.reservedControlKeys(4, 8);
+  const slots = deck.sessionSlotIndices(4, 8, reserved);
+  const alphaFace = result.plan[slots[0]];
+  assert.strictEqual(alphaFace.role, 'session');
+  assert.strictEqual(alphaFace.name, 'alpha');
+  assert.strictEqual(alphaFace.target, 'alpha');
+  assert.strictEqual(alphaFace.flags.active, true);
+
+  const betaFace = result.plan[slots[1]];
+  assert.strictEqual(betaFace.flags.needsAttention, true);
+});
+
+test('computeKeyPlan: a FAILED tile overrides state text and sets the failed flag', () => {
+  const result = deck.computeKeyPlan(
+    basePlanParams({
+      sessions: [{ name: 'alpha', active: false, needs_attention: false, last_activity_at: null }],
+      failedByName: { alpha: 5000 },
+      nowMs: 1000,
+    })
+  );
+  const reserved = deck.reservedControlKeys(4, 8);
+  const slots = deck.sessionSlotIndices(4, 8, reserved);
+  const face = result.plan[slots[0]];
+  assert.strictEqual(face.flags.failed, true);
+  assert.strictEqual(face.state, 'FAILED');
+});
+
+test('computeKeyPlan: degenerate grid returns an all-empty plan (no controls fit)', () => {
+  const grid = { rows: 1, cols: 5 };
+  const reserved = deck.reservedControlKeys(grid.rows, grid.cols);
+  assert.strictEqual(reserved.mode, 'degenerate');
+  const result = deck.computeKeyPlan(
+    basePlanParams({ grid: grid, reserved: reserved, sessions: [{ name: 'a', active: false }] })
+  );
+  // Every key is a session slot on a degenerate grid -- but with no
+  // sessions supplied beyond one, the rest stay role:'empty'.
+  assert.strictEqual(result.plan.length, 5);
+  assert.strictEqual(result.plan[0].role, 'session');
+  for (let i = 1; i < result.plan.length; i++) {
+    assert.strictEqual(result.plan[i].role, 'empty');
+  }
+});
+
+test('computeKeyPlan: clamps an out-of-range page back into bounds and reports it back to the caller', () => {
+  const sessions = Array.from({ length: 5 }, (_, i) => ({ name: 's' + i, active: false }));
+  const result = deck.computeKeyPlan(basePlanParams({ sessions: sessions, page: 99 }));
+  assert.strictEqual(result.page, 0); // only 1 page of 29-slot capacity for 5 sessions
+});
+
+test('findBlankControlFaces: flags a control-role face with empty NAME and BODY (the exact historical bug shape)', () => {
+  const plan = [
+    { index: 0, role: 'view', name: '', body: '', state: '', flags: {} },
+    { index: 1, role: 'session', name: '', body: '', state: '', flags: {} }, // sessions may legitimately have no body
+  ];
+  const offenders = deck.findBlankControlFaces(plan);
+  assert.strictEqual(offenders.length, 1);
+  assert.strictEqual(offenders[0].role, 'view');
+});
+
+// ─── Layer B golden fixture (DECK_PARITY_ARCHITECTURE.md §6.2) ───────────
+//
+// deck-layout.fixtures.json pins reserved-control-key geometry, paging, and
+// control-key content as a function of (rows, cols) ONLY -- shared with the
+// muxplex-deck hardware sidecar's own test suite (see the fixture's
+// "asserted_by" field). A case failing here means this client's math
+// disagrees with the pinned answer -- exactly the kind of drift
+// DECK_PARITY_ARCHITECTURE.md \u00a74.3 says a shared fixture turns into a red
+// test instead of a phone glance.
+
+const fixturePath = join(__dirname, '..', 'deck', 'layout.fixtures.json');
+const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+
+test('layout.fixtures.json: reserved-control-key geometry matches deck.js for every case that applies to the soft deck', () => {
+  for (const c of fixture.cases) {
+    if (!c.applies_to.includes('soft-deck')) continue;
+    const reserved = deck.reservedControlKeys(c.caps.key_rows, c.caps.key_cols);
+    assert.strictEqual(reserved.mode, c.expect.mode, c.id + ': mode');
+    if (c.expect.mode !== 'degenerate') {
+      assert.strictEqual(reserved.view, c.expect.view_key, c.id + ': view_key');
+      assert.strictEqual(reserved.prev, c.expect.prev_key, c.id + ': prev_key');
+      assert.strictEqual(reserved.next, c.expect.next_key, c.id + ': next_key');
+    }
+    const slots =
+      c.expect.mode === 'degenerate'
+        ? Array.from({ length: c.caps.key_rows * c.caps.key_cols }, (_, i) => i)
+        : deck.sessionSlotIndices(c.caps.key_rows, c.caps.key_cols, reserved);
+    assert.deepStrictEqual(slots, c.expect.session_slots, c.id + ': session_slots');
+    assert.strictEqual(slots.length, c.expect.sessions_per_page, c.id + ': sessions_per_page');
+  }
+});
+
+test('layout.fixtures.json: paging cases match pageCount/pageSlice/clampPage', () => {
+  for (const p of fixture.paging) {
+    if (p.expect_page_count !== undefined) {
+      assert.strictEqual(deck.pageCount(p.items, p.per_page), p.expect_page_count, p.id);
+    }
+    if (p.expect_page_0 !== undefined) {
+      assert.deepStrictEqual(deck.pageSlice([], 0, p.per_page), p.expect_page_0, p.id);
+    }
+    if (p.expect_page_1_len !== undefined) {
+      const items = Array.from({ length: p.items }, (_, i) => i);
+      assert.strictEqual(deck.pageSlice(items, 1, p.per_page).length, p.expect_page_1_len, p.id);
+    }
+    if (p.expect !== undefined && p.delta !== undefined) {
+      assert.strictEqual(deck.clampPage(p.page, p.delta, p.count), p.expect, p.id);
+    }
+  }
+});
+
+test('layout.fixtures.json: control_key_content cases match controlKeyContent', () => {
+  for (const c of fixture.control_key_content) {
+    const actual = deck.controlKeyContent(c.role, c.ctx);
+    assert.deepStrictEqual(actual, c.expect, c.id);
+  }
+});
+
+test('layout.fixtures.json: spec_version is present and this file is served statically at /deck/layout.fixtures.json', () => {
+  assert.strictEqual(fixture.spec_version, '1');
+  assert.strictEqual(fixture.served_at, '/deck/layout.fixtures.json');
 });
 
 // ─── deck.css: the grid is fixed/computed, never an auto-fit responsive one ─

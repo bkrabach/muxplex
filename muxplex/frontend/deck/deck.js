@@ -433,6 +433,255 @@ function viewSessionCounts(allSessionNames, viewsList) {
 // boot() and exportable for node --test, matching the pure-logic
 // functions above.
 
+/**
+ * Shorten `text` (appending an ellipsis) until `measureWidth(text)` fits
+ * `maxWidthPx`. Deterministic prefix + trailing "\u2026" -- port of
+ * muxplex-deck's `rendering.py::_fit_label` (pixel-measured truncation, not
+ * a fixed character-count cap -- a cap tuned for one face size is either
+ * dead weight or wrong at every other size; see DECK_PARITY_ARCHITECTURE.md
+ * \u00a72.3/\u00a74.1).
+ *
+ * `measureWidth` is injected rather than baked in as a Canvas call so this
+ * stays a pure, DOM-free function testable the same way as every other
+ * function in this file (frontend/tests/test_deck.mjs passes a fake
+ * character-counting measurer). The real browser painter
+ * (`_buildMeasureContext` below) supplies a canvas-measureText-backed
+ * implementation using the face's actual font.
+ * @param {string} text
+ * @param {number} maxWidthPx
+ * @param {(s: string) => number} measureWidth
+ * @returns {string}
+ */
+function fitLabel(text, maxWidthPx, measureWidth) {
+  if (!text) return '';
+  if (measureWidth(text) <= maxWidthPx) return text;
+  var t = text;
+  while (t.length > 0 && measureWidth(t + '\u2026') > maxWidthPx) {
+    t = t.slice(0, -1);
+  }
+  return t + '\u2026';
+}
+
+// ─── KeyPlan: state → KeyPlan[] → painter (DECK_PARITY_ARCHITECTURE.md §6.3) ─
+//
+// The blank-control-key bug (nine tests green on `controlKeyContent`, zero
+// call sites) was a WIRING failure, not a logic failure: a second path
+// existed between server state and a key face, and that second path never
+// called the function that computed real content. The fix here is
+// structural, not just the one call site: `computeKeyPlan` is now the ONLY
+// function that decides what appears on any key, producing a plain,
+// index-addressed array (`KeyPlan`, length rows*cols) covering every key on
+// the surface -- reserved control keys, session tiles, picker options, and
+// blank slots alike. The painter (`paintKeyFace`, in the DOM section below)
+// reads NOTHING else: no second lookup into `sessions`/`viewsList`/state, no
+// helper it might forget to call. A key with no content is only possible if
+// the plan itself says `role: 'empty'` -- there is no other way to reach
+// the screen.
+//
+// Deliberately NOT resolved here: pixel-measured label truncation. That
+// needs the real font/canvas, which only exists in the DOM painter (see
+// `fitLabel` above and `_buildMeasureContext` below) -- `name`/`body` on a
+// KeyFace carry the full, untruncated string. This keeps `computeKeyPlan`
+// itself testable with zero DOM/Canvas dependency, matching every other
+// pure function in this file.
+
+/**
+ * @typedef {{active: boolean, pending: boolean, failed: boolean,
+ *            needsAttention: boolean, currentView: boolean}} KeyFaceFlags
+ * @typedef {{index: number,
+ *            role: 'session'|'view'|'prev'|'next'|'back'|'view-option'|'empty',
+ *            name: string, body: string, state: string, preview: string,
+ *            target: string|null, flags: KeyFaceFlags}} KeyFace
+ */
+
+function _emptyFlags() {
+  return { active: false, pending: false, failed: false, needsAttention: false, currentView: false };
+}
+
+/** A blank key face -- the only shape that ever renders as empty. */
+function _emptyFace(index) {
+  return { index: index, role: 'empty', name: '', body: '', state: '', preview: '', target: null, flags: _emptyFlags() };
+}
+
+function _clampToCount(value, count) {
+  if (value > count - 1) value = count - 1;
+  if (value < 0) value = 0;
+  return value;
+}
+
+/**
+ * The face class for a role -- shared by the painter's className and (for
+ * documentation/testability) exported alongside computeKeyPlan.
+ * @param {string} role
+ * @returns {string}
+ */
+function faceClassName(role) {
+  if (role === 'empty') return 'is-empty';
+  if (role === 'session') return 'is-session';
+  if (role === 'view-option') return 'is-picker-option';
+  return 'is-control'; // view | prev | next | back
+}
+
+/**
+ * Compute the full KeyPlan for the current UI state. This is the single
+ * decision point for "what is on key N" -- see the section comment above.
+ *
+ * @param {object} p
+ * @param {{rows:number, cols:number}} p.grid
+ * @param {{mode:string, view:?number, prev:?number, next:?number}} p.reserved
+ * @param {'grid'|'picker'} p.mode
+ * @param {Array<{name:string,active:boolean,needs_attention:boolean,last_activity_at:?number}>} p.sessions
+ *   current view's sessions, server order (grid mode)
+ * @param {string} p.viewName - current active_view name
+ * @param {string[]} p.viewsList - browsable view names (picker mode)
+ * @param {number} p.page - current session grid page
+ * @param {number} p.pickerPage - current view-picker page
+ * @param {Object<string, number>} [p.viewCounts] - picker STATE enrichment
+ * @param {string|null} [p.pendingName]
+ * @param {Object<string, number>} [p.failedByName] - name -> expiry epoch ms
+ * @param {Object<string, string>} [p.snapshots] - name -> pane text
+ * @param {number} [p.previewLinesMax]
+ * @param {number} p.nowMs
+ * @returns {{plan: KeyFace[], page: number, pickerPage: number}}
+ */
+function computeKeyPlan(p) {
+  var rows = p.grid.rows;
+  var cols = p.grid.cols;
+  var keyCount = rows * cols;
+  var plan = [];
+  for (var i = 0; i < keyCount; i++) plan.push(_emptyFace(i));
+
+  // A degenerate grid (< 4 keys, or corners would collide on a single row/
+  // column) has no room for reserved controls -- but per
+  // reservedControlKeys' own contract ("no controls, every key a session
+  // tile"), session/view-option slots still cover the WHOLE grid in that
+  // case, they just never lose any keys to controls. Only the three
+  // _setControlFace calls below are conditional on this; slot computation
+  // and the session/view-option loops always run.
+  var reserved = p.reserved || { mode: 'degenerate', view: null, prev: null, next: null };
+  var page = p.page;
+  var pickerPage = p.pickerPage;
+  var hasControls = reserved.mode !== 'degenerate';
+
+  var slots = sessionSlotIndices(rows, cols, reserved);
+
+  if (p.mode === 'picker') {
+    var viewsList = p.viewsList || [];
+    var pc = pageCount(viewsList.length, slots.length);
+    pickerPage = _clampToCount(pickerPage, pc);
+    var pageViews = pageSlice(viewsList, pickerPage, slots.length);
+    var pagePosition = pc > 1 ? pickerPage + 1 + '/' + pc : '';
+
+    if (hasControls) {
+      _setControlFace(plan, reserved.view, 'back', controlKeyContent('back', {}));
+      _setControlFace(plan, reserved.prev, 'prev', controlKeyContent('prev', { pagePosition: pagePosition }));
+      _setControlFace(plan, reserved.next, 'next', controlKeyContent('next', { pagePosition: pagePosition }));
+    }
+
+    for (var vi = 0; vi < slots.length; vi++) {
+      var name = pageViews[vi];
+      if (!name) continue;
+      var count = p.viewCounts && p.viewCounts[name] != null ? p.viewCounts[name] : null;
+      var content = pickerOptionContent(name, count);
+      plan[slots[vi]] = {
+        index: slots[vi],
+        role: 'view-option',
+        name: content.name,
+        body: content.body,
+        state: content.state,
+        preview: '',
+        target: name,
+        flags: _mergeFlags({ currentView: name === p.viewName }),
+      };
+    }
+    return { plan: plan, page: page, pickerPage: pickerPage };
+  }
+
+  // grid mode
+  var sessions = p.sessions || [];
+  var pc2 = pageCount(sessions.length, slots.length);
+  page = _clampToCount(page, pc2);
+  var pageSessions = pageSlice(sessions, page, slots.length);
+  var pagePosition2 = pc2 > 1 ? page + 1 + '/' + pc2 : '';
+
+  _setControlFace(plan, reserved.view, 'view', controlKeyContent('view', { viewName: p.viewName, pagePosition: pagePosition2 }));
+  _setControlFace(plan, reserved.prev, 'prev', controlKeyContent('prev', { pagePosition: pagePosition2 }));
+  _setControlFace(plan, reserved.next, 'next', controlKeyContent('next', { pagePosition: pagePosition2 }));
+
+  var snapshots = p.snapshots || {};
+  var previewMax = p.previewLinesMax != null ? p.previewLinesMax : 20;
+  var failedByName = p.failedByName || {};
+
+  for (var si = 0; si < slots.length; si++) {
+    var s = pageSessions[si];
+    if (!s) continue;
+    var visual = tileVisualState({
+      serverActive: !!s.active,
+      pendingName: p.pendingName != null ? p.pendingName : null,
+      tileName: s.name,
+      failedUntil: failedByName[s.name] || null,
+      nowMs: p.nowMs,
+    });
+    plan[slots[si]] = {
+      index: slots[si],
+      role: 'session',
+      name: s.name,
+      body: '',
+      state: visual === 'failed' ? 'FAILED' : formatLastActivity(s.last_activity_at, p.nowMs),
+      preview: previewLines(snapshots[s.name] || '', previewMax),
+      target: s.name,
+      flags: _mergeFlags({
+        active: visual === 'active',
+        pending: visual === 'pending',
+        failed: visual === 'failed',
+        needsAttention: !!s.needs_attention,
+      }),
+    };
+  }
+
+  return { plan: plan, page: page, pickerPage: pickerPage };
+}
+
+function _mergeFlags(overrides) {
+  var flags = _emptyFlags();
+  for (var key in overrides) {
+    if (Object.prototype.hasOwnProperty.call(overrides, key)) flags[key] = overrides[key];
+  }
+  return flags;
+}
+
+function _setControlFace(plan, index, role, content) {
+  plan[index] = {
+    index: index,
+    role: role,
+    name: content.name,
+    body: content.body,
+    state: content.state,
+    preview: '',
+    target: null,
+    flags: _emptyFlags(),
+  };
+}
+
+/**
+ * Regression guard for the exact bug this file shipped: a control-role key
+ * (view/prev/next/back) whose NAME *and* BODY are both empty has no content
+ * a user can read at all -- the "blank blue key" symptom. `controlKeyContent`
+ * never returns that shape for a real role, so this only fires if a future
+ * change reintroduces a wiring gap between the plan and the content table.
+ * @param {KeyFace[]} plan
+ * @returns {KeyFace[]} any offending faces (empty array = plan is clean)
+ */
+function findBlankControlFaces(plan) {
+  var controlRoles = { view: true, prev: true, next: true, back: true };
+  var offenders = [];
+  for (var i = 0; i < plan.length; i++) {
+    var face = plan[i];
+    if (controlRoles[face.role] && !face.name && !face.body) offenders.push(face);
+  }
+  return offenders;
+}
+
 function lockLandscapeOrientation() {
   if (
     typeof screen === 'undefined' ||
@@ -491,6 +740,7 @@ if (typeof document !== 'undefined') {
     var pickerPage = 0; // current view-picker page
     var grid = null; // last computeGrid() result
     var reserved = null; // last reservedControlKeys() result
+    var tokens = null; // last deriveTokens() result -- feeds the label-measure font/box
     var keyEls = []; // R*C key <button> elements, index-addressed
     var currentShape = null; // 'RxC' string, to detect when a rebuild is needed
     var viewCounts = {}; // best-effort enrichment, see loadViewCounts()
@@ -552,7 +802,15 @@ if (typeof document !== 'undefined') {
     // ── Polling ──
 
     function poll() {
-      var viewReq = getJSON('/api/view');
+      // sort=attention is hardcoded, not a soft-deck config knob: this
+      // surface's whole purpose is Stream Deck parity (DESIGN_SOFTDECK.md),
+      // the hardware sidecar defaults to attention ordering
+      // (muxplex-deck/config.py's `sort` default), and unlike the sidecar
+      // this page has no persisted per-device config file or settings UI to
+      // put a knob on -- adding one would be a config surface with no real
+      // consumer today (DECK_PARITY_ARCHITECTURE.md \u00a72.1/\u00a76.1: sort order
+      // is Layer A, one server-owned answer, not a per-client preference).
+      var viewReq = getJSON('/api/view?sort=attention');
       var sessReq = getJSON('/api/sessions');
       return Promise.all([viewReq, sessReq])
         .then(function (results) {
@@ -627,8 +885,7 @@ if (typeof document !== 'undefined') {
       return { w: root.clientWidth, h: root.clientHeight };
     }
 
-    function applyGridTokens(g) {
-      var t = deriveTokens(g.s, g.cellH);
+    function applyGridTokens(g, t) {
       var style = root.style;
       style.setProperty('--cols', g.cols);
       style.setProperty('--rows', g.rows);
@@ -711,7 +968,8 @@ if (typeof document !== 'undefined') {
       var g = computeGrid(box.w, box.h);
       grid = g;
       reserved = reservedControlKeys(g.rows, g.cols);
-      applyGridTokens(g);
+      tokens = deriveTokens(g.s, g.cellH);
+      applyGridTokens(g, tokens);
       rebuildGridIfNeeded(g);
       root.classList.toggle('too-small', !!g.tooSmall);
     }
@@ -727,108 +985,102 @@ if (typeof document !== 'undefined') {
     window.addEventListener('resize', scheduleRecompute);
     window.addEventListener('orientationchange', scheduleRecompute);
 
-    // ── Rendering ──
+    // ── Rendering: state → KeyPlan[] → painter ──
+    //
+    // computeKeyPlan (pure, shared with node --test) decides content; the
+    // painter below reads ONLY the KeyFace it's given -- see the "KeyPlan"
+    // section comment above computeKeyPlan's definition for why that's what
+    // makes the blank-control-key bug class structurally impossible now.
 
-    function clearKey(el) {
-      el.className = 'deck-key is-empty';
-      el.querySelector('.key-name').textContent = '';
-      el.querySelector('.key-preview').textContent = '';
-      el.querySelector('.key-body').textContent = '';
-      el.querySelector('.key-state').textContent = '';
-      el.dataset.role = 'empty';
-      el.dataset.name = '';
+    var _measureCanvas = null;
+    var _FACE_FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+
+    /**
+     * Build a label-measurement context from the current grid/tokens, for
+     * the one font size (`--primary`) truncatable text is ever painted at
+     * (session NAME, the VIEW key's BODY, a picker option's BODY). Returns
+     * null outside a real DOM (no canvas to measure with) -- callers must
+     * treat a null measure context as "skip truncation," which is exactly
+     * what happens in `node --test` today since nothing there paints.
+     * @returns {{maxWidth:number, width:(s:string)=>number}|null}
+     */
+    function buildMeasureContext() {
+      if (!grid || !tokens || typeof document === 'undefined') return null;
+      if (!_measureCanvas) _measureCanvas = document.createElement('canvas');
+      var ctx = _measureCanvas.getContext('2d');
+      if (!ctx) return null;
+      var font = '600 ' + tokens.primary + 'px ' + _FACE_FONT_FAMILY;
+      return {
+        maxWidth: grid.cellW - 2 * tokens.m,
+        width: function (text) {
+          ctx.font = font;
+          return ctx.measureText(text).width;
+        },
+      };
     }
 
-    function renderControlKey(el, role, content) {
-      el.className = 'deck-key is-control';
-      el.querySelector('.key-name').textContent = content.name;
-      el.querySelector('.key-preview').textContent = '';
-      el.querySelector('.key-body').textContent = content.body;
-      el.querySelector('.key-state').textContent = content.state;
-      el.dataset.role = role;
-      el.dataset.name = '';
+    /**
+     * The ONE function that turns a KeyFace into pixels. Reads nothing but
+     * `face` (plus the injectable `measure` context for truncation) -- no
+     * second lookup into `sessions`/`viewsList`/module state. This is the
+     * structural guarantee DECK_PARITY_ARCHITECTURE.md \u00a76.3 calls for: a
+     * helper the painter "forgets to call" cannot exist, because the
+     * painter has nothing else to call.
+     * @param {HTMLElement} el
+     * @param {KeyFace} face
+     * @param {{maxWidth:number, width:(s:string)=>number}|null} measure
+     */
+    function paintKeyFace(el, face, measure) {
+      el.className = 'deck-key ' + faceClassName(face.role);
+      if (face.flags.active) el.classList.add('is-active');
+      if (face.flags.pending) el.classList.add('is-pending');
+      if (face.flags.failed) el.classList.add('is-failed');
+      if (face.flags.needsAttention) el.classList.add('needs-attention');
+      if (face.flags.currentView) el.classList.add('is-active');
+
+      var nameText = face.name;
+      var bodyText = face.body;
+      if (measure) {
+        // Truncation is scoped to exactly the bands that carry a
+        // user-controlled, unbounded-length string -- see fitLabel's
+        // doc comment for why this can't happen in computeKeyPlan.
+        if (face.role === 'session') nameText = fitLabel(nameText, measure.maxWidth, measure.width);
+        if (face.role === 'view' || face.role === 'view-option') {
+          bodyText = fitLabel(bodyText, measure.maxWidth, measure.width);
+        }
+      }
+
+      el.querySelector('.key-name').textContent = nameText;
+      el.querySelector('.key-preview').textContent = face.preview || '';
+      el.querySelector('.key-body').textContent = bodyText;
+      el.querySelector('.key-state').textContent = face.state;
+      el.dataset.role = face.role;
+      el.dataset.name = face.target || '';
     }
 
-    function renderSessionTile(el, s) {
-      el.className = 'deck-key is-session';
-      var now = Date.now();
-      var visual = tileVisualState({
-        serverActive: !!s.active,
+    function renderKeys() {
+      var result = computeKeyPlan({
+        grid: grid,
+        reserved: reserved,
+        mode: mode,
+        sessions: sessions,
+        viewName: viewName,
+        viewsList: viewsList,
+        page: page,
+        pickerPage: pickerPage,
+        viewCounts: viewCounts,
         pendingName: pendingName,
-        tileName: s.name,
-        failedUntil: failedByName[s.name] || null,
-        nowMs: now,
+        failedByName: failedByName,
+        snapshots: snapshots,
+        previewLinesMax: PREVIEW_LINES_MAX,
+        nowMs: Date.now(),
       });
-      if (visual === 'active') el.classList.add('is-active');
-      if (visual === 'pending') el.classList.add('is-pending');
-      if (visual === 'failed') el.classList.add('is-failed');
-      if (s.needs_attention) el.classList.add('needs-attention');
+      page = result.page;
+      pickerPage = result.pickerPage;
 
-      el.querySelector('.key-name').textContent = s.name;
-      el.querySelector('.key-preview').textContent = previewLines(
-        snapshots[s.name] || '',
-        PREVIEW_LINES_MAX
-      );
-      el.querySelector('.key-body').textContent = '';
-      el.querySelector('.key-state').textContent =
-        visual === 'failed' ? 'FAILED' : formatLastActivity(s.last_activity_at, now);
-      el.dataset.role = 'session';
-      el.dataset.name = s.name;
-    }
-
-    function renderPickerOption(el, name) {
-      el.className = 'deck-key is-picker-option';
-      if (name === viewName) el.classList.add('is-active');
-      var content = pickerOptionContent(name, viewCounts[name] != null ? viewCounts[name] : null);
-      el.querySelector('.key-name').textContent = content.name;
-      el.querySelector('.key-preview').textContent = '';
-      el.querySelector('.key-body').textContent = content.body;
-      el.querySelector('.key-state').textContent = content.state;
-      el.dataset.role = 'view-option';
-      el.dataset.name = name;
-    }
-
-    function renderGridMode() {
-      var slots = sessionSlotIndices(grid.rows, grid.cols, reserved);
-      var pc = pageCount(sessions.length, slots.length);
-      if (page > pc - 1) page = pc - 1;
-      if (page < 0) page = 0;
-      var pageSessions = pageSlice(sessions, page, slots.length);
-      var pagePosition = pc > 1 ? page + 1 + '/' + pc : '';
-
+      var measure = buildMeasureContext();
       for (var i = 0; i < keyEls.length; i++) {
-        clearKey(keyEls[i]);
-      }
-      if (reserved.mode !== 'degenerate') {
-        renderControlKey(keyEls[reserved.view], 'view', { viewName: viewName, pagePosition: pagePosition });
-        renderControlKey(keyEls[reserved.prev], 'prev', { pagePosition: pagePosition });
-        renderControlKey(keyEls[reserved.next], 'next', { pagePosition: pagePosition });
-      }
-      for (var si = 0; si < slots.length; si++) {
-        var s = pageSessions[si];
-        if (s) renderSessionTile(keyEls[slots[si]], s);
-      }
-    }
-
-    function renderPickerMode() {
-      var slots = sessionSlotIndices(grid.rows, grid.cols, reserved);
-      var pc = pageCount(viewsList.length, slots.length);
-      if (pickerPage > pc - 1) pickerPage = pc - 1;
-      if (pickerPage < 0) pickerPage = 0;
-      var pageViews = pageSlice(viewsList, pickerPage, slots.length);
-      var pagePosition = pc > 1 ? pickerPage + 1 + '/' + pc : '';
-
-      for (var i = 0; i < keyEls.length; i++) {
-        clearKey(keyEls[i]);
-      }
-      if (reserved.mode !== 'degenerate') {
-        renderControlKey(keyEls[reserved.view], 'back', {});
-        renderControlKey(keyEls[reserved.prev], 'prev', { pagePosition: pagePosition });
-        renderControlKey(keyEls[reserved.next], 'next', { pagePosition: pagePosition });
-      }
-      for (var vi = 0; vi < slots.length; vi++) {
-        var name = pageViews[vi];
-        if (name) renderPickerOption(keyEls[slots[vi]], name);
+        paintKeyFace(keyEls[i], result.plan[i], measure);
       }
     }
 
@@ -848,11 +1100,7 @@ if (typeof document !== 'undefined') {
       hideDisconnected();
       surface.classList.toggle('is-stale', staleness === 'warn');
 
-      if (mode === 'picker') {
-        renderPickerMode();
-      } else {
-        renderGridMode();
-      }
+      renderKeys();
     }
 
     function showDisconnected(message) {
@@ -933,7 +1181,14 @@ if (typeof document !== 'undefined') {
       // the picker from opening.
       getJSON('/api/settings')
         .then(function (settings) {
-          viewCounts = viewSessionCounts(allSessionNames, settings.views || []);
+          // "hidden" is fed through the same suffix-matching helper as a
+          // one-entry pseudo-view list, rather than a bespoke count -- it's
+          // membership-shaped data (settings.hidden_sessions) using the
+          // exact same ":<name>" rule as settings.views (AGENTS.md).
+          var lists = (settings.views || []).concat([
+            { name: 'hidden', sessions: settings.hidden_sessions || [] },
+          ]);
+          viewCounts = viewSessionCounts(allSessionNames, lists);
           viewCounts.all = allSessionNames.length;
           if (mode === 'picker') render();
         })
@@ -1070,6 +1325,10 @@ if (typeof module !== 'undefined' && module.exports) {
     controlKeyContent: controlKeyContent,
     pickerOptionContent: pickerOptionContent,
     viewSessionCounts: viewSessionCounts,
+    fitLabel: fitLabel,
+    computeKeyPlan: computeKeyPlan,
+    faceClassName: faceClassName,
+    findBlankControlFaces: findBlankControlFaces,
     lockLandscapeOrientation: lockLandscapeOrientation,
     registerServiceWorker: registerServiceWorker,
     POLL_INTERVAL_MS: POLL_INTERVAL_MS,
