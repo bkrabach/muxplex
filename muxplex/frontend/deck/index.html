@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- No user-scalable=no / maximum-scale=1 (deliberate deviation from the
+       root app's index.html — DESIGN_RESPONSIVE.md §4.1): iOS Safari has
+       ignored user-scalable=no since iOS 10, so keeping it only buys
+       platform divergence, and it's a WCAG 1.4.4 failure. The real hazard
+       (accidental double-tap zoom) is handled by touch-action:manipulation
+       on tiles instead. viewport-fit=cover is mandatory or every
+       env(safe-area-inset-*) below resolves to 0px. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0D1117" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="deck" />
+  <link rel="manifest" href="/deck/manifest.json" />
+  <!-- iOS ignores manifest icons entirely (DESIGN_RESPONSIVE.md §4.5) --
+       needs its own apple-touch-icon link or it silently falls back to the
+       root app's icon. Judgment call: reusing the root app's icon art
+       rather than commissioning distinct glyph art for v1 (SOFT_DECK_
+       DESIGN.md OQ4 explicitly names this as the fallback when distinct art
+       isn't produced); the two installed icons remain distinguishable by
+       name/short_name even though the glyph is shared. -->
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="stylesheet" href="/deck/deck.css" />
+  <title>muxplex deck</title>
+</head>
+<body>
+  <div id="deck-root">
+    <header class="deck-header">
+      <span id="liveness-dot" class="liveness-dot" role="status" aria-label="connection status"></span>
+      <span id="staleness-age" class="staleness-age"></span>
+
+      <button type="button" id="view-button" class="view-button" aria-haspopup="true">
+        <span class="caret" aria-hidden="true">&#9662;</span>
+        <span id="view-button-label">all</span>
+      </button>
+
+      <button type="button" id="wake-indicator" class="wake-indicator hidden"></button>
+
+      <button type="button" id="toggle-last-chip" class="toggle-last-chip hidden">
+        <span aria-hidden="true">&#8644;</span>
+        <span class="chip-name"></span>
+      </button>
+    </header>
+
+    <div id="attention-strip" class="attention-strip hidden" aria-label="sessions needing attention"></div>
+
+    <div id="deck-body" class="deck-body">
+      <div id="deck-loading" class="deck-loading">&#8230;</div>
+      <div id="deck-empty" class="deck-empty hidden"></div>
+      <div id="deck-grid" class="deck-grid hidden" role="list" aria-label="sessions in current view"></div>
+    </div>
+  </div>
+
+  <div id="view-sheet-backdrop" class="view-sheet-backdrop hidden"></div>
+  <div id="view-sheet" class="view-sheet hidden" role="menu" aria-label="Switch view"></div>
+
+  <div id="deck-toast" class="deck-toast hidden" role="alert"></div>
+
+  <script src="/deck/deck.js"></script>
+</body>
+</html>

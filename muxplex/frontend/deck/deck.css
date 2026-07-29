@@ -1,0 +1,495 @@
+/* muxplex soft deck — styles.
+ *
+ * Isolated from style.css on purpose (SOFT_DECK_DESIGN.md §7: "stays out of
+ * app.js" / reversibility — `rm -rf frontend/deck/` must remove the whole
+ * surface). The small palette below is duplicated from style.css's :root,
+ * not imported, so this file has zero dependency on the PWA stylesheet.
+ * Keep these six values in sync with style.css by convention if the brand
+ * palette ever changes — DESIGN_TILE.md §8 and KEY_DESIGN_SYSTEM.md §7 both
+ * make the same call for the same reason (a design-token layer is not
+ * warranted for six values in one file).
+ *
+ * ---------------------------------------------------------------------
+ * DESIGN CONFLICT RESOLUTIONS (the three the brief called out, plus one
+ * more found during implementation). Full reasoning in the delivery report;
+ * summarized here so the numbers below are traceable to a decision.
+ *
+ * 1. Tile minimum width: DESIGN_LAYOUT.md said 164px, DESIGN_RESPONSIVE.md
+ *    said 136px, DESIGN_TILE.md said 8.75rem (140px). Resolved to
+ *    DESIGN_TILE's number and unit: it is the only one of the three derived
+ *    from this project's REAL session names (including the worst case,
+ *    `amplifier-provider-load`, 23 chars, sharing a prefix with
+ *    `amplifier-main` — which is exactly the case that breaks naive
+ *    front-truncation). It is also the only one in `rem`, which is the
+ *    correct unit: a `px` minimum with `rem` type means the grid does not
+ *    grow when the user scales OS text, and the name overflows precisely
+ *    for the users who most need it not to.
+ *
+ * 2. Tile shape: DESIGN_LAYOUT.md's min-height:128px, DESIGN_RESPONSIVE.md's
+ *    aspect-ratio:4/3, and DESIGN_TILE.md's aspect-ratio:1 (square) all
+ *    disagreed. Resolved to square for the Regular class: DESIGN_TILE.md is
+ *    the only one of the three with an arithmetic derivation tying the
+ *    choice to an observable outcome (140px square → NAME 37px + STATE 14px
+ *    + 16px padding = 67px, leaving ~73px of preview ≈ 5 lines of 11px mono
+ *    — closely matching the physical deck's hardware-VERIFIED 4 lines at
+ *    72px). Square also produces a regular grid at any column count with
+ *    zero extra rules, which is the "ruthless simplicity" standard all
+ *    three documents otherwise hold each other to. DESIGN_LAYOUT's
+ *    min-height:128px is not actually a competing shape (it's a zone-model
+ *    floor from the same document, not an aspect-ratio claim) and is
+ *    compatible with the square outcome at the 140px floor.
+ *
+ * 3. Height classes: DESIGN_LAYOUT.md does not address them; DESIGN_
+ *    RESPONSIVE.md proposes an explicit Short class
+ *    (`@media (max-height:520px)`, fixed 72px, preview dropped). Adopted
+ *    as an ADDITIVE layer on top of resolution #2, not a competing
+ *    resolution — the two are orthogonal (shape-in-Regular vs.
+ *    height-triggered-override), and DESIGN_LAYOUT's OWN worked table
+ *    independently flags 844×390 (phone landscape) as "the worst case"
+ *    without proposing a fix, which is exactly the gap RESPONSIVE's Short
+ *    class closes.
+ *
+ * 4. (Not asked, found during implementation.) The active-state ring:
+ *    DESIGN_LAYOUT.md's tile sketch used `outline` with a negative offset;
+ *    DESIGN_TILE.md explicitly rejects `outline` for the active ring in
+ *    favor of `box-shadow: inset` (§4.1), reserving `outline` for
+ *    `:focus-visible` only. Resolved to DESIGN_TILE's box-shadow approach:
+ *    an element has exactly one `outline`, so if a tile is BOTH keyboard-
+ *    focused and active/pending at once (a real case — tab to the active
+ *    tile), an outline-based active ring and a focus outline would collide.
+ *    box-shadow (active/pending/failed) and outline (focus only) never
+ *    contend for the same CSS property.
+ *
+ * 5. (Not asked, found during implementation.) The optimistic "pending"
+ *    ring: DESIGN_RESPONSIVE.md §6.2 argues for a ring that is VISUALLY
+ *    DISTINCT from confirmed-active (a pulsing ring, "the optimistic state
+ *    is visually distinct from the confirmed state" — so a failure is a
+ *    resolution, not a contradiction). DESIGN_TILE.md §6.2 explicitly
+ *    argues the opposite: pending should be "deliberately identical to
+ *    genuine active," rejecting a distinct 3rd appearance as a 4th thing to
+ *    learn. Resolved in RESPONSIVE's favor: the assignment's own
+ *    non-negotiable #3 ("never show a success state it hasn't observed")
+ *    settles this independently of either document's aesthetic argument —
+ *    an identical-to-active ring during the pending window IS a success
+ *    state ("this session is active") shown before it's been observed.
+ *    Implemented as a pulsing opacity animation on the same inset
+ *    box-shadow mechanism (not literally dashed — box-shadow can't dash —
+ *    but frame-to-frame distinct from the solid confirmed ring).
+ * --------------------------------------------------------------------- */
+
+:root {
+  --bg: #0D1117;
+  --bg-tile: #10131C;
+  --bg-tile-hover: #1A1F2B;
+  --text: #F0F6FF;
+  --text-muted: #8E95A3;
+  --text-preview: #7D8590;
+  --border: #2A3040;
+  --accent: #00D9F5;
+  --bell: #F1A640;
+  --err: #f85149;
+  --warn: #d29922;
+  --radius: 4px;
+
+  --header-height: 56px;   /* RESPONSIVE §2.2: 44px can't hold a 48px target */
+  --strip-height: 44px;
+  --tile-min: 8.75rem;     /* resolution #1 above — 140px, in rem */
+  --gap: 8px;
+}
+
+* , *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior-y: contain; /* RESPONSIVE §6.4 — kill accidental pull-to-refresh reload */
+}
+
+#deck-root {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  height: 100vh; /* fallback, dvh not universal */
+}
+
+/* ─── Header ──────────────────────────────────────────────────────────── */
+
+.deck-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--header-height);
+  padding: 0 8px;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: max(8px, env(safe-area-inset-left, 0px));
+  padding-right: max(8px, env(safe-area-inset-right, 0px));
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.liveness-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+  transition: background-color 0.3s ease;
+}
+.liveness-dot.warn { background: var(--warn); }
+.liveness-dot.err { background: var(--err); }
+
+.staleness-age {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.staleness-age:empty { display: none; }
+
+.view-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 48px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  padding: 0 4px;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.view-button.unknown-view { color: var(--warn); }
+.view-button .caret { color: var(--text-muted); font-size: 0.75rem; }
+
+.wake-indicator {
+  margin-left: auto;
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  min-height: 48px;
+  min-width: 48px;
+  padding: 0 6px;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.wake-indicator.held { color: var(--accent); }
+.wake-indicator.hidden { display: none; }
+
+.toggle-last-chip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 34vw;
+  min-height: 48px;
+  background: var(--bg-tile);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  padding: 0 12px;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toggle-last-chip.hidden { display: none; }
+
+/* ─── Attention strip (overflow-conditional, LAYOUT §1.2) ────────────── */
+
+.attention-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--strip-height);
+  padding: 0 8px;
+  overflow-x: auto;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: var(--header-height);
+  z-index: 9;
+}
+.attention-strip.hidden { display: none; }
+
+.attention-chip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  background: var(--bell);
+  color: #000;
+  border: none;
+  border-radius: 999px;
+  padding: 0 12px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ─── Grid + states ───────────────────────────────────────────────────── */
+
+.deck-body {
+  flex: 1 1 auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.deck-body.stale .deck-grid {
+  filter: grayscale(0.7) opacity(0.45);
+  transition: filter 0.4s ease;
+}
+
+.deck-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr));
+  gap: var(--gap);
+  padding: var(--gap);
+  padding-left: max(var(--gap), env(safe-area-inset-left, 0px));
+  padding-right: max(var(--gap), env(safe-area-inset-right, 0px));
+  padding-bottom: max(var(--gap), env(safe-area-inset-bottom, 0px));
+  align-content: start;
+}
+
+.deck-empty,
+.deck-loading {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+  text-align: center;
+  padding: 24px;
+}
+.deck-empty.hidden,
+.deck-loading.hidden { display: none; }
+
+.deck-empty .view-name-warn { color: var(--warn); }
+
+/* ─── Session tile ────────────────────────────────────────────────────── */
+
+.session-tile {
+  position: relative;
+  aspect-ratio: 1;
+  background: var(--bg-tile);
+  border: none;
+  border-radius: var(--radius);
+  color: var(--text);
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transform: scale(1);
+  transition: transform 0.08s ease, background-color 0.08s ease;
+}
+
+/* Short class — RESPONSIVE §1.2. Additive on top of the square Regular
+   default (resolution #3 above): triggers on viewport HEIGHT, independent
+   of the width-driven column count. */
+@media (max-height: 520px) {
+  .session-tile { aspect-ratio: unset; height: 72px; }
+  .session-tile .tile-preview { display: none; }
+  .session-tile .tile-name { -webkit-line-clamp: 1; }
+}
+
+.session-tile:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.session-tile.is-pressed {
+  transform: scale(0.97);
+  background: var(--bg-tile-hover);
+}
+
+/* Active — resolution #4: box-shadow inset, never outline. */
+.session-tile.is-active {
+  box-shadow: inset 0 0 0 3px var(--accent);
+}
+
+/* Pending — resolution #5: visually distinct from confirmed-active via a
+   pulsing opacity animation on the same box-shadow mechanism. */
+.session-tile.is-pending {
+  box-shadow: inset 0 0 0 3px var(--accent);
+  animation: deck-pending-pulse 900ms ease-in-out infinite;
+}
+@keyframes deck-pending-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 3px rgba(0, 217, 245, 0.35); }
+  50% { box-shadow: inset 0 0 0 3px rgba(0, 217, 245, 1); }
+}
+
+.session-tile.is-failed {
+  box-shadow: inset 0 0 0 3px var(--err);
+  animation: deck-fail-shake 300ms ease-in-out 1;
+}
+@keyframes deck-fail-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(3px); }
+}
+
+.tile-name {
+  position: relative;
+  z-index: 2;
+  background: var(--bg-tile);
+  padding: 6px 8px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  hyphens: none;
+  min-height: calc(2 * 1.25 * 0.9375rem + 12px);
+}
+
+.session-tile.needs-attention .tile-name {
+  background: var(--bell);
+  color: #000;
+}
+
+.tile-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  padding-bottom: 20px; /* leave room for STATE */
+  font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  color: var(--text-preview);
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tile-state {
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  z-index: 3;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  padding: 2px 4px 2px 24px;
+  background: linear-gradient(to left, var(--bg-tile) 55%, transparent);
+  pointer-events: none;
+}
+
+.session-tile.is-failed .tile-state {
+  color: var(--err);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-tile,
+  .session-tile.is-pending,
+  .session-tile.is-failed {
+    animation: none !important;
+    transition: background-color 0.08s ease !important;
+  }
+  .session-tile.is-pressed { transform: none; }
+}
+
+/* ─── View sheet ──────────────────────────────────────────────────────── */
+
+.view-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 20;
+}
+.view-sheet-backdrop.hidden { display: none; }
+
+.view-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 21;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg-tile);
+  border-radius: 12px 12px 0 0;
+  padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+}
+.view-sheet.hidden { display: none; }
+
+.view-sheet-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 56px;
+  padding: 0 16px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.9375rem;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.view-sheet-row.current { color: var(--accent); font-weight: 600; }
+
+/* ─── Toast (failure notice) ──────────────────────────────────────────── */
+
+.deck-toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  background: var(--err);
+  color: #fff;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  z-index: 30;
+  max-width: 90vw;
+}
+.deck-toast.hidden { display: none; }

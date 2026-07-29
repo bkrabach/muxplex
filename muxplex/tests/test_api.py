@@ -1656,6 +1656,49 @@ def test_get_login_injects_muxplex_auth(client):
 
 
 # ---------------------------------------------------------------------------
+# GET /login?next= — carried through as window.MUXPLEX_NEXT
+# ---------------------------------------------------------------------------
+
+
+def test_get_login_injects_valid_next_param(client):
+    """GET /login?next=/deck/ injects the validated value as MUXPLEX_NEXT."""
+    response = client.get("/login?next=/deck/")
+    assert response.status_code == 200
+    assert 'window.MUXPLEX_NEXT = "/deck/";' in response.text
+
+
+def test_get_login_rejects_hostile_next_param(client):
+    """GET /login?next=<absolute URL> injects '/' -- the hostile value never
+    reaches the page at all, not even inside the rejected JSON."""
+    response = client.get("/login?next=http://evil.com/phish")
+    assert response.status_code == 200
+    assert 'window.MUXPLEX_NEXT = "/";' in response.text
+    assert "evil.com" not in response.text
+
+
+def test_get_login_rejects_protocol_relative_next_param(client):
+    """GET /login?next=//evil.com injects '/' -- protocol-relative rejected."""
+    response = client.get("/login?next=//evil.com")
+    assert response.status_code == 200
+    assert 'window.MUXPLEX_NEXT = "/";' in response.text
+    assert "evil.com" not in response.text
+
+
+def test_get_login_rejects_path_traversal_next_param(client):
+    """GET /login?next=/../etc/passwd injects '/' -- traversal rejected."""
+    response = client.get("/login?next=/../etc/passwd")
+    assert response.status_code == 200
+    assert 'window.MUXPLEX_NEXT = "/";' in response.text
+
+
+def test_get_login_no_next_param_injects_root(client):
+    """GET /login with no ?next= injects the default '/'."""
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert 'window.MUXPLEX_NEXT = "/";' in response.text
+
+
+# ---------------------------------------------------------------------------
 # POST /login
 # ---------------------------------------------------------------------------
 
@@ -2757,6 +2800,81 @@ def test_css_asset_accessible_from_non_localhost_without_auth(monkeypatch):
     assert response.status_code == 200, (
         f"Expected 200 for CSS from non-localhost, got {response.status_code}"
     )
+
+
+# ---------------------------------------------------------------------------
+# /deck/ — soft deck static route (frontend/deck/, mounted for free by the
+# existing `html=True` static mount at "/" — main.py adds no route handler)
+# ---------------------------------------------------------------------------
+
+
+def test_deck_index_served_at_deck_path(client):
+    """GET /deck/ serves frontend/deck/index.html with 200 + HTML content-type."""
+    response = client.get("/deck/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "deck-root" in response.text
+
+
+def test_deck_js_served_and_not_a_404(client):
+    """GET /deck/deck.js is served (not 404) — confirms the static mount
+    reaches the new subdirectory."""
+    response = client.get("/deck/deck.js")
+    assert response.status_code == 200
+    assert "classifyStaleness" in response.text
+
+
+def test_deck_css_served(client):
+    """GET /deck/deck.css is served."""
+    response = client.get("/deck/deck.css")
+    assert response.status_code == 200
+
+
+def test_deck_manifest_served_with_deck_scope(client):
+    """GET /deck/manifest.json is served and scoped to /deck/ (distinct from
+    the root app's manifest.json, so the two installed PWAs don't collide)."""
+    response = client.get("/deck/manifest.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["start_url"] == "/deck/"
+    assert data["scope"] == "/deck/"
+    assert data["id"] == "/deck/"
+
+
+def test_deck_js_and_css_accessible_from_non_localhost_without_auth(monkeypatch):
+    """deck.js/deck.css are served pre-auth from non-localhost (same static-
+    extension exemption as app.js/style.css) -- required so an installed
+    /deck/ PWA's own assets load before the login redirect resolves."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-pw")
+    with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
+        js_response = c.get("/deck/deck.js")
+        css_response = c.get("/deck/deck.css")
+    assert js_response.status_code == 200
+    assert css_response.status_code == 200
+
+
+def test_deck_responses_carry_no_cache_header(client):
+    """/deck/ responses inherit the same load-bearing no-cache header as the
+    root app (AGENTS.md: 'the no-cache header is load-bearing') -- an
+    installed deck PWA must not serve a stale app shell across deploys."""
+    for path in ("/deck/", "/deck/deck.js", "/deck/deck.css"):
+        response = client.get(path)
+        assert response.status_code == 200, f"GET {path} -> {response.status_code}"
+        assert response.headers.get("cache-control") == "no-cache", (
+            f"GET {path}: expected 'Cache-Control: no-cache', "
+            f"got {response.headers.get('cache-control')!r}"
+        )
+
+
+def test_deck_index_is_gated_by_auth_from_non_localhost(monkeypatch):
+    """GET /deck/ (the directory index, no static extension) is NOT auth-
+    exempt -- an unauthenticated non-localhost request is redirected to
+    /login rather than served, same as the root app's index.html."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-pw")
+    with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
+        response = c.get("/deck/")
+    assert response.status_code == 307
+    assert response.headers["location"] == "/login?next=%2Fdeck%2F"
 
 
 # ---------------------------------------------------------------------------
