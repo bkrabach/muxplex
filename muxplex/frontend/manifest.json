@@ -1,6 +1,6 @@
 {
-  "name": "muxplex",
-  "short_name": "muxplex",
+  "name": "Muxplex",
+  "short_name": "Muxplex",
   "description": "Browser-based tmux session dashboard",
   "start_url": "/",
   "display": "standalone",

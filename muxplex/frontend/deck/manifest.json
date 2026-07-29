@@ -1,7 +1,7 @@
 {
   "id": "/deck/",
-  "name": "muxplex deck",
-  "short_name": "deck",
+  "name": "Muxplex Deck",
+  "short_name": "Muxplex Deck",
   "description": "Session switcher control surface for muxplex",
   "start_url": "/deck/",
   "scope": "/deck/",
