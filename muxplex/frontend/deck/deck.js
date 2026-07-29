@@ -167,6 +167,51 @@ function tileVisualState(params) {
   return 'idle';
 }
 
+// ─── Fullscreen orientation lock ───────────────────────────────────────
+//
+// User request: game-like forced landscape, not a manual unlock/rotate/
+// relock dance every time the deck opens. `screen.orientation.lock()`
+// only succeeds when the manifest's `display` mode is `fullscreen`
+// (Chromium's ScreenOrientationProvider rejects it with
+// FULLSCREEN_REQUIRED under `standalone` -- see manifest.json).
+// Belt-and-braces: unsupported browsers/form factors and rejected locks
+// (e.g. desktop, or no user-gesture context yet) are swallowed quietly --
+// this must never be able to break the page. Defined at module scope
+// (not inside the DOM-wiring IIFE below) so it is both callable from
+// boot() and exportable for node --test, matching the pure-logic
+// functions above.
+
+function lockLandscapeOrientation() {
+  if (
+    typeof screen === 'undefined' ||
+    !screen.orientation ||
+    typeof screen.orientation.lock !== 'function'
+  ) {
+    return;
+  }
+  screen.orientation.lock('landscape').catch(function () {
+    // Expected in plenty of legitimate cases (desktop browser, no
+    // fullscreen display mode yet, no transient user activation) -- never
+    // let this reject into an unhandled rejection or break boot.
+  });
+}
+
+// ─── Service worker registration ───────────────────────────────────────
+//
+// Not required for the "Install app" menu item since Chrome 108, but
+// Chrome's own installability docs still require a `fetch` handler for
+// the automatic install prompt/banner to appear. sw.js deliberately
+// caches nothing -- see its header comment.
+
+function registerServiceWorker() {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return;
+  }
+  navigator.serviceWorker.register('/deck/sw.js').catch(function () {
+    // Non-fatal -- the deck works the same with or without a SW.
+  });
+}
+
 // ─── DOM wiring (browser only) ───────────────────────────────────────────
 
 if (typeof document !== 'undefined') {
@@ -676,10 +721,16 @@ if (typeof document !== 'undefined') {
     });
 
     // ── Boot ──
+    //
+    // lockLandscapeOrientation() and registerServiceWorker() are defined at
+    // module scope above (not inside this IIFE) so they're both callable
+    // here via closure AND exportable for node --test.
 
     function boot() {
       render();
       requestWakeLock();
+      lockLandscapeOrientation();
+      registerServiceWorker();
       poll().then(schedulePoll);
     }
 
@@ -702,6 +753,8 @@ if (typeof module !== 'undefined' && module.exports) {
     previewLines: previewLines,
     attentionSessions: attentionSessions,
     tileVisualState: tileVisualState,
+    lockLandscapeOrientation: lockLandscapeOrientation,
+    registerServiceWorker: registerServiceWorker,
     POLL_INTERVAL_MS: POLL_INTERVAL_MS,
     STALE_WARN_MS: STALE_WARN_MS,
     STALE_ERR_MS: STALE_ERR_MS,

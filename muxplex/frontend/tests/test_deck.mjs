@@ -25,6 +25,8 @@ test('deck.js exports all pure functions', () => {
     'previewLines',
     'attentionSessions',
     'tileVisualState',
+    'lockLandscapeOrientation',
+    'registerServiceWorker',
   ];
   for (const fn of expected) {
     assert.ok(fn in deck, `deck.js should export "${fn}"`);
@@ -296,4 +298,91 @@ test('.deck-grid sets an explicit non-"auto" grid-auto-rows (regression guard fo
       'If a different value was chosen deliberately, it must be re-verified with a real ' +
       'browser at 390×844 (the reproduction viewport) before this assertion is updated.'
   );
+});
+
+// ─── lockLandscapeOrientation / registerServiceWorker ─────────────────────
+//
+// These touch browser-only globals (`screen`, `navigator.serviceWorker`)
+// that don't exist in a plain Node test environment. The contract under
+// test here is narrower but load-bearing: both functions must degrade
+// silently (never throw, never produce an unhandled rejection) when those
+// globals are absent or reject -- that's what makes it safe to call them
+// unconditionally from boot() on every platform, including ones with no
+// Screen Orientation API at all (see deck.js's boot()).
+
+test('lockLandscapeOrientation does not throw when `screen` is undefined (Node/older browsers)', () => {
+  assert.strictEqual(typeof globalThis.screen, 'undefined');
+  assert.doesNotThrow(() => deck.lockLandscapeOrientation());
+});
+
+test('lockLandscapeOrientation does not throw when screen.orientation.lock rejects', async () => {
+  globalThis.screen = {
+    orientation: { lock: () => Promise.reject(new Error('not allowed')) },
+  };
+  try {
+    assert.doesNotThrow(() => deck.lockLandscapeOrientation());
+    // Let the rejected promise's .catch() run before the test exits, so a
+    // regression that removes the .catch() surfaces as an unhandled
+    // rejection instead of a silently-passing test.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    delete globalThis.screen;
+  }
+});
+
+test('lockLandscapeOrientation is a no-op when screen.orientation is absent', () => {
+  globalThis.screen = {};
+  try {
+    assert.doesNotThrow(() => deck.lockLandscapeOrientation());
+  } finally {
+    delete globalThis.screen;
+  }
+});
+
+test('registerServiceWorker does not throw when `navigator.serviceWorker` is absent', () => {
+  assert.doesNotThrow(() => deck.registerServiceWorker());
+});
+
+test('registerServiceWorker registers /deck/sw.js when serviceWorker is available', () => {
+  let registeredPath = null;
+  const originalNavigator = globalThis.navigator;
+  globalThis.navigator = {
+    serviceWorker: {
+      register: (path) => {
+        registeredPath = path;
+        return Promise.resolve({});
+      },
+    },
+  };
+  try {
+    deck.registerServiceWorker();
+    assert.strictEqual(registeredPath, '/deck/sw.js');
+  } finally {
+    globalThis.navigator = originalNavigator;
+  }
+});
+
+test('registerServiceWorker does not throw when registration rejects', async () => {
+  const originalNavigator = globalThis.navigator;
+  globalThis.navigator = {
+    serviceWorker: { register: () => Promise.reject(new Error('nope')) },
+  };
+  try {
+    assert.doesNotThrow(() => deck.registerServiceWorker());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    globalThis.navigator = originalNavigator;
+  }
+});
+
+// ─── sw.js ─────────────────────────────────────────────────────────────
+
+test('sw.js caches nothing (regression guard: this project has shipped stale-frontend bugs from caching before)', () => {
+  const swPath = join(__dirname, '..', 'deck', 'sw.js');
+  const src = fs.readFileSync(swPath, 'utf8');
+  const lowered = src.toLowerCase();
+  assert.ok(!lowered.includes('caches.open'), 'sw.js must never open a Cache Storage cache');
+  assert.ok(!lowered.includes('cache.put'), 'sw.js must never write to a cache');
+  assert.ok(!lowered.includes('cache.addall'), 'sw.js must never pre-cache assets');
+  assert.ok(src.includes("addEventListener('fetch'"), 'sw.js must have a fetch handler (required for the install prompt)');
 });

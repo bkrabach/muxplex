@@ -5,8 +5,8 @@
   "description": "Session switcher control surface for muxplex",
   "start_url": "/deck/",
   "scope": "/deck/",
-  "display": "standalone",
-  "orientation": "any",
+  "display": "fullscreen",
+  "orientation": "landscape",
   "background_color": "#0D1117",
   "theme_color": "#0D1117",
   "icons": [

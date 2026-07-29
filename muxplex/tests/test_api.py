@@ -3127,6 +3127,103 @@ def test_deck_manifest_served_with_deck_scope(client):
     assert data["id"] == "/deck/"
 
 
+def test_deck_manifest_fullscreen_and_landscape(client):
+    """display=fullscreen (required before screen.orientation.lock() will
+    fire per Chromium's ScreenOrientationProvider -- standalone does not
+    satisfy it) and orientation=landscape (baked into the WebAPK at mint
+    time, giving game-like forced landscape without a manual rotate)."""
+    response = client.get("/deck/manifest.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["display"] == "fullscreen", (
+        "display must be 'fullscreen' -- 'standalone' fails Chromium's "
+        "FULLSCREEN_REQUIRED check for screen.orientation.lock()"
+    )
+    assert data["orientation"] == "landscape"
+
+
+def test_deck_manifest_icons_meet_chromium_installability_criteria(client):
+    """Validate against Chromium's ACTUAL installability rules, not just
+    that the JSON keys exist: a 192px and a 512px icon must both be
+    present, correctly-sized PNGs, and each under 512KB (above that,
+    Chrome sends a URL reference instead of inlining icon bytes into the
+    WebAPK-mint request, which then requires the server be publicly
+    reachable from Google's infrastructure)."""
+    import pathlib
+    import struct
+
+    response = client.get("/deck/manifest.json")
+    assert response.status_code == 200
+    data = response.json()
+    icons = data["icons"]
+    assert len(icons) >= 2
+
+    sizes_present = {icon["sizes"] for icon in icons}
+    assert "192x192" in sizes_present
+    assert "512x512" in sizes_present
+
+    frontend_dir = pathlib.Path(__file__).parent.parent / "frontend"
+    max_bytes = 512 * 1024
+    checked = set()
+    for icon in icons:
+        src = icon["src"].lstrip("/")
+        if src in checked:
+            continue
+        checked.add(src)
+        icon_path = frontend_dir / src
+        assert icon_path.is_file(), f"Manifest references missing icon file: {src}"
+
+        raw = icon_path.read_bytes()
+        assert len(raw) < max_bytes, (
+            f"{src} is {len(raw)} bytes -- must be under 512KB or Chrome "
+            "sends a URL reference instead of inlining the bytes"
+        )
+
+        # Parse real PNG dimensions from the IHDR chunk (bytes 16-24,
+        # big-endian uint32 width then height) -- verifies the FILE matches
+        # what the manifest claims, not just that the JSON says so.
+        assert raw[:8] == b"\x89PNG\r\n\x1a\n", f"{src} is not a valid PNG"
+        width, height = struct.unpack(">II", raw[16:24])
+        expected = icon["sizes"]
+        actual = f"{width}x{height}"
+        assert actual == expected, (
+            f"{src} manifest claims {expected} but the real PNG is {actual}"
+        )
+
+
+def test_deck_manifest_icons_include_a_maskable_variant(client):
+    """Chromium's installability criteria require at least one icon with
+    purpose 'any' AND recommend a 'maskable' variant for adaptive icon
+    shells on Android -- confirms the maskable entry wasn't lost."""
+    response = client.get("/deck/manifest.json")
+    data = response.json()
+    purposes = {icon.get("purpose", "any") for icon in data["icons"]}
+    assert "maskable" in purposes
+    assert "any" in purposes
+
+
+def test_deck_service_worker_served_and_has_fetch_handler(client):
+    """GET /deck/sw.js is served. Not required for the "Install app" menu
+    item since Chrome 108, but Chrome's own installability docs still
+    require a `fetch` event handler for the automatic install PROMPT to
+    appear."""
+    response = client.get("/deck/sw.js")
+    assert response.status_code == 200
+    assert "addEventListener('fetch'" in response.text
+
+
+def test_deck_service_worker_caches_nothing(client):
+    """Regression guard: the deck's service worker must never introduce a
+    cache -- AGENTS.md documents this exact failure class shipping five
+    times already (stale frontend bytes served after a deploy)."""
+    response = client.get("/deck/sw.js")
+    assert response.status_code == 200
+    lowered = response.text.lower()
+    assert "caches.open" not in lowered
+    assert "cache.put" not in lowered
+    assert "cache.addall" not in lowered
+
+
 def test_deck_js_and_css_accessible_from_non_localhost_without_auth(monkeypatch):
     """deck.js/deck.css are served pre-auth from non-localhost (same static-
     extension exemption as app.js/style.css) -- required so an installed
