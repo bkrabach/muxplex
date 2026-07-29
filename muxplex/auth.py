@@ -221,12 +221,23 @@ def authenticate_pam(username: str, password: str) -> bool:
 # rationale. Do not "harden" this into requiring auth; that would defeat
 # the endpoint's purpose (a client can't authenticate over TLS it doesn't
 # yet trust).
+#
+# /ca.crt and /setup are exempt for the identical reason: /ca.crt serves
+# the SAME bytes as /api/ca (just with the MIME type Android's
+# DownloadManager recognizes -- see main.py's get_ca_certificate_for_install
+# docstring), and /setup is the onboarding page that links to it -- a user
+# who hasn't installed the CA yet, by definition, cannot hold a valid
+# session cookie for this server. Each is its own explicit entry because
+# this check is an exact-path match, not a prefix match -- adding these two
+# does not widen the exemption for any other path.
 _AUTH_EXEMPT_PATHS = {
     "/login",
     "/auth/mode",
     "/auth/logout",
     "/api/instance-info",
     "/api/ca",
+    "/ca.crt",
+    "/setup",
 }
 
 # File extensions that are always served without auth — the login page needs

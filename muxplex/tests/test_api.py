@@ -2411,6 +2411,292 @@ def test_ca_endpoint_handler_accepts_no_parameters():
 
 
 # ---------------------------------------------------------------------------
+# GET /ca.crt (Android-cert-MIME variant of /api/ca)
+# ---------------------------------------------------------------------------
+
+
+def test_ca_crt_returns_same_bytes_as_api_ca_with_android_mime(
+    client, tmp_path, monkeypatch
+):
+    """GET /ca.crt serves byte-identical content to /api/ca, but with the
+    MIME type (application/x-x509-ca-cert) Android's DownloadManager
+    recognizes to route straight into the system cert installer."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    api_response = client.get("/api/ca")
+    crt_response = client.get("/ca.crt")
+
+    assert crt_response.status_code == 200
+    assert crt_response.headers["content-type"].startswith("application/x-x509-ca-cert")
+    assert crt_response.content == api_response.content
+    assert b"BEGIN CERTIFICATE" in crt_response.content
+    assert b"PRIVATE KEY" not in crt_response.content
+
+
+def test_ca_crt_404_when_no_ca_configured(client, tmp_path, monkeypatch):
+    """GET /ca.crt returns 404 with a helpful detail when no local CA exists."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.get("/ca.crt")
+    assert response.status_code == 404
+    detail = response.json().get("detail", "")
+    assert detail, "404 response must include a non-empty, helpful 'detail' message"
+
+
+def test_ca_crt_no_auth_required(tmp_path, monkeypatch):
+    """GET /ca.crt returns 200 even without an auth cookie/credentials."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    with TestClient(app) as c:
+        response = c.get("/ca.crt")
+    assert response.status_code == 200
+    assert b"BEGIN CERTIFICATE" in response.content
+
+
+def test_ca_crt_handler_accepts_no_parameters():
+    """Same structural guarantee as /api/ca: no request input can reach the
+    filesystem read (no path/query/body/header parameter exists to abuse)."""
+    import inspect
+
+    from muxplex.main import get_ca_certificate_for_install
+
+    sig = inspect.signature(get_ca_certificate_for_install)
+    assert len(sig.parameters) == 0, (
+        "get_ca_certificate_for_install must take zero parameters, got: "
+        f"{list(sig.parameters)}"
+    )
+
+
+def test_ca_crt_ignores_query_params(client, tmp_path, monkeypatch):
+    """No query parameter can redirect the read on /ca.crt either."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+    expected_body = ca_cert_path.read_bytes()
+
+    response = client.get(
+        "/ca.crt", params={"path": "/etc/passwd", "file": "../../../etc/passwd"}
+    )
+    assert response.status_code == 200
+    assert response.content == expected_body
+
+
+def test_ca_private_key_never_served_by_any_route(client, tmp_path, monkeypatch):
+    """Security regression guard: the CA private key must never be reachable
+    over HTTP by any route this feature introduces, however it's requested."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+    private_key_bytes = ca_key_path.read_bytes()
+    assert b"PRIVATE KEY" in private_key_bytes  # sanity: the fixture is real
+
+    # Every route this feature adds/touches, plus traversal attempts against
+    # each, must never return the private key material.
+    candidates = [
+        "/api/ca",
+        "/ca.crt",
+        "/setup",
+        "/ca.key",  # a plausible-but-nonexistent sibling path
+        "/api/ca/../ca.key",
+    ]
+    for path in candidates:
+        response = client.get(path)
+        assert b"PRIVATE KEY" not in response.content, (
+            f"{path} must never serve private key material, got: "
+            f"{response.content[:200]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /setup
+# ---------------------------------------------------------------------------
+
+
+def test_setup_page_returns_200_with_download_link(client, tmp_path, monkeypatch):
+    """GET /setup renders 200 HTML with a link to the CA download."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    response = client.get("/setup")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "/ca.crt" in response.text
+    assert "PRIVATE KEY" not in response.text
+
+
+def test_setup_page_no_auth_required(tmp_path, monkeypatch):
+    """GET /setup returns 200 without any auth cookie/credentials -- a user
+    who hasn't installed the CA yet cannot hold a valid session."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    with TestClient(app) as c:
+        response = c.get("/setup")
+    assert response.status_code == 200
+
+
+def test_setup_page_no_ca_configured_says_so_plainly(client, tmp_path, monkeypatch):
+    """When no local CA is configured, /setup must return 200 with a plain
+    explanation -- never 404, never an empty/broken page."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.get("/setup")
+    assert response.status_code == 200
+    assert "not configured" in response.text.lower() or "no local ca" in (
+        response.text.lower()
+    )
+    # No download link should be offered when there's nothing to download.
+    assert 'href="/ca.crt"' not in response.text
+
+
+@pytest.mark.parametrize(
+    ("user_agent", "expected_open_platform"),
+    [
+        (
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36",
+            "android",
+        ),
+        (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            "ios",
+        ),
+        (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+            "macos",
+        ),
+        (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "windows",
+        ),
+    ],
+)
+def test_setup_page_opens_detected_platform_section(
+    client, tmp_path, monkeypatch, user_agent, expected_open_platform
+):
+    """The detected platform's <details> block is open by default; the
+    other three remain present (collapsed) so a user can pick a different
+    device."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    response = client.get("/setup", headers={"User-Agent": user_agent})
+    assert response.status_code == 200
+    html = response.text
+
+    all_platforms = ("android", "ios", "macos", "windows")
+    for platform in all_platforms:
+        assert f'data-platform="{platform}"' in html, (
+            f"Expected a {platform} instructions block to always be present"
+        )
+
+    assert f'data-platform="{expected_open_platform}" open' in html
+    for other in all_platforms:
+        if other != expected_open_platform:
+            assert f'data-platform="{other}" open' not in html
+
+
+def test_setup_page_never_echoes_raw_user_agent(client, tmp_path, monkeypatch):
+    """A hostile/unusual User-Agent header must never be reflected verbatim
+    into the page -- detect_platform maps it to a closed-set label first."""
+    import muxplex.settings as settings_mod
+    from muxplex.tls import generate_local_ca
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    ca_cert_path = tmp_path / "ca" / "muxplex-ca.crt"
+    ca_key_path = tmp_path / "ca" / "muxplex-ca.key"
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    hostile_ua = "<script>alert(1)</script>-Android-marker-zzqq"
+    response = client.get("/setup", headers={"User-Agent": hostile_ua})
+    assert response.status_code == 200
+    assert "<script>alert(1)</script>" not in response.text
+    assert "zzqq" not in response.text
+
+
+# ---------------------------------------------------------------------------
+# Auth exemption did not widen beyond the two new paths
+# ---------------------------------------------------------------------------
+
+
+def test_auth_exempt_paths_only_gained_ca_crt_and_setup():
+    """Regression guard: adding /ca.crt and /setup must not have widened the
+    exemption list for anything else. Fails loudly (with a diff-friendly
+    message) if the set doesn't match exactly what this feature intended."""
+    from muxplex.auth import _AUTH_EXEMPT_PATHS
+
+    expected = {
+        "/login",
+        "/auth/mode",
+        "/auth/logout",
+        "/api/instance-info",
+        "/api/ca",
+        "/ca.crt",
+        "/setup",
+    }
+    assert _AUTH_EXEMPT_PATHS == expected, (
+        f"_AUTH_EXEMPT_PATHS changed unexpectedly. "
+        f"Added: {_AUTH_EXEMPT_PATHS - expected}, "
+        f"removed: {expected - _AUTH_EXEMPT_PATHS}"
+    )
+
+
+def test_unrelated_protected_route_still_requires_auth(tmp_path, monkeypatch):
+    """Sanity check that the exemption is scoped: an ordinary API route is
+    still gated by auth after this change (non-localhost, no cookie)."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    with TestClient(app) as c:
+        response = c.get("/api/sessions", follow_redirects=False)
+    assert response.status_code in (302, 303, 307, 401, 403), (
+        f"Expected /api/sessions to require auth, got {response.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # POST /api/sessions (create new session)
 # ---------------------------------------------------------------------------
 

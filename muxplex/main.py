@@ -81,6 +81,7 @@ from muxplex.settings import (
     resolve_tmux_socket_dir,
     save_settings,
 )
+from muxplex.setup_page import detect_platform, render_setup_page
 from muxplex.state import (
     empty_bell,
     load_state,
@@ -1762,6 +1763,40 @@ async def instance_info() -> dict:
     }
 
 
+def _read_local_ca_cert_bytes() -> bytes | None:
+    """Read the local CA certificate's PEM bytes, or None if unavailable.
+
+    Thin wrapper around `tls.get_local_ca_cert_bytes` so every consumer of
+    "is a servable local CA present right now" — `/api/ca`, `/ca.crt`, and
+    `/setup` — shares exactly one resolution path. See that function's
+    docstring for the full list of conditions that produce None (missing
+    file, unparseable, not a CA cert, etc).
+    """
+    return get_local_ca_cert_bytes(get_local_ca_cert_path())
+
+
+def _ca_cert_bytes_or_404() -> bytes:
+    """Read the local CA cert bytes or raise the shared 404.
+
+    Used by both download endpoints (`/api/ca`, `/ca.crt`) so the file
+    resolution and error message live in exactly one place; a change to the
+    detail message only ever needs to happen here.
+    """
+    pem_bytes = _read_local_ca_cert_bytes()
+    if pem_bytes is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No local CA certificate is available. This server may not "
+                "be using 'muxplex setup-tls --method ca' (e.g. it's on "
+                "Tailscale, mkcert, or self-signed instead), or the file at "
+                "the expected CA path is missing or not a valid CA "
+                "certificate."
+            ),
+        )
+    return pem_bytes
+
+
 @app.get("/api/ca")
 async def get_ca_certificate() -> Response:
     """Serve the local CA's public certificate PEM, when the local-CA TLS
@@ -1787,23 +1822,78 @@ async def get_ca_certificate() -> Response:
     which file is read — there is no way to turn this into an
     arbitrary-file-read.
     """
-    pem_bytes = get_local_ca_cert_bytes(get_local_ca_cert_path())
-    if pem_bytes is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "No local CA certificate is available. This server may not "
-                "be using 'muxplex setup-tls --method ca' (e.g. it's on "
-                "Tailscale, mkcert, or self-signed instead), or the file at "
-                "the expected CA path is missing or not a valid CA "
-                "certificate."
-            ),
-        )
+    pem_bytes = _ca_cert_bytes_or_404()
     return Response(
         content=pem_bytes,
         media_type="application/x-pem-file",
         headers={"Content-Disposition": 'attachment; filename="muxplex-ca.crt"'},
     )
+
+
+@app.get("/ca.crt")
+async def get_ca_certificate_for_install() -> Response:
+    """Serve the same CA certificate as `/api/ca`, at a plain top-level path
+    with the MIME type Android's DownloadManager recognizes as a CA
+    certificate (`application/x-x509-ca-cert`), so tapping the download can
+    route straight into the system certificate installer instead of landing
+    as a generic file the user has to locate and open manually themselves.
+
+    Byte-identical to `GET /api/ca` (both read via `_ca_cert_bytes_or_404()`
+    — the single fixed path, no request input involved); this endpoint
+    exists only because the *download's advertised type*, not the bytes,
+    is what changes browser/OS handling. Exists mainly so `GET /setup`'s
+    download link and cert-install docs have one canonical, memorable URL.
+
+    Unauthenticated for the same reason as `/api/ca` (see auth.py's
+    `_AUTH_EXEMPT_PATHS` comment) — exempted as its own separate entry
+    since the exemption check is an exact path match, not a prefix.
+    """
+    pem_bytes = _ca_cert_bytes_or_404()
+    return Response(
+        content=pem_bytes,
+        media_type="application/x-x509-ca-cert",
+        headers={"Content-Disposition": 'attachment; filename="muxplex-ca.crt"'},
+    )
+
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request) -> HTMLResponse:
+    """Unauthenticated onboarding page: a download link for the local CA
+    certificate plus platform-specific install instructions.
+
+    Exists to close the "chicken and egg" gap in self-serve cert install:
+    getting the CA file onto a phone previously meant emailing/AirDropping
+    it and hunting through OS Settings menus from memory. This page detects
+    the visiting platform from `User-Agent` (Android is the priority
+    per the design brief; iOS/macOS/Windows are each covered too) and opens
+    that platform's instructions by default — the other three stay
+    available, just collapsed.
+
+    Detection note: iPadOS 13+ can present a desktop-class User-Agent
+    indistinguishable from real macOS Safari (when the user hasn't
+    requested the "Mobile Website"); there is no reliable server-side
+    signal to disambiguate that case, so an iPad in that mode will see the
+    macOS section opened instead of iOS. Both eventually route through
+    "download, then trust the cert" so this is a UX rough edge, not a
+    functional break — see setup_page.py's `detect_platform` docstring.
+
+    Never echoes the raw `User-Agent` (or any other request input) into
+    the response — `detect_platform` maps it to one of a fixed, closed set
+    of labels first, so there is nothing here for a hostile header to
+    inject into. See setup_page.py's module docstring.
+
+    When no local CA is configured (`ca_available=False`), the page still
+    returns 200 with a plain-language explanation rather than 404ing or
+    silently rendering an empty download link — a user landing here from a
+    cert-warning link deserves an answer, not a dead end.
+    """
+    platform = detect_platform(request.headers.get("user-agent", ""))
+    ca_available = _read_local_ca_cert_bytes() is not None
+    html = render_setup_page(platform=platform, ca_available=ca_available)
+    # no-cache, matching index_page()/login_page() above: this page is also
+    # reachable through an installed-PWA-adjacent flow and should always
+    # reflect the server's current CA-availability state, not a cached one.
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 # ---------------------------------------------------------------------------
