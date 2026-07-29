@@ -289,6 +289,30 @@ html, body {
      improvement with no downside for the case they modeled, and fixes the
      case they didn't (a small/focused view on a large screen). */
   grid-template-columns: repeat(auto-fit, minmax(var(--tile-min), 1fr));
+  /* grid-auto-rows: min-content (NOT the implicit default `auto`) — found on
+     LIVE, phone portrait, real DOM measurement, not a mock. With the default
+     `auto` keyword, Chromium sizes an implicit row track from each item's
+     max-content contribution measured at the item's OWN unstretched inline
+     size (roughly its longest unbreakable text segment, e.g. "provider-load"
+     ≈ 96.5px) — NOT the column track's final stretched width (175.5px+ once
+     `minmax(var(--tile-min), 1fr)` distributes space). `.session-tile`'s
+     square comes from `aspect-ratio: 1` applied to that final stretched
+     width, so the RENDERED tile (175.5px tall) silently overflows the row
+     track auto-sizing computed for it (96.5px), and tile N+1 renders
+     partially underneath tile N. `min-content` (equivalently `max-content`
+     here) forces the row-track sizing pass to use the item's actual laid-out
+     content size — which for an aspect-ratio box IS the post-stretch square
+     — so the track matches the tile exactly. Verified empirically (isolated
+     repro across baseline vs. four alternatives, see delivery report): the
+     `auto` default and `align-items: start` both left the mismatch; a
+     `minmax(var(--tile-min), auto)` floor still under-sized rows to 140px
+     against a 183px tile; only `min-content`/`max-content` produced an exact
+     track-to-tile match at every measured width. Confirmed harmless for the
+     Short class (`@media max-height:520px`, fixed `height:72px` below) —
+     min-content of a definite-height box is that same definite height, so
+     landscape is unaffected; this rule only changes behavior for the
+     aspect-ratio-driven Regular class where the mismatch exists. */
+  grid-auto-rows: min-content;
   gap: var(--gap);
   padding: var(--gap);
   padding-left: max(var(--gap), env(safe-area-inset-left, 0px));

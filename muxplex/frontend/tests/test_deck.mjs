@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import fs from 'node:fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -226,4 +227,73 @@ test('tileVisualState: failed outranks pending too (poll-proof — DESIGN_TILE.m
     nowMs: 1500,
   });
   assert.strictEqual(state, 'failed');
+});
+
+// ─── .deck-grid row-track sizing — regression guard for the phone-portrait
+// tile-overlap bug ──────────────────────────────────────────────────────
+//
+// HONESTY NOTE, read before "fixing" this test: the actual defect (rendered
+// tile height disagreeing with the grid's *computed* row-track height) is a
+// live CSS Grid track-sizing computation — it only exists once a real layout
+// engine resolves `.deck-grid`'s implicit row tracks against `.session-tile`'s
+// `aspect-ratio: 1`. This zero-dependency `node --test` suite has no DOM and
+// no layout engine (by convention — AGENTS.md: "these suites... use only
+// node: builtins"), so it CANNOT compute a grid track size and cannot assert
+// the geometric relationship directly. That check was done with a real
+// Chromium (Playwright) against the live `/deck/` route at 390×844, 844×390
+// and 1024×768 — see the delivery report, not this file, for those
+// measurements.
+//
+// What THIS test can do, and honestly all it does: guard against regressing
+// to the specific broken declaration. The bug was `.deck-grid` relying on
+// the implicit `grid-auto-rows: auto` default, under which Chromium sizes an
+// implicit row track from each item's own pre-stretch max-content
+// contribution (≈ its longest unbroken text segment) rather than the
+// column-track-stretched width `aspect-ratio: 1` actually renders at — so a
+// 183px-tall square tile landed in a ~96.5px-tall row track and the next row
+// rendered on top of it. `min-content`/`max-content` make the row-track
+// sizing pass use the item's real (post-stretch) box, which is the actual
+// fix. This is a source-shape assertion (same category as
+// `test_frontend_js.py`'s regex checks — see that file's docstring on
+// deliberately pinning shape over behavior when behavior isn't mechanically
+// checkable here): it fails loudly if someone reverts to `auto` (or deletes
+// the declaration, which is equivalent), but it does NOT — cannot — prove
+// the row track and tile height actually match at runtime.
+test('.deck-grid sets an explicit non-"auto" grid-auto-rows (regression guard for the phone-portrait tile-overlap bug)', () => {
+  const cssPath = join(__dirname, '..', 'deck', 'deck.css');
+  // Strip CSS comments FIRST. Without this, the rule-matching regex below can
+  // be fooled two ways: (1) the fix's own explanatory comment mentions
+  // "grid-auto-rows: min-content" in prose, which would otherwise be picked
+  // up as if it were the live declaration; (2) a compound selector elsewhere
+  // in the file that merely CONTAINS the substring ".deck-grid" (e.g.
+  // `.deck-body.stale .deck-grid { ... }`) can satisfy an unanchored rule
+  // match before the real `.deck-grid { ... }` rule is reached. Both bit this
+  // test during authoring — comment-stripping plus a start-of-line anchor
+  // fixes both.
+  const css = fs.readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  const gridRuleMatch = css.match(/^\.deck-grid\s*\{([^}]*)\}/m);
+  assert.ok(gridRuleMatch, '.deck-grid rule should exist in deck.css');
+  const ruleBody = gridRuleMatch[1];
+
+  const autoRowsMatch = ruleBody.match(/grid-auto-rows\s*:\s*([^;]+);/);
+  assert.ok(
+    autoRowsMatch,
+    '.deck-grid must explicitly declare grid-auto-rows — the implicit `auto` ' +
+      'default is exactly the value that produced the phone-portrait overlap bug'
+  );
+
+  const value = autoRowsMatch[1].trim();
+  assert.notStrictEqual(
+    value,
+    'auto',
+    'grid-auto-rows: auto is the reverted/broken state — Chromium under-sizes the ' +
+      'implicit row track relative to the aspect-ratio-driven tile height at this value'
+  );
+  assert.ok(
+    value === 'min-content' || value === 'max-content',
+    `expected grid-auto-rows to be min-content or max-content (verified fixes), got "${value}". ` +
+      'If a different value was chosen deliberately, it must be re-verified with a real ' +
+      'browser at 390×844 (the reproduction viewport) before this assertion is updated.'
+  );
 });
