@@ -425,10 +425,23 @@ and assert the process is still alive with its session intact. That is the only
 evidence that distinguishes "I set the right value" from "the sessions survive."
 
 **Candidate real fix (not done):** muxplex should not be the parent of the tmux
-server at all — spawning it detached (`setsid`, or a transient
-`systemd-run --user --scope`) puts it outside muxplex's cgroup, so the unit's
+server at all — if the tmux server lives outside muxplex's cgroup, the unit's
 `KillMode` stops mattering. `KillMode=process` is a correct guard on one host's
 config; it does not travel with the package to anyone else's.
+
+**`setsid` does NOT achieve this. Do not re-propose it.** cgroup membership is
+inherited across `fork()` and is entirely unaffected by `setsid()`, which creates
+a new *session / process group* — a different kernel concept from a cgroup. The
+proof is already in this repo: `ttyd.py:218` passes `start_new_session=True`
+(which is exactly `setsid`), and the tmux server that ttyd's `tmux attach`
+parented was still sitting in `muxplex.service`'s cgroup when it was SIGKILLed on
+2026-07-29, taking 44 live sessions with it. Someone who "fixed" the hazard this
+way would have changed nothing and believed otherwise.
+
+Only an **explicit cgroup move** escapes: launch the tmux server in a transient
+scope of its own (`systemd-run --user --scope`), or write its PID into a
+different cgroup's `cgroup.procs`. Confirm with the canary above — never by
+reading the resulting directive back.
 
 ### Recovering sessions after they are lost
 
