@@ -132,10 +132,67 @@ expose first.
 
 ---
 
+## 3. Move focus-grabbing out of the deck and into muxplex
+
+**What we want.** The code that raises the Muxplex window to the foreground
+should live in **muxplex**, exposed over its API, instead of living in
+`muxplex-deck`.
+
+**Why it matters — and the concrete bug it fixes.** Focus-grabbing sits in the
+hardware sidecar today, which means it only works from the machine the Stream
+Deck is physically plugged into. The soft deck talks to muxplex *over the
+network*, so it has no way to raise a window on the target machine — using the
+soft deck from a phone cannot pop Muxplex forward on a Mac. Adding the capability
+to `muxplex-deck` would not fix that either, because `muxplex-deck` is itself
+locally attached to whichever machine holds the hardware.
+
+The observation that resolves it: **muxplex already runs on every device, and
+muxplex is the thing being raised.** The capability belongs in the process that
+is local to the window it needs to act on. Every client — hardware deck, soft
+deck, dashboard, a remote agent — then asks for focus the same way, over HTTP,
+and the local server makes the OS call.
+
+This also collapses a duplication problem before it starts. Platform support is
+uneven (works on macOS; on Windows it flashes the taskbar icon, a documented OS
+restriction on background processes stealing focus). Today that unevenness lives
+in one client. Left alone, every new client that wants focus reimplements it.
+Moved into muxplex, there is exactly one implementation to get right per
+platform.
+
+**Scope for a first pass.** Popping the window on *all* devices is acceptable —
+no per-device targeting needed yet. That removes the hardest design question from
+the first cut and can be tightened later if it turns out to be annoying in
+practice.
+
+**Open questions.**
+
+- **Where does the fan-out happen?** The server could broadcast a focus request to
+  its federation peers, or the client could call each peer directly. Server-side
+  keeps clients dumb and matches how views already resolve; client-side avoids
+  giving the server a new outbound-call responsibility. The federation circuit
+  breaker is relevant either way.
+- **Should this be fenced?** It lets a network client raise a window on someone's
+  desktop. That is far milder than the input endpoint's RCE-by-design, but it is
+  still "act on my machine," and `input_enabled` set the precedent for a
+  local-file-only, default-off gate. Decide deliberately rather than by omission.
+- **What stays per-device?** `focus_app` is a window-title match string today.
+  That is inherently machine-specific and probably stays local config even after
+  the code moves.
+- **Is focus an action or a consequence?** Right now it is bound to a deck
+  control. It could equally be an automatic side effect of switching sessions.
+  Both are defensible; picking one is a UX decision, not a technical one.
+- **What does `muxplex-deck` keep?** Ideally it deletes its focus implementation
+  entirely and just calls the endpoint, leaving one code path. Worth confirming
+  nothing else depends on the local-only behavior.
+
+---
+
 ## Notes
 
 - Item 2 spans both repos in spirit but lands almost entirely here: the soft deck
   is served from `muxplex/frontend/deck/`. `muxplex-deck` is the hardware sidecar
   and its CLI-driven config is correct as-is.
+- Item 3 is the reverse: it *moves* code out of `muxplex-deck` and into this repo,
+  and should shrink the sidecar rather than grow it.
 - Neither item has an owner or a date. They are written down so they stop
   occupying anyone's head, not to imply they are next.
