@@ -14,6 +14,7 @@ Related docs, and why they aren't this one:
 |---|---|
 | [`README.md`](../README.md) | Human install/config reference. The settings table defines `input_enabled` / `input_allowed_sessions` as **configuration**. |
 | [`AGENTS.md`](../AGENTS.md) | Conventions for **developing muxplex itself** — invariants a contributor must not break. |
+| [`API_SEMANTICS.md`](API_SEMANTICS.md) | **Why** the API behaves as it does — the predicates, timestamps, preconditions and write-path guards clients re-derive, each with the incident that produced it. Read it if you are *implementing* a client rather than scripting one. |
 | **this file** | How to **drive** a running muxplex from outside. |
 | `/openapi.json`, `/docs` | The machine-readable contract, served by the running instance. Authoritative for exact request/response shapes. |
 
@@ -284,7 +285,7 @@ done
 
 20 attempts at 0.3s is a 6-second ceiling — comfortably above the ~1s typical
 case, so a genuinely slow poll cycle still resolves without a rewrite. This is
-a known limitation, documented in `AGENTS.md`, with a candidate fix
+a known limitation, documented in `API_SEMANTICS.md`, with a candidate fix
 (write-through cache refresh on create/delete) on the roadmap. It is a race, not
 a mystery — poll for it, don't guess a fixed delay.
 
@@ -845,8 +846,9 @@ curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" \
 report it.
 
 Endpoints not covered here (federation aggregation, bells, settings sync, the
-terminal WebSocket relay) are all in the schema. `AGENTS.md` documents the
-invariants behind them for anyone changing the server.
+terminal WebSocket relay) are all in the schema. `API_SEMANTICS.md` documents the
+invariants behind them; `AGENTS.md` carries the conventions for anyone changing
+the server.
 
 ---
 

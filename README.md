@@ -337,7 +337,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `gridViewMode` | `"flat"` | Multi-device grid layout: `flat`, `grouped`, `filtered` |
 | `sidebarOpen` | `null` | Sidebar state: `true`, `false`, or `null` (auto-detect from screen width) |
 | `settings_updated_at` | `0.0` | Unix timestamp of last settings write (used for federation sync) |
-| `views_updated_at` | `0.0` | Unix timestamp of last change to `views`/`hidden_sessions` specifically. Metadata like `settings_updated_at`, used to arbitrate views-specific federation sync conflicts independently of unrelated field changes (e.g. a `fontSize` edit no longer bumps this). Not itself a syncable setting -- see AGENTS.md's federation section. |
+| `views_updated_at` | `0.0` | Unix timestamp of last change to `views`/`hidden_sessions` specifically. Metadata like `settings_updated_at`, used to arbitrate views-specific federation sync conflicts independently of unrelated field changes (e.g. a `fontSize` edit no longer bumps this). Not itself a syncable setting -- see `docs/API_SEMANTICS.md`. |
 
 **Priority:** CLI flags > `settings.json` > defaults.
 

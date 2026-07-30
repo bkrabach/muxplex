@@ -16,226 +16,27 @@ Treat the API as a contract:
 - Clients are expected to tolerate unknown fields; the server should tolerate
   their absence (version tolerance in both directions).
 
-## Semantics external clients re-implement today (change with care)
+## API semantics external clients re-implement → `docs/API_SEMANTICS.md`
 
-These rules are currently ported into clients; silently changing them breaks
-consumers in ways this repo's tests won't catch:
+The *semantics* behind the wire contract — the rules clients currently re-derive
+locally, and the invariants a server change must not break silently — live in
+[`docs/API_SEMANTICS.md`](docs/API_SEMANTICS.md), beside `AGENT_GUIDE.md`. It
+covers the needs-attention (bell) predicate, `device_id:name` view-membership
+normalization, `last_activity_at`'s derivation, the eventually-consistent read
+model, `settings_updated_at` / `views_updated_at`, the
+`expected_settings_updated_at` compare-and-swap precondition, the
+settings-history snapshot, the destructive-write backstop on `views`,
+federation sync's write discipline, `GET /api/instance-info`'s
+`tmux_socket_dir`, `GET /api/ca`, and federation-aware stale-key pruning — each
+with the incident that produced it.
 
-- **Needs-attention (bell) predicate**:
-  `unseen_count > 0 and (seen_at is None or last_fired_at > seen_at)`
-- **View membership entries** are normalized to `"device_id:name"` form by the
-  background normalization pass; clients match by the `":<name>"` suffix
-  (tmux forbids `:` in session names).
-- **`last_activity_at`** derives from tmux `#{window_activity}` — deliberately
-  NOT `#{session_activity}`, which freezes for unattended sessions (rationale
-  and empirical evidence documented in `sessions.py`).
-- **`active_view` / `active_session` are server-global** — last writer wins,
-  across every connected client (browsers, deck, agents).
-- **The read model is eventually consistent**: GET endpoints serve a ~2s poll
-  cache. POST create/delete aren't visible until the next cycle, and `connect`
-  on a just-created session 404s until the cache catches up. **Measured, not
-  assumed**: traced runs resolved well under 1s (one trace: 3rd attempt at a
-  0.3s poll spacing, ~0.9s elapsed) — a flat `sleep 3` wastes most of that
-  waiting on a race that's usually already over. Clients/agents should poll
-  on a short interval (e.g. 0.3s) with a generous ceiling (e.g. 20 attempts /
-  6s) rather than sleep a fixed delay; see `docs/AGENT_GUIDE.md`'s "read
-  model is eventually consistent" section for the reference pattern.
-  (Candidate future fix: write-through cache refresh on create/delete.)
-- **`GET /api/state` carries `settings_updated_at: float`**, merged in at
-  request time from `settings.settings_updated_at` (settings.py) — it is
-  NOT persisted in state.json; `empty_state()`/`load_state()`/`save_state()`
-  are unaware of it (see `state.py`'s module docstring for the split).
-  Purpose: any client already polling `/api/state` (PWA, muxplex-deck,
-  agents) can detect a settings change — including view-membership edits
-  made by another device, which are otherwise only visible via a dedicated
-  `GET /api/settings` fetch — without adding a second poll. The PWA's
-  `followRemoteViewDefinitions()` (`frontend/app.js`) is the reference
-  consumer: it compares this timestamp against the last-seen value and only
-  re-fetches `/api/settings` (via the existing `loadServerSettings()`) and
-  re-renders view-dependent UI when it actually changed — an unchanged
-  value is a no-op, so this does not become a second per-second settings
-  fetch. This closed a real staleness bug: a session added to a view via
-  `PATCH /api/settings` appeared immediately on the deck sidecar's own poll,
-  but the PWA's `_serverSettings` cache — populated once at page load —
-  never refreshed, so the view dropdown / filtered list / manage-view
-  membership UI all stayed wrong until a hard reload. Same class of bug as
-  `active_view` being server-global above, one layer deeper: that fix
-  follows the active *selection*; this one follows the view *definitions*
-  (membership data) themselves.
-
-Preferred direction as semantics grow: move resolution **server-side** (e.g. a
-resolved-current-view endpoint) rather than expecting each client to port more
-logic — duplication across PWA/sidecar/agents is where drift bugs come from.
-
-- **`GET /api/view`** is now the canonical server-side resolution of the
-  above: view membership (via `filter_visible`), the needs-attention
-  predicate (`bells.needs_attention`), and sort ordering (`?sort=attention`
-  for tiered bell/active/recency ordering, or the default that mirrors
-  `settings.sort_order`). New clients should prefer it over re-deriving
-  these rules; local sessions only in v1.
-- **`PATCH /api/settings` accepts an OPTIONAL `expected_settings_updated_at`
-  precondition** (compare-and-swap). When present, it must equal the
-  server's current `settings_updated_at` or the request is rejected with
-  409 (body includes the current `settings_updated_at`) and NO write is
-  made; when omitted, behavior is unchanged (existing clients, including
-  federation sync, keep working without it). This closes a real incident:
-  a PWA tab holding a STALE `_serverSettings.views` snapshot PATCHed the
-  entire array back and destroyed 7 of 8 views in one request. The PWA's
-  `patchSettingsGuarded()` (`frontend/app.js`) is the reference consumer —
-  it attaches the precondition, and on a single 409 re-fetches settings,
-  re-applies the same mutation to the fresh copy, and retries exactly
-  once (a second consecutive 409 re-renders from server truth instead of
-  looping). New clients that write `views`/`hidden_sessions` SHOULD send
-  this field; see `main.py`'s `update_settings()` for the exact-equality
-  rationale (no epsilon — the value round-trips through JSON unmodified).
-- **Every settings write is snapshotted first**, regardless of writer (API
-  PATCH, federation sync, internal code): `settings.save_settings()` copies
-  whatever is CURRENTLY on disk to
-  `~/.config/muxplex/settings-history/settings-<unix_ts>.json` (mode 0700
-  dir) before overwriting, keeping the most recent
-  `settings.SETTINGS_HISTORY_KEEP` (20) snapshots. This is the automatic
-  recovery path the incident above needed — previously recovery only
-  worked because a manual file backup happened to exist. Best-effort: a
-  snapshot failure is logged and swallowed, never blocks or corrupts the
-  real write.
-- **Destructive-write backstop on `views`** (`views.assess_views_destruction`,
-  called from BOTH `settings.patch_settings()` and
-  `settings.apply_synced_settings()` — the single lowest choke point each
-  write path shares before `views` is replaced wholesale). The CAS
-  precondition above stops a *stale* write from being accepted, but does
-  nothing if the writer's timestamp genuinely looks newer — which is
-  exactly what happened next: a phone PWA tab resubmitted an
-  already-collapsed 1-view array 12 times over 7 minutes, and separately,
-  federation LWW replicated a collapsed state fleet-wide because `views`
-  shared `settings_updated_at` with unrelated fields (see `views_updated_at`
-  below). The backstop is a second, independent line of defense: it
-  inspects what's about to be written and refuses catastrophic shrinkage
-  regardless of whether the CAS/LWW timestamp said the write should
-  proceed. Catastrophic (thresholds are named module constants in
-  `views.py`, not magic numbers): more than
-  `DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD` (1) views collapsing to that
-  threshold or below; incoming view count <= (1 -
-  `DESTRUCTIVE_VIEW_DROP_RATIO` (0.5)) of current; or incoming total
-  session-member count (summed across all views) <= (1 -
-  `DESTRUCTIVE_MEMBER_DROP_RATIO` (0.5)) of current. A single view
-  deletion, or trimming a handful of members from one view, stays under all
-  three and is never flagged. Rejection makes NO write (not even to
-  unrelated keys in the same request) and returns 409 with `{"backstop":
-  true, "detail": <reason>, "settings_updated_at": <current>, "counts":
-  {...}}` — `backstop: true` is how a client tells this apart from an
-  ordinary CAS 409 (see `frontend/app.js`'s `patchSettingsGuarded` below).
-  `PATCH /api/settings` accepts an `allow_destructive: true` body field to
-  perform an intentional bulk deletion; **federation sync NEVER gets this
-  override** — a peer must not be able to force a destructive change onto
-  another device, only a local operator editing `settings.json` directly
-  can. Guard is robust to `views` being absent/None/non-list on either side
-  (never crashes; never treats "no incoming `views` key" as "delete all").
-- **`views_updated_at`** (metadata alongside `settings_updated_at`; both are
-  threaded through the `/api/settings/sync` GET/PUT payload but neither is
-  itself in `SYNCABLE_KEYS`): a SEPARATE timestamp that advances ONLY when a
-  PATCH/sync actually touches `views` or `hidden_sessions`, decoupled from
-  `settings_updated_at`, which advances on ANY syncable key (`fontSize`,
-  `sidebarOpen`, etc.). This closes the race that let a fleet-wide views
-  collapse replicate: because everything shared one timestamp, an unrelated
-  field edit on a peer could bump its `settings_updated_at` past ours and
-  win a federation LWW race for `views` too, even though that peer's actual
-  view data was stale or already-destroyed. `apply_synced_settings()` now
-  takes an optional third argument `incoming_views_updated_at` and, when a
-  peer supplies it, applies incoming `views`/`hidden_sessions` ONLY if it's
-  strictly newer than our local `views_updated_at` — every OTHER present
-  key still applies normally from the overall (newer) sync, so this is
-  never all-or-nothing. **Backward compatible**:
-  `incoming_views_updated_at=None` (the default, and what any
-  pre-this-field peer's payload implies) falls back to the pre-existing
-  behavior — apply views/hidden_sessions unconditionally, gated only by the
-  backstop above — so older peers keep interoperating with zero changes on
-  their end.
-- **`PUT /api/settings/sync`'s existing `payload.settings_updated_at >
-  local_ts` comparison IS this endpoint's CAS/precondition discipline** — a
-  peer only gets to write when its view of the world is strictly newer than
-  ours, the sync-path analogue of `PATCH`'s
-  `expected_settings_updated_at`. What changed: `apply_synced_settings()`
-  now runs the destructive-write backstop unconditionally as its first act
-  for EVERY caller — this endpoint AND the periodic background
-  `_sync_settings_with_remotes()` poll loop — so a catastrophic incoming
-  `views`, however the timestamp comparison came out, is rejected with 409
-  (`{"backstop": true, ...}`) and no write happens, with no override
-  available on this path.
-- **`GET /api/instance-info` includes `tmux_socket_dir`** — the resolved
-  (not raw) socket directory this instance's tmux sessions live under (see
-  `settings.resolve_tmux_socket_dir()`). Lets remote tools/agents discover
-  where sessions need to land to be visible to this instance without
-  tribal knowledge; see the "tmux socket" section below and README.md.
-- **`GET /api/ca`** serves the local CA's PUBLIC certificate PEM (200,
-  `Content-Type: application/x-pem-file`, `Content-Disposition: attachment`)
-  when `muxplex setup-tls --method ca` is in use; 404 otherwise (no local CA
-  configured, the file is missing, or the file at the CA path is not
-  actually a CA cert — `BasicConstraints CA:TRUE` is checked via
-  `tls.get_local_ca_cert_bytes()` before serving, so a leaf accidentally
-  left at the CA path is refused rather than handed out). **Unauthenticated**
-  — added to `auth._AUTH_EXEMPT_PATHS` alongside `/api/instance-info`: a CA
-  public certificate is not a secret (no private key material; it's the
-  trust anchor clients are meant to install), and requiring auth would be
-  circular (a client can't authenticate over TLS it doesn't yet trust).
-  Reads ONLY the single fixed path `settings.get_local_ca_cert_path()`
-  resolves to (`<config_dir>/ca/muxplex-ca.crt`, mirroring cli.py's
-  `setup_tls()`) — the handler takes no request parameters at all, so no
-  path/query/body/header can redirect the read to an arbitrary file. Exists
-  to close a real onboarding gap: the only prior way to get this file was
-  `scp` from the server (needs SSH access a client may not have), and users
-  reliably grabbed `muxplex.crt` (the LEAF the server presents on the wire)
-  instead, producing "unable to get local issuer certificate" downstream —
-  the exact mistake that cost real debugging time in the muxplex-deck
-  onboarding flow. See README.md's "Fetching the CA over the network"
-  subsection for the client one-liner.
-- **Stale-key pruning (`views.prune_stale_keys`) is federation-aware and
-  prunes ONLY on positive knowledge, never on ignorance.** A settings key
-  `"<device_id>:<name>"` in `views`/`hidden_sessions` may be evaluated for
-  removal ONLY when the owning device's session list is CURRENTLY KNOWN to
-  this instance:
-  - Own-device keys (`device_id == local_device_id`) are always evaluable —
-    local `names` is authoritative.
-  - Remote-device keys are evaluable ONLY if that device currently has a
-    fresh entry in `main.py`'s `_federation_cache` (the same cache backing
-    `GET /api/federation/sessions`, populated whenever any client — PWA,
-    deck sidecar, agent — polls it) whose `fail_count` hasn't reached
-    `_FEDERATION_GRACE_FAILURES` (the same reachability threshold that
-    endpoint uses to report `status: "unreachable"`). When reachable, that
-    device's live session keys are merged into the `live_keys` set passed
-    to `prune_stale_keys`, so "reachable and genuinely absent" starts the
-    grace clock and "reachable and present" clears it.
-  - A remote device with NO current cache entry (never polled, evicted on
-    auth failure, or past the reachability grace threshold) is **unknown,
-    not dead**: its keys are never pruned and never accrue grace-clock
-    time — `prune_stale_keys` actively clears (never advances) their
-    `first_missed_at` bookkeeping while unknown, via the
-    `local_device_id`/`known_remote_device_ids` parameters. **This is the
-    offline-device guarantee**: a laptop that's closed/offline for days —
-    far past `stale_key_grace_hours` — never has its view membership
-    erased by every OTHER device in the fleet (each of which, before this
-    fix, only knew ITS OWN local sessions and wrongly concluded the
-    offline device's keys were gone — a real latent eraser, confirmed
-    during the 2026-07 views-collapse incident investigation, though not
-    its proximate cause). The key survives untouched no matter how long
-    the device stays unknown, and resumes a **fresh** grace window (not a
-    stale partial count) once the device is known again.
-  - Legacy bare-name entries (no `device_id:` prefix) have no determinable
-    owner and keep the pre-fix behavior unconditionally: evaluated directly
-    against `live_keys`.
-  - The whole positive-knowledge gate is opt-in via `local_device_id`
-    (`known_remote_device_ids` defaults to empty): omitting it reproduces
-    the exact pre-fix behavior for callers/tests that don't supply device
-    identity, but `main.py`'s `_run_poll_cycle` (the only real caller)
-    always supplies both.
-  - The prune ACTION still goes through the v0.12.0 destructive-write
-    backstop (`views.assess_views_destruction`) even though it writes via
-    `save_settings()` directly rather than `patch_settings()` — the poll
-    cycle assesses before/after `views` itself and refuses to persist (both
-    `settings.json` and `pruning.json` left untouched, so the same
-    situation reproduces visibly next cycle) if a mass prune would collapse
-    views. Automatic pruning has no `allow_destructive` override — only a
-    local operator editing `settings.json` directly can authorize a bulk
-    deletion.
+**Read it before** you change the shape or behavior of any `/api/settings`,
+`/api/state`, `/api/view`, or `/api/settings/sync` field; before you change what
+the poll cycle, pruning, or federation sync writes; or when you are about to add
+a rule a client would have to re-implement. That last case has a standing
+answer: resolve it **server-side** (as `GET /api/view` now does) rather than
+shipping more logic for each of PWA / sidecar / agents to port — duplication
+across clients is where drift bugs come from.
 
 ## Terminal input: `POST /api/sessions/{name}/input` (RCE by design, fenced)
 
