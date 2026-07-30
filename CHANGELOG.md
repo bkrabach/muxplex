@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.26.0 (2026-07-30)
+
+### Bug Fixes
+
+- **muxplex no longer runs the tmux server inside its own service cgroup.** When no tmux server is running, muxplex starts one — and until now that server became muxplex's child, which put it in the service's control group. Anything that stopped the service could then take every session on the machine with it. v0.24.0 shipped `KillMode=process` to stop systemd doing that, but that was a guard on the unit file, not a fix for the relationship: edit the unit, or run muxplex under a different supervisor, and the hazard came back. Session-spawning subprocesses now run in their own transient systemd scope, so the tmux server is never in muxplex's cgroup to begin with. Verified by deliberately setting `KillMode=mixed` and restarting: the sessions survive anyway. On macOS, and on Linux without a usable systemd user session, there is no such cgroup and nothing changes — and if the escape is expected but genuinely unavailable, it is logged loudly rather than passed over in silence.
+
+- **The dashboard no longer opens sideways after you have visited the deck.** The deck deliberately forces landscape. Because the dashboard's scope covers the whole site, reaching the deck from inside it kept you in the same browsing context, and the deck's orientation lock could outlive the deck and follow you back. The dashboard now releases any inherited lock when it starts. The deck's forced landscape is unchanged.
+
+### Verification
+
+- 1692 Python tests passed (baseline 1676 + 16 new tests covering cgroup escape on mixed KillMode, escape unavailability logging, macOS no-op, and dashboard orientation release).
+- cgroup escape verified in a DTU: tmux server moved from `.../muxplex.service` into `.../run-<id>.scope`, and sessions survived a `systemctl restart` with `KillMode=mixed` deliberately set — a test that fails fatally under the old code and passes under the new one.
+- Dashboard orientation unlock verified on real hardware: visited deck (locked to landscape), returned to dashboard, confirmed dashboard immediately reverted to any-orientation behavior.
+- 583 frontend tests passed (Node 22).
+
 ## v0.25.0 (2026-07-29)
 
 ### Features
