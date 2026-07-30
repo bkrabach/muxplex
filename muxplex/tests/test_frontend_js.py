@@ -3685,13 +3685,25 @@ def test_local_device_id_variable_declared() -> None:
 
 
 def test_instance_info_fetched_at_startup() -> None:
-    """DOMContentLoaded or init code must fetch /api/instance-info to cache device_id."""
+    """DOMContentLoaded or init code must fetch /api/instance-info to cache device_id.
+
+    Anchored on the real `document.addEventListener('DOMContentLoaded', ...)`
+    registration, not the bare word "DOMContentLoaded" — that word also
+    appears in two comments earlier in the file (as of this writing, lines
+    239 and 477), and a regex starting from the first occurrence of the word
+    captures from whichever comment comes first, not the real handler. That
+    used to accidentally include the real handler's body because there was no
+    intervening `});` + comment boundary; an unrelated same-file change added
+    one (a `window.addEventListener('resize', ...)` block followed by a
+    comment) and silently truncated the capture before it reached the real
+    fetch, without the handler itself changing at all.
+    """
     match = re.search(
-        r"DOMContentLoaded.*?\{(.*?)(?=\}\);\s*\n// |\}\);\s*$)",
+        r"document\.addEventListener\(\s*['\"]DOMContentLoaded['\"].*?\{(.*?)(?=\}\);\s*\n// |\}\);\s*$)",
         _JS,
         re.DOTALL,
     )
-    assert match, "DOMContentLoaded handler not found"
+    assert match, "document.addEventListener('DOMContentLoaded', ...) handler not found"
     body = match.group(1)
     assert "instance-info" in body or "/api/instance-info" in body, (
         "DOMContentLoaded must fetch /api/instance-info to cache device_id in _localDeviceId"
