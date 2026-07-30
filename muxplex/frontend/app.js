@@ -4922,6 +4922,39 @@ window.addEventListener('resize', function() {
   }
 });
 
+// ─── Release any inherited screen-orientation lock ─────────────────────────
+//
+// This dashboard and /deck/ are two separate PWAs served from the same
+// origin. This app's manifest declares orientation "any" and has no code
+// path that locks orientation -- but its manifest also omits an explicit
+// "scope", so it defaults to "/" (the whole origin), a superset of
+// /deck/'s "/deck/" scope. If a user reaches /deck/ from within this
+// installed app's own window (in-scope navigation stays in the same
+// top-level browsing context) and /deck/'s boot calls
+// screen.orientation.lock('landscape') (see deck/deck.js), then returns
+// here, the lock has no automatic release tied to navigating to a
+// different same-origin document on every platform -- it can outlive the
+// deck. Unlocking unconditionally on boot is a safe no-op when nothing was
+// locked. Same defensive guards as deck.js's lock call: never assume the
+// API exists, never let this throw and break boot (unlock() can throw
+// InvalidStateError/SecurityError per spec).
+function releaseInheritedOrientationLock() {
+  if (
+    typeof screen === 'undefined' ||
+    !screen.orientation ||
+    typeof screen.orientation.unlock !== 'function'
+  ) {
+    return;
+  }
+  try {
+    screen.orientation.unlock();
+  } catch (err) {
+    // Expected whenever nothing was locked or the context disallows it --
+    // never let this break boot.
+  }
+}
+releaseInheritedOrientationLock();
+
 document.addEventListener('DOMContentLoaded', async function() {
   initDeviceId();
 
