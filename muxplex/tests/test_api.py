@@ -4511,7 +4511,11 @@ def test_delete_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_p
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
 
     sentinel_env = {"TMUX_TMPDIR": "/custom/tmux/socket/dir", "SENTINEL": "1"}
-    monkeypatch.setattr("muxplex.sessions.tmux_env", lambda: sentinel_env)
+    # delete_session() is unchanged by the spawn_session_command() extraction
+    # (that refactor only touched CREATE) -- it still calls its own
+    # `from muxplex.sessions import tmux_env` binding directly, so the patch
+    # target stays muxplex.main.tmux_env, not muxplex.sessions.tmux_env.
+    monkeypatch.setattr("muxplex.main.tmux_env", lambda: sentinel_env)
 
     captured_kwargs = []
 
