@@ -4924,20 +4924,36 @@ window.addEventListener('resize', function() {
 
 // ─── Release any inherited screen-orientation lock ─────────────────────────
 //
-// This dashboard and /deck/ are two separate PWAs served from the same
-// origin. This app's manifest declares orientation "any" and has no code
-// path that locks orientation -- but its manifest also omits an explicit
-// "scope", so it defaults to "/" (the whole origin), a superset of
-// /deck/'s "/deck/" scope. If a user reaches /deck/ from within this
-// installed app's own window (in-scope navigation stays in the same
-// top-level browsing context) and /deck/'s boot calls
-// screen.orientation.lock('landscape') (see deck/deck.js), then returns
-// here, the lock has no automatic release tied to navigating to a
-// different same-origin document on every platform -- it can outlive the
-// deck. Unlocking unconditionally on boot is a safe no-op when nothing was
-// locked. Same defensive guards as deck.js's lock call: never assume the
-// API exists, never let this throw and break boot (unlock() can throw
-// InvalidStateError/SecurityError per spec).
+// CORRECTED (post-v0.26.0): v0.26.0 shipped this unlock() call while the
+// manifest still declared "orientation": "any" and reasoned that the
+// manifest was "not the cause" of forced/free rotation. That reasoning was
+// wrong. Per the Web App Manifest spec (orientation member), "any"
+// affirmatively "allows the app to rotate freely to match the orientation
+// of the device" -- on Android this is baked into the installed PWA's
+// WebAPK Activity as a sensor-based screenOrientation, and Android's own
+// docs on those modes are explicit that "the sensor is used even if the
+// user has locked sensor-based rotation." That is precisely the reported
+// bug: free rotation that overrides the phone's rotation lock. The
+// manifest (../manifest.json) now omits "orientation" entirely, which per
+// spec makes the app "typically use the device's natural orientation and
+// any user or system-level orientation settings" -- i.e. behave like a
+// normal browser tab (matching Edge) and honor the system rotation lock.
+//
+// This call is KEPT as defense-in-depth, not as the fix. This dashboard
+// and /deck/ are two separate PWAs served from the same origin; the main
+// manifest's scope is "/" (a superset of /deck/'s "/deck/" scope), so
+// reaching /deck/ from inside this installed app's own window can stay in
+// the same top-level browsing context. /deck/'s boot calls
+// screen.orientation.lock('landscape') (see deck/deck.js) and there is no
+// unlock() there. Spec text says browsers "revert to this default
+// orientation whenever the top-level browsing context is navigated," which
+// should clear a prior lock on returning here -- but that is "typically",
+// not a guarantee on every engine/OS combination, and this app's manifest
+// no longer declares any orientation preference for unlock() to revert to,
+// so calling it unconditionally on boot is a safe no-op that cannot
+// reintroduce free rotation. Same defensive guards as deck.js's lock call:
+// never assume the API exists, never let this throw and break boot
+// (unlock() can throw InvalidStateError/SecurityError per spec).
 function releaseInheritedOrientationLock() {
   if (
     typeof screen === 'undefined' ||
