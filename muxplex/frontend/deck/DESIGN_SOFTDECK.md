@@ -523,6 +523,34 @@ project that has already paid for stale-state bugs five times.
 Everything else on the "web affordance" list is rejected: no long-press, no swipe, no
 pull-to-refresh, no sheets, no dropdowns, no scroll.
 
+> **Amended 2026-07-30 -- this rejection did not survive contact with a real user.**
+> BACKLOG.md item 2 (a settings menu inside the soft deck) shipped in v0.27.0 with
+> long-press as its *only* entry point, directly contradicting the line above. The
+> user who commissioned the feature, on the day it shipped, could not find it and
+> concluded it was broken -- a product council later returned 2 FAIL / 4 CONCERN,
+> one FAIL naming the accessibility consequence directly: a bare pointer-timer has
+> no node in the accessibility tree, so TalkBack (or any assistive tech) cannot
+> surface it at all, and what sits behind it is brightness/grid-size controls --
+> exactly the accommodations a low-vision user needs. The rejection above was
+> right about *sheets, dropdowns, pull-to-refresh, and scroll* -- those remain
+> rejected. It was wrong to fold long-press into the same bucket without asking
+> whether *something* needed to be added to reach a form-entry surface a phone
+> uniquely enables (\u00a76.2's "form data entry" already carves out the one deliberate
+> scroll exception for the settings panel itself; the same phone-specific reasoning
+> applies to how you get there).
+>
+> **Current shape (v0.28.x+):** a real key -- `role: 'settings'`, a normal
+> `<button>` with an explicit `aria-label` -- on the view picker page (tap VIEW,
+> SETTINGS is one of the keys that appears, present on every page, absent only
+> when the grid is too small to have controls at all). This costs zero permanent
+> pixels and zero permanent key slots on the main grid, which is what actually
+> satisfies "must not consume a key slot" -- the constraint this document's
+> long-press rejection was trying to serve in the first place. Long-press on VIEW
+> remains as an accelerator for a sighted, steady-handed user who already knows it
+> exists, with an 8px movement tolerance (matching `DIAL_TAP_PX_THRESHOLD`) and a
+> visible fill-ring while held, so a hold that fails is no longer silent. It is
+> never the *only* way in again.
+
 ### 8.2 The gate this all sits behind
 
 Real install requires a **secure origin**. `spark-1:8088` presents a leaf signed by a

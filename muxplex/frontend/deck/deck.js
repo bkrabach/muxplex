@@ -1090,7 +1090,7 @@ function clampPage(page, delta, count) {
  * (NAME, SECONDARY) -- this is what keeps view_prev and page_prev from
  * being confusable, which is worse on soft keys than on bezel-separated
  * hardware ones.
- * @param {'view'|'prev'|'next'|'back'} role
+ * @param {'view'|'prev'|'next'|'back'|'settings'} role
  * @param {{viewName?:string, pagePosition?:string}} ctx
  * @returns {{name:string, body:string, state:string}}
  */
@@ -1105,6 +1105,14 @@ function controlKeyContent(role, ctx) {
       return { name: 'NEXT >', body: 'PAGE', state: c.pagePosition || '' };
     case 'back':
       return { name: '< BACK', body: 'VIEW', state: '' };
+    case 'settings':
+      // The settings-discoverability fix (BACKLOG.md item 2 / the
+      // 2026-07 "couldn't find it" incident): a real, always-visible key
+      // on the view picker page rather than a silent long-press timer.
+      // NAME carries the label (matches VIEW/PREV/NEXT/BACK's own
+      // NAME-is-primary convention for control roles); no BODY/STATE
+      // content is needed for a single fixed action.
+      return { name: 'SETTINGS', body: '', state: '' };
     default:
       return { name: '', body: '', state: '' };
   }
@@ -1241,7 +1249,7 @@ function fitLabel(text, maxWidthPx, measureWidth) {
  * @typedef {{active: boolean, pending: boolean, failed: boolean,
  *            needsAttention: boolean, currentView: boolean}} KeyFaceFlags
  * @typedef {{index: number,
- *            role: 'session'|'view'|'prev'|'next'|'back'|'view-option'|'bound'|'empty',
+ *            role: 'session'|'view'|'prev'|'next'|'back'|'settings'|'view-option'|'bound'|'empty',
  *            name: string, body: string, state: string, preview: string,
  *            target: string|null, flags: KeyFaceFlags}} KeyFace
  */
@@ -1347,9 +1355,36 @@ function computeKeyPlan(p) {
     var viewsList = p.viewsList || [];
     var pageLabels = isPagePicker ? pageItemLabels(p.pagePickerCount != null ? p.pagePickerCount : 1) : [];
     var itemsList = isPagePicker ? pageLabels : viewsList;
-    var pc = pageCount(itemsList.length, slots.length);
+
+    // Settings-discoverability fix (BACKLOG.md item 2 / the 2026-07
+    // "couldn't find it" incident): reserve ONE session slot on the view
+    // picker (never the page picker -- there's no reason to duplicate the
+    // entry point there) for a real, always-on-every-page SETTINGS key,
+    // exactly the way reserved.view/prev/next are pinned across pages
+    // rather than paged like a view-option. This costs ZERO permanent
+    // pixels -- the slot only exists while the picker is open -- which is
+    // what satisfies "must not consume a key slot" for real.
+    //
+    // Two guards keep this from making things worse:
+    //   - hasControls: on a degenerate grid there is no BACK/PREV/NEXT
+    //     either; adding a SETTINGS key there would be inventing a control
+    //     surface the grid was already declared too small to have. No
+    //     controls fit, so no settings key -- say so, don't paper over it.
+    //   - slots.length >= 2: a settings key must never be added if doing so
+    //     would leave ZERO slots for actual view options, which would
+    //     break the picker's primary job (switching views) to fix a
+    //     secondary one (reaching settings). Only pinch this tight on a
+    //     grid at the very edge of viability (e.g. a 2x2 corners layout).
+    var settingsIndex = null;
+    var pickerSlots = slots;
+    if (!isPagePicker && hasControls && slots.length >= 2) {
+      settingsIndex = slots[0];
+      pickerSlots = slots.slice(1);
+    }
+
+    var pc = pageCount(itemsList.length, pickerSlots.length);
     pickerPage = _clampToCount(pickerPage, pc);
-    var pageItems = pageSlice(itemsList, pickerPage, slots.length);
+    var pageItems = pageSlice(itemsList, pickerPage, pickerSlots.length);
     var pagePosition = pc > 1 ? pickerPage + 1 + '/' + pc : '';
 
     if (hasControls) {
@@ -1357,15 +1392,18 @@ function computeKeyPlan(p) {
       _setControlFace(plan, reserved.prev, 'prev', controlKeyContent('prev', { pagePosition: pagePosition }));
       _setControlFace(plan, reserved.next, 'next', controlKeyContent('next', { pagePosition: pagePosition }));
     }
+    if (settingsIndex != null) {
+      _setControlFace(plan, settingsIndex, 'settings', controlKeyContent('settings', {}));
+    }
 
-    for (var vi = 0; vi < slots.length; vi++) {
+    for (var vi = 0; vi < pickerSlots.length; vi++) {
       var name = pageItems[vi];
       if (!name) continue;
       var content;
       var target;
       var isCurrentItem;
       if (isPagePicker) {
-        var itemIndex = pickerPage * slots.length + vi;
+        var itemIndex = pickerPage * pickerSlots.length + vi;
         isCurrentItem = itemIndex === p.page;
         content = pageOptionContent(name, isCurrentItem);
         target = String(itemIndex);
@@ -1375,8 +1413,8 @@ function computeKeyPlan(p) {
         content = pickerOptionContent(name, count);
         target = name;
       }
-      plan[slots[vi]] = {
-        index: slots[vi],
+      plan[pickerSlots[vi]] = {
+        index: pickerSlots[vi],
         role: 'view-option',
         name: content.name,
         body: content.body,
@@ -1457,15 +1495,16 @@ function _setControlFace(plan, index, role, content) {
 
 /**
  * Regression guard for the exact bug this file shipped: a control-role key
- * (view/prev/next/back) whose NAME *and* BODY are both empty has no content
- * a user can read at all -- the "blank blue key" symptom. `controlKeyContent`
- * never returns that shape for a real role, so this only fires if a future
- * change reintroduces a wiring gap between the plan and the content table.
+ * (view/prev/next/back/settings) whose NAME *and* BODY are both empty has no
+ * content a user can read at all -- the "blank blue key" symptom.
+ * `controlKeyContent` never returns that shape for a real role, so this only
+ * fires if a future change reintroduces a wiring gap between the plan and
+ * the content table.
  * @param {KeyFace[]} plan
  * @returns {KeyFace[]} any offending faces (empty array = plan is clean)
  */
 function findBlankControlFaces(plan) {
-  var controlRoles = { view: true, prev: true, next: true, back: true };
+  var controlRoles = { view: true, prev: true, next: true, back: true, settings: true };
   var offenders = [];
   for (var i = 0; i < plan.length; i++) {
     var face = plan[i];
@@ -1772,26 +1811,68 @@ if (typeof document !== 'undefined') {
 
       var pressTimer = null;
       var pressedAt = 0;
-      // Entry point to Settings (BACKLOG.md item 2 -- "subtle and out of the
-      // way"): long-press on the VIEW control key. Chosen over a dedicated
-      // gear icon because it spends NO key slot by default -- the icon
-      // approach costs one of a small, precious grid; long-press reuses a
-      // key that already exists in every non-degenerate layout. Only armed
-      // when this key's CURRENT role is 'view' (checked live via
-      // dataset.role, which paintKeyFace keeps current) -- long-pressing a
-      // session tile must never accidentally open settings.
+      // Long-press on the VIEW control key -- an ACCELERATOR into Settings,
+      // not the primary entry point anymore. The primary entry point is the
+      // real SETTINGS key on the view picker page (see computeKeyPlan's
+      // picker branch / role 'settings' below), added after the 2026-07
+      // "couldn't find it" incident: a bare pointer-timer has no node in the
+      // accessibility tree and TalkBack cannot surface it at all, and a
+      // 600ms hold was the ONLY path in, which is what made that incident
+      // possible. Long-press stays as a fast path for a sighted, steady-
+      // handed user who already knows it exists; it is never the only way
+      // in. Only armed when this key's CURRENT role is 'view' (checked live
+      // via dataset.role, which paintKeyFace keeps current) -- long-
+      // pressing a session tile must never accidentally open settings.
       var longPressTimer = null;
       var longPressFired = false;
+      var longPressOriginX = 0;
+      var longPressOriginY = 0;
       var LONG_PRESS_MS = 600;
-      key.addEventListener('pointerdown', function () {
+      // Movement tolerance while holding: reuses DIAL_TAP_PX_THRESHOLD (8px)
+      // verbatim rather than inventing a new number -- the task's own
+      // "reuse the discipline" guidance, and the same physical slop budget
+      // a real thumb needs everywhere else on this surface. Below this, a
+      // tremor or a not-quite-still finger no longer silently defeats the
+      // hold. Above it, the gesture cancels -- deliberately, not via the
+      // browser's own pan/zoom takeover, which is what produced the
+      // "zero movement tolerance" symptom in the first place (touch-action
+      // is 'manipulation' on every face; nothing here suppresses native
+      // gesture recognition, so the browser's own slop threshold, not this
+      // one, was firing pointercancel before movement ever reached here).
+      var LONG_PRESS_TOLERANCE_PX = DIAL_TAP_PX_THRESHOLD;
+      var armLongPress = function () {
+        key.classList.add('is-long-press-armed');
+        longPressTimer = setTimeout(function () {
+          longPressFired = true;
+          key.classList.remove('is-long-press-armed');
+          openSettings();
+        }, LONG_PRESS_MS);
+      };
+      var disarmLongPress = function () {
+        key.classList.remove('is-long-press-armed');
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+      };
+      key.addEventListener('pointerdown', function (ev) {
         pressedAt = Date.now();
         key.classList.add('is-pressed');
         longPressFired = false;
-        if (key.dataset.role === 'view') {
-          longPressTimer = setTimeout(function () {
-            longPressFired = true;
-            openSettings();
-          }, LONG_PRESS_MS);
+        longPressOriginX = ev.clientX;
+        longPressOriginY = ev.clientY;
+        if (key.dataset.role === 'view') armLongPress();
+      });
+      key.addEventListener('pointermove', function (ev) {
+        if (!longPressTimer) return;
+        var dx = ev.clientX - longPressOriginX;
+        var dy = ev.clientY - longPressOriginY;
+        // Deliberately a per-axis check, not Pythagorean distance -- matches
+        // the dial's own dialDragTicks/isDialTap tolerance shape exactly
+        // (single-axis threshold), rather than a subtly different circular
+        // tolerance that would only ever diverge from it by accident.
+        if (Math.abs(dx) > LONG_PRESS_TOLERANCE_PX || Math.abs(dy) > LONG_PRESS_TOLERANCE_PX) {
+          disarmLongPress(); // real movement: the hold no longer counts, but the tap underneath it still can
         }
       });
       var releasePress = function () {
@@ -1801,18 +1882,12 @@ if (typeof document !== 'undefined') {
         pressTimer = setTimeout(function () {
           key.classList.remove('is-pressed');
         }, wait);
-        if (longPressTimer) {
-          clearTimeout(longPressTimer);
-          longPressTimer = null;
-        }
+        disarmLongPress();
       };
       key.addEventListener('pointerup', releasePress);
       key.addEventListener('pointercancel', function () {
         key.classList.remove('is-pressed');
-        if (longPressTimer) {
-          clearTimeout(longPressTimer);
-          longPressTimer = null;
-        }
+        disarmLongPress();
       });
       key.addEventListener('click', function () {
         if (longPressFired) {
@@ -1940,6 +2015,20 @@ if (typeof document !== 'undefined') {
       el.querySelector('.key-state').textContent = face.state;
       el.dataset.role = face.role;
       el.dataset.name = face.target || '';
+
+      // Explicit accessible name for the settings entry point (a11y fix,
+      // BACKLOG.md item 2 / the 2026-07 incident): TalkBack et al. would
+      // otherwise derive the name from concatenated NAME/BODY/STATE text
+      // nodes, which happens to read fine today ("SETTINGS") but is
+      // incidental, not guaranteed -- pin it explicitly so it can never
+      // silently regress into something unreadable. Every other role
+      // relies on its NAME/BODY text as before; this is a targeted
+      // addition, not a blanket aria-label policy change.
+      if (face.role === 'settings') {
+        el.setAttribute('aria-label', 'Settings');
+      } else {
+        el.removeAttribute('aria-label');
+      }
     }
 
     function renderKeys() {
@@ -2035,6 +2124,8 @@ if (typeof document !== 'undefined') {
         pageTurn(-1);
       } else if (role === 'next') {
         pageTurn(1);
+      } else if (role === 'settings') {
+        openSettings();
       } else if (role === 'view-option') {
         if (pickerKind === 'page') {
           selectPage(parseInt(el.dataset.name, 10));

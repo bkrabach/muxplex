@@ -132,6 +132,24 @@ html, body {
   filter: brightness(1.15);
 }
 
+/* Long-press-to-Settings accelerator feedback (deck.js's armLongPress):
+   the ring fills over the full LONG_PRESS_MS hold, so a hold that stops
+   early is visibly incomplete rather than silently nothing, and a hold
+   that completes visibly finishes right as Settings opens. This is what
+   makes the accelerator's success/failure non-silent -- BACKLOG.md item 2 /
+   the 2026-07 incident's accessibility finding. Not the primary entry
+   point (the picker's SETTINGS key is), so this stays a lightweight cue,
+   not a competing affordance. */
+.deck-key.is-long-press-armed::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 var(--b) rgba(0, 217, 245, 0.9);
+  transition: box-shadow 600ms linear;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .deck-key {
     transition: filter 80ms ease;
@@ -139,6 +157,10 @@ html, body {
   .deck-key.is-pressed {
     transform: none;
     filter: brightness(1.4); /* 1-frame brightness flash replaces scale */
+  }
+  .deck-key.is-long-press-armed::after {
+    transition: none;
+    box-shadow: inset 0 0 0 var(--b) rgba(0, 217, 245, 0.9); /* instant ring, no animated fill */
   }
 }
 

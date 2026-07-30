@@ -617,6 +617,96 @@ test('computeKeyPlan: picker mode -- BACK replaces VIEW, view-options fill sessi
   assert.strictEqual(allFace.flags.currentView, false);
 });
 
+// ─── SETTINGS key on the view picker (settings-discoverability fix) ───────
+//
+// The 2026-07 "couldn't find it" incident: the ONLY entry point to Settings
+// was a 600ms zero-tolerance long-press on the VIEW key, which the user who
+// commissioned the feature could not find. These tests guard the fix: a
+// real, always-on-every-page SETTINGS key on the view picker (never the
+// page picker), present whenever the grid has room for controls at all, and
+// absent -- honestly, not silently -- when it doesn't.
+
+test('computeKeyPlan: view picker reserves an always-visible SETTINGS key (settings-discoverability fix)', () => {
+  const result = deck.computeKeyPlan(
+    basePlanParams({ mode: 'picker', pickerKind: 'view', viewName: 'work', viewsList: ['all', 'work', 'hidden'] })
+  );
+  const offenders = deck.findBlankControlFaces(result.plan);
+  assert.deepStrictEqual(offenders, []);
+
+  const reserved = deck.reservedControlKeys(4, 8);
+  const slots = deck.sessionSlotIndices(4, 8, reserved);
+  const settingsFace = result.plan[slots[0]];
+  assert.strictEqual(settingsFace.role, 'settings', 'the first session slot on the view picker should be the SETTINGS key');
+  assert.strictEqual(settingsFace.name, 'SETTINGS');
+
+  // Every OTHER session slot still resolves to a real view option -- the
+  // SETTINGS key must never crowd out the picker's actual job.
+  const optionFaces = slots.slice(1).map((i) => result.plan[i]).filter((f) => f.role === 'view-option');
+  assert.deepStrictEqual(optionFaces.map((f) => f.body), ['all', 'work', 'hidden']);
+});
+
+test('computeKeyPlan: SETTINGS stays on every page of the view picker, not just page 0', () => {
+  // 4x8 grid, 29 session slots, minus 1 for SETTINGS = 28 view-option slots
+  // per page -- comfortably more views than exist here, so this just proves
+  // the settings slot is pinned (like BACK/PREV/NEXT) rather than paged.
+  const manyViews = Array.from({ length: 40 }, (_, i) => 'view' + i);
+  const result = deck.computeKeyPlan(
+    basePlanParams({ mode: 'picker', pickerKind: 'view', viewName: 'view0', viewsList: manyViews, pickerPage: 1 })
+  );
+  const reserved = deck.reservedControlKeys(4, 8);
+  const slots = deck.sessionSlotIndices(4, 8, reserved);
+  assert.strictEqual(result.plan[slots[0]].role, 'settings', 'SETTINGS must still occupy the same slot on page 2');
+});
+
+test('computeKeyPlan: the page picker (pickerKind "page") gets no SETTINGS key -- it is not the settings entry point', () => {
+  const result = deck.computeKeyPlan(
+    basePlanParams({ mode: 'picker', pickerKind: 'page', pagePickerCount: 3, page: 0 })
+  );
+  const reserved = deck.reservedControlKeys(4, 8);
+  const slots = deck.sessionSlotIndices(4, 8, reserved);
+  const roles = slots.map((i) => result.plan[i].role);
+  assert.ok(!roles.includes('settings'), 'the page picker should never carve out a SETTINGS slot');
+});
+
+test('computeKeyPlan: degenerate grid has no room for controls, so no SETTINGS key either -- said honestly, not papered over', () => {
+  const grid = { rows: 1, cols: 5 };
+  const reserved = deck.reservedControlKeys(grid.rows, grid.cols);
+  assert.strictEqual(reserved.mode, 'degenerate');
+  const result = deck.computeKeyPlan(
+    basePlanParams({ grid: grid, reserved: reserved, mode: 'picker', pickerKind: 'view', viewsList: ['all', 'work'] })
+  );
+  const roles = result.plan.map((f) => f.role);
+  assert.ok(!roles.includes('settings'), 'a degenerate grid has no controls at all -- SETTINGS is not exempt from that rule');
+});
+
+test('computeKeyPlan: a picker with only ONE free slot after BACK/PREV/NEXT keeps that slot for a view option, not SETTINGS', () => {
+  // 2x2 grid: reservedControlKeys still reaches 'corners' mode (view=0,
+  // prev=2, next=3, all distinct) -- but that leaves exactly ONE session
+  // slot. Sacrificing it to SETTINGS would leave zero slots to actually
+  // switch views, breaking the picker's primary job to fix a secondary
+  // one. This is the edge case the >= 2 guard in computeKeyPlan exists for.
+  const grid = { rows: 2, cols: 2 };
+  const reserved = deck.reservedControlKeys(grid.rows, grid.cols);
+  assert.strictEqual(reserved.mode, 'corners');
+  const slots = deck.sessionSlotIndices(grid.rows, grid.cols, reserved);
+  assert.strictEqual(slots.length, 1, 'sanity check on the edge-case fixture');
+
+  const result = deck.computeKeyPlan(
+    basePlanParams({ grid: grid, reserved: reserved, mode: 'picker', pickerKind: 'view', viewsList: ['all', 'work'] })
+  );
+  assert.strictEqual(result.plan[slots[0]].role, 'view-option', 'the one free slot must stay a real view option');
+  assert.ok(!result.plan.some((f) => f.role === 'settings'), 'no SETTINGS key when there is no room to spare');
+});
+
+test('findBlankControlFaces: a settings-role face with real NAME is not flagged (sanity check for the new role)', () => {
+  const plan = [{ index: 0, role: 'settings', name: 'SETTINGS', body: '', state: '', flags: {} }];
+  assert.deepStrictEqual(deck.findBlankControlFaces(plan), []);
+});
+
+test('controlKeyContent("settings", {}) returns a non-blank NAME (regression guard, mirrors the view/prev/next/back cases)', () => {
+  assert.deepStrictEqual(deck.controlKeyContent('settings', {}), { name: 'SETTINGS', body: '', state: '' });
+});
+
 test('computeKeyPlan: session tiles carry name/state/target straight from the sessions array', () => {
   const result = deck.computeKeyPlan(
     basePlanParams({

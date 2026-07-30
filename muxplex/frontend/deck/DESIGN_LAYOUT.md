@@ -67,6 +67,19 @@ Three things, left to right. Nothing else.
 **No hostname.** Install-constant, not state — the same argument that removed it from the
 physical deck's view key. **No title, no logo, no settings gear, no session count.**
 
+> **Status note (2026-07-30): this header was never built, and the settings entry point
+> it would have hosted shipped a different way.** This document is scoped DESIGN ONLY
+> (see 0 above) and `deck/index.html`/`deck/deck.css` have no header element or header
+> rules at all -- not a regression, just spec that was never implemented. What *did*
+> ship (v0.27.0+) is the key-grid surface only: reserved control keys (VIEW/PREV/NEXT)
+> plus, as of the settings-discoverability fix, a `SETTINGS` key that appears on the
+> view picker page (tap VIEW) rather than anywhere permanent. "No settings gear" on the
+> header above is still correct as written -- it was never built, so it never had one --
+> but read it as "no *permanent* settings gear," not as "no way in." The permanent
+> constraint holds; reachability does not tolerate a missing entry point (see
+> BACKLOG.md item 2's original "what is the escape hatch?" question), and the picker
+> key is how that tension resolves without spending a header.
+
 **No bottom bar of any kind.** The phone is *propped*, not held
 (`SOFT_DECK_DESIGN.md` assumption 3), so thumb-zone reasoning does not apply — and the
 bottom edge of a propped tablet is the part nearest the desk lip and hardest to reach
