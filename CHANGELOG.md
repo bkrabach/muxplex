@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.27.0 (2026-07-30)
+
+### Features
+
+- **Sort your session lists, including by attention.** The dashboard and sidebar now have a sort selector — manual, alphabetical, recent, and attention (bells first, then by activity) — matching the ordering the Stream Deck sidecar has had for a while. The choice is the existing server-synced `sort_order` setting, so it follows you across devices.
+
+- **The soft deck has a settings menu.** Long-press the VIEW key to open it. Rebind any key from the full action catalog, override the grid (rows × columns) per device, add up to four emulated dials — drag to turn, tap to push — and set sort, poll interval, and brightness. Config is per-device with export/import, since a phone and a tablet genuinely want different layouts. `?settings=1` and `?reset=1` always work, so a configuration that locks you out of the UI is still recoverable.
+
+### Bug Fixes
+
+- **The sidebar was never applying your sort order at all.** It always rendered raw server order, silently disagreeing with the grid regardless of what the setting said. Both surfaces now share one ordering path.
+
+### Verification
+
+- 634 frontend tests passed (Node 22, baseline 592 + 42 new).
+- 1696 Python tests passed (no regression).
+- All 8 CI jobs green: Python 3.11/3.12/3.13 (muxplex and muxplex-client), test-latest-deps, and test-frontend.
+- Soft deck settings verified on real Chromium at landscape (844×390): long-press opens settings, 3×5 override renders exactly 15 keys, dial count 2 renders 2 dials, dial tap fired `brightness_down`, 2-tick drag fired `brightness_cycle`, `?reset=1` restored defaults.
+- Sort order verified to apply consistently to dashboard, sidebar, and grid.
+
 ## v0.26.1 (2026-07-30)
 
 ### Bug Fixes
