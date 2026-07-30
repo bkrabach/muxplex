@@ -152,8 +152,7 @@ def needs_attention(bell: dict) -> bool:
     """Return True if a bell sub-dict represents a session needing attention.
 
     Canonical predicate (previously ported into three identical call sites
-    in frontend/app.js -- see AGENTS.md "Semantics external clients
-    re-implement"):
+    in frontend/app.js -- see docs/API_SEMANTICS.md):
 
         unseen_count > 0 and (seen_at is None or last_fired_at > seen_at)
 

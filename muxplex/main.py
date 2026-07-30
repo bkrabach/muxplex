@@ -957,9 +957,9 @@ async def get_view(sort: str | None = None) -> dict:
     This is the canonical home for view-resolution semantics that the PWA,
     muxplex-deck, and future agent clients would otherwise each have to
     re-implement: `filter_visible` membership/hidden rules, the
-    needs-attention bell predicate, and sort ordering. See AGENTS.md
-    "Semantics external clients re-implement" for the rationale; new
-    clients should prefer this endpoint over re-deriving these rules.
+    needs-attention bell predicate, and sort ordering. See docs/API_SEMANTICS.md
+    for the rationale; new clients should prefer this endpoint over re-deriving
+    these rules.
 
     Query params:
         sort: omitted -> honor `settings.sort_order` the same way the PWA
