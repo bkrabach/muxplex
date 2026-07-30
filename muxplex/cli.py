@@ -1110,6 +1110,74 @@ def cmd_env() -> None:
     )
 
 
+def cmd_restore(dry_run: bool) -> None:
+    """Show the pending-restore plan from the session-presence manifest.
+
+    This build (SESSION_PERSISTENCE_DESIGN.md's "v1a -- record only"
+    milestone) ships ONLY the read-only view: no session is ever created,
+    killed, or restored by this command. ``--dry-run`` is required rather
+    than being one of two behaviors, so that a future ``muxplex restore``
+    (no flag, once real restore execution ships -- v1b) does not silently
+    change what a bare invocation does today.
+
+    The plan is computed from ``manifest.pending_restore``, which is
+    populated by the poll loop ONLY when the tmux server's identity
+    changes between cycles (a cold start -- see manifest.py's
+    update_manifest() for the full discrimination rule). It is never
+    populated by an ordinary muxplex restart with tmux left running, and
+    never by a session the user deliberately killed while muxplex kept
+    running (both cases leave ``pending_restore`` at ``None``).
+    """
+    import time  # noqa: PLC0415
+
+    from muxplex.manifest import load_manifest  # noqa: PLC0415
+
+    if not dry_run:
+        print(
+            "muxplex restore: execution is not implemented in this build "
+            "(record-only milestone -- see SESSION_PERSISTENCE_DESIGN.md).\n"
+            "Use --dry-run to see what would be restored.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    manifest = load_manifest()
+    pending = manifest.get("pending_restore")
+
+    if not pending:
+        print("No cold start detected. Nothing to restore.")
+        return
+
+    detected_at = pending.get("detected_at")
+    lost_epoch = pending.get("lost_epoch") or {}
+    sessions = pending.get("sessions") or {}
+
+    detected_str = (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(detected_at))
+        if detected_at
+        else "unknown time"
+    )
+    lost_pid = lost_epoch.get("server_pid", "unknown")
+
+    print(f"Cold start detected {detected_str} (lost tmux server pid {lost_pid}).")
+    print(
+        f"{len(sessions)} session(s) were alive under the previous server "
+        f"and are not running now.\n"
+    )
+    for name in sorted(sessions):
+        info = sessions[name]
+        first_seen = info.get("first_seen_at")
+        age_note = ""
+        if first_seen:
+            age_note = f" (first seen {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(first_seen))})"
+        print(f"  {name}{age_note}")
+
+    print(
+        "\n[DRY RUN] Restore execution is not implemented in this build. "
+        "No sessions were created, killed, or restored."
+    )
+
+
 def config_list() -> None:
     """Show all settings with current values."""
     from muxplex.settings import DEFAULT_SETTINGS, SETTINGS_PATH, load_settings  # noqa: PLC0415
@@ -1547,6 +1615,16 @@ def main() -> None:
         help='Print `eval`-able TMUX_TMPDIR export (use: eval "$(muxplex env)")',
     )
 
+    restore_parser = sub.add_parser(
+        "restore",
+        help="Show sessions lost to an unplanned tmux server death (record-only; see SESSION_PERSISTENCE_DESIGN.md)",
+    )
+    restore_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the restore plan without changing anything (currently the ONLY supported mode)",
+    )
+
     upgrade_parser = sub.add_parser(
         "upgrade",
         aliases=["update"],
@@ -1603,6 +1681,8 @@ def main() -> None:
         doctor()
     elif args.command == "env":
         cmd_env()
+    elif args.command == "restore":
+        cmd_restore(dry_run=getattr(args, "dry_run", False))
     elif args.command in ("upgrade", "update"):
         upgrade(force=getattr(args, "force", False))
     elif args.command == "config":

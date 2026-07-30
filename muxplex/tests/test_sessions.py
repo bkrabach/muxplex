@@ -15,15 +15,15 @@ from muxplex.sessions import (
     capture_pane,
     ensure_history_retention,
     enumerate_sessions,
-    get_snapshots,
     get_session_activity,
     get_session_list,
+    get_snapshots,
+    probe_tmux_epoch,
     run_tmux,
     snapshot_all,
     tmux_env,
     update_session_cache,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers for mocking asyncio.create_subprocess_exec
@@ -159,9 +159,8 @@ async def test_run_tmux_raises_on_nonzero_exit(mock_subprocess):
     """run_tmux() must raise RuntimeError when the subprocess exits non-zero."""
     with mock_subprocess(
         stdout="", stderr="no server running on /tmp/tmux-1000/default", returncode=1
-    ):
-        with pytest.raises(RuntimeError, match="no server running"):
-            await run_tmux("list-sessions", "-F", "#{session_name}")
+    ), pytest.raises(RuntimeError, match="no server running"):
+        await run_tmux("list-sessions", "-F", "#{session_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +452,7 @@ async def test_snapshot_all_returns_empty_string_on_individual_failure():
 def test_capture_pane_uses_escape_flag():
     """capture-pane must include -e for ANSI color preservation."""
     import inspect
+
     from muxplex.sessions import capture_pane
 
     source = inspect.getsource(capture_pane)
@@ -496,4 +496,87 @@ def test_update_session_cache_empty_names_clears_caches():
     update_session_cache([], {})
 
     assert get_session_list() == []
+
+
+# ---------------------------------------------------------------------------
+# probe_tmux_epoch tests
+# ---------------------------------------------------------------------------
+
+
+async def test_probe_tmux_epoch_returns_none_when_no_server_running():
+    """probe_tmux_epoch() returns None on a RuntimeError from run_tmux (tmux's
+    'no server running' exit status) -- exit status alone is the signal, no
+    parsing of tmux's error text."""
+    with patch(
+        "muxplex.sessions.run_tmux",
+        new=AsyncMock(
+            side_effect=RuntimeError("no server running on /tmp/tmux-1000/default")
+        ),
+    ):
+        result = await probe_tmux_epoch()
+
+    assert result is None
+
+
+async def test_probe_tmux_epoch_returns_none_when_tmux_binary_missing():
+    """probe_tmux_epoch() returns None if tmux itself is not installed (FileNotFoundError)."""
+    with patch(
+        "muxplex.sessions.run_tmux",
+        new=AsyncMock(side_effect=FileNotFoundError()),
+    ):
+        result = await probe_tmux_epoch()
+
+    assert result is None
+
+
+async def test_probe_tmux_epoch_parses_pid_and_socket_path(tmp_path):
+    """probe_tmux_epoch() parses '#{pid}\\t#{socket_path}' and stats the
+    socket file for its inode."""
+    socket_path = tmp_path / "tmux-1000" / "default"
+    socket_path.parent.mkdir(parents=True)
+    socket_path.write_text("")  # any file is enough to have an inode
+
+    with patch(
+        "muxplex.sessions.run_tmux",
+        new=AsyncMock(return_value=f"1527873\t{socket_path}\n"),
+    ):
+        result = await probe_tmux_epoch()
+
+    assert result is not None
+    assert result["server_pid"] == 1527873
+    assert result["socket_path"] == str(socket_path)
+    assert result["inode"] == socket_path.stat().st_ino
+
+
+async def test_probe_tmux_epoch_returns_none_when_socket_file_missing(tmp_path):
+    """If the socket path tmux reports doesn't exist on disk (a stat race),
+    probe_tmux_epoch() returns None rather than raising -- unavailable, not
+    refuted."""
+    missing_socket = tmp_path / "does-not-exist" / "default"
+
+    with patch(
+        "muxplex.sessions.run_tmux",
+        new=AsyncMock(return_value=f"12345\t{missing_socket}\n"),
+    ):
+        result = await probe_tmux_epoch()
+
+    assert result is None
+
+
+async def test_probe_tmux_epoch_returns_none_on_malformed_output():
+    """Malformed tmux output (no tab, non-numeric pid) returns None rather
+    than raising."""
+    with patch(
+        "muxplex.sessions.run_tmux",
+        new=AsyncMock(return_value="garbage-with-no-tab\n"),
+    ):
+        result = await probe_tmux_epoch()
+    assert result is None
+
+    with patch(
+        "muxplex.sessions.run_tmux",
+        new=AsyncMock(return_value="not-a-pid\t/some/socket\n"),
+    ):
+        result = await probe_tmux_epoch()
+    assert result is None
     assert get_snapshots() == {}

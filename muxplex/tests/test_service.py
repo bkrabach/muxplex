@@ -556,6 +556,69 @@ def test_systemd_unit_template_has_timeout_stop_sec():
     )
 
 
+# ---------------------------------------------------------------------------
+# Regression: KillMode must never be 'mixed' (or the systemd default,
+# 'control-group') -- both SIGKILL every process left in the service's
+# cgroup on stop/restart, including a tmux server muxplex auto-spawned as
+# its own child (which inherits the cgroup). On 2026-07-29 this shipped
+# configuration destroyed 44 live tmux sessions during a routine
+# `systemctl --user restart muxplex`. Only KillMode=process spares
+# processes outside the main PID. See AGENTS.md's "Two ways to destroy
+# every live tmux session on this host" and SESSION_PERSISTENCE_DESIGN.md
+# section 7.6.
+#
+# This is a structural fix, not a documented warning: the shipped unit
+# template itself must never regress to a cgroup-wide kill mode, on ANY
+# machine that runs `muxplex service install` -- not just this host (whose
+# local override.conf was, until this fix, the ONLY thing standing between
+# a routine restart and repeating the incident).
+# ---------------------------------------------------------------------------
+
+
+def test_systemd_unit_template_kill_mode_is_process_not_mixed():
+    """_SYSTEMD_UNIT_TEMPLATE must set KillMode=process.
+
+    Regression test for the exact configuration that destroyed 44 live tmux
+    sessions on 2026-07-29: KillMode=mixed (and the systemd default,
+    control-group) SIGKILLs every process left in the unit's cgroup on
+    stop/restart -- including a tmux server that became a child of muxplex
+    (see AGENTS.md's "muxplex auto-spawns the tmux server when none is
+    running"). Only KillMode=process is scoped to the main PID alone.
+    """
+    import muxplex.service as svc
+
+    assert "KillMode=process" in svc._SYSTEMD_UNIT_TEMPLATE, (
+        "_SYSTEMD_UNIT_TEMPLATE must set KillMode=process -- KillMode=mixed "
+        "(or an absent KillMode, which defaults to control-group) SIGKILLs "
+        "every process in the service's cgroup on stop/restart, which is "
+        "the exact mechanism that destroyed 44 live tmux sessions on "
+        "2026-07-29. This must never regress."
+    )
+    assert "KillMode=mixed" not in svc._SYSTEMD_UNIT_TEMPLATE
+    assert "KillMode=control-group" not in svc._SYSTEMD_UNIT_TEMPLATE
+
+
+def test_systemd_install_writes_kill_mode_process(monkeypatch, tmp_path):
+    """The unit file actually WRITTEN to disk by _systemd_install() must
+    contain KillMode=process, not just the in-memory template constant."""
+    import muxplex.service as svc
+
+    unit_dir = tmp_path / "systemd" / "user"
+    unit_path = unit_dir / "muxplex.service"
+
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
+    monkeypatch.setattr(svc, "_show_tls_nudge_if_needed", lambda: None)
+
+    svc._systemd_install()
+
+    content = unit_path.read_text()
+    assert "KillMode=process" in content
+    assert "KillMode=mixed" not in content
+
+
 def test_systemd_install_writes_timeout_stop_sec(monkeypatch, tmp_path):
     """The written unit file must contain TimeoutStopSec."""
     import muxplex.service as svc

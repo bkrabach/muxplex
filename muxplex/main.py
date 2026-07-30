@@ -54,6 +54,7 @@ from muxplex.auth import (
 from muxplex.bells import apply_bell_clear_rule, needs_attention, process_bell_flags
 from muxplex.breaker import CircuitBreaker
 from muxplex.identity import load_device_id
+from muxplex.manifest import load_manifest, save_manifest, update_manifest
 from muxplex.pruning import load_pruning_state, save_pruning_state
 from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
@@ -65,6 +66,7 @@ from muxplex.sessions import (
     get_session_list,
     get_snapshots,
     is_valid_session_name,
+    probe_tmux_epoch,
     run_tmux,
     snapshot_all,
     tmux_env,
@@ -303,6 +305,37 @@ async def _run_poll_cycle() -> None:
         # 1. Enumerate live tmux sessions
         names = await enumerate_sessions()
         name_set = set(names)
+
+        # 1b. Update the session-presence manifest -- durable record of
+        #     which sessions muxplex has observed alive, keyed by the
+        #     identity of the tmux server hosting them (see manifest.py's
+        #     module docstring and SESSION_PERSISTENCE_DESIGN.md). This is
+        #     PURE OBSERVATION: it never creates, kills, or restores a
+        #     tmux session -- it only records presence so an unplanned
+        #     tmux-server death (host reboot, OOM, a cgroup-wide SIGKILL)
+        #     leaves a durable list behind instead of the incident this
+        #     exists to fix, where the 44 lost session names survived only
+        #     by accident in pruning.json and were erased by the recovery
+        #     itself.
+        #
+        #     probe_tmux_epoch() is deliberately a SEPARATE tmux call from
+        #     enumerate_sessions() above, not a reuse of its result:
+        #     enumerate_sessions() conflates "tmux failed" with "zero
+        #     sessions" (both return []), which is exactly the ambiguity
+        #     the manifest's same-server/cold-start discrimination must
+        #     not inherit.
+        #
+        #     Best-effort and isolated: a failure here must never abort
+        #     the rest of the poll cycle (session enumeration, bells, and
+        #     everything below all still need to run).
+        try:
+            _epoch_now = await probe_tmux_epoch()
+            _manifest = load_manifest()
+            _manifest, _manifest_changed = update_manifest(_manifest, _epoch_now, names)
+            if _manifest_changed:
+                save_manifest(_manifest)
+        except Exception:
+            _log.exception("session-presence manifest update error")
 
         # 2. Capture pane snapshots and update in-memory snapshot cache
         new_snapshots = await snapshot_all(names)

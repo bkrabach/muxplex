@@ -206,6 +206,73 @@ async def run_tmux(*args: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# tmux-server epoch probe
+# ---------------------------------------------------------------------------
+
+
+async def probe_tmux_epoch() -> dict | None:
+    """Identify the tmux server this process is currently talking to.
+
+    This is the discriminator the session-presence manifest (manifest.py)
+    uses to tell "muxplex restarted, tmux survived" apart from "the tmux
+    server itself died" -- see SESSION_PERSISTENCE_DESIGN.md section 5.1.
+    It deliberately does NOT reuse enumerate_sessions(), because that
+    function conflates "tmux failed" with "zero sessions" (both return
+    ``[]``). This probe distinguishes them cleanly via exit status alone:
+    ``tmux display-message`` exits non-zero with "no server running" when
+    there is no server, and exits 0 with the requested fields otherwise --
+    no parsing of tmux's error text is involved.
+
+    Returns:
+        None if no tmux server is currently running (or the probe's own
+        socket-file stat races the server disappearing between the tmux
+        call and the stat -- treated identically to "no server", per the
+        "unknown, not dead" principle: absence of evidence here must never
+        be misread as evidence of absence).
+
+        Otherwise a dict identifying the live server::
+
+            {"socket_path": str, "server_pid": int, "inode": int}
+
+        Two epochs are the SAME running server iff all three fields are
+        equal:
+          - socket_path: catches a different TMUX_TMPDIR (e.g. a scratch
+            instance, or a misconfigured tmux_socket_dir) -- a different
+            socket is always a different world and must never be compared
+            against the recorded epoch as if it were the same server.
+          - inode: a new server creates a new socket file even when the
+            path is reused, so the same path with a new inode is a new
+            server.
+          - server_pid: belt-and-braces against inode reuse by the OS.
+    """
+    try:
+        output = await run_tmux("display-message", "-p", "#{pid}\t#{socket_path}")
+    except (RuntimeError, FileNotFoundError):
+        return None
+
+    line = output.strip()
+    if not line:
+        return None
+    pid_field, _, socket_path = line.partition("\t")
+    socket_path = socket_path.strip()
+    if not socket_path:
+        return None
+    try:
+        server_pid = int(pid_field.strip())
+    except ValueError:
+        return None
+
+    try:
+        inode = os.stat(socket_path).st_ino
+    except OSError:
+        # Socket file vanished between the tmux call and the stat (race).
+        # Unavailable, not refuted -- treat as "no server" this cycle.
+        return None
+
+    return {"socket_path": socket_path, "server_pid": server_pid, "inode": inode}
+
+
+# ---------------------------------------------------------------------------
 # Session enumeration
 # ---------------------------------------------------------------------------
 

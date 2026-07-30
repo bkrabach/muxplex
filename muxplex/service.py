@@ -28,7 +28,7 @@ ExecStart={exec_start}
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=10
-KillMode=mixed
+KillMode=process
 Environment=PATH={safe_path}
 {extra_environment_lines}
 [Install]

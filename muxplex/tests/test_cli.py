@@ -454,6 +454,98 @@ def test_cmd_env_falls_back_to_tmux_default_when_nothing_configured(
 
 
 # ---------------------------------------------------------------------------
+# cmd_restore tests -- the record-only slice's read-only dry-run view
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_restore_without_dry_run_refuses_and_exits_nonzero(capsys):
+    """cmd_restore(dry_run=False) must refuse -- restore EXECUTION is not
+    implemented in the record-only milestone. --dry-run is required, not one
+    of two behaviors, so a future real restore does not silently change what
+    a bare invocation does today."""
+    from muxplex.cli import cmd_restore
+
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_restore(dry_run=False)
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "not implemented" in captured.err
+    assert "--dry-run" in captured.err
+
+
+def test_cmd_restore_dry_run_no_pending_restore(tmp_path, monkeypatch, capsys):
+    """cmd_restore(dry_run=True) with no pending_restore prints a clear
+    'nothing to restore' message and creates/kills nothing."""
+    import muxplex.manifest as manifest_mod
+    from muxplex.cli import cmd_restore
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+
+    cmd_restore(dry_run=True)
+
+    captured = capsys.readouterr()
+    assert "No cold start detected" in captured.out
+    assert "Nothing to restore" in captured.out
+
+
+def test_cmd_restore_dry_run_shows_pending_sessions(tmp_path, monkeypatch, capsys):
+    """cmd_restore(dry_run=True) with a populated pending_restore prints the
+    lost server's pid, the session count, and every session name -- and
+    explicitly states that nothing was created or restored."""
+    import muxplex.manifest as manifest_mod
+    from muxplex.cli import cmd_restore
+
+    manifest_path = tmp_path / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+
+    manifest = {
+        "schema": 1,
+        "epoch": {"socket_path": "/home/user/.tmux/tmux-1000/default", "server_pid": 42, "inode": 7},
+        "sessions": {},
+        "pending_restore": {
+            "detected_at": 1785378123.0,
+            "lost_epoch": {
+                "socket_path": "/home/user/.tmux/tmux-1000/default",
+                "server_pid": 1519962,
+                "inode": 5,
+            },
+            "sessions": {
+                "a2a": {"first_seen_at": 1785372115.0, "last_seen_at": 1785378000.0},
+                "bbs": {"first_seen_at": 1785372200.0, "last_seen_at": 1785378000.0},
+            },
+        },
+    }
+    manifest_mod.save_manifest(manifest)
+
+    cmd_restore(dry_run=True)
+
+    captured = capsys.readouterr()
+    assert "Cold start detected" in captured.out
+    assert "1519962" in captured.out
+    assert "2 session(s)" in captured.out
+    assert "a2a" in captured.out
+    assert "bbs" in captured.out
+    assert "[DRY RUN]" in captured.out
+    assert "No sessions were created, killed, or restored" in captured.out
+
+
+def test_restore_subcommand_wired_to_cmd_restore(monkeypatch):
+    """`muxplex restore --dry-run` on the CLI must call cmd_restore(dry_run=True)."""
+    import muxplex.cli as cli_mod
+
+    called = {}
+    monkeypatch.setattr(
+        cli_mod, "cmd_restore", lambda dry_run: called.update(dry_run=dry_run)
+    )
+    monkeypatch.setattr("sys.argv", ["muxplex", "restore", "--dry-run"])
+
+    cli_mod.main()
+
+    assert called == {"dry_run": True}
+
+
+# ---------------------------------------------------------------------------
 # upgrade / update subcommand tests
 # ---------------------------------------------------------------------------
 

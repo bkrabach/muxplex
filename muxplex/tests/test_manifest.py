@@ -1,0 +1,408 @@
+"""
+Tests for muxplex/manifest.py -- the session-presence manifest.
+
+Covers:
+- load_manifest() tolerance (absent file, corrupt JSON, non-dict JSON,
+  partial/legacy content) -- mirrors test_pruning.py's shape.
+- save_manifest() round-trip, atomicity (no .tmp left behind), fsync.
+- update_manifest()'s three-way discrimination (SESSION_PERSISTENCE_DESIGN.md
+  section 5): same-server / cold-start / no-server-available, plus the
+  first-run/adopt case.
+- The invariant this module exists to enforce: a session's entry is
+  removed ONLY by an observed individual death against a live,
+  identity-matched server -- never by a TTL, never as a side effect of
+  anything else, and it survives the very cold-start event it's designed
+  to record (unlike pruning.json, which erases the evidence during
+  recovery).
+"""
+
+import json
+from pathlib import Path
+
+import pytest
+
+import muxplex.manifest as manifest_mod
+from muxplex.manifest import (
+    load_manifest,
+    save_manifest,
+    update_manifest,
+)
+
+EPOCH_A = {
+    "socket_path": "/home/user/.tmux/tmux-1000/default",
+    "server_pid": 111,
+    "inode": 1,
+}
+EPOCH_B = {
+    "socket_path": "/home/user/.tmux/tmux-1000/default",
+    "server_pid": 222,
+    "inode": 2,
+}
+EPOCH_A_SCRATCH = {
+    "socket_path": "/tmp/scratch-socket/tmux-1000/default",
+    "server_pid": 999,
+    "inode": 9,
+}
+
+
+@pytest.fixture(autouse=True)
+def redirect_manifest_path(tmp_path, monkeypatch):
+    """Redirect MANIFEST_PATH to a temporary file for every test."""
+    fake_path = tmp_path / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", fake_path)
+    return fake_path
+
+
+# ---------------------------------------------------------------------------
+# load_manifest() -- tolerance
+# ---------------------------------------------------------------------------
+
+
+def test_load_manifest_returns_empty_when_file_absent():
+    """load_manifest() returns an empty-but-well-formed manifest when absent."""
+    result = load_manifest()
+    assert result == {
+        "schema": 1,
+        "epoch": None,
+        "sessions": {},
+        "pending_restore": None,
+    }
+
+
+def test_load_manifest_returns_empty_on_corrupt_json(redirect_manifest_path):
+    """load_manifest() returns an empty manifest on corrupt JSON -- never raises."""
+    redirect_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    redirect_manifest_path.write_text("NOT VALID JSON {{{{")
+
+    result = load_manifest()
+    assert result["sessions"] == {}
+    assert result["epoch"] is None
+
+
+def test_load_manifest_returns_empty_on_non_dict_json(redirect_manifest_path):
+    """load_manifest() returns an empty manifest when JSON parses to a non-dict."""
+    redirect_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    redirect_manifest_path.write_text(json.dumps([1, 2, 3]))
+
+    result = load_manifest()
+    assert result["sessions"] == {}
+
+
+def test_load_manifest_applies_defensive_defaults_to_partial_content(
+    redirect_manifest_path,
+):
+    """A hand-edited manifest missing keys still loads with safe defaults."""
+    redirect_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    redirect_manifest_path.write_text(json.dumps({"schema": 1}))
+
+    result = load_manifest()
+    assert result["sessions"] == {}
+    assert result["epoch"] is None
+    assert result["pending_restore"] is None
+
+
+# ---------------------------------------------------------------------------
+# save_manifest() -- round-trip, atomicity
+# ---------------------------------------------------------------------------
+
+
+def test_save_then_load_round_trip():
+    """save_manifest then load_manifest returns the same data."""
+    manifest = {
+        "schema": 1,
+        "epoch": EPOCH_A,
+        "sessions": {"a2a": {"first_seen_at": 100.0, "last_seen_at": 200.0}},
+        "pending_restore": None,
+    }
+
+    save_manifest(manifest)
+    loaded = load_manifest()
+
+    assert loaded == manifest
+
+
+def test_save_manifest_creates_parent_directories(tmp_path, monkeypatch):
+    """save_manifest creates parent directories as needed."""
+    nested_path = tmp_path / "a" / "b" / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", nested_path)
+
+    save_manifest(manifest_mod._empty_manifest())
+
+    assert nested_path.exists()
+
+
+def test_save_manifest_leaves_no_tmp_file(redirect_manifest_path):
+    """After save_manifest, no .tmp artifact remains (atomic os.replace)."""
+    save_manifest(manifest_mod._empty_manifest())
+
+    tmp_file = Path(str(redirect_manifest_path) + ".tmp")
+    assert not tmp_file.exists()
+    assert redirect_manifest_path.exists()
+
+
+def test_save_manifest_writes_valid_json(redirect_manifest_path):
+    """save_manifest writes well-formed, parseable JSON."""
+    manifest = {"schema": 1, "epoch": None, "sessions": {}, "pending_restore": None}
+    save_manifest(manifest)
+
+    parsed = json.loads(redirect_manifest_path.read_text())
+    assert parsed == manifest
+
+
+# ---------------------------------------------------------------------------
+# update_manifest() -- no tmux server available
+# ---------------------------------------------------------------------------
+
+
+def test_update_manifest_no_server_is_unchanged():
+    """epoch_now=None (no tmux server) leaves the manifest completely untouched.
+
+    Knowledge is unavailable, not refuted -- must never tombstone, never
+    declare a cold start on absence alone.
+    """
+    manifest = {
+        "schema": 1,
+        "epoch": EPOCH_A,
+        "sessions": {"a2a": {"first_seen_at": 1.0, "last_seen_at": 2.0}},
+        "pending_restore": None,
+    }
+
+    new_manifest, changed = update_manifest(manifest, None, [])
+
+    assert changed is False
+    assert new_manifest is manifest
+    assert new_manifest["sessions"] == {
+        "a2a": {"first_seen_at": 1.0, "last_seen_at": 2.0}
+    }
+
+
+# ---------------------------------------------------------------------------
+# update_manifest() -- first run / adopt
+# ---------------------------------------------------------------------------
+
+
+def test_update_manifest_first_run_adopts_epoch_never_populates_pending_restore():
+    """First run ever (manifest.epoch is None) adopts the epoch and records
+    live sessions, but NEVER populates pending_restore -- nothing can be
+    'lost' relative to an epoch we've never recorded."""
+    manifest = manifest_mod._empty_manifest()
+
+    new_manifest, changed = update_manifest(
+        manifest, EPOCH_A, ["a2a", "bbs"], now=1000.0
+    )
+
+    assert changed is True
+    assert new_manifest["epoch"]["socket_path"] == EPOCH_A["socket_path"]
+    assert new_manifest["epoch"]["server_pid"] == EPOCH_A["server_pid"]
+    assert new_manifest["epoch"]["inode"] == EPOCH_A["inode"]
+    assert new_manifest["epoch"]["observed_at"] == 1000.0
+    assert set(new_manifest["sessions"]) == {"a2a", "bbs"}
+    assert new_manifest["sessions"]["a2a"] == {
+        "first_seen_at": 1000.0,
+        "last_seen_at": 1000.0,
+    }
+    assert new_manifest["pending_restore"] is None
+
+
+# ---------------------------------------------------------------------------
+# update_manifest() -- same server (the common, cheap, no-op case)
+# ---------------------------------------------------------------------------
+
+
+def test_update_manifest_same_server_unchanged_sessions_is_a_noop():
+    """Same epoch, same live set -> changed=False (the common muxplex-restart
+    case: no new writes, no pending_restore)."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {"a2a": {"first_seen_at": 100.0, "last_seen_at": 100.0}},
+        "pending_restore": None,
+    }
+
+    new_manifest, changed = update_manifest(manifest, EPOCH_A, ["a2a"], now=600.0)
+
+    assert changed is False
+    assert new_manifest["pending_restore"] is None
+    assert "a2a" in new_manifest["sessions"]
+
+
+def test_update_manifest_same_server_new_session_is_recorded():
+    """Same epoch, a new session appears -> recorded, changed=True."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {"a2a": {"first_seen_at": 100.0, "last_seen_at": 100.0}},
+        "pending_restore": None,
+    }
+
+    new_manifest, changed = update_manifest(
+        manifest, EPOCH_A, ["a2a", "new-one"], now=700.0
+    )
+
+    assert changed is True
+    assert "new-one" in new_manifest["sessions"]
+    assert new_manifest["sessions"]["new-one"] == {
+        "first_seen_at": 700.0,
+        "last_seen_at": 700.0,
+    }
+    assert new_manifest["pending_restore"] is None
+
+
+def test_update_manifest_same_server_deliberate_kill_is_tombstoned_not_pending():
+    """THE sharpest failure mode this design targets: a session killed while
+    muxplex keeps running (same epoch) must be permanently removed from the
+    manifest -- NOT queued for restore. A tombstoned session cannot appear
+    in pending_restore because it isn't in the manifest to begin with."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {
+            "a2a": {"first_seen_at": 100.0, "last_seen_at": 100.0},
+            "killed-on-purpose": {"first_seen_at": 100.0, "last_seen_at": 100.0},
+        },
+        "pending_restore": None,
+    }
+
+    # killed-on-purpose is no longer in the live set, but the epoch is
+    # IDENTICAL -- the tmux server never died.
+    new_manifest, changed = update_manifest(manifest, EPOCH_A, ["a2a"], now=800.0)
+
+    assert changed is True
+    assert "killed-on-purpose" not in new_manifest["sessions"]
+    assert new_manifest["pending_restore"] is None, (
+        "a deliberate kill against a live, identity-matched server must "
+        "NEVER populate pending_restore -- resurrecting it would be worse "
+        "than not restoring at all"
+    )
+
+
+def test_update_manifest_same_server_multiple_deaths_all_tombstoned():
+    """Several sessions disappearing at once (e.g. the user closed a batch)
+    under an unchanged epoch are all tombstoned -- none land in
+    pending_restore."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {
+            "keep-me": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "gone-1": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "gone-2": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+        },
+        "pending_restore": None,
+    }
+
+    new_manifest, changed = update_manifest(manifest, EPOCH_A, ["keep-me"], now=900.0)
+
+    assert changed is True
+    assert set(new_manifest["sessions"]) == {"keep-me"}
+    assert new_manifest["pending_restore"] is None
+
+
+# ---------------------------------------------------------------------------
+# update_manifest() -- different server (cold start)
+# ---------------------------------------------------------------------------
+
+
+def test_update_manifest_different_server_populates_pending_restore():
+    """A different tmux server identity (host reboot, cgroup SIGKILL, etc.)
+    with sessions recorded under the OLD epoch now missing -> those sessions
+    become pending_restore, tagged with the OLD (lost) epoch."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 100.0},
+        "sessions": {
+            "a2a": {"first_seen_at": 50.0, "last_seen_at": 100.0},
+            "bbs": {"first_seen_at": 60.0, "last_seen_at": 100.0},
+        },
+        "pending_restore": None,
+    }
+
+    # New server (EPOCH_B), and neither old session is alive under it.
+    new_manifest, changed = update_manifest(manifest, EPOCH_B, [], now=5000.0)
+
+    assert changed is True
+    assert new_manifest["epoch"]["server_pid"] == EPOCH_B["server_pid"]
+    pending = new_manifest["pending_restore"]
+    assert pending is not None
+    assert pending["detected_at"] == 5000.0
+    assert pending["lost_epoch"]["server_pid"] == EPOCH_A["server_pid"]
+    assert set(pending["sessions"]) == {"a2a", "bbs"}
+    # New (empty) live set means the manifest's own `sessions` dict is now
+    # empty too -- the sessions only survive inside the frozen snapshot.
+    assert new_manifest["sessions"] == {}
+
+
+def test_update_manifest_cold_start_pending_restore_is_frozen_not_live():
+    """pending_restore must be a FROZEN snapshot: a later same-server poll
+    cycle (now running under the NEW epoch) must not tombstone the entries
+    just queued for restore. This is the exact bug pruning.json has -- an
+    entry erased the moment the thing it's tracking is no longer live."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 100.0},
+        "sessions": {"a2a": {"first_seen_at": 50.0, "last_seen_at": 100.0}},
+        "pending_restore": None,
+    }
+
+    # Cycle 1: cold start detected.
+    manifest, changed1 = update_manifest(manifest, EPOCH_B, [], now=5000.0)
+    assert changed1 is True
+    assert manifest["pending_restore"] is not None
+    assert "a2a" in manifest["pending_restore"]["sessions"]
+
+    # Cycle 2: same (new) server, still no "a2a" live. Because the epoch is
+    # now EPOCH_B on both sides, this is the SAME-SERVER branch -- but "a2a"
+    # was never in manifest["sessions"] under the new epoch, so there is
+    # nothing to tombstone. pending_restore must be untouched.
+    manifest, changed2 = update_manifest(manifest, EPOCH_B, [], now=5010.0)
+    assert changed2 is False
+    assert manifest["pending_restore"] is not None
+    assert "a2a" in manifest["pending_restore"]["sessions"], (
+        "pending_restore must survive subsequent poll cycles under the new "
+        "epoch -- it is a frozen snapshot, not a live view"
+    )
+
+
+def test_update_manifest_cold_start_no_lost_sessions_leaves_pending_restore_none():
+    """Different epoch but every previously-recorded session is ALSO alive
+    under the new epoch (e.g. tmux socket path churn with sessions somehow
+    intact) -> no cold start plan is needed."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 100.0},
+        "sessions": {"a2a": {"first_seen_at": 50.0, "last_seen_at": 100.0}},
+        "pending_restore": None,
+    }
+
+    new_manifest, changed = update_manifest(manifest, EPOCH_B, ["a2a"], now=5000.0)
+
+    assert changed is True  # epoch changed, so the manifest write still happens
+    assert new_manifest["pending_restore"] is None
+
+
+# ---------------------------------------------------------------------------
+# Epoch identity -- socket_path is part of equality (scratch-instance safety)
+# ---------------------------------------------------------------------------
+
+
+def test_update_manifest_different_socket_path_is_treated_as_different_server():
+    """Two epochs with the same pid/inode by coincidence but a DIFFERENT
+    socket_path (e.g. a scratch instance on its own TMUX_TMPDIR) must never
+    compare equal -- this is what keeps a scratch run from ever tombstoning
+    the live manifest."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 100.0},
+        "sessions": {"a2a": {"first_seen_at": 50.0, "last_seen_at": 100.0}},
+        "pending_restore": None,
+    }
+    # Same pid/inode values as EPOCH_A, but a different socket_path.
+    scratch_epoch = {**EPOCH_A, "socket_path": "/tmp/other-scratch/tmux-1000/default"}
+
+    new_manifest, changed = update_manifest(manifest, scratch_epoch, [], now=5000.0)
+
+    # Must take the COLD-START branch (different epoch), never the
+    # same-server branch, even though pid and inode happen to match.
+    assert changed is True
+    assert new_manifest["pending_restore"] is not None
+    assert "a2a" in new_manifest["pending_restore"]["sessions"]
