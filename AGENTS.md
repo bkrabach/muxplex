@@ -374,7 +374,96 @@ argv element.
   notes go to stderr.
 - Candidate future fixes: honor XDG paths; make the ttyd port configurable.
 
-### ⚠️ NEVER broad-kill by process name on a host running a live muxplex
+## ⚠️ Two ways to destroy every live tmux session on this host
+
+The user's tmux sessions are the product. They hold hours of in-flight work and
+they are **not recoverable** — a tmux session is a live process tree, not a
+file. Two distinct mechanisms have destroyed them for real. Mechanism 2 was
+already written down here, and was being followed exactly on the day mechanism 1
+killed 44 sessions: **narrow process hygiene is necessary and not sufficient.**
+Before any action that stops, restarts, or kills anything on this box, check
+both.
+
+### 1. Restarting a service whose cgroup has adopted the tmux server
+
+**Before `systemctl restart` / `stop` on ANY unit that could own a tmux server,
+read its resolved `KillMode`.** `mixed` and `control-group` (the default) both
+SIGKILL every remaining process in the service cgroup. Only `process` spares
+them.
+
+```
+systemctl --user show muxplex.service -p KillMode      # resolved, incl. drop-ins
+systemctl --user cat muxplex.service | grep -i KillMode
+```
+
+**muxplex is the specific hazard: it auto-spawns the tmux server when none is
+running** (`WS proxy: ttyd not listening, auto-spawning for '<session>'`). That
+server becomes a child of muxplex and inherits its cgroup, where it looks like
+nothing at all until a stop kills it.
+
+**Incident (2026-07-29):** a routine `systemctl --user restart muxplex.service`
+destroyed **44 live tmux sessions**. The unit shipped `KillMode=mixed`.
+
+```
+17:03:28  muxplex.service: Killing process 1518471 (tmux: client) with signal SIGKILL
+17:03:31  Started muxplex.service
+17:03:31  44 sessions recorded in pruning.json first_missed_at — one identical timestamp
+```
+
+The identical timestamp across all 44 is what proves a single simultaneous kill
+rather than gradual loss. This was never only a deploy hazard: the drop-in's own
+2026-07-24 comment documents that something on this box periodically SIGTERMs
+muxplex, and under `mixed` every one of those was a loaded gun.
+
+**Fix in place:** `KillMode=process` in
+`~/.config/systemd/user/muxplex.service.d/override.conf`.
+
+**Prove a cgroup fix with a canary — never by reading the directive back.**
+Start a throwaway tmux server, write its PID into the service's `cgroup.procs`
+so it occupies the exact position the real sessions occupy, restart the service,
+and assert the process is still alive with its session intact. That is the only
+evidence that distinguishes "I set the right value" from "the sessions survive."
+
+**Candidate real fix (not done):** muxplex should not be the parent of the tmux
+server at all — spawning it detached (`setsid`, or a transient
+`systemd-run --user --scope`) puts it outside muxplex's cgroup, so the unit's
+`KillMode` stops mattering. `KillMode=process` is a correct guard on one host's
+config; it does not travel with the package to anyone else's.
+
+### Recovering sessions after they are lost
+
+**Capture the manifest BEFORE recreating anything.**
+`~/.config/muxplex/pruning.json`'s `first_missed_at` map is the ONLY record of
+the lost session names — and muxplex **clears an entry as soon as that session
+comes back**. Recreating sessions one at a time destroys your own recovery list
+mid-recovery. Copy it out first:
+
+```
+cp ~/.config/muxplex/pruning.json /tmp/lost-sessions.json
+```
+
+**Recreate with `amplifier-workspace`, not `tmux new-session`.** A bare tmux
+session is one window with the wrong cwd; it looks restored and isn't. Session
+name maps to `~/dev/<name>` (verify the directory exists — it did for all 44).
+`amplifier-workspace` produces the real 4-window layout — `amplifier`, `shell`,
+`git`, `files` — each with cwd set to the workspace directory:
+
+```
+env -u TMUX setsid amplifier-workspace ~/dev/<name> </dev/null
+```
+
+`env -u TMUX` and `setsid` are load-bearing when scripting this: inside tmux the
+command calls `switch-client` and yanks the user's terminal on every iteration.
+With no controlling TTY the final attach fails harmlessly *after* the session is
+correctly created — exit 1 with `open terminal failed: not a terminal` is the
+expected outcome, not an error.
+
+Recreated sessions are **fresh shells**. Names, layout, and cwd come back;
+process state does not. For sessions that held an agent, `amplifier resume` in
+the right directory picks the transcript back up — don't guess at directories on
+the user's behalf.
+
+### 2. NEVER broad-kill by process name on a host running a live muxplex
 
 A scratch test's cleanup must NEVER use process-name matching to kill
 things, because the live server's command line is literally `... muxplex
