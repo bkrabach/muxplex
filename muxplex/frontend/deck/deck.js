@@ -234,6 +234,508 @@ function deriveTokens(s, cellH) {
   };
 }
 
+// ─── Settings menu: grid override, dial strip, action catalog, bindings ────
+//
+// docs/BACKLOG.md item 2. Everything in this section is soft-deck-ONLY
+// state, stored in localStorage (see loadDeckSettings/saveDeckSettings
+// below) -- never sent to the server, never synced via /api/settings.
+//
+// Why local rather than synced (the backlog explicitly asks this to be
+// scrutinized, not adopted on the strength of being "obvious"):
+//   1. Bindings are addressed by grid position (`key.N`), and the grid
+//      shape itself is viewport-derived (computeGrid) -- N has no stable
+//      cross-device meaning. Syncing bindings while the grid differs per
+//      device reproduces the exact "indistinguishable divergence" bug
+//      class DECK_PARITY_ARCHITECTURE.md documents, self-inflicted this
+//      time by a sync feature rather than an unported rule.
+//   2. A single bad synced config would brick every installed soft deck
+//      simultaneously -- multiplying, not containing, blast radius. That
+//      directly fights the non-negotiable escape-hatch requirement below.
+//   3. The real downside of local-only (lost on PWA reinstall, invisible to
+//      backup) is answered directly by Export/Import (see
+//      exportSettingsJSON/importSettingsJSON) rather than by taking on
+//      /api/settings CAS/LWW/federation-sync complexity for a personal
+//      per-screen preference.
+// See the settings-panel wiring below for where this is surfaced.
+
+var DECK_SETTINGS_KEY = 'muxplex-deck-settings';
+var DECK_SETTINGS_VERSION = 1;
+
+var DIAL_STRIP_H = 100; // px reserved for the dial strip when dialCount > 0
+var DIAL_PX_PER_TICK = 24; // px of vertical drag per emitted relative tick
+var DIAL_TAP_PX_THRESHOLD = 8; // below this net drag, a release is a tap (push)
+var DIAL_TAP_MS_THRESHOLD = 300; // and only if it was also this quick
+
+var ACTION_MOMENTARY = 'momentary';
+var ACTION_RELATIVE = 'relative';
+
+/**
+ * The soft deck's action catalog -- mirrors muxplex-deck's `controls.py`
+ * ACTIONS table (same 19 names, same kind per name) so the two clients
+ * agree on what "view_cycle" or "page_next" means, per
+ * DECK_PARITY_ARCHITECTURE.md \u00a76.2's "shared answer, independently
+ * implemented, tested against a literal fixture" prescription for Layer B.
+ * `label` is a soft-deck-only rendering detail (split on \n into NAME/BODY
+ * for a bound key's face; hardware has its own display strings in
+ * `main._control_key_display` and does not need to agree on this part).
+ * See test_deck.mjs's "ACTION_CATALOG mirrors muxplex-deck's 19-action
+ * catalog" fixture test for the drift tripwire.
+ * @type {Object<string, {kind: string, label: string}>}
+ */
+var ACTION_CATALOG = {
+  session: { kind: ACTION_MOMENTARY, label: '' }, // not user-bindable; see keyBindingsFromConfig
+  view_picker: { kind: ACTION_MOMENTARY, label: 'VIEW\nPICKER' },
+  page_picker: { kind: ACTION_MOMENTARY, label: 'PAGE\nPICKER' },
+  page_prev: { kind: ACTION_MOMENTARY, label: '< PAGE\n' },
+  page_next: { kind: ACTION_MOMENTARY, label: 'PAGE >\n' },
+  none: { kind: ACTION_MOMENTARY, label: '' },
+  view_cycle: { kind: ACTION_RELATIVE, label: 'TURN\nVIEW' },
+  page_cycle: { kind: ACTION_RELATIVE, label: 'TURN\nPAGE' },
+  view_all: { kind: ACTION_MOMENTARY, label: 'ALL\nVIEWS' },
+  page_first: { kind: ACTION_MOMENTARY, label: 'FIRST\nPAGE' },
+  page_last: { kind: ACTION_MOMENTARY, label: 'LAST\nPAGE' },
+  view_prev: { kind: ACTION_MOMENTARY, label: '< VIEW\n' },
+  view_next: { kind: ACTION_MOMENTARY, label: 'VIEW >\n' },
+  focus_app: { kind: ACTION_MOMENTARY, label: 'FOCUS\nAPP' },
+  refresh_now: { kind: ACTION_MOMENTARY, label: 'REFRESH\nNOW' },
+  toggle_last: { kind: ACTION_MOMENTARY, label: 'LAST\nSESSION' },
+  brightness_up: { kind: ACTION_MOMENTARY, label: 'BRIGHT\n+10%' },
+  brightness_down: { kind: ACTION_MOMENTARY, label: 'BRIGHT\n-10%' },
+  brightness_cycle: { kind: ACTION_RELATIVE, label: 'TURN\nBRIGHT' },
+};
+
+/**
+ * Parse a control address string -- identical grammar to muxplex-deck's
+ * `controls.py::parse_address` (`key.N`, `dial.N.turn`, `dial.N.push`; no
+ * leading zeros, no sign). Returns null (never throws) on any grammar
+ * violation -- a live settings-editing UI rejects bad input inline rather
+ * than failing loud the way a config-file load does.
+ * @param {string} text
+ * @returns {{control:'key'|'dial', index:number, sub:'turn'|'push'|null, text:string}|null}
+ */
+function parseControlAddress(text) {
+  if (typeof text !== 'string') return null;
+  var m = /^key\.(0|[1-9][0-9]*)$/.exec(text);
+  if (m) return { control: 'key', index: parseInt(m[1], 10), sub: null, text: 'key.' + m[1] };
+  m = /^dial\.(0|[1-9][0-9]*)\.(turn|push)$/.exec(text);
+  if (m) {
+    return {
+      control: 'dial',
+      index: parseInt(m[1], 10),
+      sub: m[2],
+      text: 'dial.' + m[1] + '.' + m[2],
+    };
+  }
+  return null;
+}
+
+/**
+ * Actions legal for a given address -- mirrors
+ * `controls.py::valid_actions_for_address` (kind must match; `none` is
+ * always legal regardless of kind, same judgment call documented there).
+ * @param {{control:string, sub:?string}|null} address
+ * @returns {string[]} sorted action names
+ */
+function validActionsForAddress(address) {
+  if (!address) return [];
+  var wantKind = address.control === 'dial' && address.sub === 'turn' ? ACTION_RELATIVE : ACTION_MOMENTARY;
+  var names = [];
+  for (var name in ACTION_CATALOG) {
+    if (Object.prototype.hasOwnProperty.call(ACTION_CATALOG, name) && ACTION_CATALOG[name].kind === wantKind) {
+      names.push(name);
+    }
+  }
+  if (names.indexOf('none') === -1) names.push('none');
+  return names.sort();
+}
+
+/**
+ * Full validation of one (address, action) pair -- parse + catalog
+ * membership + kind match. Used by both `sanitizeBindings` and the
+ * settings panel's live add-binding form.
+ * @param {string} addressText
+ * @param {string} action
+ * @returns {boolean}
+ */
+function isValidBinding(addressText, action) {
+  var address = parseControlAddress(addressText);
+  if (!address) return false;
+  if (typeof action !== 'string' || !(action in ACTION_CATALOG)) return false;
+  return validActionsForAddress(address).indexOf(action) !== -1;
+}
+
+/**
+ * Filter a raw (possibly hand-edited or imported) bindings object down to
+ * only valid entries. Fails soft -- invalid entries are dropped silently
+ * (the caller surfaces a count/diff if it wants to), never thrown, since
+ * this runs on every settings load, not just a one-time config-file read.
+ * @param {object} raw
+ * @returns {Object<string,string>}
+ */
+function sanitizeBindings(raw) {
+  var out = {};
+  if (raw && typeof raw === 'object') {
+    for (var key in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, key)) continue;
+      if (isValidBinding(key, raw[key])) out[key] = raw[key];
+    }
+  }
+  return out;
+}
+
+/**
+ * Extract just the `key.N` overrides from a bindings map, filtered to
+ * in-range indices and excluding the `session` action (which means "no
+ * override, behave as a normal auto-assigned session tile" -- the same
+ * thing an absent entry means, so it is never treated as a real bound
+ * face). Result indices are excluded from `sessionSlotIndices`'s pool and
+ * rendered via `actionKeyContent` instead of a session tile.
+ * @param {Object<string,string>} bindings
+ * @param {number} keyCount
+ * @returns {Object<number,string>}
+ */
+function keyBindingsFromConfig(bindings, keyCount) {
+  var out = {};
+  for (var addr in bindings) {
+    if (!Object.prototype.hasOwnProperty.call(bindings, addr)) continue;
+    var a = parseControlAddress(addr);
+    if (!a || a.control !== 'key') continue;
+    if (a.index < 0 || a.index >= keyCount) continue;
+    if (bindings[addr] === 'session') continue;
+    out[a.index] = bindings[addr];
+  }
+  return out;
+}
+
+/**
+ * Extract `dial.N.turn`/`dial.N.push` bindings into a dense array of
+ * `{turn, push}` (default `'none'`), one entry per configured dial.
+ * @param {Object<string,string>} bindings
+ * @param {number} dialCount
+ * @returns {Array<{turn:string, push:string}>}
+ */
+function dialBindingsFromConfig(bindings, dialCount) {
+  var out = [];
+  for (var i = 0; i < dialCount; i++) out.push({ turn: 'none', push: 'none' });
+  for (var addr in bindings) {
+    if (!Object.prototype.hasOwnProperty.call(bindings, addr)) continue;
+    var a = parseControlAddress(addr);
+    if (!a || a.control !== 'dial') continue;
+    if (a.index < 0 || a.index >= dialCount) continue;
+    out[a.index][a.sub] = bindings[addr];
+  }
+  return out;
+}
+
+/**
+ * Content for a key face whose slot is bound to a fixed action (as opposed
+ * to an auto-assigned session tile). NAME/BODY come from the catalog's
+ * `label` (split on the one `\n`); STATE is always blank -- action keys
+ * carry no per-poll enrichment the way a session tile's last-activity does.
+ * @param {string} action
+ * @returns {{name:string, body:string, state:string}}
+ */
+function actionKeyContent(action) {
+  var spec = ACTION_CATALOG[action];
+  if (!spec) return { name: '', body: '', state: '' };
+  var parts = (spec.label || '').split('\n');
+  return { name: parts[0] || '', body: parts[1] || '', state: '' };
+}
+
+/**
+ * Ascending page/view labels for the generic item picker's "page" flavor
+ * (`pickerKind: 'page'` in computeKeyPlan) -- "Page 1".."Page N", 1-indexed
+ * for humans even though `page` state is 0-indexed everywhere else.
+ * @param {number} n
+ * @returns {string[]}
+ */
+function pageItemLabels(n) {
+  var out = [];
+  for (var i = 0; i < n; i++) out.push('Page ' + (i + 1));
+  return out;
+}
+
+/**
+ * Content for a page-picker option key -- structurally the picker-option
+ * twin of `pickerOptionContent`, but simpler: no per-item session count,
+ * just whether this is the current page.
+ * @param {string} label
+ * @param {boolean} isCurrent
+ * @returns {{name:string, body:string, state:string}}
+ */
+function pageOptionContent(label, isCurrent) {
+  return { name: '', body: label, state: isCurrent ? 'current' : '' };
+}
+
+/**
+ * Vertical-drag-to-ticks for an emulated dial (DESIGN: a rotary-angle drag
+ * on a small touch target is fiddly and error-prone to get right and to
+ * test; a vertical scrub gesture -- the same convention as an iOS picker
+ * wheel -- is unambiguous, and reduces to a pure function of pixel delta).
+ * Upward drag (negative deltaY) yields positive ticks, matching "turn the
+ * dial up/clockwise to increase" for every RELATIVE action's natural
+ * direction (next view, next page, brighter).
+ * @param {number} deltaYpx
+ * @returns {number} signed integer tick count (may be 0)
+ */
+function dialDragTicks(deltaYpx) {
+  // `|| 0` squashes a possible -0 result (e.g. Math.trunc(-0 / N) or a tiny
+  // negative deltaYpx below one tick) -- a negative-zero tick count is
+  // semantically meaningless and would fail a strict (Object.is-based)
+  // equality check against the plain 0 callers expect for "no tick".
+  return (-Math.trunc(deltaYpx / DIAL_PX_PER_TICK) || 0);
+}
+
+/**
+ * Whether a completed drag on a dial should be treated as a tap (push
+ * action) rather than a turn (turn action already fired incrementally
+ * during the drag via dialDragTicks) -- both a small net displacement AND
+ * a short duration, so a slow, small, deliberate turn isn't misread as a
+ * push.
+ * @param {number} deltaYpx - net displacement over the whole gesture
+ * @param {number} elapsedMs
+ * @returns {boolean}
+ */
+function isDialTap(deltaYpx, elapsedMs) {
+  return Math.abs(deltaYpx) < DIAL_TAP_PX_THRESHOLD && elapsedMs < DIAL_TAP_MS_THRESHOLD;
+}
+
+/**
+ * Apply a signed relative tick count to one of the three RELATIVE actions.
+ * Pure -- reads/writes only the small `ctx` slice relevant to the action,
+ * returns a partial-update object the caller merges into real state. All
+ * three "cycle" actions clamp (never wrap), matching the existing
+ * page_prev/page_next convention (CONTROL_MAPPING_DESIGN.md \u00a72.1) --
+ * applied uniformly here rather than inventing a second (wrapping)
+ * convention for view/brightness.
+ * @param {string} action - 'page_cycle' | 'view_cycle' | 'brightness_cycle' (others are no-ops)
+ * @param {number} ticks
+ * @param {{page:number, pageCount:number, viewIndex:number, viewCount:number, brightness:number}} ctx
+ * @returns {object} partial update, e.g. {page: n} or {} if the action doesn't apply or ticks is 0
+ */
+function applyRelativeTicks(action, ticks, ctx) {
+  if (!ticks) return {};
+  if (action === 'page_cycle') {
+    return { page: clampPage(ctx.page, ticks, ctx.pageCount) };
+  }
+  if (action === 'view_cycle') {
+    return { viewIndex: clampPage(ctx.viewIndex, ticks, ctx.viewCount) };
+  }
+  if (action === 'brightness_cycle') {
+    var next = ctx.brightness + ticks * 10;
+    if (next > 100) next = 100;
+    if (next < 10) next = 10;
+    return { brightness: next };
+  }
+  return {};
+}
+
+/**
+ * The soft deck's own default settings -- see the section header above for
+ * why these live in localStorage rather than server-synced settings.
+ * @returns {object}
+ */
+function defaultDeckSettings() {
+  return {
+    version: DECK_SETTINGS_VERSION,
+    sort: 'attention',
+    pollIntervalMs: POLL_INTERVAL_MS,
+    gridOverride: null, // {rows, cols} | null (null = auto, computeGrid)
+    dialCount: 0, // 0-4
+    brightness: 100, // 10-100, applied as a CSS filter on the whole surface
+    bindings: {}, // address (key.N | dial.N.turn | dial.N.push) -> action
+  };
+}
+
+/**
+ * Merge a possibly-partial, possibly-hostile `incoming` object onto
+ * defaults, validating every field individually -- an out-of-range or
+ * wrong-typed field is silently dropped in favor of its default rather
+ * than rejecting the whole object (an import/localStorage read should
+ * recover as much of a partially-valid settings blob as it safely can).
+ * @param {object} defaults - defaultDeckSettings(), or another rebase point
+ * @param {object} incoming
+ * @returns {object}
+ */
+function mergeDeckSettings(defaults, incoming) {
+  var out = defaultDeckSettings();
+  if (!incoming || typeof incoming !== 'object') return out;
+  if (incoming.sort === 'attention' || incoming.sort === 'server') out.sort = incoming.sort;
+  if (
+    typeof incoming.pollIntervalMs === 'number' &&
+    incoming.pollIntervalMs >= 500 &&
+    incoming.pollIntervalMs <= 60000
+  ) {
+    out.pollIntervalMs = incoming.pollIntervalMs;
+  }
+  if (
+    incoming.gridOverride &&
+    typeof incoming.gridOverride === 'object' &&
+    Number.isInteger(incoming.gridOverride.rows) &&
+    Number.isInteger(incoming.gridOverride.cols) &&
+    incoming.gridOverride.rows >= 1 &&
+    incoming.gridOverride.rows <= 12 &&
+    incoming.gridOverride.cols >= 1 &&
+    incoming.gridOverride.cols <= 12 &&
+    incoming.gridOverride.rows * incoming.gridOverride.cols <= N_MAX
+  ) {
+    out.gridOverride = { rows: incoming.gridOverride.rows, cols: incoming.gridOverride.cols };
+  }
+  if (Number.isInteger(incoming.dialCount) && incoming.dialCount >= 0 && incoming.dialCount <= 4) {
+    out.dialCount = incoming.dialCount;
+  }
+  if (Number.isInteger(incoming.brightness) && incoming.brightness >= 10 && incoming.brightness <= 100) {
+    out.brightness = incoming.brightness;
+  }
+  out.bindings = sanitizeBindings(incoming.bindings);
+  return out;
+}
+
+/**
+ * Load deck settings from a storage-like object (`localStorage`-shaped:
+ * `getItem`/`setItem`). `storage` is injectable so this is testable under
+ * `node --test` with no real `localStorage` -- passing `null`/`undefined`
+ * (as node --test does) returns defaults, exactly like a fresh install.
+ * @param {{getItem:function(string):?string}|null|undefined} storage
+ * @returns {object}
+ */
+function loadDeckSettings(storage) {
+  var defaults = defaultDeckSettings();
+  if (!storage) return defaults;
+  var raw;
+  try {
+    raw = storage.getItem(DECK_SETTINGS_KEY);
+  } catch (e) {
+    return defaults;
+  }
+  if (!raw) return defaults;
+  var parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return defaults;
+  }
+  return mergeDeckSettings(defaults, parsed);
+}
+
+/**
+ * Persist deck settings. Best-effort: a full/unavailable storage (e.g.
+ * private browsing) is swallowed, never thrown -- losing a settings write
+ * must not break the deck itself.
+ * @param {{setItem:function(string,string):void}|null|undefined} storage
+ * @param {object} settings
+ */
+function saveDeckSettings(storage, settings) {
+  if (!storage) return;
+  try {
+    storage.setItem(DECK_SETTINGS_KEY, JSON.stringify(settings));
+  } catch (e) {
+    // best-effort; see docstring
+  }
+}
+
+/**
+ * Serialize settings for the settings panel's Export field -- the backup
+ * story for a local-only, per-device settings model (see section header).
+ * @param {object} settings
+ * @returns {string}
+ */
+function exportSettingsJSON(settings) {
+  return JSON.stringify(settings, null, 2);
+}
+
+/**
+ * Parse + validate a pasted settings blob for the Import field. Never
+ * throws -- returns `{settings: null, error: <message>}` on bad JSON, or
+ * `{settings: <merged>, error: null}` on success (individual bad fields
+ * inside otherwise-valid JSON are dropped by `mergeDeckSettings`, not
+ * rejected wholesale -- same recovery posture as `loadDeckSettings`).
+ * @param {string} text
+ * @param {object} [defaults]
+ * @returns {{settings:?object, error:?string}}
+ */
+function importSettingsJSON(text, defaults) {
+  var parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return { settings: null, error: 'Invalid JSON: ' + e.message };
+  }
+  return { settings: mergeDeckSettings(defaults || defaultDeckSettings(), parsed), error: null };
+}
+
+/**
+ * Fixed-shape grid variant of `computeGrid` -- used when the user has set
+ * an explicit rows/cols override (DESIGN: "Layout as a setting... the
+ * clearest example of a setting that is inherently per-device",
+ * BACKLOG.md item 2). Skips the S-search loop entirely (rows/cols are
+ * already decided) and reuses the same fill/letterbox tail computeGrid
+ * uses once ITS search settles, so the two paths agree on what "S" and
+ * "letterboxed" mean for a given cell size.
+ * @param {number} contentW
+ * @param {number} contentH
+ * @param {number} rows
+ * @param {number} cols
+ * @returns {{rows:number, cols:number, cellW:number, cellH:number, s:number,
+ *            gap:number, letterboxed:boolean, tooSmall:boolean}}
+ */
+function computeGridForShape(contentW, contentH, rows, cols) {
+  if (!(contentW > 0) || !(contentH > 0) || !(rows > 0) || !(cols > 0)) {
+    return { rows: 0, cols: 0, cellW: 0, cellH: 0, s: 0, gap: 0, letterboxed: false, tooSmall: true };
+  }
+  var gap = Math.round(S_TARGET / 8);
+  var cellW = (contentW - (cols - 1) * gap) / cols;
+  var cellH = (contentH - (rows - 1) * gap) / rows;
+  var ratio = Math.max(cellW, cellH) / Math.min(cellW, cellH);
+  var letterboxed = ratio > ASPECT_TOLERANCE;
+  if (letterboxed) {
+    var both = Math.min(cellW, cellH);
+    cellW = both;
+    cellH = both;
+  }
+  var s = Math.min(cellW, cellH, S_MAX);
+  return {
+    rows: rows,
+    cols: cols,
+    cellW: cellW,
+    cellH: cellH,
+    s: s,
+    gap: gap,
+    letterboxed: letterboxed,
+    tooSmall: s < S_MIN,
+  };
+}
+
+/**
+ * The grid the deck actually renders: the user's explicit override when
+ * set and valid, otherwise the ordinary viewport-derived `computeGrid`.
+ * @param {number} contentW
+ * @param {number} contentH
+ * @param {{rows:number, cols:number}|null} override
+ * @returns {ReturnType<typeof computeGrid>}
+ */
+function computeEffectiveGrid(contentW, contentH, override) {
+  if (override && override.rows > 0 && override.cols > 0) {
+    return computeGridForShape(contentW, contentH, override.rows, override.cols);
+  }
+  return computeGrid(contentW, contentH);
+}
+
+/**
+ * Shrink a content box to make room for the dial strip when `dialCount` is
+ * configured -- called BEFORE `computeEffectiveGrid` so the key grid never
+ * overlaps the dial strip; a dialCount of 0 (the default) is a no-op, so
+ * every existing device with no dials configured sees byte-identical
+ * geometry to before this feature existed.
+ * @param {{w:number, h:number}} box
+ * @param {number} dialCount
+ * @returns {{w:number, h:number}}
+ */
+function contentBoxForDials(box, dialCount) {
+  if (!dialCount || dialCount <= 0) return box;
+  return { w: box.w, h: Math.max(0, box.h - DIAL_STRIP_H) };
+}
+
 /**
  * Port of muxplex-deck's `layout.py::_reserved_control_keys` -- the three
  * navigation keys are a constant at every grid size, never a fraction, so
@@ -270,20 +772,26 @@ function reservedControlKeys(rows, cols) {
 
 /**
  * The ascending key indices available as session tiles -- every index
- * 0..key_count-1 that isn't one of the three reserved control keys.
+ * 0..key_count-1 that isn't one of the three reserved control keys, AND
+ * (new) isn't explicitly bound to a fixed action via the settings menu's
+ * bindings (`keyBindingsFromConfig`). `boundIndices` is optional and
+ * defaults to excluding nothing -- every pre-existing caller (and every
+ * existing test) that passes only 3 arguments is unaffected.
  * @param {number} rows
  * @param {number} cols
  * @param {{view:number|null, prev:number|null, next:number|null}} reserved
+ * @param {Object<number,string>} [boundIndices] - index -> action, from keyBindingsFromConfig
  * @returns {number[]}
  */
-function sessionSlotIndices(rows, cols, reserved) {
+function sessionSlotIndices(rows, cols, reserved, boundIndices) {
   var reservedSet = {};
   if (reserved.view != null) reservedSet[reserved.view] = true;
   if (reserved.prev != null) reservedSet[reserved.prev] = true;
   if (reserved.next != null) reservedSet[reserved.next] = true;
+  var bound = boundIndices || {};
   var slots = [];
   for (var i = 0; i < rows * cols; i++) {
-    if (!reservedSet[i]) slots.push(i);
+    if (!reservedSet[i] && !(i in bound)) slots.push(i);
   }
   return slots;
 }
@@ -489,7 +997,7 @@ function fitLabel(text, maxWidthPx, measureWidth) {
  * @typedef {{active: boolean, pending: boolean, failed: boolean,
  *            needsAttention: boolean, currentView: boolean}} KeyFaceFlags
  * @typedef {{index: number,
- *            role: 'session'|'view'|'prev'|'next'|'back'|'view-option'|'empty',
+ *            role: 'session'|'view'|'prev'|'next'|'back'|'view-option'|'bound'|'empty',
  *            name: string, body: string, state: string, preview: string,
  *            target: string|null, flags: KeyFaceFlags}} KeyFace
  */
@@ -519,6 +1027,7 @@ function faceClassName(role) {
   if (role === 'empty') return 'is-empty';
   if (role === 'session') return 'is-session';
   if (role === 'view-option') return 'is-picker-option';
+  if (role === 'bound') return 'is-bound';
   return 'is-control'; // view | prev | next | back
 }
 
@@ -533,14 +1042,16 @@ function faceClassName(role) {
  * @param {Array<{name:string,active:boolean,needs_attention:boolean,last_activity_at:?number}>} p.sessions
  *   current view's sessions, server order (grid mode)
  * @param {string} p.viewName - current active_view name
- * @param {string[]} p.viewsList - browsable view names (picker mode)
+ * @param {string[]} p.viewsList - browsable view names (picker mode, pickerKind='view')
+ * @param {'view'|'page'} [p.pickerKind] - which generic-picker flavor is showing (default 'view')
  * @param {number} p.page - current session grid page
- * @param {number} p.pickerPage - current view-picker page
+ * @param {number} p.pickerPage - current view/page-picker page
  * @param {Object<string, number>} [p.viewCounts] - picker STATE enrichment
  * @param {string|null} [p.pendingName]
  * @param {Object<string, number>} [p.failedByName] - name -> expiry epoch ms
  * @param {Object<string, string>} [p.snapshots] - name -> pane text
  * @param {number} [p.previewLinesMax]
+ * @param {Object<number,string>} [p.boundKeys] - index -> action, from keyBindingsFromConfig
  * @param {number} p.nowMs
  * @returns {{plan: KeyFace[], page: number, pickerPage: number}}
  */
@@ -562,14 +1073,39 @@ function computeKeyPlan(p) {
   var page = p.page;
   var pickerPage = p.pickerPage;
   var hasControls = reserved.mode !== 'degenerate';
+  var boundKeys = p.boundKeys || {};
 
-  var slots = sessionSlotIndices(rows, cols, reserved);
+  var slots = sessionSlotIndices(rows, cols, reserved, boundKeys);
+
+  // Bound-action faces render identically whether the deck is in grid or
+  // picker mode -- a fixed action key doesn't stop being fixed just
+  // because the view picker is open over the session slots around it.
+  for (var bi in boundKeys) {
+    if (!Object.prototype.hasOwnProperty.call(boundKeys, bi)) continue;
+    var boundIndex = Number(bi);
+    var action = boundKeys[bi];
+    var boundContent = actionKeyContent(action);
+    plan[boundIndex] = {
+      index: boundIndex,
+      role: 'bound',
+      name: boundContent.name,
+      body: boundContent.body,
+      state: boundContent.state,
+      preview: '',
+      target: action,
+      flags: _emptyFlags(),
+    };
+  }
 
   if (p.mode === 'picker') {
+    var pickerKind = p.pickerKind || 'view';
+    var isPagePicker = pickerKind === 'page';
     var viewsList = p.viewsList || [];
-    var pc = pageCount(viewsList.length, slots.length);
+    var pageLabels = isPagePicker ? pageItemLabels(p.pagePickerCount != null ? p.pagePickerCount : 1) : [];
+    var itemsList = isPagePicker ? pageLabels : viewsList;
+    var pc = pageCount(itemsList.length, slots.length);
     pickerPage = _clampToCount(pickerPage, pc);
-    var pageViews = pageSlice(viewsList, pickerPage, slots.length);
+    var pageItems = pageSlice(itemsList, pickerPage, slots.length);
     var pagePosition = pc > 1 ? pickerPage + 1 + '/' + pc : '';
 
     if (hasControls) {
@@ -579,10 +1115,22 @@ function computeKeyPlan(p) {
     }
 
     for (var vi = 0; vi < slots.length; vi++) {
-      var name = pageViews[vi];
+      var name = pageItems[vi];
       if (!name) continue;
-      var count = p.viewCounts && p.viewCounts[name] != null ? p.viewCounts[name] : null;
-      var content = pickerOptionContent(name, count);
+      var content;
+      var target;
+      var isCurrentItem;
+      if (isPagePicker) {
+        var itemIndex = pickerPage * slots.length + vi;
+        isCurrentItem = itemIndex === p.page;
+        content = pageOptionContent(name, isCurrentItem);
+        target = String(itemIndex);
+      } else {
+        var count = p.viewCounts && p.viewCounts[name] != null ? p.viewCounts[name] : null;
+        isCurrentItem = name === p.viewName;
+        content = pickerOptionContent(name, count);
+        target = name;
+      }
       plan[slots[vi]] = {
         index: slots[vi],
         role: 'view-option',
@@ -590,8 +1138,8 @@ function computeKeyPlan(p) {
         body: content.body,
         state: content.state,
         preview: '',
-        target: name,
-        flags: _mergeFlags({ currentView: name === p.viewName }),
+        target: target,
+        flags: _mergeFlags({ currentView: isCurrentItem }),
       };
     }
     return { plan: plan, page: page, pickerPage: pickerPage };
@@ -735,15 +1283,44 @@ if (typeof document !== 'undefined') {
     var pollTimer = null;
     var wakeSentinel = null;
 
-    var mode = 'grid'; // 'grid' | 'picker'
+    var mode = 'grid'; // 'grid' | 'picker' | 'settings'
+    var pickerKind = 'view'; // 'view' | 'page' -- which generic-picker flavor is open
     var page = 0; // current session grid page
-    var pickerPage = 0; // current view-picker page
-    var grid = null; // last computeGrid() result
+    var pickerPage = 0; // current view/page-picker page
+    var grid = null; // last computeGrid()/computeEffectiveGrid() result
     var reserved = null; // last reservedControlKeys() result
     var tokens = null; // last deriveTokens() result -- feeds the label-measure font/box
     var keyEls = []; // R*C key <button> elements, index-addressed
     var currentShape = null; // 'RxC' string, to detect when a rebuild is needed
     var viewCounts = {}; // best-effort enrichment, see loadViewCounts()
+    var lastActiveName = null; // previously-active session, for the toggle_last action
+
+    // ── Settings menu state (BACKLOG.md item 2) -- see the deck.js pure-logic
+    // section for why this is local (localStorage), not server-synced. ──
+    var deckSettings = loadDeckSettings(safeLocalStorage());
+    var boundKeys = keyBindingsFromConfig(deckSettings.bindings, 0); // recomputed per recomputeGrid
+    var dialBindings = dialBindingsFromConfig(deckSettings.bindings, deckSettings.dialCount);
+    var dialEls = [];
+    var dialStripEl = document.getElementById('deck-dial-strip');
+    var settingsEl = document.getElementById('deck-settings');
+
+    /**
+     * `localStorage` is unavailable (throws) in some private-browsing modes
+     * and inside a sandboxed iframe -- probe once at boot rather than
+     * letting every read/write site guard separately.
+     * @returns {Storage|null}
+     */
+    function safeLocalStorage() {
+      try {
+        var key = '__muxplex_deck_probe__';
+        window.localStorage.setItem(key, '1');
+        window.localStorage.removeItem(key);
+        return window.localStorage;
+      } catch (e) {
+        return null;
+      }
+    }
+    var storage = safeLocalStorage();
 
     // ── DOM refs ──
     var root = document.getElementById('deck-root');
@@ -802,15 +1379,20 @@ if (typeof document !== 'undefined') {
     // ── Polling ──
 
     function poll() {
-      // sort=attention is hardcoded, not a soft-deck config knob: this
-      // surface's whole purpose is Stream Deck parity (DESIGN_SOFTDECK.md),
-      // the hardware sidecar defaults to attention ordering
-      // (muxplex-deck/config.py's `sort` default), and unlike the sidecar
-      // this page has no persisted per-device config file or settings UI to
-      // put a knob on -- adding one would be a config surface with no real
-      // consumer today (DECK_PARITY_ARCHITECTURE.md \u00a72.1/\u00a76.1: sort order
-      // is Layer A, one server-owned answer, not a per-client preference).
-      var viewReq = getJSON('/api/view?sort=attention');
+      // The sort param now follows the soft deck's OWN local `sort` setting
+      // (BACKLOG.md item 2), not a hardcoded value -- mirrors muxplex-deck's
+      // own `config.sort`, which is ALSO local sidecar config, independent
+      // of the dashboard's server-synced `sort_order` (settings.py). This
+      // surface deliberately does NOT follow the dashboard's `sort_order`:
+      // the two have always been separate knobs for separate clients (the
+      // hardware sidecar ignores `sort_order` too), and per-screen sort
+      // preference is exactly the kind of thing that's cheap to lose on
+      // reinstall and genuinely per-device (DECK_PARITY_ARCHITECTURE.md
+      // \u00a72.1/\u00a76.1: which sessions/order is Layer A -- one server-owned
+      // ANSWER -- but WHICH of the server's answers a client requests is a
+      // client preference, same as muxplex-deck's own `sort` field).
+      var sortParam = deckSettings.sort === 'server' ? '' : '?sort=attention';
+      var viewReq = getJSON('/api/view' + sortParam);
       var sessReq = getJSON('/api/sessions');
       return Promise.all([viewReq, sessReq])
         .then(function (results) {
@@ -828,6 +1410,13 @@ if (typeof document !== 'undefined') {
               newActive = viewData.sessions[i].name;
               break;
             }
+          }
+          // Track the previously-active session for the toggle_last action
+          // -- only when it's a real change to a different, non-null prior
+          // value, so the very first poll (activeName still null) doesn't
+          // record a bogus "previous" session.
+          if (newActive !== activeName && activeName != null) {
+            lastActiveName = activeName;
           }
           activeName = newActive;
           sessions = viewData.sessions;
@@ -885,6 +1474,13 @@ if (typeof document !== 'undefined') {
       return { w: root.clientWidth, h: root.clientHeight };
     }
 
+    function applyBrightness() {
+      // A soft analogue of the hardware's LED-backlight brightness action:
+      // dims the whole deck surface via a CSS filter. Meaningful for the
+      // "phone left on a desk overnight" case BACKLOG.md item 2 names.
+      root.style.filter = deckSettings.brightness >= 100 ? '' : 'brightness(' + deckSettings.brightness / 100 + ')';
+    }
+
     function applyGridTokens(g, t) {
       var style = root.style;
       style.setProperty('--cols', g.cols);
@@ -926,9 +1522,27 @@ if (typeof document !== 'undefined') {
 
       var pressTimer = null;
       var pressedAt = 0;
+      // Entry point to Settings (BACKLOG.md item 2 -- "subtle and out of the
+      // way"): long-press on the VIEW control key. Chosen over a dedicated
+      // gear icon because it spends NO key slot by default -- the icon
+      // approach costs one of a small, precious grid; long-press reuses a
+      // key that already exists in every non-degenerate layout. Only armed
+      // when this key's CURRENT role is 'view' (checked live via
+      // dataset.role, which paintKeyFace keeps current) -- long-pressing a
+      // session tile must never accidentally open settings.
+      var longPressTimer = null;
+      var longPressFired = false;
+      var LONG_PRESS_MS = 600;
       key.addEventListener('pointerdown', function () {
         pressedAt = Date.now();
         key.classList.add('is-pressed');
+        longPressFired = false;
+        if (key.dataset.role === 'view') {
+          longPressTimer = setTimeout(function () {
+            longPressFired = true;
+            openSettings();
+          }, LONG_PRESS_MS);
+        }
       });
       var releasePress = function () {
         var held = Date.now() - pressedAt;
@@ -937,12 +1551,26 @@ if (typeof document !== 'undefined') {
         pressTimer = setTimeout(function () {
           key.classList.remove('is-pressed');
         }, wait);
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
       };
       key.addEventListener('pointerup', releasePress);
       key.addEventListener('pointercancel', function () {
         key.classList.remove('is-pressed');
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
       });
       key.addEventListener('click', function () {
+        if (longPressFired) {
+          // The long-press already dispatched (opened settings); suppress
+          // the click that follows the same physical press/release.
+          longPressFired = false;
+          return;
+        }
         onKeyTap(index);
       });
 
@@ -964,14 +1592,17 @@ if (typeof document !== 'undefined') {
 
     function recomputeGrid() {
       if (mode === 'picker') return; // never regrid under an open picker
-      var box = contentBox();
-      var g = computeGrid(box.w, box.h);
+      var box = contentBoxForDials(contentBox(), deckSettings.dialCount);
+      var g = computeEffectiveGrid(box.w, box.h, deckSettings.gridOverride);
       grid = g;
       reserved = reservedControlKeys(g.rows, g.cols);
       tokens = deriveTokens(g.s, g.cellH);
       applyGridTokens(g, tokens);
       rebuildGridIfNeeded(g);
       root.classList.toggle('too-small', !!g.tooSmall);
+      boundKeys = keyBindingsFromConfig(deckSettings.bindings, g.rows * g.cols);
+      dialBindings = dialBindingsFromConfig(deckSettings.bindings, deckSettings.dialCount);
+      rebuildDialStripIfNeeded();
     }
 
     var resizeTimer = null;
@@ -1059,20 +1690,24 @@ if (typeof document !== 'undefined') {
     }
 
     function renderKeys() {
+      var slotsNow = sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys);
       var result = computeKeyPlan({
         grid: grid,
         reserved: reserved,
         mode: mode,
+        pickerKind: pickerKind,
         sessions: sessions,
         viewName: viewName,
         viewsList: viewsList,
         page: page,
         pickerPage: pickerPage,
+        pagePickerCount: pageCount(sessions.length, slotsNow.length),
         viewCounts: viewCounts,
         pendingName: pendingName,
         failedByName: failedByName,
         snapshots: snapshots,
         previewLinesMax: PREVIEW_LINES_MAX,
+        boundKeys: boundKeys,
         nowMs: Date.now(),
       });
       page = result.page;
@@ -1082,9 +1717,11 @@ if (typeof document !== 'undefined') {
       for (var i = 0; i < keyEls.length; i++) {
         paintKeyFace(keyEls[i], result.plan[i], measure);
       }
+      renderDialLabels();
     }
 
     function render() {
+      if (mode === 'settings') return; // settings panel owns the surface entirely
       if (!grid || grid.rows === 0 || grid.cols === 0) {
         showDisconnected('Screen too small for the deck.');
         return;
@@ -1134,44 +1771,70 @@ if (typeof document !== 'undefined') {
 
       if (role === 'session') {
         connectTo(el.dataset.name);
+      } else if (role === 'bound') {
+        dispatchAction(el.dataset.name);
       } else if (role === 'view') {
         openPicker();
       } else if (role === 'back') {
         closePicker();
       } else if (role === 'prev') {
-        if (mode === 'picker') {
-          var slotsP = sessionSlotIndices(grid.rows, grid.cols, reserved);
-          pickerPage = clampPage(pickerPage, -1, pageCount(viewsList.length, slotsP.length));
-        } else {
-          var slotsG = sessionSlotIndices(grid.rows, grid.cols, reserved);
-          page = clampPage(page, -1, pageCount(sessions.length, slotsG.length));
-        }
-        render();
+        pageTurn(-1);
       } else if (role === 'next') {
-        if (mode === 'picker') {
-          var slotsP2 = sessionSlotIndices(grid.rows, grid.cols, reserved);
-          pickerPage = clampPage(pickerPage, 1, pageCount(viewsList.length, slotsP2.length));
-        } else {
-          var slotsG2 = sessionSlotIndices(grid.rows, grid.cols, reserved);
-          page = clampPage(page, 1, pageCount(sessions.length, slotsG2.length));
-        }
-        render();
+        pageTurn(1);
       } else if (role === 'view-option') {
-        selectView(el.dataset.name);
+        if (pickerKind === 'page') {
+          selectPage(parseInt(el.dataset.name, 10));
+        } else {
+          selectView(el.dataset.name);
+        }
       }
+    }
+
+    /**
+     * Shared page/picker-turn logic for the 'prev'/'next' control keys AND
+     * the page_prev/page_next bound actions -- kept as one function so the
+     * two entry points can never drift on the clamped-never-wrapping rule.
+     * @param {number} delta -1 or 1
+     */
+    function pageTurn(delta) {
+      if (mode === 'picker') {
+        var itemsLen = pickerKind === 'page' ? pageCount(sessions.length, sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys).length) : viewsList.length;
+        var slotsP = sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys);
+        pickerPage = clampPage(pickerPage, delta, pageCount(itemsLen, slotsP.length));
+      } else {
+        var slotsG = sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys);
+        page = clampPage(page, delta, pageCount(sessions.length, slotsG.length));
+      }
+      render();
     }
 
     function openPicker() {
       mode = 'picker';
+      pickerKind = 'view';
       pickerPage = 0;
       loadViewCounts();
       render();
     }
 
+    /** page_picker action -- the generic-picker twin of openPicker for pages. */
+    function openPagePicker() {
+      mode = 'picker';
+      pickerKind = 'page';
+      pickerPage = 0;
+      render();
+    }
+
     function closePicker() {
       mode = 'grid';
+      pickerKind = 'view';
       recomputeGrid(); // pick up any resize that happened while the picker had it deferred
       render();
+    }
+
+    /** page-picker option tap: jump straight to the tapped page. */
+    function selectPage(index) {
+      page = index;
+      closePicker();
     }
 
     function loadViewCounts() {
@@ -1206,6 +1869,238 @@ if (typeof document !== 'undefined') {
       // caught by the next poll cycle's staleness/reconciliation, same as
       // every other write on this surface -- there is no toast/banner
       // affordance on a hardware-faithful deck (DESIGN_SOFTDECK.md \u00a77).
+    }
+
+    // ── Action dispatch (bound keys + dials) ──
+    //
+    // Central handler for every action in ACTION_CATALOG reached via a
+    // bound key, a dial push, or a dial turn (via applyRelativeTicks for
+    // the three RELATIVE actions). This is what makes the emulated dials'
+    // relative actions (view_cycle/page_cycle/brightness_cycle) actually
+    // reachable -- BACKLOG.md item 2's core argument for building dials at
+    // all: "the relative actions exist and currently have nowhere to live
+    // on a device with no dials."
+
+    function dispatchAction(action) {
+      var slots = sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys);
+      switch (action) {
+        case 'view_picker':
+          if (mode === 'picker') closePicker();
+          else openPicker();
+          return;
+        case 'page_picker':
+          if (mode === 'picker') closePicker();
+          else openPagePicker();
+          return;
+        case 'page_prev':
+          pageTurn(-1);
+          return;
+        case 'page_next':
+          pageTurn(1);
+          return;
+        case 'page_first':
+          page = 0;
+          render();
+          return;
+        case 'page_last':
+          page = pageCount(sessions.length, slots.length) - 1;
+          render();
+          return;
+        case 'view_all':
+          if (viewsList.indexOf('all') !== -1) selectView('all');
+          return;
+        case 'view_prev':
+          stepView(-1);
+          return;
+        case 'view_next':
+          stepView(1);
+          return;
+        case 'refresh_now':
+          poll();
+          return;
+        case 'toggle_last':
+          if (lastActiveName) connectTo(lastActiveName);
+          return;
+        case 'brightness_up':
+          setBrightness(deckSettings.brightness + 10);
+          return;
+        case 'brightness_down':
+          setBrightness(deckSettings.brightness - 10);
+          return;
+        case 'focus_app':
+          // Not yet implemented -- BACKLOG.md item 3 moves focus-grabbing
+          // server-side so any client (including this one, over the
+          // network) can request it. Until that lands this is a documented
+          // no-op rather than a silent dead binding.
+          if (typeof console !== 'undefined' && console.info) {
+            console.info('muxplex deck: focus_app is not yet implemented (see BACKLOG.md item 3)');
+          }
+          return;
+        case 'none':
+        case 'session':
+        default:
+          return; // explicit no-op
+      }
+    }
+
+    function stepView(delta) {
+      var idx = viewsList.indexOf(viewName);
+      if (idx === -1) return;
+      var next = clampPage(idx, delta, viewsList.length);
+      if (next !== idx) selectView(viewsList[next]);
+    }
+
+    function setBrightness(value) {
+      if (value > 100) value = 100;
+      if (value < 10) value = 10;
+      deckSettings.brightness = value;
+      saveDeckSettings(storage, deckSettings);
+      applyBrightness();
+    }
+
+    /**
+     * A relative tick from a dial turn: apply it via the pure
+     * `applyRelativeTicks`, then commit whichever piece of state it
+     * touched back into the real (mutable) module state.
+     * @param {number} dialIndex
+     * @param {number} ticks
+     */
+    function onDialTurn(dialIndex, ticks) {
+      var binding = dialBindings[dialIndex];
+      if (!binding) return;
+      var action = binding.turn;
+      var slots = sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys);
+      var viewIndex = viewsList.indexOf(viewName);
+      var update = applyRelativeTicks(action, ticks, {
+        page: page,
+        pageCount: pageCount(sessions.length, slots.length),
+        viewIndex: viewIndex === -1 ? 0 : viewIndex,
+        viewCount: viewsList.length,
+        brightness: deckSettings.brightness,
+      });
+      if ('page' in update) {
+        page = update.page;
+        render();
+      }
+      if ('viewIndex' in update && viewsList[update.viewIndex] != null) {
+        selectView(viewsList[update.viewIndex]);
+      }
+      if ('brightness' in update) {
+        setBrightness(update.brightness);
+      }
+    }
+
+    function onDialPush(dialIndex) {
+      var binding = dialBindings[dialIndex];
+      if (!binding) return;
+      dispatchAction(binding.push);
+    }
+
+    // ── Emulated dial strip (BACKLOG.md item 2 -- "emulated touch screen
+    // bars and dials like the Stream Deck+") ──
+    //
+    // A dial occupies a fixed-height strip below the key grid (reserved by
+    // contentBoxForDials before the grid is computed, so the two surfaces
+    // never overlap). Turn is a vertical drag reduced to signed ticks by
+    // dialDragTicks (see that function's doc comment for why a scrub
+    // gesture rather than a rotary-angle one); a short, small-displacement
+    // release is instead treated as a push (isDialTap). One control, both
+    // halves of the dial.N.turn / dial.N.push address pair.
+    //
+    // Deliberately NOT building a separate continuous "touch strip" widget
+    // (also named in the backlog): every action in ACTION_CATALOG is
+    // either momentary or a signed-tick RELATIVE action -- none consumes a
+    // continuous 0..1 value the way a real Stream Deck+ touch strip's
+    // volume-style use case would. Building one now would be decorative,
+    // not functional -- if a future action needs a continuous parameter,
+    // build the strip then, with a real consumer.
+
+    function buildDialElement(index) {
+      var dial = document.createElement('div');
+      dial.className = 'deck-dial';
+      dial.dataset.index = String(index);
+
+      var face = document.createElement('div');
+      face.className = 'deck-dial-face';
+      dial.appendChild(face);
+
+      var turnLabel = document.createElement('div');
+      turnLabel.className = 'deck-dial-turn-label';
+      dial.appendChild(turnLabel);
+
+      var pushLabel = document.createElement('div');
+      pushLabel.className = 'deck-dial-push-label';
+      dial.appendChild(pushLabel);
+
+      var dragging = false;
+      var startY = 0;
+      var lastTickY = 0;
+      var startTime = 0;
+
+      dial.addEventListener('pointerdown', function (ev) {
+        dragging = true;
+        startY = ev.clientY;
+        lastTickY = ev.clientY;
+        startTime = Date.now();
+        dial.classList.add('is-active');
+        if (dial.setPointerCapture) {
+          try {
+            dial.setPointerCapture(ev.pointerId);
+          } catch (e) {
+            /* ignore -- not all browsers require/support capture here */
+          }
+        }
+      });
+      dial.addEventListener('pointermove', function (ev) {
+        if (!dragging) return;
+        var deltaFromLastTick = ev.clientY - lastTickY;
+        var ticks = dialDragTicks(deltaFromLastTick);
+        if (ticks !== 0) {
+          lastTickY += -ticks * DIAL_PX_PER_TICK;
+          onDialTurn(index, ticks);
+        }
+      });
+      var endDrag = function (ev) {
+        if (!dragging) return;
+        dragging = false;
+        dial.classList.remove('is-active');
+        var totalDelta = ev.clientY - startY;
+        var elapsed = Date.now() - startTime;
+        if (isDialTap(totalDelta, elapsed)) {
+          onDialPush(index);
+        }
+      };
+      dial.addEventListener('pointerup', endDrag);
+      dial.addEventListener('pointercancel', endDrag);
+
+      return dial;
+    }
+
+    function rebuildDialStripIfNeeded() {
+      if (!dialStripEl) return;
+      var count = deckSettings.dialCount;
+      dialStripEl.classList.toggle('hidden', count <= 0);
+      if (dialEls.length === count) return;
+      dialStripEl.innerHTML = '';
+      dialEls = [];
+      for (var i = 0; i < count; i++) {
+        var el = buildDialElement(i);
+        dialStripEl.appendChild(el);
+        dialEls.push(el);
+      }
+      renderDialLabels();
+    }
+
+    function renderDialLabels() {
+      for (var i = 0; i < dialEls.length; i++) {
+        var binding = dialBindings[i] || { turn: 'none', push: 'none' };
+        var turnSpec = ACTION_CATALOG[binding.turn];
+        var pushSpec = ACTION_CATALOG[binding.push];
+        var turnEl = dialEls[i].querySelector('.deck-dial-turn-label');
+        var pushEl = dialEls[i].querySelector('.deck-dial-push-label');
+        if (turnEl) turnEl.textContent = 'TURN: ' + (turnSpec ? turnSpec.label.replace('\n', ' ') : 'NONE');
+        if (pushEl) pushEl.textContent = 'PUSH: ' + (pushSpec ? pushSpec.label.replace('\n', ' ') : 'NONE');
+      }
     }
 
     // ── Tap-to-connect (optimistic, three layers) ──
@@ -1288,15 +2183,274 @@ if (typeof document !== 'undefined') {
       }
     });
 
+    // ── Settings panel (BACKLOG.md item 2) ──
+    //
+    // A full-surface overlay, not a KeyPlan/painter surface -- settings is
+    // form data entry (address/action bindings, numeric fields, JSON
+    // export/import), which is a legitimate, deliberate exception to "no
+    // scrolling anywhere on this surface" (deck.css's own header comment):
+    // #deck-settings is the ONE element allowed overflow-y:auto, because a
+    // form that doesn't fit a landscape phone screen needs to scroll rather
+    // than truncate silently.
+
+    var settingsWired = false;
+
+    function openSettings() {
+      mode = 'settings';
+      if (!settingsWired) {
+        wireSettingsPanel();
+        settingsWired = true;
+      }
+      populateSettingsForm();
+      if (settingsEl) settingsEl.classList.remove('hidden');
+      if (surface) surface.classList.add('hidden');
+      if (dialStripEl) dialStripEl.classList.add('hidden');
+    }
+
+    function closeSettings() {
+      mode = 'grid';
+      if (settingsEl) settingsEl.classList.add('hidden');
+      if (surface) surface.classList.remove('hidden');
+      recomputeGrid(); // pick up any grid-override/dial-count change made in settings
+      render();
+    }
+
+    function populateSettingsForm() {
+      if (!settingsEl) return;
+      var sortSel = settingsEl.querySelector('#settings-sort');
+      var pollInput = settingsEl.querySelector('#settings-poll');
+      var rowsInput = settingsEl.querySelector('#settings-rows');
+      var colsInput = settingsEl.querySelector('#settings-cols');
+      var autoBtn = settingsEl.querySelector('#settings-grid-auto');
+      var dialInput = settingsEl.querySelector('#settings-dial-count');
+      var brightInput = settingsEl.querySelector('#settings-brightness');
+      var exportArea = settingsEl.querySelector('#settings-export');
+
+      if (sortSel) sortSel.value = deckSettings.sort;
+      if (pollInput) pollInput.value = String(deckSettings.pollIntervalMs);
+      if (rowsInput) rowsInput.value = deckSettings.gridOverride ? String(deckSettings.gridOverride.rows) : '';
+      if (colsInput) colsInput.value = deckSettings.gridOverride ? String(deckSettings.gridOverride.cols) : '';
+      if (autoBtn) autoBtn.textContent = deckSettings.gridOverride ? 'Use Auto Grid' : 'Auto (current)';
+      if (dialInput) dialInput.value = String(deckSettings.dialCount);
+      if (brightInput) brightInput.value = String(deckSettings.brightness);
+      if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
+
+      renderBindingsList();
+    }
+
+    function renderBindingsList() {
+      var list = settingsEl.querySelector('#settings-bindings-list');
+      if (!list) return;
+      list.innerHTML = '';
+      var addrs = Object.keys(deckSettings.bindings).sort();
+      for (var i = 0; i < addrs.length; i++) {
+        (function (addr) {
+          var row = document.createElement('div');
+          row.className = 'settings-binding-row';
+          var label = document.createElement('span');
+          label.textContent = addr + ' \u2192 ' + deckSettings.bindings[addr];
+          row.appendChild(label);
+          var removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.textContent = 'Remove';
+          removeBtn.addEventListener('click', function () {
+            delete deckSettings.bindings[addr];
+            saveDeckSettings(storage, deckSettings);
+            renderBindingsList();
+          });
+          row.appendChild(removeBtn);
+          list.appendChild(row);
+        })(addrs[i]);
+      }
+    }
+
+    function wireSettingsPanel() {
+      if (!settingsEl) return;
+
+      var closeBtn = settingsEl.querySelector('#settings-close');
+      if (closeBtn) closeBtn.addEventListener('click', closeSettings);
+
+      var resetBtn = settingsEl.querySelector('#settings-reset');
+      if (resetBtn) {
+        resetBtn.addEventListener('click', function () {
+          deckSettings = defaultDeckSettings();
+          saveDeckSettings(storage, deckSettings);
+          applyBrightness();
+          populateSettingsForm();
+        });
+      }
+
+      var sortSel = settingsEl.querySelector('#settings-sort');
+      if (sortSel) {
+        sortSel.addEventListener('change', function () {
+          deckSettings.sort = sortSel.value === 'server' ? 'server' : 'attention';
+          saveDeckSettings(storage, deckSettings);
+        });
+      }
+
+      var pollInput = settingsEl.querySelector('#settings-poll');
+      if (pollInput) {
+        pollInput.addEventListener('change', function () {
+          var v = parseInt(pollInput.value, 10);
+          if (Number.isFinite(v) && v >= 500 && v <= 60000) {
+            deckSettings.pollIntervalMs = v;
+            saveDeckSettings(storage, deckSettings);
+          } else {
+            pollInput.value = String(deckSettings.pollIntervalMs);
+          }
+        });
+      }
+
+      var rowsInput = settingsEl.querySelector('#settings-rows');
+      var colsInput = settingsEl.querySelector('#settings-cols');
+      var applyGridOverride = function () {
+        var r = parseInt(rowsInput.value, 10);
+        var c = parseInt(colsInput.value, 10);
+        if (Number.isFinite(r) && Number.isFinite(c) && r >= 1 && c >= 1 && r <= 12 && c <= 12 && r * c <= N_MAX) {
+          deckSettings.gridOverride = { rows: r, cols: c };
+          saveDeckSettings(storage, deckSettings);
+          populateSettingsForm();
+        }
+      };
+      if (rowsInput) rowsInput.addEventListener('change', applyGridOverride);
+      if (colsInput) colsInput.addEventListener('change', applyGridOverride);
+
+      var autoBtn = settingsEl.querySelector('#settings-grid-auto');
+      if (autoBtn) {
+        autoBtn.addEventListener('click', function () {
+          deckSettings.gridOverride = null;
+          saveDeckSettings(storage, deckSettings);
+          populateSettingsForm();
+        });
+      }
+
+      var dialInput = settingsEl.querySelector('#settings-dial-count');
+      if (dialInput) {
+        dialInput.addEventListener('change', function () {
+          var v = parseInt(dialInput.value, 10);
+          if (Number.isFinite(v) && v >= 0 && v <= 4) {
+            deckSettings.dialCount = v;
+            saveDeckSettings(storage, deckSettings);
+          } else {
+            dialInput.value = String(deckSettings.dialCount);
+          }
+        });
+      }
+
+      var brightInput = settingsEl.querySelector('#settings-brightness');
+      if (brightInput) {
+        brightInput.addEventListener('input', function () {
+          var v = parseInt(brightInput.value, 10);
+          if (Number.isFinite(v)) setBrightness(v);
+        });
+      }
+
+      var addAddrInput = settingsEl.querySelector('#settings-add-address');
+      var addActionSel = settingsEl.querySelector('#settings-add-action');
+      var addBtn = settingsEl.querySelector('#settings-add-binding');
+      var addError = settingsEl.querySelector('#settings-add-error');
+      var refreshActionOptions = function () {
+        if (!addAddrInput || !addActionSel) return;
+        var address = parseControlAddress(addAddrInput.value.trim());
+        var valid = validActionsForAddress(address);
+        addActionSel.innerHTML = '';
+        for (var i = 0; i < valid.length; i++) {
+          var opt = document.createElement('option');
+          opt.value = valid[i];
+          opt.textContent = valid[i];
+          addActionSel.appendChild(opt);
+        }
+        addActionSel.disabled = !address;
+      };
+      if (addAddrInput) addAddrInput.addEventListener('input', refreshActionOptions);
+      if (addBtn) {
+        addBtn.addEventListener('click', function () {
+          var addrText = addAddrInput.value.trim();
+          var action = addActionSel.value;
+          if (!isValidBinding(addrText, action)) {
+            if (addError) addError.textContent = 'Invalid address/action combination.';
+            return;
+          }
+          if (addError) addError.textContent = '';
+          var address = parseControlAddress(addrText);
+          deckSettings.bindings[address.text] = action;
+          deckSettings.bindings = sanitizeBindings(deckSettings.bindings);
+          saveDeckSettings(storage, deckSettings);
+          addAddrInput.value = '';
+          renderBindingsList();
+        });
+      }
+
+      var copyBtn = settingsEl.querySelector('#settings-export-copy');
+      var exportArea = settingsEl.querySelector('#settings-export');
+      if (copyBtn && exportArea) {
+        copyBtn.addEventListener('click', function () {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(exportArea.value).catch(function () {
+              /* best-effort -- the text is already selectable in the textarea */
+            });
+          }
+          exportArea.select();
+        });
+      }
+
+      var importArea = settingsEl.querySelector('#settings-import');
+      var importBtn = settingsEl.querySelector('#settings-import-apply');
+      var importError = settingsEl.querySelector('#settings-import-error');
+      if (importBtn && importArea) {
+        importBtn.addEventListener('click', function () {
+          var result = importSettingsJSON(importArea.value, defaultDeckSettings());
+          if (result.error) {
+            if (importError) importError.textContent = result.error;
+            return;
+          }
+          if (importError) importError.textContent = '';
+          deckSettings = result.settings;
+          saveDeckSettings(storage, deckSettings);
+          applyBrightness();
+          populateSettingsForm();
+        });
+      }
+    }
+
+    /**
+     * The non-optional escape hatch (BACKLOG.md item 2): `?settings=1`
+     * always opens Settings regardless of any binding/grid state; `?reset=1`
+     * additionally wipes local settings back to defaults first. Checked
+     * independently of every other affordance (long-press, bindings) so a
+     * user who has configured themselves into a corner (every key bound
+     * away, a degenerate 1xN override, dial-only grid) can always recover
+     * by typing a URL -- the one thing that doesn't depend on the deck's
+     * own UI being reachable.
+     * @returns {boolean} whether Settings should be opened after boot
+     */
+    function checkURLEscapeHatch() {
+      var params;
+      try {
+        params = new URLSearchParams(window.location.search);
+      } catch (e) {
+        return false;
+      }
+      var reset = params.has('reset');
+      if (reset) {
+        deckSettings = defaultDeckSettings();
+        saveDeckSettings(storage, deckSettings);
+      }
+      return reset || params.has('settings');
+    }
+
     // ── Boot ──
 
     function boot() {
+      applyBrightness();
+      var wantsSettings = checkURLEscapeHatch();
       recomputeGrid();
       render();
       requestWakeLock();
       lockLandscapeOrientation();
       registerServiceWorker();
       poll().then(schedulePoll);
+      if (wantsSettings) openSettings();
     }
 
     if (document.readyState === 'loading') {
@@ -1341,5 +2495,33 @@ if (typeof module !== 'undefined' && module.exports) {
     S_MIN: S_MIN,
     S_MAX: S_MAX,
     N_MAX: N_MAX,
+    // Settings menu (BACKLOG.md item 2)
+    ACTION_CATALOG: ACTION_CATALOG,
+    ACTION_MOMENTARY: ACTION_MOMENTARY,
+    ACTION_RELATIVE: ACTION_RELATIVE,
+    parseControlAddress: parseControlAddress,
+    validActionsForAddress: validActionsForAddress,
+    isValidBinding: isValidBinding,
+    sanitizeBindings: sanitizeBindings,
+    keyBindingsFromConfig: keyBindingsFromConfig,
+    dialBindingsFromConfig: dialBindingsFromConfig,
+    actionKeyContent: actionKeyContent,
+    pageItemLabels: pageItemLabels,
+    pageOptionContent: pageOptionContent,
+    dialDragTicks: dialDragTicks,
+    isDialTap: isDialTap,
+    applyRelativeTicks: applyRelativeTicks,
+    defaultDeckSettings: defaultDeckSettings,
+    mergeDeckSettings: mergeDeckSettings,
+    loadDeckSettings: loadDeckSettings,
+    saveDeckSettings: saveDeckSettings,
+    exportSettingsJSON: exportSettingsJSON,
+    importSettingsJSON: importSettingsJSON,
+    computeGridForShape: computeGridForShape,
+    computeEffectiveGrid: computeEffectiveGrid,
+    contentBoxForDials: contentBoxForDials,
+    DECK_SETTINGS_KEY: DECK_SETTINGS_KEY,
+    DIAL_STRIP_H: DIAL_STRIP_H,
+    DIAL_PX_PER_TICK: DIAL_PX_PER_TICK,
   };
 }

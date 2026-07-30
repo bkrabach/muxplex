@@ -42,6 +42,28 @@ test('deck.js exports all pure functions', () => {
     'findBlankControlFaces',
     'lockLandscapeOrientation',
     'registerServiceWorker',
+    // Settings menu (BACKLOG.md item 2)
+    'parseControlAddress',
+    'validActionsForAddress',
+    'isValidBinding',
+    'sanitizeBindings',
+    'keyBindingsFromConfig',
+    'dialBindingsFromConfig',
+    'actionKeyContent',
+    'pageItemLabels',
+    'pageOptionContent',
+    'dialDragTicks',
+    'isDialTap',
+    'applyRelativeTicks',
+    'defaultDeckSettings',
+    'mergeDeckSettings',
+    'loadDeckSettings',
+    'saveDeckSettings',
+    'exportSettingsJSON',
+    'importSettingsJSON',
+    'computeGridForShape',
+    'computeEffectiveGrid',
+    'contentBoxForDials',
   ];
   for (const fn of expected) {
     assert.ok(fn in deck, `deck.js should export "${fn}"`);
@@ -748,12 +770,405 @@ test('.deck-grid uses fixed, JS-computed pixel tracks -- not an auto-fit/auto-fi
   assert.ok(/grid-template-rows\s*:\s*repeat\(var\(--rows\)/.test(ruleBody), '#deck-grid must size rows from the JS-computed --rows/--cell-h custom properties');
 });
 
-test('deck.css: no scrollable ancestor anywhere on the surface (DESIGN_SOFTDECK.md \u00a78 -- scroll prohibition)', () => {
+test('deck.css: no scrollable ancestor anywhere on the deck surface, EXCEPT the settings panel (DESIGN_SOFTDECK.md \u00a78 -- scroll prohibition)', () => {
   const cssPath = join(__dirname, '..', 'deck', 'deck.css');
   const css = fs.readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.ok(/overflow\s*:\s*hidden/.test(css), 'the root surface must declare overflow: hidden');
-  assert.ok(!/overflow-y\s*:\s*auto/.test(css), 'no element should be scrollable (overflow-y: auto)');
-  assert.ok(!/overflow-x\s*:\s*auto/.test(css), 'no element should be scrollable (overflow-x: auto)');
+
+  // #deck-settings is a DELIBERATE, scoped exception (BACKLOG.md item 2):
+  // it's form data entry (bindings editor, JSON export/import), not the
+  // deck's key-grid game surface -- see deck.css's own "Settings panel"
+  // section comment. Every OTHER rule in the file must still forbid
+  // scrolling; strip #deck-settings's own rule block before asserting.
+  const settingsRuleMatch = css.match(/#deck-settings\s*\{[^}]*\}/);
+  assert.ok(settingsRuleMatch, '#deck-settings rule should exist in deck.css');
+  assert.ok(/overflow-y\s*:\s*auto/.test(settingsRuleMatch[0]), '#deck-settings should be the one scrollable element');
+  const cssWithoutSettingsPanel = css.replace(settingsRuleMatch[0], '');
+
+  assert.ok(!/overflow-y\s*:\s*auto/.test(cssWithoutSettingsPanel), 'no element OTHER than #deck-settings should be scrollable (overflow-y: auto)');
+  assert.ok(!/overflow-x\s*:\s*auto/.test(cssWithoutSettingsPanel), 'no element should be scrollable (overflow-x: auto)');
+});
+
+// ─── Settings menu (BACKLOG.md item 2) ─────────────────────────────────────
+
+// Golden-fixture drift tripwire (DECK_PARITY_ARCHITECTURE.md §6.2 style):
+// this literal table mirrors muxplex-deck's controls.py `ACTIONS` dict
+// (name -> kind) verbatim. If either repo adds/removes/reclassifies an
+// action without updating the other, this test fails loudly instead of
+// the two clients silently disagreeing on what "view_cycle" means.
+const MUXPLEX_DECK_ACTION_KINDS = {
+  session: 'momentary',
+  view_picker: 'momentary',
+  page_picker: 'momentary',
+  page_prev: 'momentary',
+  page_next: 'momentary',
+  none: 'momentary',
+  view_cycle: 'relative',
+  page_cycle: 'relative',
+  view_all: 'momentary',
+  page_first: 'momentary',
+  page_last: 'momentary',
+  view_prev: 'momentary',
+  view_next: 'momentary',
+  focus_app: 'momentary',
+  refresh_now: 'momentary',
+  toggle_last: 'momentary',
+  brightness_up: 'momentary',
+  brightness_down: 'momentary',
+  brightness_cycle: 'relative',
+};
+
+test('ACTION_CATALOG mirrors muxplex-deck controls.py\'s 19-action catalog exactly (name + kind)', () => {
+  const expectedNames = Object.keys(MUXPLEX_DECK_ACTION_KINDS).sort();
+  const actualNames = Object.keys(deck.ACTION_CATALOG).sort();
+  assert.deepEqual(actualNames, expectedNames, 'ACTION_CATALOG action names must match muxplex-deck\'s controls.py ACTIONS exactly');
+  for (const name of expectedNames) {
+    assert.strictEqual(deck.ACTION_CATALOG[name].kind, MUXPLEX_DECK_ACTION_KINDS[name], `action ${name} kind should match muxplex-deck`);
+  }
+});
+
+test('parseControlAddress: valid key/dial forms', () => {
+  assert.deepEqual(deck.parseControlAddress('key.0'), { control: 'key', index: 0, sub: null, text: 'key.0' });
+  assert.deepEqual(deck.parseControlAddress('key.31'), { control: 'key', index: 31, sub: null, text: 'key.31' });
+  assert.deepEqual(deck.parseControlAddress('dial.2.turn'), { control: 'dial', index: 2, sub: 'turn', text: 'dial.2.turn' });
+  assert.deepEqual(deck.parseControlAddress('dial.0.push'), { control: 'dial', index: 0, sub: 'push', text: 'dial.0.push' });
+});
+
+test('parseControlAddress: rejects malformed addresses (never throws)', () => {
+  assert.strictEqual(deck.parseControlAddress('key.01'), null); // leading zero
+  assert.strictEqual(deck.parseControlAddress('key.-1'), null); // sign
+  assert.strictEqual(deck.parseControlAddress('key.'), null);
+  assert.strictEqual(deck.parseControlAddress('dial.1.spin'), null); // unknown sub
+  assert.strictEqual(deck.parseControlAddress('button.3'), null);
+  assert.strictEqual(deck.parseControlAddress(''), null);
+  assert.strictEqual(deck.parseControlAddress(null), null);
+  assert.strictEqual(deck.parseControlAddress(42), null);
+});
+
+test('validActionsForAddress: key/dial.push get MOMENTARY + none; dial.turn gets RELATIVE + none', () => {
+  const keyActions = deck.validActionsForAddress(deck.parseControlAddress('key.3'));
+  assert.ok(keyActions.includes('page_prev'));
+  assert.ok(keyActions.includes('none'));
+  assert.ok(!keyActions.includes('view_cycle'), 'a RELATIVE action must not be valid on key.N');
+
+  const pushActions = deck.validActionsForAddress(deck.parseControlAddress('dial.0.push'));
+  assert.ok(pushActions.includes('refresh_now'));
+  assert.ok(!pushActions.includes('page_cycle'));
+
+  const turnActions = deck.validActionsForAddress(deck.parseControlAddress('dial.0.turn'));
+  assert.ok(turnActions.includes('view_cycle'));
+  assert.ok(turnActions.includes('page_cycle'));
+  assert.ok(turnActions.includes('brightness_cycle'));
+  assert.ok(turnActions.includes('none'), '"none" must always be valid regardless of kind');
+  assert.ok(!turnActions.includes('page_prev'), 'a MOMENTARY action must not be valid on dial.N.turn');
+});
+
+test('validActionsForAddress: null address (unparseable) returns empty', () => {
+  assert.deepEqual(deck.validActionsForAddress(null), []);
+});
+
+test('isValidBinding: combines parse + catalog + kind check', () => {
+  assert.strictEqual(deck.isValidBinding('key.3', 'refresh_now'), true);
+  assert.strictEqual(deck.isValidBinding('dial.0.turn', 'page_cycle'), true);
+  assert.strictEqual(deck.isValidBinding('dial.0.turn', 'page_prev'), false, 'kind mismatch');
+  assert.strictEqual(deck.isValidBinding('key.3', 'not_a_real_action'), false);
+  assert.strictEqual(deck.isValidBinding('not.an.address', 'none'), false);
+});
+
+test('sanitizeBindings: drops invalid entries, keeps valid ones', () => {
+  const result = deck.sanitizeBindings({
+    'key.3': 'refresh_now',
+    'key.5': 'not_a_real_action', // invalid action
+    'dial.0.turn': 'page_cycle',
+    'dial.0.push': 'view_cycle', // kind mismatch -- relative on a push
+    'bogus': 'none', // unparseable address
+  });
+  assert.deepEqual(result, { 'key.3': 'refresh_now', 'dial.0.turn': 'page_cycle' });
+});
+
+test('sanitizeBindings: non-object input returns empty', () => {
+  assert.deepEqual(deck.sanitizeBindings(null), {});
+  assert.deepEqual(deck.sanitizeBindings('not an object'), {});
+  assert.deepEqual(deck.sanitizeBindings(undefined), {});
+});
+
+test('keyBindingsFromConfig: extracts key.N entries, filters out-of-range and "session"', () => {
+  const result = deck.keyBindingsFromConfig(
+    { 'key.2': 'refresh_now', 'key.50': 'none', 'key.1': 'session', 'dial.0.turn': 'page_cycle' },
+    32 // keyCount
+  );
+  assert.deepEqual(result, { 2: 'refresh_now' }, 'key.50 out of range and key.1=session (default) are both excluded');
+});
+
+test('dialBindingsFromConfig: dense array, default {turn: none, push: none}', () => {
+  const result = deck.dialBindingsFromConfig({ 'dial.0.turn': 'page_cycle', 'dial.1.push': 'refresh_now' }, 3);
+  assert.deepEqual(result, [
+    { turn: 'page_cycle', push: 'none' },
+    { turn: 'none', push: 'refresh_now' },
+    { turn: 'none', push: 'none' },
+  ]);
+});
+
+test('actionKeyContent: splits the catalog label into NAME/BODY, STATE always blank', () => {
+  assert.deepEqual(deck.actionKeyContent('refresh_now'), { name: 'REFRESH', body: 'NOW', state: '' });
+  assert.deepEqual(deck.actionKeyContent('none'), { name: '', body: '', state: '' });
+  assert.deepEqual(deck.actionKeyContent('not_a_real_action'), { name: '', body: '', state: '' });
+});
+
+test('pageItemLabels: 1-indexed human labels', () => {
+  assert.deepEqual(deck.pageItemLabels(3), ['Page 1', 'Page 2', 'Page 3']);
+  assert.deepEqual(deck.pageItemLabels(0), []);
+});
+
+test('pageOptionContent: NAME blank, BODY is label, STATE marks current', () => {
+  assert.deepEqual(deck.pageOptionContent('Page 2', true), { name: '', body: 'Page 2', state: 'current' });
+  assert.deepEqual(deck.pageOptionContent('Page 2', false), { name: '', body: 'Page 2', state: '' });
+});
+
+test('dialDragTicks: upward drag (negative deltaY) yields positive ticks', () => {
+  assert.strictEqual(deck.dialDragTicks(-deck.DIAL_PX_PER_TICK), 1);
+  assert.strictEqual(deck.dialDragTicks(-2 * deck.DIAL_PX_PER_TICK), 2);
+});
+
+test('dialDragTicks: downward drag yields negative ticks', () => {
+  assert.strictEqual(deck.dialDragTicks(deck.DIAL_PX_PER_TICK), -1);
+});
+
+test('dialDragTicks: sub-threshold movement yields zero ticks', () => {
+  assert.strictEqual(deck.dialDragTicks(5), 0);
+  assert.strictEqual(deck.dialDragTicks(-5), 0);
+});
+
+test('isDialTap: small + fast release is a tap', () => {
+  assert.strictEqual(deck.isDialTap(3, 100), true);
+});
+
+test('isDialTap: large displacement is not a tap even if fast', () => {
+  assert.strictEqual(deck.isDialTap(50, 100), false);
+});
+
+test('isDialTap: small displacement but slow is not a tap', () => {
+  assert.strictEqual(deck.isDialTap(3, 500), false);
+});
+
+test('applyRelativeTicks: page_cycle clamps via the same rule as page_prev/page_next', () => {
+  const ctx = { page: 1, pageCount: 3, viewIndex: 0, viewCount: 1, brightness: 100 };
+  assert.deepEqual(deck.applyRelativeTicks('page_cycle', 1, ctx), { page: 2 });
+  assert.deepEqual(deck.applyRelativeTicks('page_cycle', 5, ctx), { page: 2 }, 'clamped, never wraps');
+  assert.deepEqual(deck.applyRelativeTicks('page_cycle', -5, ctx), { page: 0 });
+});
+
+test('applyRelativeTicks: view_cycle clamps an index into viewsList', () => {
+  const ctx = { page: 0, pageCount: 1, viewIndex: 1, viewCount: 3, brightness: 100 };
+  assert.deepEqual(deck.applyRelativeTicks('view_cycle', 1, ctx), { viewIndex: 2 });
+  assert.deepEqual(deck.applyRelativeTicks('view_cycle', 10, ctx), { viewIndex: 2 });
+});
+
+test('applyRelativeTicks: brightness_cycle steps by 10%, clamped [10,100]', () => {
+  const ctx = { page: 0, pageCount: 1, viewIndex: 0, viewCount: 1, brightness: 95 };
+  assert.deepEqual(deck.applyRelativeTicks('brightness_cycle', 1, ctx), { brightness: 100 });
+  assert.deepEqual(deck.applyRelativeTicks('brightness_cycle', -20, ctx), { brightness: 10 });
+});
+
+test('applyRelativeTicks: zero ticks or a non-relative action is a no-op', () => {
+  const ctx = { page: 0, pageCount: 3, viewIndex: 0, viewCount: 1, brightness: 100 };
+  assert.deepEqual(deck.applyRelativeTicks('page_cycle', 0, ctx), {});
+  assert.deepEqual(deck.applyRelativeTicks('refresh_now', 1, ctx), {});
+});
+
+test('defaultDeckSettings: sane, valid-by-construction defaults', () => {
+  const d = deck.defaultDeckSettings();
+  assert.strictEqual(d.sort, 'attention');
+  assert.strictEqual(d.gridOverride, null);
+  assert.strictEqual(d.dialCount, 0);
+  assert.strictEqual(d.brightness, 100);
+  assert.deepEqual(d.bindings, {});
+});
+
+test('mergeDeckSettings: valid incoming fields are adopted', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), {
+    sort: 'server',
+    pollIntervalMs: 3000,
+    gridOverride: { rows: 3, cols: 5 },
+    dialCount: 2,
+    brightness: 60,
+    bindings: { 'key.1': 'refresh_now' },
+  });
+  assert.strictEqual(merged.sort, 'server');
+  assert.strictEqual(merged.pollIntervalMs, 3000);
+  assert.deepEqual(merged.gridOverride, { rows: 3, cols: 5 });
+  assert.strictEqual(merged.dialCount, 2);
+  assert.strictEqual(merged.brightness, 60);
+  assert.deepEqual(merged.bindings, { 'key.1': 'refresh_now' });
+});
+
+test('mergeDeckSettings: out-of-range / wrong-typed fields fall back to defaults individually', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), {
+    sort: 'bogus',
+    pollIntervalMs: 1, // too low
+    gridOverride: { rows: 99, cols: 99 }, // exceeds N_MAX
+    dialCount: 10, // exceeds max
+    brightness: 5, // below floor
+  });
+  const defaults = deck.defaultDeckSettings();
+  assert.strictEqual(merged.sort, defaults.sort);
+  assert.strictEqual(merged.pollIntervalMs, defaults.pollIntervalMs);
+  assert.strictEqual(merged.gridOverride, null);
+  assert.strictEqual(merged.dialCount, defaults.dialCount);
+  assert.strictEqual(merged.brightness, defaults.brightness);
+});
+
+test('mergeDeckSettings: non-object incoming returns defaults', () => {
+  assert.deepEqual(deck.mergeDeckSettings(deck.defaultDeckSettings(), null), deck.defaultDeckSettings());
+});
+
+// Fake localStorage-shaped object for loadDeckSettings/saveDeckSettings.
+function fakeStorage(initial) {
+  const map = new Map(Object.entries(initial || {}));
+  return {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => map.set(k, v),
+    _map: map,
+  };
+}
+
+test('loadDeckSettings: null storage (as in node --test) returns defaults', () => {
+  assert.deepEqual(deck.loadDeckSettings(null), deck.defaultDeckSettings());
+});
+
+test('loadDeckSettings: corrupt JSON in storage falls back to defaults', () => {
+  const storage = fakeStorage({ [deck.DECK_SETTINGS_KEY]: 'not json{' });
+  assert.deepEqual(deck.loadDeckSettings(storage), deck.defaultDeckSettings());
+});
+
+test('saveDeckSettings + loadDeckSettings round-trip', () => {
+  const storage = fakeStorage();
+  const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), { sort: 'server', dialCount: 2 });
+  deck.saveDeckSettings(storage, settings);
+  const loaded = deck.loadDeckSettings(storage);
+  assert.strictEqual(loaded.sort, 'server');
+  assert.strictEqual(loaded.dialCount, 2);
+});
+
+test('saveDeckSettings: a throwing storage (full/private-browsing) is swallowed', () => {
+  const throwingStorage = {
+    setItem: () => {
+      throw new Error('QuotaExceededError');
+    },
+  };
+  assert.doesNotThrow(() => deck.saveDeckSettings(throwingStorage, deck.defaultDeckSettings()));
+});
+
+test('exportSettingsJSON + importSettingsJSON: round-trips a settings object', () => {
+  const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), {
+    sort: 'server',
+    bindings: { 'key.2': 'refresh_now' },
+  });
+  const text = deck.exportSettingsJSON(settings);
+  const result = deck.importSettingsJSON(text);
+  assert.strictEqual(result.error, null);
+  assert.strictEqual(result.settings.sort, 'server');
+  assert.deepEqual(result.settings.bindings, { 'key.2': 'refresh_now' });
+});
+
+test('importSettingsJSON: invalid JSON returns an error, never throws', () => {
+  const result = deck.importSettingsJSON('{not valid json');
+  assert.strictEqual(result.settings, null);
+  assert.ok(result.error && result.error.includes('Invalid JSON'));
+});
+
+test('computeGridForShape: forced 3x5 shape at a comfortably large box fills without letterboxing', () => {
+  const g = deck.computeGridForShape(1000, 600, 3, 5);
+  assert.strictEqual(g.rows, 3);
+  assert.strictEqual(g.cols, 5);
+  assert.ok(g.cellW > 0 && g.cellH > 0);
+});
+
+test('computeGridForShape: zero/negative box returns the same degenerate shape as computeGrid', () => {
+  const g = deck.computeGridForShape(0, 600, 3, 5);
+  assert.strictEqual(g.rows, 0);
+  assert.strictEqual(g.tooSmall, true);
+});
+
+test('computeEffectiveGrid: no override falls back to plain computeGrid (byte-identical for existing devices)', () => {
+  const a = deck.computeGrid(844, 390);
+  const b = deck.computeEffectiveGrid(844, 390, null);
+  assert.deepEqual(a, b);
+});
+
+test('computeEffectiveGrid: a valid override forces the shape', () => {
+  const g = deck.computeEffectiveGrid(1000, 600, { rows: 2, cols: 4 });
+  assert.strictEqual(g.rows, 2);
+  assert.strictEqual(g.cols, 4);
+});
+
+test('contentBoxForDials: dialCount 0 is a no-op (byte-identical box)', () => {
+  const box = { w: 800, h: 400 };
+  assert.deepEqual(deck.contentBoxForDials(box, 0), box);
+});
+
+test('contentBoxForDials: dialCount > 0 reserves DIAL_STRIP_H from height', () => {
+  const box = { w: 800, h: 400 };
+  const result = deck.contentBoxForDials(box, 2);
+  assert.strictEqual(result.w, 800);
+  assert.strictEqual(result.h, 400 - deck.DIAL_STRIP_H);
+});
+
+test('sessionSlotIndices: excludes explicitly-bound key indices in addition to reserved control keys', () => {
+  const reserved = deck.reservedControlKeys(4, 8); // view:0, prev:24, next:31
+  const withoutBindings = deck.sessionSlotIndices(4, 8, reserved);
+  const withBindings = deck.sessionSlotIndices(4, 8, reserved, { 2: 'refresh_now', 5: 'none' });
+  assert.ok(withoutBindings.includes(2) && withoutBindings.includes(5));
+  assert.ok(!withBindings.includes(2) && !withBindings.includes(5));
+  assert.strictEqual(withBindings.length, withoutBindings.length - 2);
+});
+
+test('computeKeyPlan: a bound key renders role "bound" with action content, and is excluded from session slots', () => {
+  const reserved = deck.reservedControlKeys(4, 8);
+  const sessions = [{ name: 'alpha', active: false, needs_attention: false, last_activity_at: null }];
+  const result = deck.computeKeyPlan({
+    grid: { rows: 4, cols: 8 },
+    reserved: reserved,
+    mode: 'grid',
+    sessions: sessions,
+    viewName: 'all',
+    viewsList: ['all'],
+    page: 0,
+    pickerPage: 0,
+    boundKeys: { 1: 'refresh_now' },
+    nowMs: Date.now(),
+  });
+  const boundFace = result.plan[1];
+  assert.strictEqual(boundFace.role, 'bound');
+  assert.strictEqual(boundFace.target, 'refresh_now');
+  assert.strictEqual(boundFace.name, 'REFRESH');
+  // The session should NOT have landed on the bound index -- it lands on
+  // the next available slot instead.
+  assert.notStrictEqual(result.plan[1].role, 'session');
+});
+
+test('computeKeyPlan: pickerKind "page" renders page items with correct target and current-page marker', () => {
+  const reserved = deck.reservedControlKeys(4, 8);
+  const result = deck.computeKeyPlan({
+    grid: { rows: 4, cols: 8 },
+    reserved: reserved,
+    mode: 'picker',
+    pickerKind: 'page',
+    page: 1,
+    pickerPage: 0,
+    pagePickerCount: 3,
+    viewName: 'all',
+    viewsList: ['all'],
+    nowMs: Date.now(),
+  });
+  const slots = deck.sessionSlotIndices(4, 8, reserved);
+  // slots[0] should hold "Page 1", slots[1] "Page 2" (the current page,
+  // since p.page=1 is 0-indexed page 2), slots[2] "Page 3".
+  assert.strictEqual(result.plan[slots[0]].body, 'Page 1');
+  assert.strictEqual(result.plan[slots[0]].target, '0');
+  assert.strictEqual(result.plan[slots[1]].body, 'Page 2');
+  assert.strictEqual(result.plan[slots[1]].flags.currentView, true, 'page 2 (index 1) should be marked current since p.page=1');
+  assert.strictEqual(result.plan[slots[0]].flags.currentView, false);
 });
 
 // ─── lockLandscapeOrientation / registerServiceWorker ──────────────────────

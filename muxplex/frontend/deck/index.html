@@ -38,12 +38,94 @@
       <div id="deck-grid" role="list" aria-label="deck keys"></div>
     </div>
 
+    <!-- Emulated dial strip (BACKLOG.md item 2) -- hidden (dialCount=0) by
+         default; deck.js toggles this and populates it with `.deck-dial`
+         elements per the configured dialCount. -->
+    <div id="deck-dial-strip" class="hidden" role="list" aria-label="deck dials"></div>
+
     <!-- Whole-surface takeover for the disconnected state (identical
          mechanism to the view picker, \u00a77) -- shown instead of the grid,
          never alongside it. -->
     <div id="deck-disconnected" class="hidden">
       <p id="deck-disconnected-message"></p>
       <button type="button" id="deck-retry">RETRY</button>
+    </div>
+
+    <!-- Settings panel (BACKLOG.md item 2). Reached via a long-press on the
+         VIEW control key, or the ?settings=1 / ?reset=1 URL escape hatch
+         (deck.js's checkURLEscapeHatch) -- never a default key slot. This is
+         the one element on the surface allowed to scroll (deck.css). -->
+    <div id="deck-settings" class="hidden">
+      <button type="button" id="settings-close">&larr; BACK</button>
+      <h1>Deck Settings</h1>
+
+      <section>
+        <h2>Session order</h2>
+        <label>Sort
+          <select id="settings-sort">
+            <option value="attention">Attention (needs-attention first)</option>
+            <option value="server">Server (dashboard's own order)</option>
+          </select>
+        </label>
+      </section>
+
+      <section>
+        <h2>Polling</h2>
+        <label>Poll interval (ms)
+          <input type="number" id="settings-poll" min="500" max="60000" step="100" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Grid layout</h2>
+        <p>Per-device key grid override. Leave blank for automatic (viewport-derived) sizing.</p>
+        <label>Rows <input type="number" id="settings-rows" min="1" max="12" /></label>
+        <label>Cols <input type="number" id="settings-cols" min="1" max="12" /></label>
+        <button type="button" id="settings-grid-auto">Auto</button>
+      </section>
+
+      <section>
+        <h2>Dials</h2>
+        <label>Dial count (0-4)
+          <input type="number" id="settings-dial-count" min="0" max="4" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Brightness</h2>
+        <label>Brightness (10-100%)
+          <input type="range" id="settings-brightness" min="10" max="100" />
+        </label>
+      </section>
+
+      <section>
+        <h2>Key/dial bindings</h2>
+        <p>Address form: <code>key.N</code>, <code>dial.N.turn</code>, <code>dial.N.push</code>.</p>
+        <div id="settings-bindings-list"></div>
+        <div class="settings-add-binding">
+          <input type="text" id="settings-add-address" placeholder="key.3" />
+          <select id="settings-add-action"></select>
+          <button type="button" id="settings-add-binding">Add</button>
+        </div>
+        <p id="settings-add-error" class="settings-error"></p>
+      </section>
+
+      <section>
+        <h2>Export</h2>
+        <textarea id="settings-export" readonly rows="6"></textarea>
+        <button type="button" id="settings-export-copy">Copy</button>
+      </section>
+
+      <section>
+        <h2>Import</h2>
+        <textarea id="settings-import" rows="6" placeholder="Paste exported settings JSON here"></textarea>
+        <button type="button" id="settings-import-apply">Apply</button>
+        <p id="settings-import-error" class="settings-error"></p>
+      </section>
+
+      <section>
+        <button type="button" id="settings-reset">Reset to defaults</button>
+      </section>
     </div>
   </div>
 

@@ -320,6 +320,191 @@ html, body {
   box-shadow: inset 0 0 0 var(--b) #00D9F5;
 }
 
+/* Bound-action key (BACKLOG.md item 2): a fixed action, not an
+   auto-assigned session tile or a nav control -- distinct purple so it's
+   visually unambiguous from both .is-session and .is-control at a glance. */
+.deck-key.is-bound {
+  background: #241033;
+}
+.deck-key.is-bound .key-name {
+  color: #C9A6E8;
+}
+
+/* \u2500\u2500\u2500 Emulated dial strip (BACKLOG.md item 2) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/*
+ * A fixed-height row below the key grid, reserved by deck.js's
+ * contentBoxForDials BEFORE the grid is computed -- the two never overlap.
+ * Height matches deck.js's DIAL_STRIP_H (100px) -- kept in sync by hand
+ * (this is a Layer-B-style geometry constant, not worth a CSS custom
+ * property for a single fixed value used in exactly one place).
+ */
+
+#deck-dial-strip {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 12px env(safe-area-inset-bottom, 0px);
+  z-index: 4;
+}
+#deck-dial-strip.hidden {
+  display: none;
+}
+
+.deck-dial {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background: #101036;
+  border: 2px solid #2A2A4A;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #8888AA;
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+  padding: 4px;
+  touch-action: none; /* the drag gesture IS the interaction -- never let the page scroll instead */
+  user-select: none;
+  cursor: pointer;
+  transition: filter 100ms ease, transform 100ms ease;
+}
+.deck-dial.is-active {
+  filter: brightness(1.3);
+  transform: scale(0.97);
+}
+.deck-dial-face {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #00D9F5;
+  margin-bottom: 4px;
+}
+.deck-dial-turn-label,
+.deck-dial-push-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.deck-dial-push-label {
+  color: #6A6A88;
+}
+
+/* \u2500\u2500\u2500 Settings panel (BACKLOG.md item 2) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/*
+ * The ONE element on this surface allowed to scroll -- see deck.js's
+ * "Settings panel" section comment for why that's a deliberate, scoped
+ * exception to the file header's "no scrolling anywhere" rule: this is
+ * form data entry, not the deck's key-grid game surface.
+ */
+
+#deck-settings {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: #05050A;
+  color: #E6EDF3;
+  overflow-y: auto;
+  padding: 16px 20px calc(24px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+}
+#deck-settings.hidden {
+  display: none;
+}
+#deck-settings h1 {
+  font-size: 1.1rem;
+  margin: 8px 0 16px;
+}
+#deck-settings h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8888AA;
+  margin: 0 0 8px;
+}
+#deck-settings section {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #1C1C22;
+}
+#deck-settings label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+#deck-settings input[type='number'],
+#deck-settings input[type='text'],
+#deck-settings select,
+#deck-settings textarea {
+  background: #101018;
+  color: #E6EDF3;
+  border: 1px solid #2A2A4A;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 0.9rem;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+}
+#deck-settings input[type='range'] {
+  width: 100%;
+}
+#deck-settings textarea {
+  font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
+  font-size: 12px;
+}
+#deck-settings button {
+  background: #101036;
+  color: #FFFFFF;
+  border: 1px solid #2A2A4A;
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#settings-close {
+  margin-bottom: 8px;
+}
+#settings-reset {
+  background: #3A1010;
+  border-color: #5A1C1C;
+}
+.settings-binding-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 0.85rem;
+  border-bottom: 1px solid #14141A;
+}
+.settings-add-binding {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+.settings-add-binding input,
+.settings-add-binding select {
+  width: auto;
+  flex: 1;
+  margin-top: 0;
+}
+.settings-error {
+  color: #f85149;
+  font-size: 0.8rem;
+  min-height: 1em;
+}
+
 /* ─── Disconnected / too-small takeover ──────────────────────────────────── */
 /*
  * Identical mechanism to the picker: the grid is replaced by one message
