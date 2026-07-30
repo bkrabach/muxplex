@@ -44,6 +44,85 @@ function sortByPriority(sessions) {
 }
 
 /**
+ * Sort sessions attention-first: bell/needs-attention sessions first (newest
+ * bell fire first), then everything else by last_activity_at descending
+ * (unknown activity sorts last). Mirrors the two ordering criteria that
+ * matter most from the tiered ordering already implemented server-side
+ * (main.py's _attention_order(), used by GET /api/view?sort=attention) and
+ * in muxplex-deck's attention.py.
+ *
+ * Deliberately does NOT reproduce that ordering's middle "active session"
+ * tier: the grid has no single session that is "active" while it's on
+ * screen (viewing the grid means no session is open), so an active-tier
+ * concept would only ever be meaningful for the sidebar (which has a
+ * `currentSession`) -- and the two surfaces sorting differently would
+ * violate the very invariant this sort exists to serve (main view and
+ * sidebar must agree on order). Omitting tier 2 keeps both surfaces
+ * identical for every input.
+ *
+ * Returns a new array; does not mutate the original. Array.prototype.sort
+ * is stable, so ties (including "no bell, no activity" for two sessions)
+ * preserve incoming order.
+ * @param {object[]} sessions
+ * @returns {object[]}
+ */
+function sortByAttention(sessions) {
+  const tier1 = sessions.filter((s) => sessionPriority(s) === 'bell');
+  tier1.sort((a, b) => {
+    const aFired = (a.bell && a.bell.last_fired_at) || 0;
+    const bFired = (b.bell && b.bell.last_fired_at) || 0;
+    return bFired - aFired;
+  });
+  const tier1Keys = new Set(tier1.map((s) => s.sessionKey || s.name));
+  const tier3 = sessions.filter((s) => !tier1Keys.has(s.sessionKey || s.name));
+  tier3.sort((a, b) => {
+    const aTime = a.last_activity_at;
+    const bTime = b.last_activity_at;
+    if (aTime == null) return bTime == null ? 0 : 1;
+    if (bTime == null) return -1;
+    return bTime - aTime;
+  });
+  return tier1.concat(tier3);
+}
+
+/**
+ * Apply the shared sort_order setting to a visible/filtered session array.
+ * Single implementation used by BOTH renderGrid() and renderSidebar() so the
+ * two surfaces can never drift into disagreeing about ordering -- previously
+ * renderSidebar applied no sort_order logic at all and always showed
+ * server-provided order regardless of the setting.
+ * @param {object[]} visible - already view-filtered sessions
+ * @param {string|undefined} sortOrder - _serverSettings.sort_order value
+ * @param {boolean} mobile - isMobile() result for the current viewport
+ * @returns {object[]}
+ */
+function applySortOrder(visible, sortOrder, mobile) {
+  if (sortOrder === 'alphabetical') {
+    return visible.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+  }
+  if (sortOrder === 'attention') {
+    // Unlike 'recent', attention already puts bell/urgent sessions first --
+    // the same signal sortByPriority's mobile substitute exists to surface --
+    // so it applies identically on mobile and desktop; no carve-out needed.
+    return sortByAttention(visible);
+  }
+  if (sortOrder === 'recent' && !mobile) {
+    // Sort by last_activity_at descending (most recently active first); sessions
+    // with no known activity timestamp sort last. Array.prototype.sort is stable,
+    // so ties (including sessions that are all null) preserve server-provided order.
+    return visible.slice().sort(function(a, b) {
+      var aTime = a.last_activity_at;
+      var bTime = b.last_activity_at;
+      if (aTime == null) return bTime == null ? 0 : 1;
+      if (bTime == null) return -1;
+      return bTime - aTime;
+    });
+  }
+  // 'recent' (mobile), 'manual', and default use server-provided order; priority sort on mobile
+  return mobile ? sortByPriority(visible) : visible;
+}
+
+/**
  * Filter an array of sessions by a search query string.
  * Matches against session.name (case-insensitive substring match).
  * Returns all sessions when query is empty or null.
@@ -1080,12 +1159,23 @@ function renderSidebar(sessions, currentSession, currentRemoteId) {
     return;
   }
 
+  // Apply the same sort_order setting as renderGrid, via the shared
+  // applySortOrder() helper -- previously the sidebar applied no sort_order
+  // logic at all and always showed server-provided order, so it silently
+  // disagreed with the grid whenever a non-default sort was selected.
+  const sortOrder = _serverSettings && _serverSettings.sort_order;
+  const mobile = isMobile();
+  const ordered = applySortOrder(visible, sortOrder, mobile);
+
   let html = '';
 
   if (_serverSettings && _serverSettings.multi_device_enabled) {
-    // Group sessions by deviceName when multi_device_enabled
+    // Group sessions by deviceName when multi_device_enabled. Order within
+    // each group follows `ordered` (groups are built by iterating it in
+    // order, and Map preserves insertion order), so e.g. attention sort still
+    // surfaces the freshest bell first within each device's section.
     const groups = new Map();
-    for (const session of visible) {
+    for (const session of ordered) {
       const deviceName = session.deviceName || 'Unknown';
       if (!groups.has(deviceName)) groups.set(deviceName, []);
       groups.get(deviceName).push(session);
@@ -1098,7 +1188,7 @@ function renderSidebar(sessions, currentSession, currentRemoteId) {
     }
   } else {
     // Single source: flat list with no device headers
-    html = visible.map((session) => buildSidebarHTML(session, currentSession, currentRemoteId)).join('');
+    html = ordered.map((session) => buildSidebarHTML(session, currentSession, currentRemoteId)).join('');
   }
 
   list.innerHTML = html;
@@ -1904,27 +1994,11 @@ function renderGrid(sessions) {
 
   if (emptyState) emptyState.classList.add('hidden');
 
-  // Apply sort order from server settings
+  // Apply sort order from server settings. Shared with renderSidebar() via
+  // applySortOrder() so the two surfaces can never disagree about ordering.
   var sortOrder = _serverSettings && _serverSettings.sort_order;
   var mobile = isMobile();
-  var ordered;
-  if (sortOrder === 'alphabetical') {
-    ordered = visible.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-  } else if (sortOrder === 'recent' && !mobile) {
-    // Sort by last_activity_at descending (most recently active first); sessions
-    // with no known activity timestamp sort last. Array.prototype.sort is stable,
-    // so ties (including sessions that are all null) preserve server-provided order.
-    ordered = visible.slice().sort(function(a, b) {
-      var aTime = a.last_activity_at;
-      var bTime = b.last_activity_at;
-      if (aTime == null) return bTime == null ? 0 : 1;
-      if (bTime == null) return -1;
-      return bTime - aTime;
-    });
-  } else {
-    // 'recent' (mobile), 'manual', and default use server-provided order; priority sort on mobile
-    ordered = mobile ? sortByPriority(visible) : visible;
-  }
+  var ordered = applySortOrder(visible, sortOrder, mobile);
 
   var html;
   if (_gridViewMode === 'grouped') {
@@ -3424,11 +3498,47 @@ function _rerenderViewDependentUI() {
   renderViewDropdown();
   renderGrid(_currentSessions || []);
   renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
+  syncSortOrderControls();
   if (_settingsOpen) renderViewsSettingsTab();
   var manageViewPanel = $('manage-view-panel');
   if (manageViewPanel && !manageViewPanel.classList.contains('hidden')) {
     renderManageViewList();
   }
+}
+
+/**
+ * Set every sort-order control's displayed value from _serverSettings.sort_order.
+ * There are three widgets backed by the SAME server setting (the header quick-sort
+ * select, the sidebar quick-sort select, and the Settings > Sessions select) --
+ * this is the single place that keeps them in agreement, called after any event
+ * that changes or (re)loads _serverSettings (initial load, a remote settings
+ * change via followRemoteViewDefinitions -> _rerenderViewDependentUI, opening
+ * Settings, or a local change on any one of the three selects).
+ * Missing elements (e.g. Settings dialog not yet opened) are skipped silently.
+ */
+function syncSortOrderControls() {
+  var value = (_serverSettings && _serverSettings.sort_order) || 'manual';
+  ['setting-sort-order', 'sort-order-select', 'sidebar-sort-order-select'].forEach(function(id) {
+    var el = $(id);
+    if (el) el.value = value;
+  });
+}
+
+/**
+ * Shared change handler for all three sort-order selects (header quick-sort,
+ * sidebar quick-sort, Settings > Sessions). Applies the new value optimistically
+ * (immediate re-render, matching the existing sidebarOpen/toggleSidebar pattern)
+ * before the fire-and-forget PATCH resolves, then syncs the other two widgets so
+ * a change made in any one place is reflected everywhere at once.
+ */
+function onSortOrderChange() {
+  var value = this && this.value;
+  if (!value) return;
+  if (_serverSettings) _serverSettings.sort_order = value;
+  syncSortOrderControls();
+  renderGrid(_currentSessions || []);
+  renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
+  patchServerSetting('sort_order', value);
 }
 
 /**
@@ -3915,11 +4025,9 @@ function openSettings() {
       });
     }
 
-    // Sort order
-    const sortOrderEl = $('setting-sort-order');
-    if (sortOrderEl && ss && ss.sort_order) {
-      sortOrderEl.value = ss.sort_order;
-    }
+    // Sort order -- also syncs the header/sidebar quick-sort selects (same
+    // underlying setting, three widgets).
+    syncSortOrderControls();
 
     // Window size largest
     const windowSizeEl = $('setting-window-size-largest');
@@ -4729,10 +4837,12 @@ function bindStaticEventListeners() {
     var el = $('setting-default-session');
     if (el) patchServerSetting('default_session', el.value);
   });
-  on($('setting-sort-order'), 'change', function() {
-    var el = $('setting-sort-order');
-    if (el) patchServerSetting('sort_order', el.value);
-  });
+  // Shared handler: all three sort-order selects (header quick-sort, sidebar
+  // quick-sort, this Settings one) write the same sort_order setting and
+  // re-sync each other -- see onSortOrderChange()/syncSortOrderControls().
+  on($('setting-sort-order'), 'change', onSortOrderChange);
+  on($('sort-order-select'), 'change', onSortOrderChange);
+  on($('sidebar-sort-order-select'), 'change', onSortOrderChange);
   on($('setting-window-size-largest'), 'change', function() {
     var el = $('setting-window-size-largest');
     if (el) patchServerSetting('window_size_largest', el.checked);
@@ -4979,6 +5089,8 @@ document.addEventListener('DOMContentLoaded', async function() {
   // Seed the change-detection baseline so the first /api/state poll doesn't
   // trigger a redundant re-fetch in followRemoteViewDefinitions().
   _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || 0;
+  // Initialize the header/sidebar quick-sort selects from the loaded setting.
+  syncSortOrderControls();
 
   // Cache local device_id + version from /api/instance-info. device_id feeds
   // session key construction; version populates the read-only Settings >
@@ -5035,6 +5147,8 @@ if (typeof module !== 'undefined' && module.exports) {
     formatTimestamp,
     sessionPriority,
     sortByPriority,
+    sortByAttention,
+    applySortOrder,
     filterByQuery,
     detectBellTransitions,
     generateDeviceId,

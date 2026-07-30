@@ -1190,6 +1190,12 @@ body {
   gap: 8px;
 }
 
+/* Quick sort select -- shares .settings-select's look; header/sidebar context
+   just needs a small left margin to separate it from the view dropdown. */
+.header-sort-select {
+  margin-left: 8px;
+}
+
 .header-btn {
   width: 32px;
   height: 32px;

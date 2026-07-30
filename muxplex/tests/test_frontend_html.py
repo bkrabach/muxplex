@@ -610,7 +610,7 @@ def test_html_sessions_panel_has_default_session_select() -> None:
 
 
 def test_html_sessions_panel_has_sort_order_select() -> None:
-    """Sessions panel must contain a #setting-sort-order select with manual/alphabetical/recent options."""
+    """Sessions panel must contain a #setting-sort-order select with manual/alphabetical/recent/attention options."""
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
@@ -625,8 +625,39 @@ def test_html_sessions_panel_has_sort_order_select() -> None:
     )
     options = el.find_all("option")
     values = [o.get("value") for o in options]
-    for v in ("manual", "alphabetical", "recent"):
+    for v in ("manual", "alphabetical", "recent", "attention"):
         assert v in values, f"#setting-sort-order missing option value='{v}'"
+
+
+def test_html_header_has_quick_sort_select() -> None:
+    """Main view header must contain a #sort-order-select with the same four options.
+
+    Feature request: sort the main view without opening Settings. This select
+    writes/reads the same sort_order setting as #setting-sort-order (kept in
+    sync client-side by syncSortOrderControls() in app.js).
+    """
+    soup = _SOUP
+    el = soup.find(id="sort-order-select")
+    assert el is not None, "Missing #sort-order-select in the main view header"
+    assert el.name == "select", f"#sort-order-select must be a <select>, got: {el.name}"
+    values = [o.get("value") for o in el.find_all("option")]
+    for v in ("manual", "alphabetical", "recent", "attention"):
+        assert v in values, f"#sort-order-select missing option value='{v}'"
+
+
+def test_html_sidebar_has_quick_sort_select() -> None:
+    """Sidebar header must contain a #sidebar-sort-order-select with the same four options."""
+    soup = _SOUP
+    sidebar = soup.find(id="session-sidebar")
+    assert sidebar is not None, "Missing #session-sidebar"
+    el = sidebar.find(id="sidebar-sort-order-select")
+    assert el is not None, "Missing #sidebar-sort-order-select inside #session-sidebar"
+    assert el.name == "select", (
+        f"#sidebar-sort-order-select must be a <select>, got: {el.name}"
+    )
+    values = [o.get("value") for o in el.find_all("option")]
+    for v in ("manual", "alphabetical", "recent", "attention"):
+        assert v in values, f"#sidebar-sort-order-select missing option value='{v}'"
 
 
 def test_html_sessions_panel_has_window_size_largest_checkbox() -> None:

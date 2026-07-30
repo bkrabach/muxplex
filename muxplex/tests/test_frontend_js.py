@@ -2261,8 +2261,15 @@ def test_render_grid_uses_visible_for_empty_state_check() -> None:
     )
 
 
-def test_render_grid_applies_alphabetical_sort_with_locale_compare() -> None:
-    """renderGrid() must sort alphabetically using localeCompare when sortOrder is 'alphabetical'."""
+def test_render_grid_delegates_sorting_to_apply_sort_order() -> None:
+    """renderGrid() must delegate ordering to the shared applySortOrder() helper.
+
+    Sort logic used to be inlined in renderGrid only, which is exactly how
+    renderSidebar drifted into never applying sort_order at all (see
+    test_render_sidebar_delegates_sorting_to_apply_sort_order below). Both
+    now call the same applySortOrder(visible, sortOrder, mobile) so they
+    cannot silently diverge again.
+    """
     match = re.search(
         r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _JS,
@@ -2270,10 +2277,25 @@ def test_render_grid_applies_alphabetical_sort_with_locale_compare() -> None:
     )
     assert match, "renderGrid function not found in app.js"
     body = match.group(1)
-    assert "alphabetical" in body, "renderGrid must check for 'alphabetical' sort order"
-    assert "localeCompare" in body, (
-        "renderGrid must use localeCompare for alphabetical sort"
+    assert "applySortOrder(" in body, (
+        "renderGrid must delegate to applySortOrder() rather than inlining sort logic"
     )
+
+
+def test_apply_sort_order_handles_alphabetical_with_locale_compare() -> None:
+    """applySortOrder() -- the delegate -- must sort alphabetically using localeCompare."""
+    match = re.search(
+        r"function applySortOrder\s*\(.*?\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "applySortOrder function not found in app.js"
+    body = match.group(1)
+    assert "alphabetical" in body, "applySortOrder must check for 'alphabetical' sort order"
+    assert "localeCompare" in body, (
+        "applySortOrder must use localeCompare for alphabetical sort"
+    )
+    assert "attention" in body, "applySortOrder must check for 'attention' sort order"
 
 
 def test_render_grid_reads_sort_order_from_server_settings() -> None:
@@ -2287,6 +2309,29 @@ def test_render_grid_reads_sort_order_from_server_settings() -> None:
     body = match.group(1)
     assert "sort_order" in body or "sortOrder" in body, (
         "renderGrid must read sort_order from _serverSettings"
+    )
+
+
+def test_render_sidebar_delegates_sorting_to_apply_sort_order() -> None:
+    """renderSidebar() must also read sort_order and delegate to applySortOrder().
+
+    Previously renderSidebar applied NO sort_order logic at all -- it always
+    rendered getVisibleSessions()'s raw server order regardless of the
+    setting, silently disagreeing with renderGrid whenever a non-default
+    sort was selected.
+    """
+    match = re.search(
+        r"function renderSidebar\s*\(.*?\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// \u2500)",
+        _JS,
+        re.DOTALL,
+    )
+    assert match, "renderSidebar function not found in app.js"
+    body = match.group(1)
+    assert "sort_order" in body or "sortOrder" in body, (
+        "renderSidebar must read sort_order from _serverSettings"
+    )
+    assert "applySortOrder(" in body, (
+        "renderSidebar must delegate to applySortOrder(), the same helper renderGrid uses"
     )
 
 

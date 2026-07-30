@@ -32,6 +32,15 @@
         </button>
         <div id="view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
       </div>
+      <!-- Quick sort control -- mirrors Settings > Sessions > Sort Order (#setting-sort-order);
+           all three sort selects (this one, the sidebar's, and the settings one) read/write the
+           same sort_order server setting and are kept in sync by syncSortOrderControls(). -->
+      <select id="sort-order-select" class="settings-select header-sort-select" aria-label="Sort sessions">
+        <option value="manual">Manual</option>
+        <option value="alphabetical">Alphabetical</option>
+        <option value="recent">Recent</option>
+        <option value="attention">Attention</option>
+      </select>
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
         <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
@@ -62,6 +71,13 @@
             </button>
             <div id="sidebar-view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
           </div>
+          <!-- Quick sort control -- same sort_order setting as #sort-order-select / #setting-sort-order. -->
+          <select id="sidebar-sort-order-select" class="settings-select header-sort-select" aria-label="Sort sessions">
+            <option value="manual">Manual</option>
+            <option value="alphabetical">Alphabetical</option>
+            <option value="recent">Recent</option>
+            <option value="attention">Attention</option>
+          </select>
           <button id="sidebar-collapse-btn" class="sidebar-collapse-btn" aria-label="Collapse session list">&#8249;</button>
         </div>
         <div id="sidebar-list" class="sidebar-list"></div>
@@ -219,6 +235,7 @@
               <option value="manual">Manual</option>
               <option value="alphabetical">Alphabetical</option>
               <option value="recent">Recent</option>
+              <option value="attention">Attention</option>
             </select>
           </div>
           <div class="settings-field">

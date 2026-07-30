@@ -2912,6 +2912,164 @@ test("renderGrid sort_order 'recent' on mobile still uses sortByPriority (untouc
   app._setServerSettings(null);
 });
 
+// --- sortByAttention / sort_order 'attention' (feature: sort main view + sidebar) ---
+
+test('sortByAttention puts the belled session first, ahead of a more-recently-active idle one', () => {
+  const sessions = [
+    { name: 'idle-newer', last_activity_at: 999, bell: { unseen_count: 0 } },
+    {
+      name: 'has-bell',
+      last_activity_at: 1,
+      bell: { unseen_count: 1, last_fired_at: 500, seen_at: null },
+    },
+  ];
+  const ordered = app.sortByAttention(sessions);
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['has-bell', 'idle-newer'],
+    'bell tier must come before the idle/recency tier regardless of last_activity_at');
+});
+
+test('sortByAttention orders multiple bells by last_fired_at descending (freshest first)', () => {
+  const sessions = [
+    { name: 'stale-bell', bell: { unseen_count: 1, last_fired_at: 10, seen_at: null } },
+    { name: 'fresh-bell', bell: { unseen_count: 1, last_fired_at: 200, seen_at: null } },
+  ];
+  const ordered = app.sortByAttention(sessions);
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['fresh-bell', 'stale-bell']);
+});
+
+test('sortByAttention orders the non-bell tier by last_activity_at descending, unknown last', () => {
+  const sessions = [
+    { name: 'no-activity', bell: { unseen_count: 0 } },
+    { name: 'old', last_activity_at: 100, bell: { unseen_count: 0 } },
+    { name: 'new', last_activity_at: 300, bell: { unseen_count: 0 } },
+  ];
+  const ordered = app.sortByAttention(sessions);
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['new', 'old', 'no-activity']);
+});
+
+test('applySortOrder attention mode is NOT a silent fallback to alphabetical or manual order', () => {
+  // Deliberately in an order that alphabetical sort or "leave alone" would NOT produce,
+  // so a silent fallback to either mode is caught rather than passing by coincidence.
+  const sessions = [
+    { name: 'zeta', bell: { unseen_count: 0 } },
+    { name: 'alpha', bell: { unseen_count: 1, last_fired_at: 50, seen_at: null } },
+  ];
+  const alphabetical = app.applySortOrder(sessions, 'alphabetical', false);
+  const attention = app.applySortOrder(sessions, 'attention', false);
+  assert.deepStrictEqual(alphabetical.map((s) => s.name), ['alpha', 'zeta'],
+    'sanity check: alphabetical puts alpha first');
+  assert.deepStrictEqual(attention.map((s) => s.name), ['alpha', 'zeta'],
+    'attention also puts the belled session (alpha) first here');
+  // The discriminating case: swap which name has the bell so alphabetical and
+  // attention actively disagree -- this is what would fail if attention fell
+  // back to alphabetical under the hood.
+  const sessions2 = [
+    { name: 'alpha', bell: { unseen_count: 0 } },
+    { name: 'zeta', bell: { unseen_count: 1, last_fired_at: 50, seen_at: null } },
+  ];
+  const alphabetical2 = app.applySortOrder(sessions2, 'alphabetical', false);
+  const attention2 = app.applySortOrder(sessions2, 'attention', false);
+  assert.deepStrictEqual(alphabetical2.map((s) => s.name), ['alpha', 'zeta']);
+  assert.deepStrictEqual(attention2.map((s) => s.name), ['zeta', 'alpha'],
+    'attention must put the belled session (zeta) first even though alphabetical would not -- ' +
+    'proves attention is not silently falling back to alphabetical order');
+});
+
+test('applySortOrder attention mode applies on mobile too (no carve-out, unlike recent)', () => {
+  const sessions = [
+    { name: 'idle', last_activity_at: 999, bell: { unseen_count: 0 } },
+    { name: 'belled', last_activity_at: 1, bell: { unseen_count: 1, last_fired_at: 5, seen_at: null } },
+  ];
+  const ordered = app.applySortOrder(sessions, 'attention', /* mobile */ true);
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['belled', 'idle']);
+});
+
+test('renderGrid with sort_order "attention" surfaces the belled session first', () => {
+  app._setServerSettings({ sort_order: 'attention' });
+  const sessions = [
+    { name: 'idle-recent', last_activity_at: 999, bell: { unseen_count: 0 } },
+    { name: 'needs-attention', last_activity_at: 1, bell: { unseen_count: 1, last_fired_at: 500, seen_at: null } },
+  ];
+  const html = renderGridToHTML(sessions);
+  const iBell = html.indexOf('data-session="needs-attention"');
+  const iIdle = html.indexOf('data-session="idle-recent"');
+  assert.ok(iBell > -1 && iIdle > -1, 'both tiles should render');
+  assert.ok(iBell < iIdle, 'attention sort must put the belled session first');
+  app._setServerSettings(null);
+});
+
+// --- renderSidebar now honors sort_order (previously it applied no sort at all) ---
+
+function renderSidebarToHTML(sessions, currentSession) {
+  const collected = [];
+  const mockList = {
+    get innerHTML() { return collected[0] || ''; },
+    set innerHTML(v) { collected[0] = v; },
+    querySelectorAll: () => [],
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'sidebar-list' ? mockList : null);
+  app._setViewMode('fullscreen');
+
+  app.renderSidebar(sessions, currentSession || null, '');
+
+  globalThis.document.getElementById = origGetById;
+  app._setViewMode('flat');
+  return mockList.innerHTML;
+}
+
+test('renderSidebar with sort_order "alphabetical" orders sessions alphabetically', () => {
+  app._setServerSettings({ sort_order: 'alphabetical' });
+  const sessions = [
+    { name: 'zeta', bell: { unseen_count: 0 } },
+    { name: 'alpha', bell: { unseen_count: 0 } },
+  ];
+  const html = renderSidebarToHTML(sessions);
+  const iAlpha = html.indexOf('data-session="alpha"');
+  const iZeta = html.indexOf('data-session="zeta"');
+  assert.ok(iAlpha > -1 && iZeta > -1, 'both sidebar items should render');
+  assert.ok(iAlpha < iZeta, 'renderSidebar must apply alphabetical sort_order (previously ignored entirely)');
+  app._setServerSettings(null);
+});
+
+test('renderSidebar with sort_order "attention" surfaces the belled session first', () => {
+  app._setServerSettings({ sort_order: 'attention' });
+  const sessions = [
+    { name: 'idle-recent', last_activity_at: 999, bell: { unseen_count: 0 } },
+    { name: 'needs-attention', last_activity_at: 1, bell: { unseen_count: 1, last_fired_at: 500, seen_at: null } },
+  ];
+  const html = renderSidebarToHTML(sessions);
+  const iBell = html.indexOf('data-session="needs-attention"');
+  const iIdle = html.indexOf('data-session="idle-recent"');
+  assert.ok(iBell > -1 && iIdle > -1, 'both sidebar items should render');
+  assert.ok(iBell < iIdle, 'renderSidebar attention sort must put the belled session first');
+  app._setServerSettings(null);
+});
+
+test('renderGrid and renderSidebar agree on order for every sort_order mode', () => {
+  const sessions = [
+    { name: 'idle-recent', last_activity_at: 999, bell: { unseen_count: 0 } },
+    { name: 'needs-attention', last_activity_at: 1, bell: { unseen_count: 1, last_fired_at: 500, seen_at: null } },
+    { name: 'no-activity', bell: { unseen_count: 0 } },
+  ];
+  for (const mode of ['manual', 'alphabetical', 'recent', 'attention']) {
+    app._setServerSettings({ sort_order: mode });
+    const gridHtml = renderGridToHTML(sessions);
+    const sidebarHtml = renderSidebarToHTML(sessions);
+    const gridOrder = ['idle-recent', 'needs-attention', 'no-activity']
+      .map((n) => ({ n, i: gridHtml.indexOf(`data-session="${n}"`) }))
+      .sort((a, b) => a.i - b.i)
+      .map((x) => x.n);
+    const sidebarOrder = ['idle-recent', 'needs-attention', 'no-activity']
+      .map((n) => ({ n, i: sidebarHtml.indexOf(`data-session="${n}"`) }))
+      .sort((a, b) => a.i - b.i)
+      .map((x) => x.n);
+    assert.deepStrictEqual(sidebarOrder, gridOrder,
+      `main view and sidebar must agree on order for sort_order='${mode}'`);
+  }
+  app._setServerSettings(null);
+});
+
 // --- renderFilterBar (task-12) ---
 
 test('renderFilterBar produces pill buttons for each device plus All', () => {
