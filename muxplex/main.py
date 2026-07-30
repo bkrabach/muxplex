@@ -20,7 +20,6 @@ import pathlib
 import pwd
 import re
 import shlex
-import shutil
 import socket
 import ssl
 import subprocess
@@ -60,7 +59,6 @@ from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
     capture_pane,
-    ensure_history_retention,
     enumerate_sessions,
     get_session_activity,
     get_session_list,
@@ -69,6 +67,7 @@ from muxplex.sessions import (
     probe_tmux_epoch,
     run_tmux,
     snapshot_all,
+    spawn_session_command,
     tmux_env,
     update_session_cache,
 )
@@ -328,6 +327,7 @@ async def _run_poll_cycle() -> None:
         #     Best-effort and isolated: a failure here must never abort
         #     the rest of the poll cycle (session enumeration, bells, and
         #     everything below all still need to run).
+        _manifest: dict = {}
         try:
             _epoch_now = await probe_tmux_epoch()
             _manifest = load_manifest()
@@ -520,6 +520,17 @@ async def _run_poll_cycle() -> None:
         # this check itself rather than inherit it for free.
         _views_before_prune = _prune_settings.get("views")
 
+        # SESSION_PERSISTENCE_DESIGN.md section 7.4: while a restore is
+        # pending, our own local session list just became unavailable (not
+        # refuted) -- treat local-owned keys the same as an unreachable
+        # remote device's ("unknown, not dead") so a cold start doesn't
+        # start a real prune countdown on view membership before the user
+        # has had a chance to run `muxplex restore`. Self-clearing: once
+        # pending_restore empties (restore succeeds, or is abandoned via
+        # --forget), this reverts to the normal evaluable behavior on the
+        # very next poll cycle -- no separate flag to remember to unset.
+        _local_evaluable = not bool(_manifest.get("pending_restore"))
+
         _prune_settings, _prune_state, _prune_changed = prune_stale_keys(
             _prune_settings,
             _live_keys,
@@ -527,6 +538,7 @@ async def _run_poll_cycle() -> None:
             grace_seconds=_grace_seconds,
             local_device_id=_local_device_id,
             known_remote_device_ids=_known_remote_device_ids,
+            local_evaluable=_local_evaluable,
         )
 
         _prune_destructive = False
@@ -1147,98 +1159,17 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     name = payload.name
     # Security boundary: reject unsafe names before they reach the shell.
     _require_valid_session_name(name)
-    settings = load_settings()
-    template = settings["new_session_template"]
 
-    # Pre-flight: check that the base command is on PATH.
-    base_cmd = template.split()[0] if template.strip() else ""
-    if base_cmd and not shutil.which(base_cmd):
-        _log.error(
-            "Session command binary not found on PATH: %r (PATH=%s)",
-            base_cmd,
-            os.environ.get("PATH", ""),
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Command not found: {base_cmd}. "
-            "Ensure it is installed and in the server's PATH.",
-        )
-
-    # new_session_template is an arbitrary user shell command with a {name}
-    # placeholder (default `tmux new-session -d -s {name}`, but users configure
-    # e.g. `amplifier-workspace {name}`), so this path stays shell-based to
-    # preserve that feature -- switching to a fixed argv list would break every
-    # custom template. Injection is closed by two layers: (1) the allowlist
-    # (_require_valid_session_name) guarantees the name has no shell
-    # metacharacters; (2) shlex.quote() is applied as defense-in-depth in case
-    # the allowlist is ever loosened. For an allowlist-valid name shlex.quote()
-    # is a no-op, so existing custom templates behave identically.
-    command = template.replace("{name}", shlex.quote(name))
-    _log.info("Creating session '%s' with command: %s", name, command)
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=tmux_env(),
-        )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=30
-        )
-        if proc.returncode != 0:
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-            # Some commands (amplifier-workspace) create the session then
-            # try to attach (which fails without a TTY).  If the session
-            # exists despite the non-zero exit, treat it as success.
-            sessions = await enumerate_sessions()
-            if name in sessions:
-                _log.info(
-                    "Session command exited %d but session '%s' exists -- "
-                    "treating as success (likely a TTY-attach failure)",
-                    proc.returncode,
-                    name,
-                )
-            else:
-                _log.warning(
-                    "Session command exited %d: %s (stderr: %s)",
-                    proc.returncode,
-                    command,
-                    stderr_text,
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail=(
-                        f"Session command failed (exit {proc.returncode}): "
-                        f"{stderr_text}"
-                    )
-                    if stderr_text
-                    else f"Session command failed with exit code {proc.returncode}",
-                )
-    except asyncio.TimeoutError:
-        _log.info(
-            "Session command still running after 30s (may be long-lived): %s",
-            command,
-        )
-        # Long-running session commands (e.g. amplifier-workspace that
-        # spawns background processes) may outlive the 30s window.  This is
-        # not necessarily an error -- return success and let the frontend
-        # poll for the session to appear.
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _log.warning("Failed to launch session command %r: %s", command, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to launch command: {exc}",
-        )
-
-    # Raise this session's tmux history-limit so a later caller-controlled
-    # deep read (GET /api/sessions/{name}?lines=..., or /input's `lines`
-    # field) has real scrollback to return instead of silently truncating
-    # at whatever this host's tmux.conf happens to default to. Best-effort:
-    # never fails session creation itself (see ensure_history_retention's
-    # docstring).
-    await ensure_history_retention(name)
+    # The actual subprocess/shell-template logic lives in
+    # sessions.spawn_session_command() -- extracted so that `muxplex restore`
+    # (which creates sessions from the CLI, not this running server) shares
+    # the exact same "how to create a session" implementation rather than a
+    # second one that could drift. See its docstring and
+    # SESSION_PERSISTENCE_DESIGN.md's "restore fidelity equals create
+    # fidelity" principle.
+    ok, error = await spawn_session_command(name)
+    if not ok:
+        raise HTTPException(status_code=500, detail=error)
     return {"name": name, "ok": True}
 
 

@@ -2731,7 +2731,7 @@ def test_create_session_returns_200_with_name(client, monkeypatch):
     mock_proc.returncode = 0
 
     monkeypatch.setattr(
-        "muxplex.main.asyncio.create_subprocess_shell",
+        "muxplex.sessions.asyncio.create_subprocess_shell",
         AsyncMock(return_value=mock_proc),
     )
 
@@ -2763,7 +2763,7 @@ def test_create_session_substitutes_name_in_template(client, tmp_path, monkeypat
         return mock_proc
 
     monkeypatch.setattr(
-        "muxplex.main.asyncio.create_subprocess_shell", mock_create_subprocess
+        "muxplex.sessions.asyncio.create_subprocess_shell", mock_create_subprocess
     )
 
     response = client.post("/api/sessions", json={"name": "my-project"})
@@ -2866,7 +2866,7 @@ def test_create_session_rejects_shell_injection(client, monkeypatch):
     from unittest.mock import AsyncMock
 
     spawned = AsyncMock()
-    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", spawned)
+    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", spawned)
 
     response = client.post(
         "/api/sessions", json={"name": "x; touch /tmp/deckdev-should-not-exist; true"}
@@ -2902,7 +2902,7 @@ def test_create_session_rejects_invalid_charset(client, monkeypatch):
     from unittest.mock import AsyncMock
 
     spawned = AsyncMock()
-    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", spawned)
+    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", spawned)
 
     for bad in ["has space", "back`tick`", "pipe|it", "dollar$ign", "a" * 65, "co:lon"]:
         response = client.post("/api/sessions", json={"name": bad})
@@ -2925,7 +2925,7 @@ def test_create_and_delete_accept_ordinary_names(client, monkeypatch, tmp_path):
     proc.communicate = AsyncMock(return_value=(b"", b""))
     proc.returncode = 0
     monkeypatch.setattr(
-        "muxplex.main.asyncio.create_subprocess_shell", AsyncMock(return_value=proc)
+        "muxplex.sessions.asyncio.create_subprocess_shell", AsyncMock(return_value=proc)
     )
 
     # Representative of real live session names (dots, underscores, hyphens).
@@ -3069,7 +3069,7 @@ def test_create_session_shlex_quote_defense_in_depth(client, monkeypatch, tmp_pa
         captured.append(cmd)
         return proc
 
-    monkeypatch.setattr("muxplex.main.asyncio.create_subprocess_shell", mock_shell)
+    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", mock_shell)
 
     payload = "x; touch /tmp/deckdev-quote; true"
     resp = client.post("/api/sessions", json={"name": payload})
@@ -4480,7 +4480,7 @@ def test_create_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_p
         return mock_proc
 
     monkeypatch.setattr(
-        "muxplex.main.asyncio.create_subprocess_shell", mock_create_subprocess
+        "muxplex.sessions.asyncio.create_subprocess_shell", mock_create_subprocess
     )
 
     response = client.post("/api/sessions", json={"name": "env-check"})
@@ -4578,7 +4578,7 @@ def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
     mock_proc.returncode = 0
 
     monkeypatch.setattr(
-        "muxplex.main.asyncio.create_subprocess_shell",
+        "muxplex.sessions.asyncio.create_subprocess_shell",
         AsyncMock(return_value=mock_proc),
     )
 

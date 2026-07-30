@@ -1110,72 +1110,143 @@ def cmd_env() -> None:
     )
 
 
-def cmd_restore(dry_run: bool) -> None:
-    """Show the pending-restore plan from the session-presence manifest.
+def cmd_restore(
+    dry_run: bool,
+    *,
+    yes: bool = False,
+    force: bool = False,
+    forget: bool = False,
+) -> None:
+    """Restore sessions lost to an unplanned tmux server death.
 
-    This build (SESSION_PERSISTENCE_DESIGN.md's "v1a -- record only"
-    milestone) ships ONLY the read-only view: no session is ever created,
-    killed, or restored by this command. ``--dry-run`` is required rather
-    than being one of two behaviors, so that a future ``muxplex restore``
-    (no flag, once real restore execution ships -- v1b) does not silently
-    change what a bare invocation does today.
-
-    The plan is computed from ``manifest.pending_restore``, which is
-    populated by the poll loop ONLY when the tmux server's identity
+    This is SESSION_PERSISTENCE_DESIGN.md's "v1b -- explicit restore"
+    milestone. The plan is computed from ``manifest.pending_restore``, which
+    is populated by the poll loop ONLY when the tmux server's identity
     changes between cycles (a cold start -- see manifest.py's
     update_manifest() for the full discrimination rule). It is never
     populated by an ordinary muxplex restart with tmux left running, and
     never by a session the user deliberately killed while muxplex kept
-    running (both cases leave ``pending_restore`` at ``None``).
+    running (both cases leave ``pending_restore`` at ``None`` -- a
+    tombstoned session cannot reach ``pending_restore`` in the first place,
+    see manifest.compute_restore_plan()'s docstring). This command NEVER
+    runs automatically; it only ever does something when a human invokes it.
+
+    Execution happens entirely in THIS CLI process -- it does not require
+    the muxplex service to be running, and does not route through it (see
+    restore.py's module docstring for why). Sessions are created by
+    replaying the same `new_session_template` the running server would use
+    (sessions.spawn_session_command(), shared with the API's
+    POST /api/sessions), sequentially, one at a time.
+
+    Flags:
+        --dry-run: show the plan, create/kill/restore nothing. Safe to run
+            at any time, including against a live host.
+        --yes: skip the interactive confirmation prompt (scripted use).
+        --force: proceed even if the pending-restore record is older than
+            manifest.RESTORE_MAX_AGE_SECONDS (7 days) -- a stale record is
+            more likely to reflect sessions the user has long since
+            recreated some other way.
+        --forget: clear pending_restore without creating anything -- for
+            when the user has decided NOT to restore (e.g. they already
+            recreated the sessions manually, or don't want them back).
+
+    Exit code is 0 only when every session in the plan was verified live
+    afterward. Any FAIL (session never appeared) makes the exit code 1 so
+    scripted/CI callers cannot mistake a partial restore for a complete one.
     """
+    import asyncio  # noqa: PLC0415
     import time  # noqa: PLC0415
 
-    from muxplex.manifest import load_manifest  # noqa: PLC0415
+    import muxplex.manifest as manifest_mod  # noqa: PLC0415
+    import muxplex.restore as restore_mod  # noqa: PLC0415
 
-    if not dry_run:
+    if forget:
+        count = asyncio.run(restore_mod.forget())
+        if count == 0:
+            print("No cold start detected. Nothing to forget.")
+        else:
+            print(
+                f"Cleared {count} pending session(s) from the restore record. "
+                "Nothing was created or killed."
+            )
+        return
+
+    plan = asyncio.run(restore_mod.load_plan(force=force))
+
+    if plan is None:
+        print("No cold start detected. Nothing to restore.")
+        return
+
+    detected_str = (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(plan.detected_at))
+        if plan.detected_at
+        else "unknown time"
+    )
+    print(
+        f"Cold start detected {detected_str} "
+        f"(lost tmux server pid {plan.lost_server_pid})."
+    )
+    print(
+        f"{plan.total_pending} session(s) were alive under the previous server "
+        f"and are not running now.\n"
+    )
+
+    if not plan.names:
         print(
-            "muxplex restore: execution is not implemented in this build "
-            "(record-only milestone -- see SESSION_PERSISTENCE_DESIGN.md).\n"
-            "Use --dry-run to see what would be restored.",
+            "All previously pending sessions are already live. "
+            "Nothing to restore -- this run is a no-op."
+        )
+        return
+
+    for name in plan.names:
+        print(f"  {name}")
+
+    if plan.stale and not force:
+        print(
+            f"\nThis pending-restore record is more than "
+            f"{manifest_mod.RESTORE_MAX_AGE_SECONDS / 86400:.0f} days old and "
+            "may no longer reflect reality. Refusing to restore automatically.\n"
+            "Use --force to restore anyway, or --forget to clear the record.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    manifest = load_manifest()
-    pending = manifest.get("pending_restore")
-
-    if not pending:
-        print("No cold start detected. Nothing to restore.")
+    if dry_run:
+        print(
+            "\n[DRY RUN] No sessions were created, killed, or restored. "
+            "Run `muxplex restore` (without --dry-run) to actually restore them."
+        )
         return
 
-    detected_at = pending.get("detected_at")
-    lost_epoch = pending.get("lost_epoch") or {}
-    sessions = pending.get("sessions") or {}
+    if not yes:
+        try:
+            answer = input(f"\nRestore {len(plan.names)} session(s)? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Aborted. Nothing was created or killed.")
+            return
 
-    detected_str = (
-        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(detected_at))
-        if detected_at
-        else "unknown time"
-    )
-    lost_pid = lost_epoch.get("server_pid", "unknown")
-
-    print(f"Cold start detected {detected_str} (lost tmux server pid {lost_pid}).")
-    print(
-        f"{len(sessions)} session(s) were alive under the previous server "
-        f"and are not running now.\n"
-    )
-    for name in sorted(sessions):
-        info = sessions[name]
-        first_seen = info.get("first_seen_at")
-        age_note = ""
-        if first_seen:
-            age_note = f" (first seen {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(first_seen))})"
-        print(f"  {name}{age_note}")
+    print()
+    total = len(plan.names)
+    report = asyncio.run(restore_mod.execute_restore(plan.names))
+    for i, result in enumerate(report.results, start=1):
+        label = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}[result.status]
+        suffix = f"  {result.detail}" if result.detail else ""
+        print(f"  [{i:>2}/{total}] {result.name:<28} {label}{suffix}")
 
     print(
-        "\n[DRY RUN] Restore execution is not implemented in this build. "
-        "No sessions were created, killed, or restored."
+        f"\n{report.ok_count} restored, {report.warn_count} with divergences, "
+        f"{report.fail_count} failed."
     )
+    print(
+        "\nRestored sessions are FRESH SHELLS. Names, layout, and cwd are back;\n"
+        "running processes and scrollback are not. For sessions that held an\n"
+        "agent: `amplifier resume` in the workspace directory."
+    )
+
+    if report.any_failed:
+        sys.exit(1)
 
 
 def config_list() -> None:
@@ -1617,12 +1688,27 @@ def main() -> None:
 
     restore_parser = sub.add_parser(
         "restore",
-        help="Show sessions lost to an unplanned tmux server death (record-only; see SESSION_PERSISTENCE_DESIGN.md)",
+        help="Recreate sessions lost to an unplanned tmux server death (see SESSION_PERSISTENCE_DESIGN.md)",
     )
     restore_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show the restore plan without changing anything (currently the ONLY supported mode)",
+        help="Show the restore plan without creating, killing, or restoring anything",
+    )
+    restore_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt (for scripted use)",
+    )
+    restore_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Restore even if the pending-restore record is older than 7 days",
+    )
+    restore_parser.add_argument(
+        "--forget",
+        action="store_true",
+        help="Clear the pending-restore record without creating anything",
     )
 
     upgrade_parser = sub.add_parser(
@@ -1682,7 +1768,12 @@ def main() -> None:
     elif args.command == "env":
         cmd_env()
     elif args.command == "restore":
-        cmd_restore(dry_run=getattr(args, "dry_run", False))
+        cmd_restore(
+            dry_run=getattr(args, "dry_run", False),
+            yes=getattr(args, "yes", False),
+            force=getattr(args, "force", False),
+            forget=getattr(args, "forget", False),
+        )
     elif args.command in ("upgrade", "update"):
         upgrade(force=getattr(args, "force", False))
     elif args.command == "config":

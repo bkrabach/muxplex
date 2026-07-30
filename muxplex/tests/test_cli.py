@@ -211,7 +211,9 @@ def test_reset_secret_prints_warning(tmp_path, monkeypatch, capsys):
 def test_check_dependencies_exits_when_ttyd_missing(monkeypatch):
     """_check_dependencies() must sys.exit(1) when ttyd is not in PATH."""
     import shutil
+
     import pytest
+
     from muxplex.cli import _check_dependencies
 
     orig_which = shutil.which
@@ -231,7 +233,9 @@ def test_check_dependencies_exits_when_ttyd_missing(monkeypatch):
 def test_check_dependencies_exits_when_tmux_missing(monkeypatch):
     """_check_dependencies() must sys.exit(1) when tmux is not in PATH."""
     import shutil
+
     import pytest
+
     from muxplex.cli import _check_dependencies
 
     orig_which = shutil.which
@@ -251,6 +255,7 @@ def test_check_dependencies_exits_when_tmux_missing(monkeypatch):
 def test_check_dependencies_passes_when_all_present(monkeypatch):
     """_check_dependencies() must not raise when both tmux and ttyd are found."""
     import shutil
+
     from muxplex.cli import _check_dependencies
 
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -266,9 +271,8 @@ def test_main_check_dependencies_called_for_serve(monkeypatch):
     calls = []
     monkeypatch.setattr("muxplex.cli._check_dependencies", lambda: calls.append(True))
 
-    with patch("muxplex.cli.serve"):
-        with patch("sys.argv", ["muxplex"]):
-            main()
+    with patch("muxplex.cli.serve"), patch("sys.argv", ["muxplex"]):
+        main()
 
     assert len(calls) == 1, "_check_dependencies must be called once for serve"
 
@@ -458,20 +462,50 @@ def test_cmd_env_falls_back_to_tmux_default_when_nothing_configured(
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_restore_without_dry_run_refuses_and_exits_nonzero(capsys):
-    """cmd_restore(dry_run=False) must refuse -- restore EXECUTION is not
-    implemented in the record-only milestone. --dry-run is required, not one
-    of two behaviors, so a future real restore does not silently change what
-    a bare invocation does today."""
+def _save_pending_manifest(
+    manifest_mod, names, *, detected_at=1785378123.0, lost_pid=1519962
+):
+    manifest = {
+        "schema": 1,
+        "epoch": {
+            "socket_path": "/home/user/.tmux/tmux-1000/default",
+            "server_pid": 42,
+            "inode": 7,
+        },
+        "sessions": {},
+        "pending_restore": {
+            "detected_at": detected_at,
+            "lost_epoch": {
+                "socket_path": "/home/user/.tmux/tmux-1000/default",
+                "server_pid": lost_pid,
+                "inode": 5,
+            },
+            "sessions": {
+                name: {"first_seen_at": 1785372115.0, "last_seen_at": 1785378000.0}
+                for name in names
+            },
+        },
+    }
+    manifest_mod.save_manifest(manifest)
+
+
+def test_cmd_restore_no_pending_is_a_noop_regardless_of_dry_run(
+    tmp_path, monkeypatch, capsys
+):
+    """A bare `muxplex restore` (no flags) with nothing pending must be a
+    harmless no-op, not an error -- this is real restore EXECUTION now
+    (v1b), so there is nothing left to "refuse" the way the record-only
+    milestone did."""
+    import muxplex.manifest as manifest_mod
     from muxplex.cli import cmd_restore
 
-    with pytest.raises(SystemExit) as exc_info:
-        cmd_restore(dry_run=False)
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
 
-    assert exc_info.value.code == 1
+    cmd_restore(dry_run=False)
+
     captured = capsys.readouterr()
-    assert "not implemented" in captured.err
-    assert "--dry-run" in captured.err
+    assert "No cold start detected" in captured.out
+    assert "Nothing to restore" in captured.out
 
 
 def test_cmd_restore_dry_run_no_pending_restore(tmp_path, monkeypatch, capsys):
@@ -494,29 +528,16 @@ def test_cmd_restore_dry_run_shows_pending_sessions(tmp_path, monkeypatch, capsy
     lost server's pid, the session count, and every session name -- and
     explicitly states that nothing was created or restored."""
     import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
     from muxplex.cli import cmd_restore
 
-    manifest_path = tmp_path / "sessions.json"
-    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["a2a", "bbs"])
 
-    manifest = {
-        "schema": 1,
-        "epoch": {"socket_path": "/home/user/.tmux/tmux-1000/default", "server_pid": 42, "inode": 7},
-        "sessions": {},
-        "pending_restore": {
-            "detected_at": 1785378123.0,
-            "lost_epoch": {
-                "socket_path": "/home/user/.tmux/tmux-1000/default",
-                "server_pid": 1519962,
-                "inode": 5,
-            },
-            "sessions": {
-                "a2a": {"first_seen_at": 1785372115.0, "last_seen_at": 1785378000.0},
-                "bbs": {"first_seen_at": 1785372200.0, "last_seen_at": 1785378000.0},
-            },
-        },
-    }
-    manifest_mod.save_manifest(manifest)
+    async def fake_enumerate_sessions():
+        return []  # nothing live -- both pending names stay in the plan
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
 
     cmd_restore(dry_run=True)
 
@@ -530,19 +551,323 @@ def test_cmd_restore_dry_run_shows_pending_sessions(tmp_path, monkeypatch, capsy
     assert "No sessions were created, killed, or restored" in captured.out
 
 
+def test_cmd_restore_dry_run_excludes_already_live_sessions(
+    tmp_path, monkeypatch, capsys
+):
+    """A pending session that's already live again (self-healed, or an
+    earlier restore run already created it) must not appear in the plan --
+    proves the plan is recomputed against live state, not just echoed from
+    the frozen pending_restore snapshot."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["a2a", "bbs"])
+
+    async def fake_enumerate_sessions():
+        return ["bbs"]  # bbs is already back
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
+
+    cmd_restore(dry_run=True)
+
+    captured = capsys.readouterr()
+    assert "  a2a" in captured.out
+    assert "  bbs" not in captured.out
+
+
+def test_cmd_restore_all_already_live_is_a_full_noop(tmp_path, monkeypatch, capsys):
+    """When every pending session is already live, the plan is empty --
+    cmd_restore must say so plainly and must not invoke execute_restore at
+    all (proving idempotency at the CLI layer, not just the plan layer)."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["a2a", "bbs"])
+
+    async def fake_enumerate_sessions():
+        return ["a2a", "bbs"]
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
+
+    called = {"execute": False}
+
+    async def fake_execute_restore(names):
+        called["execute"] = True
+        raise AssertionError(
+            "execute_restore must not be called when the plan is empty"
+        )
+
+    monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
+
+    cmd_restore(dry_run=False, yes=True)
+
+    assert called["execute"] is False
+    captured = capsys.readouterr()
+    assert "already live" in captured.out
+    assert "no-op" in captured.out
+
+
+def test_cmd_restore_stale_pending_refuses_without_force(tmp_path, monkeypatch, capsys):
+    """A pending_restore older than RESTORE_MAX_AGE_SECONDS must be refused
+    (nonzero exit, message naming --force / --forget) rather than silently
+    restored -- SESSION_PERSISTENCE_DESIGN.md section 7.3's "never restore
+    stale ghosts"."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["a2a"], detected_at=1.0)  # ancient
+
+    async def fake_enumerate_sessions():
+        return []
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_restore(dry_run=False, yes=True)
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "--force" in captured.err
+    assert "--forget" in captured.err
+
+
+def test_cmd_restore_declined_confirmation_creates_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    """Without --yes, a non-'y' answer to the confirmation prompt must abort
+    -- execute_restore is never called."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["a2a"])
+
+    async def fake_enumerate_sessions():
+        return []
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
+
+    called = {"execute": False}
+
+    async def fake_execute_restore(names):
+        called["execute"] = True
+        raise AssertionError("must not be called when the user declines")
+
+    monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "n")
+
+    cmd_restore(dry_run=False, yes=False)
+
+    assert called["execute"] is False
+    captured = capsys.readouterr()
+    assert "Aborted" in captured.out
+
+
+def test_cmd_restore_yes_skips_prompt_and_executes(tmp_path, monkeypatch, capsys):
+    """--yes must skip the interactive prompt entirely (no input() call) and
+    proceed straight to execution."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+    from muxplex.restore import RestoreReport, SessionResult
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["a2a"])
+
+    async def fake_enumerate_sessions():
+        return []
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
+
+    def fail_input(*_a, **_k):
+        raise AssertionError("input() must not be called when --yes is passed")
+
+    monkeypatch.setattr("builtins.input", fail_input)
+
+    async def fake_execute_restore(names):
+        assert names == ["a2a"]
+        return RestoreReport(
+            results=[SessionResult(name="a2a", status="ok", windows=4)]
+        )
+
+    monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
+
+    cmd_restore(dry_run=False, yes=True)
+
+    captured = capsys.readouterr()
+    assert "OK" in captured.out
+    assert "1 restored, 0 with divergences, 0 failed." in captured.out
+    assert "FRESH SHELLS" in captured.out
+
+
+def test_cmd_restore_partial_failure_is_loud_and_exits_nonzero(
+    tmp_path, monkeypatch, capsys
+):
+    """A partial failure (some sessions OK, one FAIL) must name the failure
+    explicitly in the output and exit nonzero -- never silently swallow it
+    or report overall success."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+    from muxplex.restore import RestoreReport, SessionResult
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["good-one", "bad-one"])
+
+    async def fake_enumerate_sessions():
+        return []
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
+
+    async def fake_execute_restore(names):
+        return RestoreReport(
+            results=[
+                SessionResult(name="good-one", status="ok", windows=4),
+                SessionResult(
+                    name="bad-one", status="fail", detail="session did not appear"
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_restore(dry_run=False, yes=True)
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "good-one" in captured.out
+    assert "OK" in captured.out
+    assert "bad-one" in captured.out
+    assert "FAIL" in captured.out
+    assert "session did not appear" in captured.out
+    assert "1 restored, 0 with divergences, 1 failed." in captured.out
+
+
+def test_cmd_restore_warn_divergence_does_not_fail_the_run(
+    tmp_path, monkeypatch, capsys
+):
+    """A WARN (e.g. a bare 1-window session -- the template's real structure
+    didn't apply) is reported but does NOT make the exit code nonzero --
+    only absence (FAIL) is a hard failure, per the design's honesty line."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+    from muxplex.restore import RestoreReport, SessionResult
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["bare-shell"])
+
+    async def fake_enumerate_sessions():
+        return []
+
+    monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
+
+    async def fake_execute_restore(names):
+        return RestoreReport(
+            results=[
+                SessionResult(
+                    name="bare-shell", status="warn", detail="windows 1", windows=1
+                )
+            ]
+        )
+
+    monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
+
+    cmd_restore(dry_run=False, yes=True)  # must NOT raise SystemExit
+
+    captured = capsys.readouterr()
+    assert "WARN" in captured.out
+    assert "0 restored, 1 with divergences, 0 failed." in captured.out
+
+
+def test_cmd_restore_forget_clears_pending_without_creating_anything(
+    tmp_path, monkeypatch, capsys
+):
+    """--forget clears pending_restore entirely and creates/kills nothing."""
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
+    from muxplex.cli import cmd_restore
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    _save_pending_manifest(manifest_mod, ["a2a", "bbs"])
+
+    called = {"execute": False}
+
+    async def fake_execute_restore(names):
+        called["execute"] = True
+        raise AssertionError("--forget must never call execute_restore")
+
+    monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
+
+    cmd_restore(dry_run=False, forget=True)
+
+    assert called["execute"] is False
+    captured = capsys.readouterr()
+    assert "Cleared 2 pending session(s)" in captured.out
+
+    reloaded = manifest_mod.load_manifest()
+    assert reloaded["pending_restore"] is None
+
+
+def test_cmd_restore_forget_noop_when_nothing_pending(tmp_path, monkeypatch, capsys):
+    import muxplex.manifest as manifest_mod
+    from muxplex.cli import cmd_restore
+
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+
+    cmd_restore(dry_run=False, forget=True)
+
+    captured = capsys.readouterr()
+    assert "Nothing to forget" in captured.out
+
+
 def test_restore_subcommand_wired_to_cmd_restore(monkeypatch):
-    """`muxplex restore --dry-run` on the CLI must call cmd_restore(dry_run=True)."""
+    """`muxplex restore --dry-run` on the CLI must call cmd_restore(dry_run=True, ...)."""
     import muxplex.cli as cli_mod
 
     called = {}
     monkeypatch.setattr(
-        cli_mod, "cmd_restore", lambda dry_run: called.update(dry_run=dry_run)
+        cli_mod,
+        "cmd_restore",
+        lambda dry_run, yes=False, force=False, forget=False: called.update(
+            dry_run=dry_run, yes=yes, force=force, forget=forget
+        ),
     )
     monkeypatch.setattr("sys.argv", ["muxplex", "restore", "--dry-run"])
 
     cli_mod.main()
 
-    assert called == {"dry_run": True}
+    assert called == {"dry_run": True, "yes": False, "force": False, "forget": False}
+
+
+def test_restore_subcommand_wires_yes_force_forget(monkeypatch):
+    """`muxplex restore --yes --force --forget` must thread all three flags
+    through to cmd_restore."""
+    import muxplex.cli as cli_mod
+
+    called = {}
+    monkeypatch.setattr(
+        cli_mod,
+        "cmd_restore",
+        lambda dry_run, yes=False, force=False, forget=False: called.update(
+            dry_run=dry_run, yes=yes, force=force, forget=forget
+        ),
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["muxplex", "restore", "--yes", "--force", "--forget"]
+    )
+
+    cli_mod.main()
+
+    assert called == {"dry_run": False, "yes": True, "force": True, "forget": True}
 
 
 # ---------------------------------------------------------------------------
@@ -1219,6 +1544,7 @@ def test_config_get_returns_value(capsys, tmp_path, monkeypatch):
 def test_config_get_unknown_key_exits(tmp_path, monkeypatch):
     """config get with unknown key must exit 1."""
     import pytest
+
     import muxplex.settings as settings_mod
 
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
@@ -1277,7 +1603,7 @@ def test_config_reset_all(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
 
-    from muxplex.cli import config_set, config_reset
+    from muxplex.cli import config_reset, config_set
 
     config_set("host", "0.0.0.0")
     config_set("port", "9090")
@@ -1294,7 +1620,7 @@ def test_config_reset_single_key(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
 
-    from muxplex.cli import config_set, config_reset
+    from muxplex.cli import config_reset, config_set
 
     config_set("host", "0.0.0.0")
     config_set("port", "9090")
@@ -1385,6 +1711,7 @@ def test_kill_stale_port_holder_exists():
 def test_kill_stale_port_holder_runs_lsof(monkeypatch):
     """_kill_stale_port_holder must invoke lsof -ti :<port> to find occupying PIDs."""
     import subprocess
+
     import muxplex.cli as cli_mod
 
     lsof_calls = []
@@ -1411,6 +1738,7 @@ def test_kill_stale_port_holder_kills_foreign_pid(monkeypatch):
     import os
     import signal
     import subprocess
+
     import muxplex.cli as cli_mod
 
     foreign_pid = 99999
@@ -1450,6 +1778,7 @@ def test_kill_stale_port_holder_skips_own_pid(monkeypatch):
     """_kill_stale_port_holder must NOT kill its own PID."""
     import os
     import subprocess
+
     import muxplex.cli as cli_mod
 
     my_pid = 12345
@@ -1475,6 +1804,7 @@ def test_kill_stale_port_holder_skips_own_pid(monkeypatch):
 def test_kill_stale_port_holder_survives_lsof_not_available(monkeypatch):
     """_kill_stale_port_holder must not raise when lsof is unavailable."""
     import subprocess
+
     import muxplex.cli as cli_mod
 
     def fake_run(cmd, **kw):
@@ -2202,9 +2532,8 @@ def test_setup_tls_prompts_when_certs_exist(tmp_path, monkeypatch, capsys):
 
     import muxplex.settings as settings_mod
     import muxplex.tls as tls_mod
-    from muxplex.tls import generate_self_signed
-
     from muxplex.cli import setup_tls
+    from muxplex.tls import generate_self_signed
 
     # Generate real self-signed cert in tmp_path
     cert_path = tmp_path / "muxplex.crt"
@@ -2253,9 +2582,8 @@ def test_setup_tls_regenerates_on_eof(tmp_path, monkeypatch, capsys):
 
     import muxplex.settings as settings_mod
     import muxplex.tls as tls_mod
-    from muxplex.tls import generate_self_signed
-
     from muxplex.cli import setup_tls
+    from muxplex.tls import generate_self_signed
 
     # Generate real self-signed cert in tmp_path
     cert_path = tmp_path / "muxplex.crt"
@@ -2389,6 +2717,7 @@ def test_pyproject_has_keywords():
 def test_upgrade_pypi_install_uses_package_name(monkeypatch, capsys):
     """upgrade() for PyPI installs must use 'muxplex' not git+https URL."""
     import subprocess
+
     import muxplex.cli as cli_mod
 
     calls = []
@@ -2490,6 +2819,7 @@ def test_main_dispatches_to_reset_device_id(monkeypatch):
 def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
     """upgrade() for git installs must still use git+https URL."""
     import subprocess
+
     import muxplex.cli as cli_mod
 
     calls = []
@@ -3210,6 +3540,7 @@ def test_find_uv_probes_known_locations_when_which_returns_none(tmp_path, monkey
 def test_find_uv_returns_none_when_no_candidate_exists(monkeypatch):
     """_find_uv() returns None when neither shutil.which nor any candidate finds uv."""
     import os as _os
+
     import muxplex.cli as cli_mod
 
     monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -3253,6 +3584,7 @@ def test_find_pip_returns_pip3_when_pip_absent():
 def test_find_pip_probes_known_locations_when_which_returns_none(monkeypatch):
     """_find_pip() falls through to the candidate list when shutil.which returns None."""
     import os as _os
+
     import muxplex.cli as cli_mod
 
     monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -3281,6 +3613,7 @@ def test_find_pip_probes_known_locations_when_which_returns_none(monkeypatch):
 def test_find_pip_returns_none_when_no_candidate_exists(monkeypatch):
     """_find_pip() returns None when neither shutil.which nor any candidate finds pip."""
     import os as _os
+
     import muxplex.cli as cli_mod
 
     monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -3597,6 +3930,7 @@ def test_kill_stale_port_holder_refuses_to_kill_healthy_server(monkeypatch, caps
     """A responding muxplex must NOT be killed; startup must abort instead."""
     import os
     import subprocess
+
     import muxplex.cli as cli_mod
 
     killed = []
@@ -3625,6 +3959,7 @@ def test_kill_stale_port_holder_kills_unresponsive_holder(monkeypatch):
     import signal
     import subprocess
     import time
+
     import muxplex.cli as cli_mod
 
     killed = []
@@ -3648,6 +3983,7 @@ def test_kill_stale_port_holder_force_overrides_healthy_check(monkeypatch):
     import signal
     import subprocess
     import time
+
     import muxplex.cli as cli_mod
 
     killed = []
@@ -3669,6 +4005,7 @@ def test_kill_stale_port_holder_no_holder_never_probes(monkeypatch):
     """With nobody on the port there must be no probe and no signal."""
     import os
     import subprocess
+
     import muxplex.cli as cli_mod
 
     probed, killed = [], []
@@ -3694,6 +4031,7 @@ def test_kill_stale_port_holder_no_holder_never_probes(monkeypatch):
 def test_kill_stale_port_holder_survives_missing_lsof(monkeypatch):
     """A missing/raising lsof must never prevent startup."""
     import subprocess
+
     import muxplex.cli as cli_mod
 
     def boom(cmd, **kw):
@@ -3839,6 +4177,7 @@ def test_port_holder_probe_false_when_connection_fails(monkeypatch):
 def test_serve_parser_exposes_force_take_port():
     """The --force-take-port escape hatch must exist on serve."""
     import argparse
+
     import muxplex.cli as cli_mod
 
     parser = argparse.ArgumentParser()

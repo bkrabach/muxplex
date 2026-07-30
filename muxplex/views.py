@@ -462,6 +462,7 @@ def prune_stale_keys(
     now: float | None = None,
     local_device_id: str | None = None,
     known_remote_device_ids: set[str] | None = None,
+    local_evaluable: bool = True,
 ) -> tuple[dict, dict, bool]:
     """Drop session keys that have been missing past the grace period.
 
@@ -489,6 +490,18 @@ def prune_stale_keys(
             entry in the federation session cache backing
             `/api/federation/sessions`). Only meaningful when
             `local_device_id` is also provided. Defaults to empty set.
+        local_evaluable: whether THIS device's own keys may be evaluated
+            for pruning. Defaults to True (today's behavior). Set False
+            while a session-presence-manifest restore is pending
+            (SESSION_PERSISTENCE_DESIGN.md section 7.4): right after a cold
+            start, `enumerate_sessions()` sees zero local sessions -- not
+            because they're gone, but because our own knowledge just
+            became unavailable -- and treating that as "unknown, not dead"
+            (the same treatment already given to an unreachable remote
+            device) stops it from starting a real prune countdown on view
+            membership before the user has had a chance to run
+            `muxplex restore`. Only affects keys owned by `local_device_id`;
+            remote-owned and legacy bare-name keys are unaffected.
 
     Returns:
         (settings, pruning_state, settings_changed) — settings_changed is True
@@ -567,7 +580,7 @@ def prune_stale_keys(
         evaluable = (
             local_device_id is None
             or owner is None
-            or owner == local_device_id
+            or (owner == local_device_id and local_evaluable)
             or owner in known_remote_device_ids
         )
 

@@ -23,7 +23,10 @@ import pytest
 
 import muxplex.manifest as manifest_mod
 from muxplex.manifest import (
+    RESTORE_MAX_AGE_SECONDS,
+    compute_restore_plan,
     load_manifest,
+    mark_restored,
     save_manifest,
     update_manifest,
 )
@@ -406,3 +409,112 @@ def test_update_manifest_different_socket_path_is_treated_as_different_server():
     assert changed is True
     assert new_manifest["pending_restore"] is not None
     assert "a2a" in new_manifest["pending_restore"]["sessions"]
+
+
+# ---------------------------------------------------------------------------
+# compute_restore_plan() -- the plan is always recomputed against live state
+# ---------------------------------------------------------------------------
+
+
+def _manifest_with_pending(names: list[str], *, detected_at: float = 1000.0) -> dict:
+    return {
+        "schema": 1,
+        "epoch": {**EPOCH_B, "observed_at": detected_at},
+        "sessions": {},
+        "pending_restore": {
+            "detected_at": detected_at,
+            "lost_epoch": EPOCH_A,
+            "sessions": {
+                name: {"first_seen_at": 1.0, "last_seen_at": 2.0} for name in names
+            },
+        },
+    }
+
+
+def test_compute_restore_plan_no_pending_returns_empty():
+    manifest = {"schema": 1, "epoch": EPOCH_A, "sessions": {}, "pending_restore": None}
+    assert compute_restore_plan(manifest, []) == []
+
+
+def test_compute_restore_plan_excludes_already_live_names():
+    """A name that's already live (came back on its own, or was already
+    restored by an earlier run) must not appear in the plan -- this is
+    what makes restore idempotent by construction."""
+    manifest = _manifest_with_pending(["a2a", "bbs", "ccc"])
+    plan = compute_restore_plan(manifest, live_names=["bbs"])
+    assert plan == ["a2a", "ccc"]
+
+
+def test_compute_restore_plan_is_sorted():
+    manifest = _manifest_with_pending(["zzz", "aaa", "mmm"])
+    assert compute_restore_plan(manifest, live_names=[]) == ["aaa", "mmm", "zzz"]
+
+
+def test_compute_restore_plan_all_live_is_empty():
+    manifest = _manifest_with_pending(["a2a", "bbs"])
+    assert compute_restore_plan(manifest, live_names=["a2a", "bbs"]) == []
+
+
+def test_compute_restore_plan_tombstoned_name_structurally_absent():
+    """A tombstoned session is removed from manifest['sessions'] by
+    update_manifest()'s same-server branch BEFORE any cold start can freeze
+    it into pending_restore -- so there is no manifest shape in which a
+    tombstoned name could appear in pending_restore for compute_restore_plan
+    to have to filter out. Proven end-to-end (real tmux) in
+    test_integration_manifest.py; this test documents the structural
+    argument at the pure-function level: pending_restore's sessions dict
+    simply never contains it.
+    """
+    # Simulate: 'killed-on-purpose' was tombstoned (removed from `sessions`)
+    # before the cold start that produced this pending_restore.
+    manifest = _manifest_with_pending(["a2a"])  # only the survivor is here
+    plan = compute_restore_plan(manifest, live_names=[])
+    assert "killed-on-purpose" not in plan
+    assert plan == ["a2a"]
+
+
+# ---------------------------------------------------------------------------
+# mark_restored() -- clears successfully-restored names, leaves failures
+# ---------------------------------------------------------------------------
+
+
+def test_mark_restored_removes_given_names():
+    manifest = _manifest_with_pending(["a2a", "bbs", "ccc"])
+    updated = mark_restored(manifest, {"a2a", "bbs"})
+    assert set(updated["pending_restore"]["sessions"]) == {"ccc"}
+
+
+def test_mark_restored_empties_to_none():
+    """When every pending name has been restored, pending_restore becomes
+    None entirely -- not an empty-but-present dict."""
+    manifest = _manifest_with_pending(["a2a", "bbs"])
+    updated = mark_restored(manifest, {"a2a", "bbs"})
+    assert updated["pending_restore"] is None
+
+
+def test_mark_restored_leaves_unmentioned_names_pending():
+    """A name that FAILED to restore (not passed in restored_names) must
+    remain in pending_restore so a future `muxplex restore` retries it."""
+    manifest = _manifest_with_pending(["a2a", "bbs"])
+    updated = mark_restored(manifest, {"a2a"})
+    assert set(updated["pending_restore"]["sessions"]) == {"bbs"}
+
+
+def test_mark_restored_noop_when_nothing_pending():
+    manifest = {"schema": 1, "epoch": EPOCH_A, "sessions": {}, "pending_restore": None}
+    updated = mark_restored(manifest, {"a2a"})
+    assert updated["pending_restore"] is None
+
+
+def test_mark_restored_is_pure_does_not_mutate_input():
+    """mark_restored() must return a NEW dict, never mutate the manifest
+    passed in -- callers rely on this to do a read-right-before-write
+    without aliasing bugs (see restore.py's module docstring)."""
+    manifest = _manifest_with_pending(["a2a", "bbs"])
+    original_sessions = dict(manifest["pending_restore"]["sessions"])
+    mark_restored(manifest, {"a2a"})
+    assert manifest["pending_restore"]["sessions"] == original_sessions
+
+
+def test_restore_max_age_is_seven_days():
+    assert RESTORE_MAX_AGE_SECONDS == pytest.approx(7 * 86400.0)

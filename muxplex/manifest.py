@@ -76,6 +76,12 @@ MANIFEST_SCHEMA_VERSION = 1
 # Never synced to federation peers -- device-local, like pruning.json.
 MANIFEST_PATH: Path = STATE_DIR / "sessions.json"
 
+# How long a pending_restore entry may sit unactioned before `muxplex restore`
+# refuses to act on it without --force (SESSION_PERSISTENCE_DESIGN.md section
+# 7.3, "never restore stale ghosts"). A module constant rather than a setting
+# -- speculative to expose this as configurable before anyone has asked.
+RESTORE_MAX_AGE_SECONDS: float = 7 * 86400.0
+
 
 def _empty_manifest() -> dict[str, Any]:
     """Return a fresh, empty top-level manifest dict.
@@ -312,3 +318,66 @@ def update_manifest(
         "pending_restore": pending_restore,
     }
     return new_manifest, True
+
+
+# ---------------------------------------------------------------------------
+# Restore plan / restore bookkeeping -- pure functions, no I/O
+# ---------------------------------------------------------------------------
+
+
+def compute_restore_plan(
+    manifest: dict[str, Any], live_names: set[str] | list[str]
+) -> list[str]:
+    """Names that are pending restore and NOT currently live, sorted.
+
+    Pure and side-effect-free -- callers recompute this at whatever moment
+    they need an up-to-date plan (SESSION_PERSISTENCE_DESIGN.md section 7.3:
+    "plan = pending_restore - live, recomputed at execution time"). Always
+    recomputing against the CURRENT live set (rather than trusting a
+    snapshot taken earlier) is what makes restore idempotent: a name that
+    came back on its own (or was already restored in an earlier run) is
+    simply absent from the returned list, nothing extra to check.
+
+    A name that was ever tombstoned (deliberately killed while muxplex was
+    running) cannot appear here at all -- tombstoning removes it from
+    manifest["sessions"] before any cold start can freeze it into
+    pending_restore (see update_manifest()'s same-server branch), so there
+    is no path by which a tombstoned name reaches pending_restore in the
+    first place. This function has nothing extra to defend against; the
+    protection is structural, upstream of this call.
+    """
+    pending = manifest.get("pending_restore")
+    if not pending:
+        return []
+    pending_names = set((pending.get("sessions") or {}).keys())
+    live_set = set(live_names)
+    return sorted(pending_names - live_set)
+
+
+def mark_restored(manifest: dict[str, Any], restored_names: set[str]) -> dict[str, Any]:
+    """Remove *restored_names* from ``pending_restore["sessions"]``.
+
+    Pure function -- returns a NEW manifest dict; never mutates *manifest*
+    in place, so a caller doing a read-right-before-write (to minimize the
+    window against a concurrently-running poll loop -- see restore.py) can
+    call this against a freshly-loaded manifest and save the result
+    immediately.
+
+    If ``pending_restore`` is already ``None``, or removing the given names
+    empties its ``sessions`` map, ``pending_restore`` becomes ``None``
+    entirely -- an empty-but-present pending_restore is not a state this
+    module wants to represent (mirrors the "None means nothing pending"
+    convention update_manifest() already establishes). Names that FAILED to
+    restore are simply not passed in, so they remain pending for a future
+    `muxplex restore` to retry.
+    """
+    pending = manifest.get("pending_restore")
+    if not pending:
+        return manifest
+    remaining = {
+        name: info
+        for name, info in (pending.get("sessions") or {}).items()
+        if name not in restored_names
+    }
+    new_pending = None if not remaining else {**pending, "sessions": remaining}
+    return {**manifest, "pending_restore": new_pending}

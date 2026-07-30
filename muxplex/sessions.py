@@ -46,6 +46,8 @@ import asyncio
 import logging
 import os
 import re
+import shlex
+import shutil
 
 from muxplex.settings import load_settings
 
@@ -412,6 +414,115 @@ async def ensure_history_retention(session_name: str) -> None:
             session_name,
             exc,
         )
+
+
+async def spawn_session_command(name: str) -> tuple[bool, str | None]:
+    """Run `settings.new_session_template` (with `{name}` substituted) to create
+    a tmux session named *name*. Returns ``(ok, error)``.
+
+    This is the SINGLE source of truth for "how to create a session" --
+    extracted from main.py's `create_session()` API handler so that both the
+    API endpoint and `muxplex restore` (which needs to create sessions from
+    the CLI, not the running server) share one implementation rather than two
+    that could drift (see SESSION_PERSISTENCE_DESIGN.md's "restore fidelity
+    equals create fidelity" principle). Callers at the API boundary MUST
+    validate the name first (`is_valid_session_name` / the API's
+    `_require_valid_session_name`) -- this function does not, so it stays
+    usable from a plain CLI process with no HTTP framework in scope.
+
+    `new_session_template` is an arbitrary user shell command with a `{name}`
+    placeholder (default `tmux new-session -d -s {name}`, but users configure
+    e.g. `amplifier-workspace {name}`), so this stays shell-based to preserve
+    that feature. Injection is closed by two layers: (1) the caller's
+    allowlist check guarantees the name has no shell metacharacters; (2)
+    `shlex.quote()` here is defense-in-depth in case the allowlist is ever
+    loosened -- for an allowlist-valid name it's a no-op.
+
+    Some session commands (e.g. `amplifier-workspace`) create the tmux
+    session and then attempt to *attach* to it, which requires a TTY. When
+    launched with no TTY available (the muxplex service, or a non-interactive
+    CLI invocation) the attach step fails with a non-zero exit code even
+    though the session was successfully created. To handle this, when the
+    command exits non-zero we check whether a tmux session with the
+    requested name now exists -- if it does, we treat it as a success.
+
+    Returns:
+        (True, None) on success.
+        (False, <error message>) on failure -- the caller decides how to
+        surface it (HTTPException for the API, a printed FAIL line for the
+        CLI).
+    """
+    settings = load_settings()
+    template = settings["new_session_template"]
+
+    # Pre-flight: check that the base command is on PATH.
+    base_cmd = template.split()[0] if template.strip() else ""
+    if base_cmd and not shutil.which(base_cmd):
+        _log.error(
+            "Session command binary not found on PATH: %r (PATH=%s)",
+            base_cmd,
+            os.environ.get("PATH", ""),
+        )
+        return False, (
+            f"Command not found: {base_cmd}. "
+            "Ensure it is installed and in the server's PATH."
+        )
+
+    command = template.replace("{name}", shlex.quote(name))
+    _log.info("Creating session '%s' with command: %s", name, command)
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=tmux_env(),
+        )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=30
+        )
+        if proc.returncode != 0:
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            # Some commands (amplifier-workspace) create the session then
+            # try to attach (which fails without a TTY). If the session
+            # exists despite the non-zero exit, treat it as success.
+            sessions = await enumerate_sessions()
+            if name in sessions:
+                _log.info(
+                    "Session command exited %d but session '%s' exists -- "
+                    "treating as success (likely a TTY-attach failure)",
+                    proc.returncode,
+                    name,
+                )
+            else:
+                _log.warning(
+                    "Session command exited %d: %s (stderr: %s)",
+                    proc.returncode,
+                    command,
+                    stderr_text,
+                )
+                return False, (
+                    f"Session command failed (exit {proc.returncode}): {stderr_text}"
+                    if stderr_text
+                    else f"Session command failed with exit code {proc.returncode}"
+                )
+    except asyncio.TimeoutError:
+        _log.info(
+            "Session command still running after 30s (may be long-lived): %s",
+            command,
+        )
+        # Long-running session commands (e.g. amplifier-workspace that
+        # spawns background processes) may outlive the 30s window. This is
+        # not necessarily an error -- return success and let the caller
+        # poll for the session to appear.
+    except Exception as exc:
+        _log.warning("Failed to launch session command %r: %s", command, exc)
+        return False, f"Failed to launch command: {exc}"
+
+    # Raise this session's tmux history-limit so a later deep read has real
+    # scrollback to return instead of silently truncating. Best-effort:
+    # never fails session creation itself.
+    await ensure_history_retention(name)
+    return True, None
 
 
 async def snapshot_all(names: list[str]) -> dict[str, str]:
