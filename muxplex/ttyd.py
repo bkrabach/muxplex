@@ -22,6 +22,7 @@ import subprocess as _subprocess
 import time
 from pathlib import Path
 
+from muxplex.cgroup_escape import should_escape, wrap_exec_argv
 from muxplex.sessions import tmux_env
 
 # ---------------------------------------------------------------------------
@@ -202,7 +203,7 @@ async def spawn_ttyd(session_name: str) -> asyncio.subprocess.Process:
     if _kill_pids_on_port(TTYD_PORT, signal.SIGKILL):
         await asyncio.sleep(0.3)
 
-    proc = await asyncio.create_subprocess_exec(
+    argv = [
         "ttyd",
         "-W",
         "-m",
@@ -213,6 +214,18 @@ async def spawn_ttyd(session_name: str) -> asyncio.subprocess.Process:
         "attach",
         "-t",
         session_name,
+    ]
+    # `tmux attach` can, in principle, be the reason a tmux SERVER exists at
+    # all (if none was already running) -- see cgroup_escape.py. Wrapping
+    # this spawn too is defense-in-depth: this repo's own incident history
+    # cites this exact call as the auto-spawn site, and different tmux
+    # versions/hosts across muxplex's federation are not all verified to
+    # behave identically to the version this fix was proven against.
+    if await should_escape():
+        argv = wrap_exec_argv(argv)
+
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=True,  # detach from parent process group so ttyd survives independently

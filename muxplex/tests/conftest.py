@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import socket
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -155,3 +156,32 @@ def _neutralize_port_killer(request, monkeypatch):
         cli_mod, "_kill_stale_port_holder", lambda *a, **k: None, raising=False
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _default_cgroup_escape_disabled(monkeypatch):
+    """Default ``should_escape()`` to False for every test.
+
+    Without this, ``sessions.spawn_session_command()`` / ``ttyd.spawn_ttyd()``
+    would call the REAL ``cgroup_escape.should_escape()`` -- which, on any
+    dev/CI host that happens to have a usable systemd --user session, spawns
+    a REAL ``systemd-run --user --scope`` probe process as a test side
+    effect. That is exactly the kind of host-touching behavior this suite's
+    other autouse fixtures exist to prevent (see this file's module
+    docstring). Tests that specifically exercise the escape-ENABLED path
+    override this within the test body -- see test_cgroup_escape.py and the
+    relevant cases in test_sessions.py / test_ttyd.py.
+    """
+    import muxplex.cgroup_escape as cgroup_escape_mod
+
+    cgroup_escape_mod.reset_probe_cache_for_tests()
+    for module_name in ("muxplex.sessions", "muxplex.ttyd"):
+        try:
+            monkeypatch.setattr(
+                module_name + ".should_escape",
+                AsyncMock(return_value=False),
+            )
+        except (ImportError, AttributeError):  # pragma: no cover
+            pass
+    yield
+    cgroup_escape_mod.reset_probe_cache_for_tests()

@@ -112,6 +112,81 @@ async def test_spawn_ttyd_passes_tmux_env_override_to_subprocess():
     }
 
 
+async def test_spawn_ttyd_wraps_in_systemd_scope_when_escape_needed():
+    """When should_escape() is True, spawn_ttyd() must wrap its argv with
+    the systemd scope prefix -- see cgroup_escape.py and AGENTS.md's "Two
+    ways to destroy every live tmux session on this host" (mechanism #1).
+
+    `tmux attach` is empirically proven (see this fix's report) NOT to
+    start a tmux server for a nonexistent session on this host's tmux
+    version -- this wrap is deliberate defense-in-depth (this exact call is
+    the one AGENTS.md's incident narrative names), not a claim that it is
+    strictly necessary on every tmux version.
+    """
+    mock_proc = _make_mock_ttyd_process(pid=33333)
+
+    with (
+        patch("muxplex.ttyd.should_escape", new=AsyncMock(return_value=True)),
+        patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=mock_proc),
+        ) as mock_create,
+    ):
+        await spawn_ttyd("test-session")
+
+    call_args = list(mock_create.call_args[0])
+    assert call_args == [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--same-dir",
+        "--",
+        "ttyd",
+        "-W",
+        "-m",
+        "3",
+        "-p",
+        "7682",
+        "tmux",
+        "attach",
+        "-t",
+        "test-session",
+    ]
+
+
+async def test_spawn_ttyd_unwrapped_when_escape_not_needed():
+    """When should_escape() is False (the conftest default -- matches macOS,
+    or Linux without a usable systemd --user session), spawn_ttyd() must
+    NOT prepend the systemd-run wrapper -- behavior unchanged from before
+    this fix."""
+    mock_proc = _make_mock_ttyd_process(pid=44444)
+
+    with (
+        patch("muxplex.ttyd.should_escape", new=AsyncMock(return_value=False)),
+        patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=mock_proc),
+        ) as mock_create,
+    ):
+        await spawn_ttyd("test-session")
+
+    call_args = list(mock_create.call_args[0])
+    assert call_args == [
+        "ttyd",
+        "-W",
+        "-m",
+        "3",
+        "-p",
+        "7682",
+        "tmux",
+        "attach",
+        "-t",
+        "test-session",
+    ]
+
+
 async def test_spawn_ttyd_returns_process_object():
     """spawn_ttyd() must return the process object from create_subprocess_exec."""
     mock_proc = _make_mock_ttyd_process(pid=11111)

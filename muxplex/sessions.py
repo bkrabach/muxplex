@@ -49,6 +49,7 @@ import re
 import shlex
 import shutil
 
+from muxplex.cgroup_escape import should_escape, wrap_shell_argv
 from muxplex.settings import load_settings
 
 _log = logging.getLogger(__name__)
@@ -471,13 +472,28 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
     command = template.replace("{name}", shlex.quote(name))
     _log.info("Creating session '%s' with command: %s", name, command)
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=tmux_env(),
-        )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+        # This command may start a brand-new tmux SERVER (e.g. the default
+        # template `tmux new-session -d -s {name}`, or a user's own
+        # `amplifier-workspace {name}`, both start one if none is running
+        # yet). If we are running under a systemd --user unit, that server
+        # must NOT be spawned as a plain child of this process -- see
+        # cgroup_escape.py's module docstring and AGENTS.md's "Two ways to
+        # destroy every live tmux session on this host" (mechanism #1).
+        if await should_escape():
+            proc = await asyncio.create_subprocess_exec(
+                *wrap_shell_argv(command),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=tmux_env(),
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=tmux_env(),
+            )
+        _stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=30
         )
         if proc.returncode != 0:

@@ -21,6 +21,7 @@ from muxplex.sessions import (
     probe_tmux_epoch,
     run_tmux,
     snapshot_all,
+    spawn_session_command,
     tmux_env,
     update_session_cache,
 )
@@ -157,9 +158,14 @@ async def test_run_tmux_calls_correct_command(mock_subprocess):
 
 async def test_run_tmux_raises_on_nonzero_exit(mock_subprocess):
     """run_tmux() must raise RuntimeError when the subprocess exits non-zero."""
-    with mock_subprocess(
-        stdout="", stderr="no server running on /tmp/tmux-1000/default", returncode=1
-    ), pytest.raises(RuntimeError, match="no server running"):
+    with (
+        mock_subprocess(
+            stdout="",
+            stderr="no server running on /tmp/tmux-1000/default",
+            returncode=1,
+        ),
+        pytest.raises(RuntimeError, match="no server running"),
+    ):
         await run_tmux("list-sessions", "-F", "#{session_name}")
 
 
@@ -579,4 +585,132 @@ async def test_probe_tmux_epoch_returns_none_on_malformed_output():
     ):
         result = await probe_tmux_epoch()
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# spawn_session_command() -- cgroup escape wiring
+#
+# spawn_session_command() runs `new_session_template` (default
+# `tmux new-session -d -s {name}`), which starts a brand-new tmux SERVER if
+# none is running yet. When muxplex runs under a systemd --user unit, that
+# server must not be spawned as a plain child of this process -- see
+# cgroup_escape.py and AGENTS.md's "Two ways to destroy every live tmux
+# session on this host" (mechanism #1). These tests verify the two branches
+# without ever invoking a real systemd-run.
+# ---------------------------------------------------------------------------
+
+
+async def test_spawn_session_command_uses_plain_shell_when_escape_not_needed():
+    """When should_escape() is False (the conftest default), behavior is
+    UNCHANGED from before this fix: a plain create_subprocess_shell call.
+
+    ensure_history_retention() is mocked away here because it makes its OWN,
+    unrelated create_subprocess_exec call (a `set-option history-limit`, via
+    run_tmux) -- deliberately never escaped (see cgroup_escape.py: run_tmux()
+    is not a tmux-server-parenting site). Isolating it keeps this test
+    focused on the one thing it verifies: how the CREATION command is spawned.
+    """
+    proc = _make_mock_process(stdout="", stderr="", returncode=0)
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_shell",
+            new=AsyncMock(return_value=proc),
+        ) as mock_shell,
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_exec",
+            new=AsyncMock(),
+        ) as mock_exec,
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"new_session_template": "tmux new-session -d -s {name}"},
+        ),
+        patch("shutil.which", return_value="/usr/bin/tmux"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, error = await spawn_session_command("my-session")
+
+    assert ok is True
+    assert error is None
+    mock_shell.assert_called_once()
+    mock_exec.assert_not_called()
+    assert mock_shell.call_args[0][0] == "tmux new-session -d -s my-session"
+
+
+async def test_spawn_session_command_wraps_in_systemd_scope_when_escape_needed():
+    """When should_escape() is True, the session-creation command must run
+    via `systemd-run --user --scope ... -- sh -c <command>` through
+    create_subprocess_exec, NOT the plain create_subprocess_shell.
+
+    ensure_history_retention() is mocked away -- see the sibling test's
+    docstring for why.
+    """
+    proc = _make_mock_process(stdout="", stderr="", returncode=0)
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=True)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec,
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_shell",
+            new=AsyncMock(),
+        ) as mock_shell,
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"new_session_template": "tmux new-session -d -s {name}"},
+        ),
+        patch("shutil.which", return_value="/usr/bin/tmux"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, error = await spawn_session_command("my-session")
+
+    assert ok is True
+    assert error is None
+    mock_shell.assert_not_called()
+    mock_exec.assert_called_once()
+    called_argv = list(mock_exec.call_args[0])
+    assert called_argv == [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--same-dir",
+        "--",
+        "sh",
+        "-c",
+        "tmux new-session -d -s my-session",
+    ]
+
+
+async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
+    """The escaped path must preserve the existing "session exists despite
+    non-zero exit" recovery (needed for amplifier-workspace's TTY-attach
+    failure under a non-interactive process) -- this is NOT specific to the
+    unwrapped path."""
+    proc = _make_mock_process(
+        stdout="", stderr="attach failed: not a terminal", returncode=1
+    )
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=True)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ),
+        patch(
+            "muxplex.sessions.enumerate_sessions",
+            new=AsyncMock(return_value=["my-session"]),
+        ),
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"new_session_template": "amplifier-workspace {name}"},
+        ),
+        patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, error = await spawn_session_command("my-session")
+
+    assert ok is True
+    assert error is None
     assert get_snapshots() == {}
