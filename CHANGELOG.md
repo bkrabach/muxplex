@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.26.1 (2026-07-30)
+
+### Bug Fixes
+
+- **The dashboard now respects your phone's rotation lock.** Its manifest declared `"orientation": "any"`, which reads like "no preference" but is not — per the Web App Manifest spec it means "allows the app to rotate freely to match the orientation of the device," and Android bakes that into the installed app as sensor-based rotation that applies *even when the user has locked rotation*. v0.26.0 fixed the dashboard opening stuck in landscape but left this in place, so it swapped one wrong behavior for another: free rotation that ignored the lock. The orientation preference is now omitted entirely, which is what leaves the device's own setting in charge. Browser tabs were never affected — manifest orientation only applies to an installed app. The deck's deliberate forced landscape is unchanged.
+
+### Note for Existing Users
+
+Anyone with the dashboard already installed must remove it from their home screen and re-add it — Android caches a PWA's manifest at install time, so a server-side change does not reach an already-installed icon.
+
+### Verification
+
+- 457 frontend tests passed (Node 22).
+- Real hardware verified: device rotation lock now honored on the dashboard; deck's landscape lock is unchanged.
+
 ## v0.26.0 (2026-07-30)
 
 ### Bug Fixes
