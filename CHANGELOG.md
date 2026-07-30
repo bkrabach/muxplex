@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.24.0 (2026-07-29)
+
+### Bug Fixes
+
+- **The service unit shipped a setting that could destroy every session on the machine.** `muxplex service install` wrote `KillMode=mixed`, which tells systemd to SIGKILL every process in the service's control group whenever the service stops. Because muxplex starts the tmux server itself when none is running, that server became muxplex's child — so any restart, upgrade, or crash-loop was a mass kill of every session on the box. This is not hypothetical: it destroyed 44 live sessions on the author's machine on 2026-07-29. New installs now get `KillMode=process`, which signals only muxplex itself. **Anyone who installed the service before this version should reinstall it** — the old unit file is still on disk and still carries the old setting.
+
+### Features
+
+- **muxplex now remembers which sessions it has seen, so a lost tmux server is recoverable.** Until now tmux was the only record of what existed; when the server died, that knowledge died with it. muxplex keeps a small manifest and can tell the difference between a session you deliberately closed and one that vanished because the server underneath it went away — the first is never resurrected, the second becomes a restore candidate. `muxplex restore --dry-run` shows what a restore would do. **Restore execution is not in this release**; nothing is created, killed, or restarted by this change.
+
+### Verification
+
+- 1655 Python tests passed (1626 baseline + 29 new tests covering manifest recording and restore candidate selection).
+- A real tmux server was killed in a DTU and the manifest survived it with the right sessions marked as restore candidates; a deliberate single-session kill was correctly tombstoned and would never be resurrected.
+- Service unit verified to contain `KillMode=process` instead of `mixed`, and no other tmux-killing paths remain in the codebase besides user-initiated `delete_session_template`.
+
 ## v0.23.0 (2026-07-29)
 
 ### Bug Fixes
