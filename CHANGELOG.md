@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.29.0 (2026-07-30)
+
+### Bug Fixes
+
+- **You can now find the soft deck's settings.** v0.27.0 shipped them behind a 600ms motionless long-press on the VIEW key with nothing on screen to suggest it existed — the person who asked for the feature couldn't find it. Tapping VIEW already repaints the grid with the view picker, so Settings is now a key on that page: no permanent pixels, no permanent key slot, reached by a tap people already make. It is a real focusable button with an accessible name, so a screen reader can find it too — the old long-press was a timer on a pointer event and had no presence in the accessibility tree at all. The long-press survives as a shortcut, now with the same 8px movement tolerance the dials use and a filling ring while it arms, so a hold that fails tells you it failed instead of doing nothing. On a grid too small to carry control keys, or one with only a single free slot, the Settings key is omitted rather than displacing the picker's own job.
+
+### Verification
+
+- 671 frontend tests passed (Node 22, baseline 664 + 7 new).
+- No Python changes (frontend + docs only).
+- Soft deck settings now discoverable: tap VIEW to open picker, Settings key visible and tappable, long-press shortcut now has a filling ring and 8px movement tolerance (same as dials), settings panel opens. Accessible name verified via Playwright `aria_snapshot()`.
+
+### Note on Design Documentation
+
+The design documents were amended in this commit: `DESIGN_SOFTDECK.md` rejected long-press by name and `DESIGN_LAYOUT.md` said "no settings gear," and both now carry dated addenda recording what shipped and why. `DESIGN_LAYOUT.md`'s 52px header is marked specified-but-never-built.
+
 ## v0.28.0 (2026-07-30)
 
 ### Features
