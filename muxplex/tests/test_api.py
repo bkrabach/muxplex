@@ -4467,7 +4467,7 @@ def test_create_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_p
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
 
     sentinel_env = {"TMUX_TMPDIR": "/custom/tmux/socket/dir", "SENTINEL": "1"}
-    monkeypatch.setattr("muxplex.main.tmux_env", lambda: sentinel_env)
+    monkeypatch.setattr("muxplex.sessions.tmux_env", lambda: sentinel_env)
 
     captured_kwargs = []
 
@@ -4511,7 +4511,7 @@ def test_delete_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_p
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "no-settings.json")
 
     sentinel_env = {"TMUX_TMPDIR": "/custom/tmux/socket/dir", "SENTINEL": "1"}
-    monkeypatch.setattr("muxplex.main.tmux_env", lambda: sentinel_env)
+    monkeypatch.setattr("muxplex.sessions.tmux_env", lambda: sentinel_env)
 
     captured_kwargs = []
 
