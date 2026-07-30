@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -132,16 +133,25 @@ def _fake_workspace_template(workspace_root: Path) -> str:
 def _fake_workspace_template_with_failure(workspace_root: Path, fail_name: str) -> str:
     """Same as _fake_workspace_template(), but exits 1 WITHOUT creating
     anything when the substituted name equals *fail_name* -- used to force a
-    real, observable partial failure."""
+    real, observable partial failure.
+
+    Wrapped in `bash -c '<script>' _ {name}` (name passed as $1, NOT
+    string-substituted into the script text) so the whole conditional lives
+    inside one already-quoted argument -- spawn_session_command()'s
+    PATH pre-flight check inspects `template.split()[0]` as the base
+    command, which must be a real executable (`bash`), not a shell
+    keyword like `if`.
+    """
     root = str(workspace_root)
-    return (
-        f'if [ "{{name}}" = "{fail_name}" ]; then exit 1; else '
-        f"mkdir -p {root}/{{name}} && "
-        f"tmux new-session -d -s {{name}} -n amplifier -c {root}/{{name}} \\; "
-        f"new-window -t {{name}} -n shell -c {root}/{{name}} \\; "
-        f"new-window -t {{name}} -n git -c {root}/{{name}} \\; "
-        f"new-window -t {{name}} -n files -c {root}/{{name}}; fi"
+    script = (
+        f'if [ "$1" = "{fail_name}" ]; then exit 1; else '
+        f"mkdir -p {root}/$1 && "
+        f'tmux new-session -d -s "$1" -n amplifier -c {root}/$1 \\; '
+        f'new-window -t "$1" -n shell -c {root}/$1 \\; '
+        f'new-window -t "$1" -n git -c {root}/$1 \\; '
+        f'new-window -t "$1" -n files -c {root}/$1; fi'
     )
+    return "bash -c " + shlex.quote(script) + " _ {name}"
 
 
 @pytest.fixture
