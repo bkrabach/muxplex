@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.28.0 (2026-07-30)
+
+### Features
+
+- **The soft deck now has an emulated touch strip.** Tap a zone, swipe left or right, or drag — each bindable separately, addressed as `strip.N.tap`, `strip.N.drag`, `strip.swipe.left`, and `strip.swipe.right`. Swipe and tap drive the same momentary actions the keys use, and drag emits the same signed ticks the dials do, so the existing 19-action catalog works on it unchanged. One genuinely new action, `brightness_set`, takes an absolute position along the strip — the touch strip's canonical use on the hardware, and the one thing the existing catalog had no way to express. It lives in its own table so the 19-action catalog that mirrors the Stream Deck sidecar stays byte-for-byte intact. Gestures are disambiguated with the same 8px/300ms tap threshold the dials already use, and a zone with a bound drag never also fires a swipe.
+
+### Verification
+
+- 664 frontend tests passed (Node 22, baseline 634 + 30 new).
+- 1696 Python tests passed (no regression).
+- All CI jobs green: Python 3.11/3.12/3.13 (muxplex and muxplex-client), test-latest-deps, and test-frontend.
+- Touch strip verified on real Chromium at phone landscape (844×390): tap-to-single-fire on zone, swipe-left −10 / swipe-right +10 measured by CSS brightness delta, drag continuous and absolute (zone baseline to 80% → brightness 80%, verified mid-gesture).
+- `brightness_set` action verified callable and delivering absolute position.
+
 ## v0.27.0 (2026-07-30)
 
 ### Features
