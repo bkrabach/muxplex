@@ -976,6 +976,219 @@ test('applyRelativeTicks: zero ticks or a non-relative action is a no-op', () =>
   assert.deepEqual(deck.applyRelativeTicks('refresh_now', 1, ctx), {});
 });
 
+// ─── Emulated touch strip (BACKLOG.md item 2) ───────────────────────────
+//
+// Verifies the "strip can be functional today" reasoning against the real
+// ACTION_CATALOG (see deck.js's own "Emulated touch strip" section
+// comment): swipe/tap reuse existing MOMENTARY actions, drag reuses the
+// existing RELATIVE actions via a generalized dialDragTicks, and exactly
+// one new CONTINUOUS action (brightness_set, in the deliberately separate
+// STRIP_ACTION_CATALOG) is added for the strip's absolute-position use
+// case -- kept out of ACTION_CATALOG so the cross-repo parity fixture test
+// above is untouched.
+
+test('ACTION_CATALOG is untouched by the strip feature -- still exactly the mirrored 19 actions', () => {
+  assert.strictEqual(Object.keys(deck.ACTION_CATALOG).length, 19);
+  assert.strictEqual('brightness_set' in deck.ACTION_CATALOG, false, 'the new continuous action must live only in STRIP_ACTION_CATALOG');
+});
+
+test('STRIP_ACTION_CATALOG: exactly one soft-deck-only CONTINUOUS action, not a family of them', () => {
+  const names = Object.keys(deck.STRIP_ACTION_CATALOG);
+  assert.deepEqual(names, ['brightness_set']);
+  assert.strictEqual(deck.STRIP_ACTION_CATALOG.brightness_set.kind, deck.ACTION_CONTINUOUS);
+});
+
+test('catalogSpecFor: finds actions in either catalog', () => {
+  assert.strictEqual(deck.catalogSpecFor('refresh_now').kind, deck.ACTION_MOMENTARY);
+  assert.strictEqual(deck.catalogSpecFor('view_cycle').kind, deck.ACTION_RELATIVE);
+  assert.strictEqual(deck.catalogSpecFor('brightness_set').kind, deck.ACTION_CONTINUOUS);
+  assert.strictEqual(deck.catalogSpecFor('not_a_real_action'), undefined);
+});
+
+test('parseControlAddress: valid strip forms (zone tap/drag, whole-strip swipe)', () => {
+  assert.deepEqual(deck.parseControlAddress('strip.0.tap'), { control: 'strip', index: 0, sub: 'tap', text: 'strip.0.tap' });
+  assert.deepEqual(deck.parseControlAddress('strip.3.drag'), { control: 'strip', index: 3, sub: 'drag', text: 'strip.3.drag' });
+  assert.deepEqual(deck.parseControlAddress('strip.swipe.left'), { control: 'strip', index: null, sub: 'swipe-left', text: 'strip.swipe.left' });
+  assert.deepEqual(deck.parseControlAddress('strip.swipe.right'), { control: 'strip', index: null, sub: 'swipe-right', text: 'strip.swipe.right' });
+});
+
+test('parseControlAddress: rejects malformed strip addresses (never throws)', () => {
+  assert.strictEqual(deck.parseControlAddress('strip.01.tap'), null); // leading zero
+  assert.strictEqual(deck.parseControlAddress('strip.-1.tap'), null); // sign
+  assert.strictEqual(deck.parseControlAddress('strip.1.spin'), null); // unknown sub
+  assert.strictEqual(deck.parseControlAddress('strip.swipe.up'), null); // unknown direction
+  assert.strictEqual(deck.parseControlAddress('strip.swipe'), null); // missing direction
+  assert.strictEqual(deck.parseControlAddress('strip.tap'), null); // missing zone index
+});
+
+test('validActionsForAddress: strip.N.tap and strip.swipe.left/right get MOMENTARY + none, like key.N', () => {
+  const tapActions = deck.validActionsForAddress(deck.parseControlAddress('strip.0.tap'));
+  assert.ok(tapActions.includes('page_prev'));
+  assert.ok(tapActions.includes('none'));
+  assert.ok(!tapActions.includes('view_cycle'), 'a RELATIVE action must not be valid on strip.N.tap');
+  assert.ok(!tapActions.includes('brightness_set'), 'a CONTINUOUS action must not be valid on strip.N.tap');
+
+  const swipeActions = deck.validActionsForAddress(deck.parseControlAddress('strip.swipe.left'));
+  assert.ok(swipeActions.includes('view_prev'));
+  assert.ok(swipeActions.includes('none'));
+  assert.ok(!swipeActions.includes('page_cycle'));
+});
+
+test('validActionsForAddress: strip.N.drag gets RELATIVE (shared) + CONTINUOUS (strip-only) + none', () => {
+  const dragActions = deck.validActionsForAddress(deck.parseControlAddress('strip.0.drag'));
+  assert.ok(dragActions.includes('view_cycle'), 'RELATIVE actions from ACTION_CATALOG are valid');
+  assert.ok(dragActions.includes('page_cycle'));
+  assert.ok(dragActions.includes('brightness_cycle'));
+  assert.ok(dragActions.includes('brightness_set'), 'the one CONTINUOUS action is valid on strip.N.drag');
+  assert.ok(dragActions.includes('none'));
+  assert.ok(!dragActions.includes('page_prev'), 'a MOMENTARY action must not be valid on strip.N.drag');
+});
+
+test('isValidBinding: strip addresses combine parse + either-catalog + kind check', () => {
+  assert.strictEqual(deck.isValidBinding('strip.0.tap', 'refresh_now'), true);
+  assert.strictEqual(deck.isValidBinding('strip.0.drag', 'page_cycle'), true);
+  assert.strictEqual(deck.isValidBinding('strip.0.drag', 'brightness_set'), true);
+  assert.strictEqual(deck.isValidBinding('strip.0.tap', 'brightness_set'), false, 'CONTINUOUS is only valid on drag');
+  assert.strictEqual(deck.isValidBinding('strip.swipe.left', 'view_prev'), true);
+  assert.strictEqual(deck.isValidBinding('strip.swipe.left', 'page_cycle'), false, 'kind mismatch');
+});
+
+test('sanitizeBindings: drops invalid strip entries, keeps valid ones (including the continuous action)', () => {
+  const result = deck.sanitizeBindings({
+    'strip.0.tap': 'refresh_now',
+    'strip.0.drag': 'brightness_set',
+    'strip.1.drag': 'page_prev', // kind mismatch -- momentary on a drag
+    'strip.swipe.left': 'view_prev',
+    'strip.swipe.up': 'view_prev', // unparseable
+  });
+  assert.deepEqual(result, {
+    'strip.0.tap': 'refresh_now',
+    'strip.0.drag': 'brightness_set',
+    'strip.swipe.left': 'view_prev',
+  });
+});
+
+test('stripZoneBindingsFromConfig: dense array, default {tap: none, drag: none}, filters out-of-range', () => {
+  const result = deck.stripZoneBindingsFromConfig(
+    { 'strip.0.tap': 'refresh_now', 'strip.1.drag': 'brightness_set', 'strip.5.tap': 'view_prev', 'strip.swipe.left': 'view_prev' },
+    3
+  );
+  assert.deepEqual(result, [
+    { tap: 'refresh_now', drag: 'none' },
+    { tap: 'none', drag: 'brightness_set' },
+    { tap: 'none', drag: 'none' },
+  ]);
+});
+
+test('stripSwipeBindingsFromConfig: extracts the whole-strip pair, default none, ignores zone entries', () => {
+  const result = deck.stripSwipeBindingsFromConfig({
+    'strip.swipe.left': 'view_prev',
+    'strip.0.tap': 'refresh_now',
+  });
+  assert.deepEqual(result, { left: 'view_prev', right: 'none' });
+});
+
+test('stripSwipeBindingsFromConfig: no strip bindings at all returns both none', () => {
+  assert.deepEqual(deck.stripSwipeBindingsFromConfig({}), { left: 'none', right: 'none' });
+});
+
+test('stripDragTicks: rightward drag (positive deltaX) yields positive ticks -- NOT a sign-flip of dialDragTicks', () => {
+  assert.strictEqual(deck.stripDragTicks(deck.DIAL_PX_PER_TICK), 1);
+  assert.strictEqual(deck.stripDragTicks(2 * deck.DIAL_PX_PER_TICK), 2);
+});
+
+test('stripDragTicks: leftward drag yields negative ticks', () => {
+  assert.strictEqual(deck.stripDragTicks(-deck.DIAL_PX_PER_TICK), -1);
+});
+
+test('stripDragTicks: sub-threshold movement yields zero ticks', () => {
+  assert.strictEqual(deck.stripDragTicks(5), 0);
+  assert.strictEqual(deck.stripDragTicks(-5), 0);
+});
+
+test('isStripSwipe: large AND fast is a swipe', () => {
+  assert.strictEqual(deck.isStripSwipe(deck.STRIP_SWIPE_PX_THRESHOLD, 100), true);
+  assert.strictEqual(deck.isStripSwipe(-deck.STRIP_SWIPE_PX_THRESHOLD, 100), true, 'direction-agnostic');
+});
+
+test('isStripSwipe: small displacement is never a swipe, even if fast (that shape is a tap)', () => {
+  assert.strictEqual(deck.isStripSwipe(3, 50), false);
+});
+
+test('isStripSwipe: large but slow displacement is not a swipe (a deliberate scrub, not a flick)', () => {
+  assert.strictEqual(deck.isStripSwipe(deck.STRIP_SWIPE_PX_THRESHOLD, deck.STRIP_SWIPE_MS_THRESHOLD + 200), false);
+});
+
+test('gesture disambiguation: tap/swipe/drag shapes are mutually exclusive classifications', () => {
+  // A tap: small AND fast.
+  assert.strictEqual(deck.isDialTap(3, 100), true);
+  assert.strictEqual(deck.isStripSwipe(3, 100), false);
+  // A swipe: large AND fast (but not small).
+  assert.strictEqual(deck.isDialTap(80, 150), false);
+  assert.strictEqual(deck.isStripSwipe(80, 150), true);
+  // A slow scrub-drag: large displacement, slow -- neither tap nor swipe;
+  // this is exactly the shape that should fall through to progressive
+  // tick/absolute emission during pointermove rather than a release-time
+  // classification (see wireTouchStrip's pointermove handler).
+  assert.strictEqual(deck.isDialTap(80, 900), false);
+  assert.strictEqual(deck.isStripSwipe(80, 900), false);
+});
+
+test('stripAbsoluteFraction: clamped [0,1] linear position within a zone rect', () => {
+  assert.strictEqual(deck.stripAbsoluteFraction(0, 0, 100), 0);
+  assert.strictEqual(deck.stripAbsoluteFraction(50, 0, 100), 0.5);
+  assert.strictEqual(deck.stripAbsoluteFraction(100, 0, 100), 1);
+});
+
+test('stripAbsoluteFraction: clamps outside the zone rect (finger dragged past the edge)', () => {
+  assert.strictEqual(deck.stripAbsoluteFraction(-20, 0, 100), 0);
+  assert.strictEqual(deck.stripAbsoluteFraction(150, 0, 100), 1);
+});
+
+test('stripAbsoluteFraction: zero-width rect (not yet measured) is a safe zero, never divides by zero', () => {
+  assert.strictEqual(deck.stripAbsoluteFraction(50, 0, 0), 0);
+});
+
+test('applyContinuousValue: brightness_set maps fraction 0..1 onto the [10,100] range', () => {
+  assert.deepEqual(deck.applyContinuousValue('brightness_set', 0), { brightness: 10 });
+  assert.deepEqual(deck.applyContinuousValue('brightness_set', 1), { brightness: 100 });
+  assert.deepEqual(deck.applyContinuousValue('brightness_set', 0.5), { brightness: 55 });
+});
+
+test('applyContinuousValue: unknown/non-continuous action is a no-op', () => {
+  assert.deepEqual(deck.applyContinuousValue('refresh_now', 0.5), {});
+  assert.deepEqual(deck.applyContinuousValue('not_a_real_action', 0.5), {});
+});
+
+test('contentBoxForStrip: zero stripCount is a no-op (byte-identical geometry to before the feature existed)', () => {
+  assert.deepEqual(deck.contentBoxForStrip({ w: 400, h: 800 }, 0), { w: 400, h: 800 });
+});
+
+test('contentBoxForStrip: positive stripCount reserves TOUCH_STRIP_H from height only', () => {
+  assert.deepEqual(deck.contentBoxForStrip({ w: 400, h: 800 }, 2), { w: 400, h: 800 - deck.TOUCH_STRIP_H });
+});
+
+test('contentBoxForStrip and contentBoxForDials compose independently (both reservations stack)', () => {
+  const afterStrip = deck.contentBoxForStrip({ w: 400, h: 800 }, 1);
+  const afterBoth = deck.contentBoxForDials(afterStrip, 1);
+  assert.deepEqual(afterBoth, { w: 400, h: 800 - deck.TOUCH_STRIP_H - deck.DIAL_STRIP_H });
+});
+
+test('defaultDeckSettings: stripCount defaults to 0, independent of dialCount', () => {
+  const d = deck.defaultDeckSettings();
+  assert.strictEqual(d.stripCount, 0);
+});
+
+test('mergeDeckSettings: valid stripCount is adopted', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), { stripCount: 3 });
+  assert.strictEqual(merged.stripCount, 3);
+});
+
+test('mergeDeckSettings: out-of-range stripCount falls back to default', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), { stripCount: 99 });
+  assert.strictEqual(merged.stripCount, deck.defaultDeckSettings().stripCount);
+});
+
 test('defaultDeckSettings: sane, valid-by-construction defaults', () => {
   const d = deck.defaultDeckSettings();
   assert.strictEqual(d.sort, 'attention');

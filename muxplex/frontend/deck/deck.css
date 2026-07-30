@@ -398,6 +398,73 @@ html, body {
   color: #6A6A88;
 }
 
+/* --- Emulated touch strip (BACKLOG.md item 2) --- */
+/*
+ * Independent of the dial strip -- a fixed-height row below the key grid
+ * (and below the dial strip when both are enabled), reserved by deck.js's
+ * contentBoxForStrip BEFORE the grid is computed. Height matches deck.js's
+ * TOUCH_STRIP_H (72px), same hand-kept-in-sync convention as the dial
+ * strip's own height comment above.
+ */
+
+#deck-touch-strip {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 72px;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0 8px env(safe-area-inset-bottom, 0px);
+  z-index: 4;
+  gap: 2px;
+}
+#deck-touch-strip.hidden {
+  display: none;
+}
+
+.deck-strip-zone {
+  flex: 1;
+  min-width: 0;
+  border-radius: 8px;
+  background: #101036;
+  border: 1px solid #2A2A4A;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #8888AA;
+  font-size: 9px;
+  line-height: 1.3;
+  text-align: center;
+  padding: 4px;
+  touch-action: none; /* the gesture IS the interaction -- never let the page scroll instead */
+  user-select: none;
+  cursor: pointer;
+}
+.deck-strip-tap-label,
+.deck-strip-drag-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.deck-strip-drag-label {
+  color: #6A6A88;
+}
+.deck-strip-swipe-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  flex-shrink: 0;
+  color: #6A6A88;
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+}
+
 /* \u2500\u2500\u2500 Settings panel (BACKLOG.md item 2) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 /*
  * The ONE element on this surface allowed to scroll -- see deck.js's

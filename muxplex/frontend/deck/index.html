@@ -43,6 +43,16 @@
          elements per the configured dialCount. -->
     <div id="deck-dial-strip" class="hidden" role="list" aria-label="deck dials"></div>
 
+    <!-- Emulated touch strip (BACKLOG.md item 2) -- hidden (stripCount=0) by
+         default; deck.js toggles this and populates it with `.deck-strip-zone`
+         elements per the configured stripCount, between the two fixed
+         swipe-hint labels. Independent of the dial strip -- either, both, or
+         neither may be enabled. -->
+    <div id="deck-touch-strip" class="hidden" role="list" aria-label="deck touch strip">
+      <span id="deck-strip-swipe-left" class="deck-strip-swipe-label"></span>
+      <span id="deck-strip-swipe-right" class="deck-strip-swipe-label"></span>
+    </div>
+
     <!-- Whole-surface takeover for the disconnected state (identical
          mechanism to the view picker, \u00a77) -- shown instead of the grid,
          never alongside it. -->
@@ -92,6 +102,14 @@
       </section>
 
       <section>
+        <h2>Touch strip</h2>
+        <p>Zones support tap (momentary) and drag (tick-based or, for <code>brightness_set</code>, absolute); the whole strip also supports a left/right swipe independent of any zone.</p>
+        <label>Strip zone count (0-4)
+          <input type="number" id="settings-strip-count" min="0" max="4" />
+        </label>
+      </section>
+
+      <section>
         <h2>Brightness</h2>
         <label>Brightness (10-100%)
           <input type="range" id="settings-brightness" min="10" max="100" />
@@ -99,8 +117,8 @@
       </section>
 
       <section>
-        <h2>Key/dial bindings</h2>
-        <p>Address form: <code>key.N</code>, <code>dial.N.turn</code>, <code>dial.N.push</code>.</p>
+        <h2>Key/dial/strip bindings</h2>
+        <p>Address form: <code>key.N</code>, <code>dial.N.turn</code>, <code>dial.N.push</code>, <code>strip.N.tap</code>, <code>strip.N.drag</code>, <code>strip.swipe.left</code>, <code>strip.swipe.right</code>.</p>
         <div id="settings-bindings-list"></div>
         <div class="settings-add-binding">
           <input type="text" id="settings-add-address" placeholder="key.3" />

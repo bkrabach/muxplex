@@ -266,8 +266,25 @@ var DIAL_PX_PER_TICK = 24; // px of vertical drag per emitted relative tick
 var DIAL_TAP_PX_THRESHOLD = 8; // below this net drag, a release is a tap (push)
 var DIAL_TAP_MS_THRESHOLD = 300; // and only if it was also this quick
 
+// Emulated touch strip (BACKLOG.md item 2 -- see the "Emulated touch strip"
+// section below, which replaces the earlier "decorative, not functional"
+// verdict once the actual ACTION_CATALOG was checked against the strip's
+// real gesture vocabulary). STRIP_MAX_ZONES mirrors dialCount's 0-4 range
+// for symmetry -- a zone is the strip's analogue of one dial.
+var TOUCH_STRIP_H = 72; // px reserved for the touch strip when stripCount > 0
+var STRIP_MAX_ZONES = 4;
+// Reuses DIAL_PX_PER_TICK verbatim for drag-to-tick conversion (task
+// guidance: "reuse the discipline rather than inventing new numbers") --
+// same physical distance means the same "one tick" everywhere on the deck.
+var STRIP_SWIPE_PX_THRESHOLD = 60; // net horizontal displacement of a deliberate flick
+var STRIP_SWIPE_MS_THRESHOLD = 400; // must complete at least this fast to count as a swipe
+
 var ACTION_MOMENTARY = 'momentary';
 var ACTION_RELATIVE = 'relative';
+// CONTINUOUS is deliberately NOT part of ACTION_CATALOG (see
+// STRIP_ACTION_CATALOG below) -- it exists for exactly one soft-deck-only
+// action and must never leak into the cross-repo mirrored catalog.
+var ACTION_CONTINUOUS = 'continuous';
 
 /**
  * The soft deck's action catalog -- mirrors muxplex-deck's `controls.py`
@@ -305,13 +322,57 @@ var ACTION_CATALOG = {
 };
 
 /**
- * Parse a control address string -- identical grammar to muxplex-deck's
- * `controls.py::parse_address` (`key.N`, `dial.N.turn`, `dial.N.push`; no
- * leading zeros, no sign). Returns null (never throws) on any grammar
- * violation -- a live settings-editing UI rejects bad input inline rather
- * than failing loud the way a config-file load does.
+ * A SECOND, deliberately separate catalog for the one continuous action the
+ * emulated touch strip's absolute-drag gesture can drive (see the "Emulated
+ * touch strip" section below for the gesture reasoning). This is NOT merged
+ * into ACTION_CATALOG: that table is a byte-for-byte mirror of
+ * muxplex-deck's `controls.py` ACTIONS dict, asserted exactly (name + kind)
+ * by test_deck.mjs's "ACTION_CATALOG mirrors muxplex-deck..." fixture test.
+ * The hardware sidecar has no continuous-value control surface today
+ * (DECK_PARITY_ARCHITECTURE.md \u00a75 lists "FULL mode (dials, touch strip)" as
+ * per-device, uncoordinated) and no such action in its own ACTIONS dict --
+ * adding `brightness_set` to ACTION_CATALOG would silently break that
+ * mirrored-19-action fixture, or force a soft-deck-only action into a table
+ * whose entire purpose is cross-repo parity. Keeping it in a second table
+ * makes "this is soft-deck-only" structural rather than a comment someone
+ * can miss.
+ * @type {Object<string, {kind: string, label: string}>}
+ */
+var STRIP_ACTION_CATALOG = {
+  brightness_set: { kind: ACTION_CONTINUOUS, label: 'SET\nBRIGHT' },
+};
+
+/**
+ * Look up an action's catalog spec regardless of which catalog it lives in
+ * -- the one place that needs to know both tables exist.
+ * @param {string} action
+ * @returns {{kind:string, label:string}|undefined}
+ */
+function catalogSpecFor(action) {
+  return ACTION_CATALOG[action] || STRIP_ACTION_CATALOG[action];
+}
+
+/**
+ * Parse a control address string. `key.N` / `dial.N.turn` / `dial.N.push`
+ * are identical grammar to muxplex-deck's `controls.py::parse_address` (no
+ * leading zeros, no sign). `strip.N.tap` / `strip.N.drag` (zone-scoped) and
+ * `strip.swipe.left` / `strip.swipe.right` (whole-strip, no zone index) are
+ * new -- see the "Emulated touch strip" section below for why the shape is
+ * `strip.N.sub` for per-zone controls (mirroring `dial.N.sub`) but
+ * `strip.swipe.<direction>` for the one gesture that spans the whole strip
+ * rather than a single zone (there is exactly one strip, so no index is
+ * needed, the same reasoning `key.N` needs an index and a hypothetical
+ * single "back" control wouldn't). These are soft-deck-only addresses with
+ * no sidecar equivalent -- DECK_PARITY_ARCHITECTURE.md \u00a75 already
+ * classifies dials/touch-strip as per-device, and \u00a76.2's layout fixture
+ * explicitly marks its one touch-strip case "HARDWARE ONLY... structurally
+ * inapplicable to the JS harness" -- so this grammar is a forward-compatible
+ * superset of the shared grammar, not a divergence from it. Returns null
+ * (never throws) on any grammar violation -- a live settings-editing UI
+ * rejects bad input inline rather than failing loud the way a config-file
+ * load does.
  * @param {string} text
- * @returns {{control:'key'|'dial', index:number, sub:'turn'|'push'|null, text:string}|null}
+ * @returns {{control:'key'|'dial'|'strip', index:number|null, sub:string|null, text:string}|null}
  */
 function parseControlAddress(text) {
   if (typeof text !== 'string') return null;
@@ -326,18 +387,64 @@ function parseControlAddress(text) {
       text: 'dial.' + m[1] + '.' + m[2],
     };
   }
+  m = /^strip\.(0|[1-9][0-9]*)\.(tap|drag)$/.exec(text);
+  if (m) {
+    return {
+      control: 'strip',
+      index: parseInt(m[1], 10),
+      sub: m[2],
+      text: 'strip.' + m[1] + '.' + m[2],
+    };
+  }
+  m = /^strip\.swipe\.(left|right)$/.exec(text);
+  if (m) {
+    return {
+      control: 'strip',
+      index: null,
+      sub: 'swipe-' + m[1],
+      text: 'strip.swipe.' + m[1],
+    };
+  }
   return null;
 }
 
 /**
  * Actions legal for a given address -- mirrors
- * `controls.py::valid_actions_for_address` (kind must match; `none` is
- * always legal regardless of kind, same judgment call documented there).
+ * `controls.py::valid_actions_for_address` for `key`/`dial` (kind must
+ * match; `none` is always legal regardless of kind, same judgment call
+ * documented there), and extends the same rule to `strip`:
+ *   - `strip.N.tap`, `strip.swipe.left/right` -- MOMENTARY (from
+ *     ACTION_CATALOG), same bucket as `key.N`: a tap or a swipe fires once,
+ *     just like a key press.
+ *   - `strip.N.drag` -- RELATIVE (from ACTION_CATALOG, the same tick-based
+ *     actions `dial.N.turn` accepts) OR CONTINUOUS (from
+ *     STRIP_ACTION_CATALOG). Both are legitimate interpretations of "drag
+ *     along a strip zone" -- which one applies is decided at runtime by the
+ *     bound action's own kind (see the pointermove handler in the
+ *     "Emulated touch strip" section), not by the address.
  * @param {{control:string, sub:?string}|null} address
  * @returns {string[]} sorted action names
  */
 function validActionsForAddress(address) {
   if (!address) return [];
+  if (address.control === 'strip' && address.sub === 'drag') {
+    var dragNames = [];
+    for (var rn in ACTION_CATALOG) {
+      if (Object.prototype.hasOwnProperty.call(ACTION_CATALOG, rn) && ACTION_CATALOG[rn].kind === ACTION_RELATIVE) {
+        dragNames.push(rn);
+      }
+    }
+    for (var cn in STRIP_ACTION_CATALOG) {
+      if (
+        Object.prototype.hasOwnProperty.call(STRIP_ACTION_CATALOG, cn) &&
+        STRIP_ACTION_CATALOG[cn].kind === ACTION_CONTINUOUS
+      ) {
+        dragNames.push(cn);
+      }
+    }
+    if (dragNames.indexOf('none') === -1) dragNames.push('none');
+    return dragNames.sort();
+  }
   var wantKind = address.control === 'dial' && address.sub === 'turn' ? ACTION_RELATIVE : ACTION_MOMENTARY;
   var names = [];
   for (var name in ACTION_CATALOG) {
@@ -351,8 +458,8 @@ function validActionsForAddress(address) {
 
 /**
  * Full validation of one (address, action) pair -- parse + catalog
- * membership + kind match. Used by both `sanitizeBindings` and the
- * settings panel's live add-binding form.
+ * membership (either catalog, via catalogSpecFor) + kind match. Used by
+ * both `sanitizeBindings` and the settings panel's live add-binding form.
  * @param {string} addressText
  * @param {string} action
  * @returns {boolean}
@@ -360,7 +467,7 @@ function validActionsForAddress(address) {
 function isValidBinding(addressText, action) {
   var address = parseControlAddress(addressText);
   if (!address) return false;
-  if (typeof action !== 'string' || !(action in ACTION_CATALOG)) return false;
+  if (typeof action !== 'string' || !catalogSpecFor(action)) return false;
   return validActionsForAddress(address).indexOf(action) !== -1;
 }
 
@@ -423,6 +530,47 @@ function dialBindingsFromConfig(bindings, dialCount) {
     if (!a || a.control !== 'dial') continue;
     if (a.index < 0 || a.index >= dialCount) continue;
     out[a.index][a.sub] = bindings[addr];
+  }
+  return out;
+}
+
+/**
+ * Extract `strip.N.tap`/`strip.N.drag` bindings into a dense array of
+ * `{tap, drag}` (default `'none'`), one entry per configured zone -- the
+ * touch-strip twin of `dialBindingsFromConfig`.
+ * @param {Object<string,string>} bindings
+ * @param {number} zoneCount
+ * @returns {Array<{tap:string, drag:string}>}
+ */
+function stripZoneBindingsFromConfig(bindings, zoneCount) {
+  var out = [];
+  for (var i = 0; i < zoneCount; i++) out.push({ tap: 'none', drag: 'none' });
+  for (var addr in bindings) {
+    if (!Object.prototype.hasOwnProperty.call(bindings, addr)) continue;
+    var a = parseControlAddress(addr);
+    if (!a || a.control !== 'strip' || a.index == null) continue;
+    if (a.index < 0 || a.index >= zoneCount) continue;
+    out[a.index][a.sub] = bindings[addr];
+  }
+  return out;
+}
+
+/**
+ * Extract the two whole-strip `strip.swipe.left` / `strip.swipe.right`
+ * bindings -- unlike zone bindings these have no index (there is exactly
+ * one strip), so the result is a single `{left, right}` pair rather than a
+ * dense array.
+ * @param {Object<string,string>} bindings
+ * @returns {{left:string, right:string}}
+ */
+function stripSwipeBindingsFromConfig(bindings) {
+  var out = { left: 'none', right: 'none' };
+  for (var addr in bindings) {
+    if (!Object.prototype.hasOwnProperty.call(bindings, addr)) continue;
+    var a = parseControlAddress(addr);
+    if (!a || a.control !== 'strip' || a.index != null) continue;
+    if (a.sub === 'swipe-left') out.left = bindings[addr];
+    if (a.sub === 'swipe-right') out.right = bindings[addr];
   }
   return out;
 }
@@ -501,6 +649,81 @@ function isDialTap(deltaYpx, elapsedMs) {
 }
 
 /**
+ * Horizontal-drag-to-ticks for an emulated touch-strip zone -- the strip's
+ * twin of `dialDragTicks`, generalized to a horizontal surface per the
+ * task's own suggestion ("dialDragTicks may generalize"). Rightward drag
+ * (positive deltaX) yields positive ticks: the natural reading-direction
+ * convention for "forward" (next view, next page, brighter), the
+ * horizontal equivalent of the dial's "up = increase". Deliberately NOT a
+ * sign-flip of dialDragTicks -- right and up are both "the positive
+ * direction" on their own axis, so the two functions differ only in which
+ * axis they read, not in a hidden orientation inversion.
+ * @param {number} deltaXpx
+ * @returns {number} signed integer tick count (may be 0)
+ */
+function stripDragTicks(deltaXpx) {
+  return Math.trunc(deltaXpx / DIAL_PX_PER_TICK) || 0; // `|| 0` squashes -0, see dialDragTicks
+}
+
+/**
+ * Whether a completed strip gesture is a deliberate flick (swipe) -- large
+ * AND fast, the opposite shape from `isDialTap` (small AND fast). A slow
+ * drag across the same distance is NOT a swipe, by design: swipe requires
+ * speed, which is what distinguishes "flick to page over" from "scrub
+ * through a continuous/relative range." Only meaningful for a zone whose
+ * `drag` binding is unbound (`none`) -- see the "Emulated touch strip"
+ * section for why a bound drag zone never reaches this check at all
+ * (its gesture is already fully consumed, progressively, as ticks or an
+ * absolute value).
+ * @param {number} deltaXpx - net horizontal displacement over the whole gesture
+ * @param {number} elapsedMs
+ * @returns {boolean}
+ */
+function isStripSwipe(deltaXpx, elapsedMs) {
+  return Math.abs(deltaXpx) >= STRIP_SWIPE_PX_THRESHOLD && elapsedMs <= STRIP_SWIPE_MS_THRESHOLD;
+}
+
+/**
+ * Absolute touch position along a strip zone as a clamped [0,1] fraction --
+ * the input to the strip's one CONTINUOUS action (`brightness_set`). Pure:
+ * takes the already-measured zone rect rather than touching the DOM itself,
+ * so it's testable under `node --test` with a fake rect.
+ * @param {number} clientX
+ * @param {number} rectLeft
+ * @param {number} rectWidth
+ * @returns {number}
+ */
+function stripAbsoluteFraction(clientX, rectLeft, rectWidth) {
+  if (!(rectWidth > 0)) return 0;
+  var f = (clientX - rectLeft) / rectWidth;
+  if (f < 0) f = 0;
+  if (f > 1) f = 1;
+  return f;
+}
+
+/**
+ * Apply an absolute [0,1] fraction to the strip's one CONTINUOUS action --
+ * the touch-strip's canonical "set brightness by touch position" gesture
+ * (hardware Stream Deck+ touch-strip's own signature use), and the
+ * CONTINUOUS counterpart of `applyRelativeTicks`. `fraction` maps linearly
+ * onto the existing [10,100] brightness range (never onto [0,100] --
+ * brightness_up/down/cycle already enforce a 10% floor, unreachable-off is
+ * deliberate, see setBrightness's own clamp).
+ * @param {string} action - 'brightness_set' (others are no-ops)
+ * @param {number} fraction - 0..1
+ * @returns {object} partial update, e.g. {brightness: n} or {} if the action doesn't apply
+ */
+function applyContinuousValue(action, fraction) {
+  if (action === 'brightness_set') {
+    var v = Math.round(10 + fraction * 90);
+    if (v > 100) v = 100;
+    if (v < 10) v = 10;
+    return { brightness: v };
+  }
+  return {};
+}
+
+/**
  * Apply a signed relative tick count to one of the three RELATIVE actions.
  * Pure -- reads/writes only the small `ctx` slice relevant to the action,
  * returns a partial-update object the caller merges into real state. All
@@ -542,8 +765,9 @@ function defaultDeckSettings() {
     pollIntervalMs: POLL_INTERVAL_MS,
     gridOverride: null, // {rows, cols} | null (null = auto, computeGrid)
     dialCount: 0, // 0-4
+    stripCount: 0, // 0-4 touch-strip zones (independent of dialCount)
     brightness: 100, // 10-100, applied as a CSS filter on the whole surface
-    bindings: {}, // address (key.N | dial.N.turn | dial.N.push) -> action
+    bindings: {}, // address (key.N | dial.N.turn | dial.N.push | strip.N.tap | strip.N.drag | strip.swipe.left | strip.swipe.right) -> action
   };
 }
 
@@ -583,6 +807,9 @@ function mergeDeckSettings(defaults, incoming) {
   }
   if (Number.isInteger(incoming.dialCount) && incoming.dialCount >= 0 && incoming.dialCount <= 4) {
     out.dialCount = incoming.dialCount;
+  }
+  if (Number.isInteger(incoming.stripCount) && incoming.stripCount >= 0 && incoming.stripCount <= STRIP_MAX_ZONES) {
+    out.stripCount = incoming.stripCount;
   }
   if (Number.isInteger(incoming.brightness) && incoming.brightness >= 10 && incoming.brightness <= 100) {
     out.brightness = incoming.brightness;
@@ -734,6 +961,23 @@ function computeEffectiveGrid(contentW, contentH, override) {
 function contentBoxForDials(box, dialCount) {
   if (!dialCount || dialCount <= 0) return box;
   return { w: box.w, h: Math.max(0, box.h - DIAL_STRIP_H) };
+}
+
+/**
+ * The touch-strip twin of `contentBoxForDials` -- shrinks a content box to
+ * make room for the emulated touch strip when `stripCount` is configured.
+ * Independent of dial reservation: the two compose by calling both in
+ * sequence (see `recomputeGrid`), so a deck with both dials and a strip
+ * reserves both heights, a deck with only one reserves only that one, and
+ * a deck with neither (the default) sees byte-identical geometry to before
+ * either feature existed.
+ * @param {{w:number, h:number}} box
+ * @param {number} stripCount
+ * @returns {{w:number, h:number}}
+ */
+function contentBoxForStrip(box, stripCount) {
+  if (!stripCount || stripCount <= 0) return box;
+  return { w: box.w, h: Math.max(0, box.h - TOUCH_STRIP_H) };
 }
 
 /**
@@ -1302,6 +1546,12 @@ if (typeof document !== 'undefined') {
     var dialBindings = dialBindingsFromConfig(deckSettings.bindings, deckSettings.dialCount);
     var dialEls = [];
     var dialStripEl = document.getElementById('deck-dial-strip');
+    var stripZoneBindings = stripZoneBindingsFromConfig(deckSettings.bindings, deckSettings.stripCount);
+    var stripSwipeBindings = stripSwipeBindingsFromConfig(deckSettings.bindings);
+    var stripZoneEls = [];
+    var stripStripEl = document.getElementById('deck-touch-strip');
+    var stripSwipeLeftLabelEl = document.getElementById('deck-strip-swipe-left');
+    var stripSwipeRightLabelEl = document.getElementById('deck-strip-swipe-right');
     var settingsEl = document.getElementById('deck-settings');
 
     /**
@@ -1592,7 +1842,7 @@ if (typeof document !== 'undefined') {
 
     function recomputeGrid() {
       if (mode === 'picker') return; // never regrid under an open picker
-      var box = contentBoxForDials(contentBox(), deckSettings.dialCount);
+      var box = contentBoxForDials(contentBoxForStrip(contentBox(), deckSettings.stripCount), deckSettings.dialCount);
       var g = computeEffectiveGrid(box.w, box.h, deckSettings.gridOverride);
       grid = g;
       reserved = reservedControlKeys(g.rows, g.cols);
@@ -1603,6 +1853,9 @@ if (typeof document !== 'undefined') {
       boundKeys = keyBindingsFromConfig(deckSettings.bindings, g.rows * g.cols);
       dialBindings = dialBindingsFromConfig(deckSettings.bindings, deckSettings.dialCount);
       rebuildDialStripIfNeeded();
+      stripZoneBindings = stripZoneBindingsFromConfig(deckSettings.bindings, deckSettings.stripCount);
+      stripSwipeBindings = stripSwipeBindingsFromConfig(deckSettings.bindings);
+      rebuildTouchStripIfNeeded();
     }
 
     var resizeTimer = null;
@@ -1718,6 +1971,7 @@ if (typeof document !== 'undefined') {
         paintKeyFace(keyEls[i], result.plan[i], measure);
       }
       renderDialLabels();
+      renderStripLabels();
     }
 
     function render() {
@@ -1965,10 +2219,17 @@ if (typeof document !== 'undefined') {
      * @param {number} dialIndex
      * @param {number} ticks
      */
-    function onDialTurn(dialIndex, ticks) {
-      var binding = dialBindings[dialIndex];
-      if (!binding) return;
-      var action = binding.turn;
+    /**
+     * Apply a signed relative tick count to whichever RELATIVE action a
+     * control (dial turn OR strip zone drag) is bound to, and commit
+     * whichever piece of state it touched back into real (mutable) module
+     * state. Factored out of onDialTurn so the emulated touch strip's
+     * tick-based drag interpretation reuses the exact same commit logic
+     * rather than a second, easily-diverging copy.
+     * @param {string} action
+     * @param {number} ticks
+     */
+    function applyAndCommitRelative(action, ticks) {
       var slots = sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys);
       var viewIndex = viewsList.indexOf(viewName);
       var update = applyRelativeTicks(action, ticks, {
@@ -1990,6 +2251,27 @@ if (typeof document !== 'undefined') {
       }
     }
 
+    /**
+     * CONTINUOUS-action twin of applyAndCommitRelative -- currently only
+     * ever `brightness_set` (see applyContinuousValue), kept as its own
+     * named commit step so the parallel with applyAndCommitRelative
+     * documents the extension point.
+     * @param {string} action
+     * @param {number} fraction - 0..1
+     */
+    function applyAndCommitContinuous(action, fraction) {
+      var update = applyContinuousValue(action, fraction);
+      if ('brightness' in update) {
+        setBrightness(update.brightness);
+      }
+    }
+
+    function onDialTurn(dialIndex, ticks) {
+      var binding = dialBindings[dialIndex];
+      if (!binding) return;
+      applyAndCommitRelative(binding.turn, ticks);
+    }
+
     function onDialPush(dialIndex) {
       var binding = dialBindings[dialIndex];
       if (!binding) return;
@@ -2006,14 +2288,6 @@ if (typeof document !== 'undefined') {
     // gesture rather than a rotary-angle one); a short, small-displacement
     // release is instead treated as a push (isDialTap). One control, both
     // halves of the dial.N.turn / dial.N.push address pair.
-    //
-    // Deliberately NOT building a separate continuous "touch strip" widget
-    // (also named in the backlog): every action in ACTION_CATALOG is
-    // either momentary or a signed-tick RELATIVE action -- none consumes a
-    // continuous 0..1 value the way a real Stream Deck+ touch strip's
-    // volume-style use case would. Building one now would be decorative,
-    // not functional -- if a future action needs a continuous parameter,
-    // build the strip then, with a real consumer.
 
     function buildDialElement(index) {
       var dial = document.createElement('div');
@@ -2101,6 +2375,211 @@ if (typeof document !== 'undefined') {
         if (turnEl) turnEl.textContent = 'TURN: ' + (turnSpec ? turnSpec.label.replace('\n', ' ') : 'NONE');
         if (pushEl) pushEl.textContent = 'PUSH: ' + (pushSpec ? pushSpec.label.replace('\n', ' ') : 'NONE');
       }
+    }
+
+    // -- Emulated touch strip (BACKLOG.md item 2 -- "emulated touch screen
+    // bars and dials like the Stream Deck+") --
+    //
+    // Verified before building: every action in ACTION_CATALOG is momentary
+    // or a signed-tick RELATIVE action -- true, but that only makes an
+    // *absolute-position* strip decorative. A real Stream Deck+ touch strip
+    // has a richer gesture vocabulary, and three of its gestures map onto
+    // the existing catalog with zero new actions:
+    //   - swipe left/right (whole strip)  -> any MOMENTARY action, exactly
+    //     like a key press (strip.swipe.left / strip.swipe.right).
+    //   - drag within a zone              -> the exact same signed ticks
+    //     dialDragTicks emits, generalized to a horizontal axis
+    //     (stripDragTicks), consumed by the same *_cycle RELATIVE actions
+    //     dial.N.turn already binds (strip.N.drag).
+    //   - tap at a position               -> a positional MOMENTARY
+    //     binding, one per zone -- structurally a mini key row
+    //     (strip.N.tap).
+    // So the strip IS functional on the existing 19-action catalog; only
+    // one thing is genuinely missing -- an ABSOLUTE-position consumer,
+    // which is the touch strip's own canonical hardware use case (a
+    // volume-style slider). That's the ONE new action this adds:
+    // `brightness_set` (STRIP_ACTION_CATALOG, kind CONTINUOUS) -- and only
+    // that one; see the catalog's own comment for why it deliberately does
+    // NOT enter the cross-repo-mirrored ACTION_CATALOG.
+    //
+    // Gesture disambiguation, one pointer stream per whole strip container
+    // (not per zone -- swipe is a whole-strip gesture, so the container is
+    // the natural listener target; the pressed zone is resolved from the
+    // event target):
+    //   - TAP: checked first, unconditionally (isDialTap's exact existing
+    //     8px/300ms discipline, reused verbatim per the task's own
+    //     guidance -- "reuse the discipline rather than inventing new
+    //     numbers"). Fires the pressed zone's `tap` binding.
+    //   - DRAG (ticks or absolute): fires PROGRESSIVELY during
+    //     pointermove, exactly like the dial does today, whenever the
+    //     pressed zone's `drag` binding is not 'none'. Once a zone has a
+    //     real drag binding, that zone's gesture vocabulary is drag --
+    //     swipe is never checked for it (see below), so a fast drag can
+    //     never double-fire both a tick update AND a swipe action.
+    //   - SWIPE: only reachable when the pressed zone's `drag` binding IS
+    //     'none' (checked via catalogSpecFor's kind, not a string compare,
+    //     so it also covers a corrupted/unknown action name the same way
+    //     'none' does) -- i.e. swipe is the fallback interpretation of a
+    //     fast, large horizontal motion on a zone that has delegated its
+    //     continuous gesture vocabulary to the whole-strip swipe binding.
+    //     Classified at release via isStripSwipe (large AND fast -- the
+    //     inverse shape of isDialTap's small AND fast).
+
+    /**
+     * Resolve which zone index a pointer event landed on, or null if it
+     * didn't land inside any `.deck-strip-zone` (e.g. a gap/edge pixel).
+     * @param {Event} ev
+     * @returns {number|null}
+     */
+    function stripZoneIndexFromEvent(ev) {
+      var target = ev.target && ev.target.closest ? ev.target.closest('.deck-strip-zone') : null;
+      if (!target) return null;
+      var idx = parseInt(target.dataset.index, 10);
+      return Number.isInteger(idx) ? idx : null;
+    }
+
+    function buildStripZoneElement(index) {
+      var zone = document.createElement('div');
+      zone.className = 'deck-strip-zone';
+      zone.dataset.index = String(index);
+
+      var tapLabel = document.createElement('div');
+      tapLabel.className = 'deck-strip-tap-label';
+      zone.appendChild(tapLabel);
+
+      var dragLabel = document.createElement('div');
+      dragLabel.className = 'deck-strip-drag-label';
+      zone.appendChild(dragLabel);
+
+      return zone;
+    }
+
+    function rebuildTouchStripIfNeeded() {
+      if (!stripStripEl) return;
+      var count = deckSettings.stripCount;
+      stripStripEl.classList.toggle('hidden', count <= 0);
+      if (stripZoneEls.length === count) return;
+      // Rebuild only the zone elements -- the container's own pointer
+      // listeners (wired once, below) persist across this rebuild.
+      while (stripStripEl.firstChild && stripStripEl.firstChild !== stripSwipeLeftLabelEl) {
+        stripStripEl.removeChild(stripStripEl.firstChild);
+      }
+      stripStripEl.innerHTML = '';
+      stripZoneEls = [];
+      if (stripSwipeLeftLabelEl) stripStripEl.appendChild(stripSwipeLeftLabelEl);
+      for (var i = 0; i < count; i++) {
+        var el = buildStripZoneElement(i);
+        stripStripEl.appendChild(el);
+        stripZoneEls.push(el);
+      }
+      if (stripSwipeRightLabelEl) stripStripEl.appendChild(stripSwipeRightLabelEl);
+      renderStripLabels();
+    }
+
+    function swipeLabelText(action) {
+      var spec = catalogSpecFor(action);
+      return spec ? spec.label.replace('\n', ' ') : 'NONE';
+    }
+
+    function renderStripLabels() {
+      for (var i = 0; i < stripZoneEls.length; i++) {
+        var binding = stripZoneBindings[i] || { tap: 'none', drag: 'none' };
+        var tapSpec = catalogSpecFor(binding.tap);
+        var dragSpec = catalogSpecFor(binding.drag);
+        var tapEl = stripZoneEls[i].querySelector('.deck-strip-tap-label');
+        var dragEl = stripZoneEls[i].querySelector('.deck-strip-drag-label');
+        if (tapEl) tapEl.textContent = 'TAP: ' + (tapSpec ? tapSpec.label.replace('\n', ' ') : 'NONE');
+        if (dragEl) dragEl.textContent = 'DRAG: ' + (dragSpec ? dragSpec.label.replace('\n', ' ') : 'NONE');
+      }
+      if (stripSwipeLeftLabelEl) stripSwipeLeftLabelEl.textContent = '\u2039 ' + swipeLabelText(stripSwipeBindings.left);
+      if (stripSwipeRightLabelEl) stripSwipeRightLabelEl.textContent = swipeLabelText(stripSwipeBindings.right) + ' \u203a';
+    }
+
+    function onStripTap(zoneIndex) {
+      var binding = stripZoneBindings[zoneIndex];
+      if (!binding) return;
+      dispatchAction(binding.tap);
+    }
+
+    function onStripSwipe(direction) {
+      var action = direction === 'left' ? stripSwipeBindings.left : stripSwipeBindings.right;
+      dispatchAction(action);
+    }
+
+    var stripPointerId = null;
+    var stripActiveZone = null; // index or null
+    var stripStartX = 0;
+    var stripStartY = 0;
+    var stripLastTickX = 0;
+    var stripStartTime = 0;
+    var stripActiveZoneRect = null; // measured at pointerdown, for absolute-fraction drags
+
+    function stripDragKind(zoneIndex) {
+      var binding = stripZoneBindings[zoneIndex];
+      if (!binding) return null;
+      var spec = catalogSpecFor(binding.drag);
+      return spec ? spec.kind : null;
+    }
+
+    function wireTouchStrip() {
+      if (!stripStripEl) return;
+      stripStripEl.addEventListener('pointerdown', function (ev) {
+        stripPointerId = ev.pointerId;
+        stripActiveZone = stripZoneIndexFromEvent(ev);
+        stripStartX = ev.clientX;
+        stripStartY = ev.clientY;
+        stripLastTickX = ev.clientX;
+        stripStartTime = Date.now();
+        stripActiveZoneRect = null;
+        if (stripActiveZone != null && stripZoneEls[stripActiveZone]) {
+          stripActiveZoneRect = stripZoneEls[stripActiveZone].getBoundingClientRect();
+        }
+        if (stripStripEl.setPointerCapture) {
+          try {
+            stripStripEl.setPointerCapture(ev.pointerId);
+          } catch (e) {
+            /* ignore -- not all browsers require/support capture here */
+          }
+        }
+      });
+
+      stripStripEl.addEventListener('pointermove', function (ev) {
+        if (stripActiveZone == null || ev.pointerId !== stripPointerId) return;
+        var kind = stripDragKind(stripActiveZone);
+        if (kind === ACTION_RELATIVE) {
+          var deltaFromLastTick = ev.clientX - stripLastTickX;
+          var ticks = stripDragTicks(deltaFromLastTick);
+          if (ticks !== 0) {
+            stripLastTickX += ticks * DIAL_PX_PER_TICK;
+            applyAndCommitRelative(stripZoneBindings[stripActiveZone].drag, ticks);
+          }
+        } else if (kind === ACTION_CONTINUOUS && stripActiveZoneRect) {
+          var fraction = stripAbsoluteFraction(ev.clientX, stripActiveZoneRect.left, stripActiveZoneRect.width);
+          applyAndCommitContinuous(stripZoneBindings[stripActiveZone].drag, fraction);
+        }
+        // kind === null/MOMENTARY ('none'): no progressive emission --
+        // deferred to release-time tap/swipe classification below.
+      });
+
+      var endStripGesture = function (ev) {
+        if (stripActiveZone == null && stripActiveZone !== 0) return;
+        if (ev.pointerId !== stripPointerId) return;
+        var totalDeltaX = ev.clientX - stripStartX;
+        var elapsed = Date.now() - stripStartTime;
+        var kind = stripDragKind(stripActiveZone);
+        if (isDialTap(totalDeltaX, elapsed)) {
+          onStripTap(stripActiveZone);
+        } else if (kind !== ACTION_RELATIVE && kind !== ACTION_CONTINUOUS) {
+          if (isStripSwipe(totalDeltaX, elapsed)) {
+            onStripSwipe(totalDeltaX < 0 ? 'left' : 'right');
+          }
+        }
+        stripActiveZone = null;
+        stripPointerId = null;
+        stripActiveZoneRect = null;
+      };
+      stripStripEl.addEventListener('pointerup', endStripGesture);
+      stripStripEl.addEventListener('pointercancel', endStripGesture);
     }
 
     // ── Tap-to-connect (optimistic, three layers) ──
@@ -2205,13 +2684,14 @@ if (typeof document !== 'undefined') {
       if (settingsEl) settingsEl.classList.remove('hidden');
       if (surface) surface.classList.add('hidden');
       if (dialStripEl) dialStripEl.classList.add('hidden');
+      if (stripStripEl) stripStripEl.classList.add('hidden');
     }
 
     function closeSettings() {
       mode = 'grid';
       if (settingsEl) settingsEl.classList.add('hidden');
       if (surface) surface.classList.remove('hidden');
-      recomputeGrid(); // pick up any grid-override/dial-count change made in settings
+      recomputeGrid(); // pick up any grid-override/dial-count/strip-count change made in settings
       render();
     }
 
@@ -2223,6 +2703,7 @@ if (typeof document !== 'undefined') {
       var colsInput = settingsEl.querySelector('#settings-cols');
       var autoBtn = settingsEl.querySelector('#settings-grid-auto');
       var dialInput = settingsEl.querySelector('#settings-dial-count');
+      var stripInput = settingsEl.querySelector('#settings-strip-count');
       var brightInput = settingsEl.querySelector('#settings-brightness');
       var exportArea = settingsEl.querySelector('#settings-export');
 
@@ -2232,6 +2713,7 @@ if (typeof document !== 'undefined') {
       if (colsInput) colsInput.value = deckSettings.gridOverride ? String(deckSettings.gridOverride.cols) : '';
       if (autoBtn) autoBtn.textContent = deckSettings.gridOverride ? 'Use Auto Grid' : 'Auto (current)';
       if (dialInput) dialInput.value = String(deckSettings.dialCount);
+      if (stripInput) stripInput.value = String(deckSettings.stripCount);
       if (brightInput) brightInput.value = String(deckSettings.brightness);
       if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
 
@@ -2333,6 +2815,19 @@ if (typeof document !== 'undefined') {
             saveDeckSettings(storage, deckSettings);
           } else {
             dialInput.value = String(deckSettings.dialCount);
+          }
+        });
+      }
+
+      var stripInput = settingsEl.querySelector('#settings-strip-count');
+      if (stripInput) {
+        stripInput.addEventListener('change', function () {
+          var v = parseInt(stripInput.value, 10);
+          if (Number.isFinite(v) && v >= 0 && v <= STRIP_MAX_ZONES) {
+            deckSettings.stripCount = v;
+            saveDeckSettings(storage, deckSettings);
+          } else {
+            stripInput.value = String(deckSettings.stripCount);
           }
         });
       }
@@ -2443,6 +2938,7 @@ if (typeof document !== 'undefined') {
 
     function boot() {
       applyBrightness();
+      wireTouchStrip();
       var wantsSettings = checkURLEscapeHatch();
       recomputeGrid();
       render();
@@ -2523,5 +3019,20 @@ if (typeof module !== 'undefined' && module.exports) {
     DECK_SETTINGS_KEY: DECK_SETTINGS_KEY,
     DIAL_STRIP_H: DIAL_STRIP_H,
     DIAL_PX_PER_TICK: DIAL_PX_PER_TICK,
+    // Emulated touch strip (BACKLOG.md item 2)
+    ACTION_CONTINUOUS: ACTION_CONTINUOUS,
+    STRIP_ACTION_CATALOG: STRIP_ACTION_CATALOG,
+    STRIP_MAX_ZONES: STRIP_MAX_ZONES,
+    TOUCH_STRIP_H: TOUCH_STRIP_H,
+    STRIP_SWIPE_PX_THRESHOLD: STRIP_SWIPE_PX_THRESHOLD,
+    STRIP_SWIPE_MS_THRESHOLD: STRIP_SWIPE_MS_THRESHOLD,
+    catalogSpecFor: catalogSpecFor,
+    stripZoneBindingsFromConfig: stripZoneBindingsFromConfig,
+    stripSwipeBindingsFromConfig: stripSwipeBindingsFromConfig,
+    stripDragTicks: stripDragTicks,
+    isStripSwipe: isStripSwipe,
+    stripAbsoluteFraction: stripAbsoluteFraction,
+    applyContinuousValue: applyContinuousValue,
+    contentBoxForStrip: contentBoxForStrip,
   };
 }
