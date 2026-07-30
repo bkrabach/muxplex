@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.25.0 (2026-07-29)
+
+### Features
+
+- **`muxplex restore` now actually restores.** v0.24.0 taught muxplex to remember which sessions existed and to tell a deliberately-closed session apart from one lost when the tmux server died. This release acts on that: it recreates the lost ones, using the same `new_session_template` that created them in the first place, so a restored session comes back with the structure it had rather than a bare shell. Sessions you closed on purpose are never resurrected. Running it twice does nothing the second time. If some sessions fail to come back it names exactly which and exits non-zero rather than reporting a partial success as a win. It asks before creating anything — `--yes` skips the prompt for scripted use.
+- **Restore runs in your shell, not inside the service.** Deliberate. muxplex spawns the tmux server as its own child when none is running, which is what let a service restart take out 44 sessions in the first place; creating sessions from a short-lived command in your own shell keeps restore out of that path entirely, and works whether or not the service is running.
+
+### Verification
+
+- 1676 Python tests passed (baseline 1655 + 21 new restore tests covering full restore with 45 sessions, tombstoned session immunity, idempotency, partial failure handling, and exit code verification).
+- Restore verified on isolated tmux servers: full 45-session restore with all four windows and cwd asserted for every session, tombstoned session staying dead, idempotency (second run is no-op), and partial failure (names the failed session, exits non-zero).
+- API endpoints for restore are not implemented — restore is CLI-only by choice. A one-tap restore button on a phone is not the right affordance for an operation that spawns dozens of processes, not until it has a proven track record.
+
 ## v0.24.0 (2026-07-29)
 
 ### Bug Fixes
