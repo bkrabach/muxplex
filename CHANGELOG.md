@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.23.0 (2026-07-29)
+
+### Bug Fixes
+
+- **The deck's three control keys were blank.** `controlKeyContent` computed the right labels, was exported, and was covered by nine tests — but nothing ever called it. The renderer was handed the context where the content belonged, so every field came back undefined and painted as an empty string. The keys are now wired to the function that was always meant to fill them, and the render path was restructured so that a key face can only be painted from a computed plan — there is no longer a second route from state to the screen for that bug to hide in.
+
+- **The deck listed sessions alphabetically instead of by attention.** It asked the server for a view without saying how to sort it, so the server fell back to alphabetical while the hardware decks defaulted to attention order. The two now agree.
+
+- **Long session names were clipped without warning.** The deck left fitting to the browser, which trims a centred label from whichever side overflows and leaves no mark that anything was cut. Names are now measured and truncated the same way the hardware does it, so what you see is always a real prefix followed by an ellipsis.
+
+### Features
+
+- **The hidden view is now reachable from the deck.** It was possible to hide a session from a deck and then have no way to bring it back, because the server left `hidden` out of the browsable view list.
+
+### Verification
+
+- 1626 Python + 583 frontend tests passed (DTU and Node 22).
+- All four fixes proven by reading the DOM in real Chromium at 915×412 against scratch instance.
+- Golden fixture proven to fail on drift (perturbed value → red; restored → green).
+- No remaining path from state to a painted key that bypasses the plan.
+
 ## v0.22.0 (2026-07-29)
 
 ### Features
