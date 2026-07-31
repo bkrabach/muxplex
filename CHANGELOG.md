@@ -1,4 +1,15 @@
-# Changelog
+## v0.30.1 (2026-07-30)
+
+### Bug Fixes
+
+- **The soft deck's grid no longer collides with the dial and touch strips.** The grid was being sized correctly for the space above the strips but then centred against the full viewport, so it sat too low and its bottom row disappeared behind them — 50px of overlap with dials on a phone in landscape. Separately, the two strips both anchored to the bottom of the screen rather than stacking, so with dials and the touch strip both enabled the strip painted over the lower part of every dial. A code comment claimed that stacking already happened; it never did, and that comment is corrected. Contrary to the original report this was not limited to having both enabled — dials-only and strip-only were already overlapping at phone-landscape sizes and only looked correct on larger screens, where extra letterboxing happened to hide it. Worth noting: this was invisible to overflow-based checks because `position: fixed` elements never enlarge document flow — `scrollHeight` equalled `clientHeight` in every broken configuration. The new tests compare element rectangles directly instead.
+
+### Verification
+
+- 685 frontend tests passed (Node 22, baseline 680 + 5 new).
+- No Python changes (frontend + CSS only).
+- All 15 dial/strip × viewport combinations tested in real Chromium against a scratch instance: every grid/strip and strip/strip overlap value is ≤ 0 (negative = letterbox slack). Screenshot at 844×390 with both enabled confirmed visually clean.
+
 
 ## v0.30.0 (2026-07-30)
 
