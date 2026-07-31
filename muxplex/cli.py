@@ -1527,21 +1527,59 @@ def setup_tls(method: str = "auto") -> None:
         print("  Install the CA on each client to eliminate browser warnings.")
         print("  The leaf rotates without re-trusting; the CA is what you trust.")
         print()
+
+        # Under WSL, PowerShell runs on the Windows side and can't open a
+        # Linux path like /home/user/.config/muxplex/ca/muxplex-ca.crt --
+        # point it at the \\wsl.localhost\ UNC path Windows can reach instead.
+        wsl_distro = os.environ.get("WSL_DISTRO_NAME", "")
+        is_wsl = bool(wsl_distro) or "microsoft" in platform.uname().release.lower()
+
         print("  Windows (PowerShell, no admin needed):")
-        print(
-            "    Import-Certificate -FilePath <path-to-ca.crt> "
-            "-CertStoreLocation Cert:\\CurrentUser\\Root"
-        )
+        if is_wsl and wsl_distro:
+            win_ca_path = (
+                "\\\\wsl.localhost\\" + wsl_distro + ca_cert_path_str.replace("/", "\\")
+            )
+            print(
+                f'    Import-Certificate -FilePath "{win_ca_path}" '
+                "-CertStoreLocation Cert:\\CurrentUser\\Root"
+            )
+            print("    (Run this from a Windows PowerShell window, not inside WSL.)")
+            print(
+                "    Alternatively, copy the file to a Windows-visible location "
+                f"first, e.g.: cp {ca_cert_path_str} /mnt/c/Users/<you>/Downloads/"
+            )
+        elif is_wsl:
+            print(
+                f"    Import-Certificate -FilePath {ca_cert_path_str} "
+                "-CertStoreLocation Cert:\\CurrentUser\\Root"
+            )
+            print(
+                "    (WSL detected, but the distro name is unavailable. From "
+                "Windows PowerShell, use \\\\wsl.localhost\\<distro>\\ plus this"
+            )
+            print(
+                "    path with backslashes, or copy the file first, e.g.: "
+                f"cp {ca_cert_path_str} /mnt/c/Users/<you>/Downloads/"
+            )
+        else:
+            print(
+                f"    Import-Certificate -FilePath {ca_cert_path_str} "
+                "-CertStoreLocation Cert:\\CurrentUser\\Root"
+            )
         print()
         print("  macOS:")
         print(
             "    sudo security add-trusted-cert -d -r trustRoot "
-            "-k /Library/Keychains/System.keychain <path-to-ca.crt>"
+            f"-k /Library/Keychains/System.keychain {ca_cert_path_str}"
         )
         print()
         print("  Linux (system-wide):")
-        print("    sudo cp <path-to-ca.crt> /usr/local/share/ca-certificates/")
+        print(f"    sudo cp {ca_cert_path_str} /usr/local/share/ca-certificates/")
         print("    sudo update-ca-certificates")
+        print()
+        print("  After importing, fully close and reopen your browser (not just")
+        print("  reload the page) — Chromium-based browsers only pick up a newly")
+        print("  trusted root certificate after a full restart.")
         print()
         print("  Leaf cert rotates yearly — re-run 'muxplex setup-tls --method ca'")
         print("  to generate a fresh leaf signed by the same CA (no client re-trust).")
