@@ -426,7 +426,11 @@ html, body {
  * (and below the dial strip when both are enabled), reserved by deck.js's
  * contentBoxForStrip BEFORE the grid is computed. Height matches deck.js's
  * TOUCH_STRIP_H (72px), same hand-kept-in-sync convention as the dial
- * strip's own height comment above.
+ * strip's own height comment above. Deliberately left at 72px rather than
+ * grown to make room for the status line below (see deck.js's
+ * renderStripStatus/buildStripStatusMessage doc comments) -- phone-landscape
+ * vertical space is scarce, so the two rows share the existing box (a thin
+ * status line plus a shorter zone row) instead of taking more of it.
  */
 
 #deck-touch-strip {
@@ -436,14 +440,47 @@ html, body {
   bottom: 0;
   height: 72px;
   display: flex;
-  align-items: stretch;
-  justify-content: center;
+  flex-direction: column;
   padding: 0 8px env(safe-area-inset-bottom, 0px);
   z-index: 4;
   gap: 2px;
 }
 #deck-touch-strip.hidden {
   display: none;
+}
+
+/*
+ * The strip's LIVE STATUS line -- what the REAL Stream Deck+ touch strip
+ * actually shows (a single, continuously-updating headline: view, page,
+ * session count, active session -- see deck.js's buildStripStatusMessage
+ * doc comment). A thin, always-present top row; the zone row below keeps
+ * its existing tap/drag/swipe behavior unchanged.
+ */
+.deck-strip-status {
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  color: #C7CBE6;
+  font-size: 10px;
+  line-height: 1.4;
+  padding-top: 2px;
+}
+
+/*
+ * The zone row -- unchanged tap/drag/swipe control surface, now nested one
+ * level inside #deck-touch-strip (alongside .deck-strip-status) instead of
+ * being the container's direct flex children. Takes the remaining height
+ * after the status line.
+ */
+#deck-strip-zones {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 2px;
 }
 
 .deck-strip-zone {

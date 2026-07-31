@@ -64,6 +64,8 @@ test('deck.js exports all pure functions', () => {
     'computeGridForShape',
     'computeEffectiveGrid',
     'contentBoxForDials',
+    'buildStripStatusMessage',
+    'buildStripPickerStatusMessage',
   ];
   for (const fn of expected) {
     assert.ok(fn in deck, `deck.js should export "${fn}"`);
@@ -1262,6 +1264,111 @@ test('contentBoxForStrip and contentBoxForDials compose independently (both rese
   const afterStrip = deck.contentBoxForStrip({ w: 400, h: 800 }, 1);
   const afterBoth = deck.contentBoxForDials(afterStrip, 1);
   assert.deepEqual(afterBoth, { w: 400, h: 800 - deck.TOUCH_STRIP_H - deck.DIAL_STRIP_H });
+});
+
+// ─── buildStripStatusMessage / buildStripPickerStatusMessage ───────────────
+//
+// The strip's LIVE STATUS content (BACKLOG.md "use the strip like Stream
+// Deck+" parity work) -- soft-deck analogue of muxplex-deck's
+// `_build_strip_message` / `_build_picker_strip_message` (main.py).
+// Investigation established the real hardware's touch strip is a single
+// continuously-live status headline (rendering.py's `render_status_strip`
+// draws exactly one centered line), NOT per-dial labels/values, and that
+// touch input on the physical strip is unassigned in v1 (`_on_touch`) --
+// see deck.js's buildStripStatusMessage doc comment for the full citation.
+
+test('buildStripStatusMessage: single page omits the page indicator (matches the session-strip convention)', () => {
+  const msg = deck.buildStripStatusMessage({
+    viewLabel: 'work',
+    page: 0,
+    pageCount: 1,
+    sessionCount: 3,
+    activeName: 'shell',
+  });
+  assert.strictEqual(msg, 'work \u00b7 3 sessions \u00b7 ACTIVE: shell');
+});
+
+test('buildStripStatusMessage: multi-page shows a 1-indexed "pN/total" segment', () => {
+  const msg = deck.buildStripStatusMessage({
+    viewLabel: 'all',
+    page: 1,
+    pageCount: 4,
+    sessionCount: 40,
+    activeName: 'build',
+  });
+  assert.strictEqual(msg, 'all \u00b7 p2/4 \u00b7 40 sessions \u00b7 ACTIVE: build');
+});
+
+test('buildStripStatusMessage: singular "session" for exactly one session', () => {
+  const msg = deck.buildStripStatusMessage({
+    viewLabel: 'work',
+    page: 0,
+    pageCount: 1,
+    sessionCount: 1,
+    activeName: null,
+  });
+  assert.match(msg, /\b1 session\b(?! s)/);
+  assert.doesNotMatch(msg, /1 sessions/);
+});
+
+test('buildStripStatusMessage: no active session reads "ACTIVE: none", never blank', () => {
+  const msg = deck.buildStripStatusMessage({
+    viewLabel: 'work',
+    page: 0,
+    pageCount: 1,
+    sessionCount: 0,
+    activeName: null,
+  });
+  assert.match(msg, /ACTIVE: none$/);
+});
+
+test('buildStripStatusMessage: missing viewLabel falls back to "all", not blank/undefined', () => {
+  const msg = deck.buildStripStatusMessage({
+    viewLabel: '',
+    page: 0,
+    pageCount: 1,
+    sessionCount: 0,
+    activeName: null,
+  });
+  assert.ok(msg.startsWith('all \u00b7'));
+});
+
+test('buildStripPickerStatusMessage: single-page picker omits the range hint', () => {
+  const msg = deck.buildStripPickerStatusMessage({ kind: 'VIEW', start: 0, total: 3, pageSize: 6 });
+  assert.strictEqual(msg, 'VIEW PICKER -- tap to choose');
+});
+
+test('buildStripPickerStatusMessage: multi-page picker shows a "first-last/total" window', () => {
+  const msg = deck.buildStripPickerStatusMessage({ kind: 'PAGE', start: 6, total: 20, pageSize: 6 });
+  assert.strictEqual(msg, 'PAGE PICKER -- tap to choose \u00b7 7-12/20');
+});
+
+test('buildStripPickerStatusMessage: last window clamps to total, never overshoots', () => {
+  const msg = deck.buildStripPickerStatusMessage({ kind: 'VIEW', start: 18, total: 20, pageSize: 6 });
+  assert.strictEqual(msg, 'VIEW PICKER -- tap to choose \u00b7 19-20/20');
+});
+
+test('computeKeyPlan: picker mode returns pickerTotal/pickerPageSize matching its own reservation-aware pagination (single source of truth for the strip status line)', () => {
+  const g = deck.computeGridForShape(4, 6);
+  const reserved = deck.reservedControlKeys(g.rows, g.cols);
+  const result = deck.computeKeyPlan(
+    basePlanParams({
+      mode: 'picker',
+      pickerKind: 'view',
+      pickerPage: 0,
+      viewsList: ['all', 'work', 'personal', 'scratch', 'ops'],
+      grid: g,
+      reserved: reserved,
+    })
+  );
+  const slots = deck.sessionSlotIndices(g.rows, g.cols, reserved, {});
+  // View picker reserves one settings slot when >=2 slots exist (see
+  // computeKeyPlan's own comment) -- pickerPageSize must reflect that, not
+  // the raw slot count, or the strip's window hint would silently disagree
+  // with what the grid itself is showing.
+  const expectedPageSize = slots.length >= 2 ? slots.length - 1 : slots.length;
+  assert.strictEqual(result.pickerTotal, 5);
+  assert.strictEqual(result.pickerPageSize, expectedPageSize);
 });
 
 test('defaultDeckSettings: stripCount defaults to 0, independent of dialCount', () => {

@@ -754,6 +754,69 @@ function applyRelativeTicks(action, ticks, ctx) {
 }
 
 /**
+ * Compose the touch strip's LIVE STATUS headline -- soft-deck analogue of
+ * muxplex-deck's `_build_strip_message` (main.py:370-393), which paints the
+ * REAL Stream Deck+ touch strip on every repaint (poll cycle, dial turn,
+ * page/view change): a single centered line of text, not per-dial
+ * labels/values. Investigation finding (see commit message / task report):
+ * `render_status_strip` (rendering.py:597-617) draws exactly ONE composed
+ * string across the whole 800x100 surface, and the real strip's OWN touch
+ * input is unassigned/no-op in v1 (`_on_touch`, main.py:1294-1295) -- the
+ * physical touch strip is a read-only, continuously-live STATUS DISPLAY,
+ * driven by dial state, never an interactive control surface itself. That
+ * settles this module's job: give the soft deck's strip the same kind of
+ * live informational content, without touching the existing tap/drag/swipe
+ * zone gestures (a soft-deck-only compensating feature for lacking physical
+ * dials on a touchscreen -- those keep working unchanged).
+ *
+ * Deliberately excludes hostname, unlike the hardware string: this repo's
+ * own DESIGN_LAYOUT.md \u00a71 already ruled hostname out of the phone deck's
+ * (never-built) header for the identical reason -- "install-constant, not
+ * state" -- and this is the same single-install, single-user PWA surface.
+ *
+ * @param {{viewLabel:string, page:number, pageCount:number, sessionCount:number, activeName:string|null}} state
+ * @returns {string}
+ */
+function buildStripStatusMessage(state) {
+  var parts = [state.viewLabel || 'all'];
+  if (state.pageCount > 1) {
+    parts.push('p' + (state.page + 1) + '/' + state.pageCount);
+  }
+  parts.push(state.sessionCount + (state.sessionCount === 1 ? ' session' : ' sessions'));
+  parts.push('ACTIVE: ' + (state.activeName || 'none'));
+  return parts.join(' \u00b7 ');
+}
+
+/**
+ * Picker-mode twin of `buildStripStatusMessage` -- soft-deck analogue of
+ * muxplex-deck's `_build_picker_strip_message` (main.py:396-411), reproduced
+ * verbatim in shape ("{KIND} PICKER -- tap to choose" + an optional
+ * "first-last/total" window hint, shown only once there are more options
+ * than fit on one page -- same "only show page info when there's more than
+ * one page" convention the grid-mode message already follows).
+ *
+ * `total`/`pageSize` are passed in from computeKeyPlan's OWN
+ * already-computed picker pagination (`itemsList.length` / actual slot
+ * count used) rather than recomputed here -- duplicating that math
+ * independently is exactly the "shared code does not guarantee parity"
+ * trap DECK_PARITY_ARCHITECTURE.md warns about (two computations of the
+ * same number can silently drift); reading the one computed value back out
+ * cannot drift.
+ *
+ * @param {{kind:'VIEW'|'PAGE', start:number, total:number, pageSize:number}} state
+ * @returns {string}
+ */
+function buildStripPickerStatusMessage(state) {
+  var parts = [state.kind + ' PICKER -- tap to choose'];
+  if (state.total > state.pageSize) {
+    var first = state.start + 1;
+    var last = Math.min(state.start + state.pageSize, state.total);
+    parts.push(first + '-' + last + '/' + state.total);
+  }
+  return parts.join(' \u00b7 ');
+}
+
+/**
  * The soft deck's own default settings -- see the section header above for
  * why these live in localStorage rather than server-synced settings.
  * @returns {object}
@@ -1424,7 +1487,18 @@ function computeKeyPlan(p) {
         flags: _mergeFlags({ currentView: isCurrentItem }),
       };
     }
-    return { plan: plan, page: page, pickerPage: pickerPage };
+    // pickerTotal/pickerPageSize expose the exact numbers this branch just
+    // computed (itemsList.length / pickerSlots.length) -- the strip's live
+    // picker-mode status line (buildStripPickerStatusMessage) reads these
+    // back rather than recomputing the same reservation-aware pagination a
+    // second time, so the two can never independently drift.
+    return {
+      plan: plan,
+      page: page,
+      pickerPage: pickerPage,
+      pickerTotal: itemsList.length,
+      pickerPageSize: pickerSlots.length,
+    };
   }
 
   // grid mode
@@ -1588,7 +1662,14 @@ if (typeof document !== 'undefined') {
     var stripZoneBindings = stripZoneBindingsFromConfig(deckSettings.bindings, deckSettings.stripCount);
     var stripSwipeBindings = stripSwipeBindingsFromConfig(deckSettings.bindings);
     var stripZoneEls = [];
+    // stripStripEl is the OUTER strip container: it owns the hidden-toggle
+    // (stripCount<=0) and is the pointer-event listener target for
+    // wireTouchStrip() -- event bubbling from a `.deck-strip-zone` still
+    // reaches it unchanged now that the zones live one level deeper, inside
+    // stripZonesEl, alongside the new live status line (stripStatusEl).
     var stripStripEl = document.getElementById('deck-touch-strip');
+    var stripStatusEl = document.getElementById('deck-strip-status');
+    var stripZonesEl = document.getElementById('deck-strip-zones');
     var stripSwipeLeftLabelEl = document.getElementById('deck-strip-swipe-left');
     var stripSwipeRightLabelEl = document.getElementById('deck-strip-swipe-right');
     var settingsEl = document.getElementById('deck-settings');
@@ -2061,6 +2142,7 @@ if (typeof document !== 'undefined') {
       }
       renderDialLabels();
       renderStripLabels();
+      renderStripStatus(result);
     }
 
     function render() {
@@ -2550,20 +2632,27 @@ if (typeof document !== 'undefined') {
       var count = deckSettings.stripCount;
       stripStripEl.classList.toggle('hidden', count <= 0);
       if (stripZoneEls.length === count) return;
+      // Zone elements live in stripZonesEl (the inner row), NOT the outer
+      // stripStripEl -- the outer container now also holds the live status
+      // line (stripStatusEl), which must survive this rebuild untouched.
+      // Falls back to stripStripEl itself if the wrapper is missing (should
+      // never happen with index.html's real markup; keeps old behavior for
+      // any test harness that stubs a bare container).
+      var zonesParent = stripZonesEl || stripStripEl;
       // Rebuild only the zone elements -- the container's own pointer
       // listeners (wired once, below) persist across this rebuild.
-      while (stripStripEl.firstChild && stripStripEl.firstChild !== stripSwipeLeftLabelEl) {
-        stripStripEl.removeChild(stripStripEl.firstChild);
+      while (zonesParent.firstChild && zonesParent.firstChild !== stripSwipeLeftLabelEl) {
+        zonesParent.removeChild(zonesParent.firstChild);
       }
-      stripStripEl.innerHTML = '';
+      zonesParent.innerHTML = '';
       stripZoneEls = [];
-      if (stripSwipeLeftLabelEl) stripStripEl.appendChild(stripSwipeLeftLabelEl);
+      if (stripSwipeLeftLabelEl) zonesParent.appendChild(stripSwipeLeftLabelEl);
       for (var i = 0; i < count; i++) {
         var el = buildStripZoneElement(i);
-        stripStripEl.appendChild(el);
+        zonesParent.appendChild(el);
         stripZoneEls.push(el);
       }
-      if (stripSwipeRightLabelEl) stripStripEl.appendChild(stripSwipeRightLabelEl);
+      if (stripSwipeRightLabelEl) zonesParent.appendChild(stripSwipeRightLabelEl);
       renderStripLabels();
     }
 
@@ -2584,6 +2673,39 @@ if (typeof document !== 'undefined') {
       }
       if (stripSwipeLeftLabelEl) stripSwipeLeftLabelEl.textContent = '\u2039 ' + swipeLabelText(stripSwipeBindings.left);
       if (stripSwipeRightLabelEl) stripSwipeRightLabelEl.textContent = swipeLabelText(stripSwipeBindings.right) + ' \u203a';
+    }
+
+    /**
+     * Paint the touch strip's LIVE STATUS line -- the actual parity target
+     * for "use the strip like we do on Stream Deck+" (see
+     * buildStripStatusMessage's doc comment for the hardware investigation
+     * this is based on). Runs on every renderKeys() call -- i.e. every poll
+     * cycle, dial drag, page/view change -- exactly like the real strip's
+     * own diffed-but-continuous repaint (`_repaint_sessions` /
+     * `_repaint_picker`, muxplex-deck/main.py). Independent of stripCount:
+     * always kept current so a later stripCount edit shows fresh content
+     * immediately rather than a stale line from before the strip existed.
+     * @param {{pickerPage:number, pickerTotal?:number, pickerPageSize?:number}} keyPlanResult
+     */
+    function renderStripStatus(keyPlanResult) {
+      if (!stripStatusEl) return;
+      if (mode === 'picker') {
+        stripStatusEl.textContent = buildStripPickerStatusMessage({
+          kind: pickerKind === 'page' ? 'PAGE' : 'VIEW',
+          start: keyPlanResult.pickerPage * (keyPlanResult.pickerPageSize || 1),
+          total: keyPlanResult.pickerTotal || 0,
+          pageSize: keyPlanResult.pickerPageSize || 1,
+        });
+        return;
+      }
+      var slotsNow = sessionSlotIndices(grid.rows, grid.cols, reserved, boundKeys);
+      stripStatusEl.textContent = buildStripStatusMessage({
+        viewLabel: viewName,
+        page: page,
+        pageCount: pageCount(sessions.length, slotsNow.length),
+        sessionCount: sessions.length,
+        activeName: activeName,
+      });
     }
 
     function onStripTap(zoneIndex) {
@@ -3125,5 +3247,7 @@ if (typeof module !== 'undefined' && module.exports) {
     stripAbsoluteFraction: stripAbsoluteFraction,
     applyContinuousValue: applyContinuousValue,
     contentBoxForStrip: contentBoxForStrip,
+    buildStripStatusMessage: buildStripStatusMessage,
+    buildStripPickerStatusMessage: buildStripPickerStatusMessage,
   };
 }

@@ -44,13 +44,23 @@
     <div id="deck-dial-strip" class="hidden" role="list" aria-label="deck dials"></div>
 
     <!-- Emulated touch strip (BACKLOG.md item 2) -- hidden (stripCount=0) by
-         default; deck.js toggles this and populates it with `.deck-strip-zone`
-         elements per the configured stripCount, between the two fixed
-         swipe-hint labels. Independent of the dial strip -- either, both, or
-         neither may be enabled. -->
+         default. Two rows, matching what the REAL Stream Deck+ touch strip
+         actually shows (see deck.js's buildStripStatusMessage doc comment
+         for the hardware investigation): a live STATUS line on top (the
+         strip's actual hardware behavior -- a continuously-updating status
+         headline, not per-dial labels), and the existing tap/drag/swipe
+         zone row below it (a soft-deck-only compensating control surface --
+         real touch input is unassigned on the hardware strip). deck.js
+         populates #deck-strip-zones with `.deck-strip-zone` elements per the
+         configured stripCount, between the two fixed swipe-hint labels.
+         Independent of the dial strip -- either, both, or neither may be
+         enabled. -->
     <div id="deck-touch-strip" class="hidden" role="list" aria-label="deck touch strip">
-      <span id="deck-strip-swipe-left" class="deck-strip-swipe-label"></span>
-      <span id="deck-strip-swipe-right" class="deck-strip-swipe-label"></span>
+      <div id="deck-strip-status" aria-live="polite"></div>
+      <div id="deck-strip-zones">
+        <span id="deck-strip-swipe-left" class="deck-strip-swipe-label"></span>
+        <span id="deck-strip-swipe-right" class="deck-strip-swipe-label"></span>
+      </div>
     </div>
 
     <!-- Whole-surface takeover for the disconnected state (identical
