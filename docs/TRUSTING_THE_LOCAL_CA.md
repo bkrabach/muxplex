@@ -59,6 +59,8 @@ PowerShell, **no admin needed**. Replace `<path-to-ca.crt>` with the path you co
 Import-Certificate -FilePath <path-to-ca.crt> -CertStoreLocation Cert:\CurrentUser\Root
 ```
 
+If muxplex runs under WSL, the CA lives at a Linux path (`/home/<user>/.config/muxplex/ca/muxplex-ca.crt`) that native Windows PowerShell can't open directly. Either use the UNC form `\\wsl.localhost\<distro>\home\<user>\.config\muxplex\ca\muxplex-ca.crt`, or copy the file to a Windows-visible path first (`cp ~/.config/muxplex/ca/muxplex-ca.crt /mnt/c/Users/<you>/muxplex-ca.crt` from inside WSL).
+
 If you'd rather not type the path, paste the PEM inline:
 
 ```powershell
@@ -191,6 +193,38 @@ The CA itself is valid for 10 years; you only need to re-deploy a new CA + re-tr
 **"`curl` says `verify ok` but the browser still warns."**
 
 The browser uses a different trust store than the system CLI in some configurations. Most often this is a Firefox issue (separate store) or a stale browser session that hasn't reloaded the cert store.
+
+**"The browser shows a red / 'Not secure' indicator even though the CA is installed and I fully restarted the browser."**
+
+One failure mode to check here: Chromium-based browsers (Chrome, Edge) remember a per-origin certificate-error bypass. If you previously clicked **Advanced → Proceed anyway** on that exact host *and* port, that cached decision can keep the red indicator showing even once the CA is genuinely trusted. It isn't the only possible cause, but it's worth ruling out when everything else checks out.
+
+To clear the cached decision:
+
+1. Open `chrome://net-internals/#hsts` (`edge://net-internals/#hsts` in Edge).
+2. In **Delete domain security policies** at the bottom of the page, enter the hostname. This field takes the host only — no scheme and no port (`my-host`, not `https://my-host:8088`).
+3. Click **Delete**, then reload the page.
+
+To tell genuine trust from a cached bypass, verify outside the browser.
+
+Any platform — check that the leaf actually chains to the CA:
+
+```sh
+openssl verify -CAfile ~/.config/muxplex/ca/muxplex-ca.crt ~/.config/muxplex/muxplex.crt
+```
+
+`OK` means the leaf verifies against the CA.
+
+Windows / WSL — ask the OS trust store about the live connection, which is where this tends to bite:
+
+```powershell
+$tc = New-Object Net.Sockets.TcpClient('<host>',<port>)
+$ss = New-Object Net.Security.SslStream($tc.GetStream(),$false)
+$ss.AuthenticateAsClient('<host>')
+"validated=" + $ss.IsAuthenticated + " issuer=" + $ss.RemoteCertificate.Issuer
+$ss.Close(); $tc.Close()
+```
+
+This bypasses the browser entirely. If it reports `validated=True` with `muxplex Local CA` as the issuer, the certificate and the OS trust store are correct, and any warning still shown by Chrome or Edge is a browser-side cached decision rather than a certificate problem. If the chain doesn't validate, `AuthenticateAsClient` throws instead of printing — the exception is the failure signal.
 
 **"My LAN IP changed and now the cert doesn't cover the new IP."**
 
