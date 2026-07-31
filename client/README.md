@@ -45,6 +45,139 @@ async with AsyncMuxplexClient("https://your-server:8088", "federation-key") as c
 A localhost caller needs no credential -- `federation_key=None` is the
 default and is fine when running on the same host as the server.
 
+## CLI
+
+`pip install muxplex-client` also installs a `muxplex-client` console script
+that exposes every feature of the muxplex HTTP API as a command, so an AI
+agent (or a shell script) can drive a muxplex server without writing Python.
+
+The CLI is a thin shell over the library above: it does argparse wiring,
+output rendering, and exit codes -- config resolution, CAS retry, and TLS
+remediation all live in (and are fully tested at) the library layer, so this
+section only documents the command surface.
+
+### Global flags
+
+All default to picking up the environment/disk-discovered value (see
+"Configuration resolution" below) when omitted; pass them before the
+subcommand.
+
+| Flag | Meaning | Env var |
+|---|---|---|
+| `--url URL` | Override server URL | `MUXPLEX_URL` |
+| `--key KEY` | Federation key literal (prefer `--key-file`; a literal here lands in shell history) | `MUXPLEX_KEY` |
+| `--key-file PATH` | Read the federation key from a file | `MUXPLEX_FEDERATION_KEY_FILE` |
+| `--ca PATH` | CA certificate path | `MUXPLEX_CA_FILE` |
+| `--timeout SECONDS` | HTTP timeout | `MUXPLEX_TIMEOUT` |
+| `--json` | Emit JSON to stdout instead of human-readable text | -- |
+
+### Configuration resolution
+
+Every value above resolves **explicit flag > environment variable >
+discovered on disk > built-in default**. `muxplex-client info --verbose`
+prints which tier won for each field -- read it first when a connection
+fails for a non-obvious reason. The default server URL is
+`http://127.0.0.1:8088`, unless a local CA certificate is discovered at
+`~/.config/muxplex/ca/muxplex-ca.crt`, in which case it defaults to
+`https://127.0.0.1:8088`. The federation key, if not given explicitly or via
+`MUXPLEX_KEY`, is read from `~/.config/muxplex/federation_key` if present;
+`None` (no credential) is a valid, working default for a localhost server.
+
+### Commands
+
+```
+info [--verbose]              Show instance info (--verbose also prints config sources)
+health                        Unauthenticated liveness check
+auth-mode                     Show the server's auth mode and running username
+ca                            Print the local CA certificate PEM to stdout, and nothing else
+
+ls [--sort attention]         List sessions (cheap, server-resolved view)
+sessions                      List sessions including pane snapshots (expensive)
+show NAME [--lines N]         Show one session's current pane content
+new NAME [--no-wait] [--wait-timeout S]
+                               Create a new tmux session
+rm NAME [--yes]                Delete a session (confirmation gate)
+disconnect                    Disconnect the current ttyd session
+connect NAME                  Connect to a session -- WARNING: moves the human's browser view too
+
+send NAME [--text T] [--key K]... [--enter] [--lines N]
+                               Type into a session; always prints the read-back snapshot
+run NAME COMMAND [--timeout S] [--lines N] [--no-bell] [--exit-expr E]
+                               Run a shell command to completion; exits with the REMOTE
+                               command's exit code (see "Exit codes" below)
+
+bell ring NAME                Record a bell fire for a session
+bell clear NAME                Acknowledge a session's bell
+
+state                         Show server state
+state set [--active-view V] [--active-session S] [--active-remote-id R] [--clear-active-session]
+                               Patch server state -- WARNING: server-global, last-writer-wins
+settings                      Show current settings
+settings set KEY JSON_VALUE [--allow-destructive]
+                               Set one top-level settings key (safe CAS read-modify-write)
+settings sync                 Show syncable settings and their timestamps
+settings push FILE|-           Push a JSON settings-sync payload
+
+fed ls                        List federation sessions
+fed connect DEVICE SESSION     Connect to a session on a remote device
+fed new DEVICE NAME            Create a session on a remote device
+fed rm DEVICE NAME [--yes]     Delete a session on a remote device (confirmation gate)
+fed bell-clear DEVICE NAME     Clear a bell on a remote device's session
+fed generate-key [--yes]       Rotate this server's federation key -- invalidates every
+                               existing client (confirmation gate)
+
+heartbeat [--device-id ID]     Register or update this device's heartbeat
+setup-hooks                   Re-register tmux hooks (call after a tmux server restart)
+```
+
+`settings set KEY JSON_VALUE` parses the value as JSON, falling back to a
+bare string when JSON parsing fails. Dotted keys are not supported --
+top-level only.
+
+### Exit codes
+
+Every client-side failure exits `1` -- there is no multi-code convention in
+this CLI. The one deliberate exception is **`run`, which exits with the
+REMOTE command's exit code** on success (that's the whole point of `run`, so
+`muxplex-client run build "pytest" && deploy` behaves as expected). A
+client-side failure in `run` itself (unreachable, forbidden, timeout) still
+exits `1`.
+
+### Safety gates
+
+- `rm`, `fed rm`, and `fed generate-key` prompt for confirmation unless
+  `--yes` is given. Non-TTY stdin without `--yes` is a hard error, never an
+  implicit yes.
+- `send` never prompts (typing input is the tool's purpose -- the server's
+  `input_enabled`/`input_allowed_sessions` fences are the real control), but
+  it always prints the read-back snapshot so a caller never fires blind.
+- Passing `--key` on the command line prints a warning to stderr (it lands
+  in shell history); prefer `--key-file`.
+- A `403` from `send`/`run` prints the literal JSON to add to
+  `~/.config/muxplex/settings.json` and never suggests a retry -- there is
+  no API path around that fence, by design (see `docs/AGENT_GUIDE.md` §7).
+
+### Examples
+
+```bash
+# See what's running
+muxplex-client ls
+
+# Create a session and run a command in it, failing the shell on non-zero
+muxplex-client new build
+muxplex-client run build "pytest -x" && echo "tests passed"
+
+# Type into a session and see the result immediately
+muxplex-client send build --text "ls -la" --enter
+
+# Point at a remote server with TLS, machine-readable output
+muxplex-client --url https://my-host:8088 --ca ~/.config/muxplex/ca/muxplex-ca.crt \
+    --json sessions
+
+# Debug a connection problem
+muxplex-client info --verbose
+```
+
 ## What's in here vs. what isn't
 
 See `muxplex-client-design.md` §3 for the full included/excluded endpoint

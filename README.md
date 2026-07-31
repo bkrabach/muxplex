@@ -183,6 +183,11 @@ muxplex setup-tls --status          Show current TLS configuration
 muxplex env                          Print `eval`-able TMUX_TMPDIR export
 ```
 
+> **Driving a muxplex server remotely?** `pip install muxplex-client` installs
+> a separate, server-free `muxplex-client` console script (no fastapi/uvicorn/
+> python-pam) that exposes every API feature as a command -- see
+> [`client/README.md`](client/README.md#cli) for the full command reference.
+
 ### Service management
 
 ```bash

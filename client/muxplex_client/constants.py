@@ -44,3 +44,17 @@ KNOWN_KEYS: frozenset[str] = frozenset(
 
 # Mirrors muxplex.terminal_input.MAX_KEYS.
 MAX_KEYS = 64
+
+# HTTP read-timeout ceiling (seconds) for the three endpoints that ask the
+# server to run an operator-supplied subprocess synchronously before it can
+# respond: create_session's POST /api/sessions (new_session_template),
+# delete_session's DELETE /api/sessions/{name} (delete_session_template,
+# with input="y\n"), and connect's POST /api/sessions/{name}/connect (kills
+# and restarts ttyd). AGENT_GUIDE.md section 4: a template that hasn't
+# finished in 30s is not a failure -- poll instead. The client's other (fast)
+# endpoints
+# keep using the ordinary client-level default; this is deliberately NOT
+# that default, and is NOT the same thing as create_session's own
+# `timeout=` parameter, which is the unrelated poll-for-visibility ceiling
+# waiting on the ~2s read cache -- do not conflate the two.
+SUBPROCESS_TIMEOUT: float = 30.0

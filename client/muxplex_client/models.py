@@ -17,8 +17,9 @@ a caller needing a field the model doesn't expose yet can still reach it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -162,3 +163,28 @@ class CommandResult:
     snapshot: str
     elapsed: float
     token: str
+
+
+@dataclass(frozen=True)
+class FederationEntry:
+    """One entry of GET /api/federation/sessions -- a real session OR a status.
+
+    Failures arrive in-band rather than as a raised error: an unreachable,
+    auth-failed, or empty remote produces an entry with `status` set and
+    `name` absent, interleaved in the same list as real sessions. Check
+    `is_session` before treating `name`/`session_key` as present -- a
+    status entry has neither.
+    """
+
+    device_id: str | None
+    device_name: str | None
+    device_version: str | None  # None means UNKNOWN, never "same as ours"
+    remote_id: str | None
+    session_key: str | None
+    name: str | None  # None when status is set
+    status: str | None  # None means this is a real session
+    raw: Mapping[str, Any]
+
+    @property
+    def is_session(self) -> bool:
+        return self.status is None

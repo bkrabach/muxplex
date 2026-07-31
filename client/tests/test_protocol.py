@@ -8,9 +8,15 @@ the complete error-mapping table.
 from __future__ import annotations
 
 from muxplex_client import _protocol as protocol
-from muxplex_client.errors import ApiError, AuthError, InputForbidden, SessionNotFound
+from muxplex_client.errors import (
+    ApiError,
+    AuthError,
+    DestructiveChange,
+    InputForbidden,
+    SessionNotFound,
+    SettingsConflict,
+)
 from muxplex_client.models import Bell
-
 
 # ---------------------------------------------------------------------------
 # Bell / needs_attention
@@ -267,6 +273,167 @@ def test_map_400_is_api_error() -> None:
     err = protocol.map_status_error(400, "/api/sessions/x", "bad request")
     assert isinstance(err, ApiError)
     assert err.status == 400
+
+
+def test_map_409_on_settings_with_no_backstop_is_settings_conflict() -> None:
+    body = {
+        "detail": "Settings have changed since you last loaded them.",
+        "settings_updated_at": 123.5,
+    }
+    err = protocol.map_status_error(409, "/api/settings", body["detail"], body=body)
+    assert isinstance(err, SettingsConflict)
+    assert not isinstance(err, DestructiveChange)
+    assert err.settings_updated_at == 123.5
+
+
+def test_map_409_on_settings_with_backstop_true_is_destructive_change() -> None:
+    body = {
+        "detail": "views would collapse from 8 to 1",
+        "settings_updated_at": 200.0,
+        "backstop": True,
+        "counts": {"before": 8, "after": 1},
+    }
+    err = protocol.map_status_error(409, "/api/settings", body["detail"], body=body)
+    assert isinstance(err, DestructiveChange)
+    assert isinstance(err, SettingsConflict)  # subclass, but told apart by backstop
+    assert err.settings_updated_at == 200.0
+    assert err.counts == {"before": 8, "after": 1}
+
+
+def test_map_409_on_settings_without_body_falls_back_to_settings_conflict() -> None:
+    """No body at all (e.g. a caller that didn't pass one) still yields a
+    SettingsConflict, never crashes, and never a DestructiveChange."""
+    err = protocol.map_status_error(409, "/api/settings", "conflict")
+    assert isinstance(err, SettingsConflict)
+    assert not isinstance(err, DestructiveChange)
+    assert err.settings_updated_at is None
+
+
+def test_map_409_on_other_path_is_api_error() -> None:
+    """The settings-specific 409 mapping is scoped to exactly /api/settings --
+    a 409 from any other path (e.g. /api/settings/sync) is an ordinary
+    ApiError, not a SettingsConflict."""
+    err = protocol.map_status_error(
+        409, "/api/settings/sync", "stale", body={"backstop": True}
+    )
+    assert isinstance(err, ApiError)
+    assert not isinstance(err, SettingsConflict)
+    assert err.status == 409
+
+
+# ---------------------------------------------------------------------------
+# FederationEntry parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_federation_entry_real_session() -> None:
+    raw = {
+        "name": "alpha",
+        "snapshot": "pane text",
+        "bell": {},
+        "last_activity_at": None,
+        "deviceId": "dev1",
+        "deviceName": "laptop",
+        "deviceVersion": "0.30.1",
+        "remoteId": None,
+        "sessionKey": "dev1:alpha",
+    }
+    entry = protocol.parse_federation_entry(raw)
+    assert entry.is_session is True
+    assert entry.name == "alpha"
+    assert entry.status is None
+    assert entry.device_id == "dev1"
+    assert entry.device_name == "laptop"
+    assert entry.device_version == "0.30.1"
+    assert entry.remote_id is None
+    assert entry.session_key == "dev1:alpha"
+    assert entry.raw == raw
+
+
+def test_parse_federation_entry_unreachable_status_has_no_name() -> None:
+    raw = {
+        "status": "unreachable",
+        "deviceId": "dev2",
+        "remoteId": "dev2",
+        "deviceName": "phone",
+        "deviceVersion": None,
+    }
+    entry = protocol.parse_federation_entry(raw)
+    assert entry.is_session is False
+    assert entry.name is None
+    assert entry.status == "unreachable"
+    assert entry.device_version is None  # UNKNOWN, never "same as ours"
+
+
+def test_parse_federation_entry_auth_failed_status() -> None:
+    raw = {
+        "status": "auth_failed",
+        "deviceId": "dev3",
+        "remoteId": "dev3",
+        "deviceName": "desktop",
+        "deviceVersion": "0.29.0",
+    }
+    entry = protocol.parse_federation_entry(raw)
+    assert entry.is_session is False
+    assert entry.status == "auth_failed"
+    assert entry.name is None
+
+
+def test_parse_federation_entry_empty_status() -> None:
+    raw = {
+        "status": "empty",
+        "deviceId": "dev4",
+        "remoteId": "dev4",
+        "deviceName": "server",
+        "deviceVersion": "0.30.1",
+    }
+    entry = protocol.parse_federation_entry(raw)
+    assert entry.is_session is False
+    assert entry.status == "empty"
+
+
+def test_parse_federation_entries_mixed_list() -> None:
+    raw = [
+        {
+            "name": "a",
+            "snapshot": "",
+            "bell": {},
+            "deviceId": "dev1",
+            "deviceName": "laptop",
+            "deviceVersion": "0.30.1",
+            "remoteId": None,
+            "sessionKey": "dev1:a",
+        },
+        {
+            "status": "unreachable",
+            "deviceId": "dev2",
+            "remoteId": "dev2",
+            "deviceName": "phone",
+            "deviceVersion": None,
+        },
+    ]
+    entries = protocol.parse_federation_entries(raw)
+    assert len(entries) == 2
+    assert entries[0].is_session is True
+    assert entries[1].is_session is False
+
+
+# ---------------------------------------------------------------------------
+# UNSET sentinel
+# ---------------------------------------------------------------------------
+
+
+def test_unset_is_a_singleton() -> None:
+    assert protocol._Unset.UNSET is protocol.UNSET
+    assert len(protocol._Unset) == 1
+
+
+def test_unset_is_falsy() -> None:
+    assert bool(protocol.UNSET) is False
+
+
+def test_unset_repr() -> None:
+    assert repr(protocol.UNSET) == "UNSET"
 
 
 # ---------------------------------------------------------------------------
