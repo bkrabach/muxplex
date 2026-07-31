@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.30.0 (2026-07-30)
+
+### Added
+
+- **The soft deck's touch strip now shows live status, like the Stream Deck+ does.** On the hardware, that strip is an LCD the sidecar repaints on every poll with the current view, page, session count and active session — and its touch input is deliberately inert, so it is purely a display. The soft deck's strip previously showed only static text naming what each zone was bound to, which told you how it was wired but never what the system was doing. It now carries the same live headline the hardware does. Hostname is omitted: `DESIGN_LAYOUT.md` §1 already ruled it out of the phone deck as install-constant rather than state, and that reasoning applies here unchanged. The strip's own tap, drag and swipe gestures are unaffected — they are a soft-deck-only addition, since the physical strip's touch does nothing — and the status line shares the strip's existing footprint rather than growing it.
+
+### Verification
+
+- 680 frontend tests passed (Node 22, baseline 671 + 9 new).
+- No Python changes (frontend only).
+- Live status line identical with dials present and absent, still populated when nothing is bound, and mid-drag it changed `all · p1/3 · 8 sessions · ACTIVE: sess-3` → `all · p2/3 · …` read back from the DOM.
+
 ## v0.29.0 (2026-07-30)
 
 ### Bug Fixes
