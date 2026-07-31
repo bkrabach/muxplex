@@ -136,6 +136,39 @@ def no_sessions(monkeypatch):
     monkeypatch.setattr(main_mod, "get_session_activity", lambda: {})
 
 
+class _NoTimeoutDeprecationTestClient(ASGITestClient):
+    """`ASGITestClient` (starlette's `TestClient`) with per-request `timeout=`
+    overrides normalized to `httpx.USE_CLIENT_DEFAULT` before reaching the
+    parent's `request()`.
+
+    Starlette's `TestClient.request()` emits `DeprecationWarning: You should
+    not use the 'timeout' argument with the TestClient` for any `timeout=`
+    value other than `httpx.USE_CLIENT_DEFAULT` (see
+    https://github.com/Kludex/starlette/issues/1108). `MuxplexClient._send()`
+    always passes an explicit `timeout=` kwarg -- `httpx.USE_CLIENT_DEFAULT`
+    for an ordinary call, or a concrete float for the three subprocess-backed
+    endpoints (`constants.SUBPROCESS_TIMEOUT`, see the "SUBPROCESS_TIMEOUT"
+    section below) -- so driving `MuxplexClient` against a bare
+    `ASGITestClient` trips this warning on every one of those calls.
+
+    This transport is in-process ASGI with no real socket to bound, so the
+    override has no effect on the call itself; only `MuxplexClient`'s own
+    outbound `.request()` call -- what every test here actually asserts on,
+    via `_capture_sync_request_timeouts` or a raw response check -- is real.
+    Normalizing the value here, before it ever reaches starlette's check,
+    means the warning cannot fire at all, rather than firing and being
+    filtered/ignored after the fact.
+    """
+
+    def request(  # type: ignore[override]
+        self, method: str, url: Any, **kwargs: Any
+    ) -> httpx.Response:
+        default = httpx.USE_CLIENT_DEFAULT
+        if kwargs.get("timeout", default) is not default:
+            kwargs["timeout"] = default
+        return super().request(method, url, **kwargs)
+
+
 def _sync_asgi_client(
     *, client_addr: tuple[str, int] = ("127.0.0.1", 12345)
 ) -> httpx.Client:
@@ -161,8 +194,11 @@ def _sync_asgi_client(
     `client_addr` sets the ASGI scope's client address; ("127.0.0.1", ...)
     triggers `AuthMiddleware`'s localhost bypass (the default for every test
     here except the explicit non-localhost 401 test below).
+
+    Returns a `_NoTimeoutDeprecationTestClient` rather than a bare
+    `ASGITestClient` -- see that class's docstring for why.
     """
-    return ASGITestClient(
+    return _NoTimeoutDeprecationTestClient(
         app,
         base_url="http://testserver",
         headers={"Accept": "application/json"},
@@ -922,18 +958,23 @@ def test_federation_sessions_status_entries_are_not_sessions(
         "federation_clear_bell",
     ],
 )
-def test_federation_proxy_404_for_unknown_device_maps_to_session_not_found(
-    sync_client, method_name
-):
+def test_federation_proxy_404_for_unknown_device_is_api_error(sync_client, method_name):
     """Every federation proxy method (connect/create/delete/clear_bell) hits
     its real path+verb and reaches _lookup_remote_by_device_id; with no
     remote_instances configured (this test environment's default), the
-    lookup always fails -> 404 -- which map_status_error maps to
-    SessionNotFound UNCONDITIONALLY regardless of path, since none of these
-    calls pass session_name to `_request`."""
+    lookup always fails -> 404.
+
+    That 404 means "no remote matches this device_id", NOT "the session is
+    missing" -- even though a session name appears in some of these URLs, it
+    is proxied through to the remote and never checked locally. These calls
+    therefore do not pass session_name, and the 404 must surface as a plain
+    ApiError. Mapping it to SessionNotFound would tell an agent a session
+    vanished and invite it to go re-create one that was never missing."""
     method = getattr(sync_client, method_name)
-    with pytest.raises(SessionNotFound) as exc_info:
+    with pytest.raises(ApiError) as exc_info:
         method("no-such-device", "some-session")
+    assert not isinstance(exc_info.value, SessionNotFound)
+    assert exc_info.value.status == 404
     assert "no-such-device" in exc_info.value.detail
 
 

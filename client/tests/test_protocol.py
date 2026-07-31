@@ -262,6 +262,19 @@ def test_map_404_is_session_not_found() -> None:
     assert err.name == "ghost"
 
 
+def test_map_404_without_session_name_is_api_error() -> None:
+    """A 404 from a call that never passed session_name is NOT a missing tmux
+    session -- e.g. GET /api/ca when no local CA is configured, or a
+    federation proxy endpoint's unknown device_id. Must stay an ApiError,
+    never a SessionNotFound, or a caller that catches SessionNotFound and
+    reacts by listing/recreating sessions is actively misled."""
+    err = protocol.map_status_error(404, "/api/ca", "not found")
+    assert isinstance(err, ApiError)
+    assert not isinstance(err, SessionNotFound)
+    assert err.status == 404
+    assert err.detail == "not found"
+
+
 def test_map_other_status_is_api_error() -> None:
     err = protocol.map_status_error(500, "/api/sessions", "boom")
     assert isinstance(err, ApiError)

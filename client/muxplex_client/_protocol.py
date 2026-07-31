@@ -238,9 +238,22 @@ def map_status_error(
       - 403 from a path ending in "/input" -> InputForbidden (the operator's
         allowlist fence, NOT a bad credential).
       - 403 from any other path -> AuthError.
-      - 404 -> SessionNotFound (session_name is whatever the caller was
+      - 404 from a session-scoped call (the caller passed *session_name*)
+        -> SessionNotFound (session_name is whatever the caller was
         targeting; right after create_session() this can be the read-model
-        poll cache rather than a real failure).
+        poll cache rather than a real failure). A 404 from a call that did
+        NOT pass *session_name* is NOT a missing tmux session -- e.g.
+        `GET /api/ca` 404s when no local CA is configured, and the
+        federation proxy endpoints 404 on an unknown `device_id` -- and
+        must not be misreported as one. Every method that targets a
+        session-scoped path (`/api/sessions/{name}` and its `/input`,
+        `/bell`, `/bell/clear`, `/connect` children) passes `session_name=`
+        for exactly this reason; see sync_client.py/async_client.py. The
+        federation_* proxy methods deliberately do NOT pass it: their 404
+        means "no remote matches this device_id", a different failure an
+        agent must not confuse with a missing session by catching
+        SessionNotFound and reacting as if a session vanished.
+      - 404 from any other call -> ApiError(status, detail).
       - 409 from exactly "/api/settings" -> SettingsConflict (the
         `expected_settings_updated_at` CAS precondition failed), or
         DestructiveChange when *body*'s `backstop` field is `True` (the
@@ -258,7 +271,9 @@ def map_status_error(
             return InputForbidden(session_name or "", detail)
         return AuthError(detail)
     if status == 404:
-        return SessionNotFound(session_name or "", detail)
+        if session_name is not None:
+            return SessionNotFound(session_name, detail)
+        return ApiError(status, detail)
     if status == 409 and path == "/api/settings":
         body = body or {}
         settings_updated_at = body.get("settings_updated_at")
