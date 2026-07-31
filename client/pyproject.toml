@@ -36,6 +36,9 @@ dev = [
     "pytest-asyncio>=0.23.0",
 ]
 
+[project.scripts]
+muxplex-client = "muxplex_client.cli:main"
+
 [project.urls]
 Repository = "https://github.com/bkrabach/muxplex"
 Issues = "https://github.com/bkrabach/muxplex/issues"

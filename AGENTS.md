@@ -124,6 +124,38 @@ helpers in `terminal_input.py`. Injection-safety is verified by `test_input.py:3
 end-of-options prevent shell interpretation, text goes as a single uninterpreted
 argv element.
 
+## Agent-facing surfaces: CLI → skill → bundle (the chain breaks silently)
+
+Three artifacts stack on top of `docs/AGENT_GUIDE.md`, each a thinner wrapper
+than the last:
+
+| Path | What it is |
+|---|---|
+| `client/` | `muxplex-client` — a server-free Python client and console script on the `muxplex-client` PyPI distribution. Exposes the whole HTTP API from a shell, with a global `--json`; `run` exits with the *remote* command's exit code. |
+| `skills/muxplex-control/` | A portable [Agent Skills](https://agentskills.io/specification) directory — command surface, worked examples, and the safety rules (`SKILL.md` + `cli-reference.md`). No Amplifier-specific frontmatter; any compatible harness can point at it. |
+| `amplifier/` | An Amplifier bundle that registers that skill and injects a ~200-word awareness pointer. See [`amplifier/README.md`](amplifier/README.md). |
+
+Two contracts hold this together, and **both fail quietly rather than loudly**:
+
+1. **`skills/` is a path contract with the outside world.**
+   `amplifier/behaviors/muxplex-control.yaml` registers the skill by URL —
+   `git+https://github.com/bkrabach/muxplex@main#subdirectory=skills`. Moving,
+   renaming, or nesting that directory resolves to nothing: `tool-skills` logs a
+   debug line, mounts zero skills, and the session starts normally with the
+   capability simply absent. Nothing errors. If you relocate `skills/`, update
+   that URL in the same commit.
+
+2. **The skill documents the CLI's defaults, not just its commands.**
+   The 30-line output cap, `new --wait-timeout`'s 6s, `rm`'s mandatory `--yes`
+   on a non-TTY, and the named-key allowlist are all written down in
+   `skills/muxplex-control/`. Changing one in `client/muxplex_client/cli.py` is
+   a documentation change in the same PR — an agent that reads a stale default
+   silently truncates output or hangs on a prompt that never came.
+
+Same rule as `docs/AGENT_GUIDE.md` above: these are downstream of the API, so a
+change to the fences, defaults, or status-code ordering is a change to what they
+promise.
+
 ## Frontend delivery: the no-cache header is load-bearing
 
 - `app.js`/`index.html` are served with `Cache-Control: no-cache` (revalidate

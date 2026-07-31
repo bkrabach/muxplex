@@ -69,6 +69,9 @@
 - **Public HTTP API** — the contract is discoverable at `/openapi.json` and `/docs`; headless clients authenticate with a Bearer federation key
 - **Terminal input over the API** — `POST /api/sessions/{name}/input` lets an agent type into a live session (RCE by design, default-CLOSED, fenced by `input_enabled` + `input_allowed_sessions`)
 - **Vendor-neutral guide** — point any agent (or a `curl` script) at [Driving muxplex from an agent](docs/AGENT_GUIDE.md)
+- **`muxplex-client` CLI** — gives an agent (or you) the whole API from a shell: `ls`, `show`, `send`, `run`, `new`, `rm`. `run` exits with the remote command's real exit code. The console script is new and is in no release yet — install it from the repo until the next release ships ([install forms](client/README.md#cli))
+- **Portable agent skill** — [`skills/muxplex-control/`](skills/muxplex-control/) is an [Agent Skills](https://agentskills.io/specification) directory carrying the command surface and the safety rules; point any compatible harness at it
+- **Amplifier bundle** — [`amplifier/`](amplifier/) wires that skill into [Amplifier](https://github.com/microsoft/amplifier) sessions in one `includes:` line
 
 ### HTTPS / TLS
 
@@ -182,6 +185,22 @@ muxplex setup-tls [--method auto]   Set up TLS certs (Tailscale/mkcert/self-sign
 muxplex setup-tls --status          Show current TLS configuration
 muxplex env                          Print `eval`-able TMUX_TMPDIR export
 ```
+
+> **Driving a muxplex server remotely?** A separate, server-free
+> `muxplex-client` console script (no fastapi/uvicorn/python-pam) exposes every
+> API feature as a command. That script is **new** -- it is not in 0.30.1 or any
+> earlier release, so `uv tool install muxplex-client` against today's PyPI
+> fails with `No executables are provided by package muxplex-client`. Three
+> forms, each true in a different state:
+>
+> - **From a checkout of this repo -- works right now:**
+>   `uv run --directory client muxplex-client ...`
+> - **From the repo on GitHub -- once the CLI lands on `main`:**
+>   `uv tool install "git+https://github.com/bkrabach/muxplex@main#subdirectory=client"`
+> - **From PyPI -- once a release newer than 0.30.1 is published:**
+>   `uv tool install muxplex-client`
+>
+> See [`client/README.md`](client/README.md#cli) for the full command reference.
 
 ### Service management
 
@@ -402,6 +421,9 @@ muxplex/
 │   │   ├── wordmark-on-dark.svg
 │   │   └── tests/            # JavaScript unit tests
 │   └── tests/                # Python tests (pytest)
+├── client/                   # muxplex-client: server-free Python client + CLI
+├── skills/muxplex-control/   # Portable Agent Skill for driving a server
+├── amplifier/                # Amplifier bundle wiring that skill into sessions
 ├── assets/branding/          # Logos, icons, design system
 ├── docs/plans/               # Historical design + implementation plans
 ├── scripts/                  # Utility scripts (asset generation)

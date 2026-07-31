@@ -1,0 +1,32 @@
+bundle:
+  name: muxplex-control-behavior
+  version: 0.1.0
+  description: >
+    Adds muxplex control to a session: registers the repo's muxplex-control
+    skill as a skill source and injects a thin awareness pointer that routes
+    the agent to that skill before it issues any muxplex-client command.
+
+# The capability itself is the `muxplex-client` console script (PyPI:
+# muxplex-client), invoked over bash. This bundle deliberately ships no tool
+# module of its own -- see amplifier/README.md, "Why no tool module".
+#
+# tool-skills is the ONLY supported place to register a skill source. A
+# top-level `skills:` key in bundle frontmatter is not processed by the
+# foundation layer and is silently ignored.
+#
+# The source must be a git URL or an absolute path. A bundle-relative form
+# (`@muxplex:skills`) is NOT resolved here -- verified empirically: the
+# awareness context below loads fine while the skill silently never appears
+# in the skills list. A relative path is worse still: it resolves against the
+# calling process's working directory, so it would work from a checkout and
+# silently resolve to nothing for everyone who installs from GitHub.
+tools:
+  - module: tool-skills
+    source: git+https://github.com/microsoft/amplifier-bundle-skills@main#subdirectory=modules/tool-skills
+    config:
+      skills:
+        - "git+https://github.com/bkrabach/muxplex@main#subdirectory=skills"
+
+context:
+  include:
+    - muxplex:context/muxplex-awareness.md

@@ -21,11 +21,13 @@ never a runtime dependency of the `muxplex` server package itself.
 
 from __future__ import annotations
 
-import tomllib
+import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
+import tomllib
 from starlette.testclient import TestClient as ASGITestClient
 
 from muxplex.bells import needs_attention as server_needs_attention
@@ -63,17 +65,23 @@ except ImportError:
     )
 
 from muxplex_client import (
+    ApiError,
     AsyncMuxplexClient,
     AuthError,
     Bell,
+    DestructiveChange,
     InputForbidden,
     MuxplexClient,
+    MuxplexError,
     SessionNotFound,
+    SessionWaitTimeout,
+    SettingsConflict,
 )
 from muxplex_client.constants import (
     DEFAULT_CAPTURE_LINES,
     KNOWN_KEYS,
     MAX_CAPTURE_LINES,
+    SUBPROCESS_TIMEOUT,
 )
 
 # ---------------------------------------------------------------------------
@@ -128,6 +136,39 @@ def no_sessions(monkeypatch):
     monkeypatch.setattr(main_mod, "get_session_activity", lambda: {})
 
 
+class _NoTimeoutDeprecationTestClient(ASGITestClient):
+    """`ASGITestClient` (starlette's `TestClient`) with per-request `timeout=`
+    overrides normalized to `httpx.USE_CLIENT_DEFAULT` before reaching the
+    parent's `request()`.
+
+    Starlette's `TestClient.request()` emits `DeprecationWarning: You should
+    not use the 'timeout' argument with the TestClient` for any `timeout=`
+    value other than `httpx.USE_CLIENT_DEFAULT` (see
+    https://github.com/Kludex/starlette/issues/1108). `MuxplexClient._send()`
+    always passes an explicit `timeout=` kwarg -- `httpx.USE_CLIENT_DEFAULT`
+    for an ordinary call, or a concrete float for the three subprocess-backed
+    endpoints (`constants.SUBPROCESS_TIMEOUT`, see the "SUBPROCESS_TIMEOUT"
+    section below) -- so driving `MuxplexClient` against a bare
+    `ASGITestClient` trips this warning on every one of those calls.
+
+    This transport is in-process ASGI with no real socket to bound, so the
+    override has no effect on the call itself; only `MuxplexClient`'s own
+    outbound `.request()` call -- what every test here actually asserts on,
+    via `_capture_sync_request_timeouts` or a raw response check -- is real.
+    Normalizing the value here, before it ever reaches starlette's check,
+    means the warning cannot fire at all, rather than firing and being
+    filtered/ignored after the fact.
+    """
+
+    def request(  # type: ignore[override]
+        self, method: str, url: Any, **kwargs: Any
+    ) -> httpx.Response:
+        default = httpx.USE_CLIENT_DEFAULT
+        if kwargs.get("timeout", default) is not default:
+            kwargs["timeout"] = default
+        return super().request(method, url, **kwargs)
+
+
 def _sync_asgi_client(
     *, client_addr: tuple[str, int] = ("127.0.0.1", 12345)
 ) -> httpx.Client:
@@ -153,8 +194,11 @@ def _sync_asgi_client(
     `client_addr` sets the ASGI scope's client address; ("127.0.0.1", ...)
     triggers `AuthMiddleware`'s localhost bypass (the default for every test
     here except the explicit non-localhost 401 test below).
+
+    Returns a `_NoTimeoutDeprecationTestClient` rather than a bare
+    `ASGITestClient` -- see that class's docstring for why.
     """
-    return ASGITestClient(
+    return _NoTimeoutDeprecationTestClient(
         app,
         base_url="http://testserver",
         headers={"Accept": "application/json"},
@@ -439,3 +483,771 @@ def test_client_version_matches_server_version():
         "version). Bump client/pyproject.toml's version to match at release "
         "time."
     )
+
+
+# ---------------------------------------------------------------------------
+# Liveness / auth mode / CA certificate
+# ---------------------------------------------------------------------------
+
+
+def test_health_fields_present(sync_client, raw_http):
+    """GET /health -- unauthenticated liveness check; client returns the raw dict."""
+    result = sync_client.health()
+    raw = raw_http.get("/health").json()
+
+    assert result == raw == {"status": "ok"}
+
+
+def test_auth_mode_fields_present(sync_client, raw_http):
+    """GET /auth/mode -- returns the server's configured auth mode and running user."""
+    result = sync_client.auth_mode()
+    raw = raw_http.get("/auth/mode").json()
+
+    assert result == raw
+    assert "mode" in result
+    assert "user" in result
+
+
+def test_ca_certificate_404_when_not_configured(sync_client):
+    """GET /api/ca 404s cleanly (ApiError) when no local CA is configured -- the
+    default in this test environment, since get_local_ca_cert_path() resolves
+    under the redirected SETTINGS_PATH, where no ca/muxplex-ca.crt exists."""
+    with pytest.raises(ApiError) as exc_info:
+        sync_client.ca_certificate()
+
+    assert exc_info.value.status == 404
+
+
+def test_ca_certificate_returns_pem_text(sync_client, monkeypatch):
+    """GET /api/ca returns PEM text via the client's _request_text path, not JSON."""
+    fake_pem = "-----BEGIN CERTIFICATE-----\nFAKEDATA\n-----END CERTIFICATE-----\n"
+    monkeypatch.setattr(
+        "muxplex.main._read_local_ca_cert_bytes", lambda: fake_pem.encode("ascii")
+    )
+
+    result = sync_client.ca_certificate()
+
+    assert result == fake_pem
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle extras: delete-current, SessionWaitTimeout dual-inheritance
+# ---------------------------------------------------------------------------
+
+
+def test_delete_current_session_kills_ttyd_and_clears_active(
+    sync_client, raw_http, monkeypatch
+):
+    """DELETE /api/sessions/current kills ttyd and clears active_session."""
+    import muxplex.main as main_mod
+    from muxplex.state import save_state
+
+    save_state(
+        {
+            "active_session": "alpha",
+            "active_remote_id": None,
+            "active_view": "all",
+            "session_order": ["alpha"],
+            "sessions": {},
+            "devices": {},
+        }
+    )
+
+    kill_called = []
+
+    async def mock_kill():
+        kill_called.append(True)
+        return True
+
+    monkeypatch.setattr(main_mod, "kill_ttyd", mock_kill)
+
+    sync_client.delete_current_session()
+
+    assert len(kill_called) == 1
+    state = raw_http.get("/api/state").json()
+    assert state["active_session"] is None
+
+
+def test_create_session_wait_timeout_raises_session_wait_timeout(
+    sync_client, no_sessions, monkeypatch
+):
+    """create_session(wait=True) raises SessionWaitTimeout when the session never
+    appears in the read cache -- catchable as BOTH MuxplexError and builtin
+    TimeoutError, since the dual inheritance exists to preserve backward
+    compatibility with pre-existing `except TimeoutError` callers (this
+    replaced a bare TimeoutError previously raised directly).
+    """
+    import muxplex.main as main_mod
+
+    async def fake_spawn(name):
+        return True, None
+
+    monkeypatch.setattr(main_mod, "spawn_session_command", fake_spawn)
+
+    with pytest.raises(SessionWaitTimeout) as exc_info:
+        sync_client.create_session(
+            "ghost-timeout", wait=True, timeout=0.05, interval=0.01
+        )
+
+    exc = exc_info.value
+    assert exc.name == "ghost-timeout"
+    assert isinstance(exc, MuxplexError)
+    assert isinstance(exc, TimeoutError)
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/state -- UNSET sentinel distinguishes "omitted" from "explicit None"
+# ---------------------------------------------------------------------------
+
+
+def test_patch_state_only_sends_explicitly_passed_fields(sync_client, raw_http):
+    """patch_state(active_view=...) alone must leave active_session untouched --
+    the server only applies `model_fields_set`, so UNSET fields must never be
+    included in the PATCH body at all (a `null` would clear them)."""
+    sync_client.patch_state(active_session="alpha", active_view="all")
+
+    sync_client.patch_state(active_view="my-view")
+
+    state = raw_http.get("/api/state").json()
+    assert state["active_session"] == "alpha"
+    assert state["active_view"] == "my-view"
+
+
+def test_patch_state_explicit_none_clears_active_session(sync_client, raw_http):
+    """patch_state(active_session=None), passed explicitly, DOES clear the
+    field -- distinguishing "explicitly cleared" from "omitted" is exactly
+    what the UNSET sentinel (vs. a plain None default) exists to prove."""
+    sync_client.patch_state(active_session="alpha", active_view="my-view")
+
+    sync_client.patch_state(active_session=None)
+
+    state = raw_http.get("/api/state").json()
+    assert state["active_session"] is None
+    assert state["active_view"] == "my-view"  # untouched by the second call
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/settings -- CAS precondition, apply_settings retry-once, and the
+# destructive-write backstop that must NEVER be auto-retried
+# ---------------------------------------------------------------------------
+
+
+def test_update_settings_sends_expected_timestamp_and_succeeds(sync_client, raw_http):
+    """PATCH /api/settings with a correct expected_settings_updated_at applies
+    the patch and returns the updated settings."""
+    state = raw_http.get("/api/state").json()
+    ts = state["settings_updated_at"]
+
+    result = sync_client.update_settings(
+        {"sort_order": "attention"}, expected_settings_updated_at=ts
+    )
+
+    assert result["sort_order"] == "attention"
+
+
+def test_update_settings_stale_expected_timestamp_raises_settings_conflict(
+    sync_client,
+):
+    """A stale expected_settings_updated_at 409s -> SettingsConflict (not
+    DestructiveChange, since this patch never touches views)."""
+    with pytest.raises(SettingsConflict) as exc_info:
+        sync_client.update_settings(
+            {"sort_order": "attention"}, expected_settings_updated_at=-1.0
+        )
+
+    assert not isinstance(exc_info.value, DestructiveChange)
+
+
+def test_apply_settings_retries_once_on_cas_conflict_with_fresh_data(
+    sync_client, raw_http
+):
+    """apply_settings() sends expected_settings_updated_at; on a 409 CAS
+    mismatch it re-reads current settings/state, re-applies the caller's
+    mutate function to the FRESH data, and retries exactly once -- per
+    API_SEMANTICS.md's patchSettingsGuarded reference behavior.
+
+    Simulates a concurrent writer landing between apply_settings' initial
+    read and its first PATCH by having *mutate* itself trigger an
+    out-of-band raw PATCH the first time it's called (after it has already
+    captured the value it was given, but before apply_settings sends its
+    own PATCH). This forces the first PATCH attempt's
+    expected_settings_updated_at to be stale, so a retry is REQUIRED for
+    this test to pass at all -- if the client failed to send
+    expected_settings_updated_at (no CAS enforced), the first attempt would
+    silently succeed and mutate would only ever be called once.
+    """
+    seen_sort_orders = []
+
+    def mutate(current):
+        seen_sort_orders.append(current["sort_order"])
+        if len(seen_sort_orders) == 1:
+            # Out-of-band writer: bumps the real settings_updated_at after
+            # our `current` snapshot was taken, but before our own PATCH lands.
+            resp = raw_http.patch("/api/settings", json={"sort_order": "alphabetical"})
+            assert resp.status_code == 200
+        return {"sort_order": "attention"}
+
+    result = sync_client.apply_settings(mutate)
+
+    assert seen_sort_orders == ["manual", "alphabetical"], (
+        "mutate's second call must see the FRESH re-read, not the original "
+        "stale snapshot -- and must be called exactly twice (one retry)"
+    )
+    assert result["sort_order"] == "attention"
+
+
+def test_apply_settings_never_retries_destructive_change(sync_client, raw_http):
+    """A views collapse (2 views -> 1) 409s with backstop=true ->
+    DestructiveChange, raised IMMEDIATELY with no retry -- unlike an
+    ordinary SettingsConflict, this must never be auto-retried even against
+    fresh data (see DestructiveChange's docstring: a stale write is out of
+    date, but a destructive write is wrong, and fresh data doesn't fix
+    that). This guard exists because a stale client once destroyed 7 of 8
+    views in a single request.
+    """
+    resp = raw_http.patch(
+        "/api/settings",
+        json={
+            "views": [
+                {"name": "v1", "sessions": []},
+                {"name": "v2", "sessions": []},
+            ]
+        },
+    )
+    assert resp.status_code == 200
+
+    calls = []
+
+    def mutate(current):
+        calls.append(len(current["views"]))
+        return {"views": [{"name": "v1", "sessions": []}]}  # 2 -> 1: collapse
+
+    with pytest.raises(DestructiveChange) as exc_info:
+        sync_client.apply_settings(mutate)
+
+    assert calls == [2]  # mutate called exactly once -- never retried
+    assert exc_info.value.counts["before_views"] == 2
+    assert exc_info.value.counts["after_views"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Settings sync (federation push/pull)
+# ---------------------------------------------------------------------------
+
+
+def test_settings_sync_fields_present(sync_client, raw_http):
+    """GET /api/settings/sync returns syncable settings plus both timestamps."""
+    result = sync_client.settings_sync()
+    raw = raw_http.get("/api/settings/sync").json()
+
+    assert result == raw
+    assert "settings_updated_at" in result
+    assert "views_updated_at" in result
+    assert "sort_order" in result["settings"]
+
+
+def test_put_settings_sync_accepts_strictly_newer_timestamp(sync_client):
+    """PUT /api/settings/sync with a strictly-newer settings_updated_at
+    applies the incoming payload (newer-wins) and returns 200."""
+    payload = {
+        "settings": {"sort_order": "attention"},
+        "settings_updated_at": time.time() + 1000,
+    }
+
+    result = sync_client.put_settings_sync(payload)
+
+    assert result["settings"]["sort_order"] == "attention"
+
+
+def test_put_settings_sync_stale_timestamp_raises_api_error(sync_client):
+    """PUT /api/settings/sync with a non-newer settings_updated_at 409s; the
+    client maps this to ApiError rather than SettingsConflict, since
+    map_status_error's CAS-specific mapping applies ONLY to the exact path
+    "/api/settings" (this endpoint's path is "/api/settings/sync")."""
+    payload = {"settings": {"sort_order": "attention"}, "settings_updated_at": 0.0}
+
+    with pytest.raises(ApiError) as exc_info:
+        sync_client.put_settings_sync(payload)
+
+    assert exc_info.value.status == 409
+
+
+# ---------------------------------------------------------------------------
+# Device heartbeat + hook re-registration
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_registers_device(sync_client, raw_http):
+    """POST /api/heartbeat registers/updates a device and returns
+    {device_id, status: 'ok'}."""
+    payload = {
+        "device_id": "device-abc",
+        "label": "Test Device",
+        "viewing_session": None,
+        "view_mode": "grid",
+        "last_interaction_at": 1700000000.0,
+    }
+
+    result = sync_client.heartbeat(payload)
+
+    assert result == {"device_id": "device-abc", "status": "ok"}
+    state = raw_http.get("/api/state").json()
+    assert "device-abc" in state["devices"]
+
+
+def test_setup_hooks_returns_ok_true_when_arm_succeeds(sync_client, monkeypatch):
+    """POST /api/internal/setup-hooks returns {ok: True} when hook
+    registration succeeds -- delegates to the same _arm_bell_hook() the
+    poll loop's self-healing retry uses."""
+
+    async def fake_arm():
+        return True
+
+    monkeypatch.setattr("muxplex.main._arm_bell_hook", fake_arm)
+
+    assert sync_client.setup_hooks() == {"ok": True}
+
+
+def test_setup_hooks_returns_ok_false_with_error_when_arm_fails(
+    sync_client, monkeypatch
+):
+    """POST /api/internal/setup-hooks returns {ok: False, error: ...} when
+    hook registration fails -- the error message comes from the
+    module-level _bell_hook_last_error global _arm_bell_hook() records."""
+    import muxplex.main as main_mod
+
+    async def fake_arm():
+        main_mod._bell_hook_last_error = "simulated failure"
+        return False
+
+    monkeypatch.setattr(main_mod, "_arm_bell_hook", fake_arm)
+
+    assert sync_client.setup_hooks() == {"ok": False, "error": "simulated failure"}
+
+
+# ---------------------------------------------------------------------------
+# Bells
+# ---------------------------------------------------------------------------
+
+
+def test_ring_bell_then_clear_bell_updates_state(sync_client, raw_http):
+    """POST .../bell increments unseen_count and stamps last_fired_at; POST
+    .../bell/clear resets unseen_count to 0 and stamps seen_at. Neither
+    endpoint validates session existence -- both create the state entry."""
+    name = "bell-test-session"
+
+    sync_client.ring_bell(name)
+    state = raw_http.get("/api/state").json()
+    bell = state["sessions"][name]["bell"]
+    assert bell["unseen_count"] == 1
+    assert bell["last_fired_at"] is not None
+
+    sync_client.clear_bell(name)
+    state = raw_http.get("/api/state").json()
+    bell = state["sessions"][name]["bell"]
+    assert bell["unseen_count"] == 0
+    assert bell["seen_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Federation
+# ---------------------------------------------------------------------------
+
+
+def test_federation_sessions_local_only_when_no_remotes(
+    sync_client, raw_http, seeded_session
+):
+    """GET /api/federation/sessions with no configured remotes returns just
+    the tagged local sessions -- a real session entry (status=None,
+    is_session=True)."""
+    entries = sync_client.federation_sessions()
+    raw = raw_http.get("/api/federation/sessions").json()
+
+    assert len(entries) == len(raw) == 1
+    entry, raw_item = entries[0], raw[0]
+    assert entry.is_session is True
+    assert entry.status is None
+    assert entry.name == raw_item["name"] == seeded_session
+    assert entry.device_id == raw_item["deviceId"]
+    assert entry.session_key == raw_item["sessionKey"]
+
+
+def test_federation_sessions_status_entries_are_not_sessions(
+    sync_client, no_sessions, monkeypatch
+):
+    """A dead/auth-rejected/empty remote returns an in-band status entry
+    (HTTP 200) carrying `status` and NO `name` field -- FederationEntry.
+    is_session must be False for every one of them, and nothing may raise.
+
+    `app.state.federation_client` is only populated during the real ASGI
+    lifespan (never run by this file's bare TestClient -- see
+    `_sync_asgi_client`'s docstring), so it's monkeypatched directly here
+    with `raising=False` (the attribute may not exist yet), matching
+    conftest.py's own `_isolate_settings_path` convention for patching an
+    attribute that might not already be present.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_mod.SETTINGS_PATH.write_text(
+        json.dumps(
+            {
+                "device_name": "local",
+                "remote_instances": [
+                    {
+                        "url": "http://contract-test-unreachable.invalid:9",
+                        "key": "k1",
+                        "name": "unreachable-remote",
+                        "device_id": "remote-unreachable",
+                    },
+                    {
+                        "url": "http://contract-test-auth-failed.invalid:9",
+                        "key": "k2",
+                        "name": "auth-failed-remote",
+                        "device_id": "remote-auth-failed",
+                    },
+                    {
+                        "url": "http://contract-test-empty.invalid:9",
+                        "key": "k3",
+                        "name": "empty-remote",
+                        "device_id": "remote-empty",
+                    },
+                ],
+            }
+        )
+    )
+
+    async def mock_get(url, **kwargs):
+        if url.endswith("/api/instance-info"):
+            # Version probe: _fetch_remote_version swallows everything and
+            # returns None -- simulate its own unreachability too.
+            raise httpx.ConnectError("simulated: version probe unreachable")
+        if "unreachable" in url:
+            raise httpx.ConnectError("simulated unreachable")
+        if "auth-failed" in url:
+            return httpx.Response(401, request=httpx.Request("GET", url))
+        if "empty" in url:
+            return httpx.Response(200, json=[], request=httpx.Request("GET", url))
+        raise AssertionError(f"test bug: unexpected federation fetch url {url!r}")
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    # `app` is the same module-level FastAPI instance `raw_http`/`sync_client`
+    # both drive (see `_sync_asgi_client`) -- using it directly here avoids a
+    # pyright false-positive on `raw_http.app` (the fixture parameter's
+    # declared type is the fixture *function*, not its yielded value).
+    monkeypatch.setattr(app.state, "federation_client", mock_client, raising=False)
+
+    entries = sync_client.federation_sessions()
+
+    statuses = {e.status for e in entries}
+    assert statuses == {"unreachable", "auth_failed", "empty"}
+    for entry in entries:
+        assert entry.is_session is False
+        assert entry.name is None
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    [
+        "federation_connect",
+        "federation_create_session",
+        "federation_delete_session",
+        "federation_clear_bell",
+    ],
+)
+def test_federation_proxy_404_for_unknown_device_is_api_error(sync_client, method_name):
+    """Every federation proxy method (connect/create/delete/clear_bell) hits
+    its real path+verb and reaches _lookup_remote_by_device_id; with no
+    remote_instances configured (this test environment's default), the
+    lookup always fails -> 404.
+
+    That 404 means "no remote matches this device_id", NOT "the session is
+    missing" -- even though a session name appears in some of these URLs, it
+    is proxied through to the remote and never checked locally. These calls
+    therefore do not pass session_name, and the 404 must surface as a plain
+    ApiError. Mapping it to SessionNotFound would tell an agent a session
+    vanished and invite it to go re-create one that was never missing."""
+    method = getattr(sync_client, method_name)
+    with pytest.raises(ApiError) as exc_info:
+        method("no-such-device", "some-session")
+    assert not isinstance(exc_info.value, SessionNotFound)
+    assert exc_info.value.status == 404
+    assert "no-such-device" in exc_info.value.detail
+
+
+def test_generate_federation_key_writes_key_and_returns_it(
+    sync_client, monkeypatch, tmp_path
+):
+    """POST /api/federation/generate-key writes a new key to
+    FEDERATION_KEY_PATH and returns {key, path}.
+
+    FEDERATION_KEY_PATH is Path.home()-based and is NOT redirected by
+    conftest.py's autouse fixtures (only SETTINGS_PATH is) -- this
+    monkeypatch is required, or a real call would overwrite the host's
+    actual federation key file. See this file's module docstring /
+    AGENTS.md's safety-rails section for the class of incident this guards
+    against; the endpoint re-imports FEDERATION_KEY_PATH from
+    muxplex.settings on every call, so patching the module attribute here
+    takes effect.
+    """
+    key_path = tmp_path / "generated-federation-key"
+    monkeypatch.setattr("muxplex.settings.FEDERATION_KEY_PATH", key_path)
+
+    result = sync_client.generate_federation_key()
+
+    assert result["path"] == str(key_path)
+    assert result["key"]
+    assert key_path.read_text().strip() == result["key"]
+
+
+# ---------------------------------------------------------------------------
+# MuxplexClient.from_env -- wiring contract between resolve_config() and
+# __init__(), not itself an HTTP call
+# ---------------------------------------------------------------------------
+
+
+def test_from_env_wires_resolved_config_into_the_transport():
+    """from_env() must apply resolve_config()'s resolved server_url,
+    federation_key, and timeout to the underlying httpx.Client -- not just
+    stash them on `.config`. `env={}`/`home=<nonexistent>` keep this
+    hermetic (never touches the real process environment or
+    ~/.config/muxplex), per config.py's own testing guidance. This client
+    is never actually used to make a request (httpx.Client is lazy at
+    construction), so no real network is ever touched.
+    """
+    client = MuxplexClient.from_env(
+        server_url="https://example.invalid:9443",
+        federation_key="test-key-123",
+        timeout=1.5,
+        env={},
+        home=Path("/nonexistent-home-for-contract-test"),
+    )
+    try:
+        assert client.config is not None
+        assert client.config.server_url == "https://example.invalid:9443"
+        assert client._client.base_url.scheme == "https"
+        assert client._client.base_url.host == "example.invalid"
+        assert client._client.base_url.port == 9443
+        assert client._client.headers["Authorization"] == "Bearer test-key-123"
+        assert client._client.timeout.connect == 1.5
+    finally:
+        client.close()
+
+
+# ---------------------------------------------------------------------------
+# Async parity for the highest-value cases (UNSET sentinel, destructive
+# backstop, SessionWaitTimeout dual-inheritance). The async client shares
+# _protocol.py with the sync client -- see test_async_client_sessions_
+# matches_sync above for why full duplication of every sync test isn't done.
+# ---------------------------------------------------------------------------
+
+
+async def test_async_patch_state_only_sends_explicit_fields(async_client):
+    """Async parity for the UNSET sentinel: an omitted field must not be sent."""
+    await async_client.patch_state(active_session="alpha", active_view="all")
+
+    await async_client.patch_state(active_view="my-view")
+
+    state = await async_client.state()
+    assert state.active_session == "alpha"
+    assert state.active_view == "my-view"
+
+
+async def test_async_apply_settings_never_retries_destructive_change(async_client):
+    """Async parity: a destructive views collapse raises DestructiveChange
+    immediately, with no retry."""
+    await async_client.update_settings(
+        {"views": [{"name": "v1", "sessions": []}, {"name": "v2", "sessions": []}]}
+    )
+
+    calls = []
+
+    def mutate(current):
+        calls.append(len(current["views"]))
+        return {"views": [{"name": "v1", "sessions": []}]}
+
+    with pytest.raises(DestructiveChange):
+        await async_client.apply_settings(mutate)
+
+    assert calls == [2]
+
+
+async def test_async_create_session_wait_timeout_raises_session_wait_timeout(
+    async_client, no_sessions, monkeypatch
+):
+    """Async parity: create_session(wait=True) raises SessionWaitTimeout,
+    catchable as both MuxplexError and builtin TimeoutError."""
+    import muxplex.main as main_mod
+
+    async def fake_spawn(name):
+        return True, None
+
+    monkeypatch.setattr(main_mod, "spawn_session_command", fake_spawn)
+
+    with pytest.raises(SessionWaitTimeout) as exc_info:
+        await async_client.create_session(
+            "ghost-timeout-async", wait=True, timeout=0.05, interval=0.01
+        )
+
+    exc = exc_info.value
+    assert exc.name == "ghost-timeout-async"
+    assert isinstance(exc, MuxplexError)
+    assert isinstance(exc, TimeoutError)
+
+
+# ---------------------------------------------------------------------------
+# SUBPROCESS_TIMEOUT -- the per-request HTTP timeout override for the three
+# endpoints that ask the server to run an operator-supplied subprocess
+# synchronously (create_session/delete_session/connect), proven end-to-end
+# against the real app rather than only at the unit-test level (see
+# client/tests/test_timeouts.py for the pure, no-app version of these
+# assertions). A spy wraps the underlying httpx transport's `request()` to
+# record each call's `timeout=` kwarg while still delegating through to the
+# real call, so the app is genuinely exercised, not bypassed.
+# ---------------------------------------------------------------------------
+
+
+def _capture_sync_request_timeouts(client: MuxplexClient, monkeypatch) -> list[Any]:
+    """Spy on *client*'s underlying transport to record every `timeout=` kwarg."""
+    captured: list[Any] = []
+    original = client._client.request
+
+    def spy(method, path, **kwargs):
+        captured.append(kwargs.get("timeout"))
+        return original(method, path, **kwargs)
+
+    monkeypatch.setattr(client._client, "request", spy)
+    return captured
+
+
+def _capture_async_request_timeouts(
+    client: AsyncMuxplexClient, monkeypatch
+) -> list[Any]:
+    """Async counterpart of `_capture_sync_request_timeouts`."""
+    captured: list[Any] = []
+    original = client._client.request
+
+    async def spy(method, path, **kwargs):
+        captured.append(kwargs.get("timeout"))
+        return await original(method, path, **kwargs)
+
+    monkeypatch.setattr(client._client, "request", spy)
+    return captured
+
+
+def test_create_session_request_uses_subprocess_timeout(
+    sync_client, no_sessions, monkeypatch
+):
+    """create_session's POST /api/sessions sends SUBPROCESS_TIMEOUT as the per-request HTTP timeout, not the client default."""
+    import muxplex.main as main_mod
+
+    async def fake_spawn(name):
+        return True, None
+
+    monkeypatch.setattr(main_mod, "spawn_session_command", fake_spawn)
+    captured = _capture_sync_request_timeouts(sync_client, monkeypatch)
+
+    sync_client.create_session("contract-timeout-test", wait=False)
+
+    assert captured == [SUBPROCESS_TIMEOUT]
+
+
+def test_delete_session_request_uses_subprocess_timeout(sync_client, monkeypatch):
+    """delete_session's DELETE /api/sessions/{name} sends SUBPROCESS_TIMEOUT as the per-request HTTP timeout."""
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "get_session_list", lambda: ["contract-timeout-test"])
+
+    def mock_run(cmd, **kwargs):
+        class _Result:
+            returncode = 0
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(main_mod.subprocess, "run", mock_run)
+    captured = _capture_sync_request_timeouts(sync_client, monkeypatch)
+
+    sync_client.delete_session("contract-timeout-test")
+
+    assert captured == [SUBPROCESS_TIMEOUT]
+
+
+def test_connect_request_uses_subprocess_timeout(
+    sync_client, seeded_session, monkeypatch
+):
+    """connect's POST /api/sessions/{name}/connect sends SUBPROCESS_TIMEOUT as the per-request HTTP timeout."""
+    import muxplex.main as main_mod
+
+    async def mock_kill():
+        return True
+
+    async def mock_spawn(name):
+        return None
+
+    monkeypatch.setattr(main_mod, "kill_ttyd", mock_kill)
+    monkeypatch.setattr(main_mod, "spawn_ttyd", mock_spawn)
+    captured = _capture_sync_request_timeouts(sync_client, monkeypatch)
+
+    sync_client.connect(seeded_session)
+
+    assert captured == [SUBPROCESS_TIMEOUT]
+
+
+def test_ordinary_read_does_not_use_subprocess_timeout(sync_client, monkeypatch):
+    """An ordinary read (GET /api/sessions) leaves the per-request timeout unset -- proves the fix is scoped to only the three subprocess-backed endpoints."""
+    captured = _capture_sync_request_timeouts(sync_client, monkeypatch)
+
+    sync_client.sessions()
+
+    assert captured == [httpx.USE_CLIENT_DEFAULT]
+
+
+def test_create_session_request_timeout_is_overridable_end_to_end(
+    sync_client, no_sessions, monkeypatch
+):
+    """A caller-supplied request_timeout reaches the real transport, overriding SUBPROCESS_TIMEOUT."""
+    import muxplex.main as main_mod
+
+    async def fake_spawn(name):
+        return True, None
+
+    monkeypatch.setattr(main_mod, "spawn_session_command", fake_spawn)
+    captured = _capture_sync_request_timeouts(sync_client, monkeypatch)
+
+    sync_client.create_session(
+        "contract-timeout-override", wait=False, request_timeout=90.0
+    )
+
+    assert captured == [90.0]
+
+
+async def test_async_create_session_request_uses_subprocess_timeout(
+    async_client, no_sessions, monkeypatch
+):
+    """Async parity: create_session's POST /api/sessions sends SUBPROCESS_TIMEOUT as the per-request HTTP timeout."""
+    import muxplex.main as main_mod
+
+    async def fake_spawn(name):
+        return True, None
+
+    monkeypatch.setattr(main_mod, "spawn_session_command", fake_spawn)
+    captured = _capture_async_request_timeouts(async_client, monkeypatch)
+
+    await async_client.create_session("contract-timeout-test-async", wait=False)
+
+    assert captured == [SUBPROCESS_TIMEOUT]
+
+
+async def test_async_ordinary_read_does_not_use_subprocess_timeout(
+    async_client, monkeypatch
+):
+    """Async parity: an ordinary read (GET /api/sessions) leaves the per-request timeout unset."""
+    captured = _capture_async_request_timeouts(async_client, monkeypatch)
+
+    await async_client.sessions()
+
+    assert captured == [httpx.USE_CLIENT_DEFAULT]
