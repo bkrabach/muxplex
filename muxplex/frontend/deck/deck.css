@@ -47,7 +47,20 @@ html, body {
   align-items: center;
   justify-content: center;
   padding-top: env(safe-area-inset-top, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  /* The dial strip and touch strip are `position: fixed` (out of flow), so
+     without this, #deck-grid -- the only flex item this rule actually
+     centers -- centers against the FULL viewport height and the reserved
+     band at the bottom overlaps it. `--reserved-bottom` is deck.js's
+     `applyStripOffsets()` writing the exact same DIAL_STRIP_H/TOUCH_STRIP_H
+     sum that `contentBoxForDials`/`contentBoxForStrip` already subtracted
+     from the grid's own content box (recomputeGrid) -- this just makes the
+     flex-centering axis agree with the box the grid was actually sized
+     against. `clientHeight` (what contentBox() reads) is unaffected by this
+     padding change under `box-sizing: border-box`, so grid sizing math
+     itself does not change, only where it's centered. 0px when neither
+     dials nor strip are enabled -- byte-identical to the pre-existing
+     behavior for every device with no dials/strip configured. */
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--reserved-bottom, 0px));
   padding-left: env(safe-area-inset-left, 0px);
   padding-right: env(safe-area-inset-right, 0px);
 }
@@ -422,22 +435,32 @@ html, body {
 
 /* --- Emulated touch strip (BACKLOG.md item 2) --- */
 /*
- * Independent of the dial strip -- a fixed-height row below the key grid
- * (and below the dial strip when both are enabled), reserved by deck.js's
- * contentBoxForStrip BEFORE the grid is computed. Height matches deck.js's
- * TOUCH_STRIP_H (72px), same hand-kept-in-sync convention as the dial
- * strip's own height comment above. Deliberately left at 72px rather than
- * grown to make room for the status line below (see deck.js's
- * renderStripStatus/buildStripStatusMessage doc comments) -- phone-landscape
- * vertical space is scarce, so the two rows share the existing box (a thin
- * status line plus a shorter zone row) instead of taking more of it.
+ * Independent of the dial strip -- a fixed-height row below the key grid,
+ * reserved by deck.js's contentBoxForStrip BEFORE the grid is computed.
+ * Height matches deck.js's TOUCH_STRIP_H (72px), same hand-kept-in-sync
+ * convention as the dial strip's own height comment above. Deliberately
+ * left at 72px rather than grown to make room for the status line below
+ * (see deck.js's renderStripStatus/buildStripStatusMessage doc comments) --
+ * phone-landscape vertical space is scarce, so the two rows share the
+ * existing box (a thin status line plus a shorter zone row) instead of
+ * taking more of it.
+ *
+ * STACKING: this strip sits ABOVE the dial strip when both are enabled, via
+ * `--touch-strip-bottom` -- a custom property deck.js's applyStripOffsets()
+ * sets to DIAL_STRIP_H (100px) when dialCount > 0, else 0px. Both strips
+ * previously hardcoded `bottom: 0`, which this comment claimed already
+ * stacked them -- it never did; they simply overlapped, with this strip
+ * (later in DOM order, same z-index) painting over the dial strip's bottom
+ * ~72px. Fixed together with the grid/strip overlap bug (`--reserved-bottom`
+ * on #deck-root, above) -- both bugs were the same root cause: fixed-
+ * position reservations that nothing actually stacked or offset against.
  */
 
 #deck-touch-strip {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  bottom: var(--touch-strip-bottom, 0px);
   height: 72px;
   display: flex;
   flex-direction: column;

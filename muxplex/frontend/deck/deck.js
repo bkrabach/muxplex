@@ -1044,6 +1044,35 @@ function contentBoxForStrip(box, stripCount) {
 }
 
 /**
+ * Pure computation of the reserved-bottom band and touch-strip stacking
+ * offset for a given dial/strip configuration -- the exact numbers
+ * `applyStripOffsets` (in the DOM-bound closure below) writes onto
+ * #deck-root as CSS custom properties (`--reserved-bottom`,
+ * `--touch-strip-bottom`). Split out as a pure function, like
+ * `contentBoxForDials`/`contentBoxForStrip` above, so the arithmetic is
+ * testable without a DOM (frontend/tests/test_deck.mjs) -- deck.css's file
+ * header invariant ("deck.js is the only source of layout arithmetic")
+ * applies here too; the CSS rules only read the two properties this
+ * produces.
+ *
+ * `reservedBottom` is added to #deck-root's padding-bottom so the grid's
+ * flex-centering axis matches the same box `contentBoxForDials`/
+ * `contentBoxForStrip` already sized the grid against (the strips are
+ * `position: fixed`, out of flow, so without this the grid centers against
+ * the full viewport height and the reserved band overlaps it).
+ * `touchStripBottom` shifts the touch strip to sit ABOVE the dial strip
+ * instead of both anchoring to `bottom: 0` and overlapping each other.
+ * @param {number} dialCount
+ * @param {number} stripCount
+ * @returns {{reservedBottom: number, touchStripBottom: number}}
+ */
+function stripReservationOffsets(dialCount, stripCount) {
+  var dialH = dialCount > 0 ? DIAL_STRIP_H : 0;
+  var stripH = stripCount > 0 ? TOUCH_STRIP_H : 0;
+  return { reservedBottom: dialH + stripH, touchStripBottom: dialH };
+}
+
+/**
  * Port of muxplex-deck's `layout.py::_reserved_control_keys` -- the three
  * navigation keys are a constant at every grid size, never a fraction, so
  * they never move when the viewport changes (DESIGN_SOFTDECK.md \u00a73).
@@ -1996,8 +2025,41 @@ if (typeof document !== 'undefined') {
       }
     }
 
+    /**
+     * Positions the reserved bottom band and offsets #deck-root's centering
+     * to match it. `#deck-dial-strip`/`#deck-touch-strip` are
+     * `position: fixed` (out of flow), so deck.css's `#deck-root` flex
+     * centering only ever sees `#deck-grid` as a flex item -- without this,
+     * the grid centers against the FULL viewport height while the strips
+     * reserve real estate at the bottom, and the two overlap. This sets two
+     * custom properties, read by deck.css:
+     *
+     *   --reserved-bottom:    total reserved height (dial + strip, whichever
+     *                         are enabled) -- added to #deck-root's
+     *                         padding-bottom so the flex-centered content
+     *                         box matches the box contentBoxForDials/
+     *                         contentBoxForStrip already sized the grid
+     *                         against (recomputeGrid, below).
+     *   --touch-strip-bottom: DIAL_STRIP_H when dials are enabled, else 0 --
+     *                         shifts the touch strip to sit ABOVE the dial
+     *                         strip instead of both anchoring to bottom:0
+     *                         and overlapping.
+     *
+     * Both are 0px when neither dials nor strip are configured --
+     * byte-identical geometry to before either feature existed. Keeps all
+     * layout arithmetic in deck.js (deck.css's file header: "Nothing here
+     * computes a size -- deck.js is the only source of layout arithmetic");
+     * the CSS rules only read these two properties.
+     */
+    function applyStripOffsets() {
+      var offsets = stripReservationOffsets(deckSettings.dialCount, deckSettings.stripCount);
+      root.style.setProperty('--reserved-bottom', offsets.reservedBottom + 'px');
+      root.style.setProperty('--touch-strip-bottom', offsets.touchStripBottom + 'px');
+    }
+
     function recomputeGrid() {
       if (mode === 'picker') return; // never regrid under an open picker
+      applyStripOffsets();
       var box = contentBoxForDials(contentBoxForStrip(contentBox(), deckSettings.stripCount), deckSettings.dialCount);
       var g = computeEffectiveGrid(box.w, box.h, deckSettings.gridOverride);
       grid = g;
@@ -3229,6 +3291,7 @@ if (typeof module !== 'undefined' && module.exports) {
     computeGridForShape: computeGridForShape,
     computeEffectiveGrid: computeEffectiveGrid,
     contentBoxForDials: contentBoxForDials,
+    stripReservationOffsets: stripReservationOffsets,
     DECK_SETTINGS_KEY: DECK_SETTINGS_KEY,
     DIAL_STRIP_H: DIAL_STRIP_H,
     DIAL_PX_PER_TICK: DIAL_PX_PER_TICK,

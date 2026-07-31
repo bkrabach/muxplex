@@ -1266,6 +1266,48 @@ test('contentBoxForStrip and contentBoxForDials compose independently (both rese
   assert.deepEqual(afterBoth, { w: 400, h: 800 - deck.TOUCH_STRIP_H - deck.DIAL_STRIP_H });
 });
 
+// ─── stripReservationOffsets ───────────────────────────────────────────────
+//
+// Regression coverage for the grid/strip overlap bug: #deck-dial-strip and
+// #deck-touch-strip are `position: fixed` (out of flow), so #deck-root's
+// flex centering only ever saw #deck-grid -- the grid centered against the
+// FULL viewport height while the reserved band overlapped it at the bottom.
+// stripReservationOffsets is the pure arithmetic applyStripOffsets (DOM-
+// bound, untestable here) writes onto #deck-root as --reserved-bottom /
+// --touch-strip-bottom. No DOM/CSS layout engine is available in this test
+// file (deliberately -- no jsdom/playwright dependency), so real rect
+// measurement lives in the real-Chromium scratch verification instead; this
+// pins the numbers that feed it.
+
+test('stripReservationOffsets: neither dials nor strip -- both offsets zero (byte-identical to before either feature existed)', () => {
+  assert.deepEqual(deck.stripReservationOffsets(0, 0), { reservedBottom: 0, touchStripBottom: 0 });
+});
+
+test('stripReservationOffsets: dials only -- reserves DIAL_STRIP_H (touchStripBottom is DIAL_STRIP_H too, but #deck-touch-strip is hidden via stripCount<=0 so it has no visible effect)', () => {
+  assert.deepEqual(deck.stripReservationOffsets(4, 0), {
+    reservedBottom: deck.DIAL_STRIP_H,
+    touchStripBottom: deck.DIAL_STRIP_H,
+  });
+});
+
+test('stripReservationOffsets: strip only -- reserves TOUCH_STRIP_H, touch strip stays at bottom:0', () => {
+  assert.deepEqual(deck.stripReservationOffsets(0, 4), {
+    reservedBottom: deck.TOUCH_STRIP_H,
+    touchStripBottom: 0,
+  });
+});
+
+test('stripReservationOffsets: both enabled -- reserves the sum, and touch strip stacks ABOVE the dial strip', () => {
+  assert.deepEqual(deck.stripReservationOffsets(4, 4), {
+    reservedBottom: deck.DIAL_STRIP_H + deck.TOUCH_STRIP_H,
+    touchStripBottom: deck.DIAL_STRIP_H,
+  });
+});
+
+test('stripReservationOffsets: dialCount/stripCount magnitude does not change the reservation (only enabled/disabled matters, matching contentBoxForDials/contentBoxForStrip)', () => {
+  assert.deepEqual(deck.stripReservationOffsets(2, 2), deck.stripReservationOffsets(4, 4));
+});
+
 // ─── buildStripStatusMessage / buildStripPickerStatusMessage ───────────────
 //
 // The strip's LIVE STATUS content (BACKLOG.md "use the strip like Stream
