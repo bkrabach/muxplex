@@ -17,7 +17,11 @@ pip install muxplex-client
 ```
 
 Runtime dependency: `httpx>=0.27.0`. Nothing else -- no `muxplex` server
-dependency, no console script installed.
+dependency, and so no `muxplex` server console script on a client machine.
+
+That installs the **library**. The distribution also declares a `muxplex-client`
+console script, but it is new and is in no published release yet -- to get the
+CLI on `PATH` today, see [CLI](#cli) below.
 
 ## Usage
 
@@ -47,9 +51,26 @@ default and is fine when running on the same host as the server.
 
 ## CLI
 
-`pip install muxplex-client` also installs a `muxplex-client` console script
-that exposes every feature of the muxplex HTTP API as a command, so an AI
-agent (or a shell script) can drive a muxplex server without writing Python.
+A `muxplex-client` console script exposes every feature of the muxplex HTTP API
+as a command, so an AI agent (or a shell script) can drive a muxplex server
+without writing Python.
+
+That script is **new**. It is not in 0.30.1 or any earlier release, so
+`uv tool install muxplex-client` against today's PyPI fails with
+`No executables are provided by package muxplex-client` -- the published
+distribution ships the library only. Three forms, each true in a different
+state:
+
+| Form | Command | True when |
+|---|---|---|
+| From a checkout of this repo | `uv run --directory client muxplex-client ...` | **Works right now.** No install; run it from the repo root. |
+| From the repo on GitHub | `uv tool install "git+https://github.com/bkrabach/muxplex@main#subdirectory=client"` | Once the CLI lands on `main`. Puts the `muxplex-client` executable on `PATH`. |
+| From PyPI | `uv tool install muxplex-client` | Once a release newer than 0.30.1 is published. |
+
+Prefer `uv tool install` for an agent: it puts the executable on `PATH` in its
+own isolated environment. `pip install muxplex-client` installs the same script
+into whichever environment is active -- fine for a library consumer, and equally
+subject to the release status above.
 
 The CLI is a thin shell over the library above: it does argparse wiring,
 output rendering, and exit codes -- config resolution, CAS retry, and TLS
