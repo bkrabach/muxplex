@@ -613,3 +613,137 @@ def test_ws_proxy_still_accepts_when_client_stays_connected_during_auto_spawn(
         "terminal_ws_proxy must still call websocket.accept() when the "
         "client stays connected through the auto-spawn wait"
     )
+
+
+# ---------------------------------------------------------------------------
+# §0 guard: device_id on /terminal/ws (sync-groups spec §10.3, tests 27-31)
+# ---------------------------------------------------------------------------
+
+
+def _heartbeat(client, device_id, sync_group=None):
+    payload = {
+        "device_id": device_id,
+        "label": "test",
+        "viewing_session": None,
+        "view_mode": "grid",
+        "last_interaction_at": 0.0,
+    }
+    if sync_group is not None:
+        payload["sync_group"] = sync_group
+    return client.post("/api/heartbeat", json=payload)
+
+
+def test_ws_no_device_id_unaffected(monkeypatch):
+    """No device_id -> today's path exactly, no new behavior."""
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    with _make_authed_client() as c:
+        with c.websocket_connect("/terminal/ws") as ws:
+            ws.send_text("hello")
+            _wait_for(lambda: "hello" in fake_ws.sent)
+
+    assert "hello" in fake_ws.sent
+
+
+def test_ws_unknown_device_id_closes_4404():
+    with _make_authed_client() as c:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with c.websocket_connect("/terminal/ws?device_id=unknown-device") as _:
+                pass
+    assert exc_info.value.code == 4404
+
+
+def test_ws_mismatched_active_session_closes_4409(monkeypatch):
+    """Device's active_session != terminal_session -> close(4409), never relay."""
+    with _make_authed_client() as c:
+        _heartbeat(c, "d1", "device:d1")
+        # Give the terminal to global (via connect), leaving device:d1's
+        # own active_session at None -- it never selected anything.
+        monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["sessX", "sessY"])
+
+        async def _mock_spawn(name):
+            class _FakeProc:
+                pid = 1
+
+            return _FakeProc()
+
+        async def _mock_kill():
+            return True
+
+        monkeypatch.setattr("muxplex.main.spawn_ttyd", _mock_spawn)
+        monkeypatch.setattr("muxplex.main.kill_ttyd", _mock_kill)
+        monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: False)
+
+        c.post("/api/sessions/sessX/connect")  # global claims the terminal
+
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with c.websocket_connect("/terminal/ws?device_id=d1") as _:
+                pass
+    assert exc_info.value.code == 4409
+
+
+def test_ws_matching_active_session_relays_normally(monkeypatch):
+    """Device's active_session == terminal_session -> normal relay."""
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
+
+    async def _mock_spawn(name):
+        class _FakeProc:
+            pid = 1
+
+        return _FakeProc()
+
+    async def _mock_kill():
+        return True
+
+    monkeypatch.setattr("muxplex.main.spawn_ttyd", _mock_spawn)
+    monkeypatch.setattr("muxplex.main.kill_ttyd", _mock_kill)
+    monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: False)
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["sessX"])
+
+    with _make_authed_client() as c:
+        _heartbeat(c, "d1", "device:d1")
+        c.post("/api/sessions/sessX/connect?device_id=d1")
+
+        with c.websocket_connect("/terminal/ws?device_id=d1") as ws:
+            ws.send_text("hello")
+            _wait_for(lambda: "hello" in fake_ws.sent)
+
+    assert "hello" in fake_ws.sent
+
+
+def test_prepare_ttyd_for_reconnect_reads_terminal_session(monkeypatch):
+    """_prepare_ttyd_for_reconnect() must respawn for terminal_session, not
+    any group's active_session."""
+    import muxplex.main as main_mod
+
+    spawn_calls = []
+
+    async def _mock_spawn(name):
+        spawn_calls.append(name)
+
+        class _FakeProc:
+            pid = 1
+
+        return _FakeProc()
+
+    async def _mock_kill():
+        return True
+
+    monkeypatch.setattr(main_mod, "spawn_ttyd", _mock_spawn)
+    monkeypatch.setattr(main_mod, "kill_ttyd", _mock_kill)
+    monkeypatch.setattr(
+        main_mod,
+        "load_state",
+        lambda: {
+            "active_session": "wrong-session",
+            "terminal_session": "right-session",
+            "sessions": {},
+            "session_order": [],
+        },
+    )
+
+    asyncio.run(main_mod._prepare_ttyd_for_reconnect())
+
+    assert spawn_calls == ["right-session"]

@@ -84,13 +84,21 @@ from muxplex.settings import (
 )
 from muxplex.setup_page import detect_platform, render_setup_page
 from muxplex.state import (
+    GLOBAL_GROUP,
+    GROUP_FIELDS,
+    clear_missing_active_sessions,
+    device_group_id,
     empty_bell,
+    gc_sync_groups,
     load_state,
     prune_devices,
+    read_group_state,
     read_state,
     register_device,
+    resolve_group,
     save_state,
     state_lock,
+    write_group_state,
 )
 from muxplex.terminal_input import (
     ALLOWED_KEYS,
@@ -363,9 +371,21 @@ async def _run_poll_cycle() -> None:
         for name in deleted:
             del state["sessions"][name]
 
-        # 7. Clear active_session if the session is gone
-        if state["active_session"] not in name_set:
-            state["active_session"] = None
+        # 7. Clear active_session if the session is gone -- every group, not
+        # just global. A private group whose session was killed from another
+        # machine must not keep pointing at a corpse -- that would strand its
+        # /terminal/ws on a permanent 4409 with no way for the user to
+        # understand why.
+        cleared = clear_missing_active_sessions(state, name_set)
+        if cleared:
+            _log.info("poll: cleared vanished active_session for group(s) %s", cleared)
+
+        # Release the single ttyd if it was attached to a session that just
+        # vanished. Does NOT call kill_ttyd() -- today's code does not kill
+        # ttyd on a vanished session and this change must not start.
+        if state["terminal_session"] not in name_set:
+            state["terminal_session"] = None
+            state["terminal_group"] = GLOBAL_GROUP
 
         # 8. Process bell flags (detect 0→1 transitions, update unseen_count)
         await process_bell_flags(names, state)
@@ -409,8 +429,20 @@ async def _run_poll_cycle() -> None:
                                     exc,
                                 )
 
-        # 11. Prune devices that haven't sent a heartbeat recently
+        # 11. Prune devices that haven't sent a heartbeat recently, then
+        # garbage-collect any sync group no surviving device claims any
+        # more (must run AFTER prune_devices() -- it derives its target set
+        # from the surviving devices). If the pruned group held the single
+        # ttyd, release it -- otherwise a closed laptop's abandoned private
+        # group would hold the terminal hostage forever, deadlocking the
+        # 409 gate with no recovery short of restarting the service.
         prune_devices(state)
+        removed_groups = gc_sync_groups(state)
+        if state["terminal_group"] in removed_groups:
+            await kill_ttyd()
+            state["terminal_session"] = None
+            state["terminal_group"] = GLOBAL_GROUP
+            _log.info("poll: released terminal held by pruned group")
 
         # 12. Atomically persist the updated state
         save_state(state)
@@ -770,6 +802,7 @@ class HeartbeatPayload(BaseModel):
     viewing_session: str | None
     view_mode: Literal["grid", "fullscreen"]
     last_interaction_at: float
+    sync_group: str | None = None
 
 
 class CreateSessionPayload(BaseModel):
@@ -851,8 +884,24 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _resolve_group_or_404(state: dict, device_id: str | None) -> str:
+    """Resolve *device_id* to a sync group, or raise HTTP 404.
+
+    Thin HTTP-boundary wrapper around state.resolve_group(): an unknown
+    device_id must never silently fall back to the shared global group --
+    that fall-through is exactly the yank this feature exists to prevent.
+    """
+    try:
+        return resolve_group(state, device_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown device_id {device_id!r}; send POST /api/heartbeat first",
+        ) from None
+
+
 @app.get("/api/state")
-async def get_state() -> dict:
+async def get_state(device_id: str | None = None) -> dict:
     """Return the full persistent state, plus settings_updated_at.
 
     settings_updated_at mirrors settings.settings_updated_at (settings.py) --
@@ -862,33 +911,60 @@ async def get_state() -> dict:
     otherwise only visible via a dedicated GET /api/settings fetch -- without
     adding a second poll. Purely additive: existing consumers that don't look
     for this key are unaffected.
+
+    device_id (optional query param): selects which sync group's
+    active_session/active_remote_id/active_view is projected into the
+    response, OVERWRITING those three top-level keys with that group's
+    values (the raw per-group data stays visible in sync_groups). Omitting
+    it means the shared "global" group -- byte-identical to today's
+    behavior plus the additive sync_groups/terminal_session/terminal_group/
+    sync_group keys, which are in state.json anyway. Unknown device_id ->
+    404 (see _resolve_group_or_404).
     """
     state = await read_state()
     state["settings_updated_at"] = load_settings().get("settings_updated_at", 0.0)
+
+    group = _resolve_group_or_404(state, device_id)
+    if group != GLOBAL_GROUP:
+        state.update(read_group_state(state, group))
+    state["sync_group"] = group
     return state
 
 
 @app.patch("/api/state")
-async def patch_state(patch: StatePatch) -> dict:
+async def patch_state(patch: StatePatch, device_id: str | None = None) -> dict:
     """Update fields in the persistent state and return the updated state.
 
     Only fields explicitly included in the request body are updated;
     omitted fields are left unchanged. Supports: session_order,
     active_session, active_remote_id, active_view.
+
+    device_id (optional query param) selects which sync group
+    active_session/active_remote_id/active_view route to via
+    write_group_state(). session_order is NEVER group-scoped -- it
+    describes the sessions, not a view of them -- so it always writes the
+    top-level key regardless of device_id. Unknown device_id -> 404.
     """
     async with state_lock:
         state = load_state()
+        group = _resolve_group_or_404(state, device_id)
+
         changed = patch.model_fields_set
         if "session_order" in changed:
             state["session_order"] = patch.session_order
-        if "active_session" in changed:
-            state["active_session"] = patch.active_session
-        if "active_remote_id" in changed:
-            state["active_remote_id"] = patch.active_remote_id
-        if "active_view" in changed:
-            state["active_view"] = patch.active_view
+
+        group_updates = {
+            field: getattr(patch, field) for field in GROUP_FIELDS if field in changed
+        }
+        if group_updates:
+            write_group_state(state, group, group_updates)
+
         save_state(state)
-        return state
+
+    if group != GLOBAL_GROUP:
+        state.update(read_group_state(state, group))
+    state["sync_group"] = group
+    return state
 
 
 @app.get("/api/sessions")
@@ -1003,7 +1079,7 @@ def _attention_order(sessions: list[dict]) -> list[dict]:
 
 
 @app.get("/api/view")
-async def get_view(sort: str | None = None) -> dict:
+async def get_view(sort: str | None = None, device_id: str | None = None) -> dict:
     """Return the server-resolved current view: filtered, sorted sessions
     plus view metadata.
 
@@ -1071,16 +1147,18 @@ async def get_view(sort: str | None = None) -> dict:
 
     settings = load_settings()
     state = await read_state()
-    active_view: str = state.get("active_view", "all")
-    active_session = state.get("active_session")
+    group = _resolve_group_or_404(state, device_id)
+    group_state = read_group_state(state, group)
+    active_view: str = group_state["active_view"]
+    active_session = group_state["active_session"]
 
-    device_id = load_device_id()
+    local_device_id = load_device_id()
     names = get_session_list()
     activity = get_session_activity()
     raw_sessions = [
         {
             "name": name,
-            "sessionKey": f"{device_id}:{name}",
+            "sessionKey": f"{local_device_id}:{name}",
             "bell": state.get("sessions", {}).get(name, {}).get("bell", empty_bell()),
             "last_activity_at": activity.get(name),
         }
@@ -1120,6 +1198,7 @@ async def get_view(sort: str | None = None) -> dict:
         "views": views,
         "sort": applied_sort,
         "sessions": resolved,
+        "sync_group": group,
     }
 
 
@@ -1182,15 +1261,24 @@ async def create_session(payload: CreateSessionPayload) -> dict:
 
 
 @app.post("/api/sessions/{name}/connect")
-async def connect_session(name: str) -> dict:
+async def connect_session(
+    name: str, device_id: str | None = None, takeover: bool = False
+) -> dict:
     """Connect to a tmux session via ttyd.
 
     Kills any existing ttyd process, spawns a new one attached to *name*,
     and updates the active_session in persistent state.
 
-    Returns {active_session: name, ttyd_port: 7682}.
+    Returns {active_session: name, ttyd_port: 7682, sync_group, terminal_session}.
     Raises HTTP 400 if *name* fails the session-name allowlist.
-    Raises HTTP 404 if *name* is not an exact match in the known session list.
+    Raises HTTP 404 if *name* is not an exact match in the known session list,
+    or if *device_id* is unknown.
+    Raises HTTP 409 ({"terminal_conflict": true, ...}) if the single ttyd is
+    currently claimed by a DIFFERENT sync group and *takeover* is not set --
+    see docs/API_SEMANTICS.md. This gate can never fire for a caller that
+    sends no device_id: it resolves to the "global" group, and the terminal
+    starts (and stays, until an opt-out group claims it) claimed by "global"
+    too -- both global, so equal, so no conflict.
     """
     _require_valid_session_name(name)
     # Fail closed: reject unless *name* is an exact member of the known set. An
@@ -1202,19 +1290,50 @@ async def connect_session(name: str) -> dict:
     if name not in known:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
-    # Same-session short-circuit: if *name* is already the active session and
-    # ttyd is still accepting connections, kill+respawn would only churn a PTY
-    # every attached client already works against. Return current state (~2ms)
-    # so redundant client re-connects (PWA follow-open, deck double-press) are
+    async with state_lock:
+        state = load_state()
+        group = _resolve_group_or_404(state, device_id)
+        terminal_session = state["terminal_session"]
+        terminal_group = state["terminal_group"]
+
+    # Terminal-claim gate: refuse to seize the single ttyd out from under a
+    # DIFFERENT group's live session unless the caller explicitly takes over.
+    # No write and no ttyd action happens on this path.
+    if terminal_session is not None and terminal_group != group and not takeover:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "terminal_conflict": True,
+                "detail": f"The terminal is attached to {terminal_session!r} for another device.",
+                "terminal_session": terminal_session,
+                "terminal_group": terminal_group,
+            },
+        )
+
+    # Same-session short-circuit: if *name* is already what the terminal is
+    # attached to and ttyd is still accepting connections, kill+respawn would
+    # only churn a PTY every attached client already works against. Still
+    # records the caller's own selection (a private device connecting to the
+    # session the terminal already shows must record its own choice) and, for
+    # co-viewing, names the last claimant. Return current state (~2ms) so
+    # redundant client re-connects (PWA follow-open, deck double-press) are
     # free. The <1ms TCP listening probe keeps this restart-safe: a truly-dead
     # ttyd still falls through to a full respawn.
-    async with state_lock:
-        current = load_state().get("active_session")
-    if name == current and _ttyd_is_listening():
+    if name == terminal_session and _ttyd_is_listening():
         _log.info(
             "Session '%s' already active and ttyd listening; skipping respawn", name
         )
-        return {"active_session": name, "ttyd_port": TTYD_PORT}
+        async with state_lock:
+            state = load_state()
+            write_group_state(state, group, {"active_session": name})
+            state["terminal_group"] = group
+            save_state(state)
+        return {
+            "active_session": name,
+            "ttyd_port": TTYD_PORT,
+            "sync_group": group,
+            "terminal_session": name,
+        }
 
     _log.info("Connecting to session '%s'", name)
     await kill_ttyd()
@@ -1222,10 +1341,17 @@ async def connect_session(name: str) -> dict:
 
     async with state_lock:
         state = load_state()
-        state["active_session"] = name
+        write_group_state(state, group, {"active_session": name})
+        state["terminal_session"] = name
+        state["terminal_group"] = group
         save_state(state)
 
-    return {"active_session": name, "ttyd_port": TTYD_PORT}
+    return {
+        "active_session": name,
+        "ttyd_port": TTYD_PORT,
+        "sync_group": group,
+        "terminal_session": name,
+    }
 
 
 @app.post("/api/sessions/{name}/input")
@@ -1359,21 +1485,39 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
 
 
 @app.delete("/api/sessions/current")
-async def delete_current_session() -> dict:
+async def delete_current_session(device_id: str | None = None) -> dict:
     """Disconnect the current ttyd session.
 
-    Kills the running ttyd process and clears active_session in persistent state.
+    Kills the running ttyd process ONLY when the caller's group is the one
+    that holds it (state["terminal_group"] == the resolved group) --
+    otherwise the caller does not own the terminal and must not kill it:
+    closing your own private fullscreen must not black out someone else's
+    live terminal. Always clears the caller's own group active_session.
 
-    Returns {active_session: None}.
+    Returns {active_session: None, sync_group, terminal_released}.
+    Raises HTTP 404 if *device_id* is unknown.
     """
-    await kill_ttyd()
+    async with state_lock:
+        state = load_state()
+        group = _resolve_group_or_404(state, device_id)
+        owns_terminal = state["terminal_group"] == group
+
+    if owns_terminal:
+        await kill_ttyd()
 
     async with state_lock:
         state = load_state()
-        state["active_session"] = None
+        write_group_state(state, group, {"active_session": None})
+        if owns_terminal:
+            state["terminal_session"] = None
+            state["terminal_group"] = GLOBAL_GROUP
         save_state(state)
 
-    return {"active_session": None}
+    return {
+        "active_session": None,
+        "sync_group": group,
+        "terminal_released": owns_terminal,
+    }
 
 
 @app.delete("/api/sessions/{name}")
@@ -1446,9 +1590,32 @@ async def heartbeat(payload: HeartbeatPayload) -> dict:
     Acquires state_lock, loads state, calls register_device() with payload
     fields, saves state.
 
-    Returns {device_id: str, status: 'ok'}.
+    payload.sync_group (optional) selects the device's sync group:
+        None                                  -> leave unchanged
+        "global"                              -> OK
+        f"device:{payload.device_id}"         -> OK (the device's own group)
+        anything else                         -> 400
+
+    Rejecting `device:<someone-else>` today is the tight-then-widen choice:
+    allowing it would ship untested surface with no consumer; relaxing this
+    later (pairing a deck to a browser's group) is purely additive and
+    needs no schema change.
+
+    Group creation happens here and only here (via register_device() ->
+    ensure_group()), one site, seeded from global.
+
+    Returns {device_id: str, status: 'ok', sync_group: str}.
     Missing device_id or invalid view_mode returns 422 (handled by Pydantic).
     """
+    if payload.sync_group is not None and payload.sync_group not in (
+        GLOBAL_GROUP,
+        device_group_id(payload.device_id),
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="sync_group must be 'global' or 'device:<own device_id>'",
+        )
+
     async with state_lock:
         state = load_state()
         register_device(
@@ -1458,10 +1625,16 @@ async def heartbeat(payload: HeartbeatPayload) -> dict:
             viewing_session=payload.viewing_session,
             view_mode=payload.view_mode,
             last_interaction_at=payload.last_interaction_at,
+            sync_group=payload.sync_group,
         )
+        resolved_group = state["devices"][payload.device_id]["sync_group"]
         save_state(state)
 
-    return {"device_id": payload.device_id, "status": "ok"}
+    return {
+        "device_id": payload.device_id,
+        "status": "ok",
+        "sync_group": resolved_group,
+    }
 
 
 @app.post("/api/sessions/{name}/bell")
@@ -1968,13 +2141,16 @@ async def _prepare_ttyd_for_reconnect() -> None:
     """Kill and respawn ttyd (best-effort) if it isn't listening, then wait
     briefly for it to bind its port.
 
-    Loads active_session from state itself so it can run as an independent
-    task, raced against _client_disconnected() by terminal_ws_proxy.
+    Loads terminal_session from state itself so it can run as an independent
+    task, raced against _client_disconnected() by terminal_ws_proxy. Reads
+    terminal_session (what ttyd was ACTUALLY attached to), not any group's
+    active_session (what some group WANTS) -- behaviorally identical for the
+    global-only case (they are equal), and correct once other groups exist.
     """
     try:
         async with state_lock:
             state = load_state()
-        session_name = state.get("active_session")
+        session_name = state["terminal_session"]
         if session_name:
             _log.info(
                 "WS proxy: ttyd not listening, auto-spawning for '%s'",
@@ -1988,12 +2164,12 @@ async def _prepare_ttyd_for_reconnect() -> None:
 
 
 @app.websocket("/terminal/ws")
-async def terminal_ws_proxy(websocket: WebSocket) -> None:
+async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) -> None:
     """Proxy WebSocket frames between the browser and ttyd.
 
     Checks that ttyd is alive BEFORE accepting the browser WebSocket.  If ttyd
     is not listening (e.g. after a service restart), auto-spawns it using the
-    active_session from state, then waits briefly for it to bind its port.
+    terminal_session from state, then waits briefly for it to bind its port.
 
     Only after ttyd is confirmed reachable does the function call
     websocket.accept() — so the browser's 'open' event only fires once a real
@@ -2008,10 +2184,35 @@ async def terminal_ws_proxy(websocket: WebSocket) -> None:
     _client_disconnected()'s docstring for the exact mechanism — so that wait
     is raced against a disconnect watcher and accept() is skipped entirely if
     the client is already gone.
+
+    device_id (optional query param) is the §0 hazard's loud backstop: it
+    holds whether or not any client behaves correctly.
+        - No device_id -> today's path exactly, no new behavior.
+        - Unknown device_id -> close(4404).
+        - Otherwise: resolve the caller's group; if that group's
+          active_session is None or does not equal the single ttyd's actual
+          terminal_session, close(4409) rather than relay -- this device
+          must never be shown, or type into, a session it did not select.
+    There is no race with the normal client path: openSession() awaits
+    /connect (which sets terminal_session) before mounting the terminal, so
+    they are equal by the time the WS opens.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
     if not await _ws_auth_check(websocket):
         return
+
+    if device_id is not None:
+        async with state_lock:
+            state = load_state()
+        try:
+            group = resolve_group(state, device_id)
+        except KeyError:
+            await websocket.close(code=4404)
+            return
+        wanted = read_group_state(state, group)["active_session"]
+        if wanted is None or wanted != state["terminal_session"]:
+            await websocket.close(code=4409)
+            return
 
     # Register this connection's task so lifespan shutdown can cancel it.
     _task = asyncio.current_task()

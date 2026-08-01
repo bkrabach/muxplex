@@ -39,10 +39,14 @@ consumers in ways this repo's tests won't catch:
 - **`last_activity_at`** derives from tmux `#{window_activity}` — deliberately
   NOT `#{session_activity}`, which freezes for unattended sessions (rationale
   and empirical evidence documented in `sessions.py`).
-- **`active_view` / `active_session` are server-global** — last writer wins,
-  across every connected client (browsers, deck, agents). What that means for
-  a client author (and why an agent should usually leave both alone) is in
-  `AGENT_GUIDE.md` §4.
+- **`active_view` / `active_session` are server-global BY DEFAULT** — last
+  writer wins, across every connected client (browsers, deck, agents),
+  *unless* a device has opted into its own private **sync group** (see "Sync
+  groups" below). What that means for a client author that sends no
+  `device_id` (and why an agent should usually leave both alone) is in
+  `AGENT_GUIDE.md` §4 — that guidance is still exactly true for such a
+  client, because omitting `device_id` resolves to the shared `"global"`
+  group, identical to today.
 - **The read model is eventually consistent**: GET endpoints serve a ~2s poll
   cache. POST create/delete aren't visible until the next cycle, and `connect`
   on a just-created session 404s until the cache catches up — that 404 is the
@@ -289,3 +293,77 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
     views. Automatic pruning has no `allow_destructive` override — only a
     local operator editing `settings.json` directly can authorize a bulk
     deletion.
+- **Sync groups let a device opt OUT of the server-global session/view
+  selection** (`state.py`, `main.py`). A **sync group** owns its own
+  `active_session` / `active_remote_id` / `active_view`. Group `"global"` —
+  every client's implicit default — is stored in, and *is*, the top-level
+  `state.json` keys described above; a device can instead select
+  `"device:<its own device_id>"`, a private group scoped to itself.
+  `GET`/`PATCH /api/state`, `GET /api/view`, `POST /api/sessions/{name}/connect`,
+  and `DELETE /api/sessions/current` all accept an optional `?device_id=`
+  query param that resolves which group is read or written; **omitting it is
+  byte-identical to today** for every existing client (muxplex-deck,
+  `muxplex_client`, and any client that predates this feature) — they all
+  omit `device_id` and stay in `"global"`. `POST /api/heartbeat` accepts an
+  optional `sync_group` body field (`"global"` or the caller's own
+  `"device:<device_id>"` — anything else is 400) to move a device between
+  groups; group creation happens there, seeded from global's CURRENT values
+  (not defaults), so opting out doesn't teleport the device to the "All"
+  view. **Unknown `device_id` on any of these endpoints is 404, never a
+  silent fallback to `"global"`** — a device that has aged out of the 300s
+  registry (`state.py`'s `prune_devices()`) must not be able to silently
+  start driving everyone's screen; the client's recovery is to re-heartbeat
+  and retry. Groups with no member device are garbage collected on the same
+  poll-cycle pass that prunes stale devices — no separate TTL or timer.
+  **`sync_groups` in `state.json` NEVER contains the key `"global"`** — the
+  top-level keys ARE its one and only storage. This is deliberate: a
+  `sync_groups["global"]` mirror would create two copies of one truth and
+  therefore a divergence bug; with one copy there is no which-one-wins
+  question to answer.
+- **The single shared ttyd process is a SEPARATE, orthogonal claim from sync
+  groups, and it is the safety-critical half of this feature.** Exactly one
+  ttyd process exists server-wide, on a hardcoded port, with the session
+  name baked into its argv at spawn time and a WRITABLE terminal (`ttyd.py`).
+  Two sync groups can each have their own `active_session` selection, but
+  they cannot BOTH have their own live terminal — only one group's session
+  can actually be relayed at a time. `state.json`'s `terminal_session` /
+  `terminal_group` make ttyd's real attachment a first-class, inspectable
+  fact instead of an assumption: `terminal_session` is what ttyd is
+  currently attached to; `terminal_group` is the group that claimed it.
+  `POST /api/sessions/{name}/connect` refuses to seize the terminal away
+  from a DIFFERENT group's live session: if `terminal_session is not None`
+  and `terminal_group` differs from the caller's resolved group, it returns
+  **409** with `{"terminal_conflict": true, "detail": ..., "terminal_session":
+  ..., "terminal_group": ...}` — `terminal_conflict: true` is the
+  discriminator that tells this 409 apart from the settings backstop 409
+  above (same established pattern as `{"backstop": true, ...}`) — and makes
+  **no state write and no ttyd process action**. Passing `?takeover=true`
+  proceeds anyway (an explicit, informed override — the client's job is to
+  surface this as a real confirmation dialog naming the session that will
+  move, never a silent retry). **This gate can never fire for a client that
+  sends no `device_id`**: it resolves to `"global"`, and the terminal starts
+  (and stays, until some other group explicitly takes it over) claimed by
+  `"global"` too — both global, so equal, so no conflict. `DELETE
+  /api/sessions/current` mirrors this: it only kills ttyd when the caller's
+  resolved group IS `terminal_group`; otherwise it clears only the caller's
+  own group `active_session` and reports `"terminal_released": false` —
+  closing your own private fullscreen must never black out someone else's
+  live terminal.
+  - **`WS /terminal/ws` enforces the same claim with a loud, unconditional
+    backstop that holds regardless of client correctness.** With an
+    optional `?device_id=`: unknown `device_id` closes with code **4404**;
+    otherwise, if the resolved group's `active_session` is `None` or does
+    not equal the current `terminal_session`, the socket is closed with
+    code **4409** *before* any upstream ttyd connection is attempted — this
+    device is never shown, and can never type into, a session it did not
+    itself select. Precisely this scenario is why the guard exists: without
+    it, one device's `POST /connect` silently redirects every other
+    connected terminal's WebSocket to the newly-attached session — the
+    viewer's UI still shows their own session name while their keystrokes
+    land in a DIFFERENT, live session belonging to someone else. The 4409
+    close converts that from a silent misdirection into a loud, recoverable
+    refusal. **Residual gap, by design**: a terminal client that supplies no
+    `device_id` at all gets none of this protection (the bundled PWA always
+    sends one; requiring it unconditionally would be a breaking change to
+    any yet-unknown client and is out of scope). No `device_id` on
+    `/terminal/ws` is the ONLY case where this guard does not apply.

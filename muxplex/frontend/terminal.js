@@ -11,6 +11,15 @@ let _vpHandler = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 let _searchAddon = null;
 let _resizeObserver = null;
+// This browser's own device_id (distinct from remoteId, a federation
+// concept). Empty string when unknown/unset -- treated as "no device_id",
+// matching today's behavior exactly (see the §0 hazard's residual gap:
+// a terminal client that supplies none gets no server-side guard).
+let _ownDeviceId = '';
+// True only while the user has confirmed a takeover after a 4409/409
+// terminal conflict -- consumed (reset to false) by the next connect
+// attempt so it can never silently apply to an unrelated future conflict.
+let _pendingTakeover = false;
 
 // ─── Module-level encoding helpers ──────────────────────────────────────────
 // Hoisted here so the clipboard key handler (in openTerminal) can also use them.
@@ -52,7 +61,7 @@ function _copyToClipboard(text) {
 
 // ─── Forward declarations ─────────────────────────────────────────────────────
 
-function connectWebSocket(name, remoteId) {
+function connectWebSocket(name, remoteId, ownDeviceId) {
   // Always connect to the same origin — remote sessions route through the
   // federation proxy (ws://host/federation/{remoteId}/terminal/ws) so that
   // no cross-origin WebSocket connections are made from the browser.
@@ -62,10 +71,17 @@ function connectWebSocket(name, remoteId) {
     // Remote session via federation proxy — same origin, different path
     url = proto + '//' + location.host + '/federation/' + remoteId + '/terminal/ws';
   } else {
-    // Local session: same origin
+    // Local session: same origin. device_id lets the server refuse to relay
+    // a session this device did not select (the §0 keystroke-misdirection
+    // guard) — omitted entirely when unknown, matching today's behavior.
     url = proto + '//' + location.host + '/terminal/ws';
+    if (ownDeviceId) {
+      url += '?device_id=' + encodeURIComponent(ownDeviceId);
+    }
   }
   const reconnectOverlay = document.getElementById('reconnect-overlay');
+  const reconnectOverlayText = document.getElementById('reconnect-overlay-text');
+  const takeoverBtn = document.getElementById('reconnect-overlay-takeover-btn');
   // Use module-level _encodePayload (hoisted above connectWebSocket)
   var encodePayload = _encodePayload;
 
@@ -146,10 +162,22 @@ function connectWebSocket(name, remoteId) {
       }
     });
 
-    ws.addEventListener('close', function() {
+    ws.addEventListener('close', function(event) {
       if (ws !== _ws) return; // stale connection — don't reconnect for old sockets
       if (!_currentSession) return; // intentional close — don't reconnect
-      if (reconnectOverlay) reconnectOverlay.classList.remove('hidden');
+      if (event && event.code === 4409) {
+        // §0 guard fired: this device's active_session does not match what
+        // the single shared terminal is actually attached to. Looping a
+        // reconnect here would hammer the server and never recover — show
+        // an honest overlay with a Take-over affordance instead.
+        _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId);
+        return;
+      }
+      if (reconnectOverlay) {
+        reconnectOverlay.classList.remove('hidden');
+        if (reconnectOverlayText) reconnectOverlayText.textContent = 'Reconnecting…';
+        if (takeoverBtn) takeoverBtn.classList.add('hidden');
+      }
       _reconnectAttempts++;
       // Exponential backoff: 1s, 2s, 4s, 8s, cap at 15s. Add jitter to avoid thundering herd.
       var delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 15000);
@@ -179,13 +207,34 @@ function connectWebSocket(name, remoteId) {
       } else {
         // Local session
         connectPath = '/api/sessions/' + encodeURIComponent(_currentSession) + '/connect';
+        if (ownDeviceId) {
+          connectPath += '?device_id=' + encodeURIComponent(ownDeviceId);
+          if (_pendingTakeover) connectPath += '&takeover=true';
+        }
       }
+      _pendingTakeover = false; // consumed -- must not silently apply to a future, unrelated conflict
       fetch(connectPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
+        .then(function(res) {
+          if (res.status === 409) {
+            return res.json().catch(function() { return {}; }).then(function(body) {
+              if (body && body.terminal_conflict) {
+                // Must inspect the status and stop here rather than proceeding
+                // to open the WebSocket -- this is the client half of the §0
+                // guard. Surface the same honest overlay the WS-side 4409
+                // close handler shows.
+                _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId);
+              }
+              return null; // never fall through to _connectWebSocket on 409
+            });
+          }
+          return true;
+        })
         .catch(function() { return null; })
-        .then(function() {
+        .then(function(proceed) {
+          if (!proceed) return;
           // Brief delay for ttyd to bind its port after /connect spawns it
           setTimeout(_connectWebSocket, 800);
         });
@@ -196,6 +245,28 @@ function connectWebSocket(name, remoteId) {
   }
 
   connect();
+}
+
+/**
+ * Show the reconnect overlay in "terminal conflict" mode: honest message +
+ * a Take-over affordance, and (critically) NO auto-reconnect loop -- looping
+ * here would hammer the server and never recover on its own.
+ */
+function _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId) {
+  if (!reconnectOverlay) return;
+  reconnectOverlay.classList.remove('hidden');
+  if (reconnectOverlayText) {
+    reconnectOverlayText.textContent = "Terminal is showing another device's session";
+  }
+  if (takeoverBtn) {
+    takeoverBtn.classList.remove('hidden');
+    takeoverBtn.onclick = function() {
+      takeoverBtn.classList.add('hidden');
+      _pendingTakeover = true;
+      _reconnectAttempts = 2; // force the escalation (/connect) path on next connect()
+      connectWebSocket(name, remoteId, ownDeviceId);
+    };
+  }
 }
 function initVisualViewport() {
   if (!window.visualViewport) return;
@@ -328,11 +399,13 @@ function _searchPrev() {
  *   When provided, the WebSocket connects via the federation proxy path
  *   ws://host/federation/{remoteId}/terminal/ws (same origin, no cross-origin).
  */
-function openTerminal(sessionName, remoteId, fontSize) {
+function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
   // Null _currentSession first so any in-flight close handler on the old WS won't
   // schedule a reconnect (it checks `if (!_currentSession) return;`).
   _currentSession = null;
   _reconnectAttempts = 0; // reset backoff on new session open
+  _ownDeviceId = ownDeviceId || '';
+  _pendingTakeover = false;
 
   // Cancel any pending reconnect timer from the previous session.
   if (_reconnectTimer) {

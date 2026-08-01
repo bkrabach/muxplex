@@ -226,7 +226,7 @@ test('generateDeviceId produces unique IDs on successive calls', () => {
 // --- buildHeartbeatPayload ---
 
 test('buildHeartbeatPayload returns correct shape with all required fields', () => {
-  const payload = app.buildHeartbeatPayload('d-abc123', 'session-1', 'split', 1700000000);
+  const payload = app.buildHeartbeatPayload('d-abc123', 'session-1', 'split', 1700000000, 'global');
   assert.strictEqual(payload.device_id, 'd-abc123');
   assert.strictEqual(payload.viewing_session, 'session-1');
   assert.strictEqual(payload.view_mode, 'split');
@@ -235,14 +235,92 @@ test('buildHeartbeatPayload returns correct shape with all required fields', () 
 });
 
 test('buildHeartbeatPayload includes null viewing_session when passed null', () => {
-  const payload = app.buildHeartbeatPayload('d-abc123', null, 'full', 0);
+  const payload = app.buildHeartbeatPayload('d-abc123', null, 'full', 0, 'global');
   assert.strictEqual(payload.viewing_session, null);
 });
 
 test('buildHeartbeatPayload label uses navigator.userAgent sliced to 50 chars', () => {
-  const payload = app.buildHeartbeatPayload('d-abc123', null, 'full', 0);
+  const payload = app.buildHeartbeatPayload('d-abc123', null, 'full', 0, 'global');
   const expected = globalThis.navigator.userAgent.slice(0, 50);
   assert.strictEqual(payload.label, expected);
+});
+
+test('buildHeartbeatPayload includes the sync_group field', () => {
+  const payload = app.buildHeartbeatPayload('d-abc123', null, 'full', 0, 'device:d-abc123');
+  assert.strictEqual(payload.sync_group, 'device:d-abc123');
+});
+
+// --- Sync groups: syncGroupId / withDevice / initSyncGroup / setSyncGroup ---
+
+test('syncGroupId returns "global" in global mode', () => {
+  app._setSyncGroupMode('global');
+  assert.strictEqual(app.syncGroupId(), 'global');
+});
+
+test('syncGroupId returns "device:<id>" in device mode', () => {
+  app._setSyncGroupMode('device');
+  app._setDeviceId('d-xyz789');
+  assert.strictEqual(app.syncGroupId(), 'device:d-xyz789');
+  app._setSyncGroupMode('global'); // restore for subsequent tests
+});
+
+test('withDevice appends device_id with ? when path has no query string', () => {
+  app._setDeviceId('d-abc123');
+  assert.strictEqual(app.withDevice('/api/state'), '/api/state?device_id=d-abc123');
+});
+
+test('withDevice appends device_id with & when path already has a query string', () => {
+  app._setDeviceId('d-abc123');
+  assert.strictEqual(
+    app.withDevice('/api/sessions/foo/connect?takeover=true'),
+    '/api/sessions/foo/connect?takeover=true&device_id=d-abc123'
+  );
+});
+
+test('initSyncGroup restores a valid stored mode', () => {
+  _localStorageStore['muxplex-sync-group'] = 'device';
+  app._setSyncGroupMode('global');
+  app.initSyncGroup();
+  assert.strictEqual(app.syncGroupId().startsWith('device:'), true);
+  app._setSyncGroupMode('global');
+  delete _localStorageStore['muxplex-sync-group'];
+});
+
+test('initSyncGroup with localStorage throwing stays "global" and does not throw', () => {
+  const origGetItem = globalThis.localStorage.getItem;
+  globalThis.localStorage.getItem = () => { throw new Error('blocked'); };
+  app._setSyncGroupMode('global');
+  assert.doesNotThrow(() => app.initSyncGroup());
+  assert.strictEqual(app.syncGroupId(), 'global');
+  globalThis.localStorage.getItem = origGetItem;
+});
+
+test('setSyncGroup("global") issues no PATCH /api/state (adopt, never push)', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (path, opts) => {
+    calls.push({ method: (opts && opts.method) || 'GET', path });
+    return { ok: true, json: async () => ({}) };
+  };
+  app._setSyncGroupMode('device');
+  await app.setSyncGroup('global');
+  const patchCalls = calls.filter((c) => c.method === 'PATCH' && c.path.indexOf('/api/state') === 0);
+  assert.strictEqual(patchCalls.length, 0, 'rejoining global must never PATCH — adopt, not push');
+  globalThis.fetch = origFetch;
+});
+
+test('setSyncGroup sends a heartbeat immediately rather than waiting for the 5s tick', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (path, opts) => {
+    calls.push({ method: (opts && opts.method) || 'GET', path });
+    return { ok: true, json: async () => ({}) };
+  };
+  await app.setSyncGroup('device');
+  const heartbeatCalls = calls.filter((c) => c.method === 'POST' && c.path === '/api/heartbeat');
+  assert.strictEqual(heartbeatCalls.length, 1);
+  app._setSyncGroupMode('global');
+  globalThis.fetch = origFetch;
 });
 
 // --- setConnectionStatus ---
@@ -1140,9 +1218,10 @@ test('openSession without skipConnect POSTs to /api/sessions/{name}/connect', as
 
   await app.openSession('work', {});
 
-  const connectCall = fetchCalls.find((c) => c.url === '/api/sessions/work/connect');
-  assert.ok(connectCall, 'should POST to /api/sessions/work/connect');
+  const connectCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/work/connect') === 0);
+  assert.ok(connectCall, 'should POST to /api/sessions/work/connect (withDevice-wrapped)');
   assert.strictEqual(connectCall.opts.method, 'POST');
+  assert.ok(connectCall.url.indexOf('device_id=') > -1, 'connect URL should include device_id (withDevice)');
   globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
@@ -1265,9 +1344,10 @@ test('openSession for local session still POSTs to local /api/sessions/{name}/co
 
   await app.openSession('local-session', {});
 
-  const connectCall = fetchCalls.find((c) => c.url === '/api/sessions/local-session/connect');
-  assert.ok(connectCall, 'should POST to /api/sessions/local-session/connect');
+  const connectCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/local-session/connect') === 0);
+  assert.ok(connectCall, 'should POST to /api/sessions/local-session/connect (withDevice-wrapped)');
   assert.strictEqual(connectCall.opts.method, 'POST');
+  assert.ok(connectCall.url.indexOf('device_id=') > -1, 'connect URL should include device_id (withDevice)');
   globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
@@ -1366,7 +1446,7 @@ test('closeSession fires DELETE /api/sessions/current', async () => {
   // yield microtask queue for fire-and-forget DELETE
   await new Promise((r) => setTimeout(r, 0));
 
-  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  const deleteCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/current') === 0 && c.opts && c.opts.method === 'DELETE');
   assert.ok(deleteCall, 'should fire DELETE /api/sessions/current');
   globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
@@ -1401,7 +1481,7 @@ test('closeSession does NOT fire DELETE for remote session (non-empty _viewingRe
   // yield microtask queue for any fire-and-forget calls
   await new Promise((r) => setTimeout(r, 0));
 
-  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  const deleteCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/current') === 0 && c.opts && c.opts.method === 'DELETE');
   assert.ok(!deleteCall, 'closeSession should NOT fire DELETE for remote session');
 
   globalThis.fetch = origFetch;
@@ -1439,7 +1519,7 @@ test('closeSession still fires DELETE /api/sessions/current for local session', 
   // yield microtask queue for fire-and-forget DELETE
   await new Promise((r) => setTimeout(r, 0));
 
-  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  const deleteCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/current') === 0 && c.opts && c.opts.method === 'DELETE');
   assert.ok(deleteCall, 'closeSession should fire DELETE /api/sessions/current for local session');
 
   globalThis.fetch = origFetch;
@@ -2086,7 +2166,11 @@ test('openSession mounts terminal AFTER connect POST, not inside animation timer
   // _openTerminal outside the window and produce a false failure here --
   // that exact false failure is what widened this from 4000 to 5000.
   const fnStart = source.indexOf('async function openSession');
-  const fnBody = source.substring(fnStart, fnStart + 5000);
+  // Widened 5000 -> 6000 for the sync-groups terminal-conflict handling
+  // (showTerminalConflictDialog branch) added to the /connect catch block --
+  // same reasoning as the prior 4000 -> 5000 widening: a legitimate addition
+  // near the top of the function must not produce a false failure here.
+  const fnBody = source.substring(fnStart, fnStart + 6000);
 
   // _openTerminal must NOT appear inside setTimeout
   const setTimeoutIdx = fnBody.indexOf('setTimeout');
@@ -3321,7 +3405,7 @@ test('openSession always POSTs to connect even when skipConnect option is passed
 
   await app.openSession('work', { skipConnect: true });
 
-  const connectCall = fetchCalls.find((c) => c.url === '/api/sessions/work/connect');
+  const connectCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/work/connect') === 0);
   assert.ok(connectCall, 'skipConnect:true must NOT prevent connect POST — connect always fires after fix');
   assert.strictEqual(connectCall.opts.method, 'POST');
   globalThis.fetch = origFetch;
@@ -4498,7 +4582,7 @@ test('openSession with integer remoteId=0 POSTs to federation proxy URL, not loc
   await app.openSession('muxplex-updates', { remoteId: 0 });
 
   const federationCall = fetchCalls.find((c) => c.url === '/api/federation/0/connect/muxplex-updates');
-  const localCall = fetchCalls.find((c) => c.url === '/api/sessions/muxplex-updates/connect');
+  const localCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/muxplex-updates/connect') === 0);
 
   assert.ok(federationCall, 'should POST to /api/federation/0/connect/muxplex-updates (not local endpoint)');
   assert.ok(!localCall, 'must NOT POST to /api/sessions/muxplex-updates/connect (local endpoint gives 404)');
@@ -4560,7 +4644,7 @@ test('closeSession after openSession with remoteId=0 does NOT fire DELETE /api/s
   await app.closeSession();
   await new Promise((r) => setTimeout(r, 0));
 
-  const deleteCall = fetchCalls.find((c) => c.url === '/api/sessions/current' && c.opts && c.opts.method === 'DELETE');
+  const deleteCall = fetchCalls.find((c) => c.url.indexOf('/api/sessions/current') === 0 && c.opts && c.opts.method === 'DELETE');
   assert.ok(!deleteCall, 'closeSession must NOT fire DELETE for remoteId=0 session (it is a remote session)');
 
   globalThis.fetch = origFetch;
@@ -5072,7 +5156,7 @@ test('openSession PATCHes /api/state with active_remote_id after successful conn
 
   await app.openSession('remote-session', { remoteId: 'fed-abc123' });
 
-  const patchCall = fetchCalls.find((c) => c.url === '/api/state' && c.opts && c.opts.method === 'PATCH');
+  const patchCall = fetchCalls.find((c) => c.url.indexOf('/api/state') === 0 && c.opts && c.opts.method === 'PATCH');
   assert.ok(patchCall, 'openSession should PATCH /api/state after successful connect');
   const body = JSON.parse(patchCall.opts.body);
   assert.strictEqual(body.active_remote_id, 'fed-abc123', 'PATCH body should include active_remote_id');
@@ -5108,7 +5192,7 @@ test('closeSession PATCHes /api/state to clear active_remote_id', async () => {
   await app.closeSession();
   await new Promise((r) => setTimeout(r, 0));
 
-  const patchCall = fetchCalls.find((c) => c.url === '/api/state' && c.opts && c.opts.method === 'PATCH');
+  const patchCall = fetchCalls.find((c) => c.url.indexOf('/api/state') === 0 && c.opts && c.opts.method === 'PATCH');
   assert.ok(patchCall, 'closeSession should PATCH /api/state to clear remote session state');
   const body = JSON.parse(patchCall.opts.body);
   assert.strictEqual(body.active_remote_id, null, 'PATCH should clear active_remote_id to null');
@@ -6408,7 +6492,7 @@ test('dedicated state poll detects remote active_session change and switches via
   globalThis.fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
     calls.push(method + ' ' + url);
-    if (method === 'GET' && url === '/api/state') {
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
       return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
     }
     return { ok: true, json: async () => [] };
@@ -6424,7 +6508,7 @@ test('dedicated state poll detects remote active_session change and switches via
   await new Promise((r) => setTimeout(r, 25));
 
   assert.ok(
-    calls.includes('POST /api/sessions/beta/connect'),
+    calls.some((c) => c.indexOf('POST /api/sessions/beta/connect') === 0),
     'remote switch must trigger the existing openSession /connect path; calls: ' + JSON.stringify(calls),
   );
   assert.strictEqual(openTerminalName, 'beta', 'terminal must be re-attached to the new session');
@@ -6448,7 +6532,7 @@ test('self-initiated switch does not double-switch (state matches viewing sessio
   globalThis.fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
     calls.push(method + ' ' + url);
-    if (method === 'GET' && url === '/api/state') {
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
       return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
     }
     return { ok: true, json: async () => [] };
@@ -6498,7 +6582,7 @@ test('local switch pends the guard: a stale poll before the PATCH settles does n
   globalThis.fetch = (url, opts) => {
     const method = (opts && opts.method) || 'GET';
     calls.push(method + ' ' + url);
-    if (method === 'PATCH' && url === '/api/state') {
+    if (method === 'PATCH' && url.indexOf('/api/state') === 0) {
       return new Promise(function () {}); // never settles
     }
     return Promise.resolve({ ok: true, json: async () => ({}) });
@@ -6560,7 +6644,7 @@ test('no pending local switch: a genuinely stale remote switch is still followed
   await new Promise((r) => setTimeout(r, 25));
 
   assert.ok(
-    calls.includes('POST /api/sessions/gamma/connect'),
+    calls.some((c) => c.indexOf('POST /api/sessions/gamma/connect') === 0),
     'with no pending local switch, a genuine remote switch must not be suppressed; calls: ' + JSON.stringify(calls),
   );
 
@@ -6584,7 +6668,7 @@ test('remote switch is NOT followed from the grid (no session open — option a)
   globalThis.fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
     calls.push(method + ' ' + url);
-    if (method === 'GET' && url === '/api/state') {
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
       return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
     }
     return { ok: true, json: async () => [] };
@@ -6673,7 +6757,7 @@ test('dedicated state poll follows on a FRESH snapshot while the federation fetc
       await federationGate; // simulate down remotes: blocks until released
       return { ok: true, json: async () => [] };
     }
-    if (method === 'GET' && url === '/api/state') {
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
       return { ok: true, json: async () => ({ active_session: 'beta', active_remote_id: null }) };
     }
     return { ok: true, json: async () => ({}) };
@@ -6689,7 +6773,7 @@ test('dedicated state poll follows on a FRESH snapshot while the federation fetc
   await new Promise((r) => setTimeout(r, 25)); // flush fire-and-forget openSession
 
   assert.ok(
-    calls.includes('POST /api/sessions/beta/connect'),
+    calls.some((c) => c.indexOf('POST /api/sessions/beta/connect') === 0),
     'follow-connect must fire while /api/federation/sessions is still pending; calls: ' + JSON.stringify(calls),
   );
 
@@ -6739,7 +6823,7 @@ test('dedicated state poll applies a remote active_view change locally without r
   globalThis.fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
     calls.push(method + ' ' + url);
-    if (method === 'GET' && url === '/api/state') {
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
       return { ok: true, json: async () => ({ active_session: null, active_remote_id: null, active_view: 'focus' }) };
     }
     return { ok: true, json: async () => ({}) };
@@ -6779,7 +6863,7 @@ test('unchanged remote active_view is a no-op (no re-render churn, no PATCH)', a
   globalThis.fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
     calls.push(method + ' ' + url);
-    if (method === 'GET' && url === '/api/state') {
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
       return { ok: true, json: async () => ({ active_session: null, active_remote_id: null, active_view: 'all' }) };
     }
     return { ok: true, json: async () => ({}) };
@@ -6831,7 +6915,7 @@ test('user-initiated switchView still PATCHes /api/state (local switches must pr
 
   assert.strictEqual(app._getActiveView(), 'focus', 'switchView must apply locally');
   assert.ok(
-    calls.includes('PATCH /api/state'),
+    calls.some((c) => c.indexOf('PATCH /api/state') === 0),
     'switchView must persist the view server-globally; calls: ' + JSON.stringify(calls),
   );
   assert.ok(

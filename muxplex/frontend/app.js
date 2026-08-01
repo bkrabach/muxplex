@@ -183,7 +183,7 @@ function generateDeviceId() {
  * @param {number} last_interaction_at - Unix timestamp of last user interaction
  * @returns {object}
  */
-function buildHeartbeatPayload(device_id, viewing_session, view_mode, last_interaction_at) {
+function buildHeartbeatPayload(device_id, viewing_session, view_mode, last_interaction_at, sync_group) {
   const label =
     typeof navigator !== 'undefined' && navigator.userAgent
       ? navigator.userAgent.slice(0, 50)
@@ -194,6 +194,7 @@ function buildHeartbeatPayload(device_id, viewing_session, view_mode, last_inter
     viewing_session,
     view_mode,
     last_interaction_at,
+    sync_group,
   };
 }
 
@@ -205,6 +206,12 @@ const MOBILE_THRESHOLD = 600;
 
 // ─── App state ────────────────────────────────────────────────────────────────
 let _deviceId = '';
+// Sync group MODE (not the resolved id): 'global' | 'device'. Storing the
+// mode rather than the full group id means a regenerated _deviceId
+// (localStorage wipe) re-derives 'device:<newId>' correctly instead of
+// stranding a stale 'device:<oldId>' that would 400 on every heartbeat.
+const SYNC_GROUP_STORAGE_KEY = 'muxplex-sync-group';
+let _syncGroup = 'global';
 let _currentSessions = [];
 let _viewingSession = null;
 let _viewingRemoteId = '';
@@ -405,6 +412,106 @@ function initDeviceId() {
   }
 }
 
+// ─── Sync groups ────────────────────────────────────────────────────────────
+// Opt-out of the server-global session/view selection. Default ('global')
+// is byte-identical to today's behavior for every existing client — this
+// only changes anything when a device explicitly flips to 'device' mode.
+
+/**
+ * Resolve the current sync-group MODE to the wire-format group id.
+ * @returns {string} 'global' or 'device:<deviceId>'
+ */
+function syncGroupId() {
+  return _syncGroup === 'device' ? 'device:' + _deviceId : 'global';
+}
+
+/**
+ * Restore the sync-group mode from localStorage. Same try/catch shape as
+ * initDeviceId(): localStorage may be blocked (Tracking Prevention, private
+ * browsing) — in that case stay 'global' for the session, no persistence.
+ */
+function initSyncGroup() {
+  try {
+    const stored = localStorage.getItem(SYNC_GROUP_STORAGE_KEY);
+    if (stored === 'device' || stored === 'global') {
+      _syncGroup = stored;
+    }
+  } catch (_) {
+    // localStorage blocked — stay 'global' for this session
+  }
+}
+
+/**
+ * Append device_id=<deviceId> to *path*, correctly handling whether *path*
+ * already has a query string. Applied unconditionally — even in 'global'
+ * mode — so there is exactly one code path: a 'global'-mode device still
+ * resolves to the global group, so semantics are identical to a client that
+ * sends no device_id at all.
+ * @param {string} path
+ * @returns {string}
+ */
+function withDevice(path) {
+  return path + (path.indexOf('?') === -1 ? '?' : '&') + 'device_id=' + encodeURIComponent(_deviceId);
+}
+
+/**
+ * Return this browser's own device_id. Exists so callers whose local scope
+ * shadows the module-level `_deviceId` name (e.g. openSession()'s local
+ * `_deviceId`, which actually holds the federation remoteId) can still reach
+ * the real value — this function's body resolves `_deviceId` via its OWN
+ * (module-level) lexical scope, unaffected by any caller's local shadowing.
+ * @returns {string}
+ */
+function _ownDeviceId() {
+  return _deviceId;
+}
+
+/**
+ * Switch this device's sync group mode and persist the choice.
+ *
+ * Rejoining 'global' ADOPTS the shared selection, it does not push: no
+ * PATCH happens here. After the heartbeat lands, the next
+ * GET /api/state?device_id=... returns global's values, and the existing
+ * followRemoteActiveView()/followRemoteActiveSession() apply them on the
+ * very next pollActiveState() tick. An accidental PATCH here would push
+ * this device's private selection onto everyone else -- precisely the bug
+ * this feature exists to prevent.
+ *
+ * Leaving global SEEDS from global -- server-side, in ensure_group() -- so
+ * going independent doesn't teleport the user to the "All" view.
+ *
+ * @param {'global'|'device'} mode
+ */
+async function setSyncGroup(mode) {
+  _syncGroup = mode;
+  try { localStorage.setItem(SYNC_GROUP_STORAGE_KEY, mode); } catch (_) { /* blocked — ok */ }
+  renderSyncGroupControls();
+  await sendHeartbeat();    // assert the new group immediately, don't wait 5s
+  await pollActiveState();  // adopt the new group's selection on the next read
+}
+
+/**
+ * Keep every sync-group UI widget (header button x2, settings checkbox) in
+ * sync with _syncGroup — same pattern as syncSortOrderControls(). Missing
+ * elements (e.g. Settings dialog not yet opened) are skipped silently.
+ */
+function renderSyncGroupControls() {
+  var independent = _syncGroup === 'device';
+
+  ['sync-group-btn', 'sync-group-btn-expanded'].forEach(function(id) {
+    var btn = $(id);
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', independent ? 'true' : 'false');
+    btn.classList.toggle('header-btn--active', independent);
+    btn.title = independent
+      ? 'Independent — not following this server\'s view'
+      : 'Following this server\'s view';
+  });
+
+  var checkbox = $('setting-independent-view');
+  if (checkbox) checkbox.checked = independent;
+}
+
 // ─── Interaction tracking ─────────────────────────────────────────────────────
 function trackInteraction() {
   _lastInteractionAt = Math.floor(Date.now() / 1000);
@@ -420,7 +527,7 @@ function trackInteraction() {
  */
 async function restoreState() {
   try {
-    const res = await api('GET', '/api/state');
+    const res = await api('GET', withDevice('/api/state'));
     const state = await res.json();
     if (state.active_view) {
       _activeView = state.active_view;
@@ -433,6 +540,15 @@ async function restoreState() {
       });
     }
   } catch (err) {
+    if (err && err.status === 404) {
+      // Device aged out of the registry (or never registered before this
+      // request raced ahead of the first heartbeat). Re-register and let
+      // the caller's own retry/poll cadence pick this up next tick — no
+      // fallback to an un-scoped request, which would silently rejoin
+      // global.
+      sendHeartbeat().catch(function() {});
+      return;
+    }
     console.warn('[restoreState] could not restore previous session:', err);
   }
 }
@@ -639,12 +755,19 @@ function startPolling() {
  */
 async function pollActiveState() {
   try {
-    const res = await api('GET', '/api/state');
+    const res = await api('GET', withDevice('/api/state'));
     const state = await res.json();
     followRemoteActiveSession(state);
     followRemoteActiveView(state);
     followRemoteViewDefinitions(state);
   } catch (err) {
+    if (err && err.status === 404) {
+      // Device aged out of the registry (e.g. laptop slept past the prune
+      // TTL). Re-register; the next tick (<=1s later) succeeds. No fallback
+      // to an un-scoped request -- that would silently rejoin global.
+      sendHeartbeat().catch(function() {});
+      return;
+    }
     // Transient failure: skip this tick; next one retries in STATE_POLL_MS.
   }
 }
@@ -1959,7 +2082,7 @@ function switchView(viewName) {
   closeViewDropdown();
   applyViewLocally(viewName);
   // Persist active view — fire and forget
-  api('PATCH', '/api/state', { active_view: viewName }).catch(function() {});
+  api('PATCH', withDevice('/api/state'), { active_view: viewName }).catch(function() {});
 }
 
 function renderGrid(sessions) {
@@ -3125,7 +3248,7 @@ async function sendHeartbeat() {
     var effectiveSession = (typeof document !== 'undefined' && document.hidden)
       ? null
       : _viewingSession;
-    const payload = buildHeartbeatPayload(_deviceId, effectiveSession, _viewMode, _lastInteractionAt);
+    const payload = buildHeartbeatPayload(_deviceId, effectiveSession, _viewMode, _lastInteractionAt, syncGroupId());
     await api('POST', '/api/heartbeat', payload);
   } catch (err) {
     console.warn('[sendHeartbeat] heartbeat failed:', err);
@@ -3380,10 +3503,14 @@ async function openSession(name, opts = {}) {
       // Remote session: route connect POST through same-origin federation proxy
       await api('POST', '/api/federation/' + encodeURIComponent(_deviceId) + '/connect/' + encodeURIComponent(name));
     } else {
-      await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/connect');
+      await api('POST', withDevice('/api/sessions/' + encodeURIComponent(name) + '/connect'));
     }
   } catch (err) {
     if (isLocal) _pendingLocalSwitches--;
+    if (err && err.status === 409 && err.body && err.body.terminal_conflict) {
+      showTerminalConflictDialog(name, err.body);
+      return closeSession();
+    }
     showToast(err.message || 'Connection failed');
     return closeSession();
   }
@@ -3392,7 +3519,7 @@ async function openSession(name, opts = {}) {
   // Fire-and-forget for the caller (never awaited -- must not delay terminal mount below), but
   // still tracked so a LOCAL switch's pending flag clears the moment the server confirms this
   // write (success or failure), rather than lingering indefinitely.
-  var statePatch = api('PATCH', '/api/state', { active_session: name, active_remote_id: _deviceId || null }).catch(function() {});
+  var statePatch = api('PATCH', withDevice('/api/state'), { active_session: name, active_remote_id: _deviceId || null }).catch(function() {});
   if (isLocal) {
     statePatch.then(function() { _pendingLocalSwitches--; });
   }
@@ -3406,7 +3533,7 @@ async function openSession(name, opts = {}) {
   await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize);
+  if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize, _ownDeviceId());
 }
 
 /**
@@ -3421,10 +3548,10 @@ function closeSession() {
 
   // Fire-and-forget DELETE — skip for remote sessions (they don't need to know we stopped watching)
   if (_viewingRemoteId === '') {
-    api('DELETE', '/api/sessions/current').catch(function() {});
+    api('DELETE', withDevice('/api/sessions/current')).catch(function() {});
   }
   // Clear active_remote_id so a page refresh does not attempt to reopen the remote session
-  api('PATCH', '/api/state', { active_session: null, active_remote_id: null }).catch(function() {});
+  api('PATCH', withDevice('/api/state'), { active_session: null, active_remote_id: null }).catch(function() {});
   _viewingRemoteId = '';
 
   const expanded = $('view-expanded');
@@ -3455,6 +3582,25 @@ function closeSession() {
   return Promise.resolve();
 }
 
+/**
+ * Honest dialog for a terminal-claim conflict (POST /connect -> 409
+ * terminal_conflict). The single shared ttyd is already showing another
+ * device's session; taking over would move that device's terminal. Never
+ * silently proceeds -- the user must explicitly confirm.
+ * @param {string} name - the session this device tried to open
+ * @param {object} body - the 409 response body ({terminal_session, ...})
+ */
+function showTerminalConflictDialog(name, body) {
+  var otherSession = (body && body.terminal_session) || 'another session';
+  var proceed = window.confirm(
+    otherSession + ' is open on another device. Opening ' + name +
+    ' here will move that device\'s terminal.\n\nTake over?'
+  );
+  if (proceed) {
+    openSession(name, { skipAnimation: true, takeover: true });
+  }
+}
+
 /** Test-only helper: set _viewingSession directly. */
 function _setViewingSession(name) {
   _viewingSession = name;
@@ -3474,6 +3620,16 @@ function _setViewingRemoteId(remoteId) {
  */
 function _setPendingLocalSwitches(n) {
   _pendingLocalSwitches = n;
+}
+
+/** Test-only helper: set _syncGroup directly, bypassing localStorage/heartbeat. */
+function _setSyncGroupMode(mode) {
+  _syncGroup = mode;
+}
+
+/** Test-only helper: set _deviceId directly, bypassing initDeviceId(). */
+function _setDeviceId(id) {
+  _deviceId = id;
 }
 
 // ─── Server settings ─────────────────────────────────────────────────────────
@@ -4893,6 +5049,23 @@ function bindStaticEventListeners() {
     patchServerSetting('multi_device_enabled', enabled);
   });
 
+  // Devices tab — "Independent view" checkbox. Deliberately OUTSIDE
+  // #multi-device-fields: that block is gated on multi_device_enabled (the
+  // federation display toggle), which has nothing to do with sync groups.
+  on($('setting-independent-view'), 'change', function() {
+    setSyncGroup(this.checked ? 'device' : 'global');
+  });
+
+  // Header sync-group toggle buttons (overview + expanded header). Both call
+  // setSyncGroup(); renderSyncGroupControls() keeps every widget in sync —
+  // same pattern as the three sort selects (syncSortOrderControls()).
+  on($('sync-group-btn'), 'click', function() {
+    setSyncGroup(_syncGroup === 'device' ? 'global' : 'device');
+  });
+  on($('sync-group-btn-expanded'), 'click', function() {
+    setSyncGroup(_syncGroup === 'device' ? 'global' : 'device');
+  });
+
   // Multi-Device tab — device name with 500ms debounce; updates document.title immediately
   var _deviceNameDebounceTimer;
   on($('setting-device-name'), 'input', function() {
@@ -5067,6 +5240,7 @@ releaseInheritedOrientationLock();
 
 document.addEventListener('DOMContentLoaded', async function() {
   initDeviceId();
+  initSyncGroup();
 
   // Load ALL settings (now includes display + sidebar) before first render
   await loadServerSettings();
@@ -5110,6 +5284,7 @@ document.addEventListener('DOMContentLoaded', async function() {
       updatePageTitle();
       startHeartbeat();
       bindStaticEventListeners();
+      renderSyncGroupControls();
       renderViewDropdown();
       // Update sidebar label after restoreState sets _activeView (Issue 7)
       var sidebarLabelEl = $('sidebar-view-label');
@@ -5137,6 +5312,13 @@ if (typeof module !== 'undefined' && module.exports) {
     detectBellTransitions,
     generateDeviceId,
     buildHeartbeatPayload,
+    // Sync groups
+    syncGroupId,
+    initSyncGroup,
+    withDevice,
+    setSyncGroup,
+    renderSyncGroupControls,
+    showTerminalConflictDialog,
     setConnectionStatus,
     pollSessions,
     followRemoteActiveSession,
@@ -5168,6 +5350,8 @@ if (typeof module !== 'undefined' && module.exports) {
     _setViewingSession,
     _setViewingRemoteId,
     _setPendingLocalSwitches,
+    _setSyncGroupMode,
+    _setDeviceId,
     handleGlobalKeydown,
     bindStaticEventListeners,
     openBottomSheet,

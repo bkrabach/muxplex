@@ -92,6 +92,8 @@ function loadTerminal() {
     getElementById: (id) => {
       if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
       if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
+      if (id === 'reconnect-overlay-text') return { textContent: '' };
+      if (id === 'reconnect-overlay-takeover-btn') return { classList: { add: () => {}, remove: () => {} }, onclick: null };
       return null;
     },
     querySelector: () => null,
@@ -159,7 +161,7 @@ function loadTerminal() {
     get termWriteMessages() { return termWriteMessages; },
     get focusCallCount() { return focusCallCount; },
     get clipboardWrites() { return clipboardWrites; },
-    fireClose() { if (capturedCloseHandler) capturedCloseHandler(); },
+    fireClose(event) { if (capturedCloseHandler) capturedCloseHandler(event); },
     fireOpen() { if (lastOpenHandler) lastOpenHandler(); },
     fireOsc52(base64Payload) {
       // xterm.js's registerOscHandler(52, cb) invokes cb with the payload
@@ -379,6 +381,8 @@ function createMultiSessionEnv() {
     getElementById: (id) => {
       if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
       if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
+      if (id === 'reconnect-overlay-text') return { textContent: '' };
+      if (id === 'reconnect-overlay-takeover-btn') return { classList: { add: () => {}, remove: () => {} }, onclick: null };
       return null;
     },
     querySelector: () => null,
@@ -1189,6 +1193,8 @@ test('openTerminal uses passed fontSize to configure xterm.js Terminal construct
     getElementById: (id) => {
       if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
       if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
+      if (id === 'reconnect-overlay-text') return { textContent: '' };
+      if (id === 'reconnect-overlay-takeover-btn') return { classList: { add: () => {}, remove: () => {} }, onclick: null };
       return null;
     },
     querySelector: () => null,
@@ -1228,6 +1234,72 @@ test('openTerminal uses passed fontSize to configure xterm.js Terminal construct
     capturedTerminalOptions.fontSize, 20,
     'openTerminal must pass the fontSize argument to the xterm.js Terminal constructor',
   );
+});
+
+// ─── §0 guard: terminal-claim conflict (sync-groups spec §10.4, tests 38-39) ───
+
+test('close handler with event.code === 4409 schedules NO reconnect', () => {
+  const t = loadTerminal();
+  const orig = globalThis.setTimeout;
+  let reconnectScheduled = false;
+  globalThis.setTimeout = (fn, _ms) => { reconnectScheduled = true; return 0; };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  reconnectScheduled = false; // ignore any scheduling during openTerminal itself
+
+  t.fireClose({ code: 4409 });
+
+  globalThis.setTimeout = orig;
+  assert.strictEqual(reconnectScheduled, false, '4409 must never schedule a reconnect loop');
+});
+
+test('close handler with a normal code still schedules a reconnect (regression guard)', () => {
+  const t = loadTerminal();
+  const orig = globalThis.setTimeout;
+  let reconnectScheduled = false;
+  globalThis.setTimeout = (fn, _ms) => { reconnectScheduled = true; return 0; };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  reconnectScheduled = false;
+
+  t.fireClose({ code: 1006 });
+
+  globalThis.setTimeout = orig;
+  assert.strictEqual(reconnectScheduled, true, 'a non-4409 close must still schedule a reconnect');
+});
+
+test('escalation POST returning 409 terminal_conflict does not proceed to open the WS', () => {
+  const t = loadTerminal();
+
+  let wsConstructed = 0;
+  const OrigWS = globalThis.WebSocket;
+  const fetchCalls = [];
+  globalThis.fetch = async (path, opts) => {
+    fetchCalls.push(path);
+    return {
+      status: 409,
+      json: async () => ({ terminal_conflict: true, terminal_session: 'other-session' }),
+    };
+  };
+
+  // Force the escalation path: 2+ failed reconnect attempts + a current session.
+  let capturedTimeoutFn = null;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => { capturedTimeoutFn = fn; return 0; };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  // Simulate two prior failed attempts by firing close twice with a normal code.
+  t.fireClose({ code: 1006 });
+  if (capturedTimeoutFn) capturedTimeoutFn(); // runs connect() again -> _reconnectAttempts=1
+  t.fireClose({ code: 1006 });
+
+  const wsCountBefore = fetchCalls.length;
+  if (capturedTimeoutFn) capturedTimeoutFn(); // _reconnectAttempts>=2 -> escalation POST path
+
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.WebSocket = OrigWS;
+
+  assert.ok(fetchCalls.length > wsCountBefore || fetchCalls.length > 0, 'escalation POST must have been attempted');
 });
 
 

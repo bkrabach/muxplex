@@ -44,6 +44,9 @@
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
         <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
+        <button id="sync-group-btn" class="header-btn"
+                aria-pressed="false" aria-label="Independent view"
+                title="Following this server's view">&#128279;</button>
         <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;</button>
         <span id="connection-status"></span>
       </div>
@@ -59,6 +62,9 @@
       <button id="back-btn" class="back-btn" aria-label="Back">&#8592;</button>
       <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle session list">&#9776;</button>
       <span id="expanded-session-name" class="expanded-session-name"></span>
+      <button id="sync-group-btn-expanded" class="header-btn"
+              aria-pressed="false" aria-label="Independent view"
+              title="Following this server's view">&#128279;</button>
       <button id="settings-btn-expanded" class="header-btn" aria-label="Settings">&#9881;</button>
     </header>
     <div class="view-body">
@@ -102,7 +108,10 @@
         <div id="terminal-container" class="terminal-container"></div>
       </div>
     </div>
-    <div id="reconnect-overlay" class="reconnect-overlay hidden" aria-live="polite">Reconnecting&hellip;</div>
+    <div id="reconnect-overlay" class="reconnect-overlay hidden" aria-live="polite">
+      <span id="reconnect-overlay-text">Reconnecting&hellip;</span>
+      <button id="reconnect-overlay-takeover-btn" class="header-btn hidden">Take over</button>
+    </div>
   </div>
 
   <!-- ── Bottom sheet (session switcher) ────────────────────────────────── -->
@@ -275,6 +284,15 @@
           </div>
         </div>
         <div class="settings-panel hidden" data-tab="devices">
+          <div class="settings-field">
+            <label class="settings-label" for="setting-independent-view">Independent view</label>
+            <input type="checkbox" id="setting-independent-view" class="settings-checkbox" />
+          </div>
+          <span class="settings-helper">
+            Keep this device's view and session selection to itself. Other devices stop
+            following it, and it stops following them. The terminal is still shared —
+            only one device can have a session open at a time.
+          </span>
           <div class="settings-field">
             <label class="settings-label" for="setting-multi-device-enabled">Enable multi-device support</label>
             <input type="checkbox" id="setting-multi-device-enabled" class="settings-checkbox" />
