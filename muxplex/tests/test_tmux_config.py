@@ -15,6 +15,7 @@ still runs on a machine without it.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -341,3 +342,129 @@ def test_tmux_theme_is_not_syncable() -> None:
     from muxplex.settings import SYNCABLE_KEYS
 
     assert "tmux_theme" not in SYNCABLE_KEYS
+
+
+# ── Status-bar regressions (reported 2026-08-01) ───────────────────────────
+#
+# Two bugs shipped in the first brand theme, both invisible to the tests that
+# existed at the time because those only checked that tmux ACCEPTED the config:
+#
+#   1. Clicking a window label stopped switching windows. The MouseDown1Status
+#      binding was fine -- an unbounded #{pane_current_path} in status-right ate
+#      the columns the window list needed, pushing windows behind the ">"
+#      truncation marker. A window that is not on screen has no mouse range.
+#   2. Only the session badge looked padded. A cell's background fills the whole
+#      character cell including leading, so segments without a background (or
+#      with one indistinguishable from the bar) read as unpadded bare text.
+
+
+def _theme_options(sandbox: Path, theme: str) -> dict[str, str]:
+    """Read every status option a real tmux resolves for *theme*."""
+    tc.install(theme=theme)
+    sock = "muxplex-test-theme"
+    env = {**os.environ, "HOME": str(sandbox)}
+    env.pop("TMUX", None)
+    env.pop("XDG_CONFIG_HOME", None)
+    kill = ["tmux", "-L", sock, "kill-server"]
+    subprocess.run(kill, capture_output=True, env=env, check=False)
+    subprocess.run(
+        ["tmux", "-L", sock, "new-session", "-d"],
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    out = subprocess.run(
+        ["tmux", "-L", sock, "show-options", "-g"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    ).stdout
+    subprocess.run(kill, capture_output=True, env=env, check=False)
+    opts = {}
+    for line in out.splitlines():
+        if " " in line:
+            k, v = line.split(" ", 1)
+            opts[k] = v.strip().strip('"')
+    return opts
+
+
+@needs_tmux
+def test_status_right_is_bounded_so_the_window_list_stays_clickable(
+    sandbox: Path,
+) -> None:
+    """status-left + status-right must leave room for windows on a narrow client.
+
+    tmux gives the window list whatever columns the two ends do not take. If
+    they take everything, windows fall behind ">" and cannot be clicked.
+    """
+    for theme in tc.available_themes():
+        opts = _theme_options(sandbox, theme)
+        left = int(opts["status-left-length"])
+        right = int(opts["status-right-length"])
+        assert left + right <= 90, (
+            f"theme {theme}: status-left-length({left}) + status-right-length({right}) "
+            f"= {left + right} leaves too little room for the window list on an "
+            f"80-100 column client; windows would be unclickable behind '>'"
+        )
+
+
+@needs_tmux
+def test_no_theme_puts_an_unbounded_path_in_the_status_bar(sandbox: Path) -> None:
+    """A full #{pane_current_path} grows without limit and crowds out windows.
+
+    Use #{b:pane_current_path} (basename) instead.
+    """
+    for theme in tc.available_themes():
+        opts = _theme_options(sandbox, theme)
+        right = opts.get("status-right", "")
+        assert "#{pane_current_path}" not in right, (
+            f"theme {theme}: status-right uses the unbounded #{{pane_current_path}}; "
+            f"use #{{b:pane_current_path}} so the window list keeps its columns"
+        )
+
+
+@needs_tmux
+def test_every_status_segment_paints_its_own_background(sandbox: Path) -> None:
+    """Mixed filled/unfilled segments look like inconsistent vertical padding.
+
+    A terminal cell's background fills the full cell height, so a segment with a
+    background reads as a padded cell and one without reads as bare text.
+    """
+    for theme in tc.available_themes():
+        opts = _theme_options(sandbox, theme)
+        for key in (
+            "status-left",
+            "status-right",
+            "window-status-format",
+            "window-status-current-format",
+        ):
+            assert "bg=" in opts.get(key, ""), (
+                f"theme {theme}: {key} paints no background, so it renders as "
+                f"unpadded text next to segments that do"
+            )
+
+
+@needs_tmux
+def test_window_cell_backgrounds_are_visibly_distinct_from_the_bar(
+    sandbox: Path,
+) -> None:
+    """A background only 10 RGB-steps off the bar is invisible in practice."""
+
+    def first_bg(fmt: str) -> tuple[int, int, int] | None:
+        m = re.search(r"bg=#([0-9A-Fa-f]{6})", fmt)
+        return tuple(int(m.group(1)[i : i + 2], 16) for i in (0, 2, 4)) if m else None  # type: ignore[return-value]
+
+    for theme in tc.available_themes():
+        opts = _theme_options(sandbox, theme)
+        bar = first_bg(opts.get("status-style", ""))
+        if bar is None:
+            continue
+        for key in ("window-status-format", "window-status-current-format"):
+            cell = first_bg(opts.get(key, ""))
+            assert cell is not None, f"theme {theme}: {key} has no bg colour"
+            distance = sum(abs(a - b) for a, b in zip(cell, bar))
+            assert distance >= 40, (
+                f"theme {theme}: {key} background is only {distance} RGB-steps from "
+                f"the status bar background -- it will read as having no padding"
+            )
