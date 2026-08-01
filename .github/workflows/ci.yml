@@ -37,6 +37,93 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  test-macos:
+    # muxplex targets macOS, WSL, and Linux (README/AGENTS.md), but until now
+    # every job in this workflow ran on ubuntu-latest -- zero macOS coverage.
+    # That gap is not hypothetical: three consecutive releases shipped
+    # macOS-only bugs found in production by a human, not CI --
+    #   v0.31.1  `muxplex update` crashed with a raw `launchctl bootstrap`
+    #            exit-5 traceback
+    #   v0.31.2  `muxplex service restart` silently did nothing (a
+    #            regression from the v0.31.1 fix itself)
+    #   v0.31.3  `doctor` reported a tunnel as the local server
+    # test_service.py already has thorough launchd coverage for the logic
+    # (bootstrap retry, bootout race, already-loaded handling, etc.), but
+    # every one of those tests mocks subprocess.run/create_subprocess_exec
+    # and every darwin-specific test monkeypatches `sys.platform` --
+    # v0.31.2's own changelog entry says this plainly: "these tests
+    # exercise the logic, not launchctl... the real launchd behaviour is
+    # verified by the shape of the calls, not by running them." Running
+    # the identical suite on a real macOS runner does NOT change that --
+    # launchctl calls stay mocked here too, and this job does not install a
+    # real launchd job -- but it proves, for the first time, three things
+    # the Linux-only matrix cannot:
+    #   1. The dependency set (python-pam + its macOS-only `six` shim,
+    #      cryptography, uvicorn[standard]'s compiled extras) actually
+    #      resolves and imports on macOS/arm64, not just in theory.
+    #   2. Every `sys.platform == "darwin"` branch (service.py, cli.py,
+    #      cgroup_escape.py) executes for real at least once, instead of
+    #      exclusively via `monkeypatch.setattr(sys, "platform", "darwin")`.
+    #   3. test_tmux_config.py's `needs_tmux`-marked tests (managed tmux
+    #      config install/uninstall/theme verification) run against a real
+    #      tmux binary built for macOS, not only skip.
+    #
+    # Deliberately a SEPARATE job, not a matrix axis added to `test` above,
+    # and deliberately ONE Python version, not the full 3.11/3.12/3.13
+    # matrix: macos-latest runners are billed at a 10x multiplier against
+    # Linux minutes and are measurably slower to provision, and the value
+    # here is PLATFORM coverage (already zero), not additional Python
+    # version coverage (already covered 3x on Linux by the `test` job).
+    # Paying that multiplier three times over for a concern the Linux
+    # matrix already owns would not be proportionate. 3.13 matches
+    # test-latest-deps below and is the newest supported interpreter --
+    # the version most representative of what a fresh `uv tool install
+    # muxplex` resolves to today.
+    #
+    # macos-latest is Apple Silicon (arm64) on the GitHub-hosted image
+    # generation this points to. That is the ONLY macOS architecture this
+    # workflow exercises -- an Intel-only (x86_64) issue would still be
+    # invisible here. Not adding a second, Intel-flavored macOS runner for
+    # the same cost-proportionality reason as the Python-version matrix
+    # above; revisit if an Intel-specific bug is ever reported.
+    #
+    # tmux is NOT preinstalled on GitHub's macOS runner image, so it's
+    # installed via Homebrew below. Without that step, every
+    # `needs_tmux`-marked test in test_tmux_config.py would silently SKIP
+    # (an honest skip, not a failure -- see that file's own
+    # `pytest.mark.skipif(not HAS_TMUX, ...)` guard) rather than actually
+    # exercise real tmux behaviour on this platform, which would defeat
+    # the point of adding this job at all.
+    #
+    # Not exercised here, and not claimed to be exercised: real
+    # `launchctl`/launchd behaviour (installing an actual agent under a
+    # CI runner's session is invasive and out of scope for this change),
+    # and Homebrew-vs-apt tmux version drift. Both are explicitly the kind
+    # of thing only a real run of this job -- not this comment -- can
+    # confirm or refute.
+    name: test (macOS, arm64)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmux (Homebrew) -- so needs_tmux tests exercise real tmux, not skip
+        run: brew install tmux
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests
+        run: uv run pytest -v
+
   test-client:
     # muxplex-client (client/) is a separate uv workspace member and PyPI
     # distribution (see client/pyproject.toml, muxplex-client-design.md) with
