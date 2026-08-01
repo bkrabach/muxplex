@@ -859,23 +859,76 @@ def test_get_view_sort_attention_active_session_already_in_bell_tier_not_duplica
     assert data["sessions"][0]["needs_attention"] is True
 
 
-def test_get_view_sort_attention_third_tier_recency_nulls_last(client, monkeypatch):
+def test_get_view_sort_attention_third_tier_orders_by_bell_last_fired_nulls_last(
+    client, monkeypatch
+):
     """?sort=attention orders the remaining (non-bell, non-active) sessions by
-    last_activity_at descending, with unknown activity (None) sorting last."""
+    bell.last_fired_at descending, with sessions that have never belled
+    (last_fired_at is None) sorting last."""
+    from muxplex.state import load_state, save_state
+
     monkeypatch.setattr(
-        "muxplex.main.get_session_list", lambda: ["no-activity", "old", "recent"]
+        "muxplex.main.get_session_list",
+        lambda: ["never-belled", "old-bell", "recent-bell"],
     )
-    monkeypatch.setattr(
-        "muxplex.main.get_session_activity",
-        lambda: {"old": 100.0, "recent": 2000.0},
-    )
+    monkeypatch.setattr("muxplex.main.get_session_activity", lambda: {})
     monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    state = load_state()
+    state["sessions"]["old-bell"] = {
+        "bell": {"unseen_count": 0, "last_fired_at": 100.0, "seen_at": 100.0}
+    }
+    state["sessions"]["recent-bell"] = {
+        "bell": {"unseen_count": 0, "last_fired_at": 2000.0, "seen_at": 2000.0}
+    }
+    save_state(state)
 
     response = client.get("/api/view", params={"sort": "attention"})
     assert response.status_code == 200
     data = response.json()
     names = [s["name"] for s in data["sessions"]]
-    assert names == ["recent", "old", "no-activity"]
+    assert names == ["recent-bell", "old-bell", "never-belled"]
+
+
+def test_get_view_sort_attention_third_tier_follows_bell_not_activity(
+    client, monkeypatch
+):
+    """Regression guard: two non-bell sessions whose last_activity_at values are
+    in the OPPOSITE order from their bell.last_fired_at values must be ordered
+    by bell.last_fired_at, not last_activity_at. This is the exact bug report:
+    tmux window_activity bumps on any pane redraw (spinners, status-line
+    clocks), so activity-based ordering churned on every ~2s poll cycle even
+    with no real bell event."""
+    from muxplex.state import load_state, save_state
+
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list",
+        lambda: ["fresh-activity-old-bell", "old-activity-fresh-bell"],
+    )
+    # last_activity_at order: fresh-activity-old-bell (2000) > old-activity-fresh-bell (100)
+    monkeypatch.setattr(
+        "muxplex.main.get_session_activity",
+        lambda: {"fresh-activity-old-bell": 2000.0, "old-activity-fresh-bell": 100.0},
+    )
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    # bell.last_fired_at order is the OPPOSITE: old-activity-fresh-bell (2000) > fresh-activity-old-bell (100)
+    state = load_state()
+    state["sessions"]["fresh-activity-old-bell"] = {
+        "bell": {"unseen_count": 0, "last_fired_at": 100.0, "seen_at": 100.0}
+    }
+    state["sessions"]["old-activity-fresh-bell"] = {
+        "bell": {"unseen_count": 0, "last_fired_at": 2000.0, "seen_at": 2000.0}
+    }
+    save_state(state)
+
+    response = client.get("/api/view", params={"sort": "attention"})
+    assert response.status_code == 200
+    data = response.json()
+    names = [s["name"] for s in data["sessions"]]
+    # Must follow bell.last_fired_at (old-activity-fresh-bell first), NOT
+    # last_activity_at (which would put fresh-activity-old-bell first).
+    assert names == ["old-activity-fresh-bell", "fresh-activity-old-bell"]
 
 
 def test_get_view_active_field_reflects_active_session(client, monkeypatch):

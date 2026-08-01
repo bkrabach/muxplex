@@ -968,8 +968,13 @@ def _attention_order(sessions: list[dict]) -> list[dict]:
     Tier 1: needs_attention sessions, ordered by bell.last_fired_at desc.
     Tier 2: the active session, if it wasn't already placed in tier 1
         (at most one entry).
-    Tier 3: everything else, ordered by last_activity_at desc (sessions
-        with no known activity timestamp sort last).
+    Tier 3: everything else, ordered by bell.last_fired_at desc (sessions
+        that have never belled sort last) -- NOT last_activity_at, because
+        that timestamp derives from tmux #{window_activity} and bumps on ANY
+        pane output (spinners, redraws, status-line clocks), which reordered
+        the grid on every ~2s poll cycle even with no real event; bell fires
+        only on the actual agent-turn-completion signal, so ordering is
+        stable between bells.
 
     All ties (including "all None") preserve the incoming order -- Python's
     sort is stable, and remains so with reverse=True.
@@ -988,7 +993,10 @@ def _attention_order(sessions: list[dict]) -> list[dict]:
 
     tier3 = sorted(
         tier3_source,
-        key=lambda s: (s["last_activity_at"] is not None, s["last_activity_at"] or 0),
+        key=lambda s: (
+            s["bell"].get("last_fired_at") is not None,
+            s["bell"].get("last_fired_at") or 0,
+        ),
         reverse=True,
     )
     return tier1 + tier2 + tier3

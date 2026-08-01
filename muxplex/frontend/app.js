@@ -45,11 +45,18 @@ function sortByPriority(sessions) {
 
 /**
  * Sort sessions attention-first: bell/needs-attention sessions first (newest
- * bell fire first), then everything else by last_activity_at descending
- * (unknown activity sorts last). Mirrors the two ordering criteria that
- * matter most from the tiered ordering already implemented server-side
- * (main.py's _attention_order(), used by GET /api/view?sort=attention) and
- * in muxplex-deck's attention.py.
+ * bell fire first), then everything else by bell.last_fired_at descending
+ * (sessions that have never belled sort last). Mirrors the two ordering
+ * criteria that matter most from the tiered ordering already implemented
+ * server-side (main.py's _attention_order(), used by GET /api/view?sort=attention)
+ * and in muxplex-deck's attention.py.
+ *
+ * Tier 3 deliberately keys off bell.last_fired_at, NOT last_activity_at:
+ * that timestamp derives from tmux #{window_activity} and bumps on ANY pane
+ * output (spinners, redraws, status-line clocks), so it reordered the grid
+ * on every ~2s poll cycle even with nothing meaningful happening. A bell
+ * only fires on the actual agent-turn-completion signal, so this ordering
+ * is stable between bells.
  *
  * Deliberately does NOT reproduce that ordering's middle "active session"
  * tier: the grid has no single session that is "active" while it's on
@@ -61,8 +68,8 @@ function sortByPriority(sessions) {
  * identical for every input.
  *
  * Returns a new array; does not mutate the original. Array.prototype.sort
- * is stable, so ties (including "no bell, no activity" for two sessions)
- * preserve incoming order.
+ * is stable, so ties (including "no bell, ever" for two sessions) preserve
+ * incoming order.
  * @param {object[]} sessions
  * @returns {object[]}
  */
@@ -76,8 +83,8 @@ function sortByAttention(sessions) {
   const tier1Keys = new Set(tier1.map((s) => s.sessionKey || s.name));
   const tier3 = sessions.filter((s) => !tier1Keys.has(s.sessionKey || s.name));
   tier3.sort((a, b) => {
-    const aTime = a.last_activity_at;
-    const bTime = b.last_activity_at;
+    const aTime = a.bell && a.bell.last_fired_at;
+    const bTime = b.bell && b.bell.last_fired_at;
     if (aTime == null) return bTime == null ? 0 : 1;
     if (bTime == null) return -1;
     return bTime - aTime;
@@ -853,8 +860,7 @@ function buildSidebarHTML(session, currentSession, currentRemoteId) {
   var ds = getDisplaySettings();
   var actIndicator = ds.activityIndicator !== undefined ? ds.activityIndicator : 'both';
 
-  const unseen = session.bell && session.bell.unseen_count;
-  const isBell = unseen && unseen > 0;
+  const isBell = sessionPriority(session) === 'bell';
 
   let classes = 'sidebar-item';
   if (isActive) classes += ' sidebar-item--active';
