@@ -2399,6 +2399,26 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
 
     Auth check uses the same cookie + bearer pattern as terminal_ws_proxy.
     Closes with code 4004 if device_id does not match any remote.
+
+    Relay uses the same asyncio.wait(FIRST_COMPLETED) + cancel-the-other-
+    direction pattern as terminal_ws_proxy (see AGENTS.md's "clean shutdown
+    ordering" and that function's own comment). gather() (wait for BOTH
+    directions) hangs forever once one side closes: if the browser
+    disconnects, remote_to_client keeps streaming from the still-live
+    remote ttyd, the handler never returns, and uvicorn's "waiting for
+    connections to close" phase runs until systemd SIGKILLs the process at
+    the stop timeout -- with N concurrent federation relays open, that is a
+    reliable shutdown hang, not an edge case.
+
+    Also registers this connection's task in `_ws_proxy_tasks` -- the same
+    registry terminal_ws_proxy uses -- so lifespan shutdown (main.py's
+    `lifespan()`) can cancel this relay directly instead of relying on it to
+    notice the browser side's disconnect on its own. Before this fix, an
+    open federation relay was invisible to shutdown entirely: the registry
+    only ever held local-proxy tasks, so `n_relays = len(_ws_proxy_tasks)`
+    at shutdown undercounted, and a federation relay blocked on the (still
+    live) remote ttyd was never cancelled -- the same hang the gather() fix
+    above addresses, from the other side.
     """
     # Auth check before accepting — same pattern as terminal_ws_proxy
     if not await _ws_auth_check(websocket):
@@ -2431,6 +2451,13 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
 
+    # Register this connection's task so lifespan shutdown can cancel it —
+    # same registry, same rationale as terminal_ws_proxy (see this
+    # function's docstring and main.py's lifespan() shutdown section).
+    _task = asyncio.current_task()
+    if _task is not None:
+        _ws_proxy_tasks.add(_task)
+
     await websocket.accept(subprotocol="tty")
 
     auth_headers = {"Authorization": f"Bearer {remote_key}"} if remote_key else {}
@@ -2446,6 +2473,8 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
                 try:
                     while True:
                         msg = await websocket.receive()
+                        if msg["type"] == "websocket.disconnect":
+                            return
                         if msg.get("bytes"):
                             await remote_ws.send(msg["bytes"])
                         elif msg.get("text"):
@@ -2463,10 +2492,24 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
                 except Exception as exc:
                     _log.debug("federation ws relay closed (remote_to_client): %s", exc)
 
-            await asyncio.gather(client_to_remote(), remote_to_client())
+            # Relay until EITHER side closes, then cancel the other — see
+            # this function's docstring (gather() would hang shutdown).
+            relay_tasks = [
+                asyncio.create_task(client_to_remote()),
+                asyncio.create_task(remote_to_client()),
+            ]
+            _done, pending = await asyncio.wait(
+                relay_tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            for p in pending:
+                p.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
     except Exception as exc:
         _log.debug("federation ws proxy closed: %s", exc)
     finally:
+        if _task is not None:
+            _ws_proxy_tasks.discard(_task)
         try:
             await websocket.close()
         except Exception:
