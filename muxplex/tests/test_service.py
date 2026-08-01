@@ -910,7 +910,11 @@ def test_systemd_install_omits_tmux_tmpdir_when_unset(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
     monkeypatch.delenv("TMUX_TMPDIR", raising=False)
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
 
     svc._systemd_install()
@@ -938,7 +942,11 @@ def test_systemd_install_propagates_custom_tmux_tmpdir(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_DIR", unit_dir)
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
     monkeypatch.setenv("TMUX_TMPDIR", "/home/user/.tmux")
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
 
     svc._systemd_install()
@@ -992,7 +1000,11 @@ def test_launchd_install_omits_tmux_tmpdir_when_unset(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
     monkeypatch.setattr(os, "getuid", lambda: 501)
     monkeypatch.delenv("TMUX_TMPDIR", raising=False)
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
 
     svc._launchd_install()
@@ -1018,7 +1030,11 @@ def test_launchd_install_propagates_custom_tmux_tmpdir(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
     monkeypatch.setattr(os, "getuid", lambda: 501)
     monkeypatch.setenv("TMUX_TMPDIR", "/Users/user/.tmux")
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
 
     svc._launchd_install()
@@ -1084,7 +1100,11 @@ def test_launchd_plist_program_arguments_are_separate_strings(monkeypatch, tmp_p
     monkeypatch.setattr(svc, "_LAUNCHD_PLIST_DIR", plist_dir)
     monkeypatch.setattr(svc, "_LAUNCHD_PLIST_PATH", plist_path)
     monkeypatch.setattr(os, "getuid", lambda: 501)
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: None)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
     monkeypatch.setattr(svc, "_show_tls_nudge_if_needed", lambda: None)
 
