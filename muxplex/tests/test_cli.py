@@ -691,11 +691,15 @@ def test_cmd_restore_yes_skips_prompt_and_executes(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr("builtins.input", fail_input)
 
-    async def fake_execute_restore(names):
+    async def fake_execute_restore(names, *, on_result=None):
         assert names == ["a2a"]
-        return RestoreReport(
+        report = RestoreReport(
             results=[SessionResult(name="a2a", status="ok", windows=4)]
         )
+        if on_result is not None:
+            for result in report.results:
+                on_result(result)
+        return report
 
     monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
 
@@ -726,8 +730,8 @@ def test_cmd_restore_partial_failure_is_loud_and_exits_nonzero(
 
     monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
 
-    async def fake_execute_restore(names):
-        return RestoreReport(
+    async def fake_execute_restore(names, *, on_result=None):
+        report = RestoreReport(
             results=[
                 SessionResult(name="good-one", status="ok", windows=4),
                 SessionResult(
@@ -735,6 +739,10 @@ def test_cmd_restore_partial_failure_is_loud_and_exits_nonzero(
                 ),
             ]
         )
+        if on_result is not None:
+            for result in report.results:
+                on_result(result)
+        return report
 
     monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
 
@@ -770,14 +778,18 @@ def test_cmd_restore_warn_divergence_does_not_fail_the_run(
 
     monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
 
-    async def fake_execute_restore(names):
-        return RestoreReport(
+    async def fake_execute_restore(names, *, on_result=None):
+        report = RestoreReport(
             results=[
                 SessionResult(
                     name="bare-shell", status="warn", detail="windows 1", windows=1
                 )
             ]
         )
+        if on_result is not None:
+            for result in report.results:
+                on_result(result)
+        return report
 
     monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
 

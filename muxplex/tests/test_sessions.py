@@ -829,16 +829,17 @@ async def test_spawn_session_command_kills_child_on_timeout(tmp_path, monkeypatc
     monkeypatch.setattr(sessions_mod, "SPAWN_TIMEOUT_SECONDS", 0.2)
 
     pid_file = tmp_path / "child.pid"
-    # `exec` (not a plain trailing command) guarantees the shell replaces
-    # itself with python3 rather than possibly forking a child of its own --
-    # so killing the PID asyncio hands back is guaranteed to kill the actual
-    # sleeping process, on any POSIX shell, deterministically.
+    # A single simple command with no shell operators, run via `sh -c` (what
+    # create_subprocess_shell always does): standard shells (dash, bash)
+    # replace themselves with it via exec rather than forking a child of
+    # their own, so the PID asyncio hands back IS the actual sleeping
+    # process's PID -- killing it is not lost to an intermediate shell.
     probe = (
         "import os, time; "
         f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
         "time.sleep(100)"
     )
-    template = "exec python3 -c " + shlex.quote(probe) + " {name}"
+    template = "python3 -c " + shlex.quote(probe) + " {name}"
 
     with (
         patch(

@@ -1229,11 +1229,26 @@ def cmd_restore(
 
     print()
     total = len(plan.names)
-    report = asyncio.run(restore_mod.execute_restore(plan.names))
-    for i, result in enumerate(report.results, start=1):
+    progress = {"i": 0}
+
+    def _print_progress(result: restore_mod.SessionResult) -> None:
+        # Printed AS EACH SESSION COMPLETES, not buffered until the whole
+        # run returns -- a restore of a dozen-plus sessions can take
+        # minutes, and a run that dies partway (see the 2026-07-31
+        # incident) must not also lose 100% of its visible output. `flush`
+        # so the line is actually on disk/terminal immediately, not sitting
+        # in a stdout buffer a killed process never gets to flush itself.
+        progress["i"] += 1
         label = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}[result.status]
         suffix = f"  {result.detail}" if result.detail else ""
-        print(f"  [{i:>2}/{total}] {result.name:<28} {label}{suffix}")
+        print(
+            f"  [{progress['i']:>2}/{total}] {result.name:<28} {label}{suffix}",
+            flush=True,
+        )
+
+    report = asyncio.run(
+        restore_mod.execute_restore(plan.names, on_result=_print_progress)
+    )
 
     print(
         f"\n{report.ok_count} restored, {report.warn_count} with divergences, "
