@@ -4016,6 +4016,12 @@ def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
         return {"device_id": "abc", "version": installed_version}
 
     monkeypatch.setattr(cli_mod, "_fetch_local_instance_info", fake_fetch)
+    # The device_id is no longer arbitrary filler: doctor's "Running:" check
+    # (c8ae4e1) now verifies the answering server is OURS before trusting its
+    # version, because a port-forward can make another machine's muxplex
+    # answer here. A local server reports our own device_id, so the stub
+    # must too -- same pattern as test_doctor_shows_running_version_match.
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
