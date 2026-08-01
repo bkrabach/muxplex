@@ -115,6 +115,16 @@ DEFAULT_SETTINGS: dict = {
     # it federation-wide; the per-device first-missed-at bookkeeping that drives
     # the actual prune is local-only (pruning.json, never synced).
     "stale_key_grace_hours": 24.0,
+    # Which shipped tmux theme `muxplex tmux install` renders into
+    # ~/.config/muxplex/tmux.d/20-theme.conf. Values are the stem of a file in
+    # muxplex/tmux_templates/themes/ (see tmux_config.available_themes()).
+    # "brand" is built from this app's own UI tokens, so a window that rings a
+    # bell turns the same amber in the terminal that its tile turns here.
+    # Deliberately NOT in SYNCABLE_KEYS: this renders to a file on THIS host,
+    # exactly as machine-scoped as tmux_socket_dir. Syncing it would also make
+    # every theme tweak bump the shared settings_updated_at that arbitrates
+    # `views` LWW races -- the precise coupling views_updated_at exists to break.
+    "tmux_theme": "brand",
 }
 
 # Keys that can ONLY be changed by editing the settings file on disk
