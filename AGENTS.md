@@ -147,6 +147,42 @@ helpers in `terminal_input.py`. Injection-safety is verified by `test_input.py:3
 end-of-options prevent shell interpretation, text goes as a single uninterpreted
 argv element.
 
+## ttyd is loopback-only by design (unauthenticated writable terminal)
+
+`ttyd.py`'s `spawn_ttyd()` execs `ttyd -W -m 3 -p 7682 -i 127.0.0.1 tmux attach
+-t <name>`. `-W` (writable) with **no `-c` credential** means ttyd is an
+**unauthenticated, writable terminal server** — anyone who can reach its
+socket can both view and *type into* whatever tmux session is currently
+attached, with zero interaction with muxplex's auth stack (`_ws_auth_check`,
+the cookie/Bearer middleware, TLS). It must **never** be reachable off-box.
+All legitimate access goes through muxplex's own authenticated `WS
+/terminal/ws` proxy (`main.py`), which dials `ws://127.0.0.1:{TTYD_PORT}/ws`
+directly — never a public interface.
+
+**Incident:** this process previously had no `-i`/bind flag at all. ttyd's
+default bind with no `-i` is `INADDR_ANY` (`0.0.0.0`) — confirmed live:
+`ss -ltnp` showed `0.0.0.0:7682`, `curl` from another host on the LAN and
+separately over Tailscale both got a real ttyd terminal client (`200`, full
+HTML), and `GET /token` returned `{"token": ""}` (no credential configured).
+Any device reachable on the LAN or tailnet could open port 7682 in a browser
+and type into the host's live tmux session. Fixed by adding `-i
+TTYD_BIND_ADDRESS` (`127.0.0.1`) to the spawn argv — see `ttyd.py`'s
+`TTYD_BIND_ADDRESS` module comment for the full rationale, including why a
+literal IP is used instead of a platform-specific interface name (`lo` on
+Linux vs `lo0` on macOS).
+
+**Not configurable, and must never become PATCHable.** There is no settings
+key for this — it's a hardcoded constant. If a future need ever justifies
+making it configurable, that setting **must** be added to
+`settings.LOCAL_ONLY_KEYS` (see "Terminal input" above), never to
+`SYNCABLE_KEYS`: the federation Bearer key is the same credential held by
+remote callers, so a PATCHable bind address would let any Bearer-key holder
+widen ttyd's exposure to the network — the identical fence rationale already
+applied to `new_session_template` et al.
+
+See `docs/API_SEMANTICS.md`'s "single shared ttyd process" section for how
+this interacts with sync groups' `terminal_session`/`terminal_group` claim.
+
 ## Frontend delivery: the no-cache header is load-bearing
 
 - `app.js`/`index.html` are served with `Cache-Control: no-cache` (revalidate

@@ -59,7 +59,7 @@ async def test_spawn_ttyd_writes_pid_file():
 
 
 async def test_spawn_ttyd_uses_correct_command():
-    """spawn_ttyd() must call ttyd with args: -W -m 3 -p 7682 tmux attach -t <name>."""
+    """spawn_ttyd() must call ttyd with args: -W -m 3 -p 7682 -i 127.0.0.1 tmux attach -t <name>."""
     mock_proc = _make_mock_ttyd_process(pid=54321)
 
     with patch(
@@ -76,11 +76,44 @@ async def test_spawn_ttyd_uses_correct_command():
         "3",
         "-p",
         "7682",
+        "-i",
+        "127.0.0.1",
         "tmux",
         "attach",
         "-t",
         "test-session",
     ]
+
+
+async def test_spawn_ttyd_binds_loopback_only():
+    """SECURITY: spawn_ttyd() must always bind ttyd to loopback (`-i 127.0.0.1`).
+
+    ttyd runs with `-W` (writable) and no `-c` (credential) -- an
+    unauthenticated, writable terminal. Without an explicit `-i` bind flag,
+    ttyd defaults to binding INADDR_ANY (0.0.0.0), which is reachable over
+    the LAN/Tailscale and lets anyone type into the live tmux session,
+    bypassing muxplex's entire auth stack. This is the regression test for
+    that incident: assert the loopback bind flag is always present in the
+    spawned argv, and that ttyd is never asked to bind a public interface.
+
+    `127.0.0.1` (a literal IP, not an interface name like `lo`/`lo0`) is used
+    deliberately for cross-platform correctness -- see TTYD_BIND_ADDRESS's
+    module comment in ttyd.py.
+    """
+    mock_proc = _make_mock_ttyd_process(pid=66666)
+
+    with patch(
+        "asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=mock_proc),
+    ) as mock_create:
+        await spawn_ttyd("test-session")
+
+    call_args = list(mock_create.call_args[0])
+    assert "-i" in call_args, "spawn_ttyd() argv must include the -i bind flag"
+    bind_value = call_args[call_args.index("-i") + 1]
+    assert bind_value == ttyd_mod.TTYD_BIND_ADDRESS == "127.0.0.1", (
+        "ttyd must bind loopback-only (127.0.0.1), never a public interface"
+    )
 
 
 async def test_spawn_ttyd_passes_tmux_env_override_to_subprocess():
@@ -149,6 +182,8 @@ async def test_spawn_ttyd_wraps_in_systemd_scope_when_escape_needed():
         "3",
         "-p",
         "7682",
+        "-i",
+        "127.0.0.1",
         "tmux",
         "attach",
         "-t",
@@ -180,6 +215,8 @@ async def test_spawn_ttyd_unwrapped_when_escape_not_needed():
         "3",
         "-p",
         "7682",
+        "-i",
+        "127.0.0.1",
         "tmux",
         "attach",
         "-t",

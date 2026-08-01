@@ -2,9 +2,11 @@
 ttyd process lifecycle management for the tmux-web muxplex.
 
 Constants:
-    TTYD_PID_DIR  — directory for the PID file (default: ~/.local/share/tmux-web/)
-    TTYD_PID_PATH — full path to the PID file (TTYD_PID_DIR / 'ttyd.pid')
-    TTYD_PORT     — port ttyd listens on (7682)
+    TTYD_PID_DIR      — directory for the PID file (default: ~/.local/share/tmux-web/)
+    TTYD_PID_PATH     — full path to the PID file (TTYD_PID_DIR / 'ttyd.pid')
+    TTYD_PORT         — port ttyd listens on (7682)
+    TTYD_BIND_ADDRESS — loopback address ttyd binds to (127.0.0.1); NOT configurable,
+                        see its own module comment for the security rationale
 
 Module state:
     _active_process — the currently running ttyd subprocess (or None)
@@ -34,6 +36,37 @@ TTYD_PID_DIR: Path = Path(os.environ.get("TMUX_WEB_STATE_DIR", _default_ttyd_pid
 TTYD_PID_PATH: Path = TTYD_PID_DIR / "ttyd.pid"
 
 TTYD_PORT: int = 7682
+
+# SECURITY: ttyd is an UNAUTHENTICATED, WRITABLE (-W) terminal -- no -c
+# credential is configured, so `-W` alone means anyone who can reach the
+# socket can both view AND type into whatever tmux session is currently
+# attached. It MUST NEVER be reachable off-box. All external access goes
+# through muxplex's own authenticated `/terminal/ws` proxy (main.py), which
+# dials this address directly -- never a public interface.
+#
+# Incident: this process previously had no `-i`/bind flag at all, which
+# defaults to binding INADDR_ANY (0.0.0.0) -- reachable over the LAN and over
+# Tailscale, with `curl http://<host>/token` returning an empty token. Fixed
+# by explicitly binding loopback-only below.
+#
+# Portability: ttyd's `-i`/`--interface` flag is passed straight through to
+# libwebsockets' `iface` (see ttyd's src/server.c and libwebsockets'
+# lws_interface_to_sa()), which tries to parse the value as a literal IP
+# address FIRST and only falls back to OS interface-name enumeration (e.g.
+# `eth0`, `lo`) if that fails. A literal dotted-quad address is therefore
+# resolved identically by libwebsockets on every platform, whereas the
+# loopback INTERFACE NAME is not portable -- it's `lo` on Linux but `lo0` on
+# macOS (a supported platform per cgroup_escape.py), and passing the wrong
+# name would silently fail to bind rather than degrade safely. Binding the
+# literal address `127.0.0.1` sidesteps that platform-naming difference
+# entirely, so this is correct on Linux and macOS without a platform branch.
+#
+# NOT CONFIGURABLE. If a future need arises to widen this, any such setting
+# must be fenced in settings.LOCAL_ONLY_KEYS (see AGENTS.md's "Terminal
+# input" section) so a federation Bearer-key holder can never widen its own
+# exposure via PATCH /api/settings or sync -- the same fence pattern applied
+# to new_session_template et al.
+TTYD_BIND_ADDRESS: str = "127.0.0.1"
 
 # ---------------------------------------------------------------------------
 # Module state
@@ -181,7 +214,13 @@ async def spawn_ttyd(session_name: str) -> asyncio.subprocess.Process:
 
     Runs::
 
-        ttyd -W -m 3 -p 7682 tmux attach -t <session_name>
+        ttyd -W -m 3 -p 7682 -i 127.0.0.1 tmux attach -t <session_name>
+
+    The ``-i 127.0.0.1`` flag is a hard, non-configurable security fence: ttyd
+    is an unauthenticated writable terminal (no ``-c`` credential), so it must
+    never bind a publicly-reachable address. See TTYD_BIND_ADDRESS's module
+    comment for the incident and the portability rationale for using a
+    literal IP rather than a platform-specific interface name.
 
     Before spawning, verifies that TTYD_PORT is free.  If any process is still
     listening on the port (e.g. a race between kill_ttyd() and spawn_ttyd()),
@@ -210,6 +249,8 @@ async def spawn_ttyd(session_name: str) -> asyncio.subprocess.Process:
         "3",
         "-p",
         str(TTYD_PORT),
+        "-i",
+        TTYD_BIND_ADDRESS,
         "tmux",
         "attach",
         "-t",

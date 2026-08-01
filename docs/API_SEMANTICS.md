@@ -324,6 +324,15 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   groups, and it is the safety-critical half of this feature.** Exactly one
   ttyd process exists server-wide, on a hardcoded port, with the session
   name baked into its argv at spawn time and a WRITABLE terminal (`ttyd.py`).
+  **ttyd is loopback-only by design, and this is unconditional (not gated by
+  sync groups, `device_id`, or anything else): it runs `-W` (writable) with
+  no `-c` (credential), so it is an unauthenticated writable terminal that
+  must never be reachable off-box — see `ttyd.py`'s `TTYD_BIND_ADDRESS` and
+  `../AGENTS.md`'s "ttyd is loopback-only by design" section for the
+  spawn-argv fence (`-i 127.0.0.1`), the incident (previously bound
+  `0.0.0.0`, reachable over LAN and Tailscale with an empty `/token`), and
+  the portability rationale. All access to it goes through the authenticated
+  claims below, never a direct network path.**
   Two sync groups can each have their own `active_session` selection, but
   they cannot BOTH have their own live terminal — only one group's session
   can actually be relayed at a time. `state.json`'s `terminal_session` /
