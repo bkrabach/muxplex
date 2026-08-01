@@ -483,6 +483,65 @@ def test_partial_failure_is_named_and_others_still_succeed(isolated, tmp_path):
     assert pending_names == {"bad-one"}
 
 
+def test_interrupted_restore_run_persists_completed_sessions_incrementally(
+    isolated, tmp_path
+):
+    """A mid-run crash after N successes must not lose bookkeeping for those
+    N -- only the NOT-yet-attempted names remain in pending_restore
+    afterward. Regression for the 2026-07-31 incident: `restore --yes`
+    created 9 of 12 sessions then vanished with no summary; because
+    _persist_restored() was only ever called once, at the very end of the
+    loop, the process dying before reaching it meant those 9 were silently
+    re-queued and a later run recreated them a second time."""
+    socket_dir = isolated
+    workspace_root = tmp_path / "dev"
+    workspace_root.mkdir()
+    settings_mod.patch_settings(
+        {"new_session_template": _fake_workspace_template(workspace_root)}
+    )
+
+    names = ["proj-a", "proj-b", "proj-c", "proj-d"]
+    old_pid = _record_pre_crash_state(socket_dir, names)
+    _simulate_cold_start(socket_dir, old_pid)
+
+    plan = asyncio.run(restore_mod.load_plan())
+    assert plan is not None
+    assert set(plan.names) == set(names)
+
+    class _SimulatedCrash(Exception):
+        """Stands in for the real process dying mid-run (e.g. killed,
+        or an unhandled exception) -- raised from the progress callback,
+        which execute_restore() does not catch, so it propagates out
+        exactly as an uncaught crash would."""
+
+    completed: list[str] = []
+
+    def _crash_after_two(result: restore_mod.SessionResult) -> None:
+        completed.append(result.name)
+        if len(completed) == 2:
+            raise _SimulatedCrash("process died right here")
+
+    with pytest.raises(_SimulatedCrash):
+        asyncio.run(restore_mod.execute_restore(plan.names, on_result=_crash_after_two))
+
+    assert len(completed) == 2, "the crash must fire after exactly 2 successes"
+
+    # The two sessions that finished BEFORE the crash must already be gone
+    # from pending_restore -- proving persistence happened incrementally,
+    # not in a single end-of-loop write the crash prevented from ever
+    # running.
+    reloaded = load_manifest()
+    pending_names = set((reloaded["pending_restore"] or {}).get("sessions", {}))
+    assert pending_names == set(names) - set(completed), (
+        f"expected only the un-attempted names to remain pending, got {pending_names}"
+    )
+
+    # And the sessions that did complete are actually live -- the crash
+    # happened in the callback, AFTER creation was verified and persisted.
+    live_now = set(_live_names(socket_dir))
+    assert set(completed) <= live_now
+
+
 def test_cli_partial_failure_exits_nonzero_end_to_end(isolated, tmp_path, capsys):
     """The SAME scenario as above, but driven through cmd_restore() (the
     real CLI entry point) end to end, proving the exit code -- not just the

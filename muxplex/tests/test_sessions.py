@@ -3,6 +3,10 @@ Tests for coordinator/sessions.py — tmux session enumeration and helpers.
 All 6 acceptance-criteria tests are defined here.
 """
 
+import json
+import os
+import shlex
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -714,3 +718,145 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
     assert ok is True
     assert error is None
     assert get_snapshots() == {}
+
+
+# ---------------------------------------------------------------------------
+# spawn_session_command() -- child isolation from the caller's terminal
+#
+# Regression coverage for the 2026-07-31 incident: `muxplex restore --yes`
+# vanished mid-run after 9 of 12 sessions with no summary and no error. Root
+# cause -- sessions.py spawned `new_session_template` with no `stdin=` and
+# no `start_new_session=True`, so a template that DOES attach to a tty (e.g.
+# a real `amplifier-workspace`) inherited the restore CLI's own controlling
+# terminal, session, and foreground process group. A live tmux client took
+# over the calling process's terminal instead of failing harmlessly the way
+# the pre-existing "TTY-attach failure" recovery path assumes.
+#
+# These tests use a REAL subprocess (a tiny python3 probe script) rather
+# than real tmux -- proving child isolation is a property of
+# spawn_session_command()'s own subprocess wiring, independent of whatever
+# `new_session_template` happens to do. `should_escape()` is forced False by
+# conftest.py's autouse fixture, so these exercise the plain
+# `create_subprocess_shell` branch (the one the 2026-07-31 incident hit).
+# ---------------------------------------------------------------------------
+
+
+async def test_spawn_session_command_child_is_not_in_callers_session(tmp_path):
+    """The spawned child must be its own session/process-group leader
+    (start_new_session=True) -- NOT a member of the calling process's
+    session, which is what let a TTY-attaching child steal the caller's
+    own terminal during the 2026-07-31 incident."""
+    result_file = tmp_path / "child-info.json"
+    probe = (
+        "import json, os; "
+        f"json.dump({{'sid': os.getsid(0), 'pgid': os.getpgrp()}}, "
+        f"open({str(result_file)!r}, 'w'))"
+    )
+    template = "python3 -c " + shlex.quote(probe) + " {name}"
+
+    with (
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"new_session_template": template},
+        ),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, error = await spawn_session_command("probe-session")
+
+    assert ok is True, error
+    info = json.loads(result_file.read_text())
+    assert info["sid"] != os.getsid(0), (
+        "child must be its own session leader (start_new_session=True) -- "
+        "otherwise it can still control/signal the calling process's "
+        "terminal, exactly like the 2026-07-31 incident"
+    )
+
+
+async def test_spawn_session_command_child_stdin_is_devnull_not_callers(tmp_path):
+    """The spawned child's stdin must be /dev/null, never inherited from
+    the calling process -- otherwise a `tmux attach` (or anything else
+    reading from stdin) inside the child succeeds against the CALLER's
+    real terminal instead of failing harmlessly."""
+    result_file = tmp_path / "child-stdin.json"
+    probe = (
+        "import json, os; "
+        f"json.dump({{'stdin_target': os.readlink('/proc/self/fd/0')}}, "
+        f"open({str(result_file)!r}, 'w'))"
+    )
+    template = "python3 -c " + shlex.quote(probe) + " {name}"
+
+    # Give the CALLING process (standing in for `muxplex restore`'s own
+    # foreground shell) a known, uniquely-identifiable stdin so the
+    # assertion below proves non-inheritance rather than assuming what
+    # pytest's own stdin happens to be in this environment.
+    marker_path = tmp_path / "parent-stdin-marker"
+    marker_path.write_text("parent stdin marker\n")
+    marker_fd = os.open(marker_path, os.O_RDONLY)
+    saved_stdin_fd = os.dup(0)
+    try:
+        os.dup2(marker_fd, 0)
+        os.close(marker_fd)
+
+        with (
+            patch(
+                "muxplex.sessions.load_settings",
+                return_value={"new_session_template": template},
+            ),
+            patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+        ):
+            ok, error = await spawn_session_command("probe-session-2")
+    finally:
+        os.dup2(saved_stdin_fd, 0)
+        os.close(saved_stdin_fd)
+
+    assert ok is True, error
+    info = json.loads(result_file.read_text())
+    assert info["stdin_target"] != str(marker_path), (
+        "child must not inherit the calling process's stdin"
+    )
+    assert info["stdin_target"] == "/dev/null", (
+        "child's stdin must be /dev/null (the `</dev/null` half of "
+        "AGENTS.md's proven-safe recovery invocation)"
+    )
+
+
+async def test_spawn_session_command_kills_child_on_timeout(tmp_path, monkeypatch):
+    """A session command that outlives SPAWN_TIMEOUT_SECONDS must have its
+    child KILLED before spawn_session_command() returns -- not abandoned.
+    Journal evidence from the 2026-07-31 incident showed six spawns spaced
+    at exactly 30.0s apart: ten live, abandoned tmux clients had
+    accumulated, one per un-killed timeout."""
+    monkeypatch.setattr(sessions_mod, "SPAWN_TIMEOUT_SECONDS", 0.2)
+
+    pid_file = tmp_path / "child.pid"
+    # `exec` (not a plain trailing command) guarantees the shell replaces
+    # itself with python3 rather than possibly forking a child of its own --
+    # so killing the PID asyncio hands back is guaranteed to kill the actual
+    # sleeping process, on any POSIX shell, deterministically.
+    probe = (
+        "import os, time; "
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(100)"
+    )
+    template = "exec python3 -c " + shlex.quote(probe) + " {name}"
+
+    with (
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={"new_session_template": template},
+        ),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        t0 = time.monotonic()
+        ok, error = await spawn_session_command("probe-session-3")
+        elapsed = time.monotonic() - t0
+
+    assert ok is True, error  # a long-lived template is not itself an error
+    assert elapsed < 5, (
+        f"took {elapsed:.1f}s -- must have used the monkeypatched short "
+        "timeout, not the real 30s default"
+    )
+
+    child_pid = int(pid_file.read_text().strip())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
