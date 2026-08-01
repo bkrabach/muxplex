@@ -1,3 +1,23 @@
+## v0.31.0 (2026-08-01)
+
+### Added
+
+- **muxplex now manages your tmux configuration.** `muxplex tmux install` ships an opinionated tmux config and wires it up by adding one guarded `source-file -q` line to your `~/.tmux.conf`. This exists because the package that used to own that config is being retired, and muxplex is the natural home -- it already owns tmux *behaviour* settings (`new_session_template`, `tmux_socket_dir`, `window_size_largest`) and has three co-equal configuration surfaces. The measured detail the whole design rests on: tmux >= 3.1 loads *every* user config in its search path, not just the first one found, and the later file wins conflicts. So the block installs into `~/.tmux.conf` -- the earliest file -- at the top, which puts muxplex first in the chain and means anything you have set, anywhere, overrides it. That is deliberately the opposite of the conda/rustup/nvm convention: they install last because they want to win, muxplex installs first because it wants to lose. Everything muxplex generates lives in `~/.config/muxplex/tmux.d/`; `90-local.conf` is created once and never written again, so it is yours and it loads last. Because this is the only place muxplex writes a file it did not create, every write is backed up first, written atomically, verified by re-reading the file *and* by starting a throwaway tmux server on a private socket, applied to your running server so you see it immediately, and removable with `muxplex tmux uninstall`, which restores the file byte-for-byte. A symlinked tmux.conf -- usually a tracked dotfiles repo -- is refused unless you pass `--allow-symlink`, and even then the symlink is resolved first so it is never replaced by a regular file.
+- **A `tmux_theme` setting**, defaulting to `brand`, with `steel` and `catppuccin-mocha` as alternatives. `brand` is built from muxplex's own UI tokens, so a window that rings a bell turns the same amber in your terminal that its tile turns in this dashboard -- one signal, one colour, two surfaces. Deliberately not federation-syncable: it renders to a file on this host, exactly as machine-scoped as `tmux_socket_dir`.
+
+### Bug Fixes
+
+- **Clicking a window label in the status bar switches to that window again.** The `MouseDown1Status` binding and `status-format[0]` were byte-identical to tmux's defaults the whole time -- the binding was never the problem. The cause was an unbounded `#{pane_current_path}` in `status-right`. tmux gives the window list whatever columns `status-left` and `status-right` do not take, so a deep path pushed windows behind the `>` truncation marker, and a window that is not on screen has no mouse range to click. `status-right` now uses `#{b:pane_current_path}` and `status-right-length` drops from 120 to 60, returning 17 columns of clickable window labels on a 179-column client. Worth stating plainly because it is the kind of bug that sends you looking in exactly the wrong place: nothing about the mouse was broken; the thing you were trying to click had been pushed off the bar.
+- **Every status-bar segment now paints its own background.** Only the session badge looked padded before. A terminal cell's background fills the whole character cell including the line-height leading, so a segment with a background reads as a padded cell and one without reads as bare text floating on the bar -- which looks exactly like inconsistent vertical padding. The window cells sat on a colour 10 RGB-steps from the bar (invisible in practice) and the `status-right` path painted no background at all. All three shipped themes were affected and all three are fixed.
+
+### Verification
+
+- 1725 tests passed in the Digital Twin Universe (`make test`), up from 1721 -- 28 of them cover the tmux config feature, all exercised against a real tmux server on private sockets with paths redirected to a sandbox.
+- The four new regression tests immediately caught that `steel` and `catppuccin-mocha` carried both status-bar bugs too; the assertions are structural (bounded left+right column budget, no unbounded path format, every segment paints a background, window cell backgrounds at least 40 RGB-steps from the bar) so a future theme cannot reintroduce either bug.
+- `ruff check` and `pyright` clean on all new and changed files.
+- Installed and running on a live server with 51 sessions throughout: session count and server PID unchanged across every step, including the live theme reapply.
+
+
 ## v0.30.1 (2026-07-30)
 
 ### Bug Fixes
