@@ -102,6 +102,41 @@ def _verify_service_started(timeout_s: int = 10) -> bool:
     return False
 
 
+def _wait_for_service_ready(port: int, timeout_s: float = 10.0) -> bool:
+    """Poll until the muxplex API answers on *port*, or *timeout_s* elapses.
+
+    ``_verify_service_started`` (above) confirms the *process* is running --
+    for systemd that's a single ``systemctl is-active`` check, true the
+    instant the unit starts, well before uvicorn has finished loading
+    settings and binding the configured host:port. Calling ``doctor()``
+    immediately in that gap races a server that is actually healthy, just not
+    listening yet, and its "Running:" check reports a false "not serving"
+    warning that a manual `muxplex doctor` moments later would not show.
+
+    Poll on a short interval with a generous ceiling instead of guessing a
+    flat delay -- same shape as the eventually-consistent read model in
+    ``docs/AGENT_GUIDE.md`` Sec 4 ("poll on a short interval, not a long
+    sleep"). Uses ``_fetch_local_instance_info``, the exact probe ``doctor``
+    itself uses for its "Running:" line, so once this returns True, doctor's
+    own check is guaranteed to observe the same live server rather than a
+    differently-timed probe.
+
+    Returns True the moment the API responds. Returns False once the ceiling
+    elapses without a response -- a real failure to report honestly, not one
+    to sleep-and-hope past.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if _fetch_local_instance_info(port) is not None:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.5, remaining))
+
+
 def _find_uv() -> str | None:
     """Locate the ``uv`` binary, checking PATH first then well-known install locations.
 
@@ -1184,8 +1219,23 @@ def upgrade(*, force: bool = False) -> None:
         )
         sys.exit(1)
 
-    # 5. Doctor check
+    # 5. Wait for the service to actually be ready before verifying. Systemd
+    # reports the unit "active" (the check above) the instant the process
+    # starts -- not once uvicorn has finished binding the configured
+    # host:port -- so calling doctor() immediately races a server that is
+    # actually healthy, just not listening yet, and its "Running:" check
+    # reports a false "not serving" warning that a manual `muxplex doctor`
+    # moments later would not show. See _wait_for_service_ready's docstring.
+    from muxplex.settings import load_settings
+
+    _serve_cfg = load_settings()
     print("\n  Verifying...")
+    if not _wait_for_service_ready(_serve_cfg["port"]):
+        print(
+            f"  ! Service did not respond on port {_serve_cfg['port']} within"
+            " the timeout -- it may still be starting, or may have failed to"
+            " come up. Checking anyway:"
+        )
     doctor()
 
 

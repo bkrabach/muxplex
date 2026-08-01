@@ -159,6 +159,36 @@ def _neutralize_port_killer(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_service_ready_wait(request, monkeypatch):
+    """Default ``_wait_for_service_ready`` to instantly-ready for every test.
+
+    Same rationale, same shape as ``_neutralize_port_killer`` above: without
+    this, ``upgrade()``'s post-restart readiness poll (added to fix the
+    "Verifying..." race -- see ``cli._wait_for_service_ready``) would attempt
+    a REAL network probe against whatever port ``load_settings()`` resolves
+    to, for every test that drives ``upgrade()`` end-to-end -- and poll for
+    the real ceiling when nothing is listening, turning dozens of
+    otherwise-instant CLI tests into multi-second waits.
+
+    Tests that want to exercise the real poll loop opt in explicitly:
+
+        @pytest.mark.allow_real_service_ready_wait
+    """
+    if "allow_real_service_ready_wait" in request.keywords:
+        yield
+        return
+    try:
+        import muxplex.cli as cli_mod
+    except Exception:  # pragma: no cover - import shape changed
+        yield
+        return
+    monkeypatch.setattr(
+        cli_mod, "_wait_for_service_ready", lambda *a, **k: True, raising=False
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _default_cgroup_escape_disabled(monkeypatch):
     """Default ``should_escape()`` to False for every test.
 

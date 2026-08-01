@@ -3916,6 +3916,174 @@ def test_doctor_reports_launchd_registered_but_not_serving(
 
 
 # ---------------------------------------------------------------------------
+# update verify race -- `muxplex update` restarts the service then
+# immediately ran doctor(), which could catch the service in the gap
+# between "systemd reports active" and "uvicorn has actually bound the
+# port", producing a false "not serving" warning for a server that was
+# perfectly healthy a moment later. Fixed by `_wait_for_service_ready`,
+# polled before doctor() runs -- see its docstring in cli.py.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.allow_real_service_ready_wait
+def test_wait_for_service_ready_succeeds_after_short_delay(monkeypatch):
+    """_wait_for_service_ready polls until the API answers and returns True
+    as soon as it does -- proving the fix for the race where doctor() ran
+    before the just-restarted service had finished binding its port."""
+    import time
+
+    import muxplex.cli as cli_mod
+
+    calls = {"n": 0}
+
+    def fake_fetch(port, timeout=2.0):
+        calls["n"] += 1
+        # Not ready for the first couple of polls -- simulates the real gap
+        # between "systemd says active" and "uvicorn has bound the port".
+        if calls["n"] < 3:
+            return None
+        return {"device_id": "abc", "version": "1.2.3"}
+
+    monkeypatch.setattr(cli_mod, "_fetch_local_instance_info", fake_fetch)
+
+    started = time.monotonic()
+    assert cli_mod._wait_for_service_ready(8088, timeout_s=5.0) is True
+    elapsed = time.monotonic() - started
+
+    assert calls["n"] == 3, "must resolve on the 3rd poll, not loop forever"
+    assert elapsed < 5.0, (
+        "must return as soon as the service is ready, not wait out the full ceiling"
+    )
+
+
+@pytest.mark.allow_real_service_ready_wait
+def test_wait_for_service_ready_times_out_when_never_ready(monkeypatch):
+    """_wait_for_service_ready returns False -- a real, reportable failure --
+    when the ceiling elapses and the API never answers. Uses a short
+    ceiling so the test proves the timeout path without a slow wait."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod, "_fetch_local_instance_info", lambda port, timeout=2.0: None
+    )
+
+    assert cli_mod._wait_for_service_ready(8088, timeout_s=0.2) is False
+
+
+@pytest.mark.allow_real_service_ready_wait
+def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
+    monkeypatch, tmp_path, capsys
+):
+    """Reproduces the real bug: `muxplex update` restarts a systemd service,
+    then immediately verifies -- if the just-restarted server hasn't
+    finished binding its port yet, doctor()'s "Running:" check races it and
+    reports a false "not serving" warning for a server that is actually
+    healthy moments later. With the service becoming ready after a short
+    delay, the real doctor() must show clean, not the false warning.
+    """
+    import subprocess
+    import sys
+    from importlib.metadata import version as pkg_version
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{}")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    def mock_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "active\n", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        cli_mod, "_check_for_update", lambda info: (True, "update available")
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
+    monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
+
+    installed_version = pkg_version("muxplex")
+    calls = {"n": 0}
+
+    def fake_fetch(port, timeout=2.0):
+        calls["n"] += 1
+        # Service is not yet accepting connections for the first couple of
+        # polls after restart -- the exact race from the bug report.
+        if calls["n"] < 3:
+            return None
+        return {"device_id": "abc", "version": installed_version}
+
+    monkeypatch.setattr(cli_mod, "_fetch_local_instance_info", fake_fetch)
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    # 3 polls from the readiness wait + 1 from doctor()'s own "Running:" check.
+    assert calls["n"] == 4, (
+        f"expected the verify step to poll for readiness before calling doctor(); "
+        f"got {calls['n']} probe(s)"
+    )
+    assert "not serving" not in out.lower(), (
+        f"doctor() must not report the false 'not serving' warning once the "
+        f"service becomes ready before the ceiling; got: {out!r}"
+    )
+    assert "matches installed" in out
+
+
+def test_upgrade_reports_honest_timeout_and_still_runs_doctor(
+    monkeypatch, tmp_path, capsys
+):
+    """If the service genuinely never becomes ready within the ceiling,
+    upgrade() must say so plainly AND still run doctor() -- never suppress
+    or downgrade the real warning, never skip verification, never assume
+    success."""
+    import subprocess
+    import sys
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{}")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    def mock_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "active\n", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        cli_mod, "_check_for_update", lambda info: (True, "update available")
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
+    monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
+
+    doctor_calls = []
+    monkeypatch.setattr(cli_mod, "doctor", lambda: doctor_calls.append(True))
+    # The service never becomes ready -- the genuine-failure path. Overrides
+    # the autouse default (which stubs this to always-True) with an explicit
+    # False, so we don't need the real poll loop's timing for this test.
+    monkeypatch.setattr(
+        cli_mod, "_wait_for_service_ready", lambda port, timeout_s=10.0: False
+    )
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    assert len(doctor_calls) == 1, (
+        "doctor() must still run even when the readiness wait times out"
+    )
+    assert "timeout" in out.lower() or "did not respond" in out.lower(), (
+        f"upgrade() must plainly report that the service never became ready; got: {out!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # task: never SIGTERM a HEALTHY muxplex — probe before kill
 #
 # A silent kill of a live server is indistinguishable from a mystery outage:
