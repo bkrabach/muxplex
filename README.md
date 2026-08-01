@@ -181,6 +181,9 @@ muxplex reset-secret                 Regenerate signing secret
 muxplex setup-tls [--method auto]   Set up TLS certs (Tailscale/mkcert/self-signed)
 muxplex setup-tls --status          Show current TLS configuration
 muxplex env                          Print `eval`-able TMUX_TMPDIR export
+muxplex tmux status                  Show whether muxplex's tmux config is active
+muxplex tmux install [--dry-run]     Install muxplex's tmux config (safe, reversible)
+muxplex tmux uninstall               Remove it, leaving your own config untouched
 ```
 
 ### Service management
@@ -317,6 +320,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `auto_open_created` | `true` | Auto-open newly created sessions |
 | `new_session_template` | `tmux new-session -d -s {name}` | Command template for creating sessions |
 | `delete_session_template` | `tmux kill-session -t {name}` | Command template for deleting sessions |
+| `tmux_theme` | `brand` | Which shipped tmux theme `muxplex tmux install` renders. `brand` is built from muxplex's own UI tokens, so a window that rings a bell turns the same amber in your terminal that its tile turns in the dashboard. Alternatives: `steel`, `catppuccin-mocha`. Not federation-syncable -- it renders to a file on this host. |
 | `input_enabled` | `false` | Global opt-in for `POST /api/sessions/{name}/input` (typing into sessions over the API). **RCE by design** — `false` makes the endpoint a hard 403. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` (a Bearer-key holder must not be able to self-authorize input) and not federation-syncable. |
 | `input_allowed_sessions` | `[]` | **Glob patterns** (matched case-INsensitively — both name and pattern are `.casefold()`-ed before `fnmatch.fnmatchcase`, so behavior is deterministic across platforms) naming sessions that may receive API terminal input, e.g. `["*"]` for all sessions, `["amplifier-*"]` for a prefix family, or an exact name (matches only itself). A session matching none of the patterns is a 403 even when `input_enabled` is true — this is how your own working panes stay un-typeable. Empty list = deny everything. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` and not federation-syncable. |
 | `tmux_socket_dir` | `""` | Override tmux's socket directory (maps to `TMUX_TMPDIR`). Set this if your tmux sessions live somewhere other than `/tmp/tmux-$UID` (e.g. a custom `TMUX_TMPDIR` in your shell rc) -- a systemd/launchd service does not inherit your login shell's environment, so without this the service can't see sessions created with a custom socket directory. |

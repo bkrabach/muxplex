@@ -1358,6 +1358,106 @@ def config_reset(key: str | None = None) -> None:
         print(f"  All settings reset to defaults ({SETTINGS_PATH})")
 
 
+def tmux_status() -> None:
+    """Show whether muxplex's tmux config is installed and actually loading."""
+    from muxplex import tmux_config as tcfg  # noqa: PLC0415
+
+    st = tcfg.status()
+    ver = (
+        f"{st.tmux_version[0]}.{st.tmux_version[1]}" if st.tmux_version else "not found"
+    )
+    print("\nmuxplex tmux config\n")
+    print(f"  tmux: {ver}")
+    print(f"  tmux reads: {', '.join(str(p) for p in st.loaded) or '(no config yet)'}")
+    print(f"  install target: {st.target}")
+    print(f"  status: {'installed' if st.installed else 'not installed'}")
+    if st.is_symlink:
+        print(f"  note: target is a symlink -> {st.symlink_target}")
+
+    if st.outranks_user:
+        print("\n  WARNING: a muxplex block sits in a file that loads AFTER the")
+        print("  install target, so muxplex settings would override your own:")
+        for p in st.misplaced:
+            print(f"    {p}")
+        print("  Fix with: muxplex tmux install")
+
+    if st.fragments:
+        print("\n  fragments (applied in this order):")
+        for f in st.fragments:
+            print(f"    {f.name}")
+
+    if st.installed:
+        v = tcfg.verify()
+        print(f"\n  live check: {'loading OK' if v['loaded'] else 'NOT LOADING'}")
+        if not v["loaded"]:
+            print(
+                "  tmux started but muxplex settings were not applied.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    print()
+
+
+def tmux_install(dry_run: bool = False, allow_symlink: bool = False) -> None:
+    """Install muxplex's tmux config. Safe, verified, reversible."""
+    from muxplex import tmux_config as tcfg  # noqa: PLC0415
+    from muxplex.settings import load_settings  # noqa: PLC0415
+
+    theme = str(load_settings().get("tmux_theme") or "brand")
+
+    try:
+        r = tcfg.install(theme=theme, allow_symlink=allow_symlink, dry_run=dry_run)
+    except tcfg.TmuxConfigError as e:
+        print(f"\nRefusing to continue:\n\n  {e}\n", file=sys.stderr)
+        sys.exit(1)
+
+    if dry_run:
+        print(f"Would render theme {theme!r} into {tcfg.TMUX_D_PATH}")
+        print(f"Would edit {r['target']}\n")
+        print(r["diff"] or "(no change needed)")
+        return
+
+    print(f"Rendered theme {theme!r} into {tcfg.TMUX_D_PATH}")
+    if not r["changed"]:
+        print(f"{r['target']} already set up -- nothing to change.")
+    elif r["created"]:
+        print(f"Created {r['target']}")
+    else:
+        print(f"Updated {r['target']}  (backup: {r['backup']})")
+        print("  Added one line at the top, so anything in your own config wins.")
+
+    v = tcfg.verify()
+    if not v["loaded"]:
+        print("\nFAILED: tmux did not load the config after install.", file=sys.stderr)
+        print("Run 'muxplex tmux uninstall' to revert.", file=sys.stderr)
+        sys.exit(1)
+    print("Verified: started tmux and confirmed the settings are applied.")
+
+    if tcfg.apply_live()["applied"]:
+        print("Applied to your running tmux server -- no restart needed.")
+    else:
+        print("No tmux server running yet; it will apply on your next session.")
+
+
+def tmux_uninstall(allow_symlink: bool = False) -> None:
+    """Remove the managed block. Everything else is left exactly as it was."""
+    from muxplex import tmux_config as tcfg  # noqa: PLC0415
+
+    try:
+        r = tcfg.uninstall(allow_symlink=allow_symlink)
+    except tcfg.TmuxConfigError as e:
+        print(f"\nRefusing to continue:\n\n  {e}\n", file=sys.stderr)
+        sys.exit(1)
+
+    if not r["changed"]:
+        print("Nothing to remove -- muxplex tmux config is not installed.")
+        return
+    for p in r["removed_from"]:
+        print(f"Removed the muxplex block from {p}")
+    print("Your own settings were left exactly as they were.")
+    print(f"Fragments in {tcfg.TMUX_D_PATH} were kept (delete manually if you want).")
+
+
 def setup_tls(method: str = "auto") -> None:
     """Generate TLS certificates and update settings.
 
@@ -1753,6 +1853,25 @@ def main() -> None:
         "key", nargs="?", help="Setting key (omit to reset all)"
     )
 
+    tmux_parser = sub.add_parser("tmux", help="Manage muxplex's tmux configuration")
+    tmux_sub = tmux_parser.add_subparsers(dest="tmux_command")
+    tmux_sub.add_parser("status", help="Show whether the tmux config is active")
+    tmux_install_parser = tmux_sub.add_parser(
+        "install", help="Install muxplex's tmux config (safe, reversible)"
+    )
+    tmux_install_parser.add_argument(
+        "--dry-run", action="store_true", help="Show the diff, change nothing"
+    )
+    tmux_install_parser.add_argument(
+        "--allow-symlink",
+        action="store_true",
+        help="Permit writing through a symlinked tmux.conf (e.g. a dotfiles repo)",
+    )
+    tmux_uninstall_parser = tmux_sub.add_parser(
+        "uninstall", help="Remove the managed block, keep everything else"
+    )
+    tmux_uninstall_parser.add_argument("--allow-symlink", action="store_true")
+
     args = parser.parse_args()
 
     if args.command == "show-password":
@@ -1820,6 +1939,16 @@ def main() -> None:
             service_logs()
         else:
             service_parser.print_help()
+    elif args.command == "tmux":
+        cmd = getattr(args, "tmux_command", None)
+        if cmd == "status":
+            tmux_status()
+        elif cmd == "install":
+            tmux_install(dry_run=args.dry_run, allow_symlink=args.allow_symlink)
+        elif cmd == "uninstall":
+            tmux_uninstall(allow_symlink=args.allow_symlink)
+        else:
+            tmux_parser.print_help()
     else:
         _check_dependencies()
         serve(
