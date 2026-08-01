@@ -48,6 +48,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 
 from muxplex.cgroup_escape import should_escape, wrap_shell_argv
 from muxplex.settings import load_settings
@@ -157,30 +158,42 @@ def tmux_env() -> dict[str, str] | None:
     run interactively by the same user.
 
     Returns:
-        None if `tmux_socket_dir` is unset/empty -- callers should pass
-        `env=None` to the subprocess call, inheriting the process's own
-        environment unchanged (fully backward compatible).
+        None if `tmux_socket_dir` is unset/empty AND `$TMUX` is not set in
+        the ambient environment -- callers should pass `env=None` to the
+        subprocess call, inheriting the process's own environment unchanged
+        (fully backward compatible, and the overwhelmingly common case).
         Otherwise, a copy of `os.environ` with `TMUX_TMPDIR` overridden to
-        the configured directory. Copying (not replacing) preserves PATH,
+        the configured directory (only when `tmux_socket_dir` is set) and
+        `TMUX` always removed. Copying (not replacing) preserves PATH,
         HOME, and everything else the subprocess needs.
 
-        Also removes `TMUX` from the returned environment. tmux gives `$TMUX`
-        (set whenever a process is a descendant of an *attached* tmux client)
-        priority over `TMUX_TMPDIR` when resolving which server socket to
-        talk to -- if it were left in place, a muxplex process that happens
-        to be a descendant of some other tmux client (e.g. started manually
-        from inside a tmux pane while debugging) would silently ignore this
-        override and keep talking to that other server. The muxplex *service*
-        itself is never an attached tmux client, so this is a no-op in the
-        normal (systemd/launchd) deployment -- it only matters for robustness
-        in atypical invocation contexts.
+        `TMUX` is stripped UNCONDITIONALLY -- this is the `env -u TMUX` half
+        of the proven-safe `env -u TMUX setsid amplifier-workspace ~/dev/<name>
+        </dev/null` invocation documented in AGENTS.md's manual-recovery
+        section. It must not be gated behind `tmux_socket_dir` being
+        configured: tmux gives `$TMUX` (set whenever a process is a
+        descendant of an *attached* tmux client) priority over `TMUX_TMPDIR`
+        when resolving which server socket to talk to, and this override
+        matters most for exactly the invocation this function was gated
+        against -- `muxplex restore` run from an ordinary interactive shell,
+        which may itself be inside a tmux pane. Restore's session-creation
+        child (`sessions.spawn_session_command()`) must never inherit that
+        `$TMUX` and end up targeting -- or being attached to -- the
+        operator's own current session instead of a fresh one. Previously,
+        with `tmux_socket_dir` unset (the default deployment), this function
+        returned `None` before ever reaching the `TMUX`-stripping line below,
+        so the strip was dead code in exactly the case that mattered.
     """
     tmpdir = load_settings().get("tmux_socket_dir", "")
-    if not tmpdir:
-        return None
     env = dict(os.environ)
-    env["TMUX_TMPDIR"] = tmpdir
+    had_tmux = "TMUX" in env
+    if not tmpdir and not had_tmux:
+        # Nothing to override and nothing to strip -- inherit the process's
+        # own environment unchanged.
+        return None
     env.pop("TMUX", None)
+    if tmpdir:
+        env["TMUX_TMPDIR"] = tmpdir
     return env
 
 
@@ -369,6 +382,14 @@ MAX_CAPTURE_LINES = 2000
 # to be on the host.
 SESSION_HISTORY_LIMIT = 5000
 
+# How long spawn_session_command() waits for the session-creation command to
+# finish before treating it as long-lived (see the function's docstring and
+# the "TTY-attach survives restore" incident this constant is central to). A
+# module-level constant -- not inlined -- so tests can monkeypatch it to a
+# small value and prove the post-timeout kill behavior without a real 30s
+# wait.
+SPAWN_TIMEOUT_SECONDS = 30
+
 
 async def capture_pane(session_name: str, lines: int = DEFAULT_CAPTURE_LINES) -> str:
     """Capture the last *lines* lines of output from *session_name*.
@@ -447,6 +468,41 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
     command exits non-zero we check whether a tmux session with the
     requested name now exists -- if it does, we treat it as a success.
 
+    That "no TTY available" assumption does NOT hold for every caller,
+    though: `muxplex restore` runs this from an ORDINARY FOREGROUND CLI
+    process invoked from a user's own shell (see restore.py's module
+    docstring for why that's deliberate) -- exactly the context where a real
+    controlling TTY usually *is* present. There the attach does not fail; it
+    SUCCEEDS, and the child's `tmux attach` client takes over the calling
+    process's own terminal, session, and foreground process group -- which
+    is exactly the 2026-07-31 incident (`restore --yes` vanished mid-run
+    after nine sessions with no summary, because a spawned child had stolen
+    its terminal). To keep that possible without the child ever taking over
+    the caller's terminal, it is isolated before it can run any TTY-facing
+    logic:
+
+    - `stdin=DEVNULL` (the `</dev/null` half of AGENTS.md's proven-safe
+      `env -u TMUX setsid amplifier-workspace ~/dev/<name> </dev/null`
+      recovery invocation) so a `tmux attach` inside the child sees no
+      terminal and fails harmlessly -- exactly the pre-existing
+      "TTY-attach failure" recovery path above, now reached deliberately
+      instead of accidentally.
+    - `start_new_session=True` (the `setsid` half) so the child can never
+      become the foreground process of, or send a signal to, the calling
+      process's session -- even if it manages to attach to some other
+      terminal.
+    - `tmux_env()` also strips `$TMUX` unconditionally (the `env -u TMUX`
+      half) so the child never resolves the CALLER's own tmux server by
+      inheritance.
+
+    A long-lived child (see the `asyncio.TimeoutError` branch below) is
+    still not treated as an error -- but it is explicitly KILLED before this
+    function returns, rather than left running. Journal evidence from the
+    2026-07-31 incident showed six spawns spaced at precisely 30.0s apart:
+    ten live, terminal-holding tmux clients had accumulated, each an
+    abandoned child from a previous iteration whose timeout fired but which
+    was never killed.
+
     Returns:
         (True, None) on success.
         (False, <error message>) on failure -- the caller decides how to
@@ -471,6 +527,7 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
 
     command = template.replace("{name}", shlex.quote(name))
     _log.info("Creating session '%s' with command: %s", name, command)
+    proc: asyncio.subprocess.Process | None = None
     try:
         # This command may start a brand-new tmux SERVER (e.g. the default
         # template `tmux new-session -d -s {name}`, or a user's own
@@ -482,19 +539,23 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
         if await should_escape():
             proc = await asyncio.create_subprocess_exec(
                 *wrap_shell_argv(command),
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=tmux_env(),
+                start_new_session=True,
             )
         else:
             proc = await asyncio.create_subprocess_shell(
                 command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=tmux_env(),
+                start_new_session=True,
             )
         _stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=30
+            proc.communicate(), timeout=SPAWN_TIMEOUT_SECONDS
         )
         if proc.returncode != 0:
             stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
@@ -521,15 +582,48 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
                     if stderr_text
                     else f"Session command failed with exit code {proc.returncode}"
                 )
-    except asyncio.TimeoutError:
-        _log.info(
-            "Session command still running after 30s (may be long-lived): %s",
+    except TimeoutError:
+        _log.warning(
+            "Session command still running after %ss -- killing it (long-lived "
+            "templates are not an error, but an abandoned child must never be "
+            "left holding a terminal/session -- see this function's docstring): "
+            "%s",
+            SPAWN_TIMEOUT_SECONDS,
             command,
         )
         # Long-running session commands (e.g. amplifier-workspace that
-        # spawns background processes) may outlive the 30s window. This is
-        # not necessarily an error -- return success and let the caller
-        # poll for the session to appear.
+        # spawns background processes, or a hung TTY attach) may outlive
+        # the timeout window. This is not necessarily an error -- the
+        # session itself may already exist -- so we still fall through to
+        # return success below. But the child process itself MUST be
+        # killed here: `asyncio.wait_for` only cancels our *await* of
+        # `proc.communicate()`, it does not touch the child process at all.
+        # Leaving it running is exactly how the 2026-07-31 incident
+        # accumulated ten live, terminal-holding tmux clients, one per
+        # restore iteration.
+        #
+        # Kill the whole PROCESS GROUP, not just proc.pid: `sh -c command`
+        # (the non-escaped branch above) does not reliably exec-replace
+        # itself with `command` -- on this platform's /bin/sh it forks a
+        # child instead, verified empirically by this fix's own regression
+        # test (a plain proc.kill() left the actual long-running process
+        # alive for its full duration, orphaned once its `sh` parent died).
+        # This is safe specifically because `start_new_session=True` above
+        # made proc.pid the leader of a brand-new session/process group
+        # created exclusively for THIS spawn -- nothing else can be a
+        # member of it, so killing the whole group cannot affect any
+        # unrelated process.
+        if proc is not None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                # Already exited between the timeout firing and us getting
+                # here -- nothing left to kill.
+                pass
+            try:
+                await proc.wait()
+            except ProcessLookupError:
+                pass
     except Exception as exc:
         _log.warning("Failed to launch session command %r: %s", command, exc)
         return False, f"Failed to launch command: {exc}"

@@ -34,10 +34,12 @@ The three-way discrimination (SESSION_PERSISTENCE_DESIGN.md section 5):
                                   handled by the cheapest branch).
     A session is deliberately     Same epoch, session missing from the live
     killed while muxplex runs     set -> tombstoned (removed from the
-                                  manifest) -> can never appear in
-                                  pending_restore. This is free: it falls out
-                                  of the same epoch comparison the reboot case
-                                  needs, with no separate kill-tracking.
+                                  manifest, AND pruned from pending_restore
+                                  if it happened to be sitting there too --
+                                  e.g. left behind by an interrupted restore
+                                  run). Falls out of the same epoch
+                                  comparison the reboot case needs, with no
+                                  separate kill-tracking.
     Host reboots / tmux server    Different epoch -> sessions recorded under
     dies                          the OLD epoch that are not alive under the
                                   NEW one become pending_restore.
@@ -264,6 +266,7 @@ def update_manifest(
     if _same_epoch(epoch_now, epoch_rec):
         # ---- SAME SERVER: presence is authoritative ----
         changed = False
+        tombstoned: set[str] = set()
         for name in live_names:
             if name in sessions:
                 sessions[name]["last_seen_at"] = now
@@ -273,16 +276,36 @@ def update_manifest(
         for name in list(sessions):
             if name not in live_set:
                 # Deliberate kill (or muxplex's own delete): tombstone by
-                # removal. A tombstoned session is not in the manifest, so
-                # it cannot be in pending_restore, so it can never be
-                # restored.
+                # removal. A tombstoned session is not in `sessions`, so a
+                # LATER cold start can never freeze it into pending_restore
+                # (see the different-server branch below).
                 del sessions[name]
+                tombstoned.add(name)
                 changed = True
+
+        pending_restore = manifest.get("pending_restore")
+        if tombstoned and pending_restore:
+            # The invariant this module claims -- "a tombstoned session is
+            # not in the manifest, so it cannot be in pending_restore, so it
+            # can never be restored" -- only holds going FORWARD from a
+            # clean manifest. It does NOT hold if the name is ALREADY
+            # sitting in pending_restore when the deliberate kill happens
+            # (e.g. left behind by an interrupted `muxplex restore` run, or
+            # any other stale pending_restore entry): tombstoning here only
+            # ever touched `sessions`, never `pending_restore`, so
+            # compute_restore_plan() would still offer the just-killed name
+            # right back up for restore. Reuse mark_restored() (the same
+            # pure removal `execute_restore()` uses) so this closes the
+            # exact same way a successful restore does.
+            pending_restore = mark_restored(
+                {"pending_restore": pending_restore}, tombstoned
+            )["pending_restore"]
+
         new_manifest = {
             "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
             "epoch": epoch_rec,
             "sessions": sessions,
-            "pending_restore": manifest.get("pending_restore"),
+            "pending_restore": pending_restore,
         }
         return new_manifest, changed
 
@@ -339,12 +362,14 @@ def compute_restore_plan(
     simply absent from the returned list, nothing extra to check.
 
     A name that was ever tombstoned (deliberately killed while muxplex was
-    running) cannot appear here at all -- tombstoning removes it from
+    running) cannot appear here at all: tombstoning removes it from
     manifest["sessions"] before any cold start can freeze it into
-    pending_restore (see update_manifest()'s same-server branch), so there
-    is no path by which a tombstoned name reaches pending_restore in the
-    first place. This function has nothing extra to defend against; the
-    protection is structural, upstream of this call.
+    pending_restore (see update_manifest()'s same-server branch), AND -- if
+    the name was already sitting in pending_restore at the moment of the
+    kill (e.g. left behind by an interrupted restore run) -- the same
+    tombstone event prunes it from there too. This function has nothing
+    extra to defend against; the protection lives entirely upstream, in
+    update_manifest()'s same-server branch.
     """
     pending = manifest.get("pending_restore")
     if not pending:

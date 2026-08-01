@@ -518,3 +518,54 @@ def test_mark_restored_is_pure_does_not_mutate_input():
 
 def test_restore_max_age_is_seven_days():
     assert RESTORE_MAX_AGE_SECONDS == pytest.approx(7 * 86400.0)
+
+
+# ---------------------------------------------------------------------------
+# update_manifest() -- tombstoning must also close the resurrection path
+# through a STALE pending_restore entry (2026-07-31 incident follow-on)
+# ---------------------------------------------------------------------------
+
+
+def test_tombstone_prunes_name_already_sitting_in_pending_restore():
+    """A name that is BOTH in `sessions` (still tracked) AND already
+    sitting in `pending_restore` (e.g. left behind by an interrupted
+    restore run, or any other stale pending_restore entry) must be pruned
+    from pending_restore the moment it is tombstoned -- otherwise a later
+    compute_restore_plan() would put a session the user just deliberately
+    killed right back in the plan. This is the exact gap in the module's
+    own documented invariant ("a tombstoned session is not in the
+    manifest, so it cannot be in pending_restore, so it can never be
+    restored") -- true only for names that were never in pending_restore
+    to begin with; tombstoning previously only ever touched `sessions`."""
+    manifest = {
+        "schema": 1,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {
+            "keep-me": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "killed-on-purpose": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+        },
+        "pending_restore": {
+            "detected_at": 400.0,
+            "lost_epoch": EPOCH_A,
+            "sessions": {
+                "killed-on-purpose": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            },
+        },
+    }
+
+    # "killed-on-purpose" disappears from the live set under an UNCHANGED
+    # epoch -- a deliberate kill (the same-server tombstone branch).
+    new_manifest, changed = update_manifest(manifest, EPOCH_A, ["keep-me"], now=800.0)
+
+    assert changed is True
+    assert "killed-on-purpose" not in new_manifest["sessions"]
+    pending = new_manifest.get("pending_restore")
+    pending_names = set((pending or {}).get("sessions") or {})
+    assert "killed-on-purpose" not in pending_names, (
+        "tombstoning must also prune pending_restore -- otherwise "
+        "compute_restore_plan() resurrects a session the user deliberately "
+        "killed"
+    )
+
+    plan = compute_restore_plan(new_manifest, live_names=["keep-me"])
+    assert "killed-on-purpose" not in plan

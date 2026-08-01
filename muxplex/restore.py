@@ -39,6 +39,7 @@ that field gets the careful treatment.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -185,7 +186,11 @@ async def forget() -> int:
     return len(names)
 
 
-async def execute_restore(names: list[str]) -> RestoreReport:
+async def execute_restore(
+    names: list[str],
+    *,
+    on_result: Callable[[SessionResult], None] | None = None,
+) -> RestoreReport:
     """Actually create each session in *names*, sequentially, verifying each
     one as it goes. This is the only function in this module that creates
     or kills anything.
@@ -201,16 +206,39 @@ async def execute_restore(names: list[str]) -> RestoreReport:
     to reflect exactly what succeeded (failed names remain in
     `pending_restore` for a future retry; this is deliberate, not an
     oversight -- see mark_restored()'s docstring).
+
+    Persistence happens INCREMENTALLY, right after each individual success
+    -- not once at the end of the loop. A restore of a dozen-plus sessions
+    can take minutes (each spawn_session_command() call may itself take up
+    to SPAWN_TIMEOUT_SECONDS), and this loop runs in an ordinary foreground
+    CLI process with no supervisor to restart it. The 2026-07-31 incident
+    is exactly what an end-of-loop-only persist costs when the process
+    dies partway: nine sessions had already been recreated in tmux, but
+    because `_persist_restored()` was only ever going to be called once,
+    after the (never-reached) end of the loop, all nine were silently
+    re-queued in `pending_restore` and a later run recreated them a second
+    time. Persisting per-success means a mid-run death loses at most the
+    bookkeeping for the ONE session in flight at the moment -- everything
+    already completed is durably reflected on disk.
+
+    *on_result*, if given, is called synchronously with each SessionResult
+    the moment it is known (after that session's persistence, if any) --
+    this is what lets a caller (cli.py's cmd_restore) print progress AS it
+    happens instead of buffering the entire report and printing it only
+    after this function returns, which showed nothing at all for the
+    length of a run that never finished.
     """
     report = RestoreReport()
-    restored: set[str] = set()
 
     for name in names:
         ok, error = await spawn_session_command(name)
         if not ok:
-            report.results.append(
-                SessionResult(name=name, status="fail", detail=error or "unknown error")
+            result = SessionResult(
+                name=name, status="fail", detail=error or "unknown error"
             )
+            report.results.append(result)
+            if on_result is not None:
+                on_result(result)
             continue
 
         # Verify against LIVE tmux state -- never trust spawn_session_command's
@@ -218,29 +246,34 @@ async def execute_restore(names: list[str]) -> RestoreReport:
         # report reflects reality at the moment of verification, not creation.
         live_now = await enumerate_sessions()
         if name not in live_now:
-            report.results.append(
-                SessionResult(name=name, status="fail", detail="session did not appear")
+            result = SessionResult(
+                name=name, status="fail", detail="session did not appear"
             )
+            report.results.append(result)
+            if on_result is not None:
+                on_result(result)
             continue
 
         windows = await _probe_windows(name)
-        restored.add(name)
         if windows is not None and windows <= 1:
-            report.results.append(
-                SessionResult(
-                    name=name,
-                    status="warn",
-                    detail=f"windows {windows} (expected multiple -- template "
-                    "may have failed partway; this is a fresh, bare shell)",
-                    windows=windows,
-                )
+            result = SessionResult(
+                name=name,
+                status="warn",
+                detail=f"windows {windows} (expected multiple -- template "
+                "may have failed partway; this is a fresh, bare shell)",
+                windows=windows,
             )
         else:
-            report.results.append(
-                SessionResult(name=name, status="ok", windows=windows)
-            )
+            result = SessionResult(name=name, status="ok", windows=windows)
+        report.results.append(result)
 
-    # Only successfully-verified names are cleared from pending_restore.
-    # Failed names stay pending so a later `muxplex restore` retries them.
-    await _persist_restored(restored)
+        # Persist THIS session's success right now -- see docstring above.
+        # Only successfully-verified names are ever cleared from
+        # pending_restore; failed names stay pending so a later
+        # `muxplex restore` retries them.
+        await _persist_restored({name})
+
+        if on_result is not None:
+            on_result(result)
+
     return report
