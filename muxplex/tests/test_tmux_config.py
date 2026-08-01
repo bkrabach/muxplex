@@ -373,13 +373,17 @@ def _theme_options(sandbox: Path, theme: str) -> dict[str, str]:
         env=env,
         check=False,
     )
-    out = subprocess.run(
-        ["tmux", "-L", sock, "show-options", "-g"],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    ).stdout
+    # -g gives session options; -gw gives window options. window-status-format
+    # lives in the latter, so both are needed.
+    out = ""
+    for scope in ("-g", "-gw"):
+        out += subprocess.run(
+            ["tmux", "-L", sock, "show-options", scope],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        ).stdout
     subprocess.run(kill, capture_output=True, env=env, check=False)
     opts = {}
     for line in out.splitlines():
