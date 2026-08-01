@@ -1,3 +1,19 @@
+## v0.31.1 (2026-08-01)
+
+### Bug Fixes
+
+- **The status bar no longer shows your session name twice.** `status-right` displayed `#{b:pane_current_path}` -- the basename of the current directory. amplifier-workspace derives tmux session names *from* the directory basename, so for any workspace session that rendered the exact string already shown in the session badge on the left. The same name, twice, costing about 22 columns that the window list wanted. Removed rather than shortened: the badge on the left already answers "where am I", and `status-right-length` drops 60 to 40, so the clickable window list gains again.
+- **The clock shows AM/PM again.** It silently became 24-hour (`%H:%M`) in the v0.31.0 theme rewrite. Restored to `%I:%M %p`.
+- **`muxplex update` no longer crashes on macOS with a launchd traceback.** The upgrade installed correctly, printed "Service started", and then died with a raw `CalledProcessError` on `launchctl bootstrap gui/501 ... exit status 5`. `launchctl bootout` returns *before* the job is actually gone, so a bootstrap issued into that window fails with exit 5 (EIO). That is a race, not a failure -- and `check=True` turned a path that had in fact succeeded into a traceback out of subprocess internals. Bootstrap now retries through the teardown window, treats an already-loaded service as success (a running service is the only outcome the caller cares about), refuses to retry genuine errors, and on real failure raises an actionable message carrying launchd's own stderr plus the manual command and the `muxplex serve` fallback. `muxplex service start` had the identical crash and now shares the same path.
+- **`muxplex-client` version matches the server again.** v0.31.0 shipped with `client/pyproject.toml` still at 0.30.1. The repo has a test that exists precisely to catch this, and it did not, because the release ran the suite *before* the version bump and never re-ran it after. The test was right; the process was wrong.
+
+### Verification
+
+- 1729 tests passed in the Digital Twin Universe, 0 failed -- run *after* the version bump this time.
+- Four new tests cover the launchd bootstrap retry, the already-loaded case, loud failure on a genuine error, and no-retry-on-non-race-errors. They exercise the logic, not `launchctl` -- that binary is macOS-only and this suite runs in a Linux container, so the real launchd behaviour is verified by the shape of the calls, not by running them. Stated plainly rather than implied.
+- Fixing the launchd path surfaced that 24 test mocks returned `None` from `subprocess.run`, which always returns a `CompletedProcess` in reality. The mocks were lying about the contract and got away with it while nothing read the result. Fixed the mocks rather than making production code defensive about a test artifact.
+
+
 ## v0.31.0 (2026-08-01)
 
 ### Added
