@@ -363,6 +363,61 @@ def _fetch_local_instance_info(port: int, timeout: float = 2.0) -> dict | None:
     return None
 
 
+def _launchd_job_pid_and_exit() -> tuple[int | None, int | None]:
+    """(pid, last_exit_status) for the com.muxplex launchd job.
+
+    `launchctl list` prints one row per job: PID, last exit status, label. A pid
+    of "-" means nothing is running right now -- and the exit status then tells
+    you whether it died or was never started. This is the only cheap way to tell
+    "loaded and healthy" from "loaded and crash-looping", which `launchctl print`
+    returning 0 cannot distinguish.
+    """
+    try:
+        out = subprocess.run(
+            ["launchctl", "list"], capture_output=True, text=True, check=False
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return (None, None)
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == "com.muxplex":
+            pid = int(parts[0]) if parts[0].isdigit() else None
+            status = int(parts[1]) if parts[1].lstrip("-").isdigit() else None
+            return (pid, status)
+    return (None, None)
+
+
+def _instance_is_this_host(data: dict | None) -> bool | None:
+    """Did this ``/api/instance-info`` payload come from THIS machine's muxplex?
+
+    True = ours, False = someone else's, None = cannot tell (no payload, or no
+    device_id in it).
+
+    WHY THIS EXISTS -- localhost:PORT is NOT proof of locality. An
+    ``ssh -N -L 8088:127.0.0.1:8088 otherhost`` tunnel makes another machine's
+    muxplex answer on our own loopback, indistinguishable from ours by probing
+    alone. Observed in the wild, and it cost hours: the tunnel held the port, so
+    the local service could never bind and crash-looped on exit 1 forever, while
+    `doctor` cheerfully probed the same port, reached the REMOTE server down the
+    tunnel, and reported ITS version as "Running" -- pinning the blame on a
+    stale local install that had in fact never started.
+
+    device_id is the discriminator: per-install, persisted in identity.json,
+    and already returned by /api/instance-info.
+    """
+    if not isinstance(data, dict):
+        return None
+    remote_id = data.get("device_id")
+    if not remote_id:
+        return None
+    try:
+        from muxplex.identity import load_device_id  # noqa: PLC0415
+
+        return str(remote_id) == load_device_id()
+    except Exception:
+        return None
+
+
 def _port_holder_is_healthy_muxplex(port: int, timeout: float = 2.0) -> bool:
     """Return True if a live, responding muxplex is serving *port*.
 
@@ -441,6 +496,31 @@ def _kill_stale_port_holder(port: int, force: bool = False) -> None:
 
     if not force and _port_holder_is_healthy_muxplex(port):
         pids = ", ".join(str(p) for p in holders)
+        # A muxplex answered -- but is it OURS? A port-forward makes a remote
+        # muxplex answer here, and the old message ("already served by a healthy
+        # muxplex ... refusing to terminate it") sent people hunting a local
+        # service that was in fact dead, because the thing answering lived on
+        # another machine entirely.
+        ours = _instance_is_this_host(_fetch_local_instance_info(port))
+        if ours is False:
+            print(
+                f"ERROR: port {port} is held by a muxplex belonging to a DIFFERENT"
+                f" machine (holder pid {pids}).\n"
+                f"       Something is forwarding this port here -- typically an SSH"
+                f" tunnel, e.g.\n"
+                f"           ssh -N -L {port}:127.0.0.1:{port} otherhost\n"
+                f"       This host's own muxplex cannot bind {port} while that is up,"
+                f" and will keep\n"
+                f"       exiting 1. Refusing to kill it: it is not ours to kill, and"
+                f" the holder is\n"
+                f"       probably the tunnel, not a server.\n"
+                f"\n"
+                f"       Find it:  lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
+                f"       Then either stop the forward, or point it at another local"
+                f" port.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         print(
             f"ERROR: port {port} is already served by a healthy muxplex (pid {pids}).\n"
             f"       Refusing to terminate it.\n"
@@ -667,7 +747,23 @@ def doctor() -> None:
         )
     else:
         running_version = running_info.get("version") or "unknown"
-        if running_version == muxplex_version:
+        # Something muxplex-shaped answered on our port -- but a port-forward
+        # makes ANOTHER machine's muxplex answer here too, and reporting its
+        # version as ours is actively misleading. Check identity before trusting
+        # it: this exact case sent a real investigation after a phantom stale
+        # install while the local service was dead and crash-looping.
+        if _instance_is_this_host(running_info) is False:
+            remote_name = running_info.get("name") or "another machine"
+            print(
+                f"  {warn_mark} Running: port {cfg['port']} is answered by a muxplex on"
+                f" a DIFFERENT machine ({remote_name}, v{running_version})"
+            )
+            print(
+                f"    This host's muxplex is NOT reachable here. Something is"
+                f" forwarding port {cfg['port']}"
+            )
+            print(f"    Find it: lsof -nP -iTCP:{cfg['port']} -sTCP:LISTEN")
+        elif running_version == muxplex_version:
             print(f"  {ok_mark} Running: v{running_version} (matches installed)")
         else:
             print(
@@ -756,13 +852,28 @@ def doctor() -> None:
                     text=True,
                 )
                 if result.returncode == 0:
-                    # Agent is registered — verify it is actually serving
-                    from muxplex.settings import load_settings
+                    # REGISTERED IS NOT RUNNING. `launchctl print` succeeding only
+                    # means the label is loaded; the process behind it can be dead
+                    # and relaunching on a loop. Probing the port does not settle it
+                    # either -- a forwarded port answers happily while this host's
+                    # service is down. Observed: a job stuck in exactly that state
+                    # (no pid, last exit 1, 15 MB of stderr) reported as a green
+                    # "launchd agent running" for hours. Ask launchd for the pid.
+                    from muxplex.settings import load_settings  # noqa: PLC0415
 
                     _cfg = load_settings()
                     _port = _cfg.get("port", 8088)
-                    if _probe_service_port(_port):
-                        print(f"  {ok_mark} Service: launchd agent running")
+                    _pid, _last_exit = _launchd_job_pid_and_exit()
+                    if _pid is not None:
+                        print(
+                            f"  {ok_mark} Service: launchd agent running (pid {_pid})"
+                        )
+                    elif _last_exit not in (None, 0):
+                        print(
+                            f"  {warn_mark} Service: launchd agent is LOADED BUT NOT"
+                            f" RUNNING \u2014 last exit status {_last_exit}"
+                        )
+                        print("    Logs: tail -50 /tmp/muxplex.err")
                     else:
                         print(
                             f"  {warn_mark} Service: launchd agent registered but"

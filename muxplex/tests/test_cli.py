@@ -1334,6 +1334,11 @@ def test_doctor_shows_running_version_match(tmp_path, monkeypatch, capsys):
         "_fetch_local_instance_info",
         lambda port, timeout=2.0: {"device_id": "abc", "version": installed_version},
     )
+    # The device_id is no longer arbitrary filler: doctor now checks that the
+    # server answering our port is actually OURS, because a port-forward can
+    # make another machine's muxplex answer here. A local server reports our
+    # own device_id, so the stub must too.
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
 
     cli_mod.doctor()
 
@@ -1361,6 +1366,9 @@ def test_doctor_shows_running_version_mismatch(tmp_path, monkeypatch, capsys):
         "_fetch_local_instance_info",
         lambda port, timeout=2.0: {"device_id": "abc", "version": "0.0.1-stale"},
     )
+    # doctor now verifies the answering server is OURS before reporting its
+    # version -- a forwarded port can make another machine's muxplex answer.
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
 
     cli_mod.doctor()
 
@@ -4338,3 +4346,93 @@ def test_serve_calls_configure_logging(tmp_path, monkeypatch):
             cli_mod.serve()
 
     assert len(calls) == 1, "serve() must call configure_logging() exactly once"
+
+
+# ── Tunnel/liveness blindness (reported 2026-08-01) ────────────────────────
+#
+# Ground truth from the machine this came from:
+#
+#   $ launchctl list | grep muxplex
+#   -	1	com.muxplex                    <- no pid, exit 1, relaunching forever
+#   $ lsof -nP -iTCP:8088 -sTCP:LISTEN
+#   ssh  85020  ...  TCP 127.0.0.1:8088 (LISTEN)
+#   $ ps -o command -p 85020
+#   ssh -N -L 8088:127.0.0.1:8088 spark-1
+#
+# An SSH tunnel held the port. The local service could never bind it, so it
+# crash-looped on exit 1 (15 MB of stderr). Meanwhile `doctor` probed the same
+# port, reached the REMOTE muxplex down the tunnel, and reported ITS version as
+# "Running" beside a green "Service: launchd agent running". Every signal said
+# healthy-but-stale; the truth was dead-and-not-mine.
+
+
+def test_launchd_job_pid_and_exit_reads_a_crash_looping_job(monkeypatch):
+    """`-` in the pid column means nothing is running, whatever the label says."""
+    import subprocess as sp
+
+    from muxplex import cli
+
+    listing = "PID\tStatus\tLabel\n8307\t0\tcom.muxplex-deck\n-\t1\tcom.muxplex\n"
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *a, **k: sp.CompletedProcess([], 0, stdout=listing, stderr=""),
+    )
+
+    assert cli._launchd_job_pid_and_exit() == (None, 1)
+
+
+def test_launchd_job_pid_and_exit_reads_a_healthy_job(monkeypatch):
+    import subprocess as sp
+
+    from muxplex import cli
+
+    listing = "PID\tStatus\tLabel\n4779\t0\tcom.muxplex\n"
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *a, **k: sp.CompletedProcess([], 0, stdout=listing, stderr=""),
+    )
+
+    assert cli._launchd_job_pid_and_exit() == (4779, 0)
+
+
+def test_launchd_job_pid_and_exit_when_not_registered(monkeypatch):
+    import subprocess as sp
+
+    from muxplex import cli
+
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *a, **k: sp.CompletedProcess([], 0, stdout="PID\tStatus\tLabel\n"),
+    )
+
+    assert cli._launchd_job_pid_and_exit() == (None, None)
+
+
+def test_instance_on_our_port_can_belong_to_another_machine(monkeypatch):
+    """localhost:PORT is not proof of locality -- a port-forward defeats it."""
+    from muxplex import cli
+
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "ours-1111")
+
+    ours = {"device_id": "ours-1111", "version": "0.31.2"}
+    theirs = {"device_id": "theirs-9999", "version": "0.30.1", "name": "spark-1"}
+
+    assert cli._instance_is_this_host(ours) is True
+    assert cli._instance_is_this_host(theirs) is False, (
+        "a muxplex answering our port with a different device_id is NOT ours"
+    )
+
+
+def test_instance_identity_is_unknown_not_assumed(monkeypatch):
+    """No payload or no device_id must read as 'cannot tell', never as 'ours'."""
+    from muxplex import cli
+
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "ours-1111")
+
+    assert cli._instance_is_this_host(None) is None
+    assert cli._instance_is_this_host({}) is None
+    assert cli._instance_is_this_host({"version": "0.31.2"}) is None
+    assert cli._instance_is_this_host("not a dict") is None  # type: ignore[arg-type]

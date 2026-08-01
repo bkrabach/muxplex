@@ -1,3 +1,18 @@
+## v0.31.3 (2026-08-01)
+
+### Bug Fixes
+
+- **`muxplex doctor` no longer reports a dead service as running.** `Service: launchd agent running` was decided by two things that both lie: `launchctl print` returning 0 (which only means the *label is loaded*, not that anything is alive) and a probe of the configured port (which any port-forward will answer). On the machine that surfaced this, the job had **no pid and a last exit status of 1**, relaunching in a loop with 15 MB of stderr — and doctor showed a green check the whole time. It now asks launchd for the actual pid and reports `LOADED BUT NOT RUNNING — last exit status N`, pointing at `/tmp/muxplex.err`. A health check that reads green on a crash-looping service is worse than no health check.
+- **`Running: vX` now proves the server it found is actually this host's.** `localhost:PORT` is not evidence of locality: an `ssh -N -L 8088:127.0.0.1:8088 otherhost` tunnel makes another machine's muxplex answer on your own loopback, indistinguishable by probing alone. Doctor was reaching a *remote* muxplex through exactly such a tunnel and reporting its version as the local running version — which read as an ordinary stale install and sent a real investigation chasing a service that had in fact never started. The probe now compares the returned `device_id` against this install's own, and when they differ says so plainly, naming the other machine and pointing at `lsof -nP -iTCP:PORT -sTCP:LISTEN`.
+- **The port guard now names a tunnel a tunnel.** When something already holds the serve port, muxplex probes it and refuses to kill a healthy peer — correct, but the message said *"port 8088 is already served by a healthy muxplex … Refusing to terminate it"* even when the "healthy muxplex" was a forwarded connection to a different machine. That framing implies a local server worth protecting. It now distinguishes the two: a foreign `device_id` produces an error that says the port is forwarded, shows the likely `ssh -L` shape, explains that this host's muxplex cannot bind while it is up, and declines to kill it on the grounds that the holder is probably the tunnel rather than a server.
+
+### Verification
+
+- Full suite green in the Digital Twin Universe, run after the version bump.
+- Five new tests: `launchctl list` parsing for the crash-looping (`-` pid, exit 1), healthy, and unregistered cases; and device-identity matching, including that a missing or absent `device_id` reads as *cannot tell* rather than *ours*.
+- Verified on the affected Mac end to end, not just in the container: the tunnel was removed, the launchd job took the port and started (pid 4779), and the host now serves its own build instead of a remote one.
+
+
 ## v0.31.2 (2026-08-01)
 
 ### Bug Fixes
