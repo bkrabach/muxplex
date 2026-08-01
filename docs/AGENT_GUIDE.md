@@ -58,6 +58,130 @@ this order:
 5. **`Authorization: Basic <base64 user:pass>`** — password or PAM, depending on
    the server's auth mode.
 
+### Trusting the server's certificate — do this before anything above
+
+`$MUXPLEX_URL` in §0 is `https://`. Against a TLS-enabled instance your machine
+doesn't already trust, **every request in this guide fails before authentication
+is ever consulted**:
+
+```
+curl: (60) SSL certificate problem: unable to get local issuer certificate
+```
+
+No credential fixes that. It is a trust problem, not an auth problem, and it has
+to be solved first. muxplex serves its own trust anchor over three
+**unauthenticated** endpoints so a client can bootstrap:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/ca` | The local CA's **public** certificate as PEM (`application/x-pem-file`, `Content-Disposition: attachment; filename="muxplex-ca.crt"`). This is the one an agent or script uses. |
+| `GET /ca.crt` | The **same bytes** at a plain top-level path, typed `application/x-x509-ca-cert` — the MIME type Android's DownloadManager recognizes, so tapping the link routes into the system certificate installer instead of dropping a generic file the user has to hunt down. Byte-identical to `/api/ca`; only the advertised type differs. |
+| `GET /setup` | An unauthenticated HTML onboarding page — download link plus per-platform install steps (Android / iOS / macOS / Windows), with the visiting platform's section opened by default. Point a human at this; point a program at `/api/ca`. |
+
+All three are in `auth._AUTH_EXEMPT_PATHS` by design, and the reason is not
+convenience: **a client cannot authenticate over TLS it does not yet trust.**
+Requiring a credential to fetch the trust anchor would be circular. A CA
+*public* certificate contains no private key material — it is precisely the
+thing clients are meant to install.
+
+#### Bootstrap once, then verify every request
+
+```bash
+# bootstrap trust
+curl -sk https://HOST:8088/api/ca -o muxplex-ca.crt
+```
+
+`-k` (skip verification) is acceptable for **this one fetch of a public trust
+anchor and nowhere else** — there is nothing sensitive to expose, and you have
+nothing to verify against yet. If you want the stronger guarantee, confirm the
+fingerprint out-of-band before trusting the file:
+
+```bash
+openssl x509 -in muxplex-ca.crt -noout -fingerprint -sha256
+```
+
+From then on, pass it as the verification bundle — never keep using `-k`:
+
+```bash
+# same machine as the server — localhost bypass, no key needed
+curl -s --cacert muxplex-ca.crt -H "Accept: application/json" \
+  https://127.0.0.1:8088/api/sessions
+
+# another machine — Bearer key required
+curl -s --cacert muxplex-ca.crt \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer $MUXPLEX_KEY" \
+  https://HOST:8088/api/sessions
+```
+
+The first works with no credential at all because of branch 1 above (socket-level
+localhost); it still needs `--cacert`, because TLS verification happens before
+the auth middleware ever runs. The second is the ordinary remote case: trust
+anchor *and* Bearer key, both required.
+
+In Python, the `muxplex-client` package takes the same file
+(`client/muxplex_client/sync_client.py:47-73`):
+
+```python
+MuxplexClient(server_url, federation_key, ca_file="muxplex-ca.crt")
+```
+
+`ca_file` becomes httpx's `verify` value. Omit it and you get the system trust
+store, which will not contain a local CA.
+
+#### `/api/ca` only exists under `setup-tls --method ca`
+
+muxplex has four TLS methods and only one of them mints a local CA. Under
+`selfsigned`, `mkcert`, or `tailscale` there is no such file, and `/api/ca`
+returns **404** with a body that says so:
+
+```
+No local CA certificate is available. This server may not be using
+'muxplex setup-tls --method ca' (e.g. it's on Tailscale, mkcert, or
+self-signed instead), or the file at the expected CA path is missing or not
+a valid CA certificate.
+```
+
+Treat that 404 as information, not an error to route around. What to do next
+depends on the method the operator actually chose, and it is not something a
+client can discover from the API:
+
+* **tailscale** — the cert is a real Let's Encrypt cert. Your system trust store
+  already works. Drop `--cacert` entirely and use the MagicDNS name the cert was
+  issued for (an IP or a bare LAN name won't match its SAN).
+* **mkcert** — trust comes from mkcert's own root, which lives on the *server*
+  at `$(mkcert -CAROOT)/rootCA.pem`. There is no HTTP endpoint for it; it has to
+  be installed on the client by whoever administers both machines.
+* **selfsigned** — there is no CA at all. The only honest options are pinning the
+  leaf itself as the verification bundle (out-of-band copy, not over HTTP) or
+  asking the operator to switch to `--method ca`.
+
+**Do not silently fall back to disabling verification.** An agent that answers a
+404 by turning verification off has quietly converted a configuration question
+into a permanently unverified connection. Report it to the human instead.
+
+#### Fetch the CA, never the leaf
+
+The file you want is `muxplex-ca.crt` — the CA. The file the server presents on
+the wire is `muxplex.crt` — the **leaf**. They sit next to each other in
+`~/.config/muxplex/`, they are both PEM, and grabbing the wrong one produces
+exactly the failure you were trying to fix:
+
+```
+curl: (60) SSL certificate problem: unable to get local issuer certificate
+```
+
+This is not hypothetical. `main.py:1976-1980` records that this endpoint exists
+in part *because* users reliably grabbed the leaf instead of the CA when copying
+files off the server by hand. `GET /api/ca` removes the ambiguity: it reads one
+fixed path and can only ever return the CA. Use the endpoint rather than picking
+a file, and if you ever do copy manually, check first:
+
+```bash
+openssl x509 -in muxplex-ca.crt -noout -subject -issuer
+# a CA is self-issued: subject == issuer
+```
+
 ### The Bearer key
 
 * Lives at `~/.config/muxplex/federation_key` **on the server** (mode 0600).

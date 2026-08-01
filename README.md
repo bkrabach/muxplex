@@ -460,6 +460,16 @@ python3 scripts/render-brand-assets.py
 
 ---
 
+## Using muxplex with Amplifier (optional)
+
+muxplex does **not** depend on [Amplifier](https://github.com/microsoft/amplifier) — Amplifier is just one optional way to drive it. A behavior bundle at [bkrabach/amplifier-bundle-muxplex](https://github.com/bkrabach/amplifier-bundle-muxplex) lets AI agents list, create, and monitor muxplex sessions with the server URL, federation key, and CA trust resolved for you instead of per-consumer.
+
+Install it **as a behavior bundle at the app level** — added to your own Amplifier app/bundle configuration. It is not something muxplex itself pulls in.
+
+**→ See [docs/AMPLIFIER.md](docs/AMPLIFIER.md)** for setup. Driving the raw API without Amplifier? [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md).
+
+---
+
 ## License
 
 MIT
