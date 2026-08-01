@@ -419,6 +419,10 @@ def _make_kwargs_capture():
 
     def fake_run(cmd, **kw):
         calls_with_kw.append((list(cmd), dict(kw)))
+        # Real subprocess.run always returns a CompletedProcess. Returning None
+        # here was a lie the callers happened to get away with until production
+        # code started reading .returncode.
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return calls_with_kw, fake_run
 
