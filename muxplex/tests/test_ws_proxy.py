@@ -199,10 +199,17 @@ def test_ws_proxy_auto_spawns_ttyd_when_dead(monkeypatch):
     fake_ws = FakeTtydWs(responses=[])
     monkeypatch.setattr("muxplex.main.websockets.connect", lambda *a, **kw: fake_ws)
 
-    # Patch load_state to return state with active_session
+    # Patch load_state to return state with terminal_session -- _prepare_ttyd_for_reconnect()
+    # reads terminal_session (what ttyd was actually attached to), not any group's
+    # active_session, per the sync-groups spec.
     monkeypatch.setattr(
         "muxplex.main.load_state",
-        lambda: {"active_session": "test-session", "sessions": {}, "session_order": []},
+        lambda: {
+            "active_session": "test-session",
+            "terminal_session": "test-session",
+            "sessions": {},
+            "session_order": [],
+        },
     )
 
     with _make_authed_client() as c:
@@ -566,7 +573,12 @@ def _patch_ttyd_auto_spawn(monkeypatch):
     monkeypatch.setattr("muxplex.main.spawn_ttyd", _mock_spawn_ttyd)
     monkeypatch.setattr(
         "muxplex.main.load_state",
-        lambda: {"active_session": "test-session", "sessions": {}, "session_order": []},
+        lambda: {
+            "active_session": "test-session",
+            "terminal_session": "test-session",
+            "sessions": {},
+            "session_order": [],
+        },
     )
 
 
