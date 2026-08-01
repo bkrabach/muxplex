@@ -16,9 +16,12 @@ let _resizeObserver = null;
 // matching today's behavior exactly (see the §0 hazard's residual gap:
 // a terminal client that supplies none gets no server-side guard).
 let _ownDeviceId = '';
-// True only while the user has confirmed a takeover after a 4409/409
-// terminal conflict -- consumed (reset to false) by the next connect
-// attempt so it can never silently apply to an unrelated future conflict.
+// True only while the user has confirmed a takeover after a terminal
+// conflict (today, in practice, always the HTTP 409 `terminal_conflict`
+// path below -- see the close-handler comment further down for why the WS
+// 4409 path cannot fire against a real server) -- consumed (reset to
+// false) by the next connect attempt so it can never silently apply to an
+// unrelated future conflict.
 let _pendingTakeover = false;
 
 // ─── Module-level encoding helpers ──────────────────────────────────────────
@@ -170,6 +173,23 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
         // the single shared terminal is actually attached to. Looping a
         // reconnect here would hammer the server and never recover — show
         // an honest overlay with a Take-over affordance instead.
+        //
+        // CURRENTLY UNREACHABLE against a real server, and that's expected:
+        // the server closes this WebSocket BEFORE calling accept() (see
+        // main.py's terminal_ws_proxy), which per ASGI/uvicorn semantics
+        // never produces a real WS close frame -- it serializes as a bare
+        // HTTP 403 handshake rejection instead (confirmed by raw-socket
+        // probe; see docs/API_SEMANTICS.md). A real browser's `close` event
+        // reports code 1006 for that case, never 4409, so this branch does
+        // not fire in production today. It only fires in
+        // tests/test_terminal.mjs, which constructs a synthetic close event
+        // with code 4409 directly. Kept (not deleted) because: (a) it is
+        // forward-compatible with a future server-side fix that makes the
+        // close code actually reach the wire (accept-then-close, or
+        // uvicorn's WS-denial-response extension) with zero client change,
+        // and (b) the real, working recovery path today is the HTTP 409
+        // `terminal_conflict` body on the /connect escalation POST below,
+        // which this branch's overlay/take-over UI is shared with.
         _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId);
         return;
       }
@@ -223,8 +243,11 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
               if (body && body.terminal_conflict) {
                 // Must inspect the status and stop here rather than proceeding
                 // to open the WebSocket -- this is the client half of the §0
-                // guard. Surface the same honest overlay the WS-side 4409
-                // close handler shows.
+                // guard, and today the ONLY half that actually fires against
+                // a real server: this is a normal HTTP response (unlike the
+                // WS-side 4409 close, which never reaches the wire -- see the
+                // close handler's comment above). Surface the same honest
+                // overlay the WS-side 4409 close handler would show.
                 _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId);
               }
               return null; // never fall through to _connectWebSocket on 409

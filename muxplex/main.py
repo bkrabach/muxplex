@@ -374,8 +374,10 @@ async def _run_poll_cycle() -> None:
         # 7. Clear active_session if the session is gone -- every group, not
         # just global. A private group whose session was killed from another
         # machine must not keep pointing at a corpse -- that would strand its
-        # /terminal/ws on a permanent 4409 with no way for the user to
-        # understand why.
+        # /terminal/ws in a permanent handshake-rejection loop (the pre-accept
+        # close(4409) never reaches a real client as a WS close code -- it
+        # serializes as an HTTP 403 -- see terminal_ws_proxy()'s docstring and
+        # docs/API_SEMANTICS.md) with no way for the user to understand why.
         cleared = clear_missing_active_sessions(state, name_set)
         if cleared:
             _log.info("poll: cleared vanished active_session for group(s) %s", cleared)
@@ -2196,6 +2198,30 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
     There is no race with the normal client path: openSession() awaits
     /connect (which sets terminal_session) before mounting the terminal, so
     they are equal by the time the WS opens.
+
+    IMPORTANT -- what a real client actually sees on the wire: both close()
+    calls below happen BEFORE websocket.accept(). Per ASGI/uvicorn
+    semantics, closing before accept() never produces a real WebSocket
+    close frame (the connection was never upgraded), so it serializes as a
+    bare HTTP handshake rejection instead -- confirmed by raw-socket probe
+    against a live instance: `HTTP/1.1 403 Forbidden`, empty body. The
+    4404/4409 values passed to close() are internal ASGI-message arguments
+    only; no real client (browser or the `websockets` library) observes
+    them today -- a browser's WS `close` event reports `1006` for any
+    failed opening handshake. Starlette's TestClient (test_ws_proxy.py)
+    does NOT catch this: it operates at the ASGI message layer and never
+    serializes real bytes, so `WebSocketDisconnect.code` there genuinely
+    is 4404/4409 -- correct at that layer, silent about the wire. The
+    resolution/denial logic below is still fully correct and enforced;
+    only the close CODE fails to reach the client. The path that DOES
+    reach a real client is the HTTP 409 `terminal_conflict` body on the
+    `POST /connect` escalation (an ordinary HTTP response, unaffected by
+    this gap) -- see docs/API_SEMANTICS.md for the full incident writeup.
+    Fixing the wire encoding (accept-then-close-with-code, or uvicorn's
+    WS-denial-response ASGI extension) is a separate, careful change: it
+    touches the pre-accept dance above that guards a hard-won
+    websocket.accept() RuntimeError (see _client_disconnected()'s
+    docstring) and is out of scope here.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
     if not await _ws_auth_check(websocket):
@@ -2207,10 +2233,14 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
         try:
             group = resolve_group(state, device_id)
         except KeyError:
+            # Pre-accept close: this code value does not reach the wire as a
+            # WebSocket close code (see this function's docstring). Real
+            # clients see an HTTP 403 handshake rejection instead.
             await websocket.close(code=4404)
             return
         wanted = read_group_state(state, group)["active_session"]
         if wanted is None or wanted != state["terminal_session"]:
+            # Pre-accept close: same wire caveat as above -- see docstring.
             await websocket.close(code=4409)
             return
 

@@ -301,6 +301,34 @@ who assume per-client state. **An agent that only reads panes and types into the
 never needs to touch either field**; prefer that over changing what the human is
 looking at.
 
+**`device_id` lets a caller opt out of the shared selection — omitting it
+changes nothing.** `GET`/`PATCH /api/state`, `GET /api/view`,
+`POST /api/sessions/{name}/connect`, and `DELETE /api/sessions/current` all
+accept an optional `?device_id=` query param that scopes the read/write to
+that device's own private selection instead of the one shared by everyone.
+**Everything said above this paragraph assumes no `device_id` is sent, and
+stays exactly true for a client that doesn't send one** — that's still the
+default, and still what every existing agent/script does. Adopting a
+`device_id` (and registering it via a heartbeat) is a real opt-in step, not
+something that happens implicitly; there's normally no reason for an agent
+to do it unless it specifically wants its own view/session selection kept
+separate from the human's.
+
+**`POST /connect` can now return `409` with a
+`{"terminal_conflict": true, ...}` body** instead of succeeding. There is
+exactly one underlying terminal process shared by the whole server, no
+matter how many separate selections exist — so if some *other* device has
+already claimed it for a different session, a caller asking for a session on
+top of that gets refused rather than silently yanking it away. **An agent
+that never sends `device_id` will essentially never see this** — refusal
+only happens *between* different selections, and an agent staying in the
+shared, default selection is always "the same one" as itself. If your agent
+does adopt its own `device_id` and hits a 409, treat it like any other
+error unless deliberately reclaiming the terminal is the intended action —
+in which case retry the same request with `&takeover=true`. Do that only
+when it's genuinely what you mean: it moves the terminal away from whichever
+device/session held it.
+
 ---
 
 ## 5. Typing into a session: `POST /api/sessions/{name}/input`
