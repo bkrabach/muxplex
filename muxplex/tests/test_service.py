@@ -55,7 +55,14 @@ def test_systemd_install_writes_unit_and_enables(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     # Avoid interactive prompt
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
@@ -91,7 +98,14 @@ def test_systemd_uninstall_stops_disables_removes(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     svc._systemd_uninstall()
 
@@ -106,7 +120,14 @@ def test_systemd_start_calls_systemctl(monkeypatch):
     import muxplex.service as svc
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     svc._systemd_start()
     assert ["systemctl", "--user", "start", "muxplex"] in calls
 
@@ -116,7 +137,14 @@ def test_systemd_stop_calls_systemctl(monkeypatch):
     import muxplex.service as svc
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     svc._systemd_stop()
     assert ["systemctl", "--user", "stop", "muxplex"] in calls
 
@@ -126,7 +154,14 @@ def test_systemd_restart_calls_systemctl(monkeypatch):
     import muxplex.service as svc
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     svc._systemd_restart()
     assert ["systemctl", "--user", "restart", "muxplex"] in calls
 
@@ -136,7 +171,14 @@ def test_systemd_status_calls_systemctl(monkeypatch):
     import muxplex.service as svc
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     svc._systemd_status()
     assert ["systemctl", "--user", "status", "muxplex", "--no-pager"] in calls
 
@@ -146,7 +188,14 @@ def test_systemd_logs_calls_journalctl(monkeypatch):
     import muxplex.service as svc
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     svc._systemd_logs()
     assert ["journalctl", "--user", "-u", "muxplex", "-f"] in calls
 
@@ -171,7 +220,14 @@ def test_launchd_install_writes_plist_and_bootstraps(monkeypatch, tmp_path):
     monkeypatch.setattr(os, "getuid", lambda: 501)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     # Suppress interactive prompt
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
@@ -211,7 +267,14 @@ def test_launchd_uninstall_bootouts_and_removes(monkeypatch, tmp_path):
     monkeypatch.setattr(os, "getuid", lambda: 501)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     svc._launchd_uninstall()
 
@@ -239,7 +302,14 @@ def test_launchd_stop_calls_bootout(monkeypatch):
     monkeypatch.setattr(os, "getuid", lambda: 501)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     svc._launchd_stop()
 
@@ -259,7 +329,14 @@ def test_launchd_logs_tails_log_file(monkeypatch):
     import muxplex.service as svc
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     svc._launchd_logs()
 
@@ -277,7 +354,14 @@ def test_launchd_restart_calls_stop_then_start(monkeypatch):
     monkeypatch.setattr(os, "getuid", lambda: 501)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     svc._launchd_restart()
 
@@ -304,7 +388,14 @@ def test_launchd_status_runs_print_command(monkeypatch):
     monkeypatch.setattr(os, "getuid", lambda: 501)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     svc._launchd_status()
 
@@ -631,7 +722,14 @@ def test_systemd_install_writes_timeout_stop_sec(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
 
     svc._systemd_install()
@@ -680,7 +778,14 @@ def test_service_install_shows_tls_tip_on_network_host(capsys, tmp_path, monkeyp
 
     # Mock subprocess to avoid actual systemctl calls
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     # Mock the prompt function
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
@@ -718,7 +823,14 @@ def test_service_install_hides_tls_tip_on_localhost(capsys, tmp_path, monkeypatc
 
     # Mock subprocess
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
 
     # Mock the prompt function
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
@@ -846,7 +958,14 @@ def test_systemd_install_restarts_so_reinstall_applies_new_env(monkeypatch, tmp_
     monkeypatch.setattr(svc, "_SYSTEMD_UNIT_PATH", unit_path)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
 
     svc._systemd_install()
@@ -923,7 +1042,14 @@ def test_launchd_install_boots_out_before_bootstrap(monkeypatch, tmp_path):
     monkeypatch.setattr(os, "getuid", lambda: 501)
 
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append(list(cmd)))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: (
+            calls.append(list(cmd)),
+            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+        )[1],
+    )
     monkeypatch.setattr(svc, "_prompt_host_if_localhost", lambda: None)
 
     svc._launchd_install()
