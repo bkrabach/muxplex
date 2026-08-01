@@ -359,28 +359,29 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   closing your own private fullscreen must never black out someone else's
   live terminal.
   - **`WS /terminal/ws` enforces the same claim with a loud, unconditional
-    backstop that holds regardless of client correctness — but the wire
-    behavior is NOT what the code's own close-code arguments suggest.**
-    With an optional `?device_id=`: unknown `device_id` calls
-    `websocket.close(code=4404)`; otherwise, if the resolved group's
-    `active_session` is `None` or does not equal the current
-    `terminal_session`, the code calls `websocket.close(code=4409)` — in
-    both cases *before* any upstream ttyd connection is attempted, and
-    *before* `websocket.accept()` has been called. This device is never
-    shown, and can never type into, a session it did not itself select.
-    Precisely this scenario is why the guard exists: without it, one
-    device's `POST /connect` silently redirects every other connected
-    terminal's WebSocket to the newly-attached session — the viewer's UI
-    still shows their own session name while their keystrokes land in a
-    DIFFERENT, live session belonging to someone else.
+    backstop that holds regardless of client correctness, and (as of the
+    fix below) the wire behavior now matches the code's close-code
+    arguments.** With an optional `?device_id=`: unknown `device_id` calls
+    `_accept_then_close(websocket, code=4404)`; otherwise, if the resolved
+    group's `active_session` is `None` or does not equal the current
+    `terminal_session`, the code calls `_accept_then_close(websocket,
+    code=4409)` — in both cases *before* any upstream ttyd connection is
+    attempted. This device is never shown, and can never type into, a
+    session it did not itself select. Precisely this scenario is why the
+    guard exists: without it, one device's `POST /connect` silently
+    redirects every other connected terminal's WebSocket to the
+    newly-attached session — the viewer's UI still shows their own session
+    name while their keystrokes land in a DIFFERENT, live session belonging
+    to someone else.
 
-    **Incident: the 4409/4404 codes never reach any real client.** Per
-    ASGI/uvicorn semantics, calling `websocket.close(code=...)` *before*
-    `websocket.accept()` does not produce a real WebSocket close frame at
-    all — the connection was never upgraded, so there is no WebSocket to
-    close. It serializes on the wire as a bare HTTP handshake rejection.
-    Live raw-socket verification against a running instance confirmed this
-    directly:
+    **Incident (original bug): the 4409/4404 codes never reached any real
+    client.** Before the fix below, both branches called
+    `websocket.close(code=...)` *before* `websocket.accept()`. Per
+    ASGI/uvicorn semantics, that does not produce a real WebSocket close
+    frame at all — the connection was never upgraded, so there is no
+    WebSocket to close. It serialized on the wire as a bare HTTP handshake
+    rejection. Live raw-socket verification against a running instance
+    confirmed this directly:
 
     ```
     $ raw socket probe of /terminal/ws?device_id=<non-owner>
@@ -390,36 +391,63 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
     Connection: close
     ```
 
-    The `websockets` Python client reports only `server rejected WebSocket
-    connection: HTTP 403` — no numeric close code is ever visible to it,
-    and a real browser's WebSocket `close` event surfaces `event.code ===
+    The `websockets` Python client reported only `server rejected WebSocket
+    connection: HTTP 403` — no numeric close code was ever visible to it,
+    and a real browser's WebSocket `close` event surfaced `event.code ===
     1006` for any failed opening handshake, never `4409`/`4404`. The
-    `4404`/`4409` values exist solely inside the ASGI message passed to
-    `websocket.close()` and are discarded by the server before a byte
-    reaches the client. **Unit tests in `muxplex/tests/test_ws_proxy.py`
+    `4404`/`4409` values existed solely inside the ASGI message passed to
+    `websocket.close()` and were discarded by the server before a byte
+    reached the client. **Unit tests in `muxplex/tests/test_ws_proxy.py`
     did not catch this** because Starlette's `TestClient` operates at the
     ASGI message layer and never serializes real bytes over a socket —
-    `WebSocketDisconnect.code` there genuinely is `4409`/`4404`, correctly,
-    at that layer, but that layer is not the wire.
+    `WebSocketDisconnect.code` there genuinely was `4409`/`4404`, correctly,
+    at that layer, but that layer was not the wire.
 
-    **What a real client actually observes, and the recovery path that
-    DOES work end-to-end:** a terminal client whose WS gets rejected sees a
-    failed handshake (403 / connection error, no usable close code) and
-    falls through to its normal reconnect logic; **the separate HTTP 409
-    `terminal_conflict` body on the `POST /connect` escalation (§4.3
-    below) is a real, ordinary HTTP response and is not affected by this
-    gap** — that is the mechanism a client can currently act on
-    (`terminal.js`'s `4409` WS-close branch can never fire against a real
-    server today; see that file for the corresponding comment). The
-    practical consequence is a couple of silent failed reconnects before
-    the client's `/connect` escalation surfaces the real, actionable 409.
-    **Residual gap, by design**: a terminal client that supplies no
-    `device_id` at all gets none of this protection (the bundled PWA always
-    sends one; requiring it unconditionally would be a breaking change to
-    any yet-unknown client and is out of scope). No `device_id` on
-    `/terminal/ws` is the ONLY case where this guard does not apply.
-    (Candidate future fix, not done here: accept-then-close-with-code, or
-    uvicorn's WebSocket-denial-response ASGI extension — both touch the
-    pre-accept dance that guards a hard-won `websocket.accept()`
-    `RuntimeError`, documented at `terminal_ws_proxy`'s docstring in
-    `main.py`, and are out of scope for a docs-only fix.)
+    **The fix: `_accept_then_close()` (`main.py`).** Both branches now call
+    `websocket.accept()` *first*, then immediately `websocket.close(code=
+    ...)`. Completing the handshake before closing is the ONLY way a real
+    close frame — carrying a real numeric code — can exist to be reported
+    to a browser at all; a browser's WebSocket object never exposes the
+    HTTP status or body of a *failed* (pre-101) handshake to JavaScript
+    (a WHATWG WebSocket API restriction, confirmed against the same live
+    instance both before and after this change — see the raw-socket
+    evidence in this fix's commit). This is also why uvicorn's
+    WebSocket-denial-response ASGI extension (`websocket.http.response.*`,
+    which lets a rejection carry a custom HTTP status/body without ever
+    accepting) was considered and **rejected** as the mechanism here: it
+    would let a script client that reads the raw HTTP response (e.g.
+    Python's `websockets` library, via `InvalidStatus.response`) see a
+    reused `{"terminal_conflict": true, ...}` body, but it cannot make a
+    numeric code — or any body — reach a real browser, because the
+    browser-side restriction applies regardless of what the server sends
+    pre-accept. Only completing the handshake does. Post-fix raw-socket
+    verification:
+
+    ```
+    $ raw socket probe of /terminal/ws?device_id=<non-owner>, post-fix
+    HTTP/1.1 101 Switching Protocols
+    ...
+    <WS close frame, code=4409>
+    ```
+
+    A real browser's `close` event now reports `event.code === 4409` (or
+    `4404`) directly — `terminal.js`'s `4409` WS-close branch, previously
+    documented as unreachable in production, now fires for real. **Trade-off
+    accepted deliberately**: the browser's `open` event fires briefly before
+    `close` follows, since the handshake genuinely completes — this does
+    not weaken the refusal (no relay, no ttyd contact, and no session data
+    is ever exchanged on this connection either way; see
+    `_accept_then_close()`'s docstring in `main.py`). The separate HTTP 409
+    `terminal_conflict` body on the `POST /connect` escalation (§4.3 below)
+    remains a second, independent, always-worked recovery path — unaffected
+    by any of this, before or after the fix. **Residual gap, unchanged by
+    this fix**: a terminal client that supplies no `device_id` at all gets
+    none of this protection (the bundled PWA always sends one; requiring it
+    unconditionally would be a breaking change to any yet-unknown client and
+    remains out of scope). No `device_id` on `/terminal/ws` is the ONLY case
+    where this guard does not apply. This fix does not touch the
+    pre-accept ttyd-auto-spawn disconnect race documented at
+    `terminal_ws_proxy`'s and `_client_disconnected()`'s docstrings in
+    `main.py`: that guard runs only in the branch where device_id is
+    absent/matching and the function proceeds toward a real relay, which
+    `_accept_then_close()`'s branches return well before reaching.

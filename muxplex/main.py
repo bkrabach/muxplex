@@ -2139,6 +2139,66 @@ async def _client_disconnected(websocket: WebSocket) -> None:
         return
 
 
+async def _accept_then_close(websocket: WebSocket, *, code: int) -> None:
+    """Accept the WebSocket handshake, then immediately close it with *code*.
+
+    This is the mechanism that fixes the "4409/4404 never reach any real
+    client" incident (see terminal_ws_proxy's docstring and
+    docs/API_SEMANTICS.md). Per ASGI/uvicorn semantics, calling
+    websocket.close() *before* accept() never produces a real WebSocket
+    close frame -- the connection was never upgraded, so it serializes as a
+    bare HTTP handshake rejection (`403 Forbidden`, confirmed by raw-socket
+    probe). Browsers report that as `close` event code 1006 unconditionally
+    and never expose the HTTP status or body to JavaScript at all -- this
+    is a WHATWG WebSocket API restriction, not an ASGI/uvicorn quirk, so it
+    applies no matter what the server sends pre-accept.
+
+    That restriction is *why* uvicorn's WebSocket-denial-response ASGI
+    extension (`websocket.http.response.*`, which lets a rejection carry a
+    custom HTTP status/body without accepting) was considered and rejected
+    for this specific problem: it changes what a script client that reads
+    the raw HTTP response (e.g. Python's `websockets` library, which
+    surfaces it via `InvalidStatus.response`) can see, but a real browser's
+    WebSocket object still never exposes that response to JS -- the denial
+    extension cannot make a numeric code, or a JSON body, reach browser
+    code. Completing the handshake (accept) is the ONLY way a real close
+    frame -- carrying a real code -- can exist to be reported to a browser
+    at all. Confirmed against a live instance in the digital twin (see the
+    commit this function was introduced in for the raw-socket evidence).
+
+    Trade-off accepted deliberately: the browser's `open` event now fires
+    briefly before `close` follows (the handshake genuinely completes), so
+    terminal.js's `open` handler runs its no-op auth/resize sends before
+    the close arrives. This does not weaken the refusal: this function
+    returns immediately after close() without ever touching ttyd or
+    reaching the relay loop below, so no session data is ever exchanged on
+    this connection regardless of what the client sends after `open` --
+    those messages are simply never read.
+
+    Guarded the same way _client_disconnected()'s documented RuntimeError
+    case is guarded: if the client already vanished (TCP dropped) during
+    the async state lookup immediately before this call, accept() can
+    raise -- caught and swallowed here (logged at debug) rather than
+    propagating as ASGI-exception log spam, since the refusal already
+    holds trivially when the client is gone (there is nothing left to
+    observe the close code anyway).
+    """
+    try:
+        await websocket.accept(subprotocol="tty")
+    except Exception as exc:
+        _log.debug(
+            "WS proxy: accept() failed while rejecting with code=%d "
+            "(client likely already disconnected): %s",
+            code,
+            exc,
+        )
+        return
+    try:
+        await websocket.close(code=code)
+    except Exception as exc:
+        _log.debug("WS proxy: close(code=%d) failed after accept: %s", code, exc)
+
+
 async def _prepare_ttyd_for_reconnect() -> None:
     """Kill and respawn ttyd (best-effort) if it isn't listening, then wait
     briefly for it to bind its port.
@@ -2199,29 +2259,42 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
     /connect (which sets terminal_session) before mounting the terminal, so
     they are equal by the time the WS opens.
 
-    IMPORTANT -- what a real client actually sees on the wire: both close()
-    calls below happen BEFORE websocket.accept(). Per ASGI/uvicorn
-    semantics, closing before accept() never produces a real WebSocket
-    close frame (the connection was never upgraded), so it serializes as a
-    bare HTTP handshake rejection instead -- confirmed by raw-socket probe
-    against a live instance: `HTTP/1.1 403 Forbidden`, empty body. The
-    4404/4409 values passed to close() are internal ASGI-message arguments
-    only; no real client (browser or the `websockets` library) observes
-    them today -- a browser's WS `close` event reports `1006` for any
-    failed opening handshake. Starlette's TestClient (test_ws_proxy.py)
-    does NOT catch this: it operates at the ASGI message layer and never
-    serializes real bytes, so `WebSocketDisconnect.code` there genuinely
-    is 4404/4409 -- correct at that layer, silent about the wire. The
-    resolution/denial logic below is still fully correct and enforced;
-    only the close CODE fails to reach the client. The path that DOES
-    reach a real client is the HTTP 409 `terminal_conflict` body on the
-    `POST /connect` escalation (an ordinary HTTP response, unaffected by
-    this gap) -- see docs/API_SEMANTICS.md for the full incident writeup.
-    Fixing the wire encoding (accept-then-close-with-code, or uvicorn's
-    WS-denial-response ASGI extension) is a separate, careful change: it
-    touches the pre-accept dance above that guards a hard-won
-    websocket.accept() RuntimeError (see _client_disconnected()'s
-    docstring) and is out of scope here.
+    IMPORTANT -- what a real client actually sees on the wire, and the fix
+    that changed it: both rejection branches below now call
+    _accept_then_close() instead of closing before accept(). Per
+    ASGI/uvicorn semantics, closing BEFORE accept() never produces a real
+    WebSocket close frame (the connection was never upgraded), so it
+    serializes as a bare HTTP handshake rejection instead -- confirmed by
+    raw-socket probe against a live instance: `HTTP/1.1 403 Forbidden`,
+    empty body, no numeric code visible anywhere on the wire. That was the
+    behavior before this fix, and it is why the 4404/4409 codes never
+    reached a real client: a browser's WS `close` event reports `1006` for
+    ANY failed opening handshake, and the WHATWG WebSocket spec gives
+    JavaScript no way to read the underlying HTTP status or body either --
+    so uvicorn's WebSocket-denial-response ASGI extension (considered as an
+    alternative) cannot help a real browser here no matter what status/body
+    it carries; it only changes what a script client that reads the raw
+    HTTP response (e.g. Python's `websockets` library) can see.
+
+    _accept_then_close() completes the handshake first, so the close frame
+    -- and its code -- genuinely reaches the wire: a real browser's `close`
+    event now reports `event.code === 4404`/`4409` instead of `1006`, and
+    terminal.js's 4409 branch (previously unreachable in production) now
+    fires for real. See _accept_then_close()'s docstring for the full
+    mechanism, the trade-off it deliberately accepts (the browser's `open`
+    event fires briefly before `close` follows, since the handshake
+    genuinely completes), and why the denial-response extension was
+    rejected. See docs/API_SEMANTICS.md for the original incident writeup
+    and this fix. The resolution/denial logic itself (which device_id maps
+    to which code) is unchanged -- only how the code reaches the client.
+
+    This fix does NOT touch the pre-accept ttyd-auto-spawn disconnect race
+    documented above and in _client_disconnected()'s docstring: that guard
+    only runs in the branch below where device_id is absent/matching and
+    the function proceeds toward a real relay. The device_id-conflict
+    branches return immediately after _accept_then_close(), well before
+    reaching the ttyd-liveness check, so they never interact with that
+    wait at all.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
     if not await _ws_auth_check(websocket):
@@ -2233,15 +2306,15 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
         try:
             group = resolve_group(state, device_id)
         except KeyError:
-            # Pre-accept close: this code value does not reach the wire as a
-            # WebSocket close code (see this function's docstring). Real
-            # clients see an HTTP 403 handshake rejection instead.
-            await websocket.close(code=4404)
+            # accept()-then-close() so this code reaches the wire as a real
+            # WS close frame -- see _accept_then_close()'s docstring and
+            # this function's docstring for the wire-reachability fix.
+            await _accept_then_close(websocket, code=4404)
             return
         wanted = read_group_state(state, group)["active_session"]
         if wanted is None or wanted != state["terminal_session"]:
-            # Pre-accept close: same wire caveat as above -- see docstring.
-            await websocket.close(code=4409)
+            # Same wire-reachability fix as above -- see _accept_then_close().
+            await _accept_then_close(websocket, code=4409)
             return
 
     # Register this connection's task so lifespan shutdown can cancel it.

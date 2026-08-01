@@ -21,7 +21,6 @@ from fastapi.testclient import TestClient
 
 from muxplex.main import app, terminal_ws_proxy
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures (mirror test_main.py setup so tests run cleanly in isolation)
 # ---------------------------------------------------------------------------
@@ -162,3 +161,58 @@ def test_ws_proxy_registry_exists_and_empty_when_idle():
     assert not _ws_proxy_tasks  # nothing open outside a live proxy session
     # And the lifespan shutdown actually uses the registry.
     assert "_ws_proxy_tasks" in inspect.getsource(lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Federation WS relay: same shutdown-hang class of bug, same fix, mirrored
+# regression coverage (federation_terminal_ws_proxy previously used gather()
+# and never registered in _ws_proxy_tasks -- both fixed to match
+# terminal_ws_proxy's already-guarded pattern above).
+# ---------------------------------------------------------------------------
+
+
+def test_federation_ws_relay_terminates_on_first_side_close():
+    """The federation relay must stop when EITHER side closes, not wait for
+    both -- same rationale as test_ws_relay_terminates_on_first_side_close.
+
+    Before the fix, federation_terminal_ws_proxy called
+    `await asyncio.gather(client_to_remote(), remote_to_client())`, which
+    hangs shutdown exactly like the pre-fix local proxy did: if the browser
+    disconnects, remote_to_client keeps streaming from the still-live
+    remote, the handler never returns, and uvicorn's "waiting for
+    connections to close" phase runs until systemd SIGKILLs the process.
+    """
+    from muxplex.main import federation_terminal_ws_proxy
+
+    source = inspect.getsource(federation_terminal_ws_proxy)
+    assert "FIRST_COMPLETED" in source, (
+        "federation relay must use asyncio.wait(..., return_when=FIRST_COMPLETED) "
+        "and cancel the other direction -- gather() waits for both and hangs shutdown"
+    )
+    assert "await asyncio.gather(client_to_remote(), remote_to_client())" not in source
+
+
+def test_federation_ws_relay_handles_disconnect_message():
+    """client_to_remote must return on a websocket.disconnect message, same
+    as terminal_ws_proxy's client_to_ttyd (test_ws_relay_handles_disconnect_message)."""
+    from muxplex.main import federation_terminal_ws_proxy
+
+    source = inspect.getsource(federation_terminal_ws_proxy)
+    assert "websocket.disconnect" in source
+
+
+def test_federation_ws_proxy_registers_in_shared_registry():
+    """federation_terminal_ws_proxy must register/deregister in the SAME
+    `_ws_proxy_tasks` registry terminal_ws_proxy uses, so lifespan shutdown
+    can cancel an open federation relay directly.
+
+    Before the fix, this registration was entirely absent: an open
+    federation relay was invisible to `n_relays = len(_ws_proxy_tasks)` and
+    to the lifespan shutdown cancellation loop, regardless of how the two
+    directions were awaited.
+    """
+    from muxplex.main import federation_terminal_ws_proxy
+
+    source = inspect.getsource(federation_terminal_ws_proxy)
+    assert "_ws_proxy_tasks.add(_task)" in source
+    assert "_ws_proxy_tasks.discard(_task)" in source

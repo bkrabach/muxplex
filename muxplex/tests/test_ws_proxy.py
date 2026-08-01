@@ -659,15 +659,25 @@ def test_ws_no_device_id_unaffected(monkeypatch):
 
 
 def test_ws_unknown_device_id_closes_4404():
+    """Unknown device_id -> accept()-then-close(4404) (see _accept_then_close()).
+
+    Post-fix, the handshake completes (accept()) before the close, so
+    entering the TestClient context manager now succeeds -- the close
+    frame is the NEXT ASGI message, observed here via ws.receive_text().
+    This is exactly the ASGI-level behavior change the fix makes (see
+    terminal_ws_proxy's docstring): pre-fix, this same close(4404) call
+    happened BEFORE accept(), so entering the context manager itself would
+    have raised WebSocketDisconnect immediately instead.
+    """
     with _make_authed_client() as c:
-        with pytest.raises(WebSocketDisconnect) as exc_info:
-            with c.websocket_connect("/terminal/ws?device_id=unknown-device") as _:
-                pass
+        with c.websocket_connect("/terminal/ws?device_id=unknown-device") as ws:
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_text()
     assert exc_info.value.code == 4404
 
 
 def test_ws_mismatched_active_session_closes_4409(monkeypatch):
-    """Device's active_session != terminal_session -> close(4409), never relay."""
+    """Device's active_session != terminal_session -> accept()-then-close(4409), never relay."""
     with _make_authed_client() as c:
         _heartbeat(c, "d1", "device:d1")
         # Give the terminal to global (via connect), leaving device:d1's
@@ -689,9 +699,12 @@ def test_ws_mismatched_active_session_closes_4409(monkeypatch):
 
         c.post("/api/sessions/sessX/connect")  # global claims the terminal
 
-        with pytest.raises(WebSocketDisconnect) as exc_info:
-            with c.websocket_connect("/terminal/ws?device_id=d1") as _:
-                pass
+        # Post-fix, accept() happens before close(4409) -- entering the
+        # context manager now succeeds (see test_ws_unknown_device_id_closes_4404
+        # for the same ASGI-level shape); the close is the next message.
+        with c.websocket_connect("/terminal/ws?device_id=d1") as ws:
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_text()
     assert exc_info.value.code == 4409
 
 
