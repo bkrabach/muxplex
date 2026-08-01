@@ -1686,7 +1686,7 @@ test('buildSidebarHTML does not add sidebar-item--active class for inactive sess
 });
 
 test('buildSidebarHTML shows bell indicator class when unseen_count > 0', () => {
-  const session = { name: 's', snapshot: '', bell: { unseen_count: 3 } };
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 3, last_fired_at: 100, seen_at: null } };
   const html = app.buildSidebarHTML(session, '');
   // activityIndicator defaults to 'both' so sidebar-item--bell and sidebar-item--edge-bell should appear
   assert.ok(html.includes('sidebar-item--bell'), 'should have sidebar-item--bell class when unseen_count > 0');
@@ -2937,14 +2937,38 @@ test('sortByAttention orders multiple bells by last_fired_at descending (freshes
   assert.deepStrictEqual(ordered.map((s) => s.name), ['fresh-bell', 'stale-bell']);
 });
 
-test('sortByAttention orders the non-bell tier by last_activity_at descending, unknown last', () => {
+test('sortByAttention orders the non-bell tier by bell.last_fired_at descending, never-belled last', () => {
   const sessions = [
-    { name: 'no-activity', bell: { unseen_count: 0 } },
-    { name: 'old', last_activity_at: 100, bell: { unseen_count: 0 } },
-    { name: 'new', last_activity_at: 300, bell: { unseen_count: 0 } },
+    { name: 'never-belled', bell: { unseen_count: 0 } },
+    { name: 'old-bell', bell: { unseen_count: 0, last_fired_at: 100, seen_at: 100 } },
+    { name: 'new-bell', bell: { unseen_count: 0, last_fired_at: 300, seen_at: 300 } },
   ];
   const ordered = app.sortByAttention(sessions);
-  assert.deepStrictEqual(ordered.map((s) => s.name), ['new', 'old', 'no-activity']);
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['new-bell', 'old-bell', 'never-belled']);
+});
+
+test('sortByAttention non-bell tier follows bell.last_fired_at, NOT last_activity_at (regression guard)', () => {
+  // last_activity_at order is the OPPOSITE of bell.last_fired_at order -- this is the exact bug
+  // report: tmux window_activity bumps on any pane redraw, so keying off it churned the grid
+  // on every poll cycle even with no real bell event.
+  const sessions = [
+    {
+      name: 'fresh-activity-old-bell',
+      last_activity_at: 2000,
+      bell: { unseen_count: 0, last_fired_at: 100, seen_at: 100 },
+    },
+    {
+      name: 'old-activity-fresh-bell',
+      last_activity_at: 100,
+      bell: { unseen_count: 0, last_fired_at: 2000, seen_at: 2000 },
+    },
+  ];
+  const ordered = app.sortByAttention(sessions);
+  assert.deepStrictEqual(
+    ordered.map((s) => s.name),
+    ['old-activity-fresh-bell', 'fresh-activity-old-bell'],
+    'must follow bell.last_fired_at, not last_activity_at'
+  );
 });
 
 test('applySortOrder attention mode is NOT a silent fallback to alphabetical or manual order', () => {
@@ -4218,7 +4242,7 @@ test('buildSidebarHTML does not have sidebar-item-meta element', () => {
 
 test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is dot', () => {
   app._setServerSettings({ activityIndicator: 'dot' });
-  const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 2, last_fired_at: 100, seen_at: null } };
   const html = app.buildSidebarHTML(session, '');
   assert.ok(html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must appear when activityIndicator is dot');
   app._setServerSettings(null);
@@ -4226,7 +4250,7 @@ test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is do
 
 test('buildSidebarHTML adds sidebar-item--edge-bell when activityIndicator is both', () => {
   app._setServerSettings({ activityIndicator: 'both' });
-  const session = { name: 's', snapshot: '', bell: { unseen_count: 2 } };
+  const session = { name: 's', snapshot: '', bell: { unseen_count: 2, last_fired_at: 100, seen_at: null } };
   const html = app.buildSidebarHTML(session, '');
   assert.ok(html.includes('sidebar-item--edge-bell'), 'sidebar-item--edge-bell must appear when activityIndicator is both');
   app._setServerSettings(null);
