@@ -85,6 +85,29 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
    Fence reads are strict-typed and fail CLOSED: only boolean `true` enables
    (`is not True` check), and a non-list allowlist is treated as empty (a
    string value would substring-match via `in`).
+
+   **This fence has a sibling, and it is not optional reading.** The `/input`
+   fence above only protects the *typing* path. A Bearer-key holder who
+   cannot type into a session can still get an equivalent RCE through a
+   completely different door: `PATCH /api/settings` the
+   `new_session_template` (or `delete_session_template`) to an arbitrary
+   shell command, then `POST /api/sessions` to make the server run it —
+   never touching `/input` at all. **Incident (confirmed by audit, fixed
+   before it was exploited in the wild):** `new_session_template` and
+   `delete_session_template` were NOT in `LOCAL_ONLY_KEYS`, so this path was
+   open. The fix widens `LOCAL_ONLY_KEYS` to cover every settings key that
+   names a **command or a filesystem path the server itself later executes
+   or reads** — not just the two input-typing keys: `new_session_template`,
+   `delete_session_template` (shell commands run via
+   `create_subprocess_shell`), `tmux_socket_dir` (fed into every tmux
+   invocation as `TMUX_TMPDIR` — a remote caller could otherwise redirect
+   session create/kill to an attacker-controlled socket dir), and
+   `tls_cert`/`tls_key` (paths the server later reads and parses — an
+   unauthenticated file-read primitive on an attacker-chosen path
+   otherwise). Same rationale as above, same remedy: local-file-only,
+   `PATCH` silently ignores them, never in `SYNCABLE_KEYS`. See
+   `settings.LOCAL_ONLY_KEYS`'s module comment for the authoritative list
+   and `docs/API_SEMANTICS.md` for the client-facing semantics.
 4. **Fail-closed target gate**: exact `{name} in get_session_list()` → 404
    (empty/unavailable cache rejects everything; same pattern as connect/delete).
 

@@ -1508,8 +1508,11 @@ def test_open_settings_populates_template_textarea() -> None:
     )
 
 
-def test_bind_static_event_listeners_binds_template_input_with_debounce() -> None:
-    """bindStaticEventListeners must bind input on #setting-template with 500ms debounce."""
+def test_bind_static_event_listeners_does_not_patch_templates() -> None:
+    """new_session_template / delete_session_template are settings.LOCAL_ONLY_KEYS --
+    the server silently ignores them in PATCH /api/settings. bindStaticEventListeners
+    must NOT wire up an input/change/reset handler that calls patchServerSetting with
+    either key: a write the server ignores must not be offered by the UI at all."""
     match = re.search(
         r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
         _JS,
@@ -1517,47 +1520,24 @@ def test_bind_static_event_listeners_binds_template_input_with_debounce() -> Non
     )
     assert match, "bindStaticEventListeners function not found"
     body = match.group(1)
-    assert "setting-template" in body, (
-        "bindStaticEventListeners must bind setting-template input event"
+    # Check the actual PATCH call shape rather than bare substring presence --
+    # a comment explaining *why* there's no handler legitimately mentions the
+    # key names, but must never appear next to a live patchServerSetting call.
+    assert "patchServerSetting('new_session_template'" not in body, (
+        "bindStaticEventListeners must not PATCH new_session_template "
+        "(settings.LOCAL_ONLY_KEYS -- server ignores it)"
     )
-    assert "500" in body, (
-        "bindStaticEventListeners template input handler must use 500ms debounce"
+    assert "patchServerSetting('delete_session_template'" not in body, (
+        "bindStaticEventListeners must not PATCH delete_session_template "
+        "(settings.LOCAL_ONLY_KEYS -- server ignores it)"
     )
-    assert "patchServerSetting" in body, (
-        "bindStaticEventListeners template input handler must call patchServerSetting"
+    # The reset buttons existed only to fire these now-removed PATCH calls, and
+    # the buttons themselves were removed from index.html (see test_frontend_html.py).
+    assert "$('setting-template-reset')" not in body, (
+        "setting-template-reset was removed from index.html; no handler should reference it"
     )
-    assert "new_session_template" in body, (
-        "bindStaticEventListeners template input handler must pass 'new_session_template' key"
-    )
-
-
-def test_bind_static_event_listeners_binds_template_reset_button() -> None:
-    """bindStaticEventListeners must bind click on #setting-template-reset."""
-    match = re.search(
-        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
-        _JS,
-        re.DOTALL,
-    )
-    assert match, "bindStaticEventListeners function not found"
-    body = match.group(1)
-    assert "setting-template-reset" in body, (
-        "bindStaticEventListeners must bind setting-template-reset click event"
-    )
-
-
-def test_bind_static_event_listeners_reset_patches_server() -> None:
-    """bindStaticEventListeners reset handler must call patchServerSetting with default template."""
-    match = re.search(
-        r"function bindStaticEventListeners\s*\(\s*\)\s*\{(.*?)\n\}",
-        _JS,
-        re.DOTALL,
-    )
-    assert match, "bindStaticEventListeners function not found"
-    body = match.group(1)
-    # The reset button section must patch with the default template
-    assert "setting-template-reset" in body, "setting-template-reset must be referenced"
-    assert "NEW_SESSION_DEFAULT_TEMPLATE" in body, (
-        "bindStaticEventListeners reset handler must use NEW_SESSION_DEFAULT_TEMPLATE"
+    assert "$('setting-delete-template-reset')" not in body, (
+        "setting-delete-template-reset was removed from index.html; no handler should reference it"
     )
 
 
@@ -2291,7 +2271,9 @@ def test_apply_sort_order_handles_alphabetical_with_locale_compare() -> None:
     )
     assert match, "applySortOrder function not found in app.js"
     body = match.group(1)
-    assert "alphabetical" in body, "applySortOrder must check for 'alphabetical' sort order"
+    assert "alphabetical" in body, (
+        "applySortOrder must check for 'alphabetical' sort order"
+    )
     assert "localeCompare" in body, (
         "applySortOrder must use localeCompare for alphabetical sort"
     )

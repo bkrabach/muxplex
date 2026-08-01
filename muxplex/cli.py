@@ -4,12 +4,11 @@ import argparse
 import logging
 import os
 import platform
+import secrets as _secrets
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-
-import secrets as _secrets
 
 from muxplex.auth import (
     get_password_path,
@@ -87,7 +86,7 @@ def _verify_service_started(timeout_s: int = 10) -> bool:
         return result.returncode == 0
 
     if _have_launchctl():
-        from muxplex.settings import load_settings  # noqa: PLC0415
+        from muxplex.settings import load_settings
 
         cfg = load_settings()
         port = cfg.get("port", 8088)
@@ -292,7 +291,11 @@ def reset_secret() -> None:
 
 def reset_device_id_command() -> None:
     """Regenerate the device identity UUID and warn about orphaned session keys."""
-    from muxplex.identity import IDENTITY_PATH, load_device_id, reset_device_id  # noqa: PLC0415
+    from muxplex.identity import (
+        IDENTITY_PATH,
+        load_device_id,
+        reset_device_id,
+    )
 
     old_id = load_device_id()
     new_id = reset_device_id()
@@ -349,7 +352,7 @@ def _fetch_local_instance_info(port: int, timeout: float = 2.0) -> dict | None:
     for scheme in ("https", "http"):
         url = f"{scheme}://127.0.0.1:{port}/api/instance-info"
         try:
-            with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:  # noqa: S310
+            with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp:
                 if resp.status != 200:
                     continue
                 data = json.loads(resp.read().decode("utf-8"))
@@ -511,9 +514,9 @@ def serve(
 
     Resolution order: CLI flag (if not None) > settings.json > hardcoded default.
     """
-    import uvicorn  # noqa: PLC0415
+    import uvicorn
 
-    from muxplex.settings import load_settings  # noqa: PLC0415
+    from muxplex.settings import load_settings
 
     # Must happen before uvicorn.run(): see configure_logging()'s docstring --
     # uvicorn's own log_level="info" below does not configure muxplex's loggers.
@@ -537,7 +540,7 @@ def serve(
     # Refuses to terminate a healthy running server -- see _kill_stale_port_holder.
     _kill_stale_port_holder(port, force=force_take_port)
 
-    from muxplex.main import app  # noqa: PLC0415
+    from muxplex.main import app
 
     # Resolve SSL configuration
     ssl_kwargs: dict = {}
@@ -609,7 +612,7 @@ def doctor() -> None:
 
     # muxplex version + install source + update check
     try:
-        from importlib.metadata import version as pkg_version  # noqa: PLC0415
+        from importlib.metadata import version as pkg_version
 
         muxplex_version = pkg_version("muxplex")
     except Exception:
@@ -629,7 +632,7 @@ def doctor() -> None:
         print(f"  {ok_mark} {update_msg}")
 
     # Settings file
-    from muxplex.settings import SETTINGS_PATH  # noqa: PLC0415
+    from muxplex.settings import SETTINGS_PATH
 
     if SETTINGS_PATH.exists():
         print(f"  {ok_mark} Settings: {SETTINGS_PATH}")
@@ -639,7 +642,7 @@ def doctor() -> None:
         )
 
     # Serve config
-    from muxplex.settings import load_settings  # noqa: PLC0415
+    from muxplex.settings import load_settings
 
     cfg = load_settings()
     print(
@@ -677,9 +680,9 @@ def doctor() -> None:
     tls_cert = cfg.get("tls_cert", "")
     tls_key = cfg.get("tls_key", "")
     if tls_cert and tls_key:
-        from datetime import datetime, timezone  # noqa: PLC0415
+        from datetime import datetime, timezone
 
-        from muxplex.tls import get_cert_info  # noqa: PLC0415
+        from muxplex.tls import get_cert_info
 
         cert_info = get_cert_info(tls_cert)
         if cert_info is not None:
@@ -712,7 +715,7 @@ def doctor() -> None:
     # Auth status
     pw_path = get_password_path()
     if pam_available():
-        import pwd  # noqa: PLC0415
+        import pwd
 
         username = pwd.getpwuid(os.getuid()).pw_name
         print(f"  {ok_mark} Auth: PAM available (user: {username})")
@@ -754,7 +757,7 @@ def doctor() -> None:
                 )
                 if result.returncode == 0:
                     # Agent is registered — verify it is actually serving
-                    from muxplex.settings import load_settings  # noqa: PLC0415
+                    from muxplex.settings import load_settings
 
                     _cfg = load_settings()
                     _port = _cfg.get("port", 8088)
@@ -962,7 +965,7 @@ def upgrade(*, force: bool = False) -> None:
             # 3. Regenerate service file (picks up any plist/unit changes)
             if sys.platform == "darwin" or _have_systemctl():
                 print("  Regenerating service file...")
-                from muxplex.service import service_install  # noqa: PLC0415
+                from muxplex.service import service_install
 
                 service_install()
             else:
@@ -1100,7 +1103,7 @@ def cmd_env() -> None:
     exactly match what the service resolves -- see
     settings.resolve_tmux_socket_dir()'s docstring for the full precedence.
     """
-    from muxplex.settings import resolve_tmux_socket_dir  # noqa: PLC0415
+    from muxplex.settings import resolve_tmux_socket_dir
 
     print(f'export TMUX_TMPDIR="{resolve_tmux_socket_dir()}"')
     print(
@@ -1154,11 +1157,11 @@ def cmd_restore(
     afterward. Any FAIL (session never appeared) makes the exit code 1 so
     scripted/CI callers cannot mistake a partial restore for a complete one.
     """
-    import asyncio  # noqa: PLC0415
-    import time  # noqa: PLC0415
+    import asyncio
+    import time
 
-    import muxplex.manifest as manifest_mod  # noqa: PLC0415
-    import muxplex.restore as restore_mod  # noqa: PLC0415
+    import muxplex.manifest as manifest_mod
+    import muxplex.restore as restore_mod
 
     if forget:
         count = asyncio.run(restore_mod.forget())
@@ -1251,7 +1254,11 @@ def cmd_restore(
 
 def config_list() -> None:
     """Show all settings with current values."""
-    from muxplex.settings import DEFAULT_SETTINGS, SETTINGS_PATH, load_settings  # noqa: PLC0415
+    from muxplex.settings import (
+        DEFAULT_SETTINGS,
+        SETTINGS_PATH,
+        load_settings,
+    )
 
     settings = load_settings()
     print(f"\nmuxplex config ({SETTINGS_PATH})\n")
@@ -1277,7 +1284,7 @@ def config_list() -> None:
 
 def config_get(key: str) -> None:
     """Show one setting value."""
-    from muxplex.settings import DEFAULT_SETTINGS, load_settings  # noqa: PLC0415
+    from muxplex.settings import DEFAULT_SETTINGS, load_settings
 
     if key not in DEFAULT_SETTINGS:
         print(f"Unknown setting: {key}", file=sys.stderr)
@@ -1300,9 +1307,9 @@ def config_get(key: str) -> None:
 
 def config_set(key: str, raw_value: str) -> None:
     """Set a setting value. Auto-detects type from the default."""
-    import json  # noqa: PLC0415
+    import json
 
-    from muxplex.settings import DEFAULT_SETTINGS, patch_settings  # noqa: PLC0415
+    from muxplex.settings import DEFAULT_SETTINGS, patch_settings
 
     if key not in DEFAULT_SETTINGS:
         print(f"Unknown setting: {key}", file=sys.stderr)
@@ -1334,9 +1341,9 @@ def config_set(key: str, raw_value: str) -> None:
 
 def config_reset(key: str | None = None) -> None:
     """Reset one or all settings to defaults."""
-    import copy  # noqa: PLC0415
+    import copy
 
-    from muxplex.settings import (  # noqa: PLC0415
+    from muxplex.settings import (
         DEFAULT_SETTINGS,
         SETTINGS_PATH,
         patch_settings,
@@ -1464,8 +1471,12 @@ def setup_tls(method: str = "auto") -> None:
     Auto-detection chain (method='auto'): Tailscale → mkcert → self-signed.
     Use --method to force a specific certificate source.
     """
-    from muxplex.settings import SETTINGS_PATH, load_settings, patch_settings  # noqa: PLC0415
-    from muxplex.tls import (  # noqa: PLC0415
+    from muxplex.settings import (
+        SETTINGS_PATH,
+        load_settings,
+        save_settings,
+    )
+    from muxplex.tls import (
         _default_hostnames,
         _default_lan_ip,
         _default_tailnet_name,
@@ -1590,8 +1601,15 @@ def setup_tls(method: str = "auto") -> None:
         )
         sys.exit(1)
 
-    # Update settings with cert/key paths
-    patch_settings({"tls_cert": str(cert_path), "tls_key": str(key_path)})
+    # Update settings with cert/key paths. tls_cert/tls_key are in
+    # settings.LOCAL_ONLY_KEYS (patch_settings() silently ignores them --
+    # see that fence's module comment). This CLI command IS the local
+    # operator action the fence is meant to allow, so it writes directly
+    # via save_settings() rather than going through the API-facing
+    # patch_settings() filter.
+    _settings["tls_cert"] = str(cert_path)
+    _settings["tls_key"] = str(key_path)
+    save_settings(_settings)
 
     # Print cert info
     hostnames_str = ", ".join(result["hostnames"])
@@ -1652,8 +1670,8 @@ def setup_tls(method: str = "auto") -> None:
 
 def setup_tls_status() -> None:
     """Display the current TLS configuration status."""
-    from muxplex.settings import load_settings  # noqa: PLC0415
-    from muxplex.tls import get_cert_info  # noqa: PLC0415
+    from muxplex.settings import load_settings
+    from muxplex.tls import get_cert_info
 
     settings = load_settings()
     tls_cert = settings.get("tls_cert", "")
@@ -1912,7 +1930,7 @@ def main() -> None:
         else:
             setup_tls(method=args.method)
     elif args.command == "service":
-        from muxplex.service import (  # noqa: PLC0415
+        from muxplex.service import (
             service_install,
             service_logs,
             service_restart,

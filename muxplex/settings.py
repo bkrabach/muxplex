@@ -136,12 +136,39 @@ DEFAULT_SETTINGS: dict = {
 # If these fence keys were PATCHable, a Bearer-key holder could self-authorize
 # typing into any session (including the human's own panes), defeating the
 # per-session allowlist entirely. Requiring a local file edit makes widening
-# the fence a deliberate local-operator action. These keys are also
-# deliberately NOT in SYNCABLE_KEYS (federation sync must never widen them).
+# the fence a deliberate local-operator action.
+#
+# WIDENED SCOPE (confirmed incident): this fence is not only for the two
+# input-typing keys above -- it covers ANY key that names a *command* or a
+# *filesystem path* the SERVER itself later executes or reads, because a
+# remote caller who can set one of those gets a capability the input fence
+# was specifically built to contain, without ever touching the fenced
+# `/input` endpoint:
+#   - `new_session_template` / `delete_session_template` are arbitrary shell
+#     commands, executed via `create_subprocess_shell` (sessions.py). A
+#     Bearer-key holder could PATCH a malicious template, then POST
+#     /api/sessions to trigger it -- full RCE, bypassing the `/input` fence
+#     entirely (it never touches that endpoint).
+#   - `tmux_socket_dir` is fed directly into every tmux invocation as
+#     `TMUX_TMPDIR` (see resolve_tmux_socket_dir() / sessions.tmux_env()).
+#     A remote caller could redirect all session create/kill traffic to an
+#     attacker-controlled socket directory -- session hijack / evasion.
+#   - `tls_cert` / `tls_key` are filesystem paths the server later reads and
+#     parses (cli.py's TLS status/serve commands). A remote caller could
+#     point these at an arbitrary path, an unauthenticated file-read
+#     primitive on whatever the server has permission to open.
+#
+# These keys are also deliberately NOT in SYNCABLE_KEYS (federation sync must
+# never widen them).
 LOCAL_ONLY_KEYS: frozenset[str] = frozenset(
     {
         "input_enabled",
         "input_allowed_sessions",
+        "new_session_template",
+        "delete_session_template",
+        "tmux_socket_dir",
+        "tls_cert",
+        "tls_key",
     }
 )
 

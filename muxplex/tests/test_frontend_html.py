@@ -866,8 +866,11 @@ def test_html_new_session_panel_has_helper_text() -> None:
     )
 
 
-def test_html_new_session_panel_has_reset_button() -> None:
-    """New Session panel must contain #setting-template-reset button with class settings-action-btn."""
+def test_html_new_session_panel_has_no_reset_button() -> None:
+    """New Session panel must NOT contain #setting-template-reset: the create
+    template field is now read-only (new_session_template is in
+    settings.LOCAL_ONLY_KEYS -- see test_html_template_textareas_are_readonly),
+    and the reset button existed only to fire the now-dead PATCH call."""
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
@@ -875,13 +878,8 @@ def test_html_new_session_panel_has_reset_button() -> None:
         class_="settings-panel", attrs={"data-tab": "new-session"}
     )
     assert new_session_panel is not None, "Missing new-session settings-panel"
-    reset_btn = new_session_panel.find(id="setting-template-reset")
-    assert reset_btn is not None, (
-        "Missing #setting-template-reset inside new-session panel"
-    )
-    classes = reset_btn.get("class") or []
-    assert "settings-action-btn" in classes, (
-        f"#setting-template-reset must have class 'settings-action-btn', has: {classes}"
+    assert new_session_panel.find(id="setting-template-reset") is None, (
+        "#setting-template-reset must be removed now that the field is read-only"
     )
 
 
@@ -1062,10 +1060,48 @@ def test_html_notifications_tab_controls() -> None:
 
 
 def test_html_new_session_tab_controls() -> None:
-    """New Session tab must contain setting-template and setting-template-reset."""
+    """New Session tab must contain setting-template."""
     soup = _SOUP
-    for id_ in ("setting-template", "setting-template-reset"):
-        assert soup.find(id=id_), f"Missing element with id='{id_}'"
+    assert soup.find(id="setting-template"), (
+        "Missing element with id='setting-template'"
+    )
+
+
+def test_html_template_textareas_are_readonly() -> None:
+    """new_session_template / delete_session_template are server-side shell commands
+    (settings.LOCAL_ONLY_KEYS) -- PATCH /api/settings silently ignores them. The
+    textareas must be readonly so the UI never implies an edit here is saved, and
+    no reset buttons (which existed only to PATCH a value) may exist for them."""
+    soup = _SOUP
+    for id_ in ("setting-template", "setting-delete-template"):
+        textarea = soup.find(id=id_)
+        assert textarea is not None, f"Missing element with id='{id_}'"
+        assert textarea.has_attr("readonly"), (
+            f"#{id_} must have the readonly attribute -- it is a "
+            "settings.LOCAL_ONLY_KEYS value the server ignores from PATCH"
+        )
+    # The reset buttons existed only to fire patchServerSetting() for these keys;
+    # once the fields are read-only there is nothing for them to do.
+    for removed_id in ("setting-template-reset", "setting-delete-template-reset"):
+        assert soup.find(id=removed_id) is None, (
+            f"#{removed_id} must be removed now that its field is read-only "
+            "(it can no longer write a value)"
+        )
+
+
+def test_html_template_textareas_note_settings_json() -> None:
+    """The helper text next to each read-only template field must name the
+    settings.json path so the user knows where to make the change."""
+    soup = _SOUP
+    for id_ in ("setting-template", "setting-delete-template"):
+        textarea = soup.find(id=id_)
+        assert textarea is not None, f"Missing element with id='{id_}'"
+        helper = textarea.find_next_sibling("span", class_="settings-helper")
+        assert helper is not None, f"Missing helper text after #{id_}"
+        helper_text = helper.get_text()
+        assert "settings.json" in helper_text, (
+            f"#{id_}'s helper text must reference settings.json, got: {helper_text!r}"
+        )
 
 
 def test_html_settings_close_btn_exists() -> None:
@@ -1174,25 +1210,6 @@ def test_html_delete_template_textarea_rows() -> None:
     assert rows == "3", f"#setting-delete-template must have rows='3', got: {rows!r}"
 
 
-def test_html_delete_template_reset_button_exists() -> None:
-    """New Session (Commands) panel must contain #setting-delete-template-reset button."""
-    soup = _SOUP
-    dialog = soup.find(id="settings-dialog")
-    assert dialog is not None, "Missing #settings-dialog"
-    new_session_panel = dialog.find(
-        class_="settings-panel", attrs={"data-tab": "new-session"}
-    )
-    assert new_session_panel is not None, "Missing new-session settings-panel"
-    reset_btn = new_session_panel.find(id="setting-delete-template-reset")
-    assert reset_btn is not None, (
-        "Missing #setting-delete-template-reset inside new-session panel"
-    )
-    classes = reset_btn.get("class") or []
-    assert "settings-action-btn" in classes, (
-        f"#setting-delete-template-reset must have class 'settings-action-btn', has: {classes}"
-    )
-
-
 def test_html_commands_tab_label() -> None:
     """The new-session tab button must be labeled 'Commands' (not 'New Session')."""
     soup = _SOUP
@@ -1209,14 +1226,10 @@ def test_html_commands_tab_label() -> None:
 
 
 def test_html_new_session_tab_controls_with_delete() -> None:
-    """New Session (Commands) tab must contain create template, delete template, and both reset buttons."""
+    """New Session (Commands) tab must contain both the create template and
+    delete template textareas (read-only; see test_html_template_textareas_are_readonly)."""
     soup = _SOUP
-    for id_ in (
-        "setting-template",
-        "setting-template-reset",
-        "setting-delete-template",
-        "setting-delete-template-reset",
-    ):
+    for id_ in ("setting-template", "setting-delete-template"):
         assert soup.find(id=id_), f"Missing element with id='{id_}'"
 
 

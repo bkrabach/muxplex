@@ -4880,22 +4880,11 @@ function bindStaticEventListeners() {
     });
   });
 
-  // Commands tab — create template textarea with 500ms debounce
-  var _templateDebounceTimer;
-  on($('setting-template'), 'input', function() {
-    clearTimeout(_templateDebounceTimer);
-    var val = this.value;
-    _templateDebounceTimer = setTimeout(function() {
-      patchServerSetting('new_session_template', val);
-    }, 500);
-  });
-
-  // Commands tab — create template reset button restores default
-  on($('setting-template-reset'), 'click', function() {
-    var el = $('setting-template');
-    if (el) el.value = NEW_SESSION_DEFAULT_TEMPLATE;
-    patchServerSetting('new_session_template', NEW_SESSION_DEFAULT_TEMPLATE);
-  });
+  // Commands tab — create template textarea is READ-ONLY: new_session_template
+  // is a server-side shell command (settings.LOCAL_ONLY_KEYS), so PATCH
+  // /api/settings silently ignores it. No input/reset handlers are bound here
+  // on purpose — the textarea only ever displays the current server value
+  // (see openSettings()); it is edited by hand in settings.json.
 
   // Multi-Device tab — enable/disable toggle
   on($('setting-multi-device-enabled'), 'change', function() {
@@ -4966,22 +4955,11 @@ function bindStaticEventListeners() {
     });
   }
 
-  // Commands tab — delete template textarea with 500ms debounce
-  var _deleteTemplateDebounceTimer;
-  on($('setting-delete-template'), 'input', function() {
-    clearTimeout(_deleteTemplateDebounceTimer);
-    var val = this.value;
-    _deleteTemplateDebounceTimer = setTimeout(function() {
-      patchServerSetting('delete_session_template', val);
-    }, 500);
-  });
-
-  // Commands tab — delete template reset button restores default
-  on($('setting-delete-template-reset'), 'click', function() {
-    var el = $('setting-delete-template');
-    if (el) el.value = DELETE_SESSION_DEFAULT_TEMPLATE;
-    patchServerSetting('delete_session_template', DELETE_SESSION_DEFAULT_TEMPLATE);
-  });
+  // Commands tab — delete template textarea is READ-ONLY: delete_session_template
+  // is a server-side shell command (settings.LOCAL_ONLY_KEYS), so PATCH
+  // /api/settings silently ignores it. No input/reset handlers are bound here
+  // on purpose — the textarea only ever displays the current server value
+  // (see openSettings()); it is edited by hand in settings.json.
 }
 
 // ─── Test-only helpers ────────────────────────────────────────────────────────

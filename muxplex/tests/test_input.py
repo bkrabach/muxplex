@@ -21,11 +21,10 @@ from muxplex.terminal_input import (
     MAX_TEXT_BYTES,
     build_send_key_argv,
     build_send_text_argv,
+    redact_preview,
     session_matches_allowlist,
     session_target,
-    redact_preview,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures — mirror test_api.py's isolation pattern
@@ -612,8 +611,22 @@ def settings_file(tmp_path, monkeypatch):
 
 
 def test_local_only_keys_are_exactly_the_input_fences():
-    """The local-only set covers both fence keys and stays out of sync."""
-    assert LOCAL_ONLY_KEYS == frozenset({"input_enabled", "input_allowed_sessions"})
+    """The local-only set covers both terminal-input fence keys plus the
+    command/path settings keys fenced for the same reason (see
+    settings.LOCAL_ONLY_KEYS's module comment: a client holding only the
+    federation Bearer key could otherwise rewrite new_session_template and
+    get RCE without ever touching the /input endpoint this file tests)."""
+    assert LOCAL_ONLY_KEYS == frozenset(
+        {
+            "input_enabled",
+            "input_allowed_sessions",
+            "new_session_template",
+            "delete_session_template",
+            "tmux_socket_dir",
+            "tls_cert",
+            "tls_key",
+        }
+    )
     assert LOCAL_ONLY_KEYS.isdisjoint(SYNCABLE_KEYS)
 
 

@@ -2191,12 +2191,19 @@ test('HTML index.html has setting-template textarea with correct attributes', ()
   assert.ok(source.includes('placeholder="tmux new-session -d -s {name}"'), 'must have correct placeholder');
 });
 
-test('HTML index.html has setting-template-reset button', () => {
+test('HTML index.html setting-template textarea is readonly and has no reset button', () => {
+  // new_session_template is in settings.LOCAL_ONLY_KEYS (server-side shell
+  // command) -- PATCH /api/settings silently ignores it, so the field is
+  // read-only and the "Reset to default" button (which only existed to fire
+  // that now-dead PATCH) is removed.
   const source = fs.readFileSync(
     new URL('../index.html', import.meta.url), 'utf8'
   );
-  assert.ok(source.includes('id="setting-template-reset"'), 'must have setting-template-reset button');
-  assert.ok(source.includes('settings-action-btn'), 'must use settings-action-btn class on reset button');
+  const templateTagMatch = source.match(/<textarea id="setting-template"[^>]*>/);
+  assert.ok(templateTagMatch, 'must have setting-template textarea tag');
+  assert.ok(templateTagMatch[0].includes('readonly'), 'setting-template textarea must be readonly');
+  assert.ok(!source.includes('id="setting-template-reset"'), 'setting-template-reset button must be removed');
+  assert.ok(source.includes('settings.json'), 'must have helper text naming settings.json');
 });
 
 test('HTML index.html has settings-helper text for template', () => {
@@ -2336,7 +2343,10 @@ test('openSettings uses default template when new_session_template not in server
   globalThis.document.createTextNode = origCreateTextNode;
 });
 
-test('bindStaticEventListeners binds input on setting-template', () => {
+test('bindStaticEventListeners does not bind input on setting-template (read-only, LOCAL_ONLY_KEYS)', () => {
+  // new_session_template is a server-side shell command (settings.LOCAL_ONLY_KEYS)
+  // -- PATCH /api/settings silently ignores it, so the field is read-only and no
+  // input handler should be bound for it.
   const eventsBound = {};
   const origGetById = globalThis.document.getElementById;
   const origDocAddListener = globalThis.document.addEventListener;
@@ -2355,85 +2365,26 @@ test('bindStaticEventListeners binds input on setting-template', () => {
   app.bindStaticEventListeners();
 
   assert.ok(
-    eventsBound['setting-template'] && 'input' in eventsBound['setting-template']._events,
-    '#setting-template should have an input listener',
+    !(eventsBound['setting-template'] && 'input' in eventsBound['setting-template']._events),
+    '#setting-template must NOT have an input listener (read-only field)',
   );
 
   globalThis.document.getElementById = origGetById;
   globalThis.document.addEventListener = origDocAddListener;
 });
 
-test('bindStaticEventListeners binds click on setting-template-reset', () => {
-  const eventsBound = {};
-  const origGetById = globalThis.document.getElementById;
-  const origDocAddListener = globalThis.document.addEventListener;
-  globalThis.document.getElementById = (id) => {
-    const el = {
-      _events: {},
-      addEventListener: (ev, fn) => { el._events[ev] = fn; },
-      value: '',
-      querySelectorAll: () => [],
-    };
-    eventsBound[id] = el;
-    return el;
-  };
-  globalThis.document.addEventListener = () => {};
-
-  app.bindStaticEventListeners();
-
-  assert.ok(
-    eventsBound['setting-template-reset'] && 'click' in eventsBound['setting-template-reset']._events,
-    '#setting-template-reset should have a click listener',
-  );
-
-  globalThis.document.getElementById = origGetById;
-  globalThis.document.addEventListener = origDocAddListener;
-});
-
-test('setting-template-reset click resets textarea to default value', () => {
-  const elements = {};
-  const origFetch = globalThis.fetch;
-  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
-
-  const origGetById = globalThis.document.getElementById;
-  const origDocAddListener = globalThis.document.addEventListener;
-  globalThis.document.getElementById = (id) => {
-    if (!elements[id]) {
-      elements[id] = {
-        _events: {},
-        addEventListener: (ev, fn) => { elements[id]._events[ev] = fn; },
-        value: 'custom-value',
-        querySelectorAll: () => [],
-      };
-    }
-    return elements[id];
-  };
-  globalThis.document.addEventListener = () => {};
-
-  app.bindStaticEventListeners();
-
-  // Simulate reset button click
-  if (elements['setting-template-reset']) {
-    elements['setting-template-reset']._events.click();
-  }
-
-  assert.strictEqual(
-    elements['setting-template'] && elements['setting-template'].value,
-    'tmux new-session -d -s {name}',
-    'textarea should be reset to default value on reset button click',
-  );
-
-  globalThis.fetch = origFetch;
-  globalThis.document.getElementById = origGetById;
-  globalThis.document.addEventListener = origDocAddListener;
-});
-
-test('app.js source uses 500ms debounce for template input and references new_session_template', () => {
+test('app.js source does not PATCH new_session_template (read-only, LOCAL_ONLY_KEYS)', () => {
   const source = fs.readFileSync(
     new URL('../app.js', import.meta.url), 'utf8'
   );
-  assert.ok(source.includes('500'), 'must have 500ms debounce timeout');
-  assert.ok(source.includes('new_session_template'), 'must reference new_session_template setting key');
+  assert.ok(
+    !source.includes("patchServerSetting('new_session_template'"),
+    'must not call patchServerSetting with new_session_template -- the server ignores it',
+  );
+  assert.ok(
+    !source.includes('id="setting-template-reset"'),
+    'setting-template-reset button reference must be gone from app.js',
+  );
 });
 
 test('buildTileHTML includes tile-options-btn button with data-session attribute', () => {
@@ -3474,27 +3425,18 @@ test('openSettings loads delete_session_template from server settings', () => {
   );
 });
 
-test('bindStaticEventListeners wires delete template input to save', () => {
+test('bindStaticEventListeners does not wire delete template input to save (read-only, LOCAL_ONLY_KEYS)', () => {
+  // delete_session_template is a server-side shell command (settings.LOCAL_ONLY_KEYS)
+  // -- PATCH /api/settings silently ignores it, so the field is read-only and no
+  // save/reset handler should be bound for it.
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  const fnStart = source.indexOf('function bindStaticEventListeners(');
-  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
-  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
   assert.ok(
-    fnBody.includes('setting-delete-template'),
-    'bindStaticEventListeners must wire #setting-delete-template input event to save'
+    !source.includes("patchServerSetting('delete_session_template'"),
+    'must not call patchServerSetting with delete_session_template -- the server ignores it',
   );
-});
-
-test('bindStaticEventListeners wires delete template reset button', () => {
-  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  const fnStart = source.indexOf('function bindStaticEventListeners(');
-  assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
-  const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
-  const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 6000);
   assert.ok(
-    fnBody.includes('setting-delete-template-reset'),
-    'bindStaticEventListeners must wire #setting-delete-template-reset click handler'
+    !source.includes('id="setting-delete-template-reset"'),
+    'setting-delete-template-reset button reference must be gone from app.js',
   );
 });
 
