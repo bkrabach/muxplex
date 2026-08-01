@@ -354,14 +354,23 @@ def test_launchd_restart_calls_stop_then_start(monkeypatch):
     monkeypatch.setattr(os, "getuid", lambda: 501)
 
     calls = []
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda cmd, **kw: (
-            calls.append(list(cmd)),
-            subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
-        )[1],
-    )
+    booted_out = {"yes": False}
+
+    def fake_run(cmd, **kw):
+        # Model launchd honestly: `print` reports the job as loaded until a
+        # bootout has happened, gone afterwards. A blanket rc=0 for every call
+        # claims bootout succeeded AND the job is still loaded -- a state real
+        # launchd cannot be in, and the reason this mock started failing once
+        # bootout learned to wait for the job to actually disappear.
+        calls.append(list(cmd))
+        if cmd[1] == "bootout":
+            booted_out["yes"] = True
+        if cmd[1] == "print":
+            return subprocess.CompletedProcess(cmd, 1 if booted_out["yes"] else 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(svc.time, "sleep", lambda _s: None)
 
     svc._launchd_restart()
 
@@ -1188,11 +1197,28 @@ def test_launchd_bootstrap_retries_through_the_bootout_race(monkeypatch):
     assert len(bootstraps) == 3, "should have retried until bootstrap succeeded"
 
 
-def test_launchd_bootstrap_treats_already_running_as_success(monkeypatch):
-    """If bootstrap complains but the service IS loaded, that is success.
+def test_launchd_start_accepts_an_already_running_service(monkeypatch):
+    """`start` means "make sure it is running", so already-loaded is success."""
+    from muxplex import service
 
-    The user-visible outcome -- a running service -- is the only thing that
-    matters here, and it is exactly what the crashing report showed happening.
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        service.subprocess, "run", _fake_run([5, 5, 5, 5, 5, 5], loaded_after=1)
+    )
+
+    service._launchd_bootstrap(501, accept_already_loaded=True)  # must not raise
+
+
+def test_install_and_restart_refuse_to_call_a_surviving_old_job_success(monkeypatch):
+    """The regression that made `muxplex service restart` a silent no-op.
+
+    v0.31.1 treated "already loaded" as success unconditionally. After a bootout
+    that had not finished, that meant: bootstrap fails with 5, the OLD job is
+    still loaded, we report success -- and the old process keeps serving. The
+    user ran `service restart` twice and `doctor` still reported the previous
+    version running, with no error either time.
+
+    A stale job is a FAILED replacement. Only `start` may accept already-loaded.
     """
     from muxplex import service
 
@@ -1201,7 +1227,44 @@ def test_launchd_bootstrap_treats_already_running_as_success(monkeypatch):
         service.subprocess, "run", _fake_run([5, 5, 5, 5, 5, 5], loaded_after=1)
     )
 
-    service._launchd_bootstrap(501)  # must not raise
+    with pytest.raises(RuntimeError, match="launchctl bootstrap failed"):
+        service._launchd_bootstrap(501)  # default: accept_already_loaded=False
+
+
+def test_bootout_waits_for_the_job_to_actually_disappear(monkeypatch):
+    """launchctl bootout returns before the job is gone. Stop must mean stopped."""
+    from muxplex import service
+
+    state = {"polls": 0}
+
+    def run(cmd, *a, **kw):
+        import subprocess as sp
+
+        if cmd[1] == "print":
+            state["polls"] += 1
+            # still loaded for the first two polls, gone on the third
+            return sp.CompletedProcess(cmd, 0 if state["polls"] < 3 else 1)
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(service.subprocess, "run", run)
+
+    assert service._launchd_bootout_and_wait(501) is True
+    assert state["polls"] >= 3, "must poll until the job is actually gone"
+
+
+def test_bootout_reports_failure_when_the_job_outlives_the_timeout(monkeypatch):
+    """If the old job will not die, say so -- do not start on top of it."""
+    from muxplex import service
+
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda cmd, *a, **kw: __import__("subprocess").CompletedProcess(cmd, 0),
+    )
+
+    assert service._launchd_bootout_and_wait(501, timeout=0.0) is False
 
 
 def test_launchd_bootstrap_fails_loud_on_a_real_error(monkeypatch):

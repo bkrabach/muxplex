@@ -1,3 +1,17 @@
+## v0.31.2 (2026-08-01)
+
+### Bug Fixes
+
+- **`muxplex service restart` actually restarts the service again on macOS.** This was a regression introduced in v0.31.1, and it is the worse kind: v0.31.0 crashed loudly on `launchctl bootstrap` exit 5, and the v0.31.1 fix for that traded the crash for a silent lie. `launchctl bootout` returns *before* the job is gone, so `restart` booted the old job out, immediately bootstrapped, got exit 5 because the old job was still tearing down, then checked "is it loaded?" -- saw the **old** job still loaded -- and reported success. The old process kept serving. Running `muxplex service restart` twice produced no output and no error either time, while `muxplex doctor` went on reporting a version from two releases earlier as the running one. Two changes fix it: `bootout` now waits for launchd to confirm the job is actually gone before anything bootstraps on top of it, and "already loaded" now counts as success only for `service start`, whose job is to make sure something is running. For `install` and `restart` -- which have just removed the old job on purpose -- a surviving job means the replacement failed, and that now fails loudly with the plist path and the manual commands.
+- **`muxplex doctor` no longer tells macOS users to run `systemctl`.** The stale-version warning and the port-conflict error both printed `systemctl --user restart muxplex` unconditionally, which is meaningless on a machine where launchd is the service manager -- and it appeared right next to a line correctly reporting `Service: launchd agent running`. Both now print `muxplex service restart`, which is correct on every platform, so there is nothing to branch on.
+
+### Verification
+
+- Full suite green in the Digital Twin Universe, run *after* the version bump.
+- Three new tests cover the regression directly: that `install`/`restart` refuse to call a surviving old job a success, that `start` still accepts an already-running service, and that `bootout` polls until the job is really gone rather than returning early.
+- Honest limit, unchanged from v0.31.1: these tests exercise the logic, not `launchctl`. That binary is macOS-only and this suite runs in a Linux container, so the real launchd behaviour is verified by the shape of the calls, not by running them. The race and the false-success path are both provable in the code; whether they are the *whole* story on any given Mac is not something this suite can attest.
+
+
 ## v0.31.1 (2026-08-01)
 
 ### Bug Fixes

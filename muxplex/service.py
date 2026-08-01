@@ -276,9 +276,7 @@ def _launchd_install() -> None:
     # bootout first (ignore failure if it wasn't loaded) to force the new
     # plist's environment (e.g. an updated TMUX_TMPDIR) to actually apply on
     # re-install, not just on first install.
-    subprocess.run(
-        ["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"], capture_output=True
-    )
+    _launchd_bootout_and_wait(uid)
     _launchd_bootstrap(uid)
     _prompt_host_if_localhost()
     _show_tls_nudge_if_needed()
@@ -296,17 +294,43 @@ def _launchd_is_loaded(uid: int) -> bool:
     )
 
 
-def _launchd_bootstrap(uid: int, *, attempts: int = 6) -> None:
-    """bootstrap the plist, tolerating launchd's asynchronous teardown.
+def _launchd_bootout_and_wait(uid: int, *, timeout: float = 10.0) -> bool:
+    """bootout the job and WAIT for launchd to actually finish tearing it down.
 
-    `launchctl bootout` returns before the job is actually gone. A bootstrap
-    issued into that window fails with exit 5 ("Input/output error"), which is
-    not a real failure -- it is a race. This retries while the old job finishes
-    unloading, and treats "already loaded" as success, because the only thing
-    the caller actually cares about is whether the service ends up running.
+    `launchctl bootout` returns before the job is gone. Not waiting is what made
+    `muxplex service restart` a silent no-op: bootstrap raced the teardown, saw
+    the OLD job still loaded, and reported success while the old process kept
+    serving. Stop must mean stopped before start can mean started.
 
-    Real failures still fail LOUDLY, but with launchd's own stderr and an
-    actionable hint instead of a raw CalledProcessError traceback.
+    Returns True if the job is confirmed gone, False if it outlived the timeout.
+    """
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"], capture_output=True
+    )
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _launchd_is_loaded(uid):
+            return True
+        time.sleep(0.25)
+    return not _launchd_is_loaded(uid)
+
+
+def _launchd_bootstrap(
+    uid: int, *, attempts: int = 6, accept_already_loaded: bool = False
+) -> None:
+    """bootstrap the plist, retrying through launchd's asynchronous teardown.
+
+    Exit 5 ("Input/output error") right after a bootout is the teardown race,
+    not a real failure, so it is retried.
+
+    `accept_already_loaded` is the load-bearing distinction. For `start` --
+    "make sure it is running" -- finding it already loaded IS the desired state.
+    For `install` and `restart` the caller has just booted the job out and is
+    replacing it, so an already-loaded job means the OLD one survived; reporting
+    success there is a lie that hides a failed upgrade. Only `start` opts in.
+
+    Real failures fail LOUDLY, with launchd's own stderr and an actionable hint
+    rather than a raw CalledProcessError traceback.
     """
     last = None
     for attempt in range(attempts):
@@ -320,15 +344,13 @@ def _launchd_bootstrap(uid: int, *, attempts: int = 6) -> None:
         )
         if last.returncode == 0:
             return
-        # Exit 5 (EIO) and 37 (EINPROGRESS-ish) are the teardown race; retry.
-        # Anything else is a genuine error and retrying will not help.
+        # Exit 5 (EIO) and 37 are the teardown race; retry. Anything else is a
+        # genuine error and retrying only delays the report.
         if last.returncode not in (5, 37):
             break
-        if _launchd_is_loaded(uid):
-            return  # someone (or the retry before us) got it loaded; done
 
-    if _launchd_is_loaded(uid):
-        return  # bootstrap complained but the service is up -- that is success
+    if accept_already_loaded and _launchd_is_loaded(uid):
+        return
 
     detail = (last.stderr or last.stdout or "").strip() if last else ""
     code = last.returncode if last else "unknown"
@@ -349,17 +371,23 @@ def _launchd_uninstall() -> None:
 
 
 def _launchd_start() -> None:
-    _launchd_bootstrap(os.getuid())
+    _launchd_bootstrap(os.getuid(), accept_already_loaded=True)
 
 
 def _launchd_stop() -> None:
-    uid = os.getuid()
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"])
+    _launchd_bootout_and_wait(os.getuid())
 
 
 def _launchd_restart() -> None:
-    _launchd_stop()
-    _launchd_start()
+    uid = os.getuid()
+    if not _launchd_bootout_and_wait(uid):
+        raise RuntimeError(
+            f"launchctl bootout did not release {_LAUNCHD_LABEL} within the timeout, "
+            f"so restarting would leave the OLD process running.\n"
+            f"  Check it: launchctl print gui/{uid}/{_LAUNCHD_LABEL}\n"
+            f"  Then:     launchctl bootout gui/{uid}/{_LAUNCHD_LABEL}"
+        )
+    _launchd_bootstrap(uid)
 
 
 def _launchd_status() -> None:

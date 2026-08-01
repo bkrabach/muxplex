@@ -446,7 +446,7 @@ def _kill_stale_port_holder(port: int, force: bool = False) -> None:
             f"       Refusing to terminate it.\n"
             f"\n"
             f"       To restart the service properly:\n"
-            f"           systemctl --user restart muxplex\n"
+            f"           muxplex service restart\n"
             f"       To take the port anyway (kills the running server):\n"
             f"           muxplex serve --force-take-port",
             file=sys.stderr,
@@ -674,7 +674,7 @@ def doctor() -> None:
                 f"  {warn_mark} Running: v{running_version}"
                 f" (installed v{muxplex_version} \u2014 restart the service to pick up the new install)"
             )
-            print("    Run: muxplex upgrade   (or) systemctl --user restart muxplex")
+            print("    Run: muxplex service restart   (or) muxplex upgrade")
 
     # TLS status
     tls_cert = cfg.get("tls_cert", "")
