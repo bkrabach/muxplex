@@ -15,7 +15,17 @@ let _resizeObserver = null;
 // concept). Empty string when unknown/unset -- treated as "no device_id",
 // matching today's behavior exactly (see the §0 hazard's residual gap:
 // a terminal client that supplies none gets no server-side guard).
-let _ownDeviceId = '';
+//
+// Named `_termOwnDeviceId` (not `_ownDeviceId`) deliberately: app.js declares
+// a top-level `function _ownDeviceId()` (a getter, called at app.js:3536).
+// Classic <script> tags share one global scope (see index.html), so a `let
+// _ownDeviceId` here previously collided with that function declaration --
+// `let` cannot redeclare an existing global binding -- and threw
+// `SyntaxError: Identifier '_ownDeviceId' has already been declared` at
+// parse time, which meant this entire file (and thus the terminal) never
+// ran. See AGENTS.md's "Frontend classic scripts share one global scope"
+// note and tests/test_shared_scope.mjs, which guards this class of bug.
+let _termOwnDeviceId = '';
 // True only while the user has confirmed a takeover after a terminal
 // conflict (today, in practice, always the HTTP 409 `terminal_conflict`
 // path below -- see the close-handler comment further down for why the WS
@@ -427,7 +437,7 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
   // schedule a reconnect (it checks `if (!_currentSession) return;`).
   _currentSession = null;
   _reconnectAttempts = 0; // reset backoff on new session open
-  _ownDeviceId = ownDeviceId || '';
+  _termOwnDeviceId = ownDeviceId || '';
   _pendingTakeover = false;
 
   // Cancel any pending reconnect timer from the previous session.

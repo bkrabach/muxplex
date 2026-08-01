@@ -193,6 +193,38 @@ this interacts with sync groups' `terminal_session`/`terminal_group` claim.
 - Startup logs the served `app.js` md5, so "which frontend is live" is a
   glance, not a debugging session.
 
+## Frontend classic scripts share one global scope
+
+`index.html` loads `app.js` and `terminal.js` (and any future frontend
+script) as classic, non-module `<script defer>` tags. Classic scripts do
+**not** get their own module scope -- every top-level `var`/`function` becomes
+a property on the shared global object, and every top-level `let`/`const`
+lives in the same shared global lexical environment. A second script cannot
+redeclare a binding the first one created there.
+
+**Incident (v0.31.3):** the sync-groups change (`fcfdcdd`) added a top-level
+`function _ownDeviceId()` in `app.js` (a getter) and, independently, a
+top-level `let _ownDeviceId = ''` in `terminal.js` (private module state).
+Both parsed and worked fine on their own -- each file's own test suite
+(`test_app.mjs`, `test_terminal.mjs`) loads only that one file in isolation,
+so neither test could ever see the collision. In the real browser, loading
+both in the same scope threw `Uncaught SyntaxError: Identifier
+'_ownDeviceId' has already been declared` while parsing `terminal.js` --
+which meant `terminal.js` never executed at all, and the interactive
+terminal pane silently rendered nothing (the grid/previews, all in `app.js`,
+kept working since `app.js` parsed fine on its own). Fixed by renaming
+`terminal.js`'s private state to `_termOwnDeviceId`.
+
+**The rule:** every top-level binding across ALL of our frontend classic
+scripts must be unique -- prefix module-private state so it can't collide
+with another file's globals (e.g. `_termOwnDeviceId`, not `_ownDeviceId`).
+Per-file unit tests cannot catch a cross-file collision by construction, no
+matter how thorough -- which is why `tests/test_shared_scope.mjs` exists: it
+parses the real `<script src=...>` tags out of `index.html` (excluding
+`/vendor/*`) and evaluates each one, in order, into one shared `vm` context,
+asserting none throws a `SyntaxError`. Any new frontend script is
+automatically covered the moment it's added to `index.html`.
+
 ## Federation is fault-isolated
 
 - A dead/unreachable remote must never gate the aggregate. `breaker.py` is a
