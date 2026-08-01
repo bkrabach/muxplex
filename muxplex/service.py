@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -275,12 +276,70 @@ def _launchd_install() -> None:
     # bootout first (ignore failure if it wasn't loaded) to force the new
     # plist's environment (e.g. an updated TMUX_TMPDIR) to actually apply on
     # re-install, not just on first install.
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"])
     subprocess.run(
-        ["launchctl", "bootstrap", f"gui/{uid}", str(_LAUNCHD_PLIST_PATH)], check=True
+        ["launchctl", "bootout", f"gui/{uid}/{_LAUNCHD_LABEL}"], capture_output=True
     )
+    _launchd_bootstrap(uid)
     _prompt_host_if_localhost()
     _show_tls_nudge_if_needed()
+
+
+def _launchd_is_loaded(uid: int) -> bool:
+    """True if launchd currently knows about our label."""
+    return (
+        subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{_LAUNCHD_LABEL}"],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _launchd_bootstrap(uid: int, *, attempts: int = 6) -> None:
+    """bootstrap the plist, tolerating launchd's asynchronous teardown.
+
+    `launchctl bootout` returns before the job is actually gone. A bootstrap
+    issued into that window fails with exit 5 ("Input/output error"), which is
+    not a real failure -- it is a race. This retries while the old job finishes
+    unloading, and treats "already loaded" as success, because the only thing
+    the caller actually cares about is whether the service ends up running.
+
+    Real failures still fail LOUDLY, but with launchd's own stderr and an
+    actionable hint instead of a raw CalledProcessError traceback.
+    """
+    last = None
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(0.5)
+        last = subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{uid}", str(_LAUNCHD_PLIST_PATH)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if last.returncode == 0:
+            return
+        # Exit 5 (EIO) and 37 (EINPROGRESS-ish) are the teardown race; retry.
+        # Anything else is a genuine error and retrying will not help.
+        if last.returncode not in (5, 37):
+            break
+        if _launchd_is_loaded(uid):
+            return  # someone (or the retry before us) got it loaded; done
+
+    if _launchd_is_loaded(uid):
+        return  # bootstrap complained but the service is up -- that is success
+
+    detail = (last.stderr or last.stdout or "").strip() if last else ""
+    code = last.returncode if last else "unknown"
+    raise RuntimeError(
+        f"launchctl bootstrap failed (exit {code})"
+        + (f": {detail}" if detail else "")
+        + f"\n  The service plist is at {_LAUNCHD_PLIST_PATH}."
+        + f"\n  Try: launchctl bootout gui/{uid}/{_LAUNCHD_LABEL} && "
+        + f"launchctl bootstrap gui/{uid} {_LAUNCHD_PLIST_PATH}"
+        + "\n  Or run 'muxplex serve' directly to start without a service manager."
+    )
 
 
 def _launchd_uninstall() -> None:
@@ -290,10 +349,7 @@ def _launchd_uninstall() -> None:
 
 
 def _launchd_start() -> None:
-    uid = os.getuid()
-    subprocess.run(
-        ["launchctl", "bootstrap", f"gui/{uid}", str(_LAUNCHD_PLIST_PATH)], check=True
-    )
+    _launchd_bootstrap(os.getuid())
 
 
 def _launchd_stop() -> None:

@@ -1,5 +1,6 @@
 """Tests for muxplex/service.py — system service management module."""
 
+import pytest
 import subprocess
 import sys
 
@@ -975,3 +976,115 @@ def test_launchd_plist_program_arguments_are_separate_strings(monkeypatch, tmp_p
             f"ProgramArguments element must not contain spaces "
             f"(embedded-space arg trap): {arg!r} in {prog_args!r}"
         )
+
+
+# ── launchd bootstrap race (reported 2026-08-01) ───────────────────────────
+#
+# `muxplex update` on macOS crashed with a raw CalledProcessError traceback:
+#
+#   subprocess.CalledProcessError: Command '['launchctl', 'bootstrap',
+#   'gui/501', '.../com.muxplex.plist']' returned non-zero exit status 5.
+#
+# ...immediately after printing "Service started". `launchctl bootout` returns
+# before the job is actually gone, so a bootstrap issued into that window fails
+# with exit 5 (EIO). It is a race, not a failure, and check=True turned it into
+# a crash on a path that had in fact succeeded.
+#
+# These tests exercise the retry/verify logic directly. They do NOT exercise
+# launchctl -- that binary only exists on macOS and this suite runs in a Linux
+# container, so the real launchd behaviour is verified by the shape of the
+# calls, not by running them.
+
+
+def _fake_run(sequence, loaded_after=None, calls=None):
+    """subprocess.run stand-in returning queued results by command kind."""
+    import subprocess as sp
+
+    state = {"bootstraps": 0}
+
+    def run(cmd, *a, **kw):
+        if calls is not None:
+            calls.append(cmd)
+        if cmd[1] == "bootstrap":
+            i = min(state["bootstraps"], len(sequence) - 1)
+            rc = (
+                sequence[state["bootstraps"]]
+                if state["bootstraps"] < len(sequence)
+                else sequence[i]
+            )
+            state["bootstraps"] += 1
+            return sp.CompletedProcess(cmd, rc, stdout="", stderr="Input/output error")
+        if cmd[1] == "print":
+            up = loaded_after is not None and state["bootstraps"] >= loaded_after
+            return sp.CompletedProcess(cmd, 0 if up else 1, stdout="", stderr="")
+        return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    return run
+
+
+def test_launchd_bootstrap_retries_through_the_bootout_race(monkeypatch):
+    """Exit 5 right after bootout is launchd still tearing down. Retry, don't crash."""
+    from muxplex import service
+
+    calls = []
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        service.subprocess, "run", _fake_run([5, 5, 0], loaded_after=99, calls=calls)
+    )
+
+    service._launchd_bootstrap(501)  # must not raise
+
+    bootstraps = [c for c in calls if c[1] == "bootstrap"]
+    assert len(bootstraps) == 3, "should have retried until bootstrap succeeded"
+
+
+def test_launchd_bootstrap_treats_already_running_as_success(monkeypatch):
+    """If bootstrap complains but the service IS loaded, that is success.
+
+    The user-visible outcome -- a running service -- is the only thing that
+    matters here, and it is exactly what the crashing report showed happening.
+    """
+    from muxplex import service
+
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        service.subprocess, "run", _fake_run([5, 5, 5, 5, 5, 5], loaded_after=1)
+    )
+
+    service._launchd_bootstrap(501)  # must not raise
+
+
+def test_launchd_bootstrap_fails_loud_on_a_real_error(monkeypatch):
+    """A non-race exit code with the service down must still fail -- loudly.
+
+    Loud means an actionable RuntimeError carrying launchd's own stderr, not a
+    CalledProcessError traceback out of subprocess internals.
+    """
+    from muxplex import service
+
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(service.subprocess, "run", _fake_run([1], loaded_after=None))
+
+    with pytest.raises(RuntimeError) as exc:
+        service._launchd_bootstrap(501)
+
+    message = str(exc.value)
+    assert "launchctl bootstrap failed" in message
+    assert "muxplex serve" in message, "must offer a way forward"
+    assert "Input/output error" in message, "must surface launchd's own stderr"
+
+
+def test_launchd_bootstrap_does_not_retry_a_non_race_error(monkeypatch):
+    """Retrying a genuine error just delays the report. Fail on the first one."""
+    from muxplex import service
+
+    calls = []
+    monkeypatch.setattr(service.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        service.subprocess, "run", _fake_run([1], loaded_after=None, calls=calls)
+    )
+
+    with pytest.raises(RuntimeError):
+        service._launchd_bootstrap(501)
+
+    assert len([c for c in calls if c[1] == "bootstrap"]) == 1
