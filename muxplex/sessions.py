@@ -50,7 +50,7 @@ import shlex
 import shutil
 
 from muxplex.cgroup_escape import should_escape, wrap_shell_argv
-from muxplex.settings import load_settings
+from muxplex.settings import find_session_command, load_settings
 
 _log = logging.getLogger(__name__)
 
@@ -417,9 +417,11 @@ async def ensure_history_retention(session_name: str) -> None:
         )
 
 
-async def spawn_session_command(name: str) -> tuple[bool, str | None]:
-    """Run `settings.new_session_template` (with `{name}` substituted) to create
-    a tmux session named *name*. Returns ``(ok, error)``.
+async def spawn_session_command(
+    name: str, command_id: str | None = None
+) -> tuple[bool, str | None]:
+    """Run the resolved pair's `new_session_template` (with `{name}`
+    substituted) to create a tmux session named *name*. Returns ``(ok, error)``.
 
     This is the SINGLE source of truth for "how to create a session" --
     extracted from main.py's `create_session()` API handler so that both the
@@ -431,13 +433,24 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
     `_require_valid_session_name`) -- this function does not, so it stays
     usable from a plain CLI process with no HTTP framework in scope.
 
-    `new_session_template` is an arbitrary user shell command with a `{name}`
-    placeholder (default `tmux new-session -d -s {name}`, but users configure
-    e.g. `amplifier-workspace {name}`), so this stays shell-based to preserve
-    that feature. Injection is closed by two layers: (1) the caller's
-    allowlist check guarantees the name has no shell metacharacters; (2)
-    `shlex.quote()` here is defense-in-depth in case the allowlist is ever
-    loosened -- for an allowlist-valid name it's a no-op.
+    *command_id* selects a configured session command pair (see
+    settings.resolve_session_commands / find_session_command).
+    ``command_id=None`` selects the reserved ``"default"`` pair -- i.e.
+    ``settings.new_session_template`` -- so this is byte-identical to
+    pre-feature behavior for every existing caller. An unresolvable
+    *command_id* returns ``(False, <message>)`` WITHOUT spawning anything --
+    this is defense-in-depth, not the primary gate: `create_session()`
+    validates first so it can return a 400 with the available-ids list; this
+    function is also called from `restore.py`, which has no HTTP boundary.
+
+    The resolved pair's `new_session_template` is an arbitrary user shell
+    command with a `{name}` placeholder (default `tmux new-session -d -s
+    {name}`, but users configure e.g. `amplifier-workspace {name}`), so this
+    stays shell-based to preserve that feature. Injection is closed by two
+    layers: (1) the caller's allowlist check guarantees the name has no
+    shell metacharacters; (2) `shlex.quote()` here is defense-in-depth in
+    case the allowlist is ever loosened -- for an allowlist-valid name it's
+    a no-op.
 
     Some session commands (e.g. `amplifier-workspace`) create the tmux
     session and then attempt to *attach* to it, which requires a TTY. When
@@ -445,7 +458,10 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
     CLI invocation) the attach step fails with a non-zero exit code even
     though the session was successfully created. To handle this, when the
     command exits non-zero we check whether a tmux session with the
-    requested name now exists -- if it does, we treat it as a success.
+    requested name now exists -- if it does, we treat it as a success. This
+    is unchanged and load-bearing for non-default pairs too: the exemplar
+    non-default pair (`amplifier-workspace`) is the very command whose
+    behavior this branch exists for.
 
     Returns:
         (True, None) on success.
@@ -454,7 +470,12 @@ async def spawn_session_command(name: str) -> tuple[bool, str | None]:
         CLI).
     """
     settings = load_settings()
-    template = settings["new_session_template"]
+    command = find_session_command(command_id, settings)
+    if command is None:
+        return False, (
+            f"Unknown command_id {command_id!r}: no such configured session command."
+        )
+    template = command["new_session_template"]
 
     # Pre-flight: check that the base command is on PATH.
     base_cmd = template.split()[0] if template.strip() else ""

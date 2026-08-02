@@ -354,6 +354,63 @@ def test_tombstoned_session_never_returns_via_restore(isolated, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_restore_uses_recorded_pair(isolated, tmp_path):
+    """A recorded command_id drives spawn_session_command with that id --
+    execute_restore() must not silently fall back to the default pair."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    settings_mod.patch_settings(
+        {
+            "session_commands": [
+                {
+                    "id": "amplifier",
+                    "label": "Amplifier",
+                    "new_session_template": _fake_workspace_template(workspace_root),
+                    "delete_session_template": "tmux kill-session -t {name}",
+                }
+            ]
+        }
+    )
+    manifest = manifest_mod.load_manifest()
+    manifest = manifest_mod.set_created_with(manifest, "restored-amp", "amplifier")
+    manifest_mod.save_manifest(manifest)
+
+    report = asyncio.run(restore_mod.execute_restore(["restored-amp"]))
+
+    assert report.ok_count == 1
+    assert not report.any_failed
+    live = asyncio.run(enumerate_sessions())
+    assert "restored-amp" in live
+    # Proves the NAMED pair ran (workspace_root/{name} only exists via the
+    # amplifier template, not the bare default tmux new-session).
+    assert (workspace_root / "restored-amp").is_dir()
+
+
+def test_restore_no_record_uses_default(isolated, tmp_path):
+    """Byte-identity: a name with no created_with record restores with the
+    default pair -- identical to pre-feature behavior."""
+    report = asyncio.run(restore_mod.execute_restore(["plain-restore"]))
+    assert report.ok_count == 1
+    live = asyncio.run(enumerate_sessions())
+    assert "plain-restore" in live
+
+
+def test_restore_unresolvable_recorded_id_fails_loudly(isolated):
+    """A recorded pair that no longer resolves must FAIL, name stays
+    pending, and NOTHING is spawned -- never a silent substitution."""
+    manifest = manifest_mod.load_manifest()
+    manifest = manifest_mod.set_created_with(manifest, "orphaned", "gone-pair")
+    manifest_mod.save_manifest(manifest)
+
+    report = asyncio.run(restore_mod.execute_restore(["orphaned"]))
+
+    assert report.any_failed
+    assert report.results[0].status == "fail"
+    assert "gone-pair" in report.results[0].detail
+    live = asyncio.run(enumerate_sessions())
+    assert "orphaned" not in live
+
+
 def test_restore_twice_is_idempotent(isolated, tmp_path):
     socket_dir = isolated
     workspace_root = tmp_path / "dev"

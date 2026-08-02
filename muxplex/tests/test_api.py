@@ -3136,6 +3136,405 @@ def test_create_session_shlex_quote_defense_in_depth(client, monkeypatch, tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# Named session command pairs (COMMAND_PAIRS_SPEC.md)
+# ---------------------------------------------------------------------------
+
+
+def _write_pairs_settings(monkeypatch, tmp_path, extra_commands=None):
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": extra_commands or [],
+            }
+        )
+    )
+    return settings_path
+
+
+def _amplifier_pair():
+    return {
+        "id": "amplifier",
+        "label": "Amplifier",
+        "new_session_template": "echo new {name}",
+        "delete_session_template": "echo del {name}",
+    }
+
+
+def test_get_session_commands_default_only(client, monkeypatch, tmp_path):
+    _write_pairs_settings(monkeypatch, tmp_path)
+    resp = client.get("/api/session-commands")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["commands"]) == 1
+    assert body["commands"][0]["id"] == "default"
+    assert body["default_id"] == "default"
+    assert body["errors"] == []
+
+
+def test_get_session_commands_lists_configured(client, monkeypatch, tmp_path):
+    _write_pairs_settings(monkeypatch, tmp_path, [_amplifier_pair()])
+    resp = client.get("/api/session-commands")
+    body = resp.json()
+    ids = [c["id"] for c in body["commands"]]
+    assert ids == ["default", "amplifier"]
+    amp = body["commands"][1]
+    assert amp["label"] == "Amplifier"
+    assert amp["new_session_template"] == "echo new {name}"
+    assert amp["delete_session_template"] == "echo del {name}"
+
+
+def test_get_session_commands_reports_errors(client, monkeypatch, tmp_path):
+    _write_pairs_settings(monkeypatch, tmp_path, [{"id": "bad!"}])
+    resp = client.get("/api/session-commands")
+    body = resp.json()
+    assert [c["id"] for c in body["commands"]] == ["default"]
+    assert len(body["errors"]) == 1
+
+
+def test_get_session_commands_requires_auth():
+    """Not in auth._AUTH_EXEMPT_PATHS -- discloses server-side shell commands."""
+    from muxplex.auth import _AUTH_EXEMPT_PATHS
+
+    assert "/api/session-commands" not in _AUTH_EXEMPT_PATHS
+
+
+def test_create_without_command_id_unchanged(client, monkeypatch, tmp_path):
+    """Byte-identity: response name/ok unchanged; the spawned command is
+    new_session_template."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    _write_pairs_settings(monkeypatch, tmp_path, [_amplifier_pair()])
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    captured = []
+
+    async def mock_shell(cmd, **kwargs):
+        captured.append(cmd)
+        return mock_proc
+
+    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", mock_shell)
+
+    resp = client.post("/api/sessions", json={"name": "plain"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "plain"
+    assert data["ok"] is True
+    assert captured == ["tmux new-session -d -s plain"]
+
+
+def test_create_response_includes_command_id(client, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    _write_pairs_settings(monkeypatch, tmp_path)
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    monkeypatch.setattr(
+        "muxplex.sessions.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=mock_proc),
+    )
+
+    resp = client.post("/api/sessions", json={"name": "plain2"})
+    assert resp.json()["command_id"] == "default"
+
+
+def test_create_with_command_id_uses_that_pair(client, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    _write_pairs_settings(monkeypatch, tmp_path, [_amplifier_pair()])
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    captured = []
+
+    async def mock_shell(cmd, **kwargs):
+        captured.append(cmd)
+        return mock_proc
+
+    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", mock_shell)
+
+    resp = client.post(
+        "/api/sessions", json={"name": "amp-sess", "command_id": "amplifier"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["command_id"] == "amplifier"
+    assert captured == ["echo new amp-sess"]
+
+
+def test_create_unknown_command_id_400_nothing_spawned(client, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    _write_pairs_settings(monkeypatch, tmp_path)
+    spawned = AsyncMock()
+    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", spawned)
+
+    resp = client.post("/api/sessions", json={"name": "x", "command_id": "typo"})
+    assert resp.status_code == 400
+    body = resp.json()["detail"]
+    assert body["unknown_command_id"] is True
+    assert "available" in body
+    spawned.assert_not_called()
+
+
+def test_create_records_command_id_in_manifest(client, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    import muxplex.manifest as manifest_mod
+
+    manifest_path = tmp_path / "state" / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr("muxplex.main.load_manifest", manifest_mod.load_manifest)
+    monkeypatch.setattr("muxplex.main.save_manifest", manifest_mod.save_manifest)
+    _write_pairs_settings(monkeypatch, tmp_path, [_amplifier_pair()])
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    monkeypatch.setattr(
+        "muxplex.sessions.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=mock_proc),
+    )
+
+    resp = client.post(
+        "/api/sessions", json={"name": "recorded", "command_id": "amplifier"}
+    )
+    assert resp.status_code == 200
+    manifest = manifest_mod.load_manifest()
+    assert manifest["created_with"]["recorded"] == "amplifier"
+
+
+def test_create_failure_records_nothing(client, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    import muxplex.manifest as manifest_mod
+
+    manifest_path = tmp_path / "state" / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr("muxplex.main.load_manifest", manifest_mod.load_manifest)
+    monkeypatch.setattr("muxplex.main.save_manifest", manifest_mod.save_manifest)
+    _write_pairs_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+
+    resp = client.post("/api/sessions", json={"name": "failed"})
+    assert resp.status_code == 500
+    manifest = manifest_mod.load_manifest()
+    assert "failed" not in manifest.get("created_with", {})
+
+
+def test_delete_no_record_uses_default(client, monkeypatch, tmp_path):
+    """Byte-identity: the subprocess command equals today's exactly."""
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.manifest as manifest_mod
+
+    manifest_path = tmp_path / "state" / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr("muxplex.main.load_manifest", manifest_mod.load_manifest)
+    _write_pairs_settings(monkeypatch, tmp_path, [_amplifier_pair()])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["untracked"])
+
+    captured = []
+
+    def mock_run(cmd, **kwargs):
+        captured.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        resp = client.delete("/api/sessions/untracked")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["command_id"] == "default"
+    assert "forced" not in data
+    assert captured == ["tmux kill-session -t untracked"]
+
+
+def test_delete_uses_recorded_pair(client, monkeypatch, tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.manifest as manifest_mod
+
+    manifest_path = tmp_path / "state" / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr("muxplex.main.load_manifest", manifest_mod.load_manifest)
+    manifest_mod.save_manifest(
+        manifest_mod.set_created_with(
+            manifest_mod.load_manifest(), "amp-sess", "amplifier"
+        )
+    )
+    _write_pairs_settings(monkeypatch, tmp_path, [_amplifier_pair()])
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["amp-sess"])
+
+    captured = []
+
+    def mock_run(cmd, **kwargs):
+        captured.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch("muxplex.main.subprocess.run", side_effect=mock_run):
+        resp = client.delete("/api/sessions/amp-sess")
+
+    assert resp.status_code == 200
+    assert resp.json()["command_id"] == "amplifier"
+    assert captured == ["echo del amp-sess"]
+
+
+def test_delete_unknown_recorded_id_409_nothing_run(client, monkeypatch, tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.manifest as manifest_mod
+
+    manifest_path = tmp_path / "state" / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr("muxplex.main.load_manifest", manifest_mod.load_manifest)
+    manifest_mod.save_manifest(
+        manifest_mod.set_created_with(
+            manifest_mod.load_manifest(), "orphan", "gone-pair"
+        )
+    )
+    _write_pairs_settings(monkeypatch, tmp_path)  # "gone-pair" not configured
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["orphan"])
+
+    run = MagicMock()
+    with patch("muxplex.main.subprocess.run", run):
+        resp = client.delete("/api/sessions/orphan")
+
+    assert resp.status_code == 409
+    body = resp.json()["detail"]
+    assert body["unknown_command_id"] is True
+    assert body["command_id"] == "gone-pair"
+    assert "available" in body
+    run.assert_not_called()
+
+
+def test_delete_force_uses_default_and_flags(client, monkeypatch, tmp_path, caplog):
+    from unittest.mock import MagicMock, patch
+
+    import muxplex.manifest as manifest_mod
+
+    manifest_path = tmp_path / "state" / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr("muxplex.main.load_manifest", manifest_mod.load_manifest)
+    manifest_mod.save_manifest(
+        manifest_mod.set_created_with(
+            manifest_mod.load_manifest(), "orphan2", "gone-pair"
+        )
+    )
+    _write_pairs_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["orphan2"])
+
+    def mock_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with (
+        patch("muxplex.main.subprocess.run", side_effect=mock_run),
+        caplog.at_level("WARNING"),
+    ):
+        resp = client.delete("/api/sessions/orphan2?force=true")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["forced"] is True
+    assert data["command_id"] == "default"
+    assert "gone-pair" in caplog.text
+
+
+def test_delete_response_includes_command_id(client, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    _write_pairs_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["my-session"])
+    monkeypatch.setattr("muxplex.main.run_tmux", AsyncMock(return_value=""))
+
+    resp = client.delete("/api/sessions/my-session")
+    assert resp.json()["command_id"] == "default"
+
+
+def test_delete_still_returns_200_on_command_failure(client, monkeypatch, tmp_path):
+    """Existing contract preserved: 200 even when the run command fails."""
+    from unittest.mock import patch
+
+    _write_pairs_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["my-session"])
+
+    with patch(
+        "muxplex.main.subprocess.run", side_effect=RuntimeError("boom")
+    ):
+        resp = client.delete("/api/sessions/my-session")
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+def test_federation_create_forwards_command_id(monkeypatch, tmp_path):
+    """Body is {"name": ...} when command_id absent; includes command_id
+    when present (spec §7.4)."""
+    import asyncio
+
+    from muxplex.main import CreateSessionPayload, federation_create_session
+
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"name": "x", "ok": True}
+
+    class FakeClient:
+        async def post(self, url, headers=None, json=None):
+            captured["json"] = json
+            return FakeResponse()
+
+    class FakeRequest:
+        class app:
+            class state:
+                federation_client = FakeClient()
+
+    monkeypatch.setattr(
+        "muxplex.main._lookup_remote_by_device_id",
+        lambda device_id: {"url": "http://remote", "key": "k"},
+    )
+
+    asyncio.run(
+        federation_create_session(
+            "dev1",
+            CreateSessionPayload(name="x"),
+            FakeRequest(),  # type: ignore[arg-type]
+        )
+    )
+    assert captured["json"] == {"name": "x"}
+
+    asyncio.run(
+        federation_create_session(
+            "dev1",
+            CreateSessionPayload(name="x", command_id="amplifier"),
+            FakeRequest(),  # type: ignore[arg-type]
+        )
+    )
+    assert captured["json"] == {"name": "x", "command_id": "amplifier"}
+
+
+# ---------------------------------------------------------------------------
 # Issue 1: Static assets exempt from auth middleware
 # ---------------------------------------------------------------------------
 

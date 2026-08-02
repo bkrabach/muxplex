@@ -53,7 +53,13 @@ from muxplex.auth import (
 from muxplex.bells import apply_bell_clear_rule, needs_attention, process_bell_flags
 from muxplex.breaker import CircuitBreaker
 from muxplex.identity import load_device_id
-from muxplex.manifest import load_manifest, save_manifest, update_manifest
+from muxplex.manifest import (
+    get_created_with,
+    load_manifest,
+    save_manifest,
+    set_created_with,
+    update_manifest,
+)
 from muxplex.pruning import load_pruning_state, save_pruning_state
 from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
@@ -72,13 +78,16 @@ from muxplex.sessions import (
     update_session_cache,
 )
 from muxplex.settings import (
+    RESERVED_COMMAND_ID,
     DestructiveSettingsWriteRejected,
     apply_synced_settings,
+    find_session_command,
     get_local_ca_cert_path,
     get_syncable_settings,
     load_federation_key,
     load_settings,
     patch_settings,
+    resolve_session_commands,
     resolve_tmux_socket_dir,
     save_settings,
 )
@@ -644,6 +653,16 @@ async def lifespan(app: FastAPI):
         hashlib.md5(_app_js.read_bytes(), usedforsecurity=False).hexdigest()[:8],
     )
 
+    # Validate the configured session command pairs once at startup, so a
+    # broken settings.json is visible in the service journal at boot without
+    # waiting for a request to GET /api/session-commands to surface it.
+    _commands, _command_errors = resolve_session_commands()
+    if _command_errors:
+        for _err in _command_errors:
+            _log.error("session_commands config error: %s", _err)
+    else:
+        _log.info("session_commands: %d pair(s) configured", len(_commands) - 1)
+
     # Startup: kill any orphaned ttyd from a previous muxplex run, then
     # start the background poll loop.
     await kill_orphan_ttyd()
@@ -809,6 +828,14 @@ class HeartbeatPayload(BaseModel):
 
 class CreateSessionPayload(BaseModel):
     name: str
+    # Which configured command pair creates this session. None (the default,
+    # and what every pre-existing client sends) resolves to the reserved
+    # "default" pair -- i.e. settings.new_session_template -- so a request
+    # body of {"name": "x"} is byte-identical to pre-feature behavior. The
+    # id is looked up (settings.find_session_command); it is NEVER
+    # interpolated into a command. See GET /api/session-commands for the
+    # valid ids.
+    command_id: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -1040,6 +1067,32 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
     }
 
 
+@app.get("/api/session-commands")
+async def list_session_commands() -> dict:
+    """Return the resolved, validated, ordered list of session command pairs.
+
+    This is the canonical SERVER-SIDE resolution of `settings.session_commands`
+    -- folding the legacy singular new_session_template/delete_session_template
+    pair in as the reserved "default" entry (always index 0), excluding
+    invalid entries, and surfacing validation errors. Clients MUST use this
+    endpoint rather than re-deriving the fold from raw `GET /api/settings`
+    data -- same rationale as `GET /api/view` (AGENTS.md: resolve rules
+    server-side rather than shipping duplicate logic to every client).
+
+    Auth: the shared middleware (Bearer / localhost bypass / session cookie).
+    Deliberately NOT in auth._AUTH_EXEMPT_PATHS -- this discloses server-side
+    shell commands.
+
+    Response:
+        commands   -- resolved list, never empty; commands[0].id == "default".
+        default_id -- always the literal "default" (so clients never hardcode it).
+        errors     -- [] when config is clean; otherwise one human-readable
+                      string per rejected session_commands entry.
+    """
+    commands, errors = resolve_session_commands()
+    return {"commands": commands, "default_id": RESERVED_COMMAND_ID, "errors": errors}
+
+
 def _attention_order(sessions: list[dict]) -> list[dict]:
     """Tiered ordering for GET /api/view?sort=attention.
 
@@ -1229,13 +1282,21 @@ def _require_valid_session_name(name: str) -> None:
 
 @app.post("/api/sessions")
 async def create_session(payload: CreateSessionPayload) -> dict:
-    """Create a new session using the new_session_template from settings.
+    """Create a new session using the resolved command pair's
+    new_session_template.
 
     Substitutes ``{name}`` in the template with the validated payload name,
     runs the command as an async subprocess, and waits up to 30 seconds for
-    it to finish.  Returns ``{name, ok: True}`` on success or
+    it to finish.  Returns ``{name, ok: True, command_id: ...}`` on success or
     ``{name, ok: False, error: ...}`` with HTTP 500 on failure so that the
     frontend can surface actionable errors instead of silently timing out.
+
+    ``payload.command_id`` (optional) selects a configured session command
+    pair -- see GET /api/session-commands. Omitting it (the default, and
+    what every pre-existing client sends) resolves to the reserved
+    "default" pair, i.e. today's ``new_session_template`` -- byte-identical
+    to pre-feature behavior. An unresolvable id is a 400, before any
+    subprocess runs.
 
     Some session commands (e.g. ``amplifier-workspace``) create the tmux
     session and then attempt to *attach* to it, which requires a TTY.  When
@@ -1249,6 +1310,24 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     # Security boundary: reject unsafe names before they reach the shell.
     _require_valid_session_name(name)
 
+    # Resolve the command pair BEFORE any subprocess -- an unknown id must
+    # never spawn anything. Never falls back to the default; see
+    # find_session_command()'s docstring.
+    command = find_session_command(payload.command_id)
+    if command is None:
+        commands, _errors = resolve_session_commands()
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": (
+                    f"Unknown command_id {payload.command_id!r}. Configured: "
+                    f"{', '.join(c['id'] for c in commands)}."
+                ),
+                "unknown_command_id": True,
+                "available": [c["id"] for c in commands],
+            },
+        )
+
     # The actual subprocess/shell-template logic lives in
     # sessions.spawn_session_command() -- extracted so that `muxplex restore`
     # (which creates sessions from the CLI, not this running server) shares
@@ -1256,10 +1335,22 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     # second one that could drift. See its docstring and
     # SESSION_PERSISTENCE_DESIGN.md's "restore fidelity equals create
     # fidelity" principle.
-    ok, error = await spawn_session_command(name)
+    ok, error = await spawn_session_command(name, command_id=payload.command_id)
     if not ok:
         raise HTTPException(status_code=500, detail=error)
-    return {"name": name, "ok": True}
+
+    # Record which pair created this session, so delete can automatically
+    # run the matching teardown. Recorded AFTER success -- a failed create
+    # writes nothing and leaves no garbage (see manifest.py's created_with
+    # concurrency notes). Note: command["id"], not payload.command_id --
+    # normalizes None to the literal "default" so the record is always
+    # explicit.
+    async with state_lock:
+        manifest = load_manifest()
+        manifest = set_created_with(manifest, name, command["id"])
+        save_manifest(manifest)
+
+    return {"name": name, "ok": True, "command_id": command["id"]}
 
 
 @app.post("/api/sessions/{name}/connect")
@@ -1523,16 +1614,38 @@ async def delete_current_session(device_id: str | None = None) -> dict:
 
 
 @app.delete("/api/sessions/{name}")
-async def delete_session(name: str) -> dict:
-    """Kill/destroy a tmux session using the delete_session_template from settings.
+async def delete_session(name: str, force: bool = False) -> dict:
+    """Kill/destroy a tmux session using the command pair it was created with.
 
-    Reads delete_session_template, substitutes {name}, and runs it synchronously
-    (30s timeout) so the caller can rely on the session being gone on return.
+    Reads the pair's delete_session_template, substitutes {name}, and runs it
+    synchronously (30s timeout) so the caller can rely on the session being
+    gone on return.
 
-    Returns {ok: True, name: name}. Errors are logged as warnings — the endpoint
-    always returns 200 so the UI can refresh and reflect the gone session.
+    No `command_id` input on this endpoint -- deliberate, not an oversight.
+    The pair a session was created with is looked up automatically
+    (manifest.get_created_with); the user should never have to remember what
+    made a session, which is what makes it a "pair". Accepting a
+    caller-chosen command_id here would also let any authenticated caller
+    run pair A's teardown command against a pair-B session -- a capability
+    with no use case.
+
+    Resolution:
+    - No record for *name* (a pre-existing tmux session, or one created
+      outside muxplex): use the "default" pair. This is not a fallback --
+      it is today's behavior, unchanged.
+    - A record exists but no longer resolves (the pair was deleted/renamed
+      in settings): refuse with 409 (`unknown_command_id: true`) and run
+      NOTHING, unless `force=true`, which substitutes the default pair and
+      logs a warning naming the missing id. Never silently substitutes --
+      that is the exact failure this feature exists to prevent.
+
+    Returns {ok: True, name: name, command_id: ...} (+ forced: True on the
+    force path). Errors are logged as warnings — the endpoint always
+    returns 200 on a run command failure so the UI can refresh and reflect
+    the gone session (unchanged contract).
     400 if *name* fails the session-name allowlist.
     404 if session is not an exact match in the known session list.
+    409 if the recorded command_id no longer resolves and force is not set.
     Must be declared after DELETE /api/sessions/current so "current" routes correctly.
     """
     # Security boundary: reject unsafe names before they reach the shell.
@@ -1547,6 +1660,43 @@ async def delete_session(name: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     settings = load_settings()
+    recorded = get_created_with(load_manifest(), name)
+    forced = False
+    if recorded is None:
+        # No record: a pre-existing / not-muxplex-created session. Use the
+        # default pair -- byte-identical to pre-feature behavior.
+        command = find_session_command(None, settings)
+        assert command is not None  # the "default" entry always resolves
+    else:
+        command = find_session_command(recorded, settings)
+        if command is None:
+            if not force:
+                commands, _errors = resolve_session_commands(settings)
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "detail": (
+                            f"Session {name!r} was created with command {recorded!r}, "
+                            "which is no longer configured. Restore it in "
+                            "~/.config/muxplex/settings.json, or retry with "
+                            "?force=true to use the default kill command."
+                        ),
+                        "unknown_command_id": True,
+                        "command_id": recorded,
+                        "name": name,
+                        "available": [c["id"] for c in commands],
+                    },
+                )
+            _log.warning(
+                "delete_session: recorded command_id %r for %r no longer "
+                "configured; ?force=true -- substituting the default pair",
+                recorded,
+                name,
+            )
+            command = find_session_command(None, settings)
+            assert command is not None  # the "default" entry always resolves
+            forced = True
+
     # create/delete templates are BOTH arbitrary user shell commands with a
     # {name} placeholder (default `tmux kill-session -t {name}`, but users
     # configure e.g. `amplifier-dev --destroy {name}`), so this path stays
@@ -1554,14 +1704,14 @@ async def delete_session(name: str) -> dict:
     # (1) the allowlist above guarantees the name has no shell metacharacters;
     # (2) shlex.quote() is applied as defense-in-depth in case the allowlist is
     # ever loosened. For an allowlist-valid name shlex.quote() is a no-op.
-    command = settings.get(
-        "delete_session_template", "tmux kill-session -t {name}"
-    ).replace("{name}", shlex.quote(name))
+    command_str = command["delete_session_template"].replace(
+        "{name}", shlex.quote(name)
+    )
 
-    _log.info("Deleting session '%s' with command: %s", name, command)
+    _log.info("Deleting session '%s' with command: %s", name, command_str)
     try:
         result = subprocess.run(
-            command,
+            command_str,
             shell=True,
             input="y\n",  # auto-confirm interactive prompts (e.g. amplifier-dev --destroy)
             capture_output=True,
@@ -1578,11 +1728,14 @@ async def delete_session(name: str) -> dict:
                 result.stderr.strip(),
             )
     except subprocess.TimeoutExpired:
-        _log.warning("Delete command timed out after 30s: %r", command)
+        _log.warning("Delete command timed out after 30s: %r", command_str)
     except Exception:
-        _log.warning("Delete command failed: %r", command)
+        _log.warning("Delete command failed: %r", command_str)
 
-    return {"ok": True, "name": name}
+    result_body = {"ok": True, "name": name, "command_id": command["id"]}
+    if forced:
+        result_body["forced"] = True
+    return result_body
 
 
 @app.post("/api/heartbeat")
@@ -3090,7 +3243,17 @@ async def federation_create_session(
 
     Looks up the remote by device_id string via ``_lookup_remote_by_device_id``,
     sends ``POST {remote_url}/api/sessions`` with a Bearer auth header and JSON
-    body ``{name: ...}``, and returns the remote's JSON response.
+    body ``{name: ...}`` (plus ``command_id`` when the caller supplied one),
+    and returns the remote's JSON response.
+
+    ``command_id`` is forwarded conditionally, not unconditionally: the id
+    namespace belongs to the REMOTE, not to us -- a local id like
+    "amplifier" may mean something else, or nothing, on the peer, where an
+    unresolvable id produces a 400 there, surfaced as a 502 by this proxy's
+    raise_for_status(). Omitting the field entirely when unset keeps the
+    proxied request byte-identical to today's for the overwhelmingly common
+    case. The frontend must not send command_id when a remote device is
+    selected (a local id is meaningless, and likely a 400, on the peer).
 
     Raises HTTP 404 if ``device_id`` does not match any remote instance,
     503 when remote is unreachable, 502 when remote returns HTTP error.
@@ -3105,11 +3268,16 @@ async def federation_create_session(
     remote_key: str = remote.get("key", "")
     url = f"{remote_url}/api/sessions"
     http_client: httpx.AsyncClient = request.app.state.federation_client
+    body = (
+        {"name": payload.name}
+        if payload.command_id is None
+        else {"name": payload.name, "command_id": payload.command_id}
+    )
     try:
         resp = await http_client.post(
             url,
             headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
-            json={"name": payload.name},
+            json=body,
         )
         resp.raise_for_status()
         return resp.json()

@@ -714,3 +714,203 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
     assert ok is True
     assert error is None
     assert get_snapshots() == {}
+
+
+# ---------------------------------------------------------------------------
+# spawn_session_command(command_id=...) -- named session command pairs
+# (COMMAND_PAIRS_SPEC.md)
+# ---------------------------------------------------------------------------
+
+
+async def test_spawn_default_when_command_id_none():
+    """command_id=None resolves to settings.new_session_template -- the
+    byte-identity guard for every existing caller."""
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_shell",
+            new=AsyncMock(return_value=_make_mock_process("", "", 0)),
+        ) as mock_shell,
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [],
+            },
+        ),
+        patch("shutil.which", return_value="/usr/bin/tmux"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, error = await spawn_session_command("my-session")
+
+    assert ok is True
+    assert error is None
+    assert mock_shell.call_args[0][0] == "tmux new-session -d -s my-session"
+
+
+async def test_spawn_uses_named_pair():
+    """command_id selects the named pair's new_session_template."""
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_shell",
+            new=AsyncMock(return_value=_make_mock_process("", "", 0)),
+        ) as mock_shell,
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [
+                    {
+                        "id": "amplifier",
+                        "label": "Amplifier",
+                        "new_session_template": "amplifier-workspace {name}",
+                        "delete_session_template": "amplifier-dev --destroy {name}",
+                    }
+                ],
+            },
+        ),
+        patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, error = await spawn_session_command("my-session", command_id="amplifier")
+
+    assert ok is True
+    assert error is None
+    assert mock_shell.call_args[0][0] == "amplifier-workspace my-session"
+
+
+async def test_spawn_unknown_command_id_returns_error_without_spawning():
+    with (
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_shell", new=AsyncMock()
+        ) as mock_shell,
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_exec", new=AsyncMock()
+        ) as mock_exec,
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [],
+            },
+        ),
+    ):
+        ok, error = await spawn_session_command("my-session", command_id="typo")
+
+    assert ok is False
+    assert error is not None
+    assert "typo" in error
+    mock_shell.assert_not_called()
+    mock_exec.assert_not_called()
+
+
+async def test_spawn_named_pair_still_honors_tty_attach_recovery():
+    """Extends the escaped-path TTY-attach recovery test to a NON-default
+    pair -- amplifier-workspace is the exemplar non-default pair AND the
+    reason that branch exists."""
+    proc = _make_mock_process(
+        stdout="", stderr="attach failed: not a terminal", returncode=1
+    )
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_shell",
+            new=AsyncMock(return_value=proc),
+        ),
+        patch(
+            "muxplex.sessions.enumerate_sessions",
+            new=AsyncMock(return_value=["my-session"]),
+        ),
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [
+                    {
+                        "id": "amplifier",
+                        "label": "Amplifier",
+                        "new_session_template": "amplifier-workspace {name}",
+                        "delete_session_template": "amplifier-dev --destroy {name}",
+                    }
+                ],
+            },
+        ),
+        patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, error = await spawn_session_command("my-session", command_id="amplifier")
+
+    assert ok is True
+    assert error is None
+
+
+async def test_spawn_named_pair_still_shlex_quotes_name():
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_shell",
+            new=AsyncMock(return_value=_make_mock_process("", "", 0)),
+        ) as mock_shell,
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [
+                    {
+                        "id": "amplifier",
+                        "label": "Amplifier",
+                        "new_session_template": "amplifier-workspace {name}",
+                        "delete_session_template": "amplifier-dev --destroy {name}",
+                    }
+                ],
+            },
+        ),
+        patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        await spawn_session_command("my-session", command_id="amplifier")
+
+    # An allowlist-valid name is a shlex.quote() no-op; this asserts the
+    # substitution path is exercised for a non-default template too.
+    assert mock_shell.call_args[0][0] == "amplifier-workspace my-session"
+
+
+async def test_spawn_named_pair_respects_cgroup_escape():
+    """should_escape() True -> wrap_shell_argv receives the NAMED pair's
+    command, not the default (guards the 44-session-incident machinery)."""
+    proc = _make_mock_process(stdout="", stderr="", returncode=0)
+    with (
+        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=True)),
+        patch(
+            "muxplex.sessions.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec,
+        patch(
+            "muxplex.sessions.load_settings",
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [
+                    {
+                        "id": "amplifier",
+                        "label": "Amplifier",
+                        "new_session_template": "amplifier-workspace {name}",
+                        "delete_session_template": "amplifier-dev --destroy {name}",
+                    }
+                ],
+            },
+        ),
+        patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
+        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
+    ):
+        ok, _error = await spawn_session_command("my-session", command_id="amplifier")
+
+    assert ok is True
+    called_argv = list(mock_exec.call_args[0])
+    assert called_argv[-1] == "amplifier-workspace my-session"

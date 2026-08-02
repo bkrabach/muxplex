@@ -45,11 +45,13 @@ from typing import Literal
 from muxplex.manifest import (
     RESTORE_MAX_AGE_SECONDS,
     compute_restore_plan,
+    get_created_with,
     load_manifest,
     mark_restored,
     save_manifest,
 )
 from muxplex.sessions import enumerate_sessions, run_tmux, spawn_session_command
+from muxplex.settings import find_session_command
 
 Status = Literal["ok", "fail", "warn"]
 
@@ -206,7 +208,31 @@ async def execute_restore(names: list[str]) -> RestoreReport:
     restored: set[str] = set()
 
     for name in names:
-        ok, error = await spawn_session_command(name)
+        # Load the manifest INSIDE the loop (not once before it): restore is
+        # explicitly designed to run while the poll loop is live, and a
+        # per-iteration read is consistent with _persist_restored()'s
+        # read-right-before-write discipline.
+        recorded = get_created_with(load_manifest(), name)
+        if recorded is not None and find_session_command(recorded) is None:
+            # The pair this session was created with no longer resolves
+            # (deleted or renamed in settings). Not a substitution, not a
+            # silent skip: a FAIL. Recreating with the wrong pair (or the
+            # default) would silently reintroduce the exact failure
+            # AGENTS.md warns about -- "a bare tmux session ... looks
+            # restored and isn't."
+            report.results.append(
+                SessionResult(
+                    name=name,
+                    status="fail",
+                    detail=(
+                        f"recorded command {recorded!r} is no longer configured; "
+                        "restore it in ~/.config/muxplex/settings.json and re-run"
+                    ),
+                )
+            )
+            continue
+
+        ok, error = await spawn_session_command(name, command_id=recorded)
         if not ok:
             report.results.append(
                 SessionResult(name=name, status="fail", detail=error or "unknown error")
