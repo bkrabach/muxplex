@@ -2519,7 +2519,9 @@ test('createNewSession polls for session before auto-opening (not immediate setT
   assert.ok(start !== -1, 'createNewSession function must exist');
   // Updated in v0.6.0: snippet size increased from 2000 to 3500 — function grew with
   // loading tile injection and auto-add-to-view logic; setInterval is now ~2800 chars in.
-  const snippet = source.slice(start, start + 3500);
+  // Updated for named session command pairs (COMMAND_PAIRS_SPEC.md): command_id body
+  // construction added near the top of the function, pushing setInterval to ~3600 chars.
+  const snippet = source.slice(start, start + 3800);
   // Must NOT contain the old immediate-open pattern inside createNewSession
   assert.ok(
     !snippet.includes("setTimeout(() => openSession"),
@@ -3742,7 +3744,9 @@ test('DOMContentLoaded sets page title via updatePageTitle after loadServerSetti
   // Updated in v0.6.0: window increased from 800 to 2000 — DOMContentLoaded handler grew
   // with federation init, view-mode setup, and restoreState().then() scaffolding;
   // updatePageTitle() is now inside .then() ~1300 chars into the handler.
-  const domBlock = source.substring(domIdx, domIdx + 2000);
+  // Updated for named session command pairs (COMMAND_PAIRS_SPEC.md): loadSessionCommands()
+  // call added right after loadServerSettings(), pushing updatePageTitle to ~2100 chars.
+  const domBlock = source.substring(domIdx, domIdx + 2300);
   // The old direct assignment is replaced by updatePageTitle()
   assert.ok(
     !domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),

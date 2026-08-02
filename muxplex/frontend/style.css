@@ -1549,7 +1549,8 @@ body {
   color: var(--text-dim);
 }
 
-.new-session-device-select {
+.new-session-device-select,
+.new-session-command-select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1562,11 +1563,45 @@ body {
   vertical-align: middle;
 }
 
-.fab-input-overlay .new-session-device-select {
+.fab-input-overlay .new-session-device-select,
+.fab-input-overlay .new-session-command-select {
   display: block;
   width: 100%;
   margin-bottom: 6px;
   margin-right: 0;
+}
+
+.settings-command-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-command-pair {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.settings-command-pair__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.settings-command-pair__template {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.settings-command-errors {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 /* ============================================================

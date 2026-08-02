@@ -354,6 +354,14 @@ const DISPLAY_DEFAULTS = {
 var VIEW_MODES = ['auto', 'fit'];
 const NEW_SESSION_DEFAULT_TEMPLATE = 'tmux new-session -d -s {name}';
 const DELETE_SESSION_DEFAULT_TEMPLATE = 'tmux kill-session -t {name}';
+// Resolved session command pairs from GET /api/session-commands, or null
+// before that fetch resolves (or on fetch failure -- see loadSessionCommands()).
+// A null/short list degrades to _createCommandSelect()'s one-pair path,
+// which is today's create-session UI unchanged.
+let _sessionCommands = null;
+// Human-readable strings from that response's `errors` (rejected
+// session_commands entries) -- rendered read-only in Settings > Commands.
+let _sessionCommandErrors = [];
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -3651,6 +3659,31 @@ async function loadServerSettings() {
 }
 
 /**
+ * Load the resolved session command pairs from GET /api/session-commands
+ * into _sessionCommands / _sessionCommandErrors. Fetched once at page load
+ * (not polled -- pairs change only when the operator edits settings.json,
+ * a rarely-changing local file).
+ *
+ * On failure, leaves _sessionCommands as null and logs to console -- never
+ * toasts. A null list degrades to _createCommandSelect()'s one-pair path,
+ * i.e. today's create-session UI, so a failed fetch costs the picker, never
+ * the ability to create a session.
+ * @returns {Promise<void>}
+ */
+async function loadSessionCommands() {
+  try {
+    const res = await api('GET', '/api/session-commands');
+    const body = await res.json();
+    _sessionCommands = body.commands || null;
+    _sessionCommandErrors = body.errors || [];
+  } catch (err) {
+    console.warn('[loadSessionCommands] failed:', err);
+    _sessionCommands = null;
+    _sessionCommandErrors = [];
+  }
+}
+
+/**
  * Re-render every view-dependent surface from current _serverSettings.
  * Shared by followRemoteViewDefinitions() and the guarded-PATCH conflict
  * path below -- both situations are "server truth changed out from under
@@ -4243,9 +4276,65 @@ function openSettings() {
       deleteTemplateEl.value = (ss && ss.delete_session_template) || DELETE_SESSION_DEFAULT_TEMPLATE;
     }
 
+    // Commands tab - render additional command pairs + config errors (read-only)
+    renderCommandPairsSettings();
+
     // Views tab
     renderViewsSettingsTab();
   });
+}
+
+/**
+ * Render the read-only "Additional command pairs" + "Command pair
+ * configuration errors" sections in Settings > Commands, from the module
+ * state populated by loadSessionCommands() (_sessionCommands,
+ * _sessionCommandErrors).
+ *
+ * Deliberately NO editable control and NO patchServerSetting('session_commands', ...)
+ * call anywhere here -- session_commands is in settings.LOCAL_ONLY_KEYS
+ * (server-executed shell commands); the only way to manage pairs is editing
+ * ~/.config/muxplex/settings.json directly. Mirrors the existing read-only
+ * treatment of #setting-template / #setting-delete-template.
+ */
+function renderCommandPairsSettings() {
+  const pairsField = $('settings-command-pairs-field');
+  const pairsList = $('settings-command-pairs');
+  if (pairsList) {
+    pairsList.innerHTML = '';
+    var extras = (_sessionCommands || []).filter(function(c) { return c.id !== 'default'; });
+    extras.forEach(function(cmd) {
+      var row = document.createElement('div');
+      row.className = 'settings-command-pair';
+      var title = document.createElement('div');
+      title.className = 'settings-command-pair__title';
+      title.textContent = cmd.label + ' (' + cmd.id + ')';
+      var createEl = document.createElement('code');
+      createEl.className = 'settings-command-pair__template';
+      createEl.textContent = cmd.new_session_template;
+      var deleteEl = document.createElement('code');
+      deleteEl.className = 'settings-command-pair__template';
+      deleteEl.textContent = cmd.delete_session_template;
+      row.appendChild(title);
+      row.appendChild(createEl);
+      row.appendChild(deleteEl);
+      pairsList.appendChild(row);
+    });
+    if (pairsField) pairsField.style.display = extras.length > 0 ? '' : 'none';
+  }
+
+  const errorsField = $('settings-command-errors-field');
+  const errorsList = $('settings-command-errors');
+  if (errorsList) {
+    errorsList.innerHTML = '';
+    (_sessionCommandErrors || []).forEach(function(err) {
+      var li = document.createElement('li');
+      li.textContent = err;
+      errorsList.appendChild(li);
+    });
+    if (errorsField) {
+      errorsField.style.display = (_sessionCommandErrors || []).length > 0 ? '' : 'none';
+    }
+  }
 }
 
 /**
@@ -4555,6 +4644,41 @@ function _createDeviceSelect() {
 }
 
 /**
+ * Create an optional command-pair <select> for session creation.
+ * Returns null when fewer than two pairs are configured (or the list has not
+ * loaded) -- at one pair the create control is byte-identical to pre-feature
+ * muxplex, which is the point. Deliberately the same shape and same
+ * null-means-omit contract as _createDeviceSelect() above, so both callers
+ * (showNewSessionInput, showFabSessionInput) handle them identically.
+ * @returns {HTMLSelectElement|null}
+ */
+function _createCommandSelect() {
+  if (!_sessionCommands || _sessionCommands.length < 2) {
+    return null;
+  }
+
+  const select = document.createElement('select');
+  select.className = 'new-session-command-select';
+
+  for (var i = 0; i < _sessionCommands.length; i++) {
+    var cmd = _sessionCommands[i];
+    var opt = document.createElement('option');
+    opt.value = cmd.id;
+    opt.textContent = cmd.label;
+    // Resolves the "Default" label ambiguity: hovering shows the actual
+    // create command, regardless of what the label says.
+    opt.title = cmd.new_session_template;
+    select.appendChild(opt);
+  }
+  // First option ("default") selected by default -- no persistence of the
+  // last choice; a sticky selection that silently changes what "create"
+  // does is a footgun nobody has asked for.
+  select.value = _sessionCommands[0].id;
+
+  return select;
+}
+
+/**
  * Replace the header + button with an inline text input (and optional device
  * select) for session naming. Hides the button, inserts controls before it,
  * and focuses the input.
@@ -4565,10 +4689,12 @@ function _createDeviceSelect() {
  */
 function showNewSessionInput(btn) {
   const select = _createDeviceSelect();
+  const cmdSelect = _createCommandSelect();
   const input = _createSessionInput();
 
   function cleanup() {
     if (select && select.parentNode) select.parentNode.removeChild(select);
+    if (cmdSelect && cmdSelect.parentNode) cmdSelect.parentNode.removeChild(cmdSelect);
     if (input.parentNode) input.parentNode.removeChild(input);
     btn.style.display = '';
   }
@@ -4577,8 +4703,9 @@ function showNewSessionInput(btn) {
     if (e.key === 'Enter') {
       const name = input.value.trim();
       const remoteId = select ? select.value : '';
+      const commandId = cmdSelect ? cmdSelect.value : '';
       cleanup();
-      if (name) createNewSession(name, remoteId);
+      if (name) createNewSession(name, remoteId, commandId);
     } else if (e.key === 'Escape') {
       cleanup();
     }
@@ -4586,8 +4713,10 @@ function showNewSessionInput(btn) {
 
   input.addEventListener('blur', function() {
     setTimeout(function() {
-      // Don't close if focus moved to the device select dropdown
+      // Don't close if focus moved to the device select dropdown or the
+      // command-pair select
       if (select && document.activeElement === select) return;
+      if (cmdSelect && document.activeElement === cmdSelect) return;
       cleanup();
     }, 150);
   });
@@ -4595,18 +4724,43 @@ function showNewSessionInput(btn) {
   if (select) {
     select.addEventListener('blur', function() {
       setTimeout(function() {
-        // Don't close if focus moved back to the name input
+        // Don't close if focus moved back to the name input or the
+        // command-pair select
         if (document.activeElement === input) return;
+        if (cmdSelect && document.activeElement === cmdSelect) return;
         cleanup();
       }, 150);
     });
     select.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') { cleanup(); }
     });
+    // Disabling (not hiding -- no layout shift) the command select when a
+    // remote device is chosen is the honest UI: a local command_id is
+    // meaningless (and likely a 400) on a remote peer (spec §7.4).
+    if (cmdSelect) {
+      select.addEventListener('change', function() {
+        cmdSelect.disabled = !!select.value;
+      });
+    }
+  }
+
+  if (cmdSelect) {
+    cmdSelect.addEventListener('blur', function() {
+      setTimeout(function() {
+        // Don't close if focus moved back to the name input or the device select
+        if (document.activeElement === input) return;
+        if (select && document.activeElement === select) return;
+        cleanup();
+      }, 150);
+    });
+    cmdSelect.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { cleanup(); }
+    });
   }
 
   btn.style.display = 'none';
   if (select) btn.parentNode.insertBefore(select, btn);
+  if (cmdSelect) btn.parentNode.insertBefore(cmdSelect, btn);
   btn.parentNode.insertBefore(input, btn);
   input.focus();
 }
@@ -4626,9 +4780,11 @@ function showFabSessionInput() {
   overlay.className = 'fab-input-overlay';
 
   const select = _createDeviceSelect();
+  const cmdSelect = _createCommandSelect();
   const input = _createSessionInput();
 
   if (select) overlay.appendChild(select);
+  if (cmdSelect) overlay.appendChild(cmdSelect);
   overlay.appendChild(input);
 
   function cleanup() {
@@ -4640,8 +4796,9 @@ function showFabSessionInput() {
     if (e.key === 'Enter') {
       const name = input.value.trim();
       const remoteId = select ? select.value : '';
+      const commandId = cmdSelect ? cmdSelect.value : '';
       cleanup();
-      if (name) createNewSession(name, remoteId);
+      if (name) createNewSession(name, remoteId, commandId);
     } else if (e.key === 'Escape') {
       cleanup();
     }
@@ -4649,8 +4806,10 @@ function showFabSessionInput() {
 
   input.addEventListener('blur', function() {
     setTimeout(function() {
-      // Don't close if focus moved to the device select dropdown
+      // Don't close if focus moved to the device select dropdown or the
+      // command-pair select
       if (select && document.activeElement === select) return;
+      if (cmdSelect && document.activeElement === cmdSelect) return;
       cleanup();
     }, 150);
   });
@@ -4658,12 +4817,33 @@ function showFabSessionInput() {
   if (select) {
     select.addEventListener('blur', function() {
       setTimeout(function() {
-        // Don't close if focus moved back to the name input
+        // Don't close if focus moved back to the name input or the
+        // command-pair select
         if (document.activeElement === input) return;
+        if (cmdSelect && document.activeElement === cmdSelect) return;
         cleanup();
       }, 150);
     });
     select.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { cleanup(); }
+    });
+    if (cmdSelect) {
+      select.addEventListener('change', function() {
+        cmdSelect.disabled = !!select.value;
+      });
+    }
+  }
+
+  if (cmdSelect) {
+    cmdSelect.addEventListener('blur', function() {
+      setTimeout(function() {
+        // Don't close if focus moved back to the name input or the device select
+        if (document.activeElement === input) return;
+        if (select && document.activeElement === select) return;
+        cleanup();
+      }, 150);
+    });
+    cmdSelect.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') { cleanup(); }
     });
   }
@@ -4682,11 +4862,18 @@ function showFabSessionInput() {
  * @param {string} name - The session name to create.
  * @returns {Promise<void>}
  */
-async function createNewSession(name, remoteId) {
+async function createNewSession(name, remoteId, commandId) {
   var deviceId = remoteId || '';  // Accept device_id string (was integer index in old protocol)
   try {
     var endpoint = deviceId ? '/api/federation/' + encodeURIComponent(deviceId) + '/sessions' : '/api/sessions';
-    const res = await api('POST', endpoint, { name });
+    var body = { name: name };
+    // Omit entirely when unset -- a pre-feature-shaped body is what keeps an
+    // un-picked create byte-identical to before. Also omit for a REMOTE
+    // create: command ids are namespaced to the host that defines them, so
+    // OUR id is meaningless (and likely a 400) on the peer. The remote uses
+    // its own default -- identical to today.
+    if (commandId && !deviceId) body.command_id = commandId;
+    const res = await api('POST', endpoint, body);
     const data = await res.json();
     const sessionName = data.name || name;
 
@@ -5152,6 +5339,13 @@ function _setServerSettings(settings) {
   _serverSettings = settings;
 }
 
+/** Test-only: set _sessionCommands / _sessionCommandErrors directly,
+ * bypassing loadSessionCommands(). */
+function _setSessionCommands(commands, errors) {
+  _sessionCommands = commands;
+  _sessionCommandErrors = errors || [];
+}
+
 /** Test-only: get _serverSettings. */
 function _getServerSettings() {
   return _serverSettings;
@@ -5244,6 +5438,10 @@ document.addEventListener('DOMContentLoaded', async function() {
 
   // Load ALL settings (now includes display + sidebar) before first render
   await loadServerSettings();
+  // Resolved session command pairs -- not polled (pairs change only when the
+  // operator edits settings.json). A failed fetch degrades to the one-pair
+  // create UI (today's behavior), never blocks session creation.
+  loadSessionCommands();
   // Seed the change-detection baseline so the first /api/state poll doesn't
   // trigger a redundant re-fetch in followRemoteViewDefinitions().
   _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || 0;
@@ -5437,6 +5635,10 @@ if (typeof module !== 'undefined' && module.exports) {
     // Constants
     NEW_SESSION_DEFAULT_TEMPLATE,
     DELETE_SESSION_DEFAULT_TEMPLATE,
+    _createCommandSelect,
+    createNewSession,
+    renderCommandPairsSettings,
+    _setSessionCommands,
     // Test-only helpers
     _setCurrentSessions,
     _setViewMode,
