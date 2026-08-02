@@ -100,9 +100,27 @@ test('_createCommandSelect returns a select with options at 2+ pairs', () => {
 // createNewSession(name, remoteId, commandId) body construction
 // ---------------------------------------------------------------------------
 
+// createNewSession() schedules a `setInterval` poll loop (pollForSession) once
+// its initial POST resolves successfully -- the same "fire and forget" pattern
+// already exercised for startPolling/startHeartbeat elsewhere in this suite
+// (see tests/test_app.mjs's "guards against double-start" tests). In a real
+// browser this loop is bounded (max 30s, self-clears on match or timeout); in
+// this stub environment the interval callback re-derives `_currentSessions`
+// from whatever `globalThis.fetch` returns and calls `.find()` on it, which
+// throws (TypeError) when the stub returns `{}` instead of an array -- and
+// since that throw happens before the loop's own `clearInterval()` call, the
+// interval is NEVER cleared and reschedules itself forever, leaking a live
+// `Timeout` handle that keeps the process alive indefinitely after the test
+// file's own assertions finish (confirmed via `process.getActiveResourcesInfo()`
+// showing a `Timeout` entry with these tests uninstrumented, and none with the
+// stub below in place). Stubbing `globalThis.setInterval` here -- exactly the
+// pattern used for startPolling/startHeartbeat -- prevents any real timer from
+// ever being scheduled, so there is nothing left to leak.
 test('createNewSession omits command_id when unset', async () => {
   let capturedBody = null;
   const origFetch = globalThis.fetch;
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = () => Symbol('timer');
   globalThis.fetch = async (url, opts) => {
     capturedBody = JSON.parse(opts.body);
     return { ok: true, json: async () => ({ name: 'x', ok: true, command_id: 'default' }) };
@@ -111,14 +129,18 @@ test('createNewSession omits command_id when unset', async () => {
     await app.createNewSession('x', '', '');
   } catch (_e) {
     // downstream DOM code may throw on stubs; only the fetch body matters here
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.setInterval = origSetInterval;
   }
-  globalThis.fetch = origFetch;
   assert.deepEqual(capturedBody, { name: 'x' });
 });
 
 test('createNewSession sends command_id when picked locally (no remote device)', async () => {
   let capturedBody = null;
   const origFetch = globalThis.fetch;
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = () => Symbol('timer');
   globalThis.fetch = async (url, opts) => {
     capturedBody = JSON.parse(opts.body);
     return { ok: true, json: async () => ({ name: 'x', ok: true, command_id: 'amplifier' }) };
@@ -127,8 +149,10 @@ test('createNewSession sends command_id when picked locally (no remote device)',
     await app.createNewSession('x', '', 'amplifier');
   } catch (_e) {
     // ignore downstream DOM errors
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.setInterval = origSetInterval;
   }
-  globalThis.fetch = origFetch;
   assert.deepEqual(capturedBody, { name: 'x', command_id: 'amplifier' });
 });
 
@@ -136,6 +160,8 @@ test('createNewSession omits command_id for a remote create even when a pair is 
   let capturedUrl = null;
   let capturedBody = null;
   const origFetch = globalThis.fetch;
+  const origSetInterval = globalThis.setInterval;
+  globalThis.setInterval = () => Symbol('timer');
   globalThis.fetch = async (url, opts) => {
     capturedUrl = url;
     capturedBody = JSON.parse(opts.body);
@@ -145,8 +171,10 @@ test('createNewSession omits command_id for a remote create even when a pair is 
     await app.createNewSession('x', 'remote-device-1', 'amplifier');
   } catch (_e) {
     // ignore downstream DOM errors
+  } finally {
+    globalThis.fetch = origFetch;
+    globalThis.setInterval = origSetInterval;
   }
-  globalThis.fetch = origFetch;
   assert.ok(capturedUrl.includes('/api/federation/'));
   assert.deepEqual(capturedBody, { name: 'x' });
 });
