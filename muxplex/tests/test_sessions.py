@@ -623,7 +623,11 @@ async def test_spawn_session_command_uses_plain_shell_when_escape_not_needed():
         ) as mock_exec,
         patch(
             "muxplex.sessions.load_settings",
-            return_value={"new_session_template": "tmux new-session -d -s {name}"},
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [],
+            },
         ),
         patch("shutil.which", return_value="/usr/bin/tmux"),
         patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
@@ -658,7 +662,11 @@ async def test_spawn_session_command_wraps_in_systemd_scope_when_escape_needed()
         ) as mock_shell,
         patch(
             "muxplex.sessions.load_settings",
-            return_value={"new_session_template": "tmux new-session -d -s {name}"},
+            return_value={
+                "new_session_template": "tmux new-session -d -s {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [],
+            },
         ),
         patch("shutil.which", return_value="/usr/bin/tmux"),
         patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
@@ -704,7 +712,11 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
         ),
         patch(
             "muxplex.sessions.load_settings",
-            return_value={"new_session_template": "amplifier-workspace {name}"},
+            return_value={
+                "new_session_template": "amplifier-workspace {name}",
+                "delete_session_template": "tmux kill-session -t {name}",
+                "session_commands": [],
+            },
         ),
         patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
         patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),

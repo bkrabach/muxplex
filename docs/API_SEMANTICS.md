@@ -245,6 +245,68 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   local file edit still takes effect. Clients that write to any of these
   five keys via `PATCH` should expect the value to come back unchanged in
   the response and treat that as confirmation the fence held, not a bug.
+  **`session_commands` is a sixth key in the same fence** (named session
+  command pairs, below) -- extend the count wherever a client or test
+  enumerates it.
+- **Named session command pairs** (`session_commands`, `GET
+  /api/session-commands`, `POST /api/sessions`'s `command_id`, `DELETE
+  /api/sessions/{name}`'s automatic pair-matching and `?force=true`).
+  There is one implicit pair today -- `new_session_template` /
+  `delete_session_template`. This lets an operator configure several NAMED
+  pairs (different working paths, or an entirely different command) and
+  select one at create time; delete automatically runs the matching
+  teardown, so a client never has to remember what created a session.
+  - **`GET /api/session-commands`** is the canonical SERVER-SIDE resolution
+    of the configured pairs: the legacy singular pair folded in as the
+    reserved `id: "default"` entry (always `commands[0]`), invalid
+    `session_commands` entries excluded, human-readable `errors` reported.
+    Clients MUST NOT re-derive this fold from `GET /api/settings`'s raw
+    `session_commands` field -- same rationale as `GET /api/view` above:
+    resolve once, server-side, rather than have every client (PWA,
+    muxplex-deck, agents) reimplement the fold and drift.
+  - **`POST /api/sessions`'s optional `command_id`** selects a pair by id.
+    Omitting it is BYTE-IDENTICAL to pre-feature behavior -- it resolves to
+    `"default"`, i.e. today's `new_session_template`. An unresolvable id is
+    a 400 (`unknown_command_id: true`, an `available` id list), before any
+    subprocess runs. The response gains one additive field, `command_id`,
+    naming the pair that actually ran.
+  - **`DELETE /api/sessions/{name}`'s pair-matching is automatic and has NO
+    `command_id` input** -- the server looks up which pair created the
+    session (recorded in the device-local session-presence manifest at
+    create time, never in `state.json`, whose session map is reaped every
+    ~2s against live tmux) and runs its `delete_session_template`. No
+    record (a pre-existing session, or one created outside muxplex) uses
+    the default pair -- unchanged pre-feature behavior. A record naming a
+    pair that no longer resolves (deleted or renamed in settings) is a
+    **409** with **no command run** -- deliberate: substituting the
+    default teardown for an unknown pair could leave the real cleanup
+    undone (a container still running, a worktree still mounted).
+    `?force=true` performs that substitution explicitly, returning
+    `forced: true` and logging a warning naming the missing id. The
+    response gains `command_id` (+ `forced` on the force path).
+  - **`unknown_command_id: true`** is the third member of the established
+    "tell this 409/400 apart from others" convention alongside
+    `backstop: true` (settings destructive-write guard) and
+    `terminal_conflict: true` (connect terminal-claim gate).
+  - **`session_commands` is in `LOCAL_ONLY_KEYS` and absent from
+    `SYNCABLE_KEYS`** -- same fence, same reasoning as the singular
+    templates: arbitrary server-executed shell commands, so the API may
+    list and select a pair but can never define one. Managing pairs means
+    editing `~/.config/muxplex/settings.json` directly; the PWA's Settings
+    > Commands tab reflects this honestly (read-only rows, no
+    `patchServerSetting('session_commands', ...)` call anywhere).
+  - **Federation (v1 decision, deliberately narrow):** `command_id` is
+    forwarded on `POST /api/federation/{device_id}/sessions` when supplied
+    (omitted, not `null`, when absent -- byte-identical proxied request for
+    the common case), but the id namespace belongs to the REMOTE -- a
+    local id may mean nothing (or something different) there, where it
+    correctly 400s, surfaced as a 502 by the proxy.
+    `GET /api/federation/{device_id}/session-commands` is **deliberately
+    NOT added** -- no consumer, and a cross-device picker's failure modes
+    (peer unreachable, peer pre-feature, id drift between hosts) are real
+    design work with zero demand today. Command pairs are per-host
+    configuration and are NOT synced across a federated fleet -- the
+    non-negotiable consequence of the `LOCAL_ONLY_KEYS` fence above.
 - **Stale-key pruning (`views.prune_stale_keys`) is federation-aware and
   prunes ONLY on positive knowledge, never on ignorance.** A settings key
   `"<device_id>:<name>"` in `views`/`hidden_sessions` may be evaluated for

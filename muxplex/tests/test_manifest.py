@@ -64,13 +64,17 @@ def redirect_manifest_path(tmp_path, monkeypatch):
 
 
 def test_load_manifest_returns_empty_when_file_absent():
-    """load_manifest() returns an empty-but-well-formed manifest when absent."""
+    """load_manifest() returns an empty-but-well-formed manifest when absent.
+
+    schema is 2 (MANIFEST_SCHEMA_VERSION) and created_with is {} -- added
+    for named session command pairs (COMMAND_PAIRS_SPEC.md)."""
     result = load_manifest()
     assert result == {
-        "schema": 1,
+        "schema": 2,
         "epoch": None,
         "sessions": {},
         "pending_restore": None,
+        "created_with": {},
     }
 
 
@@ -114,10 +118,11 @@ def test_load_manifest_applies_defensive_defaults_to_partial_content(
 def test_save_then_load_round_trip():
     """save_manifest then load_manifest returns the same data."""
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "epoch": EPOCH_A,
         "sessions": {"a2a": {"first_seen_at": 100.0, "last_seen_at": 200.0}},
         "pending_restore": None,
+        "created_with": {},
     }
 
     save_manifest(manifest)

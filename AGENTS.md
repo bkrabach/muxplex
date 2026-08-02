@@ -82,6 +82,14 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
    handed to the remote agents that call `/input` — if these keys were
    PATCHable, a Bearer-key holder could self-authorize typing into the
    human's own panes. Widening the fence must be a local-operator action.
+
+   `session_commands` (a list of named create/kill pairs, each holding the same two
+   arbitrary shell commands as `new_session_template`/`delete_session_template` below --
+   the API may list and select a pair via `GET /api/session-commands` and
+   `POST /api/sessions {"command_id": ...}`, never define one) is fenced for the identical
+   reason: a PATCHable `session_commands` would let a Bearer-key holder define a pair AND
+   select it at create time -- the same RCE with an extra layer of indirection. See
+   `docs/API_SEMANTICS.md` for the full design.
    Fence reads are strict-typed and fail CLOSED: only boolean `true` enables
    (`is not True` check), and a non-list allowlist is treated as empty (a
    string value would substring-match via `in`).
