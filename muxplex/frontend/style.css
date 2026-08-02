@@ -1444,16 +1444,36 @@ body {
   gap: 8px;
 }
 
+/* Extra clearance before ONE specific field: the Terminal tab's "Copy mode"
+   field, directly below the Theme <select>. The normal field boundary here
+   (.settings-field's 8px padding-bottom + 1px border + this field's own 8px
+   padding-top = ~17px, same as every other field-to-field gap in this dialog)
+   read as touching the select in browser testing -- the select's own visible
+   border sits right against the field's border-bottom, so two adjacent
+   border lines compress the perceived whitespace in a way plain preceding
+   text doesn't. Scoped to just this field: the visually-identical boundary
+   between the copy-mode radios and "Generated config file" (also plain text
+   before it) tested fine and must not gain extra space too. */
+.settings-field--section-gap {
+  margin-top: 8px;
+}
+
 .settings-checkbox-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;   /* matches .settings-field--column's own gap so option groups keep the
-                 same rhythm as every other field boundary in the settings dialog */
+  gap: 6px;   /* Deliberately SMALLER than a field boundary (~17px from .settings-field's
+                 8px padding + 1px border, style.css:1368-1369) so two related radio
+                 choices read as one group, not separate sections. A prior pass set this
+                 to 8px specifically to "match .settings-field--column's own gap" (the
+                 label-to-list gap within this same field) -- that coincidence made the
+                 Desktop/Vim-style options read as unrelated in browser testing. Still a
+                 touch looser than .settings-checkbox-option's own 4px (radio-to-its-own
+                 caption) so the two levels of grouping stay visually distinct. */
   width: 100%;
 }
 
 /* Groups one radio + its own description together, tighter than the gap between
-   distinct options (.settings-checkbox-list's 8px) so the pairing reads as a unit. */
+   distinct options (.settings-checkbox-list's 6px) so the pairing reads as a unit. */
 .settings-checkbox-option {
   display: flex;
   flex-direction: column;
@@ -1484,27 +1504,60 @@ body {
   width: 100%;
 }
 
-/* Deliberately shorter than a full render and paired with the fade below, so the
-   box reads as "collapsed, more inside" rather than "broken/truncated". */
-.settings-textarea--preview {
-  max-height: 200px;
+/* A <pre>, not a <textarea>. A textarea is a replaced element: its native
+   scrollbar/resize chrome paints in a layer the wrapper's ::after fade below
+   cannot draw over (confirmed live -- clientHeight 170px vs scrollHeight
+   3590px, ~21x overflow, with zero visual scroll affordance despite the fade
+   and scrollbar-color rules below being present in the stylesheet), and
+   custom scrollbar styling on a textarea is unreliable across engines. A
+   plain block element gets a normal CSS overflow box instead, so both the
+   fade and a real, visible scrollbar thumb actually render. Taller than the
+   old 170px slot (rows="10" on a textarea) so it reads as "a window onto a
+   long file" rather than a truncated box. Deliberately no `resize` -- a
+   read-only preview has no reason to be resizable, and the previous attempt
+   couldn't confirm the resize grip painted once the element was restyled. */
+.settings-tmux-preview {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  margin: 0;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  outline: none;
   scrollbar-width: auto;   /* app-wide `thin` (style.css:69) is too faint here to read as scrollable */
+  scrollbar-color: rgba(0, 200, 200, 0.45) transparent;  /* Firefox thumb/track, --accent at 45% */
 }
 
-.settings-textarea--preview::-webkit-scrollbar {
+.settings-tmux-preview:focus {
+  border-color: var(--accent);
+}
+
+.settings-tmux-preview::-webkit-scrollbar {
   width: 12px;   /* wider than the app-wide 6px thumb -- unmistakable, not just decorative */
 }
 
-.settings-textarea--preview::-webkit-scrollbar-thumb {
+.settings-tmux-preview::-webkit-scrollbar-thumb {
   background: rgba(0, 200, 200, 0.45);  /* --accent at 45%, matching the app's existing scrollbar accent */
   border-radius: 6px;
 }
 
-.settings-textarea--preview::-webkit-scrollbar-thumb:hover {
+.settings-tmux-preview::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 200, 200, 0.65);  /* --accent at 65% */
 }
 
-/* Fade at the visible cut so the truncation reads as an affordance, not a bug. */
+/* Fade at the visible cut so the truncation reads as an affordance, not a bug.
+   Paints above the <pre>'s own content/scrollbar since it's a normal ::after
+   on the wrapper, painted after its sibling in source order -- this is exactly
+   the overlay that couldn't render over a <textarea>'s native chrome. */
 .settings-tmux-preview-wrap::after {
   content: "";
   position: absolute;

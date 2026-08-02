@@ -3688,7 +3688,7 @@ async function loadSessionCommands() {
 
 /**
  * Render the Settings > Terminal tab's install status, hint, and preview
- * textarea from a GET/PATCH /api/tmux-config response *cfg*. Shared by
+ * from a GET/PATCH /api/tmux-config response *cfg*. Shared by
  * loadTmuxConfigSettings() (initial populate) and patchTmuxConfig() (after
  * a change), so both paths keep the tab in agreement with the server.
  */
@@ -3697,8 +3697,10 @@ function _renderTmuxConfigTab(cfg) {
   if (statusEl) statusEl.textContent = cfg && cfg.installed ? 'Installed' : 'Not installed';
   const hintEl = $('tmux-config-install-hint');
   if (hintEl) hintEl.style.display = cfg && cfg.installed ? 'none' : '';
+  // #setting-tmux-preview is a <pre>, not a <textarea> (see style.css's
+  // .settings-tmux-preview comment for why) -- set textContent, not .value.
   const previewEl = $('setting-tmux-preview');
-  if (previewEl) previewEl.value = (cfg && cfg.preview) || '';
+  if (previewEl) previewEl.textContent = (cfg && cfg.preview) || '';
 }
 
 /**

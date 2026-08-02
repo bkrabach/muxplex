@@ -344,7 +344,7 @@
             <label class="settings-label" for="setting-tmux-theme">Theme</label>
             <select id="setting-tmux-theme" class="settings-select"></select>
           </div>
-          <div class="settings-field settings-field--column">
+          <div class="settings-field settings-field--column settings-field--section-gap">
             <label class="settings-label">Copy mode</label>
             <div class="settings-checkbox-list">
               <div class="settings-checkbox-option">
@@ -367,7 +367,7 @@
             <label class="settings-label">Generated config file</label>
             <button id="tmux-preview-toggle-btn" type="button" class="settings-action-btn" aria-expanded="false" aria-controls="tmux-preview-wrap">Show the generated config</button>
             <div id="tmux-preview-wrap" class="settings-tmux-preview-wrap hidden">
-              <textarea id="setting-tmux-preview" class="settings-textarea settings-textarea--preview" rows="10" readonly aria-label="Generated config file (read-only)"></textarea>
+              <pre id="setting-tmux-preview" class="settings-tmux-preview" tabindex="0" aria-label="Generated config file (read-only)"></pre>
             </div>
           </div>
         </div>
