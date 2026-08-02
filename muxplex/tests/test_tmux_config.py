@@ -302,6 +302,99 @@ def test_every_shipped_theme_is_selectable(sandbox: Path) -> None:
         tc.render_fragments(theme)
 
 
+# ── Copy mode ────────────────────────────────────────────────────────────
+
+
+def test_render_fragments_vi_writes_copy_mode_fragment(sandbox: Path) -> None:
+    tc.render_fragments("brand", "vi")
+    fragment = tc.TMUX_D_PATH / "30-copy-mode.conf"
+    assert fragment.exists()
+    text = fragment.read_text()
+    assert "mode-keys vi" in text
+    assert "begin-selection" in text
+
+
+def test_render_fragments_desktop_writes_no_copy_mode_fragment(sandbox: Path) -> None:
+    tc.render_fragments("brand", "desktop")
+    assert not (tc.TMUX_D_PATH / "30-copy-mode.conf").exists()
+
+
+def test_render_fragments_default_copy_mode_is_desktop(sandbox: Path) -> None:
+    """The *copy_mode* parameter defaults to "desktop" -- callers that don't
+    know about it (e.g. old test fixtures calling render_fragments(theme))
+    get the pre-existing behavior: no 30-copy-mode.conf."""
+    tc.render_fragments("brand")
+    assert not (tc.TMUX_D_PATH / "30-copy-mode.conf").exists()
+
+
+def test_render_fragments_switching_back_to_desktop_removes_stale_fragment(
+    sandbox: Path,
+) -> None:
+    """Switching vi -> desktop must remove the fragment, not just stop
+    writing it -- otherwise a stale 30-copy-mode.conf would keep loading vi
+    keybindings even though the setting says "desktop"."""
+    tc.render_fragments("brand", "vi")
+    assert (tc.TMUX_D_PATH / "30-copy-mode.conf").exists()
+    tc.render_fragments("brand", "desktop")
+    assert not (tc.TMUX_D_PATH / "30-copy-mode.conf").exists()
+
+
+def test_render_fragments_rejects_unknown_copy_mode(sandbox: Path) -> None:
+    with pytest.raises(tc.TmuxConfigError, match="Unknown tmux copy mode"):
+        tc.render_fragments("brand", "emacs")
+
+
+def test_render_fragments_rejects_unknown_copy_mode_before_writing_anything(
+    sandbox: Path,
+) -> None:
+    """An invalid copy_mode must fail before any fragment is written --
+    matches the existing unknown-theme behavior (validate-before-write)."""
+    with pytest.raises(tc.TmuxConfigError):
+        tc.render_fragments("brand", "modal")
+    assert not tc.TMUX_D_PATH.exists() or not any(tc.TMUX_D_PATH.glob("*.conf"))
+
+
+@needs_tmux
+def test_install_honors_copy_mode_vi(sandbox: Path) -> None:
+    tc.install(copy_mode="vi")
+    assert tmux_option(sandbox, "mode-keys") == "vi"
+
+
+@needs_tmux
+def test_install_default_copy_mode_is_desktop(sandbox: Path) -> None:
+    tc.install()
+    assert tmux_option(sandbox, "mode-keys") in ("emacs", "")
+
+
+# ── render_preview: pure read, no filesystem writes ─────────────────────
+
+
+def test_render_preview_reflects_theme_and_copy_mode(sandbox: Path) -> None:
+    preview = tc.render_preview("brand", "vi")
+    assert "mode-keys vi" in preview
+    assert "#00D9F5" in preview, "brand theme content must be included"
+
+
+def test_render_preview_excludes_vi_bindings_for_desktop(sandbox: Path) -> None:
+    preview = tc.render_preview("brand", "desktop")
+    assert "mode-keys vi" not in preview
+
+
+def test_render_preview_writes_nothing_to_disk(sandbox: Path) -> None:
+    tc.render_preview("brand", "vi")
+    assert not tc.TMUX_D_PATH.exists(), "render_preview must be a pure read"
+
+
+def test_render_preview_rejects_unknown_theme(sandbox: Path) -> None:
+    with pytest.raises(tc.TmuxConfigError, match="Unknown tmux theme"):
+        tc.render_preview("no-such-theme")
+
+
+def test_render_preview_rejects_unknown_copy_mode(sandbox: Path) -> None:
+    with pytest.raises(tc.TmuxConfigError, match="Unknown tmux copy mode"):
+        tc.render_preview("brand", "emacs")
+
+
 @needs_tmux
 def test_every_shipped_theme_actually_loads_in_tmux(sandbox: Path) -> None:
     """A theme that tmux rejects would break the user's whole config."""
@@ -342,6 +435,20 @@ def test_tmux_theme_is_not_syncable() -> None:
     from muxplex.settings import SYNCABLE_KEYS
 
     assert "tmux_theme" not in SYNCABLE_KEYS
+
+
+def test_tmux_copy_mode_default_is_a_valid_copy_mode() -> None:
+    from muxplex.settings import DEFAULT_SETTINGS
+
+    assert DEFAULT_SETTINGS["tmux_copy_mode"] in tc.COPY_MODES
+
+
+def test_tmux_copy_mode_is_not_syncable() -> None:
+    """Same rationale as tmux_theme: renders to a file on THIS host, must not
+    cross a federation link."""
+    from muxplex.settings import SYNCABLE_KEYS
+
+    assert "tmux_copy_mode" not in SYNCABLE_KEYS
 
 
 # ── Status-bar regressions (reported 2026-08-01) ───────────────────────────

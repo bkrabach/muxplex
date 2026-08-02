@@ -2109,6 +2109,129 @@ def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET / PATCH /api/tmux-config
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tmux_config_sandbox(tmp_path, monkeypatch):
+    """Redirect every path the tmux-config endpoints touch into an isolated
+    fake HOME, matching test_tmux_config.py's ``sandbox`` fixture, and stub
+    ``apply_live()`` so these API-level tests never invoke a real tmux
+    subprocess -- render_fragments()/status()/apply_live() themselves are
+    already covered by test_tmux_config.py's dedicated sandbox.
+    """
+    import muxplex.settings as settings_mod
+    from muxplex import tmux_config as tc
+
+    home = tmp_path / "home"
+    (home / ".config" / "muxplex").mkdir(parents=True)
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", home / "settings.json")
+    monkeypatch.setattr(tc, "TMUX_CONF_PATH", home / ".tmux.conf")
+    monkeypatch.setattr(
+        tc, "XDG_TMUX_CONF_PATH", home / ".config" / "tmux" / "tmux.conf"
+    )
+    monkeypatch.setattr(tc, "TMUX_D_PATH", home / ".config" / "muxplex" / "tmux.d")
+    monkeypatch.setattr(
+        tc, "apply_live", lambda socket=None: {"applied": False, "reason": "test stub"}
+    )
+    return home
+
+
+def test_get_tmux_config_shape(client, tmux_config_sandbox):
+    """GET /api/tmux-config returns exactly installed/theme/available_themes/
+    copy_mode/preview, with defaults when nothing has been configured yet."""
+    response = client.get("/api/tmux-config")
+    assert response.status_code == 200
+    data = response.json()
+    assert set(data.keys()) == {
+        "installed",
+        "theme",
+        "available_themes",
+        "copy_mode",
+        "preview",
+    }
+    assert data["installed"] is False
+    assert data["theme"] == "brand"
+    assert "brand" in data["available_themes"]
+    assert data["copy_mode"] == "desktop"
+    assert isinstance(data["preview"], str) and data["preview"]
+    assert "muxplex never writes this file" not in data["preview"], (
+        "preview must exclude the user's own 90-local.conf"
+    )
+
+
+def test_get_tmux_config_desktop_preview_has_no_vi_bindings(client, tmux_config_sandbox):
+    response = client.get("/api/tmux-config")
+    assert "mode-keys vi" not in response.json()["preview"]
+
+
+def test_patch_tmux_config_updates_theme_and_copy_mode(client, tmux_config_sandbox):
+    """PATCH persists both fields, re-renders, and reflects the change in the
+    same response's preview -- and a subsequent GET confirms persistence."""
+    response = client.patch(
+        "/api/tmux-config", json={"theme": "steel", "copy_mode": "vi"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["theme"] == "steel"
+    assert data["copy_mode"] == "vi"
+    assert "mode-keys vi" in data["preview"]
+
+    follow_up = client.get("/api/tmux-config").json()
+    assert follow_up["theme"] == "steel"
+    assert follow_up["copy_mode"] == "vi"
+
+
+def test_patch_tmux_config_partial_body_keeps_other_field(client, tmux_config_sandbox):
+    """Omitting a field leaves its current (persisted) value untouched."""
+    client.patch("/api/tmux-config", json={"theme": "steel", "copy_mode": "vi"})
+    response = client.patch("/api/tmux-config", json={"theme": "brand"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["theme"] == "brand"
+    assert data["copy_mode"] == "vi", "omitted copy_mode must keep its persisted value"
+
+
+def test_patch_tmux_config_rejects_unknown_theme(client, tmux_config_sandbox):
+    """CONSTRAINED VOCABULARY: an unknown theme is a 400, never accepted."""
+    response = client.patch("/api/tmux-config", json={"theme": "no-such-theme"})
+    assert response.status_code == 400
+    assert "no-such-theme" in response.json()["detail"]
+
+
+def test_patch_tmux_config_rejects_unknown_copy_mode(client, tmux_config_sandbox):
+    """CONSTRAINED VOCABULARY: only 'desktop'/'vi' are valid -- anything else,
+    including a plausible-sounding tmux term like 'emacs', is a 400."""
+    response = client.patch("/api/tmux-config", json={"copy_mode": "emacs"})
+    assert response.status_code == 400
+    assert "emacs" in response.json()["detail"]
+
+
+def test_patch_tmux_config_rejects_free_text_copy_mode(client, tmux_config_sandbox):
+    """There is no escape hatch: arbitrary text is rejected exactly like a
+    plausible-but-wrong value -- this endpoint has no free-text field."""
+    response = client.patch(
+        "/api/tmux-config", json={"copy_mode": "run-shell 'rm -rf ~'"}
+    )
+    assert response.status_code == 400
+
+
+def test_patch_tmux_config_rejected_copy_mode_makes_no_partial_write(
+    client, tmux_config_sandbox
+):
+    """An invalid copy_mode must reject the WHOLE patch -- theme must not be
+    updated either, even though it was valid in the same request body."""
+    client.patch("/api/tmux-config", json={"theme": "steel"})
+    response = client.patch(
+        "/api/tmux-config", json={"theme": "brand", "copy_mode": "emacs"}
+    )
+    assert response.status_code == 400
+    follow_up = client.get("/api/tmux-config").json()
+    assert follow_up["theme"] == "steel", "rejected patch must not partially apply"
+
+
+# ---------------------------------------------------------------------------
 # PATCH /api/settings -- expected_settings_updated_at (optimistic concurrency)
 # ---------------------------------------------------------------------------
 

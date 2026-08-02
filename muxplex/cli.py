@@ -1664,9 +1664,15 @@ def tmux_install(dry_run: bool = False, allow_symlink: bool = False) -> None:
     from muxplex.settings import load_settings  # noqa: PLC0415
 
     theme = str(load_settings().get("tmux_theme") or "brand")
+    copy_mode = str(load_settings().get("tmux_copy_mode") or "desktop")
 
     try:
-        r = tcfg.install(theme=theme, allow_symlink=allow_symlink, dry_run=dry_run)
+        r = tcfg.install(
+            theme=theme,
+            copy_mode=copy_mode,
+            allow_symlink=allow_symlink,
+            dry_run=dry_run,
+        )
     except tcfg.TmuxConfigError as e:
         print(f"\nRefusing to continue:\n\n  {e}\n", file=sys.stderr)
         sys.exit(1)

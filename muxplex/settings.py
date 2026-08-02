@@ -145,6 +145,23 @@ DEFAULT_SETTINGS: dict = {
     # every theme tweak bump the shared settings_updated_at that arbitrates
     # `views` LWW races -- the precise coupling views_updated_at exists to break.
     "tmux_theme": "brand",
+    # Which copy-mode keybinding scheme `muxplex tmux install` (and
+    # PATCH /api/tmux-config) renders into
+    # ~/.config/muxplex/tmux.d/30-copy-mode.conf. Exactly two values, both
+    # validated against a closed set (see tmux_config.COPY_MODES) -- never
+    # free text:
+    #   "desktop" -- tmux's default emacs-style copy-mode. Arrow keys,
+    #                PageUp/PageDown, Home/End behave the way every desktop
+    #                text field does; Ctrl+C copies the selection; Esc exits.
+    #                No fragment is written for this value (30-copy-mode.conf
+    #                is removed if present) since it's tmux's own default.
+    #   "vi"      -- the modal v (begin-selection) / y (copy-selection) flow,
+    #                for users whose muscle memory is vi/vim. Writes
+    #                30-copy-mode.conf from tmux_templates/copy-mode-vi.conf.
+    # Same rationale as tmux_theme just above: renders to a file on THIS
+    # host, exactly as machine-scoped as tmux_theme/tmux_socket_dir.
+    # Deliberately NOT in SYNCABLE_KEYS.
+    "tmux_copy_mode": "desktop",
 }
 
 # Keys that can ONLY be changed by editing the settings file on disk

@@ -166,6 +166,7 @@
         <button class="settings-tab" data-tab="views">Views</button>
         <button class="settings-tab" data-tab="new-session">Commands</button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
+        <button class="settings-tab" data-tab="tmux">Terminal</button>
       </nav>
       <div class="settings-content">
         <div class="settings-panel" data-tab="display">
@@ -328,6 +329,38 @@
               <div id="setting-remote-instances" class="settings-remote-list"></div>
               <button id="add-remote-instance-btn" class="settings-action-btn">+ Add Remote</button>
             </div>
+          </div>
+        </div>
+        <div class="settings-panel hidden" data-tab="tmux">
+          <div class="settings-field">
+            <label class="settings-label">tmux config</label>
+            <span id="tmux-config-status" class="settings-status-text">&mdash;</span>
+          </div>
+          <p class="settings-helper" id="tmux-config-install-hint" style="display:none">
+            Not installed on this machine yet. Run <code>muxplex tmux install</code> in a terminal here to enable it.
+          </p>
+          <div class="settings-field">
+            <label class="settings-label" for="setting-tmux-theme">Theme</label>
+            <select id="setting-tmux-theme" class="settings-select"></select>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Copy mode</label>
+            <div class="settings-checkbox-list">
+              <label class="settings-checkbox-item">
+                <input type="radio" name="tmux-copy-mode" id="setting-tmux-copy-mode-desktop" class="settings-checkbox" value="desktop" />
+                Desktop (recommended)
+              </label>
+              <span class="settings-helper">Arrow keys, Page Up/Down, Home/End, and Ctrl+C all work the way they do everywhere else on your computer.</span>
+              <label class="settings-checkbox-item">
+                <input type="radio" name="tmux-copy-mode" id="setting-tmux-copy-mode-vi" class="settings-checkbox" value="vi" />
+                Vim-style
+              </label>
+              <span class="settings-helper">Press v to start a selection and y to copy it, for people used to that flow.</span>
+            </div>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label" for="setting-tmux-preview">Rendered config (read-only)</label>
+            <textarea id="setting-tmux-preview" class="settings-textarea" rows="10" readonly></textarea>
           </div>
         </div>
       </div>

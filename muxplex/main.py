@@ -38,6 +38,7 @@ from starlette.responses import RedirectResponse, Response
 from starlette.types import Scope
 from websockets.typing import Subprotocol
 
+from muxplex import tmux_config
 from muxplex.auth import (
     AuthMiddleware,
     authenticate_pam,
@@ -1939,6 +1940,113 @@ async def update_settings(request: Request):
         if "key" in inst:
             inst["key"] = ""
     return result
+
+
+def _tmux_config_snapshot(theme: str, copy_mode: str) -> dict:
+    """Shared response shape for GET and PATCH /api/tmux-config.
+
+    ``preview`` is built by ``tmux_config.render_preview`` -- a pure read of
+    the templates on disk, not the (possibly stale, possibly never-rendered)
+    files under ~/.config/muxplex/tmux.d/ -- so it always reflects *theme*
+    and *copy_mode* exactly, whether or not muxplex's tmux config has ever
+    been installed.
+    """
+    return {
+        "installed": tmux_config.status().installed,
+        "theme": theme,
+        "available_themes": tmux_config.available_themes(),
+        "copy_mode": copy_mode,
+        "preview": tmux_config.render_preview(theme, copy_mode),
+    }
+
+
+@app.get("/api/tmux-config")
+async def get_tmux_config() -> dict:
+    """Return muxplex's tmux config posture: install status, theme, copy
+    mode, available themes, and a preview of the fragments muxplex renders.
+
+    ``preview`` is the concatenated text of ONLY the muxplex-owned fragments
+    (base + theme + copy-mode) -- it deliberately excludes the user's own
+    ``90-local.conf``, which muxplex never writes after first creation.
+    """
+    settings = load_settings()
+    theme = str(settings.get("tmux_theme") or "brand")
+    copy_mode = str(settings.get("tmux_copy_mode") or "desktop")
+    return _tmux_config_snapshot(theme, copy_mode)
+
+
+@app.patch("/api/tmux-config")
+async def update_tmux_config(request: Request):
+    """Change the tmux theme and/or copy-mode scheme, live.
+
+    CONSTRAINED VOCABULARY ONLY -- this is the entire security model. tmux
+    config can carry `run-shell` and `default-command` (arbitrary code
+    execution), and this endpoint sits behind the same Bearer auth as every
+    other write -- the same credential handed to remote agents. ``theme``
+    must be one of ``tmux_config.available_themes()``; ``copy_mode`` must be
+    one of ``tmux_config.COPY_MODES``. Anything else is rejected with 400
+    naming the valid values. There is no free-text field here and there
+    must never be one.
+
+    Either field may be omitted; an omitted field keeps its current
+    (persisted) value. On success: the new value(s) are persisted via
+    ``patch_settings`` (the same path ``PATCH /api/settings`` uses),
+    fragments are re-rendered on disk (``tmux_config.render_fragments``),
+    and -- if a tmux server is currently running -- the change is sourced
+    into it immediately (``tmux_config.apply_live``) so it takes effect
+    without waiting for a restart. No running server is not an error;
+    ``apply_live`` tolerates it. This endpoint never kills or restarts the
+    tmux server -- live user sessions are never touched, only the
+    freshly-rendered fragments are re-sourced into them.
+    """
+    body = await request.json()
+    settings = load_settings()
+    theme = str(body.get("theme", settings.get("tmux_theme", "brand")))
+    copy_mode = str(body.get("copy_mode", settings.get("tmux_copy_mode", "desktop")))
+
+    available_themes = tmux_config.available_themes()
+    if theme not in available_themes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown tmux theme {theme!r}. "
+                f"Valid values: {', '.join(available_themes)}"
+            ),
+        )
+    if copy_mode not in tmux_config.COPY_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown tmux copy mode {copy_mode!r}. "
+                f"Valid values: {', '.join(tmux_config.COPY_MODES)}"
+            ),
+        )
+
+    patch: dict = {}
+    if "theme" in body:
+        patch["tmux_theme"] = theme
+    if "copy_mode" in body:
+        patch["tmux_copy_mode"] = copy_mode
+    if patch:
+        patch_settings(patch)
+
+    tmux_config.render_fragments(theme, copy_mode)
+    try:
+        tmux_config.apply_live()
+    except tmux_config.TmuxConfigError:
+        # A setting change must still succeed even if tmux itself is
+        # unavailable (e.g. not on PATH in a test/CI environment) -- the
+        # fragments and settings are already written; only the live-reload
+        # step is best-effort. "no running server" is NOT this branch --
+        # apply_live() already tolerates that and returns normally.
+        _log.warning(
+            "tmux-config: could not apply live (theme=%r, copy_mode=%r)",
+            theme,
+            copy_mode,
+            exc_info=True,
+        )
+
+    return _tmux_config_snapshot(theme, copy_mode)
 
 
 @app.get("/api/settings/sync")

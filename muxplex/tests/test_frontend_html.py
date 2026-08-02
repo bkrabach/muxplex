@@ -544,8 +544,8 @@ def test_html_settings_panels_use_data_tab() -> None:
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
     panels = dialog.find_all(class_="settings-panel")
-    assert len(panels) == 5, (
-        f"Expected 5 .settings-panel elements, found: {len(panels)}"
+    assert len(panels) == 6, (
+        f"Expected 6 .settings-panel elements, found: {len(panels)}"
     )
     for panel in panels:
         assert panel.get("data-tab") is not None, (

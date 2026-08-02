@@ -324,6 +324,9 @@ function _buildFlyoutMenuItems() {
 // ─── Settings state ───────────────────────────────────────────────────────────
 let _settingsOpen = false;
 let _serverSettings = null;
+// Last response from GET/PATCH /api/tmux-config (Settings > Terminal tab).
+// null until that endpoint has been fetched at least once.
+let _tmuxConfig = null;
 // Last-seen settings_updated_at (from /api/state's poll payload), used by
 // followRemoteViewDefinitions() to detect a settings change (e.g. view
 // membership edited on another device) without re-fetching /api/settings
@@ -3684,6 +3687,75 @@ async function loadSessionCommands() {
 }
 
 /**
+ * Render the Settings > Terminal tab's install status, hint, and preview
+ * textarea from a GET/PATCH /api/tmux-config response *cfg*. Shared by
+ * loadTmuxConfigSettings() (initial populate) and patchTmuxConfig() (after
+ * a change), so both paths keep the tab in agreement with the server.
+ */
+function _renderTmuxConfigTab(cfg) {
+  const statusEl = $('tmux-config-status');
+  if (statusEl) statusEl.textContent = cfg && cfg.installed ? 'Installed' : 'Not installed';
+  const hintEl = $('tmux-config-install-hint');
+  if (hintEl) hintEl.style.display = cfg && cfg.installed ? 'none' : '';
+  const previewEl = $('setting-tmux-preview');
+  if (previewEl) previewEl.value = (cfg && cfg.preview) || '';
+}
+
+/**
+ * Populate the Settings > Terminal tab from GET /api/tmux-config: rebuilds
+ * the theme <select> options, sets the copy-mode radio, and calls
+ * _renderTmuxConfigTab() for the install status/hint/preview.
+ */
+function loadTmuxConfigSettings() {
+  return api('GET', '/api/tmux-config')
+    .then(function(res) { return res.json(); })
+    .then(function(cfg) {
+      _tmuxConfig = cfg;
+      const themeEl = $('setting-tmux-theme');
+      if (themeEl) {
+        themeEl.innerHTML = '';
+        (cfg.available_themes || []).forEach(function(name) {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          if (name === cfg.theme) opt.selected = true;
+          themeEl.appendChild(opt);
+        });
+      }
+      const desktopRadio = $('setting-tmux-copy-mode-desktop');
+      const viRadio = $('setting-tmux-copy-mode-vi');
+      const isVi = cfg.copy_mode === 'vi';
+      if (desktopRadio) desktopRadio.checked = !isVi;
+      if (viRadio) viRadio.checked = isVi;
+      _renderTmuxConfigTab(cfg);
+    })
+    .catch(function(err) {
+      console.warn('[loadTmuxConfigSettings] failed:', err);
+    });
+}
+
+/**
+ * PATCH /api/tmux-config with *patch* ({theme?, copy_mode?}). The server
+ * re-renders fragments and (if a tmux server is running) reloads it live,
+ * then returns the same shape as GET -- used to refresh the tab so the
+ * preview always reflects what the server actually rendered, not an
+ * optimistic guess.
+ */
+function patchTmuxConfig(patch) {
+  return api('PATCH', '/api/tmux-config', patch)
+    .then(function(res) { return res.json(); })
+    .then(function(cfg) {
+      _tmuxConfig = cfg;
+      _renderTmuxConfigTab(cfg);
+      showToast('Terminal settings updated');
+    })
+    .catch(function(err) {
+      console.warn('[patchTmuxConfig] failed:', err);
+      showToast('Failed to update terminal settings');
+    });
+}
+
+/**
  * Re-render every view-dependent surface from current _serverSettings.
  * Shared by followRemoteViewDefinitions() and the guarded-PATCH conflict
  * path below -- both situations are "server truth changed out from under
@@ -4282,6 +4354,9 @@ function openSettings() {
     // Views tab
     renderViewsSettingsTab();
   });
+
+  // Terminal tab (tmux theme/copy-mode) -- separate endpoint, own fetch.
+  loadTmuxConfigSettings();
 }
 
 /**
@@ -5228,6 +5303,22 @@ function bindStaticEventListeners() {
   // /api/settings silently ignores it. No input/reset handlers are bound here
   // on purpose — the textarea only ever displays the current server value
   // (see openSettings()); it is edited by hand in settings.json.
+
+  // Terminal tab -- tmux theme select and copy-mode radios.
+  // CONSTRAINED VOCABULARY ONLY: the <select> options come exclusively from
+  // GET /api/tmux-config's available_themes (server-owned list), and the
+  // two radios are the only two values PATCH /api/tmux-config accepts.
+  // There is deliberately no free-text field here -- see main.py's
+  // update_tmux_config() docstring for why.
+  on($('setting-tmux-theme'), 'change', function() {
+    patchTmuxConfig({ theme: this.value });
+  });
+  on($('setting-tmux-copy-mode-desktop'), 'change', function() {
+    if (this.checked) patchTmuxConfig({ copy_mode: 'desktop' });
+  });
+  on($('setting-tmux-copy-mode-vi'), 'change', function() {
+    if (this.checked) patchTmuxConfig({ copy_mode: 'vi' });
+  });
 
   // Multi-Device tab — enable/disable toggle
   on($('setting-multi-device-enabled'), 'change', function() {

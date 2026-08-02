@@ -187,17 +187,40 @@ def available_themes() -> list[str]:
     return sorted(p.stem for p in d.glob("*.conf")) if d.is_dir() else []
 
 
-def render_fragments(theme: str) -> list[Path]:
+# Closed vocabulary for the copy-mode keybinding scheme -- see
+# settings.DEFAULT_SETTINGS["tmux_copy_mode"] for the user-facing rationale.
+# Never accept anything outside this set from an API caller; this is the
+# entire security model for that field (see AGENTS.md's constrained-
+# vocabulary discussion for `tmux_theme` -- the same reasoning applies here).
+COPY_MODES: tuple[str, ...] = ("desktop", "vi")
+
+_COPY_MODE_FRAGMENT_NAME = "30-copy-mode.conf"
+
+
+def render_fragments(theme: str, copy_mode: str = "desktop") -> list[Path]:
     """Write muxplex's own fragments into ~/.config/muxplex/tmux.d/.
 
     muxplex owns that directory outright, so these are safe to overwrite on
     every run -- the user's edits live in 90-local.conf, which is created once
     and then never written again.
+
+    *copy_mode* controls whether ``30-copy-mode.conf`` (vi-style copy-mode
+    keybindings, see tmux_templates/copy-mode-vi.conf) is written. It loads
+    after the base (10) and theme (20) fragments -- numeric order -- so it can
+    override tmux's default mode-keys, and before the user's 90-local.conf so
+    anything the user sets there still wins. ``"desktop"`` (tmux's own
+    emacs-style default) means no fragment is needed; any stale
+    30-copy-mode.conf from a previous "vi" selection is removed so switching
+    back to desktop actually takes effect, not just stops being written.
     """
     theme_src = TEMPLATES_PATH / "themes" / f"{theme}.conf"
     if not theme_src.is_file():
         raise TmuxConfigError(
             f"Unknown tmux theme {theme!r}. Available: {', '.join(available_themes())}"
+        )
+    if copy_mode not in COPY_MODES:
+        raise TmuxConfigError(
+            f"Unknown tmux copy mode {copy_mode!r}. Available: {', '.join(COPY_MODES)}"
         )
 
     TMUX_D_PATH.mkdir(parents=True, exist_ok=True)
@@ -207,11 +230,51 @@ def render_fragments(theme: str) -> list[Path]:
     shutil.copy2(theme_src, TMUX_D_PATH / "20-theme.conf")
     written.append(TMUX_D_PATH / "20-theme.conf")
 
+    copy_mode_dest = TMUX_D_PATH / _COPY_MODE_FRAGMENT_NAME
+    if copy_mode == "vi":
+        shutil.copy2(TEMPLATES_PATH / "copy-mode-vi.conf", copy_mode_dest)
+        written.append(copy_mode_dest)
+    else:
+        # Remove a stale fragment left over from a previous "vi" selection --
+        # otherwise switching back to "desktop" would silently keep loading
+        # vi keybindings from disk even though the setting says otherwise.
+        copy_mode_dest.unlink(missing_ok=True)
+
     local = TMUX_D_PATH / "90-local.conf"
     if not local.exists():
         local.write_text(_LOCAL_FRAGMENT_HEADER, encoding="utf-8")
         written.append(local)
     return written
+
+
+def render_preview(theme: str, copy_mode: str = "desktop") -> str:
+    """Return the concatenated text muxplex WOULD render for *theme* and
+    *copy_mode*, without writing anything to disk.
+
+    A pure read (unlike render_fragments(), which writes to TMUX_D_PATH) --
+    used by GET /api/tmux-config so a caller can preview a configuration
+    without side effects. Mirrors render_fragments()'s fragment order (base +
+    theme + copy-mode-vi when applicable) but reads straight from
+    TEMPLATES_PATH. Deliberately excludes 90-local.conf: that is the user's
+    own file, never something muxplex renders.
+    """
+    theme_src = TEMPLATES_PATH / "themes" / f"{theme}.conf"
+    if not theme_src.is_file():
+        raise TmuxConfigError(
+            f"Unknown tmux theme {theme!r}. Available: {', '.join(available_themes())}"
+        )
+    if copy_mode not in COPY_MODES:
+        raise TmuxConfigError(
+            f"Unknown tmux copy mode {copy_mode!r}. Available: {', '.join(COPY_MODES)}"
+        )
+
+    parts = [
+        (TEMPLATES_PATH / "base.conf").read_text(encoding="utf-8"),
+        theme_src.read_text(encoding="utf-8"),
+    ]
+    if copy_mode == "vi":
+        parts.append((TEMPLATES_PATH / "copy-mode-vi.conf").read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 # ── Write helpers ──────────────────────────────────────────────────────────
@@ -274,7 +337,11 @@ def diff_preview(existing: str | None, updated: str) -> str:
 
 
 def install(
-    *, theme: str = "brand", allow_symlink: bool = False, dry_run: bool = False
+    *,
+    theme: str = "brand",
+    copy_mode: str = "desktop",
+    allow_symlink: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """Render fragments and add the managed block. Raises on anything unclear."""
     st = status()
@@ -310,7 +377,7 @@ def install(
         result["fragments"] = [str(p) for p in (TEMPLATES_PATH,)]
         return result
 
-    result["fragments"] = [str(p) for p in render_fragments(theme)]
+    result["fragments"] = [str(p) for p in render_fragments(theme, copy_mode)]
 
     if not result["changed"]:
         return result
