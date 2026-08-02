@@ -1,3 +1,33 @@
+## v0.32.0 (2026-08-02)
+
+### Changed
+
+- **The default tmux config now targets people who never asked to learn tmux.** muxplex users drive sessions from the web dashboard — creating windows, switching sessions, splitting panes are all things the UI does — and almost nobody arrives as a tmux user. The default was still shaped like a tmux user's config. It now optimises for the terminal *content* behaving the way a desktop app behaves, and not for teaching keybindings. The bar applied to every line: would someone who has never heard of tmux be surprised by it?
+  - **Copy mode is `emacs`, not `vi`.** In vi copy-mode the arrow keys are the least useful way to move, selection is modal (`v` to start, `y` to finish), and nothing on screen indicates a mode exists. In emacs copy-mode the arrows, PageUp/PageDown, and Home/End all do the obvious thing — which is what someone reaching for the keyboard after scrolling tries first.
+  - **`Ctrl+C` copies the selection**, and **`Esc` leaves copy mode.** Scrolling up silently enters copy mode, so there has to be an obvious way back out; without it, "my typing stopped working" is the common report. And Ctrl+C is the first thing anyone tries after highlighting text — the alternative was `Alt+w`, which nobody guesses.
+  - **Double-click selects a useful word.** tmux's default separators break on `/ . - _`, so double-clicking a path, a filename, or a package name grabbed a fragment instead of the thing you pointed at. `word-separators` now keeps those intact.
+  - **Vim-style `Alt+hjkl` pane navigation is no longer a default.** It is muscle memory this audience does not have. `Alt+arrows` remains — discoverable by trying it, and the direction is self-evident. Anyone who wants hjkl adds four lines to `90-local.conf`.
+  - Unchanged and deliberately so: mouse on, 50k scrollback, 1-based window/pane numbering, `renumber-windows` (close a middle window and the rest close the gap, like browser tabs), and the terminal/colour/clipboard correctness settings.
+
+**Upgrading:** `90-local.conf` is loaded last and is never written by muxplex, so anything you have set there already wins over all of this. If you were relying on the old vi copy-mode or `Alt+hjkl` defaults, put them back with:
+
+```
+setw -g mode-keys vi
+bind -T copy-mode-vi v send -X begin-selection
+bind -T copy-mode-vi y send -X copy-selection-and-cancel
+bind -n M-h select-pane -L
+bind -n M-l select-pane -R
+bind -n M-k select-pane -U
+bind -n M-j select-pane -D
+```
+
+### Verification
+
+- Full suite green in the Digital Twin Universe, run after the version bump.
+- The rendered config was loaded into a real tmux server and every changed option read back from it — `mode-keys emacs`, `word-separators`, and the three new `copy-mode` bindings — rather than asserted from the template text.
+- Verified live on a server with 51 running sessions: the new base loaded, a local override still won, and the server pid was unchanged throughout.
+
+
 ## v0.31.6 (2026-08-02)
 
 ### Bug Fixes
