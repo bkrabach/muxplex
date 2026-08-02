@@ -1217,6 +1217,25 @@ body {
   color: var(--accent);
 }
 
+/* Sync-group toggle (in)active state -- see renderSyncGroupControls() in
+   app.js, which toggles this class on #sync-group-btn / #sync-group-btn-
+   expanded but (until now) had no rule to render: the JS worked (aria-pressed
+   and title both updated correctly) but nothing visually changed, so the
+   toggle looked broken to the user. Reuses the same --accent tokens already
+   used for .header-btn:hover and .settings-tab--active rather than
+   introducing a new color -- the filled background + solid border (not just
+   a color swap) is what keeps this readable without relying on hue alone. */
+.header-btn--active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.header-btn--active:hover {
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+
 /* ============================================================
    Settings dialog
    ============================================================ */
