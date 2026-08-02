@@ -338,8 +338,6 @@ body {
   margin: 0;
 }
 
-
-
 /* ============================================================
    Empty state
    ============================================================ */
@@ -439,7 +437,6 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 
 .view-body {
   display: flex;
@@ -635,8 +632,6 @@ body {
   overflow: hidden;
   background: #000000;
 }
-
-
 
 .sidebar-item-body pre {
   position: absolute;
@@ -891,7 +886,6 @@ body {
   }
 }
 
-
 /* ─── Mobile Bottom Sheet ─────────────────────────────────────── */
 
 .bottom-sheet {
@@ -1007,7 +1001,6 @@ body {
 .session-pill__bell {
   color: var(--bell);
 }
-
 
 /* ============================================================
    Source tile states — offline and auth-required (Phase 3)
@@ -1177,8 +1170,6 @@ body {
   word-break: break-all;        /* break long lines at viewport edge */
   overflow-x: hidden;
 }
-
-
 
 /* ============================================================
    Header actions + settings buttons
@@ -1519,9 +1510,7 @@ body {
 .settings-tmux-preview {
   display: block;
   width: 100%;
-  max-height: 260px;
   margin: 0;
-  overflow-y: auto;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -1533,60 +1522,7 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   outline: none;
-  scrollbar-width: auto;   /* app-wide `thin` (style.css:69) is too faint here to read as scrollable */
-  scrollbar-color: rgba(0, 200, 200, 0.45) transparent;  /* Firefox thumb/track, --accent at 45% */
-}
-
-.settings-tmux-preview:focus {
-  border-color: var(--accent);
-}
-
-.settings-tmux-preview::-webkit-scrollbar {
-  width: 12px;   /* wider than the app-wide 6px thumb -- unmistakable, not just decorative */
-}
-
-.settings-tmux-preview::-webkit-scrollbar-thumb {
-  background: rgba(0, 200, 200, 0.45);  /* --accent at 45%, matching the app's existing scrollbar accent */
-  border-radius: 6px;
-}
-
-.settings-tmux-preview::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 200, 200, 0.65);  /* --accent at 65% */
-}
-
-/* Fade at the visible cut so the truncation reads as an affordance, not a bug.
-   Paints above the <pre>'s own content/scrollbar since it's a normal ::after
-   on the wrapper, painted after its sibling in source order -- this is exactly
-   the overlay that couldn't render over a <textarea>'s native chrome. */
-.settings-tmux-preview-wrap::after {
-  content: "";
-  position: absolute;
-  left: 1px;
-  right: 1px;
-  bottom: 1px;
-  height: 28px;
-  background: linear-gradient(to bottom, transparent, var(--bg-secondary));
-  border-radius: 0 0 4px 4px;
-  pointer-events: none;
-}
-
-/* ============================================================
-   New Session tab controls
-   ============================================================ */
-
-.settings-textarea {
-  width: 100%;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  padding: 10px;
-  resize: vertical;
-  min-height: 60px;
-  outline: none;
-}
+  
 
 .settings-textarea:focus {
   border-color: var(--accent);
@@ -2054,8 +1990,6 @@ body {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-
-
 .manage-view-panel__list {
   overflow-y: auto;
   padding: 8px 0;
@@ -2488,7 +2422,6 @@ body {
   font-size: 12px;
   color: var(--text-muted);
 }
-
 
 /* —— Tile Flyout Menu ————————————————————————————————————————————————————— */
 

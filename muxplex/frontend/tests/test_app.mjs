@@ -3821,12 +3821,15 @@ test('applyFitLayout does NOT measure DOM dimensions (pure arithmetic)', () => {
 
 // ─── Settings tab reorganization (4 tabs) ────────────────────────────────────
 
-test('HTML settings dialog has exactly 4 tab buttons', () => {
+test('HTML settings dialog has exactly 6 tab buttons', () => {
   const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const tabMatches = source.match(/class="settings-tab[^"]*"\s+data-tab=/g) || [];
-  // Updated in v0.6.0: Views tab added to settings dialog — now has 5 tabs:
-  // Display, Sessions, Views, Commands, Multi-Device.
-  assert.strictEqual(tabMatches.length, 5, 'settings dialog must have exactly 5 tab buttons (Views tab added in v0.6.0)');
+  // Display, Sessions, Views, Commands, Multi-Device, Terminal.
+  // Keep the count AND the test name in step with reality: this assertion
+  // spent releases titled "exactly 4" while asserting 5, which is how a real
+  // count regression got waved through as "pre-existing" instead of read as
+  // the breakage it was.
+  assert.strictEqual(tabMatches.length, 6, 'settings dialog must have exactly 6 tab buttons');
 });
 
 test('HTML index.html has no Notifications tab button', () => {
