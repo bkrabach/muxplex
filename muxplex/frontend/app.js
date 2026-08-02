@@ -4290,8 +4290,8 @@ function openSettings() {
  * state populated by loadSessionCommands() (_sessionCommands,
  * _sessionCommandErrors).
  *
- * Deliberately NO editable control and NO patchServerSetting('session_commands', ...)
- * call anywhere here -- session_commands is in settings.LOCAL_ONLY_KEYS
+ * Deliberately NO editable control and NO settings-PATCH call of any kind
+ * anywhere here -- session_commands is in settings.LOCAL_ONLY_KEYS
  * (server-executed shell commands); the only way to manage pairs is editing
  * ~/.config/muxplex/settings.json directly. Mirrors the existing read-only
  * treatment of #setting-template / #setting-delete-template.
