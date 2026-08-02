@@ -682,7 +682,9 @@ def test_get_view_all_excludes_hidden_sessions(client, monkeypatch):
     assert names == ["alpha"]
 
 
-def test_get_view_views_list_is_all_plus_user_views_plus_hidden_last(client, monkeypatch):
+def test_get_view_views_list_is_all_plus_user_views_plus_hidden_last(
+    client, monkeypatch
+):
     """The 'views' list is 'all' + user views (settings order) + 'hidden' last.
 
     'hidden' is appended (not omitted) so clients that build a browsable
@@ -4532,8 +4534,22 @@ def test_create_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_p
         captured_kwargs.append(kwargs)
         return mock_proc
 
+    async def mock_create_subprocess_exec(*cmd, **kwargs):
+        # Separate stub, separate capture list. Sharing one would fold the
+        # incidental exec call into captured_kwargs and quietly break the
+        # "called exactly once" guard this test relies on.
+        return mock_proc
+
     monkeypatch.setattr(
         "muxplex.sessions.asyncio.create_subprocess_shell", mock_create_subprocess
+    )
+    # The request path also reaches run_tmux(), which uses create_subprocess_exec
+    # and really does exec `tmux`. Unmocked, this test depends on a tmux binary
+    # being present and on whatever a live tmux server happens to answer --
+    # neither of which it is trying to assert. Stub it so the test measures only
+    # what its name claims: the env= passed to the shell call.
+    monkeypatch.setattr(
+        "muxplex.sessions.asyncio.create_subprocess_exec", mock_create_subprocess_exec
     )
 
     response = client.post("/api/sessions", json={"name": "env-check"})

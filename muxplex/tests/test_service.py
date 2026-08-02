@@ -1,8 +1,11 @@
 """Tests for muxplex/service.py — system service management module."""
 
-import pytest
+import os
+import shutil
 import subprocess
 import sys
+
+import pytest
 
 
 def test_service_module_importable():
@@ -1301,3 +1304,198 @@ def test_launchd_bootstrap_does_not_retry_a_non_race_error(monkeypatch):
         service._launchd_bootstrap(501)
 
     assert len([c for c in calls if c[1] == "bootstrap"]) == 1
+
+
+# ── Real launchd, not mocked launchd ───────────────────────────────────────
+#
+# Every other launchd test in this file mocks subprocess.run, so they verify
+# the SHAPE of the calls, never launchd's actual behaviour. Three consecutive
+# releases shipped macOS-only bugs that shape-checking could not have caught,
+# and a human found all three in production:
+#
+#   v0.31.1  `muxplex update` crashed on a raw `launchctl bootstrap` exit 5
+#   v0.31.2  `service restart` silently did nothing -- the v0.31.1 fix treated
+#            a still-tearing-down OLD job as proof the NEW one had started
+#   v0.31.3  `doctor` called a crash-looping job "running"
+#
+# The v0.31.2 bug in particular is *only* observable against real launchd:
+# it hinges on `bootout` returning before the job is gone, which no mock
+# reproduces unless someone already knows to write it that way -- and if they
+# knew, they would not have written the bug.
+#
+# These tests use a THROWAWAY label, never com.muxplex, and clean up in a
+# fixture finalizer so a failure cannot leave an agent behind on a CI runner
+# or a developer's machine.
+
+HAS_LAUNCHCTL = sys.platform == "darwin" and shutil.which("launchctl") is not None
+needs_launchd = pytest.mark.skipif(
+    not HAS_LAUNCHCTL, reason="requires macOS with launchctl"
+)
+
+_TEST_LABEL = "com.muxplex.selftest"
+
+_TEST_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>{program}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"""
+
+# A job that takes a moment to die on SIGTERM. This detail is load-bearing and
+# was found by probing a real Mac, not by reasoning: a plain `/bin/sleep` job
+# dies instantly, `bootout` then looks SYNCHRONOUS, and a test built on it
+# passes while proving nothing. The race only exists for a process with a
+# shutdown sequence -- which is exactly what the real muxplex server is
+# (uvicorn draining connections), and exactly why v0.31.2's bug reached
+# production but no mock ever caught it.
+_SLOW_TO_DIE = 'trap "sleep 3; exit 0" TERM; while :; do sleep 0.2; done'
+
+
+@pytest.fixture
+def throwaway_launchd_job(tmp_path, monkeypatch):
+    """A real, disposable launchd agent pointed at /bin/sleep.
+
+    Yields (uid, plist_path). Bootstrapping is the caller's job -- some tests
+    need the job absent. Teardown boots it out unconditionally, so neither a
+    failing assertion nor an exception can strand a live agent.
+    """
+    from muxplex import service
+
+    uid = os.getuid()
+    plist_path = tmp_path / f"{_TEST_LABEL}.plist"
+    plist_path.write_text(_TEST_PLIST.format(label=_TEST_LABEL, program=_SLOW_TO_DIE))
+
+    monkeypatch.setattr(service, "_LAUNCHD_LABEL", _TEST_LABEL)
+    monkeypatch.setattr(service, "_LAUNCHD_PLIST_PATH", plist_path)
+
+    try:
+        yield uid, plist_path
+    finally:
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{uid}/{_TEST_LABEL}"], capture_output=True
+        )
+
+
+@needs_launchd
+def test_real_launchctl_list_output_parses():
+    """The `launchctl list` parser must handle REAL output, not a remembered sample.
+
+    _launchd_job_pid_and_exit was written against output pasted from one Mac,
+    once. Column widths, tab-vs-space, and the header row are all assumptions
+    until a real launchctl produces them.
+    """
+    from muxplex.cli import _launchd_job_pid_and_exit
+
+    raw = subprocess.run(
+        ["launchctl", "list"], capture_output=True, text=True, check=False
+    )
+    assert raw.returncode == 0, "launchctl list should work on any macOS session"
+    assert raw.stdout.strip(), "launchctl list returned nothing at all"
+
+    # Must not raise or hang on real output, whatever this machine happens to run.
+    pid, status = _launchd_job_pid_and_exit()
+    assert pid is None or isinstance(pid, int)
+    assert status is None or isinstance(status, int)
+
+
+@needs_launchd
+def test_real_launchd_reports_a_running_job_as_running(throwaway_launchd_job):
+    """A bootstrapped job must read as loaded, with a real pid."""
+    from muxplex import service
+
+    uid, plist_path = throwaway_launchd_job
+
+    result = subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            "could not bootstrap a throwaway launchd agent on this machine "
+            f"(exit {result.returncode}): {(result.stderr or '').strip()}. "
+            "If this is a CI runner without a usable gui/ domain, that is a real "
+            "finding about what this job can and cannot cover -- not something to "
+            "paper over with a skip."
+        )
+
+    assert service._launchd_is_loaded(uid) is True
+
+
+@needs_launchd
+def test_real_bootout_is_asynchronous_and_the_wait_covers_it(throwaway_launchd_job):
+    """THE v0.31.2 REGRESSION, against real launchd.
+
+    `launchctl bootout` returns before the job is actually gone. v0.31.2's
+    restart booted out, immediately bootstrapped, saw the OLD job still loaded,
+    and called that success -- so `service restart` silently kept the old
+    process. _launchd_bootout_and_wait exists to close that window, and this is
+    the only test in the suite that can prove it against the real thing.
+    """
+    from muxplex import service
+
+    uid, plist_path = throwaway_launchd_job
+
+    subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], capture_output=True
+    )
+    assert service._launchd_is_loaded(uid) is True, "fixture job failed to start"
+
+    # Issue the bootout by hand first and look immediately, the way v0.31.2 did.
+    subprocess.run(
+        ["launchctl", "bootout", f"gui/{uid}/{_TEST_LABEL}"], capture_output=True
+    )
+    still_there = service._launchd_is_loaded(uid)
+
+    # Now the real thing must close that window.
+    assert service._launchd_bootout_and_wait(uid) is True
+    assert service._launchd_is_loaded(uid) is False, (
+        "bootout_and_wait returned True while the job was still loaded -- "
+        "exactly the false-success that made `service restart` a no-op"
+    )
+
+    assert still_there, (
+        "This launchd tore the job down synchronously, so the naive "
+        "check-immediately approach would have passed too -- meaning this test "
+        "did not actually exercise the race it exists to cover. The fixture "
+        "program is supposed to be slow to die; if that stopped being true, "
+        "this test is now a tautology and needs rebuilding, not muting."
+    )
+
+
+@needs_launchd
+def test_real_bootstrap_refuses_to_call_a_surviving_job_success(
+    throwaway_launchd_job,
+):
+    """install/restart must NOT report success when the old job is still there.
+
+    accept_already_loaded=False is the guard that keeps a failed replacement
+    from reading as a successful one.
+    """
+    from muxplex import service
+
+    uid, plist_path = throwaway_launchd_job
+
+    subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], capture_output=True
+    )
+    assert service._launchd_is_loaded(uid) is True, "fixture job failed to start"
+
+    # Bootstrapping over a live job is what a botched restart looks like.
+    with pytest.raises(RuntimeError, match="launchctl bootstrap failed"):
+        service._launchd_bootstrap(uid, attempts=2)
+
+    # ...while `start` -- "make sure something is running" -- accepts it.
+    service._launchd_bootstrap(uid, attempts=2, accept_already_loaded=True)
