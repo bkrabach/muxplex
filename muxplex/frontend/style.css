@@ -1447,8 +1447,17 @@ body {
 .settings-checkbox-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;   /* matches .settings-field--column's own gap so option groups keep the
+                 same rhythm as every other field boundary in the settings dialog */
   width: 100%;
+}
+
+/* Groups one radio + its own description together, tighter than the gap between
+   distinct options (.settings-checkbox-list's 8px) so the pairing reads as a unit. */
+.settings-checkbox-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .settings-checkbox-item {
@@ -1464,6 +1473,48 @@ body {
   width: 16px;
   height: 16px;
   cursor: pointer;
+}
+
+/* ============================================================
+   Terminal tab controls (generated tmux config preview)
+   ============================================================ */
+
+.settings-tmux-preview-wrap {
+  position: relative;
+  width: 100%;
+}
+
+/* Deliberately shorter than a full render and paired with the fade below, so the
+   box reads as "collapsed, more inside" rather than "broken/truncated". */
+.settings-textarea--preview {
+  max-height: 200px;
+  scrollbar-width: auto;   /* app-wide `thin` (style.css:69) is too faint here to read as scrollable */
+}
+
+.settings-textarea--preview::-webkit-scrollbar {
+  width: 12px;   /* wider than the app-wide 6px thumb -- unmistakable, not just decorative */
+}
+
+.settings-textarea--preview::-webkit-scrollbar-thumb {
+  background: rgba(0, 200, 200, 0.45);  /* --accent at 45%, matching the app's existing scrollbar accent */
+  border-radius: 6px;
+}
+
+.settings-textarea--preview::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 200, 200, 0.65);  /* --accent at 65% */
+}
+
+/* Fade at the visible cut so the truncation reads as an affordance, not a bug. */
+.settings-tmux-preview-wrap::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 28px;
+  background: linear-gradient(to bottom, transparent, var(--bg-secondary));
+  border-radius: 0 0 4px 4px;
+  pointer-events: none;
 }
 
 /* ============================================================

@@ -5320,6 +5320,18 @@ function bindStaticEventListeners() {
     if (this.checked) patchTmuxConfig({ copy_mode: 'vi' });
   });
 
+  // Terminal tab -- "Show the generated config" disclosure. Collapsed by default
+  // (see index.html): the preview is an advanced/optional reference, not something
+  // the target (non-technical) audience needs open by default.
+  on($('tmux-preview-toggle-btn'), 'click', function() {
+    const wrap = $('tmux-preview-wrap');
+    if (!wrap) return;
+    const nowHidden = !wrap.classList.contains('hidden');
+    wrap.classList.toggle('hidden', nowHidden);
+    this.setAttribute('aria-expanded', String(!nowHidden));
+    this.textContent = nowHidden ? 'Show the generated config' : 'Hide the generated config';
+  });
+
   // Multi-Device tab — enable/disable toggle
   on($('setting-multi-device-enabled'), 'change', function() {
     var enabled = this.checked;
