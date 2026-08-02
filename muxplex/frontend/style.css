@@ -1522,7 +1522,19 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   outline: none;
-  
+  /* Deliberately NO max-height and NO overflow. Three attempts to make an
+     inner scroll box LOOK scrollable here all failed the same way, and the
+     measurement says why: offsetWidth - clientWidth came back 2px, not the
+     12px the rule asked for. This platform paints overlay scrollbars -- they
+     reserve no gutter and ignore ::-webkit-scrollbar outright -- and a
+     gradient fade stacked on top to compensate did not paint either.
+
+     The bug was never the styling. It was having a second scroll container
+     at all: .settings-content already scrolls, so an inner box put the
+     interesting edge BELOW the dialog's own fold and asked the user to find
+     two nested scrolls. Removing the box removes the thing that needed an
+     affordance. */
+}
 
 .settings-textarea:focus {
   border-color: var(--accent);

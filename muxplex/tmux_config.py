@@ -247,6 +247,22 @@ def render_fragments(theme: str, copy_mode: str = "desktop") -> list[Path]:
     return written
 
 
+def _directives_only(text: str) -> str:
+    """Strip comments and blank runs, leaving just the settings themselves.
+
+    The template files are heavily commented on purpose -- they explain WHY each
+    setting exists to whoever opens the file. That is the wrong content for a UI
+    preview: measured on the shipped default, 116 of 162 lines are comment or
+    blank, so 71% of what a reader scrolls past answers a question they did not
+    ask. Someone opening "Show the generated config" wants to see what it does,
+    not read an essay. The file on disk keeps every comment.
+    """
+    kept = [
+        ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    return "\n".join(kept) + "\n"
+
+
 def render_preview(theme: str, copy_mode: str = "desktop") -> str:
     """Return the concatenated text muxplex WOULD render for *theme* and
     *copy_mode*, without writing anything to disk.
@@ -274,7 +290,7 @@ def render_preview(theme: str, copy_mode: str = "desktop") -> str:
     ]
     if copy_mode == "vi":
         parts.append((TEMPLATES_PATH / "copy-mode-vi.conf").read_text(encoding="utf-8"))
-    return "\n".join(parts)
+    return _directives_only("\n".join(parts))
 
 
 # ── Write helpers ──────────────────────────────────────────────────────────
