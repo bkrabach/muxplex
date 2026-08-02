@@ -8,6 +8,7 @@ import copy
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -45,6 +46,25 @@ DEFAULT_SETTINGS: dict = {
     "remote_instances": [],
     "device_name": "",
     "delete_session_template": "tmux kill-session -t {name}",
+    # Additional NAMED create/delete command pairs, beyond the implicit
+    # "default" pair formed by new_session_template/delete_session_template
+    # above. Each entry is:
+    #     {"id": str, "label": str,
+    #      "new_session_template": str, "delete_session_template": str}
+    #
+    # SECURITY: these are arbitrary shell commands, executed by the server
+    # exactly like the two singular keys above. This key is in
+    # LOCAL_ONLY_KEYS and deliberately NOT in SYNCABLE_KEYS for the same
+    # reason (see LOCAL_ONLY_KEYS's comment block): a federation Bearer-key
+    # holder who could define a pair and then select it at create time would
+    # have full RCE without ever touching the fenced /input endpoint. The
+    # API may LIST and SELECT a pair (GET /api/session-commands,
+    # POST /api/sessions {"command_id": ...}); it can never DEFINE one.
+    #
+    # Resolution (including how the singular keys above fold in as the
+    # reserved "default" entry, and the validation rules) lives in exactly
+    # one place: resolve_session_commands().
+    "session_commands": [],
     # Explicit override for tmux's socket directory (maps to the TMUX_TMPDIR
     # env var). Empty string = inherit whatever TMUX_TMPDIR (if any) is in
     # the muxplex process's own environment. Needed because a systemd/launchd
@@ -149,6 +169,13 @@ DEFAULT_SETTINGS: dict = {
 #     Bearer-key holder could PATCH a malicious template, then POST
 #     /api/sessions to trigger it -- full RCE, bypassing the `/input` fence
 #     entirely (it never touches that endpoint).
+#   - `session_commands` is a LIST of additional named create/kill pairs,
+#     each holding the same two arbitrary shell commands as the singular
+#     keys above (see its DEFAULT_SETTINGS comment). The API may LIST and
+#     SELECT a pair (GET /api/session-commands, POST /api/sessions
+#     {"command_id": ...}); it can never DEFINE one -- a PATCHable
+#     `session_commands` would let a Bearer-key holder define a pair AND
+#     select it, the identical RCE with an extra layer of indirection.
 #   - `tmux_socket_dir` is fed directly into every tmux invocation as
 #     `TMUX_TMPDIR` (see resolve_tmux_socket_dir() / sessions.tmux_env()).
 #     A remote caller could redirect all session create/kill traffic to an
@@ -166,11 +193,32 @@ LOCAL_ONLY_KEYS: frozenset[str] = frozenset(
         "input_allowed_sessions",
         "new_session_template",
         "delete_session_template",
+        "session_commands",
         "tmux_socket_dir",
         "tls_cert",
         "tls_key",
     }
 )
+
+# ---------------------------------------------------------------------------
+# Named session command pairs -- validation constants
+# ---------------------------------------------------------------------------
+
+# The id reserved for the pair folded in from the singular
+# new_session_template/delete_session_template settings keys (see
+# resolve_session_commands()). Never claimable by a session_commands entry --
+# this is what guarantees the zero-config path can never be broken by a
+# config edit.
+RESERVED_COMMAND_ID: str = "default"
+
+# Charset for a session_commands entry's `id`: lowercase alphanumeric plus
+# `_`/`-`, 1-32 chars, first character alphanumeric. NOT a security boundary
+# (ids are dict keys used for lookup, never passed to a shell) -- this exists
+# for predictable error messages, logs, and UI.
+COMMAND_ID_RE: re.Pattern[str] = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,31}\Z")
+
+# Max length of a session_commands entry's `label` field.
+COMMAND_LABEL_MAX_LEN: int = 64
 
 SYNCABLE_KEYS: frozenset[str] = frozenset(
     {
@@ -221,6 +269,189 @@ def load_settings() -> dict:
     if not result["device_name"]:
         result["device_name"] = socket.gethostname()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Named session command pairs -- resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_session_commands(
+    settings: dict | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Resolve the configured session command pairs into an ordered list.
+
+    Returns ``(commands, errors)``.
+
+    ``commands`` is never empty: element 0 is ALWAYS the reserved
+    ``"default"`` entry, synthesized from the singular
+    ``new_session_template`` / ``delete_session_template`` settings keys.
+    That is what makes this feature additive -- a config with no
+    ``session_commands`` at all resolves to a one-element list whose
+    behavior is identical to pre-feature muxplex. Valid ``session_commands``
+    entries follow, in file order.
+
+    Each element is a dict with exactly the keys ``id``, ``label``,
+    ``new_session_template``, ``delete_session_template``.
+
+    ``errors`` is a list of human-readable strings, one per rejected entry
+    (see the validation rules in this module's docstring / the spec). An
+    invalid entry is EXCLUDED from ``commands`` -- it never silently
+    degrades into the default pair. A caller that then looks up its id gets
+    None from find_session_command() and MUST surface that as an error
+    rather than substituting anything (main.py's create/delete handlers,
+    restore.py's execute_restore).
+
+    *settings* is accepted so callers that already hold a loaded settings
+    dict (e.g. delete_session()) do not re-read the file; None loads it.
+
+    The reserved id ``"default"`` may not be claimed by a session_commands
+    entry -- the legacy pair is never displaceable, which is what
+    guarantees the zero-config path can never be broken by a config edit.
+
+    Validation rules (V1-V7), each rejected entry excluded and one error
+    string appended -- never fatal, never a silent fallback to default:
+
+        V1: entry must be a dict
+        V2: 'id' must be a str matching COMMAND_ID_RE
+        V3: 'id' must not equal RESERVED_COMMAND_ID
+        V4: 'label' must be a non-empty str, <= COMMAND_LABEL_MAX_LEN chars
+        V5: 'new_session_template' must be a non-empty str containing '{name}'
+        V6: 'delete_session_template' must be a non-empty str containing '{name}'
+        V7: 'id' must not be shared with another entry (ALL copies rejected)
+
+    Note V5/V6 (the '{name}' requirement) applies ONLY to session_commands
+    entries -- it is deliberately NOT retroactively applied to the singular
+    new_session_template/delete_session_template keys, which are
+    un-validated today. Adding validation to those would be a breaking
+    change for an exotic existing config; this asymmetry is deliberate.
+    """
+    if settings is None:
+        settings = load_settings()
+
+    errors: list[str] = []
+    default_entry = {
+        "id": RESERVED_COMMAND_ID,
+        "label": "Default",
+        "new_session_template": settings["new_session_template"],
+        "delete_session_template": settings["delete_session_template"],
+    }
+
+    raw = settings.get("session_commands")
+    if raw is None:
+        raw = []
+    elif not isinstance(raw, list):
+        errors.append(
+            f"session_commands: must be a list of objects, got {type(raw).__name__} -- ignoring"
+        )
+        raw = []
+
+    candidates: list[dict] = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            errors.append(
+                f"session_commands[{i}]: entry must be an object, got {type(entry).__name__}"
+            )
+            continue
+
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not COMMAND_ID_RE.match(entry_id):
+            errors.append(
+                f"session_commands[{i}]: 'id' must match [a-z0-9][a-z0-9_-]{{0,31}} "
+                f"(got {entry_id!r})"
+            )
+            continue
+
+        if entry_id == RESERVED_COMMAND_ID:
+            errors.append(
+                f"session_commands[{i}]: id 'default' is reserved for the "
+                "new_session_template/delete_session_template pair"
+            )
+            continue
+
+        label = entry.get("label")
+        if (
+            not isinstance(label, str)
+            or not label
+            or len(label) > COMMAND_LABEL_MAX_LEN
+        ):
+            errors.append(
+                f"session_commands[{i}]: 'label' must be a non-empty string of at "
+                f"most {COMMAND_LABEL_MAX_LEN} characters"
+            )
+            continue
+
+        new_tmpl = entry.get("new_session_template")
+        if not isinstance(new_tmpl, str) or not new_tmpl or "{name}" not in new_tmpl:
+            errors.append(
+                f"session_commands[{i}] ({entry_id}): 'new_session_template' must "
+                "be a non-empty string containing '{name}'"
+            )
+            continue
+
+        del_tmpl = entry.get("delete_session_template")
+        if not isinstance(del_tmpl, str) or not del_tmpl or "{name}" not in del_tmpl:
+            errors.append(
+                f"session_commands[{i}] ({entry_id}): 'delete_session_template' must "
+                "be a non-empty string containing '{name}'"
+            )
+            continue
+
+        candidates.append(
+            {
+                "id": entry_id,
+                "label": label,
+                "new_session_template": new_tmpl,
+                "delete_session_template": del_tmpl,
+            }
+        )
+
+    # V7: reject ALL entries sharing a duplicate id -- first-wins would let a
+    # user who duplicates an id during an edit get a silently-wrong command.
+    id_to_indexes: dict[str, list[int]] = {}
+    for i, cand in enumerate(candidates):
+        id_to_indexes.setdefault(cand["id"], []).append(i)
+    dup_indexes: set[int] = set()
+    for dup_id, indexes in id_to_indexes.items():
+        if len(indexes) > 1:
+            dup_indexes.update(indexes)
+            errors.append(
+                f"session_commands: duplicate id {dup_id!r} at indexes "
+                f"{', '.join(str(i) for i in indexes)} -- all copies rejected"
+            )
+
+    valid = [cand for i, cand in enumerate(candidates) if i not in dup_indexes]
+
+    for error in errors:
+        _log.error("settings: %s", error)
+
+    return [default_entry, *valid], errors
+
+
+def find_session_command(
+    command_id: str | None,
+    settings: dict | None = None,
+) -> dict | None:
+    """Return the resolved command pair for *command_id*, or None if it does
+    not resolve.
+
+    ``command_id=None`` returns the reserved ``"default"`` entry -- this is
+    the no-command_id path every pre-existing client takes, and it must
+    always succeed.
+
+    Returns None for an id that is unknown, or that named an entry rejected
+    by validation. Callers MUST treat None as an error (400/409/FAIL) and
+    MUST NOT fall back to the default entry -- silently running the wrong
+    teardown command is the specific failure this feature exists to
+    prevent.
+    """
+    if command_id is None:
+        command_id = RESERVED_COMMAND_ID
+    commands, _errors = resolve_session_commands(settings)
+    for command in commands:
+        if command["id"] == command_id:
+            return command
+    return None
 
 
 # Rotating snapshot safety net for settings.json -- see _snapshot_current_settings().

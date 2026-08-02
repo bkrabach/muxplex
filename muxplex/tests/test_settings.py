@@ -12,13 +12,16 @@ import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
     LOCAL_ONLY_KEYS,
+    RESERVED_COMMAND_ID,
     SYNCABLE_KEYS,
     DestructiveSettingsWriteRejected,
     apply_synced_settings,
+    find_session_command,
     get_syncable_settings,
     load_federation_key,
     load_settings,
     patch_settings,
+    resolve_session_commands,
     save_settings,
 )
 
@@ -1594,3 +1597,185 @@ def test_apply_synced_settings_newer_views_updated_at_applies(redirect_settings_
 
     assert result["views"] == [{"name": "PeerNewer", "sessions": ["y"]}]
     assert result["views_updated_at"] == 200.0
+
+
+# ============================================================
+# Named session command pairs (COMMAND_PAIRS_SPEC.md)
+# ============================================================
+
+
+def _pair(id_, label="Pair", new="cmd new {name}", delete="cmd del {name}"):
+    return {
+        "id": id_,
+        "label": label,
+        "new_session_template": new,
+        "delete_session_template": delete,
+    }
+
+
+def test_session_commands_in_default_settings():
+    """DEFAULT_SETTINGS must include session_commands, defaulting to []."""
+    assert "session_commands" in DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["session_commands"] == []
+
+
+def test_session_commands_is_local_only():
+    assert "session_commands" in LOCAL_ONLY_KEYS
+
+
+def test_session_commands_not_syncable():
+    assert "session_commands" not in SYNCABLE_KEYS
+
+
+def test_session_commands_not_patchable():
+    """SECURITY: session_commands is server-executed shell commands (fenced
+    like the singular templates) -- PATCH must silently ignore it while
+    still applying the rest of the patch (mirrors
+    test_delete_session_template_not_patchable)."""
+    result = patch_settings({"session_commands": [_pair("amplifier")], "fontSize": 18})
+    assert result["session_commands"] == []
+    assert result["fontSize"] == 18
+    loaded = load_settings()
+    assert loaded["session_commands"] == []
+
+
+def test_resolve_empty_config_yields_only_default():
+    commands, errors = resolve_session_commands()
+    assert errors == []
+    assert len(commands) == 1
+    assert commands[0]["id"] == "default"
+    assert (
+        commands[0]["new_session_template"] == DEFAULT_SETTINGS["new_session_template"]
+    )
+    assert (
+        commands[0]["delete_session_template"]
+        == DEFAULT_SETTINGS["delete_session_template"]
+    )
+
+
+def test_resolve_default_entry_tracks_custom_singular_template():
+    save_settings({"new_session_template": "amplifier-workspace {name}"})
+    commands, _errors = resolve_session_commands()
+    assert commands[0]["new_session_template"] == "amplifier-workspace {name}"
+
+
+def test_resolve_orders_default_first():
+    save_settings({"session_commands": [_pair("beta"), _pair("alpha")]})
+    commands, errors = resolve_session_commands()
+    assert errors == []
+    assert [c["id"] for c in commands] == ["default", "beta", "alpha"]
+
+
+def test_resolve_rejects_non_dict_entry():
+    save_settings({"session_commands": ["not-a-dict"]})
+    commands, errors = resolve_session_commands()
+    assert [c["id"] for c in commands] == ["default"]
+    assert len(errors) == 1
+    assert "must be an object" in errors[0]
+
+
+def test_resolve_rejects_bad_id():
+    save_settings({"session_commands": [_pair("Has Spaces!")]})
+    commands, errors = resolve_session_commands()
+    assert [c["id"] for c in commands] == ["default"]
+    assert len(errors) == 1
+    assert "'id'" in errors[0]
+
+
+def test_resolve_rejects_reserved_id():
+    """V3: an entry claiming id 'default' is rejected; the legacy default
+    entry survives intact."""
+    save_settings({"session_commands": [_pair("default")]})
+    commands, errors = resolve_session_commands()
+    assert len(commands) == 1
+    assert commands[0]["id"] == "default"
+    assert (
+        commands[0]["new_session_template"] == DEFAULT_SETTINGS["new_session_template"]
+    )
+    assert len(errors) == 1
+    assert "reserved" in errors[0]
+
+
+def test_resolve_rejects_bad_label():
+    save_settings({"session_commands": [_pair("ok", label="")]})
+    commands, errors = resolve_session_commands()
+    assert [c["id"] for c in commands] == ["default"]
+    assert len(errors) == 1
+    assert "'label'" in errors[0]
+
+
+def test_resolve_rejects_label_too_long():
+    save_settings({"session_commands": [_pair("ok", label="x" * 65)]})
+    commands, errors = resolve_session_commands()
+    assert [c["id"] for c in commands] == ["default"]
+    assert len(errors) == 1
+
+
+def test_resolve_rejects_new_template_missing_name():
+    save_settings({"session_commands": [_pair("ok", new="no placeholder here")]})
+    commands, errors = resolve_session_commands()
+    assert [c["id"] for c in commands] == ["default"]
+    assert len(errors) == 1
+    assert "new_session_template" in errors[0]
+
+
+def test_resolve_rejects_delete_template_missing_name():
+    save_settings({"session_commands": [_pair("ok", delete="no placeholder here")]})
+    commands, errors = resolve_session_commands()
+    assert [c["id"] for c in commands] == ["default"]
+    assert len(errors) == 1
+    assert "delete_session_template" in errors[0]
+
+
+def test_resolve_rejects_all_duplicates():
+    """V7: ALL copies sharing a duplicate id are rejected -- not first-wins."""
+    save_settings(
+        {
+            "session_commands": [
+                _pair("dup", label="One"),
+                _pair("dup", label="Two"),
+                _pair("unique"),
+            ]
+        }
+    )
+    commands, errors = resolve_session_commands()
+    ids = [c["id"] for c in commands]
+    assert "dup" not in ids
+    assert "unique" in ids
+    assert "default" in ids
+    assert len(commands) == 2
+    dup_errors = [e for e in errors if "duplicate id 'dup'" in e]
+    assert len(dup_errors) == 1
+    assert "0" in dup_errors[0] and "1" in dup_errors[0]
+
+
+def test_resolve_non_list_session_commands():
+    save_settings({"session_commands": {"a": 1}})
+    commands, errors = resolve_session_commands()
+    assert [c["id"] for c in commands] == ["default"]
+    assert len(errors) == 1
+    assert "must be a list" in errors[0]
+
+
+def test_resolve_logs_errors_at_error_level(caplog):
+    save_settings({"session_commands": ["not-a-dict"]})
+    with caplog.at_level("ERROR", logger="muxplex.settings"):
+        resolve_session_commands()
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+
+
+def test_find_none_returns_default():
+    command = find_session_command(None)
+    assert command is not None
+    assert command["id"] == RESERVED_COMMAND_ID
+
+
+def test_find_unknown_returns_none():
+    assert find_session_command("does-not-exist") is None
+
+
+def test_find_rejected_entry_returns_none():
+    """An id belonging to a rejected entry must resolve to None, never the
+    default."""
+    save_settings({"session_commands": [_pair("bad", new="no placeholder")]})
+    assert find_session_command("bad") is None

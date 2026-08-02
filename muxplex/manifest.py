@@ -69,7 +69,7 @@ from muxplex.state import STATE_DIR
 # Paths and schema
 # ---------------------------------------------------------------------------
 
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 # Beside state.json (STATE_DIR from state.py, honors MUXPLEX_STATE_DIR), NOT
 # under ~/.config/muxplex/ -- this is observed state, not configuration.
@@ -93,6 +93,7 @@ def _empty_manifest() -> dict[str, Any]:
         "epoch": None,
         "sessions": {},
         "pending_restore": None,
+        "created_with": {},
     }
 
 
@@ -127,6 +128,15 @@ def load_manifest() -> dict[str, Any]:
     if not isinstance(data.get("sessions"), dict):
         data["sessions"] = {}
     data.setdefault("pending_restore", None)
+    if not isinstance(data.get("created_with"), dict):
+        data["created_with"] = {}
+    # Forward-only version normalization, mirroring settings.save_settings()'s
+    # stance on `_schema_version` ("clients do not get to write older
+    # versions"). A v1 manifest read by this code IS a v2 manifest -- the
+    # only difference is created_with, which we just materialized as {} --
+    # so recording it as v1 would be a lie. Nothing branches on this value;
+    # it exists as an honest marker, not a switch.
+    data["schema"] = MANIFEST_SCHEMA_VERSION
     return data
 
 
@@ -248,6 +258,8 @@ def update_manifest(
     sessions: dict[str, Any] = dict(manifest.get("sessions", {}))
     live_set = set(live_names)
 
+    created_with: dict[str, str] = dict(manifest.get("created_with", {}))
+
     if epoch_rec is None:
         # First run ever, or first run after upgrade: adopt. Nothing is
         # "lost" relative to an epoch we've never recorded.
@@ -258,6 +270,7 @@ def update_manifest(
             "epoch": {**epoch_now, "observed_at": now},
             "sessions": sessions,
             "pending_restore": manifest.get("pending_restore"),
+            "created_with": created_with,
         }
         return new_manifest, True
 
@@ -275,14 +288,20 @@ def update_manifest(
                 # Deliberate kill (or muxplex's own delete): tombstone by
                 # removal. A tombstoned session is not in the manifest, so
                 # it cannot be in pending_restore, so it can never be
-                # restored.
+                # restored. Reap rule 1: created_with's record for this
+                # name is garbage the instant the session it describes is
+                # confirmed dead -- pop it as a side effect of this SAME
+                # `changed` trigger (do not add a second one; that would
+                # break the "< 1 write/minute" steady-state target).
                 del sessions[name]
+                created_with.pop(name, None)
                 changed = True
         new_manifest = {
             "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
             "epoch": epoch_rec,
             "sessions": sessions,
             "pending_restore": manifest.get("pending_restore"),
+            "created_with": created_with,
         }
         return new_manifest, changed
 
@@ -311,11 +330,23 @@ def update_manifest(
     new_sessions = {
         name: {"first_seen_at": now, "last_seen_at": now} for name in live_names
     }
+    # Reap rule 2: retain only created_with records for names that are
+    # either currently live or frozen into pending_restore -- everything
+    # else is garbage-collected here (this is the only place a
+    # never-appeared-live session's leaked record is ever cleaned up; see
+    # this module's bounded-growth analysis in the spec).
+    retained_names = set(live_names) | set(
+        (pending_restore or {}).get("sessions") or {}
+    )
+    created_with = {
+        name: cmd_id for name, cmd_id in created_with.items() if name in retained_names
+    }
     new_manifest = {
         "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
         "epoch": {**epoch_now, "observed_at": now},
         "sessions": new_sessions,
         "pending_restore": pending_restore,
+        "created_with": created_with,
     }
     return new_manifest, True
 
@@ -381,3 +412,36 @@ def mark_restored(manifest: dict[str, Any], restored_names: set[str]) -> dict[st
     }
     new_pending = None if not remaining else {**pending, "sessions": remaining}
     return {**manifest, "pending_restore": new_pending}
+
+
+# ---------------------------------------------------------------------------
+# created_with accessors -- named session command pairs
+# ---------------------------------------------------------------------------
+
+
+def get_created_with(manifest: dict[str, Any], name: str) -> str | None:
+    """Return the command_id recorded for *name* at create time, or None.
+
+    None means "muxplex has no record of creating this session" -- a
+    pre-existing tmux session, one created outside muxplex, or one created
+    before this feature existed. Callers treat None as "use the default
+    pair", which is byte-identical to pre-feature behavior. It is NOT the
+    same as a recorded-but-unresolvable id (see main.py's delete_session()).
+    """
+    return manifest.get("created_with", {}).get(name)
+
+
+def set_created_with(
+    manifest: dict[str, Any], name: str, command_id: str
+) -> dict[str, Any]:
+    """Return a NEW manifest with ``created_with[name] = command_id``.
+
+    Pure -- never mutates *manifest* in place, matching mark_restored()'s
+    contract, so a caller doing a read-right-before-write (to minimize the
+    window against the concurrently running poll loop -- see restore.py's
+    module docstring) can call this on a freshly-loaded manifest and save
+    the result immediately.
+    """
+    created_with = dict(manifest.get("created_with", {}))
+    created_with[name] = command_id
+    return {**manifest, "created_with": created_with}

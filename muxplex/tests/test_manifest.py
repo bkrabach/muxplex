@@ -25,9 +25,11 @@ import muxplex.manifest as manifest_mod
 from muxplex.manifest import (
     RESTORE_MAX_AGE_SECONDS,
     compute_restore_plan,
+    get_created_with,
     load_manifest,
     mark_restored,
     save_manifest,
+    set_created_with,
     update_manifest,
 )
 
@@ -514,6 +516,156 @@ def test_mark_restored_is_pure_does_not_mutate_input():
     original_sessions = dict(manifest["pending_restore"]["sessions"])
     mark_restored(manifest, {"a2a"})
     assert manifest["pending_restore"]["sessions"] == original_sessions
+
+
+# ---------------------------------------------------------------------------
+# created_with -- named session command pairs (COMMAND_PAIRS_SPEC.md)
+# ---------------------------------------------------------------------------
+
+
+def test_load_v1_manifest_yields_empty_created_with(redirect_manifest_path):
+    """A v1 file on disk (no created_with key) loads with created_with == {}
+    and schema forward-normalized to 2."""
+    redirect_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    redirect_manifest_path.write_text(
+        json.dumps(
+            {"schema": 1, "epoch": EPOCH_A, "sessions": {}, "pending_restore": None}
+        )
+    )
+    result = load_manifest()
+    assert result["created_with"] == {}
+    assert result["schema"] == 2
+
+
+def test_set_created_with_is_pure():
+    manifest = {"schema": 2, "epoch": None, "sessions": {}, "pending_restore": None}
+    set_created_with(manifest, "my-session", "amplifier")
+    assert "created_with" not in manifest or manifest.get("created_with") in (None, {})
+
+
+def test_set_created_with_returns_new_manifest_with_record():
+    manifest = {
+        "schema": 2,
+        "epoch": None,
+        "sessions": {},
+        "pending_restore": None,
+        "created_with": {},
+    }
+    updated = set_created_with(manifest, "my-session", "amplifier")
+    assert updated["created_with"] == {"my-session": "amplifier"}
+    assert manifest["created_with"] == {}  # original untouched
+
+
+def test_get_created_with_absent_returns_none():
+    manifest = {
+        "schema": 2,
+        "epoch": None,
+        "sessions": {},
+        "pending_restore": None,
+        "created_with": {},
+    }
+    assert get_created_with(manifest, "unknown") is None
+
+
+def test_get_created_with_returns_recorded_id():
+    manifest = {
+        "schema": 2,
+        "epoch": None,
+        "sessions": {},
+        "pending_restore": None,
+        "created_with": {"my-session": "amplifier"},
+    }
+    assert get_created_with(manifest, "my-session") == "amplifier"
+
+
+def test_same_epoch_tombstone_reaps_created_with():
+    """A session recorded, then absent from live_names at the same epoch,
+    is tombstoned from BOTH sessions and created_with."""
+    manifest = {
+        "schema": 2,
+        "epoch": EPOCH_A,
+        "sessions": {"gone": {"first_seen_at": 1.0, "last_seen_at": 1.0}},
+        "pending_restore": None,
+        "created_with": {"gone": "amplifier"},
+    }
+    new_manifest, changed = update_manifest(manifest, EPOCH_A, [], now=2.0)
+    assert changed is True
+    assert "gone" not in new_manifest["sessions"]
+    assert "gone" not in new_manifest["created_with"]
+
+
+def test_created_with_survives_before_first_observation():
+    """The §0.3 regression guard: a record written for a name never yet in
+    live_names must survive a same-epoch cycle (not be tombstoned) -- this
+    is the whole reason created_with lives in the manifest and not
+    state.json's reap-every-2s sessions map."""
+    manifest = {
+        "schema": 2,
+        "epoch": EPOCH_A,
+        "sessions": {},
+        "pending_restore": None,
+        "created_with": {"not-yet-live": "amplifier"},
+    }
+    new_manifest, _changed = update_manifest(manifest, EPOCH_A, [], now=2.0)
+    assert new_manifest["created_with"] == {"not-yet-live": "amplifier"}
+
+
+def test_tmux_unavailable_never_reaps_created_with():
+    manifest = {
+        "schema": 2,
+        "epoch": EPOCH_A,
+        "sessions": {"x": {"first_seen_at": 1.0, "last_seen_at": 1.0}},
+        "pending_restore": None,
+        "created_with": {"x": "amplifier"},
+    }
+    new_manifest, changed = update_manifest(manifest, None, [], now=2.0)
+    assert changed is False
+    assert new_manifest is manifest
+    assert new_manifest["created_with"] == {"x": "amplifier"}
+
+
+def test_cold_start_retains_live_and_pending_created_with():
+    """Cold start: created_with entries for names that are either currently
+    live OR frozen into pending_restore are retained; an unrelated,
+    never-appeared name is dropped (bounded-growth garbage collection)."""
+    manifest = {
+        "schema": 2,
+        "epoch": EPOCH_A,
+        "sessions": {
+            "still-live": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+            "will-be-pending": {"first_seen_at": 1.0, "last_seen_at": 1.0},
+        },
+        "pending_restore": None,
+        "created_with": {
+            "still-live": "amplifier",
+            "will-be-pending": "scratch",
+            "leaked": "amplifier",
+        },
+    }
+    new_manifest, changed = update_manifest(manifest, EPOCH_B, ["still-live"], now=10.0)
+    assert changed is True
+    assert new_manifest["created_with"] == {
+        "still-live": "amplifier",
+        "will-be-pending": "scratch",
+    }
+    assert "leaked" not in new_manifest["created_with"]
+
+
+def test_created_with_pop_does_not_add_spurious_change():
+    """A cycle whose only difference is a created_with pop accompanying an
+    already-counted sessions deletion must not report `changed` a second
+    time via a separate trigger, and a genuinely quiet cycle (no sessions
+    change at all) must report changed=False."""
+    manifest = {
+        "schema": 2,
+        "epoch": EPOCH_A,
+        "sessions": {"x": {"first_seen_at": 1.0, "last_seen_at": 1.0}},
+        "pending_restore": None,
+        "created_with": {"x": "amplifier"},
+    }
+    # Quiet cycle: x still live, nothing changes.
+    _new_manifest, changed = update_manifest(manifest, EPOCH_A, ["x"], now=2.0)
+    assert changed is False
 
 
 def test_restore_max_age_is_seven_days():

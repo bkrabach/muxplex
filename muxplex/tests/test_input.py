@@ -615,13 +615,19 @@ def test_local_only_keys_are_exactly_the_input_fences():
     command/path settings keys fenced for the same reason (see
     settings.LOCAL_ONLY_KEYS's module comment: a client holding only the
     federation Bearer key could otherwise rewrite new_session_template and
-    get RCE without ever touching the /input endpoint this file tests)."""
+    get RCE without ever touching the /input endpoint this file tests).
+
+    session_commands is included: it's a LIST of additional named
+    create/kill pairs, each holding the same two arbitrary shell commands as
+    the singular keys -- the API may list/select a pair, never define one
+    (COMMAND_PAIRS_SPEC.md)."""
     assert LOCAL_ONLY_KEYS == frozenset(
         {
             "input_enabled",
             "input_allowed_sessions",
             "new_session_template",
             "delete_session_template",
+            "session_commands",
             "tmux_socket_dir",
             "tls_cert",
             "tls_key",
