@@ -1,3 +1,26 @@
+## v0.33.0 (2026-08-02)
+
+### Added
+
+- **Settings > Terminal — the tmux config is now editable from the dashboard.** Until now the only way to pick a theme was `muxplex config set tmux_theme`, which the target audience will never do. The new tab shows install status, a theme picker, a copy-mode choice, and the generated config behind a "Show the generated config" disclosure. Changes apply to a running tmux server immediately — a setting that appears to do nothing until restart is a bug, not a deferral.
+- **`GET`/`PATCH /api/tmux-config`.** API first, per this repo's own rule; the tab is a client of it, not a parallel implementation. GET returns install status, the current theme and copy mode, the available themes, and a preview of the rendered config.
+- **New setting `tmux_copy_mode`** — `desktop` (default) or `vi`. Selecting `vi` renders an extra `30-copy-mode.conf` fragment; selecting `desktop` removes it. Machine-scoped like `tmux_theme`, so it does not sync between devices.
+
+### Security
+
+- **The API's tmux vocabulary is closed, by construction.** tmux config can carry `run-shell` and `default-command` — arbitrary code execution — and the API bearer key is the same credential handed to remote agents. So there is no free-text directive field and there will not be one: `theme` is validated against the shipped theme list and `copy_mode` against exactly two values, and anything else is rejected with 400 before it reaches disk. Verified against a live server with four injection attempts (a `run-shell` payload, a newline-smuggled `default-command`, a path-traversal theme, and a plausible-but-invalid enum value) — all four rejected, nothing written.
+
+### Fixed
+
+- **The config preview no longer looks broken.** It was a `<textarea>` 170px tall holding ~3600px of text with no visible scrollbar. Two rounds of adding a fade and a styled scrollbar changed nothing, and the measurement explains why: `offsetWidth - clientWidth` came back 2px, not the 12px the rule asked for — this platform paints overlay scrollbars, which reserve no gutter and ignore `::-webkit-scrollbar` outright. The fix was not a third styling attempt. The dialog body already scrolls, so an inner scroll box was a second scroll container that put the interesting edge below the dialog's own fold; removing it removes the thing that needed an affordance. The preview also now shows directives only — 116 of its 162 lines were comment or blank, 71% of what a reader scrolled past answering a question they had not asked. 162 lines to 46. The template files keep every comment.
+
+### Verification
+
+- Full suite green in the Digital Twin Universe (1845 passed) on the released tree.
+- The API was exercised against a running server, not asserted from source: GET shape, valid PATCH in both directions, fragment appearing and being removed, the rendered vi fragment loading into a real tmux server, and the four injection attempts above.
+- The tab was driven in a real browser across three rounds. The first two found real defects that were fixed rather than explained away.
+
+
 ## v0.32.0 (2026-08-02)
 
 ### Changed
