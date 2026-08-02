@@ -21,6 +21,28 @@ def _default_hostnames() -> list[str]:
     return [hostname, f"{hostname}.local", "localhost"]
 
 
+# RFC 5280 caps a CommonName at 64 characters (ub-common-name), and
+# `cryptography` enforces it by raising rather than truncating. Real hostnames
+# do exceed it: a GitHub macOS runner reports a 67-character name, and long
+# Tailscale names, corporate FQDNs, and cloud instance names all get there too.
+_CN_MAX_LEN = 64
+
+
+def _common_name(hostname: str) -> str:
+    """Fit *hostname* into an X.509 CommonName.
+
+    Truncating is safe, and is the right trade here. CN stopped being the field
+    clients validate against when RFC 2818 was superseded by RFC 6125 -- every
+    modern TLS client reads subjectAltName, and the FULL hostname is always in
+    the SAN list this module builds alongside the subject. So a shortened CN
+    costs nothing a client will ever notice, whereas the alternative costs the
+    user their certificate: cert generation raises a bare
+    `ValueError: Attribute's length must be >= 1 and <= 64` from deep inside
+    cryptography, with nothing naming the hostname as the cause.
+    """
+    return hostname[:_CN_MAX_LEN]
+
+
 def _default_lan_ip() -> str | None:
     """Detect the primary outbound IPv4 address.
 
@@ -118,7 +140,7 @@ def generate_self_signed(
     # Build subject / issuer with CN = first hostname, O = muxplex
     subject = issuer = x509.Name(
         [
-            x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0]),
+            x509.NameAttribute(NameOID.COMMON_NAME, _common_name(hostnames[0])),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "muxplex"),
         ]
     )
@@ -231,7 +253,7 @@ def generate_local_ca(
 
     subject = issuer = x509.Name(
         [
-            x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+            x509.NameAttribute(NameOID.COMMON_NAME, _common_name(common_name)),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "muxplex"),
         ]
     )
@@ -358,7 +380,7 @@ def generate_leaf_signed_by_ca(
 
     subject = x509.Name(
         [
-            x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0]),
+            x509.NameAttribute(NameOID.COMMON_NAME, _common_name(hostnames[0])),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "muxplex"),
         ]
     )

@@ -2956,7 +2956,7 @@ def test_upgrade_no_systemctl_runs_to_completion(monkeypatch, capsys):
         lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
     )
     # Ensure we exercise the Linux (non-darwin) path
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     # Must NOT raise FileNotFoundError (the original bug)
     cli_mod.upgrade()
@@ -3000,7 +3000,7 @@ def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     cli_mod.upgrade()
 
@@ -3046,7 +3046,7 @@ def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     cli_mod.upgrade()
 
@@ -3084,7 +3084,7 @@ def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
@@ -3104,6 +3104,12 @@ def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
 
 def test_doctor_no_systemctl_shows_graceful_message(monkeypatch, capsys):
     """doctor() must show 'systemd not available' when systemctl is not on PATH."""
+    # This asserts the LINUX service branch. Left to the ambient platform it
+    # passes on the Linux matrix and fails on macOS, where doctor correctly
+    # takes the launchd path instead -- a test that silently means something
+    # different depending on the runner. Say which platform it is about.
+    monkeypatch.setattr("sys.platform", "linux")
+
     original_which = shutil.which
 
     def fake_which_no_systemctl(name):
@@ -3213,7 +3219,7 @@ def test_upgrade_propagates_install_failure_as_exit1(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available (v0.6.1 \u2192 v0.6.2)"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with pytest.raises(SystemExit) as exc_info:
         cli_mod.upgrade()
@@ -3255,7 +3261,7 @@ def test_upgrade_restarts_systemctl_after_failed_install(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with pytest.raises(SystemExit):
         cli_mod.upgrade()
@@ -3405,7 +3411,7 @@ def test_upgrade_no_launchctl_on_linux_uses_systemctl(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()  # must not raise
@@ -3471,7 +3477,7 @@ def test_upgrade_prefers_uv_tool_when_uv_managed(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available (v0.6.1 \u2192 v0.6.2)"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
@@ -3532,7 +3538,7 @@ def test_upgrade_falls_back_to_pip_when_uv_absent(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
@@ -3743,7 +3749,7 @@ def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
         "_check_for_update",
         lambda info: (True, "update available"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
@@ -3806,7 +3812,7 @@ def test_upgrade_exits_1_after_finally_recovers_stopped_service(monkeypatch, cap
         "_check_for_update",
         lambda info: (True, "update available"),
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
 
     with pytest.raises(SystemExit) as exc_info:
         cli_mod.upgrade()
@@ -3900,6 +3906,10 @@ def test_upgrade_exits_1_if_service_fails_to_restart(monkeypatch, capsys):
 
 def test_upgrade_calls_daemon_reload_before_start(monkeypatch, capsys):
     """upgrade() calls systemctl daemon-reload before start (stale unit-file fix)."""
+    # systemctl is Linux-only; on macOS upgrade drives launchctl and no
+    # daemon-reload is ever issued. Pin the platform this test is about.
+    monkeypatch.setattr("sys.platform", "linux")
+
     import subprocess
 
     import muxplex.cli as cli_mod
@@ -4090,7 +4100,7 @@ def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
     monkeypatch.setattr(
         cli_mod, "_check_for_update", lambda info: (True, "update available")
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
     monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
 
@@ -4160,7 +4170,7 @@ def test_upgrade_reports_honest_timeout_and_still_runs_doctor(
     monkeypatch.setattr(
         cli_mod, "_check_for_update", lambda info: (True, "update available")
     )
-    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
     monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
 
