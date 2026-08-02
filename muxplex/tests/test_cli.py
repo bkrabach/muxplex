@@ -917,6 +917,12 @@ def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     calls = []
 
     def mock_run(cmd, **kwargs):
@@ -999,6 +1005,12 @@ def test_upgrade_force_skips_version_check(monkeypatch, capsys):
     import subprocess
 
     import muxplex.cli as cli_mod
+
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
 
     calls = []
 
@@ -1852,6 +1864,12 @@ def test_upgrade_uses_service_module_install(monkeypatch, capsys):
     import subprocess
 
     import muxplex.cli as cli_mod
+
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
 
     calls = []
 
@@ -2728,6 +2746,12 @@ def test_upgrade_pypi_install_uses_package_name(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     calls = []
 
     def mock_run(cmd, **kwargs):
@@ -2830,6 +2854,12 @@ def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     calls = []
 
     def mock_run(cmd, **kwargs):
@@ -2899,6 +2929,12 @@ def test_upgrade_no_systemctl_runs_to_completion(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     subprocess_calls = []
 
     def mock_run(cmd, **kwargs):
@@ -2942,6 +2978,12 @@ def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     def mock_run(cmd, **kwargs):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
@@ -2982,6 +3024,12 @@ def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     def mock_run(cmd, **kwargs):
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
@@ -3015,6 +3063,12 @@ def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
     import sys
 
     import muxplex.cli as cli_mod
+
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
 
     subprocess_calls = []
 
@@ -3326,6 +3380,12 @@ def test_upgrade_no_launchctl_on_linux_uses_systemctl(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     subprocess_calls: list = []
 
     def mock_run(cmd, **kwargs):
@@ -3375,6 +3435,12 @@ def test_upgrade_prefers_uv_tool_when_uv_managed(monkeypatch, capsys):
     import sys
 
     import muxplex.cli as cli_mod
+
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
 
     # Build a fake muxplex path that looks like a uv-tool-managed install.
     # Use Path.home() so _uv_tools_dir computation matches inside upgrade().
@@ -3438,6 +3504,12 @@ def test_upgrade_falls_back_to_pip_when_uv_absent(monkeypatch, capsys):
     import sys
 
     import muxplex.cli as cli_mod
+
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
 
     calls: list = []
 
@@ -3646,6 +3718,12 @@ def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     calls: list = []
 
     def mock_run(cmd, **kwargs):
@@ -3826,6 +3904,12 @@ def test_upgrade_calls_daemon_reload_before_start(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
     calls: list = []
 
     def mock_run(cmd, **kwargs):
@@ -3986,6 +4070,12 @@ def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
     from importlib.metadata import version as pkg_version
 
     import muxplex.cli as cli_mod
+
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
     import muxplex.settings as settings_mod
 
     settings_file = tmp_path / "settings.json"
@@ -4050,6 +4140,12 @@ def test_upgrade_reports_honest_timeout_and_still_runs_doctor(
     import sys
 
     import muxplex.cli as cli_mod
+
+    # These tests drive upgrade() with a mocked installer, which by
+    # construction cannot change the installed version. Stub the
+    # version-moved gate so they keep testing what they are about --
+    # which install command gets dispatched -- not whether it landed.
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
     import muxplex.settings as settings_mod
 
     settings_file = tmp_path / "settings.json"
@@ -4610,3 +4706,105 @@ def test_instance_identity_is_unknown_not_assumed(monkeypatch):
     assert cli._instance_is_this_host({}) is None
     assert cli._instance_is_this_host({"version": "0.31.2"}) is None
     assert cli._instance_is_this_host("not a dict") is None  # type: ignore[arg-type]
+
+
+# ── Upgrade reported success while doing nothing (reported 2026-08-01) ─────
+#
+# Real transcript from the affected Mac:
+#
+#   Installed: v0.31.2 via pypi
+#   Status: update available (v0.31.2 → v0.31.3)
+#   Installed successfully          <- it was not
+#   Service started
+#
+#   $ uv tool list | grep muxplex
+#   muxplex v0.31.2                 <- never moved
+#
+# The install target is unpinned ("muxplex" = latest), so uv answered from a
+# cached PyPI index that predated the release, resolved "latest" to the version
+# already installed, reinstalled it, and exited 0. The code checked the exit
+# code -- which asks "did the installer do what I asked", not "did the version
+# change". Those come apart exactly here, and the gap is invisible from the
+# exit code alone.
+
+
+def test_upgrade_fails_loud_when_the_version_did_not_move(monkeypatch, capsys):
+    """A known-available update that leaves the version unchanged is a FAILURE."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "0.31.2")
+
+    assert cli_mod._verify_version_moved("0.31.2", True) is False
+
+    out = capsys.readouterr().out
+    assert "did not change" in out
+    assert "still v0.31.2" in out
+    assert "--refresh" in out, "must hand over the command that actually fixes it"
+
+
+def test_upgrade_accepts_a_force_reinstall_of_the_same_version(monkeypatch):
+    """`--force` with no update available is a legitimate no-op, not a failure."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "0.31.2")
+
+    assert cli_mod._verify_version_moved("0.31.2", False) is True
+
+
+def test_upgrade_reports_the_version_change_when_it_lands(monkeypatch, capsys):
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "0.31.4")
+
+    assert cli_mod._verify_version_moved("0.31.2", True) is True
+    assert "v0.31.2" in capsys.readouterr().out
+
+
+def test_upgrade_treats_an_unreadable_version_as_failure_not_success(
+    monkeypatch, capsys
+):
+    """Unknown must never read as fine -- that is the whole bug, one level up."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: None)
+
+    assert cli_mod._verify_version_moved("0.31.2", True) is False
+    assert "could not be read back" in capsys.readouterr().out
+
+
+def test_installed_version_is_read_from_disk_not_from_this_process(
+    tmp_path, monkeypatch
+):
+    """importlib.metadata is the OLD build's cached answer and would lie post-upgrade."""
+    import sysconfig
+
+    import muxplex.cli as cli_mod
+
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    (site / "muxplex-0.31.9.dist-info").mkdir()
+
+    monkeypatch.setattr(
+        sysconfig,
+        "get_paths",
+        lambda *a, **k: {"purelib": str(site), "platlib": str(site)},
+    )
+
+    assert cli_mod._installed_version_on_disk() == "0.31.9"
+
+
+def test_installed_version_is_none_when_nothing_is_on_disk(tmp_path, monkeypatch):
+    """Absent must read as unknown, so callers can refuse to call it success."""
+    import sysconfig
+
+    import muxplex.cli as cli_mod
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(
+        sysconfig,
+        "get_paths",
+        lambda *a, **k: {"purelib": str(empty), "platlib": str(empty)},
+    )
+
+    assert cli_mod._installed_version_on_disk() is None

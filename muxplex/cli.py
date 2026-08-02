@@ -240,6 +240,42 @@ def _get_install_info() -> dict:
     return info
 
 
+def _installed_version_on_disk() -> str | None:
+    """Read muxplex's installed version straight off the filesystem.
+
+    NOT importlib.metadata: it resolves and caches at import time, and this
+    process IS the old build -- after an upgrade it still reports the version we
+    started on, no matter what just landed on disk. That is the same
+    ask-the-thing-that-cannot-know blind spot one level up from the bug this
+    guards, so it cannot be used to check the guard.
+
+    Reading the dist-info directory name instead reflects what is on disk right
+    now. Deliberately no subprocess: shelling out to a fresh interpreter would
+    also work, but it is slower, drags in PATH and interpreter-resolution
+    failure modes, and makes every test that stubs subprocess.run interact with
+    version checking for no reason.
+
+    Returns None if it cannot be determined, which callers MUST treat as
+    "unknown" -- never as "fine".
+    """
+    import sysconfig
+
+    seen = set()
+    for key in ("purelib", "platlib"):
+        directory = sysconfig.get_paths().get(key)
+        if not directory or directory in seen:
+            continue
+        seen.add(directory)
+        try:
+            for info in Path(directory).glob("muxplex-*.dist-info"):
+                version = info.name[len("muxplex-") : -len(".dist-info")]
+                if version:
+                    return version
+        except OSError:
+            continue
+    return None
+
+
 def _check_for_update(info: dict) -> tuple[bool, str]:
     """Check if an update is available. Returns (update_available, message).
 
@@ -984,6 +1020,42 @@ def _check_dependencies() -> None:
         sys.exit(1)
 
 
+def _verify_version_moved(before: str, update_was_available: bool) -> bool:
+    """Confirm an upgrade actually landed. Print and return False if it did not.
+
+    A zero exit from the installer means "the installer did what I asked", NOT
+    "the version changed". Those come apart whenever the resolver picks the
+    version already installed -- a stale index being the common cause -- and the
+    difference is invisible from the exit code alone. Checking it is the whole
+    point: an upgrade that silently no-ops leaves you running old code while
+    every message on screen says you are current.
+
+    Only an upgrade we KNEW was available is required to move. A --force
+    reinstall of the current version is a legitimate no-op, not a failure.
+    """
+    after = _installed_version_on_disk()
+    if after is None:
+        print(
+            "  ERROR: install reported success but the installed version could"
+            " not be read back.\n"
+            "  Check it yourself: uv tool list  (or) pip show muxplex"
+        )
+        return False
+    if update_was_available and after == before:
+        print(
+            f"  ERROR: install reported success but the version did not change"
+            f" (still v{after}).\n"
+            f"  The resolver almost certainly served a cached index that predates"
+            f" the release.\n"
+            f"  Fix it with:\n"
+            f"      uv tool install --reinstall --refresh --force muxplex"
+        )
+        return False
+    if after != before:
+        print(f"  Version: v{before} \u2192 v{after}")
+    return True
+
+
 def upgrade(*, force: bool = False) -> None:
     """Upgrade muxplex to the latest version and restart the service."""
     print("\nmuxplex upgrade\n")
@@ -993,6 +1065,7 @@ def upgrade(*, force: bool = False) -> None:
     commit_suffix = f" (commit {info['commit'][:8]})" if info["commit"] else ""
     print(f"  Installed: v{info['version']}{commit_suffix} via {info['source']}")
 
+    update_available = False
     if not force:
         update_available, message = _check_for_update(info)
         print(f"  Status: {message}")
@@ -1073,19 +1146,36 @@ def upgrade(*, force: bool = False) -> None:
         if uv_path:
             if _is_uv_managed:
                 # uv-tool install: always reinstall the package by name
+                # --refresh is load-bearing, not belt-and-braces. The target is
+                # unpinned ("muxplex" = latest), so uv answers it from its cached
+                # PyPI index. A cache that predates the release resolves "latest"
+                # to the version already installed, reinstalls it, and exits 0 --
+                # a perfectly successful no-op upgrade. Observed on a real Mac:
+                # three consecutive upgrades reported success while the venv
+                # never left 0.31.2.
                 install_cmd = [
                     uv_path,
                     "tool",
                     "install",
                     "--reinstall",
+                    "--refresh",
                     "--force",
                     "muxplex",
                 ]
             else:
-                install_cmd = [uv_path, "tool", "install", install_target, "--force"]
+                install_cmd = [
+                    uv_path,
+                    "tool",
+                    "install",
+                    install_target,
+                    "--refresh",
+                    "--force",
+                ]
             result = subprocess.run(install_cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"  ERROR: uv tool install failed:\n{result.stderr}")
+                _install_failed = True
+            elif not _verify_version_moved(info["version"], update_available):
                 _install_failed = True
             else:
                 print("  Installed successfully")
@@ -1100,6 +1190,8 @@ def upgrade(*, force: bool = False) -> None:
                 )
                 if result.returncode != 0:
                     print(f"  ERROR: pip install failed:\n{result.stderr}")
+                    _install_failed = True
+                elif not _verify_version_moved(info["version"], update_available):
                     _install_failed = True
                 else:
                     print("  Installed successfully")

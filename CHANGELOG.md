@@ -1,3 +1,17 @@
+## v0.31.5 (2026-08-02)
+
+### Bug Fixes
+
+- **`muxplex upgrade` no longer reports success for an upgrade that did nothing.** Observed on a real machine: three consecutive upgrades printed `Status: update available (v0.31.2 → v0.31.3)` followed by `Installed successfully` and `Service started`, while the tool environment never left v0.31.2. The install target is unpinned (`muxplex`, meaning "latest"), so uv answered it from a cached PyPI index that predated the release, resolved "latest" to the version already installed, reinstalled it, and exited 0. The code checked the exit code — which asks *did the installer do what I asked*, not *did the version change*. Those two come apart precisely here, and nothing in the exit code distinguishes them. Two changes: the upgrade now passes `--refresh`, so a stale index cannot silently pin you to the version you already have; and the version is read back **from disk in a fresh interpreter** and compared against what you started on. An upgrade known to be available that leaves the version unchanged is now a loud failure carrying the exact command that fixes it, rather than a green message. A `--force` reinstall of the current version is still a legitimate no-op.
+  - The fresh interpreter matters: `importlib.metadata` resolves and caches at import time, and the process asking the question *is* the old build. Asking it in-process returns the version you started with regardless of what just landed on disk — the same blind spot one level up.
+
+### Verification
+
+- Full suite green in the Digital Twin Universe, run after the version bump.
+- Five new tests: the unchanged-version failure (including that it prints the `--refresh` command), the legitimate `--force` no-op, the successful move, an unreadable version treated as failure rather than success, and that the version is read by shelling out rather than importing in-process.
+- Verified on the affected machine by reproducing the original condition rather than only asserting the new code path.
+
+
 ## v0.31.4 (2026-08-01)
 
 ### Security
