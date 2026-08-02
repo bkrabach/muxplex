@@ -575,3 +575,226 @@ def test_generate_self_signed_no_deprecation_warning(tmp_path):
     assert deprecation_warnings == [], (
         f"CryptographyDeprecationWarning must not be raised, got: {deprecation_warnings}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 26-34. CommonName truncation regression tests (e6133c5)
+#
+# RFC 5280 caps a CommonName at 64 chars (ub-common-name); `cryptography`
+# raises `ValueError: Attribute's length must be >= 1 and <= 64` rather than
+# truncating. A GitHub macOS runner reports a 67-char hostname, and long
+# Tailscale/corporate FQDNs get there too -- e6133c5 added `_common_name()`
+# to truncate the CN at all three cert-generation call sites. These tests
+# cover all three: they must not just "not raise" -- they must also prove
+# the FULL, untruncated hostname still reaches the SAN, since SAN (not CN)
+# is what modern TLS clients actually validate against (RFC 6125 superseded
+# RFC 2818). A fix that truncated the SAN too would pass a naive
+# success-only test while silently breaking certificate validity.
+# ---------------------------------------------------------------------------
+
+# Comfortably over the 64-char ub-common-name limit.
+_LONG_HOSTNAME = "this-hostname-is-deliberately-longer-than-the-sixty-four-character-cn-limit.example.com"
+assert len(_LONG_HOSTNAME) > 64, "test fixture must itself exceed the CN limit"
+
+
+def _cn_value(cert_path):
+    """Read back the CommonName attribute value from a PEM cert on disk."""
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+
+    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    assert len(cn_attrs) == 1, (
+        f"expected exactly one CommonName attribute, got: {cn_attrs!r}"
+    )
+    return cn_attrs[0].value
+
+
+# --- generate_self_signed() -------------------------------------------------
+
+
+def test_generate_self_signed_long_hostname_does_not_raise(tmp_path):
+    """generate_self_signed() must not raise ValueError for a hostname > 64 chars.
+
+    Regression test for e6133c5: building the CN directly from the hostname
+    raised `ValueError: Attribute's length must be >= 1 and <= 64` for any
+    hostname over RFC 5280's ub-common-name limit.
+    """
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    generate_self_signed(cert_path, key_path, hostnames=[_LONG_HOSTNAME, "localhost"])
+
+    assert cert_path.exists(), "cert.pem was not created"
+    assert key_path.exists(), "key.pem was not created"
+
+
+def test_generate_self_signed_long_hostname_full_name_in_san(tmp_path):
+    """The FULL, untruncated hostname must be present in the subjectAltName.
+
+    This is the load-bearing assertion: CN truncation is only safe because
+    the SAN carries the real, full hostname clients actually validate
+    against.
+    """
+    from muxplex.tls import generate_self_signed, get_cert_info
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    generate_self_signed(cert_path, key_path, hostnames=[_LONG_HOSTNAME, "localhost"])
+
+    info = get_cert_info(cert_path)
+    assert info is not None, "get_cert_info() must not return None for a valid cert"
+    assert _LONG_HOSTNAME in info["hostnames"], (
+        f"full hostname {_LONG_HOSTNAME!r} must be present, untruncated, in the SAN, "
+        f"got: {info['hostnames']!r}"
+    )
+
+
+def test_generate_self_signed_long_hostname_cn_within_limit(tmp_path):
+    """The CN attribute itself must be <= 64 chars (RFC 5280 ub-common-name)."""
+    from muxplex.tls import generate_self_signed
+
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+
+    generate_self_signed(cert_path, key_path, hostnames=[_LONG_HOSTNAME, "localhost"])
+
+    cn_value = _cn_value(cert_path)
+    assert len(cn_value) <= 64, (
+        f"CN must be <= 64 chars (RFC 5280 ub-common-name), got {len(cn_value)}: {cn_value!r}"
+    )
+
+
+# --- generate_local_ca() ----------------------------------------------------
+
+
+def test_generate_local_ca_long_common_name_does_not_raise(tmp_path):
+    """generate_local_ca() must not raise ValueError for a common_name > 64 chars."""
+    from muxplex.tls import generate_local_ca
+
+    ca_cert_path = tmp_path / "ca.pem"
+    ca_key_path = tmp_path / "ca-key.pem"
+
+    generate_local_ca(ca_cert_path, ca_key_path, common_name=_LONG_HOSTNAME)
+
+    assert ca_cert_path.exists(), "ca.pem was not created"
+    assert ca_key_path.exists(), "ca-key.pem was not created"
+
+
+def test_generate_local_ca_long_common_name_cn_within_limit(tmp_path):
+    """The CA's CN attribute itself must be <= 64 chars (RFC 5280 ub-common-name)."""
+    from muxplex.tls import generate_local_ca
+
+    ca_cert_path = tmp_path / "ca.pem"
+    ca_key_path = tmp_path / "ca-key.pem"
+
+    generate_local_ca(ca_cert_path, ca_key_path, common_name=_LONG_HOSTNAME)
+
+    cn_value = _cn_value(ca_cert_path)
+    assert len(cn_value) <= 64, (
+        f"CA CN must be <= 64 chars (RFC 5280 ub-common-name), got {len(cn_value)}: {cn_value!r}"
+    )
+
+
+def test_generate_local_ca_has_no_san_extension(tmp_path):
+    """generate_local_ca() takes a `common_name`, not a hostname list, and
+    does not add a SubjectAlternativeName extension at all (only
+    BasicConstraints, KeyUsage, and SubjectKeyIdentifier -- see its
+    implementation). A CA cert is not validated against a hostname the way a
+    leaf is, so there is no "full hostname in SAN" assertion that applies
+    here. This test documents that fact explicitly rather than silently
+    omitting SAN coverage for this path, and pins get_cert_info()'s actual
+    behavior (empty hostnames list, not an error) for a cert with no SAN.
+    """
+    from muxplex.tls import generate_local_ca, get_cert_info
+
+    ca_cert_path = tmp_path / "ca.pem"
+    ca_key_path = tmp_path / "ca-key.pem"
+
+    generate_local_ca(ca_cert_path, ca_key_path, common_name=_LONG_HOSTNAME)
+
+    info = get_cert_info(ca_cert_path)
+    assert info is not None, "get_cert_info() must not return None for a valid CA cert"
+    assert info["hostnames"] == [], (
+        f"CA cert has no SAN extension by design; expected an empty hostnames list, "
+        f"got: {info['hostnames']!r}"
+    )
+
+
+# --- generate_leaf_signed_by_ca() -------------------------------------------
+
+
+def test_generate_leaf_signed_by_ca_long_hostname_does_not_raise(tmp_path):
+    """generate_leaf_signed_by_ca() must not raise ValueError for a hostname > 64 chars."""
+    from muxplex.tls import generate_leaf_signed_by_ca, generate_local_ca
+
+    ca_cert_path = tmp_path / "ca.pem"
+    ca_key_path = tmp_path / "ca-key.pem"
+    leaf_cert_path = tmp_path / "leaf.pem"
+    leaf_key_path = tmp_path / "leaf-key.pem"
+
+    generate_local_ca(ca_cert_path, ca_key_path)
+
+    generate_leaf_signed_by_ca(
+        ca_cert_path,
+        ca_key_path,
+        leaf_cert_path,
+        leaf_key_path,
+        hostnames=[_LONG_HOSTNAME, "localhost"],
+    )
+
+    assert leaf_cert_path.exists(), "leaf.pem was not created"
+    assert leaf_key_path.exists(), "leaf-key.pem was not created"
+
+
+def test_generate_leaf_signed_by_ca_long_hostname_full_name_in_san(tmp_path):
+    """The FULL, untruncated hostname must be present in the leaf's subjectAltName."""
+    from muxplex.tls import generate_leaf_signed_by_ca, generate_local_ca, get_cert_info
+
+    ca_cert_path = tmp_path / "ca.pem"
+    ca_key_path = tmp_path / "ca-key.pem"
+    leaf_cert_path = tmp_path / "leaf.pem"
+    leaf_key_path = tmp_path / "leaf-key.pem"
+
+    generate_local_ca(ca_cert_path, ca_key_path)
+    generate_leaf_signed_by_ca(
+        ca_cert_path,
+        ca_key_path,
+        leaf_cert_path,
+        leaf_key_path,
+        hostnames=[_LONG_HOSTNAME, "localhost"],
+    )
+
+    info = get_cert_info(leaf_cert_path)
+    assert info is not None, "get_cert_info() must not return None for a valid cert"
+    assert _LONG_HOSTNAME in info["hostnames"], (
+        f"full hostname {_LONG_HOSTNAME!r} must be present, untruncated, in the SAN, "
+        f"got: {info['hostnames']!r}"
+    )
+
+
+def test_generate_leaf_signed_by_ca_long_hostname_cn_within_limit(tmp_path):
+    """The leaf's CN attribute itself must be <= 64 chars (RFC 5280 ub-common-name)."""
+    from muxplex.tls import generate_leaf_signed_by_ca, generate_local_ca
+
+    ca_cert_path = tmp_path / "ca.pem"
+    ca_key_path = tmp_path / "ca-key.pem"
+    leaf_cert_path = tmp_path / "leaf.pem"
+    leaf_key_path = tmp_path / "leaf-key.pem"
+
+    generate_local_ca(ca_cert_path, ca_key_path)
+    generate_leaf_signed_by_ca(
+        ca_cert_path,
+        ca_key_path,
+        leaf_cert_path,
+        leaf_key_path,
+        hostnames=[_LONG_HOSTNAME, "localhost"],
+    )
+
+    cn_value = _cn_value(leaf_cert_path)
+    assert len(cn_value) <= 64, (
+        f"leaf CN must be <= 64 chars (RFC 5280 ub-common-name), got {len(cn_value)}: {cn_value!r}"
+    )
