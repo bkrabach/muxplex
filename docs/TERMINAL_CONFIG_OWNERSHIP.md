@@ -146,7 +146,7 @@ sharing work.
 | **Amplifier dev session layout** (`amplifier`/`shell`/`git`/`files` windows, resume detection, rcfile generation) | **amplifier-workspace** | Workflow-specific. But should *consume* muxplex's tmux config rather than assume its own. | No change |
 | **Optional tool install** (lazygit, yazi, mosh) | **amplifier-workspace** | Already does. | No change |
 | **wezterm config** | **UNRESOLVED** | No natural owner exists after retirement. | **Still unresolved** — §5.2 |
-| **yazi / lazygit themes** | **UNRESOLVED** | Same problem, smaller stakes. | Still unresolved |
+| **yazi / lazygit themes** | **dotfiles** | Same problem as wezterm, smaller stakes. | **Resolved** — `yazi.toml` was re-homed into dotfiles; lazygit was never actually orphaned. Both `~/.config` paths symlink into the dotfiles repo. |
 | **Shell (prompt, PATH, completions, env), git identity/aliases, personal paths, secrets** | **dotfiles** | Stays personal. Secrets become `env.sh.example`. | No change |
 
 ### 3.2 The mechanism: managed fragment, never the user's file — **shipped v0.31.0**
@@ -201,9 +201,9 @@ frontend-only**:
    existing `muxplex config set` path.
 3. **Web UI** — **shipped v0.33.0.** A sixth settings tab, "Terminal": theme
    picker, copy-mode choice, install status, and the generated config behind a
-   disclosure. The proposed Export/Import/Reset triad was not built; with a
-   two-key closed vocabulary there is nothing to export that `muxplex config`
-   does not already show.
+   disclosure. The proposed Export/Import/Reset triad was not built, and no
+   decision was recorded either way — it simply never came up once the
+   writable surface had narrowed to two enum-valued keys.
 
 The storage-model question flagged here for review is answered in §5.3.
 
