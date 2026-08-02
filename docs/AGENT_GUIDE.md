@@ -358,6 +358,58 @@ something other than plain `tmux new-session`. A long-running template that
 hasn't finished in 30 seconds is **not** treated as a failure — the endpoint
 returns success and expects you to poll for the session to appear.
 
+#### Optional: pick a named command pair with `command_id`
+
+An operator can configure additional named create/delete command pairs beyond
+the single default template above (e.g. one pair that opens a full
+`amplifier-workspace` layout, another that creates a scratch session in
+`/tmp`). Discover what's configured with:
+
+```bash
+curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
+     "$MUXPLEX_URL/api/session-commands"
+```
+
+```json
+{
+  "commands": [
+    {"id": "default", "label": "Default", "new_session_template": "tmux new-session -d -s {name}", "delete_session_template": "tmux kill-session -t {name}"},
+    {"id": "amplifier", "label": "Amplifier workspace", "new_session_template": "amplifier-workspace ~/dev/{name}", "delete_session_template": "amplifier-dev --destroy {name}"}
+  ],
+  "default_id": "default",
+  "errors": []
+}
+```
+
+`commands[0]` is always the reserved `"default"` entry (the same template
+create/delete already use above). This endpoint is the canonical, server-side
+resolution — don't re-derive the pair list from `GET /api/settings`'s raw
+`session_commands` field.
+
+Pass the id you want on create:
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" \
+     -H "Content-Type: application/json" -H "Accept: application/json" \
+     -d '{"name":"agent-build","command_id":"amplifier"}' \
+     "$MUXPLEX_URL/api/sessions"
+```
+
+→ `{"name": "agent-build", "ok": true, "command_id": "amplifier"}`
+
+**`command_id` is entirely optional, and omitting it is byte-identical to
+today** — every pre-existing client (and every example elsewhere in this
+guide) that sends no `command_id` gets the `"default"` pair, exactly as
+before this existed. An unresolvable id (typo, or an entry removed from
+config since you last called `GET /api/session-commands`) is a **400** with
+`{"unknown_command_id": true, "available": [...]}` in the body, and nothing is
+spawned.
+
+You cannot define or edit a pair through the API — `session_commands` is
+local-file-only, same fence as `input_enabled` (§7). "Managing" pairs means
+the operator edits `~/.config/muxplex/settings.json`; this endpoint only
+lists and selects.
+
 ### Connect (point the web terminal at a session)
 
 ```bash
@@ -381,6 +433,30 @@ curl -sS -X DELETE -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: applicati
 
 `DELETE /api/sessions/current` is different: it disconnects the web terminal
 without killing anything.
+
+**Delete uses whichever command pair the session was created with,
+automatically** — there is no `command_id` parameter on this endpoint, and
+that's deliberate: the pair a session was created with is looked up for you
+(so `command_id: "amplifier"` on create means the matching
+`amplifier-dev --destroy` teardown runs on delete, with nothing further to
+remember or pass). A session with no recorded pair (pre-existing, or created
+outside muxplex) falls back to the `"default"` pair, unchanged from
+pre-feature behavior. The response gains one additive field:
+`{"ok": true, "name": "agent-build", "command_id": "amplifier"}`.
+
+If the recorded pair has since been removed or renamed in
+`~/.config/muxplex/settings.json`, delete **refuses rather than silently
+substituting**: **409** with `{"unknown_command_id": true, "command_id":
+"amplifier", "available": [...]}`, and nothing is run. Recover by restoring
+the pair in settings, or retry the same request with `?force=true` to
+explicitly fall back to the default kill command:
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
+     "$MUXPLEX_URL/api/sessions/agent-build?force=true"
+```
+
+→ `{"ok": true, "name": "agent-build", "command_id": "default", "forced": true}`
 
 ### The read model is eventually consistent — poll on a short interval, not a long sleep
 
