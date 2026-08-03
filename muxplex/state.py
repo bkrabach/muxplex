@@ -40,9 +40,9 @@ State schema (all values are plain JSON-serialisable dicts):
             }
         },
 
-        # -- the single, server-wide ttyd, made an explicit fact --
-        "terminal_session": str | None,  # what ttyd is actually attached to
-        "terminal_group": str,           # group id that claimed the terminal
+        # -- per-request WS fallback target + provenance (see below) --
+        "terminal_session": str | None,  # fallback target for a WS with no ?session=
+        "terminal_group": str,           # informational: group that last connected it
     }
 
 GET /api/state additionally merges in ``settings_updated_at: float`` (mirrors

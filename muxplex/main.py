@@ -36,9 +36,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
 from starlette.types import Scope
+from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
 from muxplex import tmux_config
+from muxplex import ttyd as ttyd_mod
 from muxplex.auth import (
     AuthMiddleware,
     authenticate_pam,
@@ -120,7 +122,22 @@ from muxplex.terminal_input import (
     session_matches_allowlist,
 )
 from muxplex.tls import get_local_ca_cert_bytes
-from muxplex.ttyd import TTYD_PORT, kill_orphan_ttyd, kill_ttyd, spawn_ttyd
+from muxplex.ttyd import (
+    TTYD_PORT,
+    TtydCapacityError,
+    TtydSpawnError,
+    acquire_relay,
+    ensure_ttyd,
+    kill_all_ttyd,
+    kill_ttyd,
+    reap_idle_ttyds,
+    reap_legacy_ttyd,
+    reap_orphan_ttyds,
+    relay_count,
+    release_relay,
+    socket_is_live,
+    socket_path_for,
+)
 from muxplex.views import (
     assess_views_destruction,
     filter_visible,
@@ -392,9 +409,11 @@ async def _run_poll_cycle() -> None:
         if cleared:
             _log.info("poll: cleared vanished active_session for group(s) %s", cleared)
 
-        # Release the single ttyd if it was attached to a session that just
-        # vanished. Does NOT call kill_ttyd() -- today's code does not kill
-        # ttyd on a vanished session and this change must not start.
+        # Clear the no-session-param fallback target if it vanished. Does NOT
+        # call kill_ttyd() -- a vanished session's ttyd (if any) is reaped
+        # normally by the idle reaper below; this only updates the
+        # bookkeeping fallback WS /terminal/ws uses when a client sends no
+        # ?session= (see ttyd.py's module docstring and docs/API_SEMANTICS.md).
         if state["terminal_session"] not in name_set:
             state["terminal_session"] = None
             state["terminal_group"] = GLOBAL_GROUP
@@ -444,20 +463,27 @@ async def _run_poll_cycle() -> None:
         # 11. Prune devices that haven't sent a heartbeat recently, then
         # garbage-collect any sync group no surviving device claims any
         # more (must run AFTER prune_devices() -- it derives its target set
-        # from the surviving devices). If the pruned group held the single
-        # ttyd, release it -- otherwise a closed laptop's abandoned private
-        # group would hold the terminal hostage forever, deadlocking the
-        # 409 gate with no recovery short of restarting the service.
+        # from the surviving devices). With per-session ttyd there is no
+        # contended resource for a pruned group to hold hostage -- an
+        # abandoned group's ttyd (if it ever had one) is reclaimed on
+        # resource grounds by the idle reaper below within
+        # IDLE_REAP_SECONDS, so no explicit release branch is needed here.
         prune_devices(state)
-        removed_groups = gc_sync_groups(state)
-        if state["terminal_group"] in removed_groups:
-            await kill_ttyd()
-            state["terminal_session"] = None
-            state["terminal_group"] = GLOBAL_GROUP
-            _log.info("poll: released terminal held by pruned group")
+        gc_sync_groups(state)
 
         # 12. Atomically persist the updated state
         save_state(state)
+
+    # 12b. Resource hygiene: reap idle (relays == 0, past IDLE_REAP_SECONDS)
+    # per-session ttyds. No new timer -- rides this poll cycle exactly as
+    # gc_sync_groups() rides prune_devices() above. Outside state_lock: the
+    # ttyd registry is a separate, disposable structure with no interaction
+    # with state.json. Killing an idle ttyd never touches the tmux session
+    # it was attached to (see ttyd.py's module docstring).
+    try:
+        await reap_idle_ttyds()
+    except Exception:
+        _log.exception("ttyd idle-reap cycle error")
 
     # 13. Periodically sync settings with remote instances (every SETTINGS_SYNC_INTERVAL
     #     poll cycles, ~30 seconds). Runs outside the state_lock to avoid blocking the
@@ -664,9 +690,20 @@ async def lifespan(app: FastAPI):
     else:
         _log.info("session_commands: %d pair(s) configured", len(_commands) - 1)
 
-    # Startup: kill any orphaned ttyd from a previous muxplex run, then
-    # start the background poll loop.
-    await kill_orphan_ttyd()
+    # Startup, in order (PER_SESSION_TTYD_SPEC.md §10.1):
+    # 1. Validate the ttyd socket dir -- fail loud before anything else. A
+    #    bad socket dir must abort startup, not surface later as a
+    #    mysterious per-attach failure. Read via the module object (not a
+    #    name imported at module load time) so a test's
+    #    monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", ...) is honored.
+    ttyd_mod.validate_socket_dir(ttyd_mod.TTYD_SOCKET_DIR)
+    # 2. Reap any per-session ttyds left running across a restart (identity
+    #    checked against a fresh `ps` snapshot -- never an unconfirmed kill).
+    await reap_orphan_ttyds()
+    # 3. One-time migration: reap the pre-upgrade single ttyd if its PID file
+    #    survived; detect-and-report (never sweep) a still-live legacy port.
+    await reap_legacy_ttyd()
+    # 4. Start the background poll loop.
     _poll_task = asyncio.create_task(_poll_loop())
 
     # Register tmux alert-bell hook so bells are detected even when clients are
@@ -715,7 +752,7 @@ async def lifespan(app: FastAPI):
     _poll_task = None
 
     try:
-        await asyncio.wait_for(kill_ttyd(), timeout=3.0)
+        await asyncio.wait_for(kill_all_ttyd(), timeout=3.0)
     except Exception:
         _log.exception("ttyd shutdown error")
 
@@ -1358,21 +1395,29 @@ async def create_session(payload: CreateSessionPayload) -> dict:
 async def connect_session(
     name: str, device_id: str | None = None, takeover: bool = False
 ) -> dict:
-    """Connect to a tmux session via ttyd.
+    """Ensure *name* has a live, per-session ttyd, and record it as this
+    caller's (and the no-`?session=`-fallback's) active session.
 
-    Kills any existing ttyd process, spawns a new one attached to *name*,
-    and updates the active_session in persistent state.
+    With one ttyd per session, `ensure_ttyd()` is idempotent: connecting to a
+    session that's already live is free, and connecting to session X never
+    disturbs any OTHER session's ttyd -- that is the entire point of this
+    architecture (see PER_SESSION_TTYD_SPEC.md).
 
     Returns {active_session: name, ttyd_port: 7682, sync_group, terminal_session}.
+    `ttyd_port` is a legacy wire field -- see ttyd.py's module docstring --
+    kept solely because `muxplex_client.parse_connect_result()` requires it.
+
     Raises HTTP 400 if *name* fails the session-name allowlist.
     Raises HTTP 404 if *name* is not an exact match in the known session list,
     or if *device_id* is unknown.
-    Raises HTTP 409 ({"terminal_conflict": true, ...}) if the single ttyd is
-    currently claimed by a DIFFERENT sync group and *takeover* is not set --
-    see docs/API_SEMANTICS.md. This gate can never fire for a caller that
-    sends no device_id: it resolves to the "global" group, and the terminal
-    starts (and stays, until an opt-out group claims it) claimed by "global"
-    too -- both global, so equal, so no conflict.
+    Raises HTTP 500 if the ttyd fails to spawn/bind (TtydSpawnError) or HTTP
+    503 if the server is at its ttyd capacity ceiling (TtydCapacityError) --
+    both are new failure modes: today's single-ttyd endpoint never verified
+    the spawn, so it could return 200 for a terminal that didn't exist.
+
+    `takeover` is accepted and ignored: with no single shared terminal to
+    seize, there is nothing left to take over. Kept in the signature so
+    existing clients sending `&takeover=true` (terminal.js) don't 422.
     """
     _require_valid_session_name(name)
     # Fail closed: reject unless *name* is an exact member of the known set. An
@@ -1387,52 +1432,17 @@ async def connect_session(
     async with state_lock:
         state = load_state()
         group = _resolve_group_or_404(state, device_id)
-        terminal_session = state["terminal_session"]
-        terminal_group = state["terminal_group"]
 
-    # Terminal-claim gate: refuse to seize the single ttyd out from under a
-    # DIFFERENT group's live session unless the caller explicitly takes over.
-    # No write and no ttyd action happens on this path.
-    if terminal_session is not None and terminal_group != group and not takeover:
+    try:
+        await ensure_ttyd(name)
+    except TtydCapacityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except TtydSpawnError as exc:
         raise HTTPException(
-            status_code=409,
-            detail={
-                "terminal_conflict": True,
-                "detail": f"The terminal is attached to {terminal_session!r} for another device.",
-                "terminal_session": terminal_session,
-                "terminal_group": terminal_group,
-            },
+            status_code=500, detail=f"Failed to start terminal for {name!r}: {exc}"
         )
-
-    # Same-session short-circuit: if *name* is already what the terminal is
-    # attached to and ttyd is still accepting connections, kill+respawn would
-    # only churn a PTY every attached client already works against. Still
-    # records the caller's own selection (a private device connecting to the
-    # session the terminal already shows must record its own choice) and, for
-    # co-viewing, names the last claimant. Return current state (~2ms) so
-    # redundant client re-connects (PWA follow-open, deck double-press) are
-    # free. The <1ms TCP listening probe keeps this restart-safe: a truly-dead
-    # ttyd still falls through to a full respawn.
-    if name == terminal_session and _ttyd_is_listening():
-        _log.info(
-            "Session '%s' already active and ttyd listening; skipping respawn", name
-        )
-        async with state_lock:
-            state = load_state()
-            write_group_state(state, group, {"active_session": name})
-            state["terminal_group"] = group
-            save_state(state)
-        return {
-            "active_session": name,
-            "ttyd_port": TTYD_PORT,
-            "sync_group": group,
-            "terminal_session": name,
-        }
 
     _log.info("Connecting to session '%s'", name)
-    await kill_ttyd()
-    await spawn_ttyd(name)
-
     async with state_lock:
         state = load_state()
         write_group_state(state, group, {"active_session": name})
@@ -1580,37 +1590,35 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
 
 @app.delete("/api/sessions/current")
 async def delete_current_session(device_id: str | None = None) -> dict:
-    """Disconnect the current ttyd session.
+    """Disconnect the caller's own session and, if no one else is relaying
+    it, kill that session's ttyd.
 
-    Kills the running ttyd process ONLY when the caller's group is the one
-    that holds it (state["terminal_group"] == the resolved group) --
-    otherwise the caller does not own the terminal and must not kill it:
-    closing your own private fullscreen must not black out someone else's
-    live terminal. Always clears the caller's own group active_session.
+    Always clears the caller's own group `active_session`. The ttyd is only
+    killed when `relay_count(mine) == 0` -- a structural refcount check, not
+    a group-ownership claim: two devices (in the SAME or DIFFERENT groups)
+    co-viewing one session share one ttyd, and one of them disconnecting
+    must never black out the other's live terminal (AGENTS.md).
 
     Returns {active_session: None, sync_group, terminal_released}.
+    `terminal_released` keeps its meaning exactly: "this call tore down a
+    terminal process."
     Raises HTTP 404 if *device_id* is unknown.
     """
     async with state_lock:
         state = load_state()
         group = _resolve_group_or_404(state, device_id)
-        owns_terminal = state["terminal_group"] == group
-
-    if owns_terminal:
-        await kill_ttyd()
-
-    async with state_lock:
-        state = load_state()
+        mine = read_group_state(state, group)["active_session"]
         write_group_state(state, group, {"active_session": None})
-        if owns_terminal:
-            state["terminal_session"] = None
-            state["terminal_group"] = GLOBAL_GROUP
         save_state(state)
+
+    released = False
+    if mine is not None and relay_count(mine) == 0:
+        released = await kill_ttyd(mine)
 
     return {
         "active_session": None,
         "sync_group": group,
-        "terminal_released": owns_terminal,
+        "terminal_released": released,
     }
 
 
@@ -2326,21 +2334,6 @@ async def setup_page(request: Request) -> HTMLResponse:
 # ---------------------------------------------------------------------------
 
 
-def _ttyd_is_listening() -> bool:
-    """Return True if something is accepting TCP connections on TTYD_PORT.
-
-    Uses a raw socket connect (no WebSocket handshake, no PTY spawned).
-    Takes < 1 ms on localhost when ttyd is running; fails immediately with
-    ConnectionRefusedError when it's not.  OSError/TimeoutError are also
-    caught so the caller always gets a bool.
-    """
-    try:
-        with socket.create_connection(("127.0.0.1", TTYD_PORT), timeout=0.5):
-            return True
-    except (ConnectionRefusedError, OSError, TimeoutError):
-        return False
-
-
 async def _ws_auth_check(websocket: WebSocket) -> bool:
     """Return True if the WebSocket caller is authorized.
 
@@ -2461,120 +2454,128 @@ async def _accept_then_close(websocket: WebSocket, *, code: int) -> None:
         _log.debug("WS proxy: close(code=%d) failed after accept: %s", code, exc)
 
 
-async def _prepare_ttyd_for_reconnect() -> None:
-    """Kill and respawn ttyd (best-effort) if it isn't listening, then wait
-    briefly for it to bind its port.
+async def _prepare_ttyd(target: str) -> bool:
+    """Ensure *target* session's ttyd is live. Returns True on success.
 
-    Loads terminal_session from state itself so it can run as an independent
-    task, raced against _client_disconnected() by terminal_ws_proxy. Reads
-    terminal_session (what ttyd was ACTUALLY attached to), not any group's
-    active_session (what some group WANTS) -- behaviorally identical for the
-    global-only case (they are equal), and correct once other groups exist.
+    Replaces `_prepare_ttyd_for_reconnect()`: `ensure_ttyd()` already proves
+    the socket is bound and live before returning, so there is no fixed
+    settle sleep here at all (the old 0.8s wait for ttyd to bind its port is
+    gone -- see PER_SESSION_TTYD_SPEC.md §3.6, typical readiness is 20-100ms).
+    Does not read/write state itself -- the caller already resolved *target*.
+    Never raises: a spawn/capacity failure is logged at warning and reported
+    as False so the caller can bail out without relaying.
     """
     try:
-        async with state_lock:
-            state = load_state()
-        session_name = state["terminal_session"]
-        if session_name:
-            _log.info(
-                "WS proxy: ttyd not listening, auto-spawning for '%s'",
-                session_name,
-            )
-            await kill_ttyd()
-            await spawn_ttyd(session_name)
-            await asyncio.sleep(0.8)  # wait for ttyd to bind its port
-    except Exception as exc:
-        _log.warning("WS proxy: failed to auto-spawn ttyd: %s", exc)
+        await ensure_ttyd(target)
+        return True
+    except (TtydSpawnError, TtydCapacityError) as exc:
+        _log.warning("WS proxy: failed to prepare ttyd for '%s': %s", target, exc)
+        return False
 
 
 @app.websocket("/terminal/ws")
-async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) -> None:
-    """Proxy WebSocket frames between the browser and ttyd.
+async def terminal_ws_proxy(
+    websocket: WebSocket, device_id: str | None = None, session: str | None = None
+) -> None:
+    """Proxy WebSocket frames between the browser and *this session's* ttyd.
 
-    Checks that ttyd is alive BEFORE accepting the browser WebSocket.  If ttyd
-    is not listening (e.g. after a service restart), auto-spawns it using the
-    terminal_session from state, then waits briefly for it to bind its port.
+    `session` (new, optional query param) names the target session directly.
+    Absent, it falls back to `state["terminal_session"]` -- today's behavior
+    byte-for-byte, and what keeps the federation relay (which never sends
+    `session` upstream on its own initiative -- see
+    `federation_terminal_ws_proxy`) and any pre-this-change client working
+    unchanged. With per-session ttyd there is no single "the" ttyd anymore,
+    so a WS that names no session has nothing implicit left to attach to
+    except this fallback.
 
-    Only after ttyd is confirmed reachable does the function call
-    websocket.accept() — so the browser's 'open' event only fires once a real
-    relay is possible.  This prevents the reconnect-counter bounce bug where
-    the proxy accepted immediately (resetting _reconnectAttempts to 0) and
-    then closed as soon as it couldn't reach the dead ttyd.
+    Checks that this session's ttyd is alive BEFORE accepting the browser
+    WebSocket. If it is not (first attach, or it died and needs a respawn),
+    auto-spawns it via `_prepare_ttyd()`. Only after it is confirmed reachable
+    does the function call websocket.accept() -- so the browser's 'open'
+    event only fires once a real relay is possible. This prevents the
+    reconnect-counter bounce bug where the proxy accepted immediately
+    (resetting _reconnectAttempts to 0) and then closed as soon as it
+    couldn't reach the dead ttyd.
 
-    The ttyd auto-spawn wait (kill_ttyd + spawn_ttyd + a fixed 0.8s settle
-    delay) is real wall-clock time during which the browser can disconnect
-    (tab closed, navigation, network drop, PWA backgrounding). Calling
-    websocket.accept() after that happens raises RuntimeError — see
-    _client_disconnected()'s docstring for the exact mechanism — so that wait
-    is raced against a disconnect watcher and accept() is skipped entirely if
-    the client is already gone.
+    The ttyd auto-spawn wait is real wall-clock time during which the
+    browser can disconnect (tab closed, navigation, network drop, PWA
+    backgrounding). Calling websocket.accept() after that happens raises
+    RuntimeError -- see _client_disconnected()'s docstring for the exact
+    mechanism -- so that wait is raced against a disconnect watcher and
+    accept() is skipped entirely if the client is already gone.
 
-    device_id (optional query param) is the §0 hazard's loud backstop: it
-    holds whether or not any client behaves correctly.
+    device_id (optional query param) is the §0 hazard's loud backstop,
+    REDEFINED and NARROWER now that there is no single contended terminal to
+    arbitrate (PER_SESSION_TTYD_SPEC.md §7.2): it now means "you asked to
+    attach to a session your own group has not selected," a per-request
+    consistency check rather than a resource claim.
         - No device_id -> today's path exactly, no new behavior.
         - Unknown device_id -> close(4404).
+        - Missing/invalid/unknown *target* session -> close(4404) (widened
+          from the old single-ttyd version, which could only ever see one
+          possible session).
         - Otherwise: resolve the caller's group; if that group's
-          active_session is None or does not equal the single ttyd's actual
-          terminal_session, close(4409) rather than relay -- this device
-          must never be shown, or type into, a session it did not select.
+          active_session is None or does not equal *target*, close(4409)
+          rather than relay -- this device must never be shown, or type
+          into, a session it did not select.
     There is no race with the normal client path: openSession() awaits
-    /connect (which sets terminal_session) before mounting the terminal, so
-    they are equal by the time the WS opens.
+    /connect (which sets terminal_session, and now also directly names the
+    session in the WS URL) before mounting the terminal.
 
     IMPORTANT -- what a real client actually sees on the wire, and the fix
-    that changed it: both rejection branches below now call
-    _accept_then_close() instead of closing before accept(). Per
-    ASGI/uvicorn semantics, closing BEFORE accept() never produces a real
-    WebSocket close frame (the connection was never upgraded), so it
-    serializes as a bare HTTP handshake rejection instead -- confirmed by
-    raw-socket probe against a live instance: `HTTP/1.1 403 Forbidden`,
-    empty body, no numeric code visible anywhere on the wire. That was the
-    behavior before this fix, and it is why the 4404/4409 codes never
-    reached a real client: a browser's WS `close` event reports `1006` for
-    ANY failed opening handshake, and the WHATWG WebSocket spec gives
-    JavaScript no way to read the underlying HTTP status or body either --
-    so uvicorn's WebSocket-denial-response ASGI extension (considered as an
-    alternative) cannot help a real browser here no matter what status/body
-    it carries; it only changes what a script client that reads the raw
-    HTTP response (e.g. Python's `websockets` library) can see.
+    that changed it: both rejection branches below call _accept_then_close()
+    instead of closing before accept(). Per ASGI/uvicorn semantics, closing
+    BEFORE accept() never produces a real WebSocket close frame (the
+    connection was never upgraded), so it serializes as a bare HTTP
+    handshake rejection instead -- confirmed by raw-socket probe against a
+    live instance: `HTTP/1.1 403 Forbidden`, empty body, no numeric code
+    visible anywhere on the wire. A browser's WS `close` event reports
+    `1006` for ANY failed opening handshake, and the WHATWG WebSocket spec
+    gives JavaScript no way to read the underlying HTTP status or body
+    either. `_accept_then_close()` completes the handshake first, so the
+    close frame -- and its code -- genuinely reaches the wire: a real
+    browser's `close` event reports `event.code === 4404`/`4409` instead of
+    `1006`. See _accept_then_close()'s docstring for the full mechanism and
+    docs/API_SEMANTICS.md for the original incident writeup.
 
-    _accept_then_close() completes the handshake first, so the close frame
-    -- and its code -- genuinely reaches the wire: a real browser's `close`
-    event now reports `event.code === 4404`/`4409` instead of `1006`, and
-    terminal.js's 4409 branch (previously unreachable in production) now
-    fires for real. See _accept_then_close()'s docstring for the full
-    mechanism, the trade-off it deliberately accepts (the browser's `open`
-    event fires briefly before `close` follows, since the handshake
-    genuinely completes), and why the denial-response extension was
-    rejected. See docs/API_SEMANTICS.md for the original incident writeup
-    and this fix. The resolution/denial logic itself (which device_id maps
-    to which code) is unchanged -- only how the code reaches the client.
-
-    This fix does NOT touch the pre-accept ttyd-auto-spawn disconnect race
+    This does NOT touch the pre-accept ttyd-auto-spawn disconnect race
     documented above and in _client_disconnected()'s docstring: that guard
-    only runs in the branch below where device_id is absent/matching and
-    the function proceeds toward a real relay. The device_id-conflict
-    branches return immediately after _accept_then_close(), well before
-    reaching the ttyd-liveness check, so they never interact with that
-    wait at all.
+    only runs in the branch below where device_id is absent/matching and the
+    function proceeds toward a real relay. The rejection branches return
+    immediately after _accept_then_close(), well before reaching the
+    ttyd-liveness check, so they never interact with that wait at all.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
     if not await _ws_auth_check(websocket):
         return
 
+    async with state_lock:
+        state = load_state()
+
+    group: str | None = None
     if device_id is not None:
-        async with state_lock:
-            state = load_state()
         try:
             group = resolve_group(state, device_id)
         except KeyError:
             # accept()-then-close() so this code reaches the wire as a real
-            # WS close frame -- see _accept_then_close()'s docstring and
-            # this function's docstring for the wire-reachability fix.
+            # WS close frame -- see _accept_then_close()'s docstring.
             await _accept_then_close(websocket, code=4404)
             return
+
+    target = session if session is not None else state["terminal_session"]
+    if (
+        target is None
+        or not is_valid_session_name(target)
+        or target not in get_session_list()
+    ):
+        # Fail-closed exact membership -- same pattern as connect/delete/input.
+        # An empty/unavailable cache rejects everything.
+        await _accept_then_close(websocket, code=4404)
+        return
+
+    if group is not None:
         wanted = read_group_state(state, group)["active_session"]
-        if wanted is None or wanted != state["terminal_session"]:
+        if wanted is None or wanted != target:
             # Same wire-reachability fix as above -- see _accept_then_close().
             await _accept_then_close(websocket, code=4409)
             return
@@ -2584,11 +2585,10 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
     if _task is not None:
         _ws_proxy_tasks.add(_task)
 
-    # Ensure ttyd is reachable BEFORE accepting the browser WS.
-    # After a service restart ttyd is dead but clients reconnect immediately.
-    # Auto-spawn from active_session so the browser's 'open' event only fires
-    # when a real relay is possible — eliminates the 0→1→0→1 counter bounce.
-    if not _ttyd_is_listening():
+    # Ensure this session's ttyd is reachable BEFORE accepting the browser WS.
+    # Auto-spawn so the browser's 'open' event only fires when a real relay
+    # is possible — eliminates the 0→1→0→1 counter bounce.
+    if not socket_is_live(socket_path_for(target)):
         # Consume the ASGI 'websocket.connect' handshake message up front —
         # this is what websocket.accept() would otherwise do internally —
         # so _client_disconnected() below can observe a 'websocket.disconnect'
@@ -2600,8 +2600,10 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
                 _ws_proxy_tasks.discard(_task)
             return
 
-        prep_task = asyncio.create_task(_prepare_ttyd_for_reconnect())
-        disconnect_task = asyncio.create_task(_client_disconnected(websocket))
+        prep_task: asyncio.Task = asyncio.create_task(_prepare_ttyd(target))
+        disconnect_task: asyncio.Task = asyncio.create_task(
+            _client_disconnected(websocket)
+        )
         done, pending = await asyncio.wait(
             {prep_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
         )
@@ -2623,12 +2625,23 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
                 _ws_proxy_tasks.discard(_task)
             return
 
+        if prep_task in done and (
+            prep_task.exception() is not None or not prep_task.result()
+        ):
+            # Spawn failure/capacity ceiling: log + close, no relay attempted
+            # -- same shape as an unreachable ttyd always produced.
+            if _task is not None:
+                _ws_proxy_tasks.discard(_task)
+            return
+
     await websocket.accept(subprotocol="tty")
 
-    ttyd_url = f"ws://localhost:{TTYD_PORT}/ws"
+    acquire_relay(target)
     try:
-        async with websockets.connect(
-            ttyd_url, subprotocols=[Subprotocol("tty")]
+        async with unix_connect(
+            str(socket_path_for(target)),
+            uri="ws://localhost/ws",
+            subprotocols=[Subprotocol("tty")],
         ) as ttyd_ws:
 
             async def client_to_ttyd() -> None:
@@ -2674,6 +2687,7 @@ async def terminal_ws_proxy(websocket: WebSocket, device_id: str | None = None) 
     except Exception as exc:
         _log.debug("ws proxy closed: %s", exc)
     finally:
+        release_relay(target)
         if _task is not None:
             _ws_proxy_tasks.discard(_task)
         try:
@@ -2725,12 +2739,26 @@ def _lookup_remote_by_device_id(device_id: str) -> dict | None:
 
 
 @app.websocket("/federation/{device_id}/terminal/ws")
-async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> None:
+async def federation_terminal_ws_proxy(
+    websocket: WebSocket, device_id: str, session: str | None = None
+) -> None:
     """Proxy WebSocket frames between the browser and a remote muxplex ttyd.
 
     *device_id* is the device_id string of the remote instance in
     settings.  Authenticates to the remote instance using the configured
     ``key`` field via a Bearer header.
+
+    This relay dials the remote muxplex's own authenticated ``/terminal/ws``
+    endpoint over the network (ws(s)://<remote>) -- it NEVER touches a ttyd
+    socket directly. UNIX sockets are process-local by construction, so the
+    per-session-ttyd transport change cannot cross an instance boundary even
+    in principle, and does not need any socket-handling code here. The only
+    change this route needed is `session` (new, optional query param):
+    forwarded upstream when supplied so the remote relays the *named*
+    session rather than whatever its ``terminal_session`` fallback happens
+    to hold. Absent, the upstream call omits it and the remote falls back
+    identically to its own no-`session` behavior -- purely additive in both
+    directions (PER_SESSION_TTYD_SPEC.md §11).
 
     Auth check uses the same cookie + bearer pattern as terminal_ws_proxy.
     Closes with code 4004 if device_id does not match any remote.
@@ -2767,13 +2795,16 @@ async def federation_terminal_ws_proxy(websocket: WebSocket, device_id: str) -> 
     remote_url: str = remote.get("url", "").rstrip("/")
     remote_key: str = remote.get("key", "")
 
-    # Convert http(s) URL to ws(s)
+    # Convert http(s) URL to ws(s), forwarding ?session= when supplied.
+    session_qs = f"?session={quote(session, safe='')}" if session is not None else ""
     if remote_url.startswith("https://"):
-        ws_url = "wss://" + remote_url[8:] + "/terminal/ws"
+        ws_url = "wss://" + remote_url[8:] + "/terminal/ws" + session_qs
     elif remote_url.startswith("http://"):
-        ws_url = "ws://" + remote_url[7:] + "/terminal/ws"
+        ws_url = "ws://" + remote_url[7:] + "/terminal/ws" + session_qs
     else:
-        ws_url = remote_url + "/terminal/ws"  # assume already ws:// or wss://
+        ws_url = (
+            remote_url + "/terminal/ws" + session_qs
+        )  # assume already ws:// or wss://
 
     # Build an SSL context that skips verification for self-signed certs on
     # remote instances.  Same rationale as httpx verify=False: federation
