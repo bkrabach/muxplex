@@ -380,7 +380,7 @@ requires-dist = [
     { name = "python-pam", specifier = ">=1.8.4" },
     { name = "six", specifier = ">=1.16.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
-    { name = "websockets", specifier = ">=11.0" },
+    { name = "websockets", specifier = ">=14.0" },
 ]
 provides-extras = ["dev"]
 
