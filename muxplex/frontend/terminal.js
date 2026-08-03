@@ -79,18 +79,29 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
   // Always connect to the same origin — remote sessions route through the
   // federation proxy (ws://host/federation/{remoteId}/terminal/ws) so that
   // no cross-origin WebSocket connections are made from the browser.
+  //
+  // ?session= (both branches) names the target session directly -- required
+  // now that each session has its own ttyd; there is no longer an implicit
+  // "the" terminal a session-less WS could fall back to on this browser's
+  // behalf. `name` is the session this UI believes it is showing, which is
+  // exactly the point: the URL now STATES the target instead of inheriting
+  // it from server-side state. See PER_SESSION_TTYD_SPEC.md §9.1.
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var url;
   if (remoteId) {
     // Remote session via federation proxy — same origin, different path
-    url = proto + '//' + location.host + '/federation/' + remoteId + '/terminal/ws';
+    url = proto + '//' + location.host + '/federation/' + remoteId + '/terminal/ws'
+        + '?session=' + encodeURIComponent(name);
   } else {
     // Local session: same origin. device_id lets the server refuse to relay
     // a session this device did not select (the §0 keystroke-misdirection
     // guard) — omitted entirely when unknown, matching today's behavior.
-    url = proto + '//' + location.host + '/terminal/ws';
+    // NOTE the separator flips from '?' to '&' here since ?session= is now
+    // always present on this branch.
+    url = proto + '//' + location.host + '/terminal/ws'
+        + '?session=' + encodeURIComponent(name);
     if (ownDeviceId) {
-      url += '?device_id=' + encodeURIComponent(ownDeviceId);
+      url += '&device_id=' + encodeURIComponent(ownDeviceId);
     }
   }
   const reconnectOverlay = document.getElementById('reconnect-overlay');
@@ -284,25 +295,31 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
 }
 
 /**
- * Show the reconnect overlay in "terminal conflict" mode: honest message +
- * a Take-over affordance, and (critically) NO auto-reconnect loop -- looping
- * here would hammer the server and never recover on its own.
+ * Show the reconnect overlay in "session changed elsewhere" mode: an honest
+ * message (no Take-over affordance -- with per-session ttyd there is no
+ * single shared terminal left to take over), and (critically) NO
+ * auto-reconnect loop -- looping here would hammer the server and never
+ * recover on its own. Re-issues /connect for `name` once (not a loop)
+ * before reconnecting, since the 4409 guard is now a per-request
+ * consistency check rather than a resource claim (PER_SESSION_TTYD_SPEC.md
+ * §7.2, §9.2) -- a stale reconnect after the user switched sessions on
+ * another device is the only way this still fires.
  */
 function _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId) {
   if (!reconnectOverlay) return;
   reconnectOverlay.classList.remove('hidden');
   if (reconnectOverlayText) {
-    reconnectOverlayText.textContent = "Terminal is showing another device's session";
+    reconnectOverlayText.textContent = 'Session changed on another device — reconnecting';
   }
-  if (takeoverBtn) {
-    takeoverBtn.classList.remove('hidden');
-    takeoverBtn.onclick = function() {
-      takeoverBtn.classList.add('hidden');
-      _pendingTakeover = true;
-      _reconnectAttempts = 2; // force the escalation (/connect) path on next connect()
+  if (takeoverBtn) takeoverBtn.classList.add('hidden');
+
+  var connectPath = '/api/sessions/' + encodeURIComponent(name) + '/connect';
+  if (ownDeviceId) connectPath += '?device_id=' + encodeURIComponent(ownDeviceId);
+  fetch(connectPath, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+    .catch(function() {})
+    .then(function() {
       connectWebSocket(name, remoteId, ownDeviceId);
-    };
-  }
+    });
 }
 function initVisualViewport() {
   if (!window.visualViewport) return;

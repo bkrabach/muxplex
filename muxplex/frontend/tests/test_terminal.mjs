@@ -715,8 +715,60 @@ test('connectWebSocket URL uses /terminal/ws path', () => {
 
   assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
   assert.ok(
-    t.capturedWsUrl.endsWith('/terminal/ws'),
-    `WebSocket URL should end with /terminal/ws, got: ${t.capturedWsUrl}`,
+    t.capturedWsUrl.includes('/terminal/ws'),
+    `WebSocket URL should include /terminal/ws, got: ${t.capturedWsUrl}`,
+  );
+});
+
+// --- ?session= addressing (PER_SESSION_TTYD_SPEC.md §9.1) --------------------
+
+test('connectWebSocket local branch includes ?session= with the session name', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('my-session');
+
+  globalThis.setTimeout = orig;
+
+  assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
+  assert.ok(
+    t.capturedWsUrl.includes('?session=my-session'),
+    `local WS URL must name the target session via ?session=, got: ${t.capturedWsUrl}`,
+  );
+});
+
+test('connectWebSocket local branch appends &device_id= after ?session=', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('my-session', undefined, undefined, 'dev-42');
+
+  globalThis.setTimeout = orig;
+
+  assert.ok(
+    t.capturedWsUrl.includes('?session=my-session&device_id=dev-42'),
+    `expected ?session= then &device_id=, got: ${t.capturedWsUrl}`,
+  );
+});
+
+test('connectWebSocket federation branch includes ?session= with the session name', () => {
+  const t = loadTerminal();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (_fn, _ms) => 0;
+
+  t.openTerminal('remote-session', 'fed-abc123');
+
+  globalThis.setTimeout = orig;
+
+  assert.strictEqual(
+    t.capturedWsUrl,
+    'ws://localhost/federation/fed-abc123/terminal/ws?session=remote-session',
+    `expected federation URL with ?session=, got: ${t.capturedWsUrl}`,
   );
 });
 
