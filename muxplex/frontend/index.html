@@ -47,7 +47,7 @@
         <button id="sync-group-btn" class="header-btn"
                 aria-pressed="false" aria-label="Independent view"
                 title="Following this server's view">&#128279;</button>
-        <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;</button>
+        <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge" class="error-count-badge hidden"></span></button>
         <span id="connection-status"></span>
       </div>
     </header>
@@ -65,7 +65,7 @@
       <button id="sync-group-btn-expanded" class="header-btn"
               aria-pressed="false" aria-label="Independent view"
               title="Following this server's view">&#128279;</button>
-      <button id="settings-btn-expanded" class="header-btn" aria-label="Settings">&#9881;</button>
+      <button id="settings-btn-expanded" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge-expanded" class="error-count-badge hidden"></span></button>
     </header>
     <div class="view-body">
       <div id="session-sidebar" class="session-sidebar">
@@ -164,7 +164,7 @@
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
         <button class="settings-tab" data-tab="views">Views</button>
-        <button class="settings-tab" data-tab="new-session">Commands</button>
+        <button class="settings-tab" data-tab="new-session">Commands<span id="settings-tab-command-errors-badge" class="error-count-badge hidden"></span></button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
         <button class="settings-tab" data-tab="tmux">Terminal</button>
       </nav>
@@ -276,22 +276,23 @@
           <div class="settings-field settings-field--column">
             <label class="settings-label" for="setting-template">Command template</label>
             <textarea id="setting-template" class="settings-textarea" rows="3" placeholder="tmux new-session -d -s {name}" readonly></textarea>
-            <span class="settings-helper">{name} is replaced with the session name. For security, this runs a shell command on the server, so it can only be changed by editing <code>~/.config/muxplex/settings.json</code> directly (not from the browser).</span>
+            <span class="settings-helper">{name} is replaced with the session name. These run shell commands on the server, so the browser can show them but never change them &mdash; use the Duplicate action below, or edit <code>~/.config/muxplex/settings.json</code> directly.</span>
           </div>
           <div class="settings-field settings-field--column">
             <label class="settings-label" for="setting-delete-template">Kill session command</label>
             <textarea id="setting-delete-template" class="settings-textarea" rows="3" placeholder="tmux kill-session -t {name}" readonly></textarea>
-            <span class="settings-helper">{name} is replaced with the session name. For security, this runs a shell command on the server, so it can only be changed by editing <code>~/.config/muxplex/settings.json</code> directly (not from the browser).</span>
+            <span class="settings-helper">{name} is replaced with the session name. These run shell commands on the server, so the browser can show them but never change them &mdash; use the Duplicate action below, or edit <code>~/.config/muxplex/settings.json</code> directly.</span>
           </div>
           <div class="settings-field settings-field--column" id="settings-command-pairs-field" style="display:none">
-            <label class="settings-label">Additional command pairs</label>
+            <label class="settings-label">Command pairs</label>
             <div id="settings-command-pairs" class="settings-command-pairs"></div>
-            <span class="settings-helper">Each pair is a create command and its matching kill command; the pair a session was created with is the one used to delete it. For security, these run shell commands on the server, so they can only be changed by editing <code>~/.config/muxplex/settings.json</code> directly (not from the browser).</span>
+            <span class="settings-helper">Each pair is a create command and its matching kill command; the pair a session was created with is the one used to delete it. These run shell commands on the server, so the browser composes changes and your shell applies them &mdash; Duplicate an existing pair, then paste the generated <code>muxplex commands add</code> line into any shell, including the terminal in this app.</span>
           </div>
+          <div class="settings-field settings-field--column hidden" id="settings-command-composer"></div>
           <div class="settings-field settings-field--column" id="settings-command-errors-field" style="display:none">
             <label class="settings-label">Command pair configuration errors</label>
             <ul id="settings-command-errors" class="settings-command-errors"></ul>
-            <span class="settings-helper">These entries in <code>~/.config/muxplex/settings.json</code> were rejected and are not available. Sessions created with them cannot be deleted until they are fixed.</span>
+            <span class="settings-helper">These entries in <code>~/.config/muxplex/settings.json</code> were rejected and are not available. Sessions created with them cannot be deleted until they are fixed &mdash; see the entry above matching the id named in a delete error, fix it, then reopen this tab to confirm.</span>
           </div>
         </div>
         <div class="settings-panel hidden" data-tab="devices">

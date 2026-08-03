@@ -69,6 +69,31 @@ test('_createCommandSelect returns null with exactly 1 pair configured (the UI-u
   assert.equal(app._createCommandSelect(), null);
 });
 
+test('_createCommandSelect renders a warning row when there are config errors, even at <2 pairs', () => {
+  app._setSessionCommands(
+    [{ id: 'default', label: 'Default', new_session_template: 'tmux new-session -d -s {name}' }],
+    ["session_commands[0]: 'id' must match [a-z0-9][a-z0-9_-]{0,31} (got None)"]
+  );
+
+  const created = [];
+  const realCreateElement = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = { tagName: tag.toUpperCase(), children: [], appendChild(child) { this.children.push(child); } };
+    created.push(el);
+    return el;
+  };
+
+  const select = app._createCommandSelect();
+  globalThis.document.createElement = realCreateElement;
+
+  assert.notEqual(select, null, 'a config error must produce a select even with only 1 valid pair');
+  assert.equal(select.children.length, 2); // the 1 real pair + the warning row
+  const warnOpt = select.children[1];
+  assert.equal(warnOpt.disabled, true);
+  assert.ok(warnOpt.textContent.includes('1 pair failed to load'));
+  assert.ok(warnOpt.textContent.includes('Settings'));
+});
+
 test('_createCommandSelect returns a select with options at 2+ pairs', () => {
   const pairs = [
     { id: 'default', label: 'Default', new_session_template: 'tmux new-session -d -s {name}' },
@@ -180,10 +205,16 @@ test('createNewSession omits command_id for a remote create even when a pair is 
 });
 
 // ---------------------------------------------------------------------------
-// renderCommandPairsSettings() -- read-only rendering, no editable control
+// renderCommandPairsSettings() -- always includes "default", no PATCH call
 // ---------------------------------------------------------------------------
 
-test('renderCommandPairsSettings renders non-default pairs read-only, no patch call anywhere in source', () => {
+// _stubEl()-based createElement (from the top of this file) is enough for
+// renderCommandPairsSettings(): it builds real rows via _buildCommandPairRow()
+// (title/code/buttons), which only needs .appendChild / .classList / .style /
+// .addEventListener -- all present on _stubEl(). No need for the bespoke
+// createElement stub the old version of these two tests used.
+
+test('renderCommandPairsSettings renders ALL pairs including default, no patch call anywhere in source', () => {
   const fs = require('node:fs');
   const source = fs.readFileSync(join(__dirname, '..', 'app.js'), 'utf8');
   assert.ok(
@@ -194,19 +225,14 @@ test('renderCommandPairsSettings renders non-default pairs read-only, no patch c
 
   const pairsList = { innerHTML: '', children: [], appendChild(c) { this.children.push(c); } };
   const pairsField = { style: {} };
+  const composer = { classList: { add: () => {}, remove: () => {} }, innerHTML: '' };
   const errorsList = { innerHTML: '', children: [], appendChild(c) { this.children.push(c); } };
   const errorsField = { style: {} };
   _elements['settings-command-pairs'] = pairsList;
   _elements['settings-command-pairs-field'] = pairsField;
+  _elements['settings-command-composer'] = composer;
   _elements['settings-command-errors'] = errorsList;
   _elements['settings-command-errors-field'] = errorsField;
-
-  const realCreateElement = globalThis.document.createElement;
-  globalThis.document.createElement = (tag) => ({
-    tagName: tag.toUpperCase(),
-    children: [],
-    appendChild(child) { this.children.push(child); },
-  });
 
   app._setSessionCommands(
     [
@@ -217,21 +243,22 @@ test('renderCommandPairsSettings renders non-default pairs read-only, no patch c
   );
 
   app.renderCommandPairsSettings();
-  globalThis.document.createElement = realCreateElement;
 
-  assert.equal(pairsList.children.length, 1); // only the non-default entry
+  assert.equal(pairsList.children.length, 2); // default AND the extra pair
   assert.notEqual(pairsField.style.display, 'none');
   assert.equal(errorsList.children.length, 1);
   assert.notEqual(errorsField.style.display, 'none');
 });
 
-test('renderCommandPairsSettings hides the errors field when there are none', () => {
+test('renderCommandPairsSettings still shows the pairs field with ONLY the default pair (the discoverability fix)', () => {
   const pairsList = { innerHTML: '', children: [], appendChild(c) { this.children.push(c); } };
   const pairsField = { style: {} };
+  const composer = { classList: { add: () => {}, remove: () => {} }, innerHTML: '' };
   const errorsList = { innerHTML: '', children: [], appendChild(c) { this.children.push(c); } };
   const errorsField = { style: {} };
   _elements['settings-command-pairs'] = pairsList;
   _elements['settings-command-pairs-field'] = pairsField;
+  _elements['settings-command-composer'] = composer;
   _elements['settings-command-errors'] = errorsList;
   _elements['settings-command-errors-field'] = errorsField;
 
@@ -241,6 +268,99 @@ test('renderCommandPairsSettings hides the errors field when there are none', ()
   );
   app.renderCommandPairsSettings();
 
-  assert.equal(pairsField.style.display, 'none');
+  // Before this fix, zero non-default pairs meant the field hid entirely --
+  // the user with no extras configured saw nothing about the feature at all.
+  assert.equal(pairsList.children.length, 1);
+  assert.notEqual(pairsField.style.display, 'none');
   assert.equal(errorsField.style.display, 'none');
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate composer + copy helpers
+// ---------------------------------------------------------------------------
+
+test('_commandsAddInvocation builds a shell-quoted muxplex commands add line', () => {
+  const line = app._commandsAddInvocation({
+    id: 'dev-alpha',
+    label: "alpha's box",
+    new_session_template: 'tmux new-session -d -s {name} -c /home/b/dev/alpha',
+    delete_session_template: 'tmux kill-session -t {name}',
+  });
+  assert.equal(
+    line,
+    "muxplex commands add --id 'dev-alpha' --label 'alpha'\\''s box' " +
+      "--create 'tmux new-session -d -s {name} -c /home/b/dev/alpha' " +
+      "--delete 'tmux kill-session -t {name}'"
+  );
+});
+
+test('_openCommandPairComposer prefills id with a -copy suffix for a non-default source', () => {
+  const composer = {
+    innerHTML: '',
+    classList: { add: () => {}, remove: () => {} },
+    appendChild(_c) {},
+  };
+  _elements['settings-command-composer'] = composer;
+
+  const inputs = {};
+  const realCreateElement = globalThis.document.createElement;
+  globalThis.document.createElement = (tag) => {
+    const el = {
+      tagName: tag.toUpperCase(),
+      classList: { add: () => {}, remove: () => {} },
+      style: {},
+      appendChild() {},
+      addEventListener() {},
+      setAttribute() {},
+      focus() {},
+    };
+    if (tag === 'input') inputs[Object.keys(inputs).length] = el;
+    return el;
+  };
+
+  app._setSessionCommands([{ id: 'amplifier', label: 'Amplifier', new_session_template: 'amplifier-workspace {name}', delete_session_template: 'amplifier-dev --destroy {name}' }], []);
+  app._openCommandPairComposer({ id: 'amplifier', label: 'Amplifier', new_session_template: 'amplifier-workspace {name}', delete_session_template: 'amplifier-dev --destroy {name}' });
+  globalThis.document.createElement = realCreateElement;
+
+  // First input created is the id field (see _openCommandPairComposer order).
+  // The label is prefilled as-is (not modified) -- only id needs
+  // disambiguating, since 'amplifier' would otherwise collide with itself.
+  assert.equal(inputs[0].value, 'amplifier-copy');
+  assert.equal(inputs[1].value, 'Amplifier');
+
+  app._closeCommandPairComposer();
+});
+
+// ---------------------------------------------------------------------------
+// _updateCommandErrorBadges() -- outside-the-dialog signal (§6 item 5)
+// ---------------------------------------------------------------------------
+
+test('_updateCommandErrorBadges shows count and hides at zero, on all three badge elements', () => {
+  function badgeStub() {
+    return { textContent: '', classList: { _hidden: true, add() { this._hidden = true; }, remove() { this._hidden = false; } } };
+  }
+  const gearBadge = badgeStub();
+  const gearBadgeExpanded = badgeStub();
+  const tabBadge = badgeStub();
+  _elements['settings-error-badge'] = gearBadge;
+  _elements['settings-error-badge-expanded'] = gearBadgeExpanded;
+  _elements['settings-tab-command-errors-badge'] = tabBadge;
+
+  app._setSessionCommands([{ id: 'default', label: 'Default' }], ['bad entry 1', 'bad entry 2']);
+  app._updateCommandErrorBadges();
+  assert.equal(gearBadge.textContent, '2');
+  assert.equal(gearBadge.classList._hidden, false);
+  assert.equal(gearBadgeExpanded.textContent, '2');
+  assert.equal(tabBadge.textContent, '2');
+
+  app._setSessionCommands([{ id: 'default', label: 'Default' }], []);
+  app._updateCommandErrorBadges();
+  assert.equal(gearBadge.classList._hidden, true);
+  assert.equal(gearBadgeExpanded.classList._hidden, true);
+  assert.equal(tabBadge.classList._hidden, true);
+});
+
+test('_shellQuote escapes embedded single quotes for POSIX shells', () => {
+  assert.equal(app._shellQuote("it's"), "'it'\\''s'");
+  assert.equal(app._shellQuote(''), "''");
 });

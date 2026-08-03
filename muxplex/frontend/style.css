@@ -1227,6 +1227,40 @@ body {
   color: var(--accent-hover);
 }
 
+/* Small count badge for a config error the user otherwise cannot see without
+   opening Settings > Commands -- see _updateCommandErrorBadges() in app.js
+   (COMMAND_PAIRS_UI_DESIGN.md §6 item 5). Used both on the header gear
+   buttons (positioned absolute, relative to .header-btn) and on the Commands
+   settings-tab button (positioned inline, no relative-positioned ancestor
+   needed since .settings-tab is a normal flow button). */
+.error-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: #d9534f;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  vertical-align: top;
+  margin-left: 2px;
+}
+
+.header-btn {
+  position: relative;
+}
+
+.header-btn .error-count-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  margin-left: 0;
+}
+
 /* ============================================================
    Settings dialog
    ============================================================ */
@@ -1649,6 +1683,15 @@ body {
   padding: 6px 8px;
 }
 
+/* The built-in "default" pair (folded in from new_session_template /
+   delete_session_template) is always rendered now -- see
+   renderCommandPairsSettings()'s docstring -- and gets a slightly different
+   left border so it visually reads as "the one that's always there",
+   distinct from operator-configured extras. */
+.settings-command-pair--builtin {
+  border-left: 3px solid var(--accent);
+}
+
 .settings-command-pair__title {
   font-size: 12px;
   font-weight: 600;
@@ -1663,11 +1706,64 @@ body {
   word-break: break-all;
 }
 
+.settings-command-pair__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .settings-command-errors {
   margin: 0;
   padding-left: 18px;
   font-size: 12px;
   color: var(--text-dim);
+}
+
+/* Duplicate composer (§6 item 3): editable draft fields, a live-updating
+   copyable `muxplex commands add ...` line, and a Show JSON disclosure.
+   Deliberately no "submit"/"save" styling exists anywhere in this block --
+   there is no such control. */
+.settings-command-composer__input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 4px 6px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.settings-command-composer__warning {
+  font-size: 12px;
+  color: var(--warning, #d9534f);
+  margin: 4px 0;
+}
+
+.settings-command-composer__output {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.settings-command-composer__output .settings-command-pair__template {
+  flex: 1;
+}
+
+.settings-command-composer__json {
+  margin: 6px 0;
+}
+
+.settings-command-composer__json pre {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 4px 0;
 }
 
 /* ============================================================

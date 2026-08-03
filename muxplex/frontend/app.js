@@ -3684,6 +3684,11 @@ async function loadSessionCommands() {
     _sessionCommands = null;
     _sessionCommandErrors = [];
   }
+  // Update the outside-the-dialog error badges from THIS fetch, not just
+  // when renderCommandPairsSettings() runs -- this function is called once
+  // at page load (before Settings has ever been opened), so the badge must
+  // be current without requiring the user to open Settings first.
+  _updateCommandErrorBadges();
 }
 
 /**
@@ -4359,44 +4364,399 @@ function openSettings() {
 
   // Terminal tab (tmux theme/copy-mode) -- separate endpoint, own fetch.
   loadTmuxConfigSettings();
+
+  // Commands tab -- re-fetch (not just re-render from possibly-stale module
+  // state left over from the one-time page-load fetch) so "apply, then
+  // reopen Settings" reflects what's actually on disk. Mirrors
+  // loadTmuxConfigSettings() immediately above (see COMMAND_PAIRS_UI_DESIGN.md
+  // §6 item 2 -- this is what closes the apply→verify loop for command pairs).
+  loadSessionCommands().then(renderCommandPairsSettings);
 }
 
 /**
- * Render the read-only "Additional command pairs" + "Command pair
+ * Single-quote *value* for safe paste into a POSIX shell argv, matching what
+ * `muxplex commands add` (an argparse CLI, not a shell) expects on the other
+ * end. This is purely a display/clipboard helper for a line the user pastes
+ * into THEIR OWN shell -- muxplex itself never executes anything built here.
+ * @param {*} value
+ * @returns {string}
+ */
+function _shellQuote(value) {
+  return "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Build the ready-to-run `muxplex commands add ...` line for *cmd* (an
+ * existing pair, or an in-progress composer draft) -- see
+ * COMMAND_PAIRS_UI_DESIGN.md's verdict: "the thing you copy should be a
+ * command, not JSON."
+ * @param {{id: string, label: string, new_session_template: string, delete_session_template: string}} cmd
+ * @returns {string}
+ */
+function _commandsAddInvocation(cmd) {
+  return 'muxplex commands add --id ' + _shellQuote(cmd.id) +
+    ' --label ' + _shellQuote(cmd.label) +
+    ' --create ' + _shellQuote(cmd.new_session_template) +
+    ' --delete ' + _shellQuote(cmd.delete_session_template);
+}
+
+/**
+ * Copy *text* to the clipboard via the async Clipboard API, falling back to
+ * a hidden-textarea + document.execCommand('copy') for contexts where
+ * navigator.clipboard is unavailable (e.g. plain http:// LAN access, which
+ * this app explicitly supports -- see README.md -- and where Clipboard API
+ * is restricted to secure contexts in some browsers). On completion, briefly
+ * flashes *btn*'s label to confirm success/failure, then restores it.
+ * @param {string} text
+ * @param {HTMLButtonElement} [btn]
+ * @param {string} [restoreLabel]
+ */
+function _copyToClipboard(text, btn, restoreLabel) {
+  function flash(ok) {
+    if (!btn) return;
+    btn.textContent = ok ? 'Copied!' : 'Copy failed';
+    setTimeout(function() { btn.textContent = restoreLabel || 'Copy'; }, 1500);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      function() { flash(true); },
+      function() { flash(false); }
+    );
+    return;
+  }
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    var ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    flash(ok);
+  } catch (_e) {
+    flash(false);
+  }
+}
+
+// Id of the pair the currently-open composer was duplicated from (test/debug
+// visibility only -- the composer never reads this to decide behavior).
+var _commandComposerSourceId = null;
+
+/**
+ * Recompute the composer's advisory warnings, `muxplex commands add` line,
+ * and JSON preview from its current field values. Advisory-only, by design
+ * (COMMAND_PAIRS_UI_DESIGN.md §4): these checks exist to catch obvious typos
+ * before copying, never to gate the copy buttons -- the authoritative
+ * verdict is the server's own GET /api/session-commands `errors[]` after the
+ * user actually applies the command and reopens Settings > Commands.
+ */
+function _renderCommandComposerOutput() {
+  var idEl = $('composer-id');
+  var labelEl = $('composer-label');
+  var createEl = $('composer-create');
+  var deleteEl = $('composer-delete');
+  if (!idEl || !labelEl || !createEl || !deleteEl) return;
+
+  var draft = {
+    id: (idEl.value || '').trim(),
+    label: (labelEl.value || '').trim(),
+    new_session_template: createEl.value || '',
+    delete_session_template: deleteEl.value || '',
+  };
+
+  var warnings = [];
+  if (!draft.id) {
+    warnings.push('id is required');
+  } else if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(draft.id)) {
+    warnings.push('id must be lowercase alphanumeric (plus _ or -), starting with a letter or digit, max 32 chars');
+  } else if (draft.id === 'default') {
+    warnings.push("id 'default' is reserved for the built-in pair");
+  } else if ((_sessionCommands || []).some(function(c) { return c.id === draft.id && c.id !== _commandComposerSourceId; })) {
+    warnings.push('id \u2018' + draft.id + '\u2019 is already in use');
+  }
+  if (!draft.label) warnings.push('label is required');
+  if (!draft.new_session_template || draft.new_session_template.indexOf('{name}') === -1) {
+    warnings.push('create command must contain {name}');
+  }
+  if (!draft.delete_session_template || draft.delete_session_template.indexOf('{name}') === -1) {
+    warnings.push('delete command must contain {name}');
+  }
+
+  var warningEl = $('composer-warning');
+  if (warningEl) {
+    if (warnings.length > 0) {
+      warningEl.textContent = '\u26a0 ' + warnings.join('; ') + '. Checked again by the server when you apply.';
+      warningEl.style.display = '';
+    } else {
+      warningEl.style.display = 'none';
+    }
+  }
+
+  var lineEl = $('composer-command-line');
+  if (lineEl) lineEl.textContent = _commandsAddInvocation(draft);
+
+  var jsonEl = $('composer-json');
+  if (jsonEl) {
+    jsonEl.textContent = JSON.stringify(
+      {
+        id: draft.id,
+        label: draft.label,
+        new_session_template: draft.new_session_template,
+        delete_session_template: draft.delete_session_template,
+      },
+      null,
+      2
+    );
+  }
+}
+
+/**
+ * Close (and empty) the Duplicate composer, if open.
+ */
+function _closeCommandPairComposer() {
+  var container = $('settings-command-composer');
+  if (!container) return;
+  container.classList.add('hidden');
+  container.innerHTML = '';
+  _commandComposerSourceId = null;
+}
+
+/**
+ * Open the Duplicate composer, prefilled from *sourceCmd*. Builds an
+ * editable id/label/create/delete form, a live-updating copyable
+ * `muxplex commands add ...` line, and a "Show JSON" disclosure for
+ * hand-editors -- see COMMAND_PAIRS_UI_DESIGN.md §6 item 3. There is
+ * deliberately NO Save button anywhere in this composer and nothing in it
+ * ever calls patchServerSetting() / api('PATCH', ...) -- editing the fields
+ * only updates what gets copied; applying it is the user's own shell.
+ * @param {{id: string, label: string, new_session_template: string, delete_session_template: string}} sourceCmd
+ */
+function _openCommandPairComposer(sourceCmd) {
+  var container = $('settings-command-composer');
+  if (!container) return;
+  _commandComposerSourceId = sourceCmd.id;
+  container.innerHTML = '';
+
+  var heading = document.createElement('label');
+  heading.className = 'settings-label';
+  heading.textContent = 'Duplicate \u2014 based on ' + sourceCmd.label + ' (' + sourceCmd.id + ')';
+  container.appendChild(heading);
+
+  var idInput = document.createElement('input');
+  idInput.type = 'text';
+  idInput.id = 'composer-id';
+  idInput.className = 'settings-command-composer__input';
+  idInput.placeholder = 'id (e.g. dev-alpha)';
+  idInput.value = sourceCmd.id === 'default' ? '' : sourceCmd.id + '-copy';
+  idInput.setAttribute('aria-label', 'New command pair id');
+  _suppressAutofill(idInput);
+  container.appendChild(idInput);
+
+  var labelInput = document.createElement('input');
+  labelInput.type = 'text';
+  labelInput.id = 'composer-label';
+  labelInput.className = 'settings-command-composer__input';
+  labelInput.placeholder = 'Label';
+  labelInput.value = sourceCmd.label;
+  labelInput.setAttribute('aria-label', 'New command pair label');
+  _suppressAutofill(labelInput);
+  container.appendChild(labelInput);
+
+  var createInput = document.createElement('textarea');
+  createInput.id = 'composer-create';
+  createInput.className = 'settings-textarea';
+  createInput.rows = 2;
+  createInput.value = sourceCmd.new_session_template;
+  createInput.setAttribute('aria-label', 'New create command template');
+  container.appendChild(createInput);
+
+  var deleteInput = document.createElement('textarea');
+  deleteInput.id = 'composer-delete';
+  deleteInput.className = 'settings-textarea';
+  deleteInput.rows = 2;
+  deleteInput.value = sourceCmd.delete_session_template;
+  deleteInput.setAttribute('aria-label', 'New delete command template');
+  container.appendChild(deleteInput);
+
+  var warningEl = document.createElement('p');
+  warningEl.id = 'composer-warning';
+  warningEl.className = 'settings-command-composer__warning';
+  container.appendChild(warningEl);
+
+  var outputRow = document.createElement('div');
+  outputRow.className = 'settings-command-composer__output';
+  var lineEl = document.createElement('code');
+  lineEl.id = 'composer-command-line';
+  lineEl.className = 'settings-command-pair__template';
+  outputRow.appendChild(lineEl);
+  var copyCmdBtn = document.createElement('button');
+  copyCmdBtn.type = 'button';
+  copyCmdBtn.className = 'settings-action-btn';
+  copyCmdBtn.textContent = 'Copy command';
+  copyCmdBtn.addEventListener('click', function() {
+    _copyToClipboard(lineEl.textContent, copyCmdBtn, 'Copy command');
+  });
+  outputRow.appendChild(copyCmdBtn);
+  container.appendChild(outputRow);
+
+  var details = document.createElement('details');
+  details.className = 'settings-command-composer__json';
+  var summary = document.createElement('summary');
+  summary.textContent = 'Show JSON';
+  details.appendChild(summary);
+  var jsonEl = document.createElement('pre');
+  jsonEl.id = 'composer-json';
+  details.appendChild(jsonEl);
+  var copyJsonBtn = document.createElement('button');
+  copyJsonBtn.type = 'button';
+  copyJsonBtn.className = 'settings-action-btn';
+  copyJsonBtn.textContent = 'Copy JSON';
+  copyJsonBtn.addEventListener('click', function() {
+    _copyToClipboard(jsonEl.textContent, copyJsonBtn, 'Copy JSON');
+  });
+  details.appendChild(copyJsonBtn);
+  container.appendChild(details);
+
+  var applyNote = document.createElement('span');
+  applyNote.className = 'settings-helper';
+  applyNote.textContent = 'These run shell commands on the server, so the browser composes them and ' +
+    'your shell applies them. Paste this into any shell \u2014 including the terminal in this app. ' +
+    '~/.config/muxplex/settings.json';
+  var copyPathBtn = document.createElement('button');
+  copyPathBtn.type = 'button';
+  copyPathBtn.className = 'settings-action-btn';
+  copyPathBtn.textContent = 'Copy path';
+  copyPathBtn.addEventListener('click', function() {
+    _copyToClipboard('~/.config/muxplex/settings.json', copyPathBtn, 'Copy path');
+  });
+  applyNote.appendChild(copyPathBtn);
+  container.appendChild(applyNote);
+
+  var closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'settings-action-btn';
+  closeBtn.textContent = 'Close';
+  closeBtn.addEventListener('click', _closeCommandPairComposer);
+  container.appendChild(closeBtn);
+
+  [idInput, labelInput, createInput, deleteInput].forEach(function(el) {
+    el.addEventListener('input', _renderCommandComposerOutput);
+  });
+
+  container.classList.remove('hidden');
+  _renderCommandComposerOutput();
+  idInput.focus();
+}
+
+/**
+ * Build a single command-pair row for Settings > Commands: id/label
+ * (built-in default visually marked), the create/delete templates
+ * (read-only), and the Duplicate.../Copy command actions (§6 item 3).
+ * @param {{id: string, label: string, new_session_template: string, delete_session_template: string}} cmd
+ * @returns {HTMLDivElement}
+ */
+function _buildCommandPairRow(cmd) {
+  var isDefault = cmd.id === 'default';
+  var row = document.createElement('div');
+  row.className = 'settings-command-pair' + (isDefault ? ' settings-command-pair--builtin' : '');
+
+  var title = document.createElement('div');
+  title.className = 'settings-command-pair__title';
+  title.textContent = cmd.label + ' (' + cmd.id + ')' + (isDefault ? ' \u2014 built-in' : '');
+  row.appendChild(title);
+
+  var createEl = document.createElement('code');
+  createEl.className = 'settings-command-pair__template';
+  createEl.textContent = cmd.new_session_template;
+  row.appendChild(createEl);
+
+  var deleteEl = document.createElement('code');
+  deleteEl.className = 'settings-command-pair__template';
+  deleteEl.textContent = cmd.delete_session_template;
+  row.appendChild(deleteEl);
+
+  var actions = document.createElement('div');
+  actions.className = 'settings-command-pair__actions';
+
+  var dupBtn = document.createElement('button');
+  dupBtn.type = 'button';
+  dupBtn.className = 'settings-action-btn';
+  dupBtn.textContent = 'Duplicate\u2026';
+  dupBtn.addEventListener('click', function() { _openCommandPairComposer(cmd); });
+  actions.appendChild(dupBtn);
+
+  var copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'settings-action-btn';
+  copyBtn.textContent = 'Copy command';
+  copyBtn.addEventListener('click', function() {
+    _copyToClipboard(_commandsAddInvocation(cmd), copyBtn, 'Copy command');
+  });
+  actions.appendChild(copyBtn);
+
+  row.appendChild(actions);
+  return row;
+}
+
+/**
+ * Reflect _sessionCommandErrors as small count badges OUTSIDE the Settings
+ * dialog (both gear buttons) and on the Commands tab button itself, so a
+ * config error is visible without opening Settings > Commands at all --
+ * COMMAND_PAIRS_UI_DESIGN.md §6 item 5 ("fail loud" for a config error the
+ * user otherwise cannot see). Called from loadSessionCommands() so both the
+ * page-load fetch and every openSettings() re-fetch keep it current.
+ */
+function _updateCommandErrorBadges() {
+  var count = (_sessionCommandErrors || []).length;
+  ['settings-error-badge', 'settings-error-badge-expanded', 'settings-tab-command-errors-badge'].forEach(function(id) {
+    var el = $(id);
+    if (!el) return;
+    if (count > 0) {
+      el.textContent = String(count);
+      el.classList.remove('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  });
+}
+
+/**
+ * Render the "Command pairs" (ALL configured pairs, including the built-in
+ * `default` -- see COMMAND_PAIRS_UI_DESIGN.md §6 item 1) and "Command pair
  * configuration errors" sections in Settings > Commands, from the module
  * state populated by loadSessionCommands() (_sessionCommands,
  * _sessionCommandErrors).
  *
- * Deliberately NO editable control and NO settings-PATCH call of any kind
- * anywhere here -- session_commands is in settings.LOCAL_ONLY_KEYS
- * (server-executed shell commands); the only way to manage pairs is editing
- * ~/.config/muxplex/settings.json directly. Mirrors the existing read-only
- * treatment of #setting-template / #setting-delete-template.
+ * Each row's Duplicate.../Copy command actions can populate editable text
+ * fields (the composer) and copy strings to the clipboard, but NOTHING in
+ * this file calls patchServerSetting()/api('PATCH', ...) for
+ * session_commands -- it is in settings.LOCAL_ONLY_KEYS (server-executed
+ * shell commands); the only way to actually apply a change is the user's
+ * own shell, via the copyable `muxplex commands add` line or hand-editing
+ * ~/.config/muxplex/settings.json. See
+ * test_command_pairs.mjs's "no patch call anywhere in source" test, which
+ * greps this file for exactly that.
  */
 function renderCommandPairsSettings() {
+  _closeCommandPairComposer();
+
   const pairsField = $('settings-command-pairs-field');
   const pairsList = $('settings-command-pairs');
   if (pairsList) {
     pairsList.innerHTML = '';
-    var extras = (_sessionCommands || []).filter(function(c) { return c.id !== 'default'; });
-    extras.forEach(function(cmd) {
-      var row = document.createElement('div');
-      row.className = 'settings-command-pair';
-      var title = document.createElement('div');
-      title.className = 'settings-command-pair__title';
-      title.textContent = cmd.label + ' (' + cmd.id + ')';
-      var createEl = document.createElement('code');
-      createEl.className = 'settings-command-pair__template';
-      createEl.textContent = cmd.new_session_template;
-      var deleteEl = document.createElement('code');
-      deleteEl.className = 'settings-command-pair__template';
-      deleteEl.textContent = cmd.delete_session_template;
-      row.appendChild(title);
-      row.appendChild(createEl);
-      row.appendChild(deleteEl);
-      pairsList.appendChild(row);
+    var pairs = _sessionCommands || [];
+    pairs.forEach(function(cmd) {
+      pairsList.appendChild(_buildCommandPairRow(cmd));
     });
-    if (pairsField) pairsField.style.display = extras.length > 0 ? '' : 'none';
+    // Always show the field once pairs have loaded -- resolve_session_commands()
+    // guarantees `pairs` is never empty (element 0 is always "default"), so
+    // this is effectively "show once loaded", not "show only when non-default
+    // pairs exist". A user who has never configured an extra pair still sees
+    // the built-in default and its Duplicate action -- the single biggest
+    // discoverability fix in the design doc.
+    if (pairsField) pairsField.style.display = pairs.length > 0 ? '' : 'none';
   }
 
   const errorsField = $('settings-command-errors-field');
@@ -4412,6 +4772,8 @@ function renderCommandPairsSettings() {
       errorsField.style.display = (_sessionCommandErrors || []).length > 0 ? '' : 'none';
     }
   }
+
+  _updateCommandErrorBadges();
 }
 
 /**
@@ -4730,15 +5092,21 @@ function _createDeviceSelect() {
  * @returns {HTMLSelectElement|null}
  */
 function _createCommandSelect() {
-  if (!_sessionCommands || _sessionCommands.length < 2) {
+  // §6 item 6 of the design doc: a malformed pair doesn't just vanish from
+  // this picker silently (indistinguishable from "never configured") -- if
+  // there are configuration errors, render the select (even at <2 valid
+  // pairs) so a non-selectable warning row can point at Settings > Commands.
+  var hasErrors = (_sessionCommandErrors || []).length > 0;
+  if ((!_sessionCommands || _sessionCommands.length < 2) && !hasErrors) {
     return null;
   }
 
   const select = document.createElement('select');
   select.className = 'new-session-command-select';
 
-  for (var i = 0; i < _sessionCommands.length; i++) {
-    var cmd = _sessionCommands[i];
+  var cmds = _sessionCommands || [];
+  for (var i = 0; i < cmds.length; i++) {
+    var cmd = cmds[i];
     var opt = document.createElement('option');
     opt.value = cmd.id;
     opt.textContent = cmd.label;
@@ -4747,10 +5115,18 @@ function _createCommandSelect() {
     opt.title = cmd.new_session_template;
     select.appendChild(opt);
   }
-  // First option ("default") selected by default -- no persistence of the
-  // last choice; a sticky selection that silently changes what "create"
+  if (hasErrors) {
+    var warnOpt = document.createElement('option');
+    warnOpt.disabled = true;
+    var n = _sessionCommandErrors.length;
+    warnOpt.textContent = '\u26a0 ' + n + ' pair' + (n === 1 ? '' : 's') +
+      ' failed to load \u2014 see Settings \u203a Commands';
+    select.appendChild(warnOpt);
+  }
+  // First real option ("default") selected by default -- no persistence of
+  // the last choice; a sticky selection that silently changes what "create"
   // does is a footgun nobody has asked for.
-  select.value = _sessionCommands[0].id;
+  select.value = cmds.length ? cmds[0].id : '';
 
   return select;
 }
@@ -5743,6 +6119,14 @@ if (typeof module !== 'undefined' && module.exports) {
     _createCommandSelect,
     createNewSession,
     renderCommandPairsSettings,
+    _buildCommandPairRow,
+    _shellQuote,
+    _commandsAddInvocation,
+    _copyToClipboard,
+    _openCommandPairComposer,
+    _closeCommandPairComposer,
+    _renderCommandComposerOutput,
+    _updateCommandErrorBadges,
     _setSessionCommands,
     // Test-only helpers
     _setCurrentSessions,

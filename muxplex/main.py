@@ -1680,7 +1680,8 @@ async def delete_session(name: str, force: bool = False) -> dict:
                             f"Session {name!r} was created with command {recorded!r}, "
                             "which is no longer configured. Restore it in "
                             "~/.config/muxplex/settings.json, or retry with "
-                            "?force=true to use the default kill command."
+                            "?force=true to use the default kill command. "
+                            "See Settings \u203a Commands for the configuration error."
                         ),
                         "unknown_command_id": True,
                         "command_id": recorded,
