@@ -1651,6 +1651,341 @@ def test_config_reset_single_key(tmp_path, monkeypatch):
     assert settings["port"] == 9090  # unchanged
 
 
+def test_config_set_fails_loud_on_local_only_key(tmp_path, monkeypatch, capsys):
+    """config set on a LOCAL_ONLY_KEYS key must exit non-zero, print an
+    error, and write NOTHING -- the fail-silent bug this fix closes.
+    """
+    import pytest
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "s.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+
+    from muxplex.cli import config_set
+
+    with pytest.raises(SystemExit) as exc_info:
+        config_set("session_commands", '[{"id": "x"}]')
+    assert exc_info.value.code != 0
+
+    err = capsys.readouterr().err
+    assert "session_commands" in err
+    assert "local-file-only" in err
+    assert "muxplex commands add" in err
+
+    # Nothing was written -- settings.json still resolves to the default (an
+    # empty list), not the value that was "successfully" printed before.
+    settings = settings_mod.load_settings()
+    assert settings["session_commands"] == []
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "input_enabled",
+        "input_allowed_sessions",
+        "new_session_template",
+        "delete_session_template",
+        "session_commands",
+        "tmux_socket_dir",
+        "tls_cert",
+        "tls_key",
+    ],
+)
+def test_config_set_fails_loud_for_every_local_only_key(
+    key, tmp_path, monkeypatch, capsys
+):
+    """The fail-loud fence is ONE check covering every LOCAL_ONLY_KEYS entry,
+    not just session_commands -- see settings.LOCAL_ONLY_KEYS.
+    """
+    import pytest as _pytest
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+    assert key in settings_mod.LOCAL_ONLY_KEYS
+
+    from muxplex.cli import config_set
+
+    default = settings_mod.DEFAULT_SETTINGS[key]
+    raw = (
+        "true"
+        if isinstance(default, bool)
+        else ("x" if default is None else str(default))
+    )
+    with _pytest.raises(SystemExit) as exc_info:
+        config_set(key, raw)
+    assert exc_info.value.code != 0
+    assert key in capsys.readouterr().err
+
+
+def test_config_reset_single_key_fails_loud_on_local_only_key(
+    tmp_path, monkeypatch, capsys
+):
+    """config reset <key> goes through the identical patch_settings() choke
+    point as config set and must fail the same way for a fenced key.
+    """
+    import pytest
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import config_reset
+
+    with pytest.raises(SystemExit) as exc_info:
+        config_reset("session_commands")
+    assert exc_info.value.code != 0
+    assert "local-file-only" in capsys.readouterr().err
+
+
+def test_config_set_still_works_for_non_fenced_keys(tmp_path, monkeypatch):
+    """The fence must not regress ordinary (non-LOCAL_ONLY_KEYS) settings."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import config_set
+
+    config_set("host", "0.0.0.0")
+    assert settings_mod.load_settings()["host"] == "0.0.0.0"
+
+
+# ---------------------------------------------------------------------------
+# commands subcommand tests (the local-operator write path for
+# session_commands -- writes via save_settings(), never patch_settings())
+# ---------------------------------------------------------------------------
+
+
+def test_commands_add_persists_pair(tmp_path, monkeypatch, capsys):
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add
+
+    commands_add(
+        "dev-alpha",
+        "alpha",
+        "tmux new-session -d -s {name} -c /home/b/dev/alpha",
+        "tmux kill-session -t {name}",
+    )
+
+    settings = settings_mod.load_settings()
+    assert settings["session_commands"] == [
+        {
+            "id": "dev-alpha",
+            "label": "alpha",
+            "new_session_template": "tmux new-session -d -s {name} -c /home/b/dev/alpha",
+            "delete_session_template": "tmux kill-session -t {name}",
+        }
+    ]
+    out = capsys.readouterr().out
+    assert "Added" in out
+    assert "dev-alpha" in out
+
+
+def test_commands_add_refuses_to_clobber_without_replace(tmp_path, monkeypatch):
+    import pytest
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add
+
+    commands_add(
+        "dev-alpha",
+        "alpha",
+        "tmux new-session -d -s {name}",
+        "tmux kill-session -t {name}",
+    )
+
+    with pytest.raises(SystemExit):
+        commands_add(
+            "dev-alpha",
+            "alpha2",
+            "tmux new-session -d -s {name}",
+            "tmux kill-session -t {name}",
+        )
+
+    # Unchanged by the rejected attempt.
+    settings = settings_mod.load_settings()
+    assert settings["session_commands"][0]["label"] == "alpha"
+
+
+def test_commands_add_replace_overwrites_existing(tmp_path, monkeypatch):
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add
+
+    commands_add(
+        "dev-alpha",
+        "alpha",
+        "tmux new-session -d -s {name}",
+        "tmux kill-session -t {name}",
+    )
+    commands_add(
+        "dev-alpha",
+        "alpha2",
+        "tmux new-session -d -s {name} -c /x",
+        "tmux kill-session -t {name}",
+        replace=True,
+    )
+
+    settings = settings_mod.load_settings()
+    assert len(settings["session_commands"]) == 1
+    assert settings["session_commands"][0]["label"] == "alpha2"
+
+
+def test_commands_add_rejects_id_default(tmp_path, monkeypatch):
+    import pytest
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add
+
+    with pytest.raises(SystemExit):
+        commands_add(
+            "default",
+            "x",
+            "tmux new-session -d -s {name}",
+            "tmux kill-session -t {name}",
+        )
+
+
+def test_commands_add_rejects_missing_name_placeholder(tmp_path, monkeypatch, capsys):
+    """The prospective list is validated via resolve_session_commands() (the
+    same V1-V7 rules the server applies) BEFORE writing -- one source of
+    truth, never a second reimplementation.
+    """
+    import pytest
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add
+
+    with pytest.raises(SystemExit):
+        commands_add(
+            "dev-alpha",
+            "alpha",
+            "tmux new-session -d -s x",
+            "tmux kill-session -t {name}",
+        )
+
+    assert settings_mod.load_settings()["session_commands"] == []
+    assert "rejected" in capsys.readouterr().err
+
+
+def test_commands_add_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add
+
+    commands_add(
+        "dev-alpha",
+        "alpha",
+        "tmux new-session -d -s {name}",
+        "tmux kill-session -t {name}",
+        dry_run=True,
+    )
+
+    assert settings_mod.load_settings()["session_commands"] == []
+    out = capsys.readouterr().out
+    assert '"id": "dev-alpha"' in out
+
+
+def test_commands_remove_deletes_pair(tmp_path, monkeypatch):
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add, commands_remove
+
+    commands_add(
+        "dev-alpha",
+        "alpha",
+        "tmux new-session -d -s {name}",
+        "tmux kill-session -t {name}",
+    )
+    commands_remove("dev-alpha")
+
+    assert settings_mod.load_settings()["session_commands"] == []
+
+
+def test_commands_remove_unknown_id_exits(tmp_path, monkeypatch):
+    import pytest
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_remove
+
+    with pytest.raises(SystemExit):
+        commands_remove("nope")
+
+
+def test_commands_remove_rejects_default(tmp_path, monkeypatch):
+    import pytest
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_remove
+
+    with pytest.raises(SystemExit):
+        commands_remove("default")
+
+
+def test_commands_list_shows_default_and_configured_pairs(
+    tmp_path, monkeypatch, capsys
+):
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "s.json")
+
+    from muxplex.cli import commands_add, commands_list
+
+    commands_add(
+        "dev-alpha",
+        "alpha",
+        "tmux new-session -d -s {name}",
+        "tmux kill-session -t {name}",
+    )
+    commands_list()
+
+    out = capsys.readouterr().out
+    assert "default" in out
+    assert "dev-alpha" in out
+    assert "built-in" in out
+
+
+def test_commands_subcommand_registered():
+    """commands must appear in --help."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "muxplex", "commands", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "list" in result.stdout
+    assert "add" in result.stdout
+    assert "remove" in result.stdout
+
+
 def test_config_subcommand_registered():
     """config must appear in --help."""
     import subprocess

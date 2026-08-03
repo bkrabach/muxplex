@@ -1558,11 +1558,43 @@ def config_get(key: str) -> None:
         print(value)
 
 
+def _fail_local_only_key(key: str) -> None:
+    """Print the fail-loud error for a LOCAL_ONLY_KEYS key and exit(1).
+
+    `patch_settings()` -- the function every `config set`/`config reset <key>`
+    call goes through -- silently SKIPS any key in `settings.LOCAL_ONLY_KEYS`
+    (logging only a warning) so that a Bearer-key-holding remote caller can
+    never widen one of these fences through the API. That skip is correct
+    behavior for `PATCH /api/settings`, but this CLI previously called
+    `patch_settings()` unconditionally and printed "success" regardless --
+    the exact same skip, but for the LOCAL OPERATOR, who has every right to
+    change these keys and was being told nothing happened when in fact
+    nothing did. This is one check covering all eight fenced keys
+    (`input_enabled`, `input_allowed_sessions`, `new_session_template`,
+    `delete_session_template`, `session_commands`, `tmux_socket_dir`,
+    `tls_cert`, `tls_key`) -- see `settings.LOCAL_ONLY_KEYS`'s module comment
+    for why each one is fenced. The legitimate path for all of them is a
+    direct edit of `settings.json` (`save_settings()`/`load_settings()` apply
+    no fence); `session_commands` additionally has `muxplex commands add`.
+    """
+    from muxplex.settings import SETTINGS_PATH
+
+    print(
+        f"error: {key!r} is local-file-only and cannot be set through "
+        "patch_settings() (the write path `muxplex config set`/`config reset` use).",
+        file=sys.stderr,
+    )
+    if key == "session_commands":
+        print("       Use:  muxplex commands add ...", file=sys.stderr)
+    print(f"       Or edit {SETTINGS_PATH} directly.", file=sys.stderr)
+    sys.exit(1)
+
+
 def config_set(key: str, raw_value: str) -> None:
     """Set a setting value. Auto-detects type from the default."""
     import json
 
-    from muxplex.settings import DEFAULT_SETTINGS, patch_settings
+    from muxplex.settings import DEFAULT_SETTINGS, LOCAL_ONLY_KEYS, patch_settings
 
     if key not in DEFAULT_SETTINGS:
         print(f"Unknown setting: {key}", file=sys.stderr)
@@ -1570,6 +1602,9 @@ def config_set(key: str, raw_value: str) -> None:
             f"Valid keys: {', '.join(sorted(DEFAULT_SETTINGS.keys()))}", file=sys.stderr
         )
         sys.exit(1)
+
+    if key in LOCAL_ONLY_KEYS:
+        _fail_local_only_key(key)
 
     default = DEFAULT_SETTINGS[key]
 
@@ -1598,6 +1633,7 @@ def config_reset(key: str | None = None) -> None:
 
     from muxplex.settings import (
         DEFAULT_SETTINGS,
+        LOCAL_ONLY_KEYS,
         SETTINGS_PATH,
         patch_settings,
         save_settings,
@@ -1611,11 +1647,177 @@ def config_reset(key: str | None = None) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Same fail-loud fence as config_set() -- `reset <key>` goes through
+        # the identical patch_settings() choke point and was subject to the
+        # identical silent-skip bug for a LOCAL_ONLY_KEYS key.
+        if key in LOCAL_ONLY_KEYS:
+            _fail_local_only_key(key)
         patch_settings({key: DEFAULT_SETTINGS[key]})
         print(f"  {key} reset to: {DEFAULT_SETTINGS[key]}")
     else:
         save_settings(copy.deepcopy(DEFAULT_SETTINGS))
         print(f"  All settings reset to defaults ({SETTINGS_PATH})")
+
+
+# ---------------------------------------------------------------------------
+# commands subcommand -- the local-operator write path for session_commands
+# ---------------------------------------------------------------------------
+#
+# `session_commands` is in settings.LOCAL_ONLY_KEYS (see its module comment):
+# arbitrary server-executed shell commands, so `PATCH /api/settings` must
+# never accept it -- a Bearer-key holder must never be able to both DEFINE a
+# pair and SELECT it at create time. That fence is enforced in
+# patch_settings(), the API's write path. It is NOT enforced in
+# save_settings()/load_settings() -- those are the local-operator path, and a
+# CLI subcommand invoked by the human at the keyboard IS the intended writer,
+# no different in kind from hand-editing settings.json (just less
+# error-prone). This module writes via save_settings(), never
+# patch_settings(), which is the whole distinction. See
+# docs/API_SEMANTICS.md's "Named session command pairs" section and this
+# feature's design doc for the full argument.
+
+
+def commands_list() -> None:
+    """List all configured session command pairs, including the built-in default.
+
+    Uses resolve_session_commands() -- the same server-side resolution
+    GET /api/session-commands returns -- so this never re-derives the V1-V7
+    fold/validation rules a second time.
+    """
+    from muxplex.settings import resolve_session_commands
+
+    commands, errors = resolve_session_commands()
+    print("\nmuxplex session command pairs\n")
+    for cmd in commands:
+        marker = "  (built-in)" if cmd["id"] == "default" else ""
+        print(f"  {cmd['id']}: {cmd['label']}{marker}")
+        print(f"    create: {cmd['new_session_template']}")
+        print(f"    delete: {cmd['delete_session_template']}")
+    if errors:
+        print("\n  Configuration errors (rejected, unavailable until fixed):")
+        for err in errors:
+            print(f"    - {err}")
+    print()
+
+
+def commands_add(
+    cmd_id: str,
+    label: str,
+    create: str,
+    delete: str,
+    *,
+    replace: bool = False,
+    dry_run: bool = False,
+) -> None:
+    """Add (or, with --replace, overwrite) a named session command pair.
+
+    Validates the FULL prospective `session_commands` list through
+    resolve_session_commands() -- the identical V1-V7 rules the server
+    applies -- BEFORE writing anything. This is one source of truth: the CLI
+    never reimplements the validation rules a second time, it just calls the
+    same function the server calls. Refuses to clobber an existing id unless
+    *replace* is set. Writes via save_settings() (see module docstring above
+    for why that -- not patch_settings() -- is correct here), which means
+    this gets the settings-history/ snapshot for free (save_settings() is
+    the choke point that writes it).
+    """
+    import json
+
+    from muxplex.settings import (
+        RESERVED_COMMAND_ID,
+        load_settings,
+        resolve_session_commands,
+        save_settings,
+    )
+
+    if cmd_id == RESERVED_COMMAND_ID:
+        print(
+            f"error: id {cmd_id!r} is reserved for the built-in default pair",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    settings = load_settings()
+    existing: list = list(settings.get("session_commands") or [])
+    existing_idx = next(
+        (
+            i
+            for i, e in enumerate(existing)
+            if isinstance(e, dict) and e.get("id") == cmd_id
+        ),
+        None,
+    )
+    if existing_idx is not None and not replace:
+        print(
+            f"error: id {cmd_id!r} already exists. Use --replace to overwrite it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    new_entry = {
+        "id": cmd_id,
+        "label": label,
+        "new_session_template": create,
+        "delete_session_template": delete,
+    }
+    prospective = list(existing)
+    if existing_idx is not None:
+        prospective[existing_idx] = new_entry
+    else:
+        prospective.append(new_entry)
+
+    settings_for_check = dict(settings)
+    settings_for_check["session_commands"] = prospective
+    resolved, errors = resolve_session_commands(settings_for_check)
+    if cmd_id not in {c["id"] for c in resolved}:
+        print("error: this pair would be rejected by validation:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
+    # Any OTHER error belongs to a pre-existing entry, not this one -- surface
+    # it as a warning (this add should not be blocked by an unrelated,
+    # already-broken entry), never silently.
+    other_errors = [e for e in errors if cmd_id not in e]
+    if other_errors:
+        print(
+            "warning: existing configuration has other issue(s), unaffected by this change:",
+            file=sys.stderr,
+        )
+        for err in other_errors:
+            print(f"  - {err}", file=sys.stderr)
+
+    if dry_run:
+        print(json.dumps(prospective, indent=2))
+        return
+
+    settings["session_commands"] = prospective
+    save_settings(settings)
+    action = "Replaced" if existing_idx is not None else "Added"
+    print(f"  {action} command pair {cmd_id!r} ({label})")
+    print(f"    create: {create}")
+    print(f"    delete: {delete}")
+
+
+def commands_remove(cmd_id: str) -> None:
+    """Remove a named session command pair by id. Writes via save_settings()."""
+    from muxplex.settings import RESERVED_COMMAND_ID, load_settings, save_settings
+
+    if cmd_id == RESERVED_COMMAND_ID:
+        print(f"error: cannot remove the built-in {cmd_id!r} pair", file=sys.stderr)
+        sys.exit(1)
+
+    settings = load_settings()
+    existing = list(settings.get("session_commands") or [])
+    filtered = [
+        e for e in existing if not (isinstance(e, dict) and e.get("id") == cmd_id)
+    ]
+    if len(filtered) == len(existing):
+        print(f"error: no command pair with id {cmd_id!r}", file=sys.stderr)
+        sys.exit(1)
+
+    settings["session_commands"] = filtered
+    save_settings(settings)
+    print(f"  Removed command pair {cmd_id!r}")
 
 
 def tmux_status() -> None:
@@ -2130,6 +2332,48 @@ def main() -> None:
         "key", nargs="?", help="Setting key (omit to reset all)"
     )
 
+    commands_parser = sub.add_parser(
+        "commands",
+        help="Manage named session command pairs (session_commands is "
+        "local-file-only; this is the local-operator write path)",
+    )
+    commands_sub = commands_parser.add_subparsers(dest="commands_command")
+    commands_sub.add_parser(
+        "list", help="List configured command pairs, including the built-in default"
+    )
+    commands_add_parser = commands_sub.add_parser(
+        "add", help="Add (or --replace) a named command pair"
+    )
+    commands_add_parser.add_argument(
+        "--id",
+        dest="cmd_id",
+        required=True,
+        help="Pair id (lowercase alphanumeric, _/-)",
+    )
+    commands_add_parser.add_argument("--label", required=True, help="Display label")
+    commands_add_parser.add_argument(
+        "--create",
+        required=True,
+        help="Create/new-session template; must contain {name}",
+    )
+    commands_add_parser.add_argument(
+        "--delete",
+        required=True,
+        help="Delete/kill-session template; must contain {name}",
+    )
+    commands_add_parser.add_argument(
+        "--replace", action="store_true", help="Overwrite an existing id"
+    )
+    commands_add_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the resulting session_commands JSON without writing",
+    )
+    commands_remove_parser = commands_sub.add_parser(
+        "remove", help="Remove a command pair by id"
+    )
+    commands_remove_parser.add_argument("--id", dest="cmd_id", required=True)
+
     tmux_parser = sub.add_parser("tmux", help="Manage muxplex's tmux configuration")
     tmux_sub = tmux_parser.add_subparsers(dest="tmux_command")
     tmux_sub.add_parser("status", help="Show whether the tmux config is active")
@@ -2183,6 +2427,22 @@ def main() -> None:
         else:
             # Default: list (no subcommand or explicit "list")
             config_list()
+    elif args.command == "commands":
+        cmd = getattr(args, "commands_command", None)
+        if cmd == "add":
+            commands_add(
+                args.cmd_id,
+                args.label,
+                args.create,
+                args.delete,
+                replace=args.replace,
+                dry_run=args.dry_run,
+            )
+        elif cmd == "remove":
+            commands_remove(args.cmd_id)
+        else:
+            # Default: list (no subcommand or explicit "list")
+            commands_list()
     elif args.command == "setup-tls":
         if args.status:
             setup_tls_status()
