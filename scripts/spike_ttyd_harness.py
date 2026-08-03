@@ -18,10 +18,18 @@ executable guards rather than prose, because both are silent failures:
    verifies the socket file actually exists after launch.
    **Never trust ttyd's exit code or liveness as proof it bound a socket.**
 
-2. **`sun_path` is short.** Linux allows 108 bytes, macOS 104 (103 usable,
-   and only **102** survive the trip through ttyd). A raw session name in a
-   deep temp dir overruns that. `socket_path()` therefore hashes the label
-   into a short fixed-width name and range-checks the result.
+2. **`sun_path` is short.** Linux (and WSL) allow 108 bytes, macOS 104 (103
+   usable, and only **102** survive the trip through ttyd). A raw session
+   name in a deep temp dir overruns that. `socket_path()` therefore hashes
+   the label into a short fixed-width name and range-checks the result.
+
+3. **On WSL, the socket must live on a Linux-native filesystem.** Under
+   `/mnt/*` (DrvFs/9p) a raw `bind()` fails with `ENOTSUP` (errno 95) --
+   and ttyd does NOT treat that as fatal. It retries the bind roughly every
+   10ms, forever, with no backoff and no self-termination: alive, burning
+   CPU, no socket file, no TCP fallback. `socket_path()` refuses a `/mnt/*`
+   directory when running under WSL rather than letting a probe hand ttyd a
+   path it will spin on.
 
 Safety (AGENTS.md, "NEVER broad-kill by process name"): this harness kills
 ONLY the exact ttyd PID it spawned, and only ever runs `kill-server` against
@@ -51,14 +59,27 @@ TTYD_SUN_PATH_MAX = {"Linux": 107, "Darwin": 102}
 # ttyd's UNIX-socket detection is suffix-based. See finding 1 above.
 REQUIRED_SOCKET_SUFFIX = ".sock"
 
+# WSL mounts Windows drives under /mnt/* as DrvFs/9p, which cannot host an
+# AF_UNIX socket. See finding 3 above.
+DRVFS_MOUNT_PREFIX = "/mnt/"
+
 # A short, predictable base dir keeps us far under sun_path everywhere.
 # Override for a host with an unusual /tmp policy.
 DEFAULT_SOCKET_DIR = Path(os.environ.get("MUXPLEX_SPIKE_SOCKET_DIR", "/tmp"))
 
 
 def sun_path_budget() -> int:
-    """Largest socket path length that reliably works through ttyd here."""
+    """Largest socket path length that reliably works through ttyd here.
+
+    WSL reports `Linux` from `platform.system()` and shares Linux's limits,
+    so no special case is needed -- confirmed by measurement, not assumed.
+    """
     return TTYD_SUN_PATH_MAX.get(platform.system(), 102)
+
+
+def is_wsl() -> bool:
+    """True when running under WSL, where `/mnt/*` is a DrvFs/9p mount."""
+    return "microsoft" in platform.uname().release.lower()
 
 
 def socket_path(label: str, socket_dir: Path | None = None) -> Path:
@@ -71,6 +92,15 @@ def socket_path(label: str, socket_dir: Path | None = None) -> Path:
     digest = hashlib.sha256(label.encode("utf-8")).hexdigest()[:10]
     path = directory / f"mxspk-{digest}{REQUIRED_SOCKET_SUFFIX}"
 
+    # Finding 3: resolve first, so a symlink or `..` into /mnt is caught too.
+    if is_wsl() and str(directory.resolve()).startswith(DRVFS_MOUNT_PREFIX):
+        raise ValueError(
+            f"socket dir {directory} is a DrvFs/9p mount under "
+            f"{DRVFS_MOUNT_PREFIX} and cannot host an AF_UNIX socket "
+            "(bind fails ENOTSUP/95). ttyd would NOT exit on that -- it "
+            "busy-retries the bind every ~10ms forever, alive and useless. "
+            "Use a Linux-native path (e.g. /tmp)."
+        )
     if path.suffix != REQUIRED_SOCKET_SUFFIX:
         raise ValueError(
             f"socket path must end in {REQUIRED_SOCKET_SUFFIX!r}; ttyd silently "
@@ -88,6 +118,17 @@ def socket_path(label: str, socket_dir: Path | None = None) -> Path:
 def tmux_socket_name(session_label: str) -> str:
     """Name of the dedicated `tmux -L` socket for `session_label`."""
     return f"mxspk-{session_label}"
+
+
+def tmux_socket_file(session_label: str) -> Path:
+    """On-disk path of the `tmux -L` socket this harness creates.
+
+    `kill-server` stops the server but leaves this file behind. Teardown
+    unlinks it so unattended runs don't accumulate dead sockets under
+    `/tmp/tmux-<uid>/`.
+    """
+    base = Path(os.environ.get("TMUX_TMPDIR", "/tmp"))
+    return base / f"tmux-{os.getuid()}" / tmux_socket_name(session_label)
 
 
 def tmux_session_name(session_label: str) -> str:
@@ -241,6 +282,8 @@ def ttyd_session(
             check=False,
         )
         sock.unlink(missing_ok=True)
+        # kill-server leaves its own socket file behind; don't accumulate them.
+        tmux_socket_file(session_label).unlink(missing_ok=True)
 
 
 def main() -> int:
