@@ -272,6 +272,54 @@ suggests looking at them):
 
 ---
 
+## 5. Where the device label goes on a preview tile
+
+**What we want.** A setting controlling where a session's device label is drawn on
+its preview tile, with three choices: in the **title bar** (today's behavior), in
+the **preview itself** anchored to the lower-right corner and out of the way, or
+**not at all**.
+
+**Why it matters.** The title bar is a fixed-width budget shared between the
+device label and the session name, and the device label wins by position. On a
+tile narrow enough to matter, `spark-1:` eats the front of the string and the
+session name — the part that actually distinguishes one tile from another —
+truncates. Most of the time the device is already obvious from context and the
+name is not. Moving the label off the title bar buys that space back without
+throwing the information away; removing it entirely is the right answer for
+anyone running a single device.
+
+**What it has to fit alongside.**
+
+- Device labels exist because federation made one dashboard show sessions from
+  several hosts. Hiding them entirely is safe on one device and actively
+  confusing on seven — two hosts can and do have same-named sessions, and the
+  device label is the only thing separating them in the grid.
+- Views store **device-qualified keys**, so the underlying identity survives
+  regardless of what the tile draws. This is presentation only.
+- The lower-right corner option overlays live terminal content, which is
+  arbitrary and can be any color. Whatever is drawn there needs to stay legible
+  over a full-bright `htop` as well as an empty prompt.
+- The soft deck (`frontend/deck/`) and the `muxplex-deck` hardware sidecar render
+  their own session tiles. A setting that only the PWA honors would put three
+  surfaces out of agreement about the same session.
+
+**Open questions.**
+
+- Syncable or per-device? It reads like a display preference, which argues for
+  `SYNCABLE_KEYS` — but the whole reason per-device sync groups exist is that
+  some preferences genuinely belong to the screen you are looking at. A phone
+  and a 34" ultrawide want different answers here.
+- Does the deck honor it, or is it PWA-only? If the deck honors it, this is a
+  cross-repo change and the setting has to reach the sidecar.
+- Should "not at all" be silently overridden when more than one device has
+  sessions in view — or is that exactly the kind of clever-and-wrong behavior
+  that makes a setting feel broken? Leaning toward: honor what the user asked
+  for, and make the ambiguity visible some other way.
+- Is lower-right actually the right corner? It is the least-used corner of a
+  terminal in practice, but a full-screen TUI can and will paint there.
+
+---
+
 ## Notes
 
 - Item 2 spans both repos in spirit but lands almost entirely here: the soft deck
