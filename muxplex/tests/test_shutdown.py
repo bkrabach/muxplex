@@ -28,21 +28,24 @@ from muxplex.main import app, terminal_ws_proxy
 
 @pytest.fixture(autouse=True)
 def patch_startup_and_state(tmp_path, monkeypatch):
-    """Redirect state/PID files to tmp_path and stub out long-running startup tasks."""
+    """Redirect state/socket dir to tmp_path and stub out long-running startup tasks."""
     tmp_state_dir = tmp_path / "state"
     tmp_state_path = tmp_state_dir / "state.json"
     monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
     monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
 
-    tmp_pid_dir = tmp_path / "ttyd"
-    tmp_pid_path = tmp_pid_dir / "ttyd.pid"
-    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_DIR", tmp_pid_dir)
-    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_PATH", tmp_pid_path)
+    tmp_socket_dir = tmp_path / "ttyd"
+    monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", tmp_socket_dir)
 
-    async def _mock_kill_orphan():
+    async def _mock_reap_orphan():
+        return 0
+
+    async def _mock_reap_legacy():
         return False
 
-    monkeypatch.setattr("muxplex.main.kill_orphan_ttyd", _mock_kill_orphan)
+    monkeypatch.setattr("muxplex.main.reap_orphan_ttyds", _mock_reap_orphan)
+    monkeypatch.setattr("muxplex.main.reap_legacy_ttyd", _mock_reap_legacy)
+    monkeypatch.setattr("muxplex.main.ttyd_mod.validate_socket_dir", lambda d: None)
 
     async def noop_poll_loop() -> None:
         pass
@@ -79,20 +82,52 @@ def test_shutdown_cancels_poll_task(monkeypatch):
     )
 
 
-def test_shutdown_kills_ttyd(monkeypatch):
-    """The ttyd subprocess must be killed on shutdown (it was leaked before)."""
+def test_shutdown_kills_all_ttyd(monkeypatch):
+    """Every registered per-session ttyd must be killed on shutdown (it was
+    leaked before, in the single-ttyd era)."""
     calls: list[str] = []
 
-    async def mock_kill_ttyd() -> bool:
-        calls.append("kill_ttyd")
-        return True
+    async def mock_kill_all_ttyd() -> int:
+        calls.append("kill_all_ttyd")
+        return 0
 
-    monkeypatch.setattr("muxplex.main.kill_ttyd", mock_kill_ttyd)
+    monkeypatch.setattr("muxplex.main.kill_all_ttyd", mock_kill_all_ttyd)
 
     with TestClient(app):
         pass
 
-    assert calls == ["kill_ttyd"], "lifespan shutdown must call kill_ttyd()"
+    assert calls == ["kill_all_ttyd"], "lifespan shutdown must call kill_all_ttyd()"
+
+
+def test_lifespan_kills_all_ttyds(monkeypatch):
+    """Three registered ttyds -> all three killed, within the existing 3s
+    wait_for budget. kill_all_ttyd() gathers, so wall time stays ~one SIGTERM
+    round trip, preserving AGENTS.md's ~0.5s shutdown target."""
+    import muxplex.ttyd as ttyd_mod
+
+    killed: list[str] = []
+
+    async def _fake_kill(session_name: str) -> bool:
+        killed.append(session_name)
+        ttyd_mod._ttyds.pop(session_name, None)
+        return True
+
+    for name in ("s1", "s2", "s3"):
+        ttyd_mod._ttyds[name] = object()  # type: ignore[assignment]  # presence is all kill_all_ttyd() needs to iterate
+
+    monkeypatch.setattr(ttyd_mod, "kill_ttyd", _fake_kill)
+    monkeypatch.setattr("muxplex.main.kill_all_ttyd", ttyd_mod.kill_all_ttyd)
+
+    import time as time_mod
+
+    start = time_mod.monotonic()
+    with TestClient(app):
+        pass
+    elapsed = time_mod.monotonic() - start
+
+    assert sorted(killed) == ["s1", "s2", "s3"]
+    assert ttyd_mod._ttyds == {}
+    assert elapsed < 3.0
 
 
 def test_shutdown_closes_federation_client():

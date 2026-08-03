@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 
 from muxplex.main import app
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures (mirror test_api.py setup so tests run cleanly in isolation)
 # ---------------------------------------------------------------------------
@@ -29,15 +28,18 @@ def patch_startup_and_state(tmp_path, monkeypatch):
     monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
     monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
 
-    tmp_pid_dir = tmp_path / "ttyd"
-    tmp_pid_path = tmp_pid_dir / "ttyd.pid"
-    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_DIR", tmp_pid_dir)
-    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_PATH", tmp_pid_path)
+    tmp_socket_dir = tmp_path / "ttyd"
+    monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", tmp_socket_dir)
 
-    async def _mock_kill_orphan():
+    async def _mock_reap_orphan():
+        return 0
+
+    async def _mock_reap_legacy():
         return False
 
-    monkeypatch.setattr("muxplex.main.kill_orphan_ttyd", _mock_kill_orphan)
+    monkeypatch.setattr("muxplex.main.reap_orphan_ttyds", _mock_reap_orphan)
+    monkeypatch.setattr("muxplex.main.reap_legacy_ttyd", _mock_reap_legacy)
+    monkeypatch.setattr("muxplex.main.ttyd_mod.validate_socket_dir", lambda d: None)
 
     async def noop_poll_loop() -> None:
         pass

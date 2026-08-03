@@ -13,21 +13,24 @@ from muxplex.main import app
 
 @pytest.fixture(autouse=True)
 def patch_startup_and_state(tmp_path, monkeypatch):
-    """Redirect state/PID files to tmp_path, mock startup side-effects."""
+    """Redirect state/socket dir to tmp_path, mock startup side-effects."""
     tmp_state_dir = tmp_path / "state"
     tmp_state_path = tmp_state_dir / "state.json"
     monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
     monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
 
-    tmp_pid_dir = tmp_path / "ttyd"
-    tmp_pid_path = tmp_pid_dir / "ttyd.pid"
-    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_DIR", tmp_pid_dir)
-    monkeypatch.setattr("muxplex.ttyd.TTYD_PID_PATH", tmp_pid_path)
+    tmp_socket_dir = tmp_path / "ttyd"
+    monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", tmp_socket_dir)
 
-    async def _mock_kill_orphan():
+    async def _mock_reap_orphan():
+        return 0
+
+    async def _mock_reap_legacy():
         return False
 
-    monkeypatch.setattr("muxplex.main.kill_orphan_ttyd", _mock_kill_orphan)
+    monkeypatch.setattr("muxplex.main.reap_orphan_ttyds", _mock_reap_orphan)
+    monkeypatch.setattr("muxplex.main.reap_legacy_ttyd", _mock_reap_legacy)
+    monkeypatch.setattr("muxplex.main.ttyd_mod.validate_socket_dir", lambda d: None)
 
     async def noop_poll_loop() -> None:
         pass
@@ -35,19 +38,16 @@ def patch_startup_and_state(tmp_path, monkeypatch):
     monkeypatch.setattr("muxplex.main._poll_loop", noop_poll_loop)
 
     # Neuter ttyd process management entirely -- these tests exercise the
-    # terminal-claim GATE logic, never a real ttyd/tmux process.
-    async def _mock_kill_ttyd():
+    # sync-group/session-resolution logic, never a real ttyd/tmux process.
+    async def _mock_kill_ttyd(name):
         return True
 
-    async def _mock_spawn_ttyd(name):
-        class _FakeProc:
-            pid = 99999
-
-        return _FakeProc()
+    async def _mock_ensure_ttyd(name):
+        return None
 
     monkeypatch.setattr("muxplex.main.kill_ttyd", _mock_kill_ttyd)
-    monkeypatch.setattr("muxplex.main.spawn_ttyd", _mock_spawn_ttyd)
-    monkeypatch.setattr("muxplex.main._ttyd_is_listening", lambda: False)
+    monkeypatch.setattr("muxplex.main.ensure_ttyd", _mock_ensure_ttyd)
+    monkeypatch.setattr("muxplex.main.socket_is_live", lambda path: False)
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["sessX", "sessY"])
 
 
@@ -224,39 +224,36 @@ def test_heartbeat_omitting_sync_group_does_not_reset_private_device(client):
 
 
 # ---------------------------------------------------------------------------
-# 22-23: terminal-claim gate on connect
+# 22-23: connect no longer arbitrates a single contended terminal
+# (PER_SESSION_TTYD_SPEC.md §7.1 -- 409 terminal_conflict is retired, it can
+# no longer fire)
 # ---------------------------------------------------------------------------
 
 
-def test_connect_conflict_returns_409_no_state_write(monkeypatch, client):
+def test_connect_no_longer_conflicts_across_groups(monkeypatch, client):
     _heartbeat(client, "d1", "device:d1")
     r1 = client.post("/api/sessions/sessX/connect?device_id=d1")
     assert r1.status_code == 200
 
-    spawn_called = {"count": 0}
+    ensure_called = {"count": 0}
 
-    async def _tracked_spawn(name):
-        spawn_called["count"] += 1
+    async def _tracked_ensure(name):
+        ensure_called["count"] += 1
 
-        class _FakeProc:
-            pid = 1
+    monkeypatch.setattr("muxplex.main.ensure_ttyd", _tracked_ensure)
 
-        return _FakeProc()
-
-    monkeypatch.setattr("muxplex.main.spawn_ttyd", _tracked_spawn)
-
-    # Global (no device_id) tries to open a DIFFERENT session -> conflict
+    # Global (no device_id) opens a DIFFERENT session -> succeeds, no conflict.
+    # Two groups, two sessions, two independent ttyds -- the whole point.
     r2 = client.post("/api/sessions/sessY/connect")
-    assert r2.status_code == 409
-    body = r2.json()["detail"]
-    assert body["terminal_conflict"] is True
-    assert body["terminal_session"] == "sessX"
-    assert body["terminal_group"] == "device:d1"
-    assert spawn_called["count"] == 0
+    assert r2.status_code == 200
+    assert "terminal_conflict" not in r2.json()
+    assert ensure_called["count"] == 1
 
-    # terminal_session must still be sessX
-    state = client.get("/api/state").json()
-    assert state["terminal_session"] == "sessX"
+    # d1's own selection (sessX) is untouched by global's connect.
+    state = client.get("/api/state?device_id=d1").json()
+    assert state["active_session"] == "sessX"
+    # global's own selection is sessY.
+    assert client.get("/api/state").json()["active_session"] == "sessY"
 
 
 def test_connect_takeover_succeeds(client):
@@ -282,7 +279,7 @@ def test_delete_current_non_owner_does_not_kill_ttyd(monkeypatch, client):
 
     kill_called = {"count": 0}
 
-    async def _tracked_kill():
+    async def _tracked_kill(name):
         kill_called["count"] += 1
         return True
 
@@ -308,7 +305,7 @@ def test_delete_current_owner_kills_ttyd(monkeypatch, client):
 
     kill_called = {"count": 0}
 
-    async def _tracked_kill():
+    async def _tracked_kill(name):
         kill_called["count"] += 1
         return True
 
@@ -319,6 +316,8 @@ def test_delete_current_owner_kills_ttyd(monkeypatch, client):
     assert res.json()["terminal_released"] is True
     assert kill_called["count"] == 1
 
+    # terminal_session/terminal_group are now informational-only bookkeeping
+    # (PER_SESSION_TTYD_SPEC.md §7.4/§8) -- delete no longer clears them; only
+    # /connect writes them and the poll cycle clears them if the session vanishes.
     state = client.get("/api/state").json()
-    assert state["terminal_session"] is None
-    assert state["terminal_group"] == "global"
+    assert state["terminal_session"] == "sessX"
