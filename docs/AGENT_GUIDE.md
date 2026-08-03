@@ -419,6 +419,12 @@ curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application
 
 → `{"active_session": "agent-build", "ttyd_port": 7682}`
 
+`ttyd_port` is a legacy wire field kept only for client compatibility (no
+ttyd binds a TCP port any more — see `../AGENTS.md`). This call can now
+return `500` if the session's terminal process fails to start, or `503` if
+the server is at its terminal-count ceiling — both new failure modes, since
+this endpoint now verifies the terminal actually came up before returning.
+
 This is for the *human's* browser view. An agent does not need to connect in
 order to read or type — `/api/sessions` and `/input` work on any session.
 

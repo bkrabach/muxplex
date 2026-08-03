@@ -155,41 +155,56 @@ helpers in `terminal_input.py`. Injection-safety is verified by `test_input.py:3
 end-of-options prevent shell interpretation, text goes as a single uninterpreted
 argv element.
 
-## ttyd is loopback-only by design (unauthenticated writable terminal)
+## ttyd is loopback-only by design (unauthenticated writable terminal) — now per-session, over AF_UNIX
 
-`ttyd.py`'s `spawn_ttyd()` execs `ttyd -W -m 3 -p 7682 -i 127.0.0.1 tmux attach
--t <name>`. `-W` (writable) with **no `-c` credential** means ttyd is an
+**One ttyd process per tmux session**, each bound to its own UNIX domain
+socket under `ttyd.ttyd_socket_dir()` (default `~/.local/share/muxplex/ttyd/`).
+`ttyd.py`'s `spawn_ttyd()` execs `ttyd -W -m 3 -i <socket> tmux attach -t
+<name>`. `-W` (writable) with **no `-c` credential** means every ttyd is an
 **unauthenticated, writable terminal server** — anyone who can reach its
-socket can both view and *type into* whatever tmux session is currently
-attached, with zero interaction with muxplex's auth stack (`_ws_auth_check`,
-the cookie/Bearer middleware, TLS). It must **never** be reachable off-box.
-All legitimate access goes through muxplex's own authenticated `WS
-/terminal/ws` proxy (`main.py`), which dials `ws://127.0.0.1:{TTYD_PORT}/ws`
-directly — never a public interface.
+socket can both view and *type into* the attached tmux session, with zero
+interaction with muxplex's auth stack (`_ws_auth_check`, the cookie/Bearer
+middleware, TLS). All legitimate access goes through muxplex's own
+authenticated `WS /terminal/ws` (or federation) proxy (`main.py`), which
+dials a UNIX socket directly — never a public interface.
 
-**Incident:** this process previously had no `-i`/bind flag at all. ttyd's
-default bind with no `-i` is `INADDR_ANY` (`0.0.0.0`) — confirmed live:
-`ss -ltnp` showed `0.0.0.0:7682`, `curl` from another host on the LAN and
-separately over Tailscale both got a real ttyd terminal client (`200`, full
-HTML), and `GET /token` returned `{"token": ""}` (no credential configured).
-Any device reachable on the LAN or tailnet could open port 7682 in a browser
-and type into the host's live tmux session. Fixed by adding `-i
-TTYD_BIND_ADDRESS` (`127.0.0.1`) to the spawn argv — see `ttyd.py`'s
-`TTYD_BIND_ADDRESS` module comment for the full rationale, including why a
-literal IP is used instead of a platform-specific interface name (`lo` on
-Linux vs `lo0` on macOS).
+`AF_UNIX` is a **strictly stronger** fence than the old `-i 127.0.0.1` TCP
+bind: filesystem permissions (0700 dir, 0600 socket, uid-checked) and no
+network namespace involvement at all — there is no port to scan or interface
+to misconfigure. `ttyd.SOCKET_SUFFIX` (`.sock`) is the successor to that old
+fence: a non-`.sock` path does not make ttyd error — it silently falls back
+to TCP port **7681** on `INADDR_ANY`, reopening the identical exposure. This
+is why the socket path is never hand-built and the readiness gate checks the
+actual socket file, never ttyd's liveness or its own log line.
 
-**Not configurable, and must never become PATCHable.** There is no settings
-key for this — it's a hardcoded constant. If a future need ever justifies
-making it configurable, that setting **must** be added to
-`settings.LOCAL_ONLY_KEYS` (see "Terminal input" above), never to
-`SYNCABLE_KEYS`: the federation Bearer key is the same credential held by
-remote callers, so a PATCHable bind address would let any Bearer-key holder
-widen ttyd's exposure to the network — the identical fence rationale already
-applied to `new_session_template` et al.
+**Incident (pre-UNIX-socket era, kept for the record):** this process
+previously had no `-i`/bind flag at all. ttyd's default bind with no `-i` is
+`INADDR_ANY` (`0.0.0.0`) — confirmed live: `ss -ltnp` showed `0.0.0.0:7682`,
+`curl` from another host on the LAN and separately over Tailscale both got a
+real ttyd terminal client (`200`, full HTML), and `GET /token` returned
+`{"token": ""}` (no credential configured). Any device reachable on the LAN
+or tailnet could open the port in a browser and type into the host's live
+tmux session. Fixed at the time by adding `-i 127.0.0.1`; the per-session
+UNIX-socket architecture supersedes that fix entirely (there is no longer a
+TCP bind to secure).
 
-See `docs/API_SEMANTICS.md`'s "single shared ttyd process" section for how
-this interacts with sync groups' `terminal_session`/`terminal_group` claim.
+**Not configurable, and must never become PATCHable.** The socket directory
+is resolved from `MUXPLEX_TTYD_SOCKET_DIR` (env var) or `STATE_DIR/ttyd` —
+deliberately **not** a settings key (would have to join
+`settings.LOCAL_ONLY_KEYS`; an env var sidesteps the fence question entirely
+and cannot be reached by a federation Bearer-key holder at all). If a future
+need ever exposes ttyd's bind target as a setting, it **must** join
+`LOCAL_ONLY_KEYS` (see "Terminal input" above), never `SYNCABLE_KEYS` — same
+fence rationale already applied to `new_session_template` et al.
+
+`ttyd_port` (`= 7682`) survives in `POST /connect`'s response as a
+**legacy wire field only** — no ttyd binds this port anymore, but
+`muxplex_client.parse_connect_result()` requires an int with no default
+(vendored into muxplex-deck). Do not remove it or return `null`.
+
+See `docs/API_SEMANTICS.md`'s "per-session ttyd" section for how this
+interacts with sync groups' `terminal_session`/`terminal_group` bookkeeping
+(now provenance metadata, not a resource claim).
 
 ## Frontend delivery: the no-cache header is load-bearing
 

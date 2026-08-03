@@ -157,6 +157,13 @@ fine, round-trip included.
 `socket_path()` enforces this in the harness: under WSL it refuses a socket dir
 that resolves under `/mnt/`, rather than handing ttyd a path it will spin on.
 
+### Shipped
+
+The per-session-ttyd-over-UNIX-sockets architecture these probes qualified
+has shipped (`muxplex/ttyd.py`, see `PER_SESSION_TTYD_SPEC.md`). These probes
+remain the platform-qualification gate: re-run them when qualifying a new
+platform, a new ttyd release, or a new tmux release.
+
 ### What counts as proof that ttyd bound
 
 Finding 1 already says never to trust exit code or liveness. WSL extends that

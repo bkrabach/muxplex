@@ -382,59 +382,87 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   `sync_groups["global"]` mirror would create two copies of one truth and
   therefore a divergence bug; with one copy there is no which-one-wins
   question to answer.
-- **The single shared ttyd process is a SEPARATE, orthogonal claim from sync
-  groups, and it is the safety-critical half of this feature.** Exactly one
-  ttyd process exists server-wide, on a hardcoded port, with the session
-  name baked into its argv at spawn time and a WRITABLE terminal (`ttyd.py`).
-  **ttyd is loopback-only by design, and this is unconditional (not gated by
-  sync groups, `device_id`, or anything else): it runs `-W` (writable) with
-  no `-c` (credential), so it is an unauthenticated writable terminal that
-  must never be reachable off-box — see `ttyd.py`'s `TTYD_BIND_ADDRESS` and
+- **Per-session ttyd (formerly "the single shared ttyd process"): now ONE
+  ttyd PER SESSION, each bound to its own UNIX domain socket** — see
+  `ttyd.py`'s module docstring and `PER_SESSION_TTYD_SPEC.md` for the full
+  design. Two devices connecting to two DIFFERENT sessions now get two
+  independent ttyds and never interact; that used to be a **conflict**
+  muxplex had to detect and refuse (`terminal_conflict`, below), and is now
+  simply not a shared-resource question at all.
+  **ttyd remains loopback-only by design in spirit, now via `AF_UNIX`
+  rather than TCP, and this is unconditional (not gated by sync groups,
+  `device_id`, or anything else): every ttyd runs `-W` (writable) with no
+  `-c` (credential), so each is an unauthenticated writable terminal that
+  must never be reachable off-box** — `AF_UNIX` is a *strictly stronger*
+  fence than the old `-i 127.0.0.1` TCP bind (filesystem permissions, no
+  network namespace at all). See `ttyd.py`'s module docstring and
   `../AGENTS.md`'s "ttyd is loopback-only by design" section for the
-  spawn-argv fence (`-i 127.0.0.1`), the incident (previously bound
-  `0.0.0.0`, reachable over LAN and Tailscale with an empty `/token`), and
-  the portability rationale. All access to it goes through the authenticated
-  claims below, never a direct network path.**
-  Two sync groups can each have their own `active_session` selection, but
-  they cannot BOTH have their own live terminal — only one group's session
-  can actually be relayed at a time. `state.json`'s `terminal_session` /
-  `terminal_group` make ttyd's real attachment a first-class, inspectable
-  fact instead of an assumption: `terminal_session` is what ttyd is
-  currently attached to; `terminal_group` is the group that claimed it.
-  `POST /api/sessions/{name}/connect` refuses to seize the terminal away
-  from a DIFFERENT group's live session: if `terminal_session is not None`
-  and `terminal_group` differs from the caller's resolved group, it returns
-  **409** with `{"terminal_conflict": true, "detail": ..., "terminal_session":
-  ..., "terminal_group": ...}` — `terminal_conflict: true` is the
-  discriminator that tells this 409 apart from the settings backstop 409
-  above (same established pattern as `{"backstop": true, ...}`) — and makes
-  **no state write and no ttyd process action**. Passing `?takeover=true`
-  proceeds anyway (an explicit, informed override — the client's job is to
-  surface this as a real confirmation dialog naming the session that will
-  move, never a silent retry). **This gate can never fire for a client that
-  sends no `device_id`**: it resolves to `"global"`, and the terminal starts
-  (and stays, until some other group explicitly takes it over) claimed by
-  `"global"` too — both global, so equal, so no conflict. `DELETE
-  /api/sessions/current` mirrors this: it only kills ttyd when the caller's
-  resolved group IS `terminal_group`; otherwise it clears only the caller's
-  own group `active_session` and reports `"terminal_released": false` —
-  closing your own private fullscreen must never black out someone else's
-  live terminal.
-  - **`WS /terminal/ws` enforces the same claim with a loud, unconditional
-    backstop that holds regardless of client correctness, and (as of the
-    fix below) the wire behavior now matches the code's close-code
-    arguments.** With an optional `?device_id=`: unknown `device_id` calls
-    `_accept_then_close(websocket, code=4404)`; otherwise, if the resolved
-    group's `active_session` is `None` or does not equal the current
-    `terminal_session`, the code calls `_accept_then_close(websocket,
+  socket-directory validation, the `0.0.0.0` incident this superseded, and
+  the `.sock`-suffix fence against ttyd's silent TCP-7681 fallback. All
+  access to a ttyd goes through the authenticated claims below, never a
+  direct network path.
+  Two sync groups can each have their own `active_session` selection AND
+  their own live terminal now — there is no longer a single contended
+  resource to arbitrate. `state.json`'s `terminal_session` / `terminal_group`
+  are **retained, redefined**: `terminal_session` is now the *fallback
+  target* a `WS /terminal/ws` with no `?session=` param resolves to (still
+  written by `/connect`, still what the federation relay and any
+  pre-this-change client rely on unchanged); `terminal_group` is
+  **informational provenance only** — the group that most recently
+  connected `terminal_session` — **no server behavior branches on it any
+  more**. `POST /api/sessions/{name}/connect` no longer refuses or seizes
+  anything: `ensure_ttyd()` is idempotent, so connecting to session X never
+  disturbs session Y's ttyd, no matter which group holds which. `?takeover=
+  true` is **accepted and silently ignored** (there is no longer a terminal
+  to take over) — kept in the signature so existing clients sending
+  `&takeover=true` don't 422. `DELETE /api/sessions/current` kills the
+  caller's session's ttyd only when `relay_count(mine) == 0` — a
+  **structural refcount check**, stronger than the old group-ownership
+  claim: it also covers two devices in the *same* group co-viewing one
+  session, which the old check did not. Closing your own private fullscreen
+  must never black out someone else's live terminal.
+  - **`409 terminal_conflict` on `/connect` is RETIRED — it cannot fire.**
+    Its condition (`terminal_session is not None and terminal_group !=
+    group`) arbitrated a single contended resource that no longer exists.
+    A client that still handles this response body simply never sees it —
+    version-tolerant in the direction `../AGENTS.md` requires.
+  - **`WS /terminal/ws` and `WS /federation/{device_id}/terminal/ws` both
+    take a new, additive, optional `?session=` query param** naming the
+    target session directly. Absent, both fall back to
+    `state["terminal_session"]` exactly as before — byte-identical to
+    pre-this-change behavior in both directions (an old peer ignores the
+    unknown param from a new peer; a new peer with no `session` falls back
+    identically). The federation proxy forwards `?session=` upstream
+    verbatim when supplied; it never dials a ttyd socket itself (see
+    `federation_terminal_ws_proxy`'s docstring) — the transport change is
+    invisible to it beyond that one forwarded parameter.
+  - **`WS 4409` is KEPT, REDEFINED, and NARROWER**: no longer "another
+    group holds the one terminal" (that resource is gone) but "you asked to
+    attach to a session your own group has not selected" — a per-request
+    consistency check rather than a resource claim. It fires only on genuine
+    desync (e.g. a stale reconnect after the user switched sessions on
+    another device), and — as of the fix below — the wire behavior matches
+    the code's close-code arguments.** With an optional `?device_id=`:
+    unknown `device_id` calls `_accept_then_close(websocket, code=4404)`;
+    otherwise, if the resolved group's `active_session` is `None` or does
+    not equal the *resolved target session* (`?session=` if given, else
+    `terminal_session`), the code calls `_accept_then_close(websocket,
     code=4409)` — in both cases *before* any upstream ttyd connection is
-    attempted. This device is never shown, and can never type into, a
-    session it did not itself select. Precisely this scenario is why the
-    guard exists: without it, one device's `POST /connect` silently
-    redirects every other connected terminal's WebSocket to the
-    newly-attached session — the viewer's UI still shows their own session
-    name while their keystrokes land in a DIFFERENT, live session belonging
-    to someone else.
+    attempted. `4404` is additionally now the response for a missing,
+    invalid, or unknown target session (widened from the old single-ttyd
+    version, which could only ever see one possible session). This device
+    is never shown, and can never type into, a session it did not itself
+    select. Precisely this scenario is why the guard exists: without it,
+    one device's `POST /connect` silently redirects every other connected
+    terminal's WebSocket to the newly-attached session — the viewer's UI
+    still shows their own session name while their keystrokes land in a
+    DIFFERENT, live session belonging to someone else. **Residual gap,
+    unchanged by per-session ttyd**: a client that sends no `device_id` at
+    all (the federation relay is exactly such a client) gets none of this
+    protection — but with `?session=` now forwarded, the remote relays the
+    *named* session rather than whatever its fallback happened to hold, so
+    the misdirection window closes on the transport side even though this
+    guard still doesn't fire for it.
 
     **Incident (original bug): the 4409/4404 codes never reached any real
     client.** Before the fix below, both branches called

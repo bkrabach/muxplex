@@ -1033,3 +1033,13 @@ closing, the feature is not safe to ship.
 9. `uv run ruff` / `pyright` clean; `node --test frontend/tests/*.mjs` green.
 10. The PR description states §0's constraint and §4.8's residual gap explicitly.
     A reviewer must not have to discover the shared-ttyd limitation from the code.
+
+---
+
+**Update (per-session ttyd):** §0's blocking finding above — the single,
+server-wide ttyd as a shared resource requiring `terminal_conflict`/4409
+arbitration — is now retired. Each tmux session gets its own ttyd bound to
+its own UNIX domain socket; two devices on two different sessions are no
+longer a conflict at all. See `PER_SESSION_TTYD_SPEC.md` for the design and
+`muxplex/ttyd.py` for the implementation. This plan's record of the
+original constraint and the sync-groups work it shaped is left as-is above.
