@@ -932,6 +932,21 @@ def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the uv dispatch itself, not install source -- pin a
+    # pypi source explicitly rather than depending on whatever _get_install_info()
+    # happens to report on the machine actually running the test (e.g. an
+    # editable dev checkout, which upgrade() now refuses to touch).
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     # Mock version check so upgrade proceeds regardless of local install type
     monkeypatch.setattr(
         cli_mod,
@@ -987,7 +1002,15 @@ def test_get_install_info_returns_dict():
     assert "version" in info
     assert "commit" in info
     assert "url" in info
-    assert info["source"] in ("git", "editable", "pypi", "unknown")
+    assert "ref" in info
+    assert info["source"] in (
+        "git",
+        "editable",
+        "pypi",
+        "local-dir",
+        "archive",
+        "unknown",
+    )
 
 
 def test_check_for_update_editable_returns_false():
@@ -998,6 +1021,784 @@ def test_check_for_update_editable_returns_false():
     available, msg = _check_for_update(info)
     assert available is False
     assert "editable" in msg
+
+
+# ---------------------------------------------------------------------------
+# upgrade-source-awareness: _get_install_info detects all five PEP 610 shapes
+#
+# Proven against real installs of each shape (see the task report for the raw
+# direct_url.json captured from actual pip/uv installs of each kind). These
+# tests drive _get_install_info() by monkeypatching importlib.metadata's
+# distribution() lookup, since _get_install_info imports it locally at call
+# time (`from importlib.metadata import ... distribution`), which resolves
+# against the module attribute at call time -- patching
+# importlib.metadata.distribution is therefore visible to it.
+# ---------------------------------------------------------------------------
+
+
+def _fake_distribution(version: str, direct_url_json: str | None):
+    """Build a fake importlib.metadata distribution for _get_install_info tests."""
+
+    class _FakeDist:
+        def __init__(self):
+            self.metadata = {"Version": version}
+
+        def read_text(self, name):
+            if name == "direct_url.json":
+                return direct_url_json
+            return None
+
+    return _FakeDist()
+
+
+def test_get_install_info_pypi_when_no_direct_url(monkeypatch):
+    """Absent direct_url.json -> source 'pypi', no url/ref/commit."""
+    import importlib.metadata as im
+
+    monkeypatch.setattr(
+        im, "distribution", lambda name: _fake_distribution("1.2.3", None)
+    )
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert info["source"] == "pypi"
+    assert info["version"] == "1.2.3"
+    assert info["url"] is None
+    assert info["ref"] is None
+
+
+def test_get_install_info_git_with_tag_ref(monkeypatch):
+    """vcs_info with a requested_revision -> source 'git', ref preserved verbatim.
+
+    Regression for defect #2: the pin must be recorded, not silently dropped.
+    """
+    import importlib.metadata as im
+
+    du = json.dumps(
+        {
+            "url": "https://github.com/bkrabach/muxplex",
+            "vcs_info": {
+                "vcs": "git",
+                "commit_id": "59ad05fd0000000000000000000000000000000",
+                "requested_revision": "v0.34.0",
+            },
+        }
+    )
+    monkeypatch.setattr(
+        im, "distribution", lambda name: _fake_distribution("0.34.0", du)
+    )
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert info["source"] == "git"
+    assert info["url"] == "https://github.com/bkrabach/muxplex"
+    assert info["ref"] == "v0.34.0"
+    assert info["commit"].startswith("59ad05fd")
+
+
+def test_get_install_info_git_without_ref(monkeypatch):
+    """vcs_info with no requested_revision -> ref is None (default-branch install)."""
+    import importlib.metadata as im
+
+    du = json.dumps(
+        {
+            "url": "https://github.com/bkrabach/muxplex",
+            "vcs_info": {"vcs": "git", "commit_id": "abc123"},
+        }
+    )
+    monkeypatch.setattr(
+        im, "distribution", lambda name: _fake_distribution("0.35.0", du)
+    )
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert info["source"] == "git"
+    assert info["ref"] is None
+
+
+def test_get_install_info_editable(monkeypatch):
+    """dir_info + editable=True -> source 'editable'."""
+    import importlib.metadata as im
+
+    du = json.dumps(
+        {"url": "file:///home/user/muxplex", "dir_info": {"editable": True}}
+    )
+    monkeypatch.setattr(
+        im, "distribution", lambda name: _fake_distribution("0.1.0", du)
+    )
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert info["source"] == "editable"
+    assert info["url"] == "file:///home/user/muxplex"
+
+
+def test_get_install_info_local_dir_non_editable(monkeypatch):
+    """dir_info WITHOUT editable -> source 'local-dir', not 'unknown'.
+
+    Regression for defect #3: a non-editable local directory install was
+    previously falling through to 'unknown', which _check_for_update treated
+    as an always-true "upgrade to be safe" -- the exact defect that let
+    `upgrade` overwrite a local build with upstream canonical.
+    """
+    import importlib.metadata as im
+
+    du = json.dumps({"url": "file:///home/user/muxplex", "dir_info": {}})
+    monkeypatch.setattr(
+        im, "distribution", lambda name: _fake_distribution("0.30.0", du)
+    )
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert info["source"] == "local-dir"
+    assert info["url"] == "file:///home/user/muxplex"
+
+
+def test_get_install_info_archive(monkeypatch):
+    """archive_info -> source 'archive', not 'unknown'.
+
+    Regression for defect #3: a local wheel/sdist install was previously
+    falling through to 'unknown' for the same reason as local-dir above.
+    """
+    import importlib.metadata as im
+
+    du = json.dumps(
+        {
+            "url": "file:///tmp/muxplex-0.34.0-py3-none-any.whl",
+            "archive_info": {},
+        }
+    )
+    monkeypatch.setattr(
+        im, "distribution", lambda name: _fake_distribution("0.34.0", du)
+    )
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert info["source"] == "archive"
+    assert info["url"] == "file:///tmp/muxplex-0.34.0-py3-none-any.whl"
+
+
+# ---------------------------------------------------------------------------
+# upgrade-source-awareness: _file_url_to_path
+# ---------------------------------------------------------------------------
+
+
+def test_file_url_to_path_converts_file_url():
+    from muxplex.cli import _file_url_to_path
+
+    assert _file_url_to_path("file:///home/user/muxplex") == Path("/home/user/muxplex")
+
+
+def test_file_url_to_path_returns_none_for_non_file_url():
+    from muxplex.cli import _file_url_to_path
+
+    assert _file_url_to_path("https://github.com/bkrabach/muxplex") is None
+
+
+def test_file_url_to_path_returns_none_for_empty():
+    from muxplex.cli import _file_url_to_path
+
+    assert _file_url_to_path("") is None
+
+
+# ---------------------------------------------------------------------------
+# upgrade-source-awareness: _latest_tag
+# ---------------------------------------------------------------------------
+
+
+def test_latest_tag_picks_highest_semver():
+    from muxplex.cli import _latest_tag
+
+    assert _latest_tag({"v0.30.0", "v0.34.0", "v0.9.0", "v0.34.1"}) == "v0.34.1"
+
+
+def test_latest_tag_tolerates_odd_tags():
+    """A malformed tag sorts low instead of crashing the comparison."""
+    from muxplex.cli import _latest_tag
+
+    assert _latest_tag({"v1.0.0", "not-a-version", "v1.2.0"}) == "v1.2.0"
+
+
+# ---------------------------------------------------------------------------
+# upgrade-source-awareness: _git_ref_kind_and_target
+# ---------------------------------------------------------------------------
+
+
+def test_git_ref_kind_default_when_no_requested_revision(monkeypatch):
+    """No ref recorded -> 'default', no network call needed."""
+    import subprocess
+
+    from muxplex.cli import _git_ref_kind_and_target
+
+    def fail(*a, **k):
+        raise AssertionError(
+            "must not query the remote when there is no ref to resolve"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    kind, target_ref, err = _git_ref_kind_and_target("https://example.com/x", None)
+    assert kind == "default"
+    assert target_ref is None
+    assert err is None
+
+
+def _fake_ls_remote(tags: dict[str, str], heads: dict[str, str]):
+    """subprocess.run stub for `git ls-remote --tags|--heads <url>`."""
+
+    def fake_run(cmd, **kwargs):
+        if "--tags" in cmd:
+            out = "\n".join(f"{sha}\trefs/tags/{name}" for name, sha in tags.items())
+        elif "--heads" in cmd:
+            out = "\n".join(f"{sha}\trefs/heads/{name}" for name, sha in heads.items())
+        else:
+            out = ""
+        return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
+
+    return fake_run
+
+
+def test_git_ref_kind_tag_resolves_latest_tag(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _git_ref_kind_and_target
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_ls_remote({"v0.34.0": "aaa", "v0.35.0": "bbb"}, {"main": "ccc"}),
+    )
+
+    kind, target_ref, err = _git_ref_kind_and_target(
+        "https://github.com/bkrabach/muxplex", "v0.34.0"
+    )
+    assert kind == "tag"
+    assert target_ref == "v0.35.0"
+    assert err is None
+
+
+def test_git_ref_kind_tag_already_latest(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _git_ref_kind_and_target
+
+    monkeypatch.setattr(
+        subprocess, "run", _fake_ls_remote({"v0.34.0": "aaa"}, {"main": "ccc"})
+    )
+
+    kind, target_ref, _err = _git_ref_kind_and_target(
+        "https://github.com/bkrabach/muxplex", "v0.34.0"
+    )
+    assert kind == "tag"
+    assert target_ref == "v0.34.0"
+
+
+def test_git_ref_kind_branch_tracks_head(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _git_ref_kind_and_target
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_ls_remote({"v0.34.0": "aaa"}, {"develop": "ddd", "main": "ccc"}),
+    )
+
+    kind, target_ref, _err = _git_ref_kind_and_target(
+        "https://github.com/bkrabach/muxplex", "develop"
+    )
+    assert kind == "branch"
+    assert target_ref == "develop"
+
+
+def test_git_ref_kind_commit_when_neither_tag_nor_branch(monkeypatch):
+    """An exact commit sha (or a ref that no longer exists) is an exact pin."""
+    import subprocess
+
+    from muxplex.cli import _git_ref_kind_and_target
+
+    monkeypatch.setattr(
+        subprocess, "run", _fake_ls_remote({"v0.34.0": "aaa"}, {"main": "ccc"})
+    )
+
+    kind, target_ref, _err = _git_ref_kind_and_target(
+        "https://github.com/bkrabach/muxplex", "59ad05fd0000000000000000000000000000000"
+    )
+    assert kind == "commit"
+    assert target_ref == "59ad05fd0000000000000000000000000000000"
+
+
+def test_git_ref_kind_error_on_remote_failure(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _git_ref_kind_and_target
+
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    kind, target_ref, err = _git_ref_kind_and_target(
+        "https://github.com/bkrabach/muxplex", "v0.34.0"
+    )
+    assert kind == "error"
+    assert target_ref is None
+    assert err
+
+
+# ---------------------------------------------------------------------------
+# upgrade-source-awareness: _check_for_update -- "not checkable", never a lie
+#
+# Regression coverage for the core design fix: no path may return
+# update_available=True without having actually verified it, and no failed
+# check may masquerade as "up to date" either -- it must say 'not checkable'.
+# ---------------------------------------------------------------------------
+
+
+def test_check_for_update_git_tag_pin_up_to_date(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _check_for_update
+
+    monkeypatch.setattr(
+        subprocess, "run", _fake_ls_remote({"v0.34.0": "aaa"}, {"main": "ccc"})
+    )
+    info = {
+        "source": "git",
+        "version": "0.34.0",
+        "commit": "aaa",
+        "url": "https://github.com/bkrabach/muxplex",
+        "ref": "v0.34.0",
+    }
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert "up to date" in msg
+    assert "v0.34.0" in msg
+
+
+def test_check_for_update_git_tag_pin_update_available(monkeypatch):
+    """The core defect #2 regression: a tag-pinned install must compare against
+    the latest TAG, never the default branch's HEAD."""
+    import subprocess
+
+    from muxplex.cli import _check_for_update
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_ls_remote({"v0.34.0": "aaa", "v0.35.0": "bbb"}, {"main": "zzz"}),
+    )
+    info = {
+        "source": "git",
+        "version": "0.34.0",
+        "commit": "aaa",
+        "url": "https://github.com/bkrabach/muxplex",
+        "ref": "v0.34.0",
+    }
+    available, msg = _check_for_update(info)
+    assert available is True
+    assert "v0.34.0" in msg and "v0.35.0" in msg
+    # Must never mention the unrelated default-branch sha as the comparison target
+    assert "zzz" not in msg
+
+
+def test_check_for_update_git_branch_pin(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _check_for_update
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_ls_remote({}, {"develop": "new-sha"}),
+    )
+    info = {
+        "source": "git",
+        "version": "0.1.0",
+        "commit": "old-sha",
+        "url": "https://github.com/bkrabach/muxplex",
+        "ref": "develop",
+    }
+    available, msg = _check_for_update(info)
+    assert available is True
+    assert "develop" in msg
+
+
+def test_check_for_update_git_commit_pin_not_checkable(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _check_for_update
+
+    monkeypatch.setattr(
+        subprocess, "run", _fake_ls_remote({"v0.34.0": "aaa"}, {"main": "ccc"})
+    )
+    info = {
+        "source": "git",
+        "version": "0.1.0",
+        "commit": "deadbeef",
+        "url": "https://github.com/bkrabach/muxplex",
+        "ref": "deadbeef",
+    }
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert msg.startswith("not checkable")
+
+
+def test_check_for_update_git_remote_failure_is_not_checkable_not_a_lie(monkeypatch):
+    """Regression: the old code returned (True, 'upgrading to be safe') here.
+
+    That is exactly the lie this design eliminates -- a failed check must
+    never be reported as an available update.
+    """
+    import subprocess
+
+    from muxplex.cli import _check_for_update
+
+    def fake_run(cmd, **kwargs):
+        return type(
+            "R", (), {"returncode": 1, "stdout": "", "stderr": "network down"}
+        )()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    info = {
+        "source": "git",
+        "version": "0.1.0",
+        "commit": "abc",
+        "url": "https://github.com/bkrabach/muxplex",
+        "ref": None,
+    }
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert "not checkable" in msg
+
+
+def test_check_for_update_pypi_failure_is_not_checkable(monkeypatch):
+    import urllib.request
+
+    from muxplex.cli import _check_for_update
+
+    def fake_urlopen(*a, **k):
+        raise OSError("no network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    info = {
+        "source": "pypi",
+        "version": "0.1.0",
+        "commit": None,
+        "url": None,
+        "ref": None,
+    }
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert "not checkable" in msg
+
+
+def test_check_for_update_local_dir_is_not_checkable():
+    from muxplex.cli import _check_for_update
+
+    info = {
+        "source": "local-dir",
+        "version": "0.1.0",
+        "commit": None,
+        "url": "file:///home/user/muxplex",
+        "ref": None,
+    }
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert "not checkable" in msg
+
+
+def test_check_for_update_archive_is_not_checkable():
+    from muxplex.cli import _check_for_update
+
+    info = {
+        "source": "archive",
+        "version": "0.1.0",
+        "commit": None,
+        "url": "file:///tmp/muxplex-0.1.0.whl",
+        "ref": None,
+    }
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert "not checkable" in msg
+
+
+def test_check_for_update_unknown_source_is_not_checkable_never_true():
+    """Regression for defect #3: 'unknown' used to be an unconditional
+    (True, "unknown install source — upgrading to be safe"). That silent
+    always-upgrade is exactly what let `upgrade` overwrite an unclassified
+    local install with upstream canonical.
+    """
+    from muxplex.cli import _check_for_update
+
+    info = {
+        "source": "unknown",
+        "version": "0.0.0",
+        "commit": None,
+        "url": None,
+        "ref": None,
+    }
+    available, msg = _check_for_update(info)
+    assert available is False
+    assert "not checkable" in msg
+
+
+# ---------------------------------------------------------------------------
+# upgrade-source-awareness: _upgrade_target -- never substitutes the source
+# ---------------------------------------------------------------------------
+
+
+def test_upgrade_target_pypi():
+    from muxplex.cli import _upgrade_target
+
+    target, reason = _upgrade_target(
+        {"source": "pypi", "version": "0.1.0", "commit": None, "url": None, "ref": None}
+    )
+    assert target == "muxplex"
+    assert reason is None
+
+
+def test_upgrade_target_git_no_ref(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _upgrade_target
+
+    def fail(*a, **k):
+        raise AssertionError("must not query remote refs when there is no ref")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    target, reason = _upgrade_target(
+        {
+            "source": "git",
+            "version": "0.1.0",
+            "commit": "abc",
+            "url": "https://github.com/bkrabach/muxplex",
+            "ref": None,
+        }
+    )
+    assert target == "git+https://github.com/bkrabach/muxplex"
+    assert reason is None
+
+
+def test_upgrade_target_git_tag_pin_targets_latest_tag(monkeypatch):
+    """Core defect #2 regression, at the install-target layer."""
+    import subprocess
+
+    from muxplex.cli import _upgrade_target
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_ls_remote({"v0.34.0": "aaa", "v0.35.0": "bbb"}, {"main": "zzz"}),
+    )
+    target, reason = _upgrade_target(
+        {
+            "source": "git",
+            "version": "0.34.0",
+            "commit": "aaa",
+            "url": "https://github.com/bkrabach/muxplex",
+            "ref": "v0.34.0",
+        }
+    )
+    assert target == "git+https://github.com/bkrabach/muxplex@v0.35.0"
+    assert reason is None
+
+
+def test_upgrade_target_git_branch_pin_targets_branch(monkeypatch):
+    import subprocess
+
+    from muxplex.cli import _upgrade_target
+
+    monkeypatch.setattr(subprocess, "run", _fake_ls_remote({}, {"develop": "new-sha"}))
+    target, _reason = _upgrade_target(
+        {
+            "source": "git",
+            "version": "0.1.0",
+            "commit": "old-sha",
+            "url": "https://github.com/bkrabach/muxplex",
+            "ref": "develop",
+        }
+    )
+    assert target == "git+https://github.com/bkrabach/muxplex@develop"
+
+
+def test_upgrade_target_editable_refuses():
+    from muxplex.cli import _upgrade_target
+
+    target, reason = _upgrade_target(
+        {
+            "source": "editable",
+            "version": "0.1.0",
+            "commit": None,
+            "url": "file:///home/user/muxplex",
+            "ref": None,
+        }
+    )
+    assert target is None
+    assert reason is not None
+    assert "manage" in reason.lower()
+
+
+def test_upgrade_target_local_dir_existing_path(tmp_path):
+    from muxplex.cli import _upgrade_target
+
+    checkout = tmp_path / "muxplex"
+    checkout.mkdir()
+    target, reason = _upgrade_target(
+        {
+            "source": "local-dir",
+            "version": "0.1.0",
+            "commit": None,
+            "url": f"file://{checkout}",
+            "ref": None,
+        }
+    )
+    assert target == str(checkout)
+    assert reason is None
+
+
+def test_upgrade_target_local_dir_missing_path_refuses(tmp_path):
+    """Core defect #3 regression: a local build must never be silently
+    replaced -- if its original directory is gone, refuse, don't substitute
+    upstream canonical."""
+    from muxplex.cli import _upgrade_target
+
+    missing = tmp_path / "gone"
+    target, reason = _upgrade_target(
+        {
+            "source": "local-dir",
+            "version": "0.1.0",
+            "commit": None,
+            "url": f"file://{missing}",
+            "ref": None,
+        }
+    )
+    assert target is None
+    assert reason is not None
+    assert "no longer exists" in reason
+
+
+def test_upgrade_target_archive_existing_path(tmp_path):
+    from muxplex.cli import _upgrade_target
+
+    wheel = tmp_path / "muxplex-0.1.0-py3-none-any.whl"
+    wheel.write_text("fake")
+    target, reason = _upgrade_target(
+        {
+            "source": "archive",
+            "version": "0.1.0",
+            "commit": None,
+            "url": f"file://{wheel}",
+            "ref": None,
+        }
+    )
+    assert target == f"file://{wheel}"
+    assert reason is None
+
+
+def test_upgrade_target_archive_missing_path_refuses(tmp_path):
+    from muxplex.cli import _upgrade_target
+
+    missing = tmp_path / "gone.whl"
+    target, reason = _upgrade_target(
+        {
+            "source": "archive",
+            "version": "0.1.0",
+            "commit": None,
+            "url": f"file://{missing}",
+            "ref": None,
+        }
+    )
+    assert target is None
+    assert "no longer exists" in reason
+
+
+def test_upgrade_target_unknown_source_refuses():
+    from muxplex.cli import _upgrade_target
+
+    target, reason = _upgrade_target(
+        {
+            "source": "unknown",
+            "version": "0.0.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+    )
+    assert target is None
+    assert reason is not None
+
+
+# ---------------------------------------------------------------------------
+# upgrade-source-awareness: _target_matches_source -- the defense-in-depth gate
+# ---------------------------------------------------------------------------
+
+
+def test_target_matches_source_pypi():
+    from muxplex.cli import _target_matches_source
+
+    info = {
+        "source": "pypi",
+        "version": "0.1.0",
+        "commit": None,
+        "url": None,
+        "ref": None,
+    }
+    assert _target_matches_source(info, "muxplex") is True
+
+
+def test_target_matches_source_git():
+    from muxplex.cli import _target_matches_source
+
+    info = {
+        "source": "git",
+        "version": "0.1.0",
+        "commit": "abc",
+        "url": "https://github.com/bkrabach/muxplex",
+        "ref": "v0.1.0",
+    }
+    assert (
+        _target_matches_source(info, "git+https://github.com/bkrabach/muxplex@v0.1.0")
+        is True
+    )
+
+
+def test_target_matches_source_rejects_git_to_pypi_substitution():
+    """This is the exact shape of the original defect: a git-sourced install
+    being handed 'muxplex' (the PyPI package name) as its install target."""
+    from muxplex.cli import _target_matches_source
+
+    info = {
+        "source": "git",
+        "version": "0.1.0",
+        "commit": "abc",
+        "url": "https://github.com/bkrabach/muxplex",
+        "ref": "v0.34.0",
+    }
+    assert _target_matches_source(info, "muxplex") is False
+
+
+def test_target_matches_source_local_dir(tmp_path):
+    from muxplex.cli import _target_matches_source
+
+    checkout = tmp_path / "muxplex"
+    checkout.mkdir()
+    info = {
+        "source": "local-dir",
+        "version": "0.1.0",
+        "commit": None,
+        "url": f"file://{checkout}",
+        "ref": None,
+    }
+    assert _target_matches_source(info, str(checkout)) is True
+    assert _target_matches_source(info, "muxplex") is False
 
 
 def test_upgrade_force_skips_version_check(monkeypatch, capsys):
@@ -1021,6 +1822,20 @@ def test_upgrade_force_skips_version_check(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the force-skips-check behavior, not install source --
+    # pin a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the machine running the test.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     # With force=True the version check must be bypassed entirely
     check_calls = []
     monkeypatch.setattr(
@@ -1054,6 +1869,20 @@ def test_upgrade_already_up_to_date_skips_install(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the "already up to date, don't install" path, not
+    # install source -- pin a pypi source explicitly rather than depending on
+    # whatever _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -2215,6 +3044,20 @@ def test_upgrade_uses_service_module_install(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the service_install() call, not install source -- pin
+    # a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3285,6 +4128,20 @@ def test_upgrade_no_systemctl_runs_to_completion(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the systemctl-absent path, not install source -- pin
+    # a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3330,6 +4187,20 @@ def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the systemctl-absent path, not install source -- pin
+    # a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3376,6 +4247,20 @@ def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the manual-restart advisory, not install source -- pin
+    # a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3414,6 +4299,20 @@ def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the systemctl-available path, not install source --
+    # pin a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3549,6 +4448,20 @@ def test_upgrade_propagates_install_failure_as_exit1(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about install-failure propagation, not install source --
+    # pin a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3591,6 +4504,20 @@ def test_upgrade_restarts_systemctl_after_failed_install(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the finally-block restart, not install source -- pin
+    # a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3664,6 +4591,20 @@ def test_upgrade_restarts_launchctl_after_failed_install(monkeypatch, capsys, tm
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the finally-block restart, not install source -- pin
+    # a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3741,6 +4682,20 @@ def test_upgrade_no_launchctl_on_linux_uses_systemctl(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", fake_which)
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the launchctl-absent-on-Linux path, not install
+    # source -- pin a pypi source explicitly rather than depending on
+    # whatever _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3807,6 +4762,23 @@ def test_upgrade_prefers_uv_tool_when_uv_managed(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", fake_which)
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the uv-tool-managed dispatch shape (--reinstall),
+    # not install source -- pin a pypi source explicitly rather than
+    # depending on whatever _get_install_info() happens to report on the
+    # test machine. See test_upgrade_uv_managed_git_install_keeps_git_target
+    # below for the regression test that a uv-managed GIT install is not
+    # silently converted to this "muxplex" package name (the original defect).
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -3868,6 +4840,20 @@ def test_upgrade_falls_back_to_pip_when_uv_absent(monkeypatch, capsys):
     monkeypatch.setattr(shutil, "which", fake_which)
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about the uv-absent pip fallback, not install source --
+    # pin a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -4079,6 +5065,20 @@ def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/snap/bin/uv")
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    # This test is about _find_uv() vs shutil.which(), not install source --
+    # pin a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -4142,6 +5142,20 @@ def test_upgrade_exits_1_after_finally_recovers_stopped_service(monkeypatch, cap
         lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
     )
     monkeypatch.setattr(subprocess, "run", mock_run)
+    # This test is about install-failure propagation, not install source --
+    # pin a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod,
         "_check_for_update",
@@ -4218,6 +5232,20 @@ def test_upgrade_exits_1_if_service_fails_to_restart(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    # This test is about the service-never-becomes-active failure, not
+    # install source -- pin a pypi source explicitly rather than depending
+    # on whatever _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod, "_check_for_update", lambda info: (True, "update available")
     )
@@ -4263,6 +5291,20 @@ def test_upgrade_calls_daemon_reload_before_start(monkeypatch, capsys):
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    # This test is about daemon-reload ordering, not install source -- pin a
+    # pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod, "_check_for_update", lambda info: (True, "update available")
     )
@@ -4432,6 +5474,20 @@ def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    # This test is about the readiness-wait race, not install source -- pin a
+    # pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod, "_check_for_update", lambda info: (True, "update available")
     )
@@ -4502,6 +5558,20 @@ def test_upgrade_reports_honest_timeout_and_still_runs_doctor(
 
     monkeypatch.setattr(subprocess, "run", mock_run)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    # This test is about the genuine-timeout path, not install source -- pin
+    # a pypi source explicitly rather than depending on whatever
+    # _get_install_info() happens to report on the test machine.
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda: {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
     monkeypatch.setattr(
         cli_mod, "_check_for_update", lambda info: (True, "update available")
     )
