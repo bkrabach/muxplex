@@ -1228,33 +1228,54 @@ function pickerOptionContent(viewName, sessionCount) {
 }
 
 /**
- * Per-view session counts for the picker's STATE enrichment, computed from
- * already-fetched, already-documented data only:
- *   - `allSessionNames`: this device's current session names (GET /api/sessions)
- *   - `viewsList`: raw `settings.views` shape -- a list of
- *     `{name: string, sessions: string[]}` objects (views.py's `filter_visible`
- *     is the canonical reader of this same shape).
+ * Per-view session counts for the picker's STATE enrichment.
  *
- * Matches by the ":<name>" suffix -- the exact rule AGENTS.md documents as
- * safe for clients to port ("View membership entries are normalized to
- * 'device_id:name' form; clients match by the ':<name>' suffix"), with a
- * bare-name fallback for legacy pre-normalization entries (mirrors
- * views.py's own dual-lookup). This is NOT a re-derivation of the
- * needs-attention bell predicate or of view filtering semantics -- just a
- * membership count, using the one matching rule the server explicitly
- * blesses for client reuse.
- * @param {string[]} allSessionNames
+ * Two calling shapes, kept backward compatible (AUTO_VIEWS_SPEC.md §9.4):
+ *
+ *   1. viewSessionCounts(sessionsWithViews, viewsList) -- PREFERRED. When
+ *      `sessionsWithViews` entries carry a `views` array (the server's
+ *      resolved membership from GET /api/sessions -- pins union glob-rule
+ *      matches; see views.annotate_view_membership), counts are read
+ *      straight from that annotation: `sessions.filter(s =>
+ *      (s.views||[]).indexOf(name) !== -1).length`. This is the ONLY path
+ *      that counts rule-matched sessions correctly -- the suffix-matching
+ *      fallback below cannot see them, because they are never written into
+ *      `view.sessions`.
+ *   2. viewSessionCounts(allSessionNames, viewsList) -- LEGACY fallback,
+ *      kept for the `hidden`/`all` pseudo-view counts (which have no rules
+ *      and gain none -- AGENTS.md's ":<name>" suffix rule remains exactly
+ *      correct for them) and for any caller still passing bare name
+ *      strings. Matches by the ":<name>" suffix with a bare-name fallback
+ *      for legacy pre-normalization entries (mirrors views.py's own
+ *      dual-lookup).
+ *
+ * Neither path re-derives the needs-attention bell predicate or general
+ * view-filtering semantics -- just a membership count.
+ * @param {string[]|Array<{name:string, views?:string[]}>} sessionsOrNames
  * @param {Array<{name:string, sessions:string[]}>} viewsList
  * @returns {Object<string, number>}
  */
-function viewSessionCounts(allSessionNames, viewsList) {
+function viewSessionCounts(sessionsOrNames, viewsList) {
   var counts = {};
-  var names = allSessionNames || [];
+  var entries = sessionsOrNames || [];
   var views = viewsList || [];
+  // Detect the preferred shape: an array of session objects (annotated),
+  // vs. an array of bare name strings (legacy).
+  var annotated = entries.length > 0 && typeof entries[0] === 'object' && entries[0] !== null;
+
   views.forEach(function (v) {
     if (!v || !v.name) return;
-    var members = v.sessions || [];
     var count = 0;
+    if (annotated) {
+      for (var k = 0; k < entries.length; k++) {
+        var sessViews = entries[k].views || [];
+        if (sessViews.indexOf(v.name) !== -1) count++;
+      }
+      counts[v.name] = count;
+      return;
+    }
+    var members = v.sessions || [];
+    var names = entries;
     for (var i = 0; i < names.length; i++) {
       var suffix = ':' + names[i];
       var matched = false;
@@ -1674,6 +1695,7 @@ if (typeof document !== 'undefined') {
     var page = 0; // current session grid page
     var pickerPage = 0; // current view/page-picker page
     var grid = null; // last computeGrid()/computeEffectiveGrid() result
+    var allSessionsAnnotated = []; // last-known GET /api/sessions payload (full objects, with `views`)
     var reserved = null; // last reservedControlKeys() result
     var tokens = null; // last deriveTokens() result -- feeds the label-measure font/box
     var keyEls = []; // R*C key <button> elements, index-addressed
@@ -1823,6 +1845,13 @@ if (typeof document !== 'undefined') {
           allSessionNames = sessData.map(function (s) {
             return s.name;
           });
+          // Keep the full annotated payload too (AUTO_VIEWS_SPEC.md §9.4) --
+          // it is already fetched here and already carries the server's
+          // resolved `views` membership per session. loadViewCounts() reads
+          // this for user-view counts instead of re-deriving membership by
+          // suffix match, which cannot see rule-matched sessions (they are
+          // never written into view.sessions).
+          allSessionsAnnotated = sessData;
           snapshots = {};
           for (var j = 0; j < sessData.length; j++) {
             snapshots[sessData[j].name] = sessData[j].snapshot || '';
@@ -2333,14 +2362,21 @@ if (typeof document !== 'undefined') {
       // the picker from opening.
       getJSON('/api/settings')
         .then(function (settings) {
-          // "hidden" is fed through the same suffix-matching helper as a
-          // one-entry pseudo-view list, rather than a bespoke count -- it's
-          // membership-shaped data (settings.hidden_sessions) using the
-          // exact same ":<name>" rule as settings.views (AGENTS.md).
-          var lists = (settings.views || []).concat([
+          // User-view counts now come from allSessionsAnnotated (the
+          // already-fetched GET /api/sessions payload, carrying the
+          // server's resolved `views` membership -- AUTO_VIEWS_SPEC.md
+          // §9.4) rather than re-deriving membership from
+          // settings.views[].sessions by suffix match, which cannot see
+          // rule-matched sessions (they are never written into
+          // view.sessions). "hidden" keeps the suffix-matching path: it
+          // has no rules and gains none, so settings.hidden_sessions'
+          // ":<name>" rule (AGENTS.md) remains exactly correct for it.
+          var userViewCounts = viewSessionCounts(allSessionsAnnotated, settings.views || []);
+          var hiddenCounts = viewSessionCounts(allSessionNames, [
             { name: 'hidden', sessions: settings.hidden_sessions || [] },
           ]);
-          viewCounts = viewSessionCounts(allSessionNames, lists);
+          viewCounts = userViewCounts;
+          viewCounts.hidden = hiddenCounts.hidden;
           viewCounts.all = allSessionNames.length;
           if (mode === 'picker') render();
         })

@@ -513,6 +513,43 @@ test('viewSessionCounts: empty/missing membership returns an empty map, never th
   assert.deepStrictEqual(deck.viewSessionCounts(null, null), {});
 });
 
+// --- viewSessionCounts: annotated shape (AUTO_VIEWS_SPEC.md §9.4) ---
+//
+// When entries carry the server's resolved `views` (from GET /api/sessions),
+// counts are read straight from the annotation -- the ONLY path that counts
+// rule-matched sessions correctly, since they are never written into
+// view.sessions.
+
+test('viewSessionCounts: annotated sessions count from s.views, matching the server\'s own resolved membership', () => {
+  const sessionsWithViews = [
+    { name: 'amplifier-foo', views: ['Auto'] },
+    { name: 'amplifier-bar', views: ['Auto'] },
+    { name: 'unrelated', views: [] },
+  ];
+  // Deliberately give the view an EMPTY `sessions` array (rule-only view) --
+  // the legacy suffix-matching path would report 0 here; the annotated
+  // path must report 2, matching the server's GET /api/sessions annotation.
+  const viewsList = [{ name: 'Auto', sessions: [] }];
+  const counts = deck.viewSessionCounts(sessionsWithViews, viewsList);
+  assert.strictEqual(counts.Auto, 2);
+});
+
+test('viewSessionCounts: annotated shape handles a session in multiple views', () => {
+  const sessionsWithViews = [{ name: 'x', views: ['A', 'B'] }];
+  const viewsList = [{ name: 'A', sessions: [] }, { name: 'B', sessions: [] }];
+  const counts = deck.viewSessionCounts(sessionsWithViews, viewsList);
+  assert.strictEqual(counts.A, 1);
+  assert.strictEqual(counts.B, 1);
+});
+
+test('viewSessionCounts: legacy bare-name-array calling shape still works unchanged', () => {
+  // Regression: the pre-existing calling convention (array of name strings)
+  // must still produce the pre-existing suffix-matched result.
+  const names = ['alpha', 'beta'];
+  const viewsList = [{ name: 'work', sessions: ['device-1:alpha'] }];
+  assert.strictEqual(deck.viewSessionCounts(names, viewsList).work, 1);
+});
+
 // ─── fitLabel -- pixel-measured truncation (port of rendering.py's _fit_label) ─
 //
 // `measureWidth` is a fake: N characters -> N "pixels". This is enough to

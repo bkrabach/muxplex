@@ -163,7 +163,7 @@
       <nav class="settings-tabs">
         <button class="settings-tab settings-tab--active" data-tab="display">Display</button>
         <button class="settings-tab" data-tab="sessions">Sessions</button>
-        <button class="settings-tab" data-tab="views">Views</button>
+        <button class="settings-tab" data-tab="views">Views<span id="settings-tab-view-errors-badge" class="error-count-badge hidden"></span></button>
         <button class="settings-tab" data-tab="new-session">Commands<span id="settings-tab-command-errors-badge" class="error-count-badge hidden"></span></button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
         <button class="settings-tab" data-tab="tmux">Terminal</button>
@@ -271,6 +271,11 @@
         <div class="settings-panel hidden" data-tab="views">
           <div id="views-settings-list" class="views-settings-list"></div>
           <p class="settings-helper" id="views-settings-empty" style="display:none">No user-created views yet. Use the dropdown in the header to create one.</p>
+          <div class="settings-field settings-field--column" id="settings-view-errors-field" style="display:none">
+            <label class="settings-label">View rule configuration errors</label>
+            <ul id="settings-view-errors" class="settings-command-errors"></ul>
+            <span class="settings-helper">These <code>match_names</code> patterns in <code>~/.config/muxplex/settings.json</code> were rejected and are excluded from matching -- the view still shows its pins and any other valid patterns. Fix the pattern named above, then reopen this tab to confirm.</span>
+          </div>
         </div>
         <div class="settings-panel hidden" data-tab="new-session">
           <div class="settings-field settings-field--column">

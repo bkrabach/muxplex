@@ -5571,7 +5571,14 @@ test('filterVisible view="hidden" excludes dead keys (hidden_sessions entries wi
 // --- filterVisible: user view ---
 
 test('filterVisible user view filters by membership AND visibility', () => {
-  const sessions = [_session('a'), _session('b'), _session('c')];
+  // Membership is now the server's resolved `views` annotation (§9.1), not
+  // a client-side re-derivation from view.sessions -- fixtures supply the
+  // annotation a real GET /api/sessions response would carry for these pins.
+  const sessions = [
+    { ..._session('a'), views: ['Work'] },
+    { ..._session('b'), views: ['Work'] },
+    { ..._session('c'), views: [] },
+  ];
   const settings = {
     hidden_sessions: ['dev1:b'],
     views: [{ name: 'Work', sessions: ['dev1:a', 'dev1:b'] }],
@@ -5582,7 +5589,11 @@ test('filterVisible user view filters by membership AND visibility', () => {
 });
 
 test('filterVisible user view includeHidden:true lifts visibility filter but NOT membership filter', () => {
-  const sessions = [_session('a'), _session('b'), _session('c')];
+  const sessions = [
+    { ..._session('a'), views: ['Work'] },
+    { ..._session('b'), views: ['Work'] },
+    { ..._session('c'), views: [] },
+  ];
   const settings = {
     hidden_sessions: ['dev1:b'],
     views: [{ name: 'Work', sessions: ['dev1:a', 'dev1:b'] }],
@@ -5602,7 +5613,10 @@ test('filterVisible returns empty list for unknown view name', () => {
 // --- Overlap state (key in both view.sessions AND hidden_sessions) ---
 
 test('filterVisible overlap state: hidden filter wins by default, includeHidden surfaces it', () => {
-  const sessions = [_session('a'), _session('b')];
+  const sessions = [
+    { ..._session('a'), views: ['Work'] },
+    { ..._session('b'), views: ['Work'] },
+  ];
   const settings = {
     hidden_sessions: ['dev1:a'],   // also in Work view
     views: [{ name: 'Work', sessions: ['dev1:a', 'dev1:b'] }],
@@ -5617,6 +5631,61 @@ test('filterVisible overlap state: hidden filter wins by default, includeHidden 
   assert.deepStrictEqual(inclResult.map(s => s.name), ['a', 'b']);
 });
 
+// ---------------------------------------------------------------------------
+// Auto-updating views (AUTO_VIEWS_SPEC.md §11.5, §9.1): filterVisible's
+// user-view branch reads the server's resolved `s.views` annotation --
+// membership is a lookup, not a re-derivation from view.sessions.
+// ---------------------------------------------------------------------------
+
+test('filterVisible user view reads s.views (server annotation), not view.sessions', () => {
+  const sessions = [
+    { sessionKey: 'dev1:amplifier-foo', name: 'amplifier-foo', views: ['Auto'] },
+    { sessionKey: 'dev1:unrelated', name: 'unrelated', views: [] },
+  ];
+  // Deliberately give `Auto` an EMPTY `sessions` array (a rule-only view) --
+  // if filterVisible were still reading view.sessions, this would return [].
+  const settings = { hidden_sessions: [], views: [{ name: 'Auto', sessions: [] }] };
+  const result = app.filterVisible(sessions, settings, 'Auto');
+  assert.deepStrictEqual(result.map(s => s.name), ['amplifier-foo']);
+});
+
+test('filterVisible user view: a session missing `views` is NOT a member (no fallback)', () => {
+  // Deliberately asserts the ABSENCE of a client-side dual-key fallback
+  // (§9.1): a session dict with no `views` key at all must not be treated
+  // as a member even if it appears in view.sessions -- the annotation is
+  // the only source of truth once this feature ships.
+  const sessions = [_session('pinned')]; // no `views` field
+  const settings = {
+    hidden_sessions: [],
+    views: [{ name: 'Work', sessions: ['dev1:pinned'] }],
+  };
+  const result = app.filterVisible(sessions, settings, 'Work');
+  assert.deepStrictEqual(result, []);
+});
+
+test('filterVisible "all" and "hidden" are unaffected by the `views` annotation', () => {
+  const sessions = [
+    { sessionKey: 'dev1:a', name: 'a', views: ['Auto'] },
+    { sessionKey: 'dev1:b', name: 'b', views: [] },
+  ];
+  const settings = { hidden_sessions: ['dev1:a'], views: [{ name: 'Auto', sessions: [] }] };
+  assert.deepStrictEqual(app.filterVisible(sessions, settings, 'all').map(s => s.name), ['b']);
+  assert.deepStrictEqual(app.filterVisible(sessions, settings, 'hidden').map(s => s.name), ['a']);
+});
+
+test('filterVisible user view: hidden rule-matched session excluded unless includeHidden', () => {
+  const sessions = [
+    { sessionKey: 'dev1:amplifier-hidden', name: 'amplifier-hidden', views: ['Auto'] },
+  ];
+  const settings = {
+    hidden_sessions: ['dev1:amplifier-hidden'],
+    views: [{ name: 'Auto', sessions: [] }],
+  };
+  assert.deepStrictEqual(app.filterVisible(sessions, settings, 'Auto'), []);
+  const incl = app.filterVisible(sessions, settings, 'Auto', { includeHidden: true });
+  assert.deepStrictEqual(incl.map(s => s.name), ['amplifier-hidden']);
+});
+
 // --- Bare-name dual-lookup ---
 
 test('filterVisible bare-name in hidden_sessions matches session by name', () => {
@@ -5628,11 +5697,19 @@ test('filterVisible bare-name in hidden_sessions matches session by name', () =>
   assert.deepStrictEqual(result.map(s => s.name), ['b']);
 });
 
-test('filterVisible bare-name in view.sessions matches session by name', () => {
-  const sessions = [_session('a'), _session('b'), _session('c')];
+test('filterVisible bare-name pin trusts the server-side annotation regardless of key form', () => {
+  // The bare-name/sessionKey dual-lookup for pins now lives server-side
+  // only (views.py's view_names_for_session) -- the client trusts
+  // whatever `views` the server resolved, whether the underlying pin was
+  // stored as a bare name or a device-qualified key.
+  const sessions = [
+    { ..._session('a'), views: ['Work'] },
+    { ..._session('b'), views: ['Work'] },
+    { ..._session('c'), views: [] },
+  ];
   const settings = {
     hidden_sessions: [],
-    views: [{ name: 'Work', sessions: ['a', 'b'] }],  // bare names
+    views: [{ name: 'Work', sessions: ['a', 'b'] }],  // bare names, server-side concern
   };
   const result = app.filterVisible(sessions, settings, 'Work');
   assert.deepStrictEqual(result.map(s => s.name), ['a', 'b']);

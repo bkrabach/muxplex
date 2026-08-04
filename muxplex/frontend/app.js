@@ -365,6 +365,10 @@ let _sessionCommands = null;
 // Human-readable strings from that response's `errors` (rejected
 // session_commands entries) -- rendered read-only in Settings > Commands.
 let _sessionCommandErrors = [];
+// Human-readable strings from GET /api/views' `errors` (rejected
+// match_names rules -- AUTO_VIEWS_SPEC.md §9.2) -- rendered read-only in
+// Settings > Views, mirroring _sessionCommandErrors exactly.
+let _viewRuleErrors = [];
 
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
@@ -1094,11 +1098,21 @@ function filterVisible(sessions, settings, view, options) {
   for (var i = 0; i < views.length; i++) {
     if (views[i].name === view) { userView = views[i]; break; }
   }
-  if (!userView) return [];
-  var members = userView.sessions || [];
+  if (!userView) return []; // keep: the documented "unknown view -> empty" contract
 
+  // Membership is a lookup against the server's resolved answer, not a
+  // client-side re-derivation (AUTO_VIEWS_SPEC.md §0.1/§9.1): every session
+  // dict from GET /api/sessions and GET /api/federation/sessions carries
+  // `views` (pins union glob-rule matches). No fallback to the old dual-key
+  // search against `userView.sessions` -- deliberately: the PWA is served by
+  // the SAME server that annotates (with Cache-Control: no-cache, load-
+  // bearing per AGENTS.md), and the local server annotates remote sessions
+  // too, so the annotation is present regardless of any peer's version. A
+  // missing `s.views` is therefore a server bug, and a silent dual path
+  // would hide it. Provenance (pinned vs. matched) is read from
+  // `userView.sessions` at its OWN call sites (the view pickers), not here.
   function inView(s) {
-    return members.indexOf(keyOf(s)) !== -1 || members.indexOf(s.name) !== -1;
+    return (s.views || []).indexOf(view) !== -1;
   }
   if (includeHidden) {
     return live.filter(inView);
@@ -2478,6 +2492,15 @@ function _openMobileViewPicker(sessionKey, sessionName, unhideFirst) {
     return;
   }
 
+  // Same provenance distinction as the desktop flyout submenu (§9.3):
+  // pinned members can be toggled off; rule-matched members cannot (they
+  // aren't pinned, so the toggle would be a silent no-op) and are shown
+  // disabled with a label instead.
+  var mobilePickerSession = (_currentSessions || []).find(function(s) {
+    return (s.sessionKey || s.name) === sessionKey;
+  });
+  var mobileSessionViews = (mobilePickerSession && mobilePickerSession.views) || [];
+
   var sheet = document.createElement('div');
   sheet.className = 'flyout-sheet';
 
@@ -2487,10 +2510,15 @@ function _openMobileViewPicker(sessionKey, sessionName, unhideFirst) {
 
   for (var i = 0; i < views.length; i++) {
     var v = views[i];
-    var isIn = (v.sessions || []).indexOf(sessionKey) !== -1;
-    html += '<button class="flyout-sheet__item" role="menuitem" data-view-index="' + i + '">';
+    var isPinned = (v.sessions || []).indexOf(sessionKey) !== -1;
+    var isMatched = !isPinned && mobileSessionViews.indexOf(v.name) !== -1;
+    var isIn = isPinned || isMatched;
+    html += '<button class="flyout-sheet__item' + (isMatched ? ' flyout-sheet__item--matched' : '') + '"' +
+      (isMatched ? ' disabled title="Matched by rule -- not pinned, so it can\u2019t be removed here"' : '') +
+      ' role="menuitem" data-view-index="' + i + '">';
     html += '<span style="margin-right:8px">' + (isIn ? '\u2713' : '\u00a0\u00a0') + '</span>';
     html += escapeHtml(v.name);
+    if (isMatched) html += ' <span class="flyout-sheet__matched-label">(rule)</span>';
     html += '</button>';
   }
 
@@ -2619,14 +2647,28 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
   var views = (_serverSettings && _serverSettings.views) || [];
 
   var sessionKey = _flyoutSessionKey;
+  // Session's server-resolved view membership (pins union glob-rule
+  // matches -- AUTO_VIEWS_SPEC.md §9.3). Used to distinguish "pinned"
+  // (togglable) from "matched by rule" (member, but the toggle would
+  // silently do nothing since it's not pinned -- so it's disabled and
+  // labeled instead of offered as a no-op).
+  var flyoutSession = (_currentSessions || []).find(function(s) {
+    return (s.sessionKey || s.name) === sessionKey;
+  });
+  var sessionViews = (flyoutSession && flyoutSession.views) || [];
   // Show ALL user views with checkmarks — unified Views submenu
   var html = '';
   for (var i = 0; i < views.length; i++) {
     var v = views[i];
-    var isIn = (v.sessions || []).indexOf(sessionKey) !== -1;
-    html += '<button class="flyout-submenu__item" role="menuitem" data-view-index="' + i + '">';
+    var isPinned = (v.sessions || []).indexOf(sessionKey) !== -1;
+    var isMatched = !isPinned && sessionViews.indexOf(v.name) !== -1;
+    var isIn = isPinned || isMatched;
+    html += '<button class="flyout-submenu__item' + (isMatched ? ' flyout-submenu__item--matched' : '') + '"' +
+      (isMatched ? ' disabled title="Matched by rule -- not pinned, so it can\u2019t be removed here"' : '') +
+      ' role="menuitem" data-view-index="' + i + '">';
     html += '<span class="flyout-submenu__check">' + (isIn ? '\u2713' : '') + '</span>';
     html += escapeHtml(v.name);
+    if (isMatched) html += '<span class="flyout-submenu__matched-label"> (rule)</span>';
     html += '</button>';
   }
   // — Always show "+ New View" option at the bottom
@@ -3095,15 +3137,19 @@ function renderManageViewList() {
     summaryEl.textContent = allSessions.length + ' sessions · ' + visibleCount(_currentSessions, _serverSettings, _activeView, { includeHidden: true }) + ' in this view';
   }
 
-  // Partition into inView (checked first) and notInView
-  var inView = allSessions.filter(function(s) {
+  // Membership per session: pinned (in viewSessions -- togglable) or
+  // matched-by-rule (in s.views but not pinned -- AUTO_VIEWS_SPEC.md §9.3,
+  // shown as a member but not removable here, since there's no pin to
+  // remove). Both count as "in view" for partitioning purposes.
+  function isPinned(s) {
     var key = s.sessionKey || s.name;
     return viewSessions.indexOf(key) !== -1 || viewSessions.indexOf(s.name) !== -1;
-  });
-  var notInView = allSessions.filter(function(s) {
-    var key = s.sessionKey || s.name;
-    return viewSessions.indexOf(key) === -1 && viewSessions.indexOf(s.name) === -1;
-  });
+  }
+  function isMatchedByRule(s) {
+    return !isPinned(s) && (s.views || []).indexOf(_activeView) !== -1;
+  }
+  var inView = allSessions.filter(function(s) { return isPinned(s) || isMatchedByRule(s); });
+  var notInView = allSessions.filter(function(s) { return !isPinned(s) && !isMatchedByRule(s); });
 
   // Sort each group: alphabetical, grouped by device
   function sortByDeviceAlpha(arr) {
@@ -3688,7 +3734,29 @@ async function loadSessionCommands() {
   // when renderCommandPairsSettings() runs -- this function is called once
   // at page load (before Settings has ever been opened), so the badge must
   // be current without requiring the user to open Settings first.
-  _updateCommandErrorBadges();
+  _updateConfigErrorBadges();
+}
+
+/**
+ * Load view-rule validation errors from GET /api/views into
+ * _viewRuleErrors -- the same "fail loud" treatment as
+ * loadSessionCommands()/_sessionCommandErrors (AUTO_VIEWS_SPEC.md §9.2).
+ * Called from the same two places loadSessionCommands() is (page load and
+ * every openSettings()), PLUS from followRemoteViewDefinitions()'s
+ * settings-changed branch -- so a rule that arrives by federation sync or
+ * a direct file edit surfaces without a reload.
+ * @returns {Promise<void>}
+ */
+async function loadViewRules() {
+  try {
+    const res = await api('GET', '/api/views');
+    const body = await res.json();
+    _viewRuleErrors = body.errors || [];
+  } catch (err) {
+    console.warn('[loadViewRules] failed:', err);
+    _viewRuleErrors = [];
+  }
+  _updateConfigErrorBadges();
 }
 
 /**
@@ -4371,6 +4439,10 @@ function openSettings() {
   // loadTmuxConfigSettings() immediately above (see COMMAND_PAIRS_UI_DESIGN.md
   // §6 item 2 -- this is what closes the apply→verify loop for command pairs).
   loadSessionCommands().then(renderCommandPairsSettings);
+
+  // Views tab errors -- same re-fetch-on-reopen rationale as Commands
+  // immediately above (AUTO_VIEWS_SPEC.md §9.2).
+  loadViewRules().then(renderViewsSettingsTab);
 }
 
 /**
@@ -4701,25 +4773,56 @@ function _buildCommandPairRow(cmd) {
 }
 
 /**
- * Reflect _sessionCommandErrors as small count badges OUTSIDE the Settings
- * dialog (both gear buttons) and on the Commands tab button itself, so a
- * config error is visible without opening Settings > Commands at all --
- * COMMAND_PAIRS_UI_DESIGN.md §6 item 5 ("fail loud" for a config error the
- * user otherwise cannot see). Called from loadSessionCommands() so both the
- * page-load fetch and every openSettings() re-fetch keep it current.
+ * Reflect config-error counts as small badges OUTSIDE the Settings dialog
+ * (both gear buttons) and on each relevant tab button itself, so a config
+ * error is visible without opening Settings at all -- COMMAND_PAIRS_UI_DESIGN.md
+ * §6 item 5 ("fail loud" for a config error the user otherwise cannot see),
+ * extended by AUTO_VIEWS_SPEC.md §9.2 to cover view-rule errors too.
+ *
+ * The two GEAR badges show the SUM across every error source (so the user
+ * always sees "something needs attention" from one glance at the gear);
+ * each TAB badge shows only its OWN source (so opening Settings takes them
+ * straight to the right tab). Generalizes the former
+ * `_updateCommandErrorBadges` (kept as a thin alias below since some call
+ * sites/tests may still reference the old name) to also read
+ * `_viewRuleErrors`. Called from loadSessionCommands() AND loadViewRules()
+ * so either fetch keeps both gear badges current.
  */
-function _updateCommandErrorBadges() {
-  var count = (_sessionCommandErrors || []).length;
-  ['settings-error-badge', 'settings-error-badge-expanded', 'settings-tab-command-errors-badge'].forEach(function(id) {
+function _updateConfigErrorBadges() {
+  var commandCount = (_sessionCommandErrors || []).length;
+  var viewRuleCount = (_viewRuleErrors || []).length;
+  var totalCount = commandCount + viewRuleCount;
+
+  ['settings-error-badge', 'settings-error-badge-expanded'].forEach(function(id) {
     var el = $(id);
     if (!el) return;
-    if (count > 0) {
-      el.textContent = String(count);
+    if (totalCount > 0) {
+      el.textContent = String(totalCount);
       el.classList.remove('hidden');
     } else {
       el.classList.add('hidden');
     }
   });
+
+  var tabBadges = [
+    ['settings-tab-command-errors-badge', commandCount],
+    ['settings-tab-view-errors-badge', viewRuleCount],
+  ];
+  tabBadges.forEach(function(pair) {
+    var el = $(pair[0]);
+    if (!el) return;
+    if (pair[1] > 0) {
+      el.textContent = String(pair[1]);
+      el.classList.remove('hidden');
+    } else {
+      el.classList.add('hidden');
+    }
+  });
+}
+
+// Thin alias: kept for any pre-existing external reference to the old name.
+function _updateCommandErrorBadges() {
+  _updateConfigErrorBadges();
 }
 
 /**
@@ -5923,6 +6026,9 @@ document.addEventListener('DOMContentLoaded', async function() {
   // operator edits settings.json). A failed fetch degrades to the one-pair
   // create UI (today's behavior), never blocks session creation.
   loadSessionCommands();
+  // Resolved view-rule validation errors -- same "not polled, fetched once
+  // plus on relevant triggers" treatment as loadSessionCommands() above.
+  loadViewRules();
   // Seed the change-detection baseline so the first /api/state poll doesn't
   // trigger a redundant re-fetch in followRemoteViewDefinitions().
   _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || 0;
