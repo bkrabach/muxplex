@@ -1250,13 +1250,31 @@ def test_git_ref_kind_default_when_no_requested_revision(monkeypatch):
 
 
 def _fake_ls_remote(tags: dict[str, str], heads: dict[str, str]):
-    """subprocess.run stub for `git ls-remote --tags|--heads <url>`."""
+    """subprocess.run stub for `git ls-remote --tags|--heads|<exact ref> <url>`.
+
+    Handles all three call shapes `_check_for_update`/`_git_ref_kind_and_target`
+    make: `--tags` and `--heads` listings, and the exact `refs/heads/<name>`
+    single-ref query `_check_for_update`'s branch-kind path uses to get that
+    branch's current sha.
+    """
 
     def fake_run(cmd, **kwargs):
+        exact_head = next(
+            (
+                arg
+                for arg in cmd
+                if isinstance(arg, str) and arg.startswith("refs/heads/")
+            ),
+            None,
+        )
         if "--tags" in cmd:
             out = "\n".join(f"{sha}\trefs/tags/{name}" for name, sha in tags.items())
         elif "--heads" in cmd:
             out = "\n".join(f"{sha}\trefs/heads/{name}" for name, sha in heads.items())
+        elif exact_head is not None:
+            name = exact_head[len("refs/heads/") :]
+            sha = heads.get(name)
+            out = f"{sha}\t{exact_head}" if sha else ""
         else:
             out = ""
         return type("R", (), {"returncode": 0, "stdout": out, "stderr": ""})()
