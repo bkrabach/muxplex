@@ -1,10 +1,51 @@
 # Implementation Specification: Auto-Updating Views (glob rules)
 
-**Target repo:** `/home/bkrabach/dev/muxplex-qol-updates/muxplex` (branch `main`, `50b1560`)
-**Status:** ready to implement. No further design decisions required.
-**Scope discipline:** this adds ONE optional key inside an existing settings structure and ONE
-predicate to an existing filter. It does not build a rule engine, a query language, or a
-subsystem.
+Status: **MERGED to `main` on 2026-08-04 (`8e8692f`..`b78a944`, four commits) — NOT
+YET IN A RELEASE.** The newest tag, `v0.35.0`, predates all four, so an installed
+muxplex has manual-only views. Retained as an architectural decision record.
+
+Source brief: `docs/BACKLOG.md` item 1, deleted in `b78a944` per that backlog's own
+graduation rule. Do not re-add it.
+
+**Scope discipline (as written, and as shipped):** this adds ONE optional key inside an
+existing settings structure and ONE predicate to an existing filter. It does not build a
+rule engine, a query language, or a subsystem.
+
+**Read §0.1 first — it is the most valuable section in the document.** The originating
+brief's implied delivery mechanism (put rule evaluation behind `GET /api/view` and stop)
+would have shipped a feature that renders **empty in the PWA**. Three of the four surfaces
+that consume view membership re-derive it *client-side* from `settings.views[].sessions` —
+the PWA grid/dropdown/sidebar/Manage View (`app.js` `filterVisible()`), muxplex-deck's
+`resolve_view()`, and the soft deck's picker counts; only the soft deck's session list
+asks the server. `views.filter_visible()` had exactly one server-side caller in the repo.
+The fix that shipped is additive and is the load-bearing decision here: every session dict
+in `GET /api/sessions` and `GET /api/federation/sessions` carries a resolved
+`views: [<name>, ...]`, so client membership logic *shrinks* instead of being ported again.
+
+Five decisions below are settled and will be re-litigated by anyone who skips them:
+
+- **Glob matches the bare session name, one syntax, no device qualifier.** The qualifier is
+  a UUID, not a hostname, so `spark-1:*` can never match anything; a pattern containing
+  `:` is rejected at validation rather than silently never matching
+  (`views.view_patterns`, `views.validate_view_rules`). §0.2.
+- **Membership is the UNION of rules and manual pins, resolved fresh on every read.** The
+  server must **NEVER** materialize a rule match back into `view["sessions"]` — that
+  re-introduces the exact decay this feature exists to eliminate, turns every poll cycle
+  into a settings write, and hands federation LWW a new race. This prohibition is also
+  recorded in `AGENTS.md` because it is load-bearing beyond this document.
+- **Exclusions are deliberately out of v1**, with the shape pre-committed so adding them
+  later is not a redesign.
+- **Ordering falls through to the existing sort.** A view must not become a fourth ordering
+  authority.
+- **Attention is a SORT, permanently — never a view.** Looking at a session clears
+  `needs_attention`, so an attention *view* would empty itself as you used it, and it would
+  immediately demand set composition to be useful. §0.6.
+
+**Open follow-up, real and unshipped:** muxplex-deck (separate repo, independent release)
+renders a rule-based view as **empty** until it reads the new `views` field. Manual views
+are unaffected. The remedy is the ~5-line change specified in §10.2; the `muxplex_client`
+half already shipped here (§10.1), which is what keeps it to five lines instead of a port
+of the matcher. Not a blocker for this repo — but it is a live gap, not a hypothetical.
 
 ---
 
