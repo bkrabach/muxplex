@@ -845,6 +845,33 @@ async def test_legacy_reap_never_sweeps_port(monkeypatch, caplog):
     assert "lsof" not in inspect.getsource(ttyd_mod)
 
 
+async def test_legacy_reap_reports_live_port_with_no_pid_file(monkeypatch, caplog):
+    """Regression: a live legacy ttyd on 7682 with NO pid file (crash, manual
+    kill, or state-dir wipe lost the recorded pid) must still be reported --
+    not silently missed. No identity can be confirmed without a recorded pid,
+    so this must never reap (that would be the exact port-based sweep this
+    migration deletes); it must always report loudly.
+    """
+    assert not ttyd_mod.LEGACY_TTYD_PID_PATH.exists()
+
+    def _fail_if_kill_called(pid, sig):
+        raise AssertionError(
+            f"os.kill must not be called with no recorded pid (pid={pid})"
+        )
+
+    monkeypatch.setattr(os, "kill", _fail_if_kill_called)
+    monkeypatch.setattr(ttyd_mod, "_legacy_port_still_live", lambda: True)
+
+    with caplog.at_level("ERROR"):
+        result = await reap_legacy_ttyd()
+
+    assert result is False
+    assert any("127.0.0.1:7682" in rec.message for rec in caplog.records), (
+        "no-pid-file + live legacy listener must still produce the "
+        "UNAUTHENTICATED WRITABLE TERMINAL report"
+    )
+
+
 def test_no_lsof_anywhere_in_module():
     """Source-level: "lsof" does not appear in ttyd.py. Guards the deleted sweep."""
     source = inspect.getsource(ttyd_mod)

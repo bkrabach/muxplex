@@ -722,49 +722,47 @@ def _legacy_port_still_live() -> bool:
 
 async def reap_legacy_ttyd() -> bool:
     """One-time migration: reap the pre-upgrade single ttyd if its PID file
-    survived, then unconditionally detect-and-report (never sweep) a still-live
-    legacy port.
+    survived and its identity is confirmed, then unconditionally
+    detect-and-report (never sweep) a still-live legacy port -- regardless of
+    whether a PID file existed at all.
+
+    A live 7682 with NO recorded PID (crash, manual kill, or state-dir wipe
+    lost the file) gets the identical loud report as every other unconfirmed
+    case below: without a recorded PID there is no identity to check, and
+    reaping by "whatever is listening on 7682" is precisely the port-based
+    sweep this migration exists to delete. Report, never sweep.
 
     Runs once in lifespan, immediately after ``reap_orphan_ttyds()``.
     """
-    if not LEGACY_TTYD_PID_PATH.exists():
-        return False
-
-    try:
-        pid = int(LEGACY_TTYD_PID_PATH.read_text().strip())
-    except (ValueError, OSError):
-        LEGACY_TTYD_PID_PATH.unlink(missing_ok=True)
-        if _legacy_port_still_live():
-            _log.error(
-                "A process is still listening on 127.0.0.1:%d. This is very "
-                "likely a pre-upgrade muxplex ttyd -- an UNAUTHENTICATED "
-                "WRITABLE TERMINAL attached to a live tmux session. muxplex no "
-                "longer manages that port and will not kill an unidentified "
-                "process. Identify and stop it manually (find the process "
-                "bound to that port and terminate it).",
-                TTYD_PORT,
-            )
-        return False
-
-    snapshot = await _ps_snapshot()
-    cmdline = snapshot.get(pid, "")
-    confirmed = (
-        bool(cmdline)
-        and "ttyd" in cmdline
-        and (f"-p {TTYD_PORT}" in cmdline or f":{TTYD_PORT}" in cmdline)
-    )
-
     reaped = False
-    if confirmed:
-        await _terminate_pid(pid)
-        reaped = True
-        _log.info("ttyd: reaped legacy single-ttyd pid=%d", pid)
-    LEGACY_TTYD_PID_PATH.unlink(missing_ok=True)
+
+    if LEGACY_TTYD_PID_PATH.exists():
+        try:
+            pid: int | None = int(LEGACY_TTYD_PID_PATH.read_text().strip())
+        except (ValueError, OSError):
+            pid = None
+        LEGACY_TTYD_PID_PATH.unlink(missing_ok=True)
+
+        if pid is not None:
+            snapshot = await _ps_snapshot()
+            cmdline = snapshot.get(pid, "")
+            confirmed = (
+                bool(cmdline)
+                and "ttyd" in cmdline
+                and (f"-p {TTYD_PORT}" in cmdline or f":{TTYD_PORT}" in cmdline)
+            )
+            if confirmed:
+                await _terminate_pid(pid)
+                reaped = True
+                _log.info("ttyd: reaped legacy single-ttyd pid=%d", pid)
 
     # Unconditional detect-and-report, never a sweep: killing an unidentified
     # PID on a hardcoded port is precisely the dangerous sweep this migration
     # exists to delete (AGENTS.md's "unpatched second instance WILL kill the
-    # first instance's ttyd" hazard).
+    # first instance's ttyd" hazard). Runs regardless of which path above got
+    # us here -- no PID file, a corrupt one, an unconfirmed identity, or a
+    # confirmed reap that didn't actually take -- so a live legacy listener is
+    # never silently missed.
     if _legacy_port_still_live():
         _log.error(
             "A process is still listening on 127.0.0.1:%d. This is very likely "
