@@ -2432,6 +2432,68 @@ def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# deviceLabelPlacement (DEVICE_LABEL_SPEC.md, test plan section 8.2)
+# ---------------------------------------------------------------------------
+
+
+def test_get_settings_exposes_device_label_placement(client, tmp_path, monkeypatch):
+    """P19: GET /api/settings body contains deviceLabelPlacement."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    assert response.json()["deviceLabelPlacement"] == "titlebar"
+
+
+def test_patch_device_label_placement_valid(client, tmp_path, monkeypatch):
+    """P20: a valid PATCH updates placement and derives showDeviceBadges."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"deviceLabelPlacement": "corner"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["deviceLabelPlacement"] == "corner"
+    assert data["showDeviceBadges"] is True
+
+
+def test_patch_device_label_placement_invalid_returns_400(
+    client, tmp_path, monkeypatch
+):
+    """P21: an unknown value is a 400 carrying the discriminator + allowed list."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"deviceLabelPlacement": "banana"})
+    assert response.status_code == 400
+    body = response.json()
+    assert body["unknown_device_label_placement"] is True
+    assert body["allowed"] == ["corner", "off", "titlebar"]
+
+
+def test_patch_device_label_placement_invalid_writes_nothing(
+    client, tmp_path, monkeypatch
+):
+    """P22: a 400 for deviceLabelPlacement makes NO write -- not even to other
+    keys in the same request."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch(
+        "/api/settings", json={"deviceLabelPlacement": "banana", "fontSize": 99}
+    )
+    assert response.status_code == 400
+
+    follow_up = client.get("/api/settings")
+    assert follow_up.json()["fontSize"] != 99
+
+
+# ---------------------------------------------------------------------------
 # GET / PATCH /api/tmux-config
 # ---------------------------------------------------------------------------
 

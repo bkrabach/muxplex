@@ -11,6 +11,7 @@ import pytest
 import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
+    DEVICE_LABEL_PLACEMENTS,
     LOCAL_ONLY_KEYS,
     RESERVED_COMMAND_ID,
     SYNCABLE_KEYS,
@@ -1061,6 +1062,7 @@ def test_syncable_keys_contains_display_settings():
         "bellSound",
         "viewMode",
         "showDeviceBadges",
+        "deviceLabelPlacement",
         "showHoverPreview",
         "activityIndicator",
         "gridViewMode",
@@ -1168,6 +1170,141 @@ def test_apply_synced_settings_does_not_use_time_now():
     apply_synced_settings({"fontSize": 16}, old_ts)
     settings = load_settings()
     assert settings["settings_updated_at"] == old_ts  # exact match, not "close to now"
+
+
+# ============================================================
+# deviceLabelPlacement: authoritative key + showDeviceBadges mirror
+# (DEVICE_LABEL_SPEC.md, sections 2.2-2.4, test plan section 8.1)
+# ============================================================
+
+
+def test_device_label_placement_default_is_titlebar():
+    """P1: DEFAULT_SETTINGS['deviceLabelPlacement'] == 'titlebar'."""
+    assert DEFAULT_SETTINGS["deviceLabelPlacement"] == "titlebar"
+
+
+def test_device_label_placements_vocabulary():
+    """P2: DEVICE_LABEL_PLACEMENTS is the exact closed vocabulary."""
+    assert DEVICE_LABEL_PLACEMENTS == frozenset({"titlebar", "corner", "off"})
+
+
+def test_device_label_placement_is_syncable():
+    """P3: deviceLabelPlacement is syncable."""
+    assert "deviceLabelPlacement" in SYNCABLE_KEYS
+
+
+def test_device_label_placement_not_local_only():
+    """P4: deviceLabelPlacement must NOT be fenced -- it names no command or path."""
+    assert "deviceLabelPlacement" not in LOCAL_ONLY_KEYS
+
+
+def test_show_device_badges_mirror_retained():
+    """P5: showDeviceBadges must never be removed -- a future cleanup must not
+    delete the mirror; unknown pre-v0.36 clients still read it."""
+    assert "showDeviceBadges" in DEFAULT_SETTINGS
+    assert "showDeviceBadges" in SYNCABLE_KEYS
+
+
+def test_migration_derives_off_from_false(tmp_path):
+    """P6: file has only showDeviceBadges=false -> deviceLabelPlacement == 'off'."""
+    settings_mod.SETTINGS_PATH.write_text(json.dumps({"showDeviceBadges": False}))
+    result = load_settings()
+    assert result["deviceLabelPlacement"] == "off"
+
+
+def test_migration_derives_titlebar_from_true(tmp_path):
+    """P7: file has only showDeviceBadges=true -> deviceLabelPlacement == 'titlebar'."""
+    settings_mod.SETTINGS_PATH.write_text(json.dumps({"showDeviceBadges": True}))
+    result = load_settings()
+    assert result["deviceLabelPlacement"] == "titlebar"
+
+
+def test_migration_is_idempotent_and_self_heals(tmp_path):
+    """P8: placement already present in the file -> migration does not fire,
+    and R4 self-heal corrects a disagreeing showDeviceBadges on load."""
+    settings_mod.SETTINGS_PATH.write_text(
+        json.dumps({"showDeviceBadges": False, "deviceLabelPlacement": "corner"})
+    )
+    result = load_settings()
+    assert result["deviceLabelPlacement"] == "corner"
+    assert result["showDeviceBadges"] is True
+
+
+def test_r1_patch_derives_off():
+    """P9: patching deviceLabelPlacement='off' derives showDeviceBadges=False."""
+    updated = patch_settings({"deviceLabelPlacement": "off"})
+    assert updated["showDeviceBadges"] is False
+
+
+def test_r1_patch_derives_corner():
+    """P10: patching deviceLabelPlacement='corner' derives showDeviceBadges=True."""
+    updated = patch_settings({"deviceLabelPlacement": "corner"})
+    assert updated["showDeviceBadges"] is True
+
+
+def test_r1_authoritative_key_wins_over_mirror_in_same_patch():
+    """P11: deviceLabelPlacement in the same patch as showDeviceBadges always wins."""
+    updated = patch_settings({"deviceLabelPlacement": "off", "showDeviceBadges": True})
+    assert updated["deviceLabelPlacement"] == "off"
+    assert updated["showDeviceBadges"] is False
+
+
+def test_r2_legacy_true_never_clobbers_corner():
+    """P12: an old client's showDeviceBadges=True never drags 'corner' back to
+    'titlebar' -- only moves the placement off 'off'."""
+    patch_settings({"deviceLabelPlacement": "corner"})
+    updated = patch_settings({"showDeviceBadges": True})
+    assert updated["deviceLabelPlacement"] == "corner"
+
+
+def test_r2_legacy_false_sets_off():
+    """P13: an old client's showDeviceBadges=False sets placement to 'off'."""
+    patch_settings({"deviceLabelPlacement": "corner"})
+    updated = patch_settings({"showDeviceBadges": False})
+    assert updated["deviceLabelPlacement"] == "off"
+
+
+def test_r2_legacy_true_from_off_moves_to_titlebar():
+    """P14: an old client's showDeviceBadges=True from 'off' moves to 'titlebar'."""
+    patch_settings({"deviceLabelPlacement": "off"})
+    updated = patch_settings({"showDeviceBadges": True})
+    assert updated["deviceLabelPlacement"] == "titlebar"
+
+
+def test_r3_non_bool_show_device_badges_ignored():
+    """P15: a non-bool showDeviceBadges is ignored -- placement unchanged, no
+    exception raised."""
+    patch_settings({"deviceLabelPlacement": "corner"})
+    updated = patch_settings({"showDeviceBadges": "yes"})
+    assert updated["deviceLabelPlacement"] == "corner"
+
+
+def test_r4_self_heal_on_unrelated_patch():
+    """P16: a hand-edited disagreement self-heals on the next write of any kind."""
+    settings_mod.SETTINGS_PATH.write_text(
+        json.dumps({"deviceLabelPlacement": "corner", "showDeviceBadges": False})
+    )
+    updated = patch_settings({"fontSize": 16})
+    assert updated["showDeviceBadges"] is True
+
+
+def test_sync_ignores_unknown_placement_but_applies_other_keys():
+    """P17: federation sync with an unknown deviceLabelPlacement ignores just
+    that key -- other keys in the same payload still apply, no exception."""
+    apply_synced_settings(
+        {"deviceLabelPlacement": "banana", "fontSize": 18}, 1712600000.0
+    )
+    settings = load_settings()
+    assert settings["deviceLabelPlacement"] == "titlebar"  # unchanged (default)
+    assert settings["fontSize"] == 18
+
+
+def test_sync_from_old_peer_sets_off():
+    """P18: an old peer syncing showDeviceBadges=False moves placement to 'off'."""
+    patch_settings({"deviceLabelPlacement": "corner"})
+    apply_synced_settings({"showDeviceBadges": False}, 1712600001.0)
+    settings = load_settings()
+    assert settings["deviceLabelPlacement"] == "off"
 
 
 # ============================================================
