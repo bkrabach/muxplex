@@ -104,6 +104,20 @@ DEFAULT_SETTINGS: dict = {
     "bellSound": False,
     "viewMode": "auto",
     "showDeviceBadges": True,
+    # Where a session's device label is drawn on its preview tile / sidebar item.
+    # Closed vocabulary (DEVICE_LABEL_PLACEMENTS):
+    #   "titlebar" -- in the tile header (today's behavior; the default)
+    #   "corner"   -- inside the preview, anchored lower-right
+    #   "off"      -- not drawn at all
+    # Presentation ONLY: views store device-qualified "device_id:name" keys, so
+    # session identity survives regardless of what the tile draws.
+    #
+    # THIS KEY IS AUTHORITATIVE; `showDeviceBadges` above is a DERIVED MIRROR of
+    # it (showDeviceBadges == deviceLabelPlacement != "off"), maintained by
+    # reconcile_device_label() on every write path. showDeviceBadges is retained
+    # for pre-v0.36 clients that read it and must never be removed from
+    # DEFAULT_SETTINGS or SYNCABLE_KEYS. Do not write showDeviceBadges directly.
+    "deviceLabelPlacement": "titlebar",
     "showHoverPreview": True,
     "activityIndicator": "both",
     "gridViewMode": "flat",
@@ -217,6 +231,10 @@ LOCAL_ONLY_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Closed vocabulary for the deviceLabelPlacement setting (see its
+# DEFAULT_SETTINGS comment and reconcile_device_label() below).
+DEVICE_LABEL_PLACEMENTS: frozenset[str] = frozenset({"titlebar", "corner", "off"})
+
 # ---------------------------------------------------------------------------
 # Named session command pairs -- validation constants
 # ---------------------------------------------------------------------------
@@ -246,6 +264,7 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
         "bellSound",
         "viewMode",
         "showDeviceBadges",
+        "deviceLabelPlacement",
         "showHoverPreview",
         "activityIndicator",
         "gridViewMode",
@@ -268,6 +287,84 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
 )
 
 
+def reconcile_device_label(current: dict, incoming: dict | None = None) -> None:
+    """Reconcile deviceLabelPlacement (authoritative) with showDeviceBadges (mirror).
+
+    Mutates *current* in place. *incoming* is the patch/sync payload that produced
+    *current*, or None when reconciling a settings dict with no payload behind it
+    (the load-time migration and the self-heal pass).
+
+    This is the ONLY function that may write deviceLabelPlacement or
+    showDeviceBadges. Callers (patch_settings, apply_synced_settings) must
+    NOT copy either key directly from an incoming payload into *current* --
+    they hand both keys to this function instead.
+
+    Rules, evaluated in this order. Exactly one branch applies:
+
+    R1: *incoming* contains a valid deviceLabelPlacement -> apply it. Set
+        showDeviceBadges = (value != "off"). Any showDeviceBadges in the same
+        payload is ignored (authoritative key wins). No log.
+    R2: *incoming* contains showDeviceBadges as a bool and no valid
+        deviceLabelPlacement -> False sets deviceLabelPlacement = "off". True
+        sets deviceLabelPlacement = "titlebar" ONLY if it is currently "off";
+        otherwise leave it unchanged. Then set showDeviceBadges to match the
+        derivation.
+    R3: *incoming* contains showDeviceBadges as a non-bool -> ignore both
+        keys; leave *current* unchanged for this pair (self-heal showDeviceBadges
+        from the current placement, undoing any generic-loop overwrite of the
+        raw incoming value). logger.warning.
+    R4: neither key present (or *incoming* is None) -> self-heal: set
+        showDeviceBadges = (current["deviceLabelPlacement"] != "off") if it
+        disagrees.
+
+    An unknown deviceLabelPlacement value present in *incoming* is treated
+    like R1's condition failing (falls through to R2/R4), logging a warning
+    and keeping the local value -- this is the federation-sync path; PATCH
+    validates the value in main.py before patch_settings() is ever called,
+    so patch_settings() should never see one in practice.
+    """
+    incoming = incoming or {}
+    placement_present = "deviceLabelPlacement" in incoming
+    incoming_placement = incoming.get("deviceLabelPlacement")
+
+    if placement_present and incoming_placement in DEVICE_LABEL_PLACEMENTS:
+        # R1: authoritative key wins; any showDeviceBadges in the same
+        # payload is ignored.
+        current["deviceLabelPlacement"] = incoming_placement
+        current["showDeviceBadges"] = incoming_placement != "off"
+        return
+
+    if placement_present:
+        _log.warning(
+            "settings: unknown deviceLabelPlacement %r; ignoring, keeping %r",
+            incoming_placement,
+            current.get("deviceLabelPlacement"),
+        )
+
+    if "showDeviceBadges" in incoming:
+        badges_value = incoming["showDeviceBadges"]
+        if isinstance(badges_value, bool):
+            # R2
+            if badges_value is False:
+                current["deviceLabelPlacement"] = "off"
+            elif current.get("deviceLabelPlacement") == "off":
+                current["deviceLabelPlacement"] = "titlebar"
+            current["showDeviceBadges"] = current["deviceLabelPlacement"] != "off"
+            return
+        # R3
+        _log.warning(
+            "settings: showDeviceBadges must be a bool, got %r; ignoring",
+            type(badges_value).__name__,
+        )
+        current["showDeviceBadges"] = current.get("deviceLabelPlacement") != "off"
+        return
+
+    # R4: self-heal.
+    derived = current.get("deviceLabelPlacement") != "off"
+    if current.get("showDeviceBadges") != derived:
+        current["showDeviceBadges"] = derived
+
+
 def load_settings() -> dict:
     """Load settings from disk, merging saved values over defaults.
 
@@ -275,6 +372,7 @@ def load_settings() -> dict:
     Unknown keys in the file are ignored.
     """
     result = copy.deepcopy(DEFAULT_SETTINGS)
+    data: dict = {}
     try:
         text = SETTINGS_PATH.read_text()
         data = json.loads(text)
@@ -285,6 +383,15 @@ def load_settings() -> dict:
         pass
     if not result["device_name"]:
         result["device_name"] = socket.gethostname()
+    # One-time migration: an existing settings.json predating deviceLabelPlacement
+    # carries only showDeviceBadges. Derive the placement from it so the mirror
+    # and its source never start out disagreeing. Idempotent: once
+    # deviceLabelPlacement is present in the FILE, this branch stops firing.
+    if "deviceLabelPlacement" not in data and "showDeviceBadges" in data:
+        result["deviceLabelPlacement"] = (
+            "titlebar" if data["showDeviceBadges"] is True else "off"
+        )
+    reconcile_device_label(result)
     return result
 
 
@@ -715,7 +822,18 @@ def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
                     key,
                 )
                 continue
+            if key in ("deviceLabelPlacement", "showDeviceBadges"):
+                # reconcile_device_label() below is the ONLY writer of this
+                # pair -- skip the generic copy so an invalid/contradictory
+                # payload value is never applied directly.
+                continue
             current[key] = patch[key]
+
+    # deviceLabelPlacement/showDeviceBadges: authoritative-key-with-derived-
+    # mirror reconciliation (see reconcile_device_label's docstring for the
+    # exact rules). Must run for every patch, even one that touches neither
+    # key, so a stale on-disk divergence self-heals on any write.
+    reconcile_device_label(current, patch)
 
     # Restore keys that were stripped by redaction.
     if "remote_instances" in patch:
@@ -843,7 +961,19 @@ def apply_synced_settings(
             # Incoming views-related data is stale by views_updated_at --
             # keep ours, but still apply every other syncable key below.
             continue
+        if key in ("deviceLabelPlacement", "showDeviceBadges"):
+            # reconcile_device_label() below is the ONLY writer of this
+            # pair -- skip the generic copy so an invalid incoming
+            # deviceLabelPlacement is never applied directly (it must
+            # instead fall through to R2/R4, keeping the local value).
+            continue
         current[key] = incoming_settings[key]
+
+    # deviceLabelPlacement/showDeviceBadges reconciliation -- same mechanism
+    # as patch_settings, applied to the sync payload. A peer sending an
+    # unknown deviceLabelPlacement never wedges the rest of the sync (see
+    # reconcile_device_label's docstring).
+    reconcile_device_label(current, incoming_settings)
 
     if views_keys_present and apply_views_fields:
         current["views_updated_at"] = (

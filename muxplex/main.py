@@ -81,6 +81,7 @@ from muxplex.sessions import (
     update_session_cache,
 )
 from muxplex.settings import (
+    DEVICE_LABEL_PLACEMENTS,
     RESERVED_COMMAND_ID,
     DestructiveSettingsWriteRejected,
     InvalidViewRuleRejected,
@@ -1994,6 +1995,23 @@ async def update_settings(request: Request):
     body = await request.json()
     expected = body.pop("expected_settings_updated_at", None)
     allow_destructive = bool(body.pop("allow_destructive", False))
+    if (
+        "deviceLabelPlacement" in body
+        and body["deviceLabelPlacement"] not in DEVICE_LABEL_PLACEMENTS
+    ):
+        # Reject, never coerce (DEVICE_LABEL_SPEC.md 2.5): a value that was
+        # never valid cannot have a working client behind it, so this is not
+        # a breaking change. Checked before patch_settings() is ever called
+        # so no partial write occurs. Fourth member of the discriminator
+        # convention alongside backstop / terminal_conflict / unknown_command_id.
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "unknown deviceLabelPlacement",
+                "unknown_device_label_placement": True,
+                "allowed": sorted(DEVICE_LABEL_PLACEMENTS),
+            },
+        )
     if expected is not None:
         current_ts = load_settings().get("settings_updated_at", 0.0)
         # Exact float equality (not an epsilon comparison): the expected
