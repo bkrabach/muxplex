@@ -611,6 +611,24 @@ class DestructiveSettingsWriteRejected(Exception):
         super().__init__(reason)
 
 
+class InvalidViewRuleRejected(Exception):
+    """Raised by patch_settings() when a `views` patch contains a
+    structurally malformed `match_names` rule (see
+    `views.validate_view_rules`).
+
+    No write has been made when this is raised -- checked before the
+    destructive-write backstop and before any mutation of the in-memory
+    settings dict. `apply_synced_settings()` (federation sync / background
+    writers) deliberately never raises this: a malformed rule from a peer
+    is stored as sent and surfaced at read time instead (AUTO_VIEWS_SPEC.md
+    §5.2) -- one bad peer must never break fleet-wide settings sync.
+    """
+
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        super().__init__("; ".join(errors))
+
+
 def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
     """Merge known keys from *patch* into the current settings, save, and return result.
 
@@ -641,7 +659,19 @@ def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
 
     if "views" in patch:
         # Lazy import: avoids potential circular import between settings and views.
-        from muxplex.views import assess_views_destruction
+        from muxplex.views import assess_views_destruction, validate_view_rules
+
+        # Rule validation runs BEFORE the destructive-write backstop:
+        # cheapest and most specific check first, and a malformed payload
+        # should not be reported as a near-miss on a backstop threshold.
+        # Rejects the entire patch, writing nothing -- not even unrelated
+        # keys in the same request -- consistent with the backstop's own
+        # all-or-nothing rule (AUTO_VIEWS_SPEC.md §5.2).
+        rule_errors = validate_view_rules(patch["views"])
+        if rule_errors:
+            for e in rule_errors:
+                _log.error("settings: %s", e)
+            raise InvalidViewRuleRejected(rule_errors)
 
         assessment = assess_views_destruction(current.get("views"), patch["views"])
         if assessment.destructive and not allow_destructive:

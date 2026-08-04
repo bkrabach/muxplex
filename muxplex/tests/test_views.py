@@ -3,20 +3,26 @@ Tests for muxplex/views.py — views invariant enforcement and v2 visibility hel
 """
 
 from muxplex.views import (
+    VIEW_RULE_KEY,
     add_membership,
+    annotate_view_membership,
+    assess_views_destruction,
     enforce_mutual_exclusion,
     filter_visible,
     hide,
     is_hidden,
+    matches_name_pattern,
     normalize_session_keys,
     prune_stale_keys,
     remove_from_all_views,
     remove_membership,
     unhide,
     validate_view_name,
+    validate_view_rules,
+    view_names_for_session,
+    view_patterns,
     visible_count,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test fixtures (built-in, no pytest fixtures needed)
@@ -1272,3 +1278,310 @@ def test_normalize_then_prune_stale_canonical_key_is_pruned_after_grace():
     )
     assert changed is True
     assert "gone" not in settings["hidden_sessions"]
+
+
+# ---------------------------------------------------------------------------
+# Auto-updating views (AUTO_VIEWS_SPEC.md §11.1)
+# ---------------------------------------------------------------------------
+
+
+# --- matches_name_pattern -----------------------------------------------
+
+
+def test_matches_name_pattern_prefix_glob():
+    assert matches_name_pattern("amplifier-foo", "amplifier-*") is True
+    assert matches_name_pattern("foo-amplifier", "amplifier-*") is False
+
+
+def test_matches_name_pattern_suffix_glob():
+    assert matches_name_pattern("x-test", "*-test") is True
+    assert matches_name_pattern("test-x", "*-test") is False
+
+
+def test_matches_name_pattern_case_insensitive_both_directions():
+    assert matches_name_pattern("AMPLIFIER-foo", "amplifier-*") is True
+    assert matches_name_pattern("amplifier-foo", "AMPLIFIER-*") is True
+
+
+def test_matches_name_pattern_platform_determinism():
+    """Assert True for a case-differing literal match -- the assertion that
+    fails if someone 'simplifies' to plain fnmatch.fnmatch, which folds case
+    via os.path.normcase and would only match on macOS/Windows, never Linux.
+    """
+    assert matches_name_pattern("Foo", "foo") is True
+
+
+def test_matches_name_pattern_literal_matches_only_itself():
+    assert matches_name_pattern("foo", "foo") is True
+    assert matches_name_pattern("foo-bar", "foo") is False
+
+
+def test_matches_name_pattern_question_and_class():
+    assert matches_name_pattern("cat", "c?t") is True
+    assert matches_name_pattern("cot", "c?t") is True
+    assert matches_name_pattern("cut", "c[ou]t") is True
+    assert matches_name_pattern("cat", "c[ou]t") is False
+
+
+def test_matches_name_pattern_non_str_inputs_return_false():
+    assert matches_name_pattern(None, "foo*") is False
+    assert matches_name_pattern(123, "foo*") is False
+    assert matches_name_pattern("foo", None) is False
+    assert matches_name_pattern("foo", 123) is False
+
+
+# --- view_patterns --------------------------------------------------------
+
+
+def test_view_patterns_absent_key_returns_empty():
+    assert view_patterns({"name": "V", "sessions": []}) == []
+
+
+def test_view_patterns_non_list_dropped():
+    assert view_patterns({"name": "V", VIEW_RULE_KEY: "amplifier-*"}) == []
+
+
+def test_view_patterns_drops_non_str_entries():
+    assert view_patterns({"name": "V", VIEW_RULE_KEY: ["ok-*", 5, None, 1.0]}) == [
+        "ok-*"
+    ]
+
+
+def test_view_patterns_drops_empty_strings():
+    assert view_patterns({"name": "V", VIEW_RULE_KEY: ["ok-*", ""]}) == ["ok-*"]
+
+
+def test_view_patterns_drops_colon_patterns():
+    assert view_patterns({"name": "V", VIEW_RULE_KEY: ["ok-*", "spark-1:*"]}) == [
+        "ok-*"
+    ]
+
+
+def test_view_patterns_preserves_file_order():
+    assert view_patterns({"name": "V", VIEW_RULE_KEY: ["b-*", "a-*"]}) == [
+        "b-*",
+        "a-*",
+    ]
+
+
+def test_view_patterns_non_dict_view_returns_empty():
+    assert view_patterns("not-a-dict") == []
+    assert view_patterns(None) == []
+
+
+# --- filter_visible with rules --------------------------------------------
+
+
+def test_filter_visible_rule_only_view():
+    settings = {
+        "hidden_sessions": [],
+        "views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["amplifier-*"]}],
+    }
+    sessions = [
+        _session("amplifier-foo"),
+        _session("amplifier-bar"),
+        _session("unrelated"),
+    ]
+    result = filter_visible(sessions, settings, "Auto")
+    assert {s["name"] for s in result} == {"amplifier-foo", "amplifier-bar"}
+
+
+def test_filter_visible_pins_only_view_regression_unchanged():
+    settings = {
+        "hidden_sessions": [],
+        "views": [{"name": "Work", "sessions": ["dev1:pinned"]}],
+    }
+    sessions = [_session("pinned"), _session("other")]
+    result = filter_visible(sessions, settings, "Work")
+    assert [s["name"] for s in result] == ["pinned"]
+
+
+def test_filter_visible_union_of_pin_and_rule_no_duplicates():
+    settings = {
+        "hidden_sessions": [],
+        "views": [
+            {
+                "name": "Mixed",
+                "sessions": ["dev1:pinned-only"],
+                VIEW_RULE_KEY: ["amplifier-*"],
+            }
+        ],
+    }
+    sessions = [
+        _session("pinned-only"),
+        _session("amplifier-matched"),
+        # A session that is BOTH pinned and matched must not duplicate.
+        _session("amplifier-both", device_id="dev1"),
+    ]
+    settings["views"][0]["sessions"].append("dev1:amplifier-both")
+    result = filter_visible(sessions, settings, "Mixed")
+    names = [s["name"] for s in result]
+    assert set(names) == {"pinned-only", "amplifier-matched", "amplifier-both"}
+    assert len(names) == len(set(names))
+
+
+def test_filter_visible_hidden_matching_rule_excluded_unless_include_hidden():
+    settings = {
+        "hidden_sessions": ["dev1:amplifier-hidden"],
+        "views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["amplifier-*"]}],
+    }
+    sessions = [_session("amplifier-hidden"), _session("amplifier-visible")]
+    result = filter_visible(sessions, settings, "Auto")
+    assert [s["name"] for s in result] == ["amplifier-visible"]
+
+    result_incl = filter_visible(sessions, settings, "Auto", include_hidden=True)
+    assert {s["name"] for s in result_incl} == {"amplifier-hidden", "amplifier-visible"}
+
+
+def test_filter_visible_status_entry_never_matches_rule():
+    settings = {
+        "hidden_sessions": [],
+        "views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["*"]}],
+    }
+    sessions = [_session("amplifier-x", status="unreachable")]
+    result = filter_visible(sessions, settings, "Auto")
+    assert result == []
+
+
+def test_filter_visible_all_and_hidden_unaffected_by_rules():
+    settings = {
+        "hidden_sessions": ["dev1:hidden-one"],
+        "views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["*"]}],
+    }
+    sessions = [_session("hidden-one"), _session("visible-one")]
+    assert [s["name"] for s in filter_visible(sessions, settings, "all")] == [
+        "visible-one"
+    ]
+    assert [s["name"] for s in filter_visible(sessions, settings, "hidden")] == [
+        "hidden-one"
+    ]
+
+
+# --- view_names_for_session / annotate_view_membership --------------------
+
+
+def test_view_names_for_session_order_follows_settings_views():
+    settings = {
+        "views": [
+            {"name": "First", "sessions": [], VIEW_RULE_KEY: ["amp-*"]},
+            {"name": "Second", "sessions": ["dev1:amp-x"]},
+        ]
+    }
+    session = _session("amp-x")
+    assert view_names_for_session(session, settings) == ["First", "Second"]
+
+
+def test_view_names_for_session_status_entry_returns_empty():
+    settings = {"views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["*"]}]}
+    session = _session("anything", status="unreachable")
+    assert view_names_for_session(session, settings) == []
+
+
+def test_view_names_for_session_never_returns_all_or_hidden():
+    settings = {"views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["*"]}]}
+    session = _session("x")
+    names = view_names_for_session(session, settings)
+    assert "all" not in names
+    assert "hidden" not in names
+
+
+def test_annotate_view_membership_status_entries_get_empty_list():
+    settings = {"views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["*"]}]}
+    sessions = [_session("x", status="unreachable")]
+    result = annotate_view_membership(sessions, settings)
+    assert result[0]["views"] == []
+
+
+def test_annotate_view_membership_does_not_mutate_input():
+    """The _federation_cache guard (§5.1): input dicts must not gain a
+    `views` key as a side effect."""
+    settings = {"views": [{"name": "Auto", "sessions": [], VIEW_RULE_KEY: ["*"]}]}
+    sessions = [_session("x")]
+    annotate_view_membership(sessions, settings)
+    assert "views" not in sessions[0]
+
+
+def test_annotate_view_membership_returns_new_dicts():
+    settings = {"views": []}
+    sessions = [_session("x")]
+    result = annotate_view_membership(sessions, settings)
+    assert result[0] is not sessions[0]
+    assert result[0]["views"] == []
+
+
+# --- validate_view_rules ---------------------------------------------------
+
+
+def test_validate_view_rules_r1_non_list():
+    errors = validate_view_rules([{"name": "V", VIEW_RULE_KEY: "not-a-list"}])
+    assert len(errors) == 1
+    assert "must be a list of strings" in errors[0]
+    assert "V" in errors[0]
+
+
+def test_validate_view_rules_r2_non_str_entry():
+    errors = validate_view_rules([{"name": "V", VIEW_RULE_KEY: [123]}])
+    assert len(errors) == 1
+    assert "must be a string" in errors[0]
+
+
+def test_validate_view_rules_r3_empty_entry():
+    errors = validate_view_rules([{"name": "V", VIEW_RULE_KEY: [""]}])
+    assert len(errors) == 1
+    assert "may not be empty" in errors[0]
+
+
+def test_validate_view_rules_r4_colon_names_the_reason():
+    errors = validate_view_rules([{"name": "V", VIEW_RULE_KEY: ["spark-1:*"]}])
+    assert len(errors) == 1
+    assert "':'" in errors[0]
+    assert "device" in errors[0].lower()
+
+
+def test_validate_view_rules_clean_config_returns_empty():
+    assert (
+        validate_view_rules(
+            [{"name": "V", "sessions": [], VIEW_RULE_KEY: ["amplifier-*"]}]
+        )
+        == []
+    )
+
+
+def test_validate_view_rules_non_dict_entry_in_views_no_error():
+    assert validate_view_rules(["not-a-dict", 123, None]) == []
+
+
+def test_validate_view_rules_non_list_views_returns_empty():
+    assert validate_view_rules("not-a-list") == []
+    assert validate_view_rules(None) == []
+
+
+def test_validate_view_rules_missing_key_produces_no_error():
+    assert validate_view_rules([{"name": "V", "sessions": []}]) == []
+
+
+# --- _view_member_count / assess_views_destruction with rules -------------
+
+
+def test_view_member_count_counts_patterns_as_members():
+    from muxplex.views import _view_member_count
+
+    views = [{"name": "V", "sessions": ["a"], VIEW_RULE_KEY: ["p1", "p2"]}]
+    assert _view_member_count(views) == 3
+
+
+def test_view_member_count_no_match_names_unchanged_regression():
+    from muxplex.views import _view_member_count
+
+    views = [{"name": "V", "sessions": ["a", "b"]}]
+    assert _view_member_count(views) == 2
+
+
+def test_assess_views_destruction_stripping_all_patterns_is_destructive():
+    current = [
+        {"name": f"v{i}", "sessions": [], VIEW_RULE_KEY: [f"p{i}-a", f"p{i}-b"]}
+        for i in range(4)
+    ]
+    incoming = [{"name": f"v{i}", "sessions": []} for i in range(4)]
+    assessment = assess_views_destruction(current, incoming)
+    assert assessment.destructive is True

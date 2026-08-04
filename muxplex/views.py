@@ -17,11 +17,20 @@ Other invariants:
   `enforce_mutual_exclusion`.
 """
 
+import fnmatch
 import time
 from typing import NamedTuple
 
 RESERVED_VIEW_NAMES = frozenset({"all", "hidden"})
 MAX_VIEW_NAME_LENGTH = 30
+
+# Settings key for a view's auto-updating glob rules (AUTO_VIEWS_SPEC.md §3.1).
+# A view is optionally extended with {"match_names": [<glob>, ...]} -- patterns
+# matched against the bare tmux session name (never a device-qualified key;
+# see matches_name_pattern's docstring for why). Membership is the UNION of
+# `sessions` (manual pins) and match_names (resolved live, every read) --
+# never materialized back into `sessions` (see filter_visible/§2.5).
+VIEW_RULE_KEY: str = "match_names"
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +89,18 @@ def _view_member_count(views: list) -> int:
             sessions = v.get("sessions")
             if isinstance(sessions, list):
                 total += len(sessions)
+            # Rules count as members too (AUTO_VIEWS_SPEC.md §3.4): a
+            # rule-bearing view with zero pins must not contribute 0 to the
+            # backstop's total, or the DESTRUCTIVE_MEMBER_DROP_RATIO
+            # protection weakens exactly as views migrate to rules -- a
+            # stale client that PATCHes back `views` with every
+            # match_names stripped would otherwise sail through. Count RAW
+            # entries (including structurally invalid ones): the backstop
+            # measures how much configuration is about to disappear, not
+            # how much of it is valid.
+            patterns = v.get(VIEW_RULE_KEY)
+            if isinstance(patterns, list):
+                total += len(patterns)
     return total
 
 
@@ -182,6 +203,191 @@ def is_hidden(key: str, settings: dict) -> bool:
     return key in (settings.get("hidden_sessions") or [])
 
 
+# ---------------------------------------------------------------------------
+# Auto-updating views: glob rule matching (AUTO_VIEWS_SPEC.md §2.1, §4, §5.1)
+#
+# Rules are matched against the bare tmux session name only -- never a
+# device-qualified "<device_id>:<name>" key. The qualifier is a UUID
+# (identity.load_device_id()), never something a user would type, and
+# GET /api/sessions -- the payload most clients poll for membership -- never
+# carries it in single-device mode. `amplifier-*` already means "on any
+# device", which is the case that matters; a pattern containing ":" is
+# rejected at validation time (validate_view_rules, rule R4) rather than
+# silently matching nothing forever.
+# ---------------------------------------------------------------------------
+
+
+def matches_name_pattern(name: object, pattern: object) -> bool:
+    """Return True if *name* matches the glob *pattern*.
+
+    Matching is deliberately case-INSENSITIVE via explicit `.casefold()` on
+    both sides followed by `fnmatch.fnmatchcase` -- NOT plain
+    `fnmatch.fnmatch`, whose case-folding is a side effect of
+    `os.path.normcase` and is therefore platform-dependent (a no-op on
+    Linux, case-folding on macOS/Windows). Explicit casefold + fnmatchcase
+    gives the same deterministic result on every platform muxplex runs on.
+
+    This is the SAME technique as
+    `terminal_input.session_matches_allowlist`, and is DELIBERATELY a
+    separate implementation (AUTO_VIEWS_SPEC.md §2.1): that function is the
+    entire security boundary for the RCE-by-design `/input` endpoint;
+    this one is a display filter. Two consumers with opposite failure
+    requirements (fail-closed security vs. fail-loud display) must not
+    share a mutable implementation -- a future tightening of the input
+    fence must not silently change which sessions a view contains, and a
+    future loosening for views must not silently widen an RCE fence.
+
+    Non-`str` *name* or *pattern* returns False rather than raising -- a
+    malformed settings.json must never 500 a poll cycle. Validity (as
+    opposed to matchability) is reported separately by
+    `validate_view_rules`, never inferred from a silent False here.
+    """
+    if not isinstance(name, str) or not isinstance(pattern, str):
+        return False
+    return fnmatch.fnmatchcase(name.casefold(), pattern.casefold())
+
+
+def view_patterns(view: object) -> list[str]:
+    """Return the structurally-valid `match_names` patterns of one view entry.
+
+    `[]` unless *view* is a dict whose `match_names` is a list. From that
+    list, keeps an entry iff it is a non-empty `str` containing no `":"`
+    (see `validate_view_rules` rules R2-R4). Patterns are used VERBATIM --
+    no trimming, no normalization (a leading space is a legitimate, if
+    unusual, part of a session name).
+
+    Order is preserved (file order). Invalid patterns are excluded from
+    matching -- never silently widened to match everything, and never
+    fatal. Mirrors `resolve_session_commands`'s "invalid entry is
+    EXCLUDED, never silently degrades into the default." Everything
+    dropped here is reported by `validate_view_rules`; nothing is dropped
+    silently.
+    """
+    if not isinstance(view, dict):
+        return []
+    patterns = view.get(VIEW_RULE_KEY)
+    if not isinstance(patterns, list):
+        return []
+    return [p for p in patterns if isinstance(p, str) and p and ":" not in p]
+
+
+def view_names_for_session(session: dict, settings: dict) -> list[str]:
+    """Return the resolved list of user-view names *session* belongs to.
+
+    Order follows `settings["views"]`. Pure; no I/O.
+
+    A session is a member of a view iff it is pinned (the existing
+    dual-lookup against `sessionKey`/`name`, unchanged) OR its bare `name`
+    matches one of the view's structurally-valid `match_names` patterns
+    (see `view_patterns`/`matches_name_pattern`) -- a strict UNION, never a
+    replacement (AUTO_VIEWS_SPEC.md §2.2).
+
+    Returns `[]` for an entry with a truthy `status` (federation status
+    tiles are not sessions). Never returns "all" or "hidden" -- those are
+    reserved pseudo-views, not entries in `settings["views"]`.
+
+    Does NOT consider `hidden_sessions`: hidden is orthogonal (schema v2)
+    and stays a separate, rule-free membership test every client already
+    performs on its own.
+    """
+    if session.get("status"):
+        return []
+    name = session.get("name", "")
+    names: list[str] = []
+    for view in settings.get("views") or []:
+        if not isinstance(view, dict):
+            continue
+        members = set(view.get("sessions") or [])
+        pinned = _key_of(session) in members or name in members
+        matched = pinned or any(
+            matches_name_pattern(name, p) for p in view_patterns(view)
+        )
+        if matched:
+            view_name = view.get("name")
+            if isinstance(view_name, str):
+                names.append(view_name)
+    return names
+
+
+def annotate_view_membership(sessions: list[dict], settings: dict) -> list[dict]:
+    """Return a NEW list of NEW dicts, each with a `views` key added.
+
+    `{**s, "views": view_names_for_session(s, settings)}` for every entry;
+    status/tile entries get `"views": []` so no client has to null-check.
+
+    Must NOT mutate its input, and this is not merely stylistic:
+    `GET /api/federation/sessions` stores its tagged remote session dicts
+    in `_federation_cache` (main.py) and re-serves those same objects on
+    later cycles. In-place annotation would bake a point-in-time
+    membership answer into the cache and serve it after the settings that
+    produced it had changed. Building new dicts keeps the cache
+    un-annotated so every read re-resolves membership against current
+    settings.
+    """
+    return [{**s, "views": view_names_for_session(s, settings)} for s in sessions]
+
+
+def validate_view_rules(views: object) -> list[str]:
+    """Validate every view entry's `match_names`. Returns human-readable
+    error strings (empty list = clean).
+
+    Only `match_names` is inspected here -- nothing else about a `views`
+    entry gains validation (AUTO_VIEWS_SPEC.md §6.3): a non-dict entry, a
+    missing `name`, a non-list `sessions`, etc. are all tolerated exactly
+    as they are today, by the existing defensive `isinstance`/`.get()`
+    reads throughout this module. `PATCH /api/settings` accepts those
+    payloads today; rejecting them now would be a behavior change to
+    previously-valid requests.
+
+    Rules (each producing one error string and excluding exactly what it
+    names -- R1 excludes the whole rule, R2-R4 exclude one pattern):
+        R1: `match_names` must be a list.
+        R2: each entry must be a string.
+        R3: each entry must be non-empty.
+        R4: each entry must not contain ':' -- tmux forbids ':' in session
+            names, so such a pattern can never match anything; device-
+            scoped rules are a distinct, not-yet-built feature (§2.8).
+
+    Non-dict entries in *views* are skipped without error (§6.3); entries
+    with no `match_names` key produce no error either (the key is
+    optional).
+    """
+    errors: list[str] = []
+    if not isinstance(views, list):
+        return errors
+    for i, view in enumerate(views):
+        if not isinstance(view, dict):
+            continue
+        if VIEW_RULE_KEY not in view:
+            continue
+        name = view.get("name", "")
+        patterns = view.get(VIEW_RULE_KEY)
+        if not isinstance(patterns, list):
+            errors.append(
+                f"views[{i}] '{name}': {VIEW_RULE_KEY} must be a list of "
+                f"strings (got {type(patterns).__name__})"
+            )
+            continue
+        for j, p in enumerate(patterns):
+            if not isinstance(p, str):
+                errors.append(
+                    f"views[{i}] '{name}': {VIEW_RULE_KEY}[{j}] must be a "
+                    f"string (got {type(p).__name__})"
+                )
+            elif not p:
+                errors.append(
+                    f"views[{i}] '{name}': {VIEW_RULE_KEY}[{j}] may not be empty"
+                )
+            elif ":" in p:
+                errors.append(
+                    f"views[{i}] '{name}': {VIEW_RULE_KEY}[{j}] may not contain "
+                    f"':' -- tmux session names cannot contain ':', so this "
+                    f"pattern can never match. Patterns match the bare session "
+                    f"name only; device-scoped rules are not supported."
+                )
+    return errors
+
+
 def filter_visible(
     sessions: list[dict],
     settings: dict,
@@ -241,9 +447,14 @@ def filter_visible(
     if user_view is None:
         return []
     members = set(user_view.get("sessions") or [])
+    patterns = view_patterns(user_view)
 
     def in_view(s: dict) -> bool:
-        return _key_of(s) in members or s.get("name", "") in members
+        return (
+            _key_of(s) in members
+            or s.get("name", "") in members
+            or any(matches_name_pattern(s.get("name", ""), p) for p in patterns)
+        )
 
     if include_hidden:
         return [s for s in live if in_view(s)]

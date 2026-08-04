@@ -83,6 +83,7 @@ from muxplex.sessions import (
 from muxplex.settings import (
     RESERVED_COMMAND_ID,
     DestructiveSettingsWriteRejected,
+    InvalidViewRuleRejected,
     apply_synced_settings,
     find_session_command,
     get_local_ca_cert_path,
@@ -139,10 +140,13 @@ from muxplex.ttyd import (
     socket_path_for,
 )
 from muxplex.views import (
+    annotate_view_membership,
     assess_views_destruction,
     filter_visible,
     normalize_session_keys,
     prune_stale_keys,
+    validate_view_rules,
+    view_patterns,
 )
 
 # ---------------------------------------------------------------------------
@@ -1036,11 +1040,21 @@ async def patch_state(patch: StatePatch, device_id: str | None = None) -> dict:
 
 @app.get("/api/sessions")
 async def get_sessions() -> list[dict]:
-    """Return list of sessions with name, snapshot, bell, and last-activity data."""
+    """Return list of sessions with name, snapshot, bell, and last-activity data.
+
+    Each entry additionally carries `views`: the resolved list of user-view
+    names this session belongs to (pins union glob-rule matches -- see
+    `views.annotate_view_membership`). This is the mechanism that lets rule-
+    based views reach every client polling this endpoint (PWA grid/counts/
+    sidebar/Manage View, the soft deck's picker counts) without each one
+    re-deriving membership from raw `settings.views` (AUTO_VIEWS_SPEC.md §0.1).
+    """
     names = get_session_list()
     snapshots = get_snapshots()
     activity = get_session_activity()
     state = await read_state()
+    settings = load_settings()
+    local_device_id = load_device_id()
 
     result = []
     for name in names:
@@ -1049,12 +1063,21 @@ async def get_sessions() -> list[dict]:
         result.append(
             {
                 "name": name,
+                # Synthetic key, used ONLY to resolve `views` below (a pin
+                # stored in canonical `device_id:name` form -- the form
+                # normalize_session_keys() produces -- needs a sessionKey to
+                # match). NOT part of this endpoint's wire response (§0.3:
+                # unchanged, no client relies on one here) -- popped below.
+                "sessionKey": f"{local_device_id}:{name}",
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
                 "last_activity_at": activity.get(name),
             }
         )
-    return result
+    annotated = annotate_view_membership(result, settings)
+    for s in annotated:
+        s.pop("sessionKey", None)
+    return annotated
 
 
 @app.get("/api/sessions/{name}")
@@ -1293,6 +1316,62 @@ async def get_view(sort: str | None = None, device_id: str | None = None) -> dic
         "sessions": resolved,
         "sync_group": group,
     }
+
+
+@app.get("/api/views")
+async def get_views() -> dict:
+    """Return the resolved, validated set of user-defined views and their
+    `match_names` rule errors.
+
+    This is the canonical SERVER-SIDE resolution of `settings.views`'
+    auto-updating glob rules -- the plural sibling of `GET /api/view`, and a
+    one-for-one structural copy of `GET /api/session-commands` (this repo's
+    established pattern for "canonical resolution + the validation errors
+    that go with it"). Clients MUST use this endpoint rather than deciding
+    rule validity themselves from raw `GET /api/settings` data -- same
+    rationale as `GET /api/session-commands` (AUTO_VIEWS_SPEC.md §5.4/§6.4).
+
+    Reports USER-DEFINED views only -- no "all", no "hidden" (`GET /api/view`
+    already publishes the cycle list including the pseudo-views; this
+    endpoint is about definitions). `match_names` on each view contains only
+    the patterns that will actually be used (invalid ones are absent and
+    named in `errors`), so a client never has to decide validity for itself.
+
+    Carries no session data, so it never goes stale as sessions come and go
+    and costs nothing to fetch on a settings-change trigger rather than a
+    poll -- the PWA's `followRemoteViewDefinitions()` is the reference
+    consumer.
+
+    Auth: the shared middleware (Bearer / localhost bypass / session
+    cookie). Deliberately NOT in auth._AUTH_EXEMPT_PATHS.
+
+    Response:
+        views  -- [{name, sessions, match_names, errors}], each view's own
+                  errors alongside its own resolution.
+        errors -- flat list, all views, same strings as each view's own
+                  `errors` (a client that only wants a single badge count
+                  doesn't have to walk `views`).
+    """
+    settings = load_settings()
+    raw_views = settings.get("views") or []
+    flat_errors = validate_view_rules(raw_views)
+
+    result_views = []
+    for i, v in enumerate(raw_views):
+        if not isinstance(v, dict):
+            continue
+        prefix = f"views[{i}] '{v.get('name', '')}':"
+        view_errors = [e for e in flat_errors if e.startswith(prefix)]
+        result_views.append(
+            {
+                "name": v.get("name", ""),
+                "sessions": v.get("sessions") or [],
+                "match_names": view_patterns(v),
+                "errors": view_errors,
+            }
+        )
+
+    return {"views": result_views, "errors": flat_errors}
 
 
 def _require_valid_session_name(name: str) -> None:
@@ -1932,6 +2011,18 @@ async def update_settings(request: Request):
             )
     try:
         updated = patch_settings(body, allow_destructive=allow_destructive)
+    except InvalidViewRuleRejected as exc:
+        # 400, not 409: the body is malformed, not conflicted -- retrying
+        # with fresh settings cannot help, so a client must not treat this
+        # like a CAS miss (AUTO_VIEWS_SPEC.md §5.5). No write was made.
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": exc.errors[0] if exc.errors else "Invalid view rule",
+                "invalid_view_rule": True,
+                "errors": exc.errors,
+            },
+        )
     except DestructiveSettingsWriteRejected as exc:
         current_ts = load_settings().get("settings_updated_at", 0.0)
         return JSONResponse(
@@ -3096,7 +3187,7 @@ async def federation_sessions(request: Request) -> list[dict]:
         )
 
     if not remote_instances:
-        return local_sessions
+        return annotate_view_membership(local_sessions, settings)
 
     # Fetch remote sessions concurrently
     http_client: httpx.AsyncClient = request.app.state.federation_client
@@ -3261,7 +3352,16 @@ async def federation_sessions(request: Request) -> list[dict]:
     for result in remote_results:
         all_sessions.extend(result)
 
-    return all_sessions
+    # Annotate the FINAL MERGED list, not the per-remote `tagged` lists
+    # cached above in `_federation_cache` -- this is what keeps the cache
+    # un-annotated (AUTO_VIEWS_SPEC.md §5.3). In-place annotation of a
+    # cached object would bake a point-in-time membership answer into the
+    # cache and serve it after the settings that produced it had changed.
+    # Local views apply to remote sessions too, and that is correct:
+    # `views` is a synced setting, so view definitions are fleet-global by
+    # design; each device annotates the sessions it is showing with the
+    # view definitions it holds.
+    return annotate_view_membership(all_sessions, settings)
 
 
 @app.post("/api/federation/generate-key")

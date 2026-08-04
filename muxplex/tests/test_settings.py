@@ -15,6 +15,7 @@ from muxplex.settings import (
     RESERVED_COMMAND_ID,
     SYNCABLE_KEYS,
     DestructiveSettingsWriteRejected,
+    InvalidViewRuleRejected,
     apply_synced_settings,
     find_session_command,
     get_syncable_settings,
@@ -1452,6 +1453,95 @@ def test_patch_settings_views_none_or_garbage_does_not_crash_or_wipe(
         # Must not raise DestructiveSettingsWriteRejected.
         result = patch_settings({"views": garbage})
         assert result["views"] == garbage
+
+
+def test_patch_settings_malformed_rule_raises_and_writes_nothing(
+    redirect_settings_path,
+):
+    """A malformed match_names rule raises InvalidViewRuleRejected and
+    writes NOTHING -- including an unrelated key in the same patch
+    (AUTO_VIEWS_SPEC.md §11.2)."""
+    save_settings({"views": [{"name": "V", "sessions": []}], "fontSize": 14})
+
+    with pytest.raises(InvalidViewRuleRejected) as excinfo:
+        patch_settings(
+            {
+                "views": [
+                    {"name": "V", "sessions": [], "match_names": ["bad:pattern"]}
+                ],
+                "fontSize": 99,
+            }
+        )
+    assert any("':'" in e for e in excinfo.value.errors)
+
+    # Byte-identical on disk, including the unrelated key.
+    reloaded = load_settings()
+    assert reloaded["views"] == [{"name": "V", "sessions": []}]
+    assert reloaded["fontSize"] == 14
+
+
+def test_patch_settings_valid_rule_writes_and_bumps_views_updated_at(
+    redirect_settings_path,
+):
+    save_settings({"views": [{"name": "V", "sessions": []}], "views_updated_at": 0.0})
+
+    result = patch_settings(
+        {"views": [{"name": "V", "sessions": [], "match_names": ["amp-*"]}]}
+    )
+
+    assert result["views"][0]["match_names"] == ["amp-*"]
+    assert result["views_updated_at"] > 0.0
+
+
+def test_apply_synced_settings_malformed_rule_stored_not_raised(
+    redirect_settings_path,
+):
+    """apply_synced_settings() never validates match_names -- a peer's
+    malformed rule is stored as sent and does not raise. The view still
+    resolves to its pins (checked via filter_visible, not just storage)."""
+    save_settings({"views": []})
+
+    result = apply_synced_settings(
+        {
+            "views": [
+                {"name": "V", "sessions": ["dev1:pinned"], "match_names": ["bad:x"]}
+            ]
+        },
+        incoming_timestamp=1000.0,
+    )
+
+    assert result["views"][0]["match_names"] == ["bad:x"]
+
+    from muxplex.views import filter_visible
+
+    sessions = [{"sessionKey": "dev1:pinned", "name": "pinned"}]
+    visible = filter_visible(sessions, result, "V")
+    assert [s["name"] for s in visible] == ["pinned"]
+
+
+def test_match_names_round_trips_save_then_load(redirect_settings_path):
+    """§0.5: match_names survives save_settings -> load_settings."""
+    save_settings(
+        {"views": [{"name": "V", "sessions": [], "match_names": ["amp-*", "x-*"]}]}
+    )
+    reloaded = load_settings()
+    assert reloaded["views"][0]["match_names"] == ["amp-*", "x-*"]
+
+
+def test_patch_settings_rule_added_to_20_pin_view_not_destructive(
+    redirect_settings_path,
+):
+    """Adding a rule to an existing manual view is a pure addition -- never
+    trips the backstop (§0.4/§2.2's union design)."""
+    pins = [f"dev1:s{i}" for i in range(20)]
+    save_settings({"views": [{"name": "Big", "sessions": pins}]})
+
+    # Must not raise.
+    result = patch_settings(
+        {"views": [{"name": "Big", "sessions": pins, "match_names": ["amp-*"]}]}
+    )
+    assert len(result["views"][0]["sessions"]) == 20
+    assert result["views"][0]["match_names"] == ["amp-*"]
 
 
 def test_apply_synced_settings_rejects_destructive_views_collapse(

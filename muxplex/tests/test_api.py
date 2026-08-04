@@ -424,6 +424,240 @@ def test_get_sessions_returns_empty_list_when_no_sessions(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/sessions -- `views` annotation (AUTO_VIEWS_SPEC.md §11.3)
+# ---------------------------------------------------------------------------
+
+
+def test_get_sessions_every_entry_carries_views(client, monkeypatch, tmp_path):
+    """Every session dict from GET /api/sessions carries a `views` list --
+    manual-only config: unchanged apart from the new key."""
+    from muxplex.settings import save_settings
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha", "beta"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", dict)
+    save_settings({"views": [{"name": "Work", "sessions": []}]})
+
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 2
+    for item in items:
+        assert "views" in item
+        assert item["views"] == []
+
+
+def test_get_sessions_rule_matching_session_lists_the_view(client, monkeypatch):
+    from muxplex.settings import save_settings
+
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["amplifier-foo", "unrelated"]
+    )
+    monkeypatch.setattr("muxplex.main.get_snapshots", dict)
+    save_settings(
+        {"views": [{"name": "Auto", "sessions": [], "match_names": ["amplifier-*"]}]}
+    )
+
+    response = client.get("/api/sessions")
+    items = {item["name"]: item for item in response.json()}
+    assert items["amplifier-foo"]["views"] == ["Auto"]
+    assert items["unrelated"]["views"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/federation/sessions -- `views` annotation
+# ---------------------------------------------------------------------------
+
+
+def test_federation_sessions_local_and_remote_annotated(client, monkeypatch, tmp_path):
+    from muxplex.settings import save_settings
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["amplifier-local"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", dict)
+    monkeypatch.setattr("muxplex.main.get_session_activity", dict)
+    save_settings(
+        {
+            "views": [{"name": "Auto", "sessions": [], "match_names": ["amplifier-*"]}],
+            "remote_instances": [],
+        }
+    )
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert items[0]["views"] == ["Auto"]
+
+
+def test_federation_sessions_cache_not_baked_with_stale_membership(
+    client, monkeypatch, tmp_path
+):
+    """After one call with a rule view, mutating settings to remove the rule
+    must be reflected on the NEXT call -- proving nothing was baked into
+    _federation_cache (the annotate-the-merged-list-only guarantee)."""
+    import httpx
+
+    from muxplex.settings import save_settings
+
+    monkeypatch.setattr("muxplex.main.get_session_list", list)
+    monkeypatch.setattr("muxplex.main.get_snapshots", dict)
+    monkeypatch.setattr("muxplex.main.get_session_activity", dict)
+
+    async def fake_get(self, url, headers=None, timeout=None):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            json=[{"name": "amplifier-remote", "snapshot": "", "bell": {}}],
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    save_settings(
+        {
+            "views": [{"name": "Auto", "sessions": [], "match_names": ["amplifier-*"]}],
+            "remote_instances": [
+                {
+                    "name": "peer",
+                    "url": "http://peer.example",
+                    "key": "k",
+                    "device_id": "peer-1",
+                }
+            ],
+        }
+    )
+
+    first = client.get("/api/federation/sessions").json()
+    remote_item = next(s for s in first if s.get("name") == "amplifier-remote")
+    assert remote_item["views"] == ["Auto"]
+
+    # Remove the rule -- the cached `tagged` list must not have baked in
+    # the old membership answer.
+    save_settings(
+        {
+            "views": [{"name": "Auto", "sessions": []}],
+            "remote_instances": [
+                {
+                    "name": "peer",
+                    "url": "http://peer.example",
+                    "key": "k",
+                    "device_id": "peer-1",
+                }
+            ],
+        }
+    )
+    second = client.get("/api/federation/sessions").json()
+    remote_item2 = next(s for s in second if s.get("name") == "amplifier-remote")
+    assert remote_item2["views"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /api/view with a rule-based active_view -- handler unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_get_view_rule_based_view_resolves_with_no_handler_change(client, monkeypatch):
+    from muxplex.settings import save_settings
+    from muxplex.state import save_state
+
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["amplifier-foo", "unrelated"]
+    )
+    save_settings(
+        {"views": [{"name": "Auto", "sessions": [], "match_names": ["amplifier-*"]}]}
+    )
+    save_state(
+        {
+            "active_view": "Auto",
+            "active_session": None,
+            "active_remote_id": None,
+            "session_order": ["amplifier-foo", "unrelated"],
+            "sessions": {},
+            "devices": {},
+        }
+    )
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    body = response.json()
+    assert [s["name"] for s in body["sessions"]] == ["amplifier-foo"]
+    # /api/view's session entries do NOT carry `views` (§4 item 2).
+    assert "views" not in body["sessions"][0]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/views -- resolution + validation errors
+# ---------------------------------------------------------------------------
+
+
+def test_get_views_shape_and_valid_patterns_only(client, monkeypatch):
+    from muxplex.settings import save_settings
+
+    save_settings(
+        {
+            "views": [
+                {
+                    "name": "Amplifier",
+                    "sessions": ["dev1:pinned"],
+                    "match_names": ["amplifier-*", "bad:pattern"],
+                }
+            ]
+        }
+    )
+
+    response = client.get("/api/views")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["views"][0]["name"] == "Amplifier"
+    assert body["views"][0]["sessions"] == ["dev1:pinned"]
+    assert body["views"][0]["match_names"] == ["amplifier-*"]
+    assert len(body["views"][0]["errors"]) == 1
+    assert len(body["errors"]) == 1
+
+
+def test_get_views_clean_config_returns_no_errors(client, monkeypatch):
+    from muxplex.settings import save_settings
+
+    save_settings({"views": [{"name": "V", "sessions": [], "match_names": ["a-*"]}]})
+    response = client.get("/api/views")
+    body = response.json()
+    assert body["errors"] == []
+    assert body["views"][0]["errors"] == []
+
+
+def test_get_views_requires_auth():
+    """Not in auth._AUTH_EXEMPT_PATHS -- same convention as
+    test_get_session_commands_requires_auth (GET /api/views resolves
+    view rules, disclosing config an unauthenticated caller should not see)."""
+    from muxplex.auth import _AUTH_EXEMPT_PATHS
+
+    assert "/api/views" not in _AUTH_EXEMPT_PATHS
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/settings -- malformed view rule (400, invalid_view_rule)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_settings_malformed_view_rule_returns_400(client, monkeypatch):
+    from muxplex.settings import save_settings
+
+    save_settings({"views": [{"name": "V", "sessions": []}]})
+
+    response = client.patch(
+        "/api/settings",
+        json={"views": [{"name": "V", "sessions": [], "match_names": ["bad:x"]}]},
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["invalid_view_rule"] is True
+    assert len(body["errors"]) > 0
+
+    # No write happened.
+    settings_response = client.get("/api/settings")
+    assert settings_response.json()["views"] == [{"name": "V", "sessions": []}]
+
+
+# ---------------------------------------------------------------------------
 # GET /api/sessions/{name} -- caller-controlled read depth (scrollback fix)
 # ---------------------------------------------------------------------------
 
