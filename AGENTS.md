@@ -248,6 +248,32 @@ parses the real `<script src=...>` tags out of `index.html` (excluding
 asserting none throws a `SyntaxError`. Any new frontend script is
 automatically covered the moment it's added to `index.html`.
 
+## `attachCustomKeyEventHandler`: `return false` does NOT stop the browser
+
+xterm.js's custom key handler returning `false` stops **xterm's own** key
+processing. It does **not** call `preventDefault()`, so the browser's default
+action still fires -- for any chord that produces text input, the key also
+reaches xterm's hidden textarea and comes back around through `onData`. You get
+the key twice, from two different paths.
+
+**Incident (Shift+Enter, v0.34.0+):** the new Shift+Enter branch sent the CSI-u
+sequence over the WebSocket and returned `false`. Measured in a live pane with a
+raw byte dumper, the app received **`0a 0d`** -- our translated `C-j`, then a
+stray `CR`. Visible symptom: a newline appeared and the line submitted anyway.
+Both halves of the feature were correct and deployed; the bug was purely the
+missing `e.preventDefault()`. Fixed by calling it before `return false`.
+
+The pre-existing branches in that handler (Ctrl+Shift+C, Ctrl+F) never hit this,
+which is exactly why it was easy to miss -- those chords produce no text input,
+so there is no default action to suppress. **Any new branch that intercepts a
+key which would otherwise type something MUST call `e.preventDefault()`.**
+`tests/test_terminal.mjs` asserts this for the Enter branch; extend that
+assertion rather than trusting review to catch the next one.
+
+Corollary for debugging this class of bug: reason about **bytes**, not
+behavior. "It submitted anyway" is ambiguous; `0a 0d` names the failure exactly
+and distinguishes "our handler never fired" from "our handler fired twice."
+
 ## Federation is fault-isolated
 
 - A dead/unreachable remote must never gate the aggregate. `breaker.py` is a

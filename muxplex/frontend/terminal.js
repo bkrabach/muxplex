@@ -564,6 +564,34 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
       return false;
     }
 
+    // Shift+Enter / Ctrl+Enter → encode as a real modified Enter (kitty
+    // keyboard protocol, CSI-u). A legacy terminal CANNOT express these: the
+    // encoding has no field for a modifier on Enter, so Enter, Shift+Enter and
+    // Ctrl+Enter all collapse to 0x0D and every chat TUI has to fall back to
+    // Ctrl+J. We are a browser, not a legacy terminal -- the modifier is right
+    // there on the event, so send it faithfully instead of throwing it away.
+    //
+    // Downstream, tmux decodes CSI-u and our shipped config rewrites these to
+    // C-j for apps that only speak the legacy encoding (tmux_templates/
+    // base.conf). Apps that understand CSI-u natively get a true Shift+Enter.
+    //
+    // Deliberately NOT sending a bare '\n' here: that would be indistinguishable
+    // from Ctrl+J and would lie to any app that wants the real key.
+    if (e.key === 'Enter' && !e.altKey && !e.metaKey && (e.shiftKey || e.ctrlKey)) {
+      if (_ws && _ws.readyState === WebSocket.OPEN) {
+        _ws.send(_encodePayload(0x30, e.shiftKey ? '\x1b[13;2u' : '\x1b[13;5u'));
+      }
+      // preventDefault is load-bearing, NOT belt-and-braces. Returning false only
+      // stops xterm.js's own key handling -- it does not suppress the browser's
+      // default action, so Enter still reaches xterm's hidden textarea and arrives
+      // a second time through onData. Measured before this line existed: the app
+      // received 0a 0d -- our C-j AND a stray CR, i.e. a newline immediately
+      // followed by a submit. The other branches in this handler (Ctrl+Shift+C,
+      // Ctrl+F) never hit this because those chords produce no text input.
+      e.preventDefault();
+      return false;
+    }
+
     return true;  // let xterm handle all other keys normally
   });
 
