@@ -164,7 +164,10 @@ def test_validate_accepts_a_normal_fresh_dir(tmp_path):
 
 
 def test_validate_rejects_drvfs_under_wsl(monkeypatch):
-    """Monkeypatch is_wsl() True + /mnt/c/x -> TtydSocketDirError mentioning ENOTSUP."""
+    """Monkeypatch is_wsl() True + /mnt/c/x, mode already 0o700 (as if a
+    metadata-enabled DrvFs mount actually persisted our chmod) ->
+    TtydSocketDirError mentioning ENOTSUP. Confirms the DrvFs check still
+    fires even when the mode check alone would have passed."""
     directory = Path("/mnt/c/some/deep/path")
 
     monkeypatch.setattr(Path, "mkdir", lambda self, **kw: None)
@@ -172,6 +175,65 @@ def test_validate_rejects_drvfs_under_wsl(monkeypatch):
     monkeypatch.setattr(Path, "lstat", lambda self: _fake_stat())
     monkeypatch.setattr(Path, "resolve", lambda self: self)
     monkeypatch.setattr(ttyd_mod, "is_wsl", lambda: True)
+
+    with pytest.raises(TtydSocketDirError, match="ENOTSUP"):
+        validate_socket_dir(directory)
+
+
+def test_validate_rejects_drvfs_under_wsl_when_chmod_is_silent_noop(monkeypatch):
+    """THE REGRESSION GUARD for the real-host bug: on a real WSL2 host with
+    the default (metadata-less) DrvFs mount, chmod() on a /mnt/* path is a
+    SILENT NO-OP -- it raises nothing, but the directory's mode never
+    actually changes. Verified directly on a real WSL2 host (alienware-r13):
+    chmod(0o755) then chmod(0o700) on a fresh /mnt/c directory both "succeed"
+    and both leave the mode at 0o777.
+
+    Model exactly that here: chmod() is callable and raises nothing, but
+    lstat() always reports 0o777 regardless of what was requested -- the
+    directory's own chmod(0o700) call inside validate_socket_dir() has no
+    effect, same as on the real host.
+
+    Before the fix, the mode check ran BEFORE the DrvFs check, so this raised
+    a "must be 0700" message describing a fix (more chmod) that cannot work
+    on this filesystem, and the accurate ENOTSUP/DrvFs diagnosis was
+    unreachable dead code. This test fails against that ordering and passes
+    against the fix.
+    """
+    directory = Path("/mnt/c/Users/someone/AppData/Local/muxplex/ttyd")
+
+    monkeypatch.setattr(Path, "mkdir", lambda self, **kw: None)
+    # chmod "succeeds" (no exception) but never changes what lstat reports --
+    # the exact real-host behavior this regression guard is about.
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: None)
+    monkeypatch.setattr(
+        Path, "lstat", lambda self: _fake_stat(mode=stat.S_IFDIR | 0o777)
+    )
+    monkeypatch.setattr(Path, "resolve", lambda self: self)
+    monkeypatch.setattr(ttyd_mod, "is_wsl", lambda: True)
+
+    with pytest.raises(TtydSocketDirError, match="ENOTSUP"):
+        validate_socket_dir(directory)
+
+
+def test_validate_rejects_drvfs_under_wsl_with_synthetic_uid(monkeypatch):
+    """A metadata-less DrvFs mount reports a synthetic, mount-wide uid/gid,
+    not real per-file ownership -- it need not match ``os.getuid()`` even
+    though there is no real ownership mismatch to refuse over. The DrvFs
+    check must still fire ahead of the ownership check here too, for the
+    same reason it must run ahead of the mode check: neither chmod nor chown
+    can fix a directory on this filesystem, so the accurate ENOTSUP/DrvFs
+    diagnosis must win over a misleading "wrong owner" message.
+    """
+    directory = Path("/mnt/c/some/deep/path")
+
+    monkeypatch.setattr(Path, "mkdir", lambda self, **kw: None)
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: None)
+    monkeypatch.setattr(
+        Path, "lstat", lambda self: _fake_stat(mode=stat.S_IFDIR | 0o700, uid=1000)
+    )
+    monkeypatch.setattr(Path, "resolve", lambda self: self)
+    monkeypatch.setattr(ttyd_mod, "is_wsl", lambda: True)
+    monkeypatch.setattr(os, "getuid", lambda: 1000 + 12345)
 
     with pytest.raises(TtydSocketDirError, match="ENOTSUP"):
         validate_socket_dir(directory)

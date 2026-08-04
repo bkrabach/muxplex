@@ -53,7 +53,7 @@ a resource claim.
 
 Public API:
     ttyd_socket_dir()     -- resolve the socket directory (env override or STATE_DIR/ttyd)
-    validate_socket_dir() -- fail-loud startup check: ownership, perms, WSL/DrvFs, sun_path, bind probe
+    validate_socket_dir() -- fail-loud startup check: symlink, WSL/DrvFs, ownership, perms, sun_path, bind probe
     socket_path_for()     -- deterministic, hashed .sock path for a session name
     socket_is_live()      -- real AF_UNIX connect() liveness probe (never Path.exists())
     ensure_ttyd()         -- idempotent get-or-spawn, the normal entry point
@@ -184,6 +184,24 @@ def validate_socket_dir(directory: Path) -> None:
     with an actionable message on any failure -- never degrades, never falls
     back silently. This directory hosts unauthenticated writable terminals,
     so every check here is a security boundary, not a convenience check.
+
+    Order matters here in a way that is not obvious from reading each check
+    in isolation: on a WSL2 host with the (default) metadata-less DrvFs
+    mount, ``chmod()`` on a ``/mnt/*`` path is a *silent no-op* -- it returns
+    success but the directory's reported mode never actually changes, and
+    DrvFs also reports a synthetic, mount-wide uid/gid rather than real
+    per-file ownership. Left in the original order, both the ownership check
+    and the mode check below would fire on such a directory for reasons that
+    have nothing to do with an attacker or a misconfigured umask -- and
+    neither is fixable by chmod/chown, because the filesystem never persists
+    those bits. The WSL/DrvFs check therefore runs BEFORE both, so the
+    accurate, actionable diagnosis (this filesystem cannot host an AF_UNIX
+    bind at all -- move the directory) surfaces instead of a misleading
+    "just fix the permissions/ownership" message describing a fix that
+    cannot work here. The symlink check is unaffected by any of this (it
+    reads the file-type bit, not a permission or ownership bit) and stays
+    first, since a directory that is itself a symlink is a strictly worse
+    finding than anything downstream.
     """
     if not hasattr(socket, "AF_UNIX"):
         raise TtydSocketDirError(
@@ -192,7 +210,10 @@ def validate_socket_dir(directory: Path) -> None:
         )
 
     # mkdir's mode= is umask-masked and silently skipped when the dir already
-    # exists -- chmod is not, so it always runs unconditionally after.
+    # exists -- chmod is not, so it always runs unconditionally after. On a
+    # metadata-less WSL DrvFs mount this chmod is itself a silent no-op (see
+    # the docstring above); it is kept anyway because it is the correct,
+    # harmless action on every filesystem that DOES honor it (the common case).
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
 
@@ -204,21 +225,11 @@ def validate_socket_dir(directory: Path) -> None:
             "real, owned directory, never a link an attacker could redirect."
         )
 
-    if st.st_uid != os.getuid():
-        raise TtydSocketDirError(
-            f"ttyd socket dir {directory} is owned by uid {st.st_uid}, not this "
-            f"process's uid {os.getuid()}. Refusing a directory this process does "
-            "not own -- it hosts unauthenticated writable terminals."
-        )
-    if st.st_mode & 0o077:
-        raise TtydSocketDirError(
-            f"ttyd socket dir {directory} is group/other accessible (mode "
-            f"{oct(st.st_mode & 0o777)}). It must be 0700: this directory hosts "
-            "unauthenticated writable terminals, and group/other access is a full "
-            "RCE handoff."
-        )
-
-    # Resolve BEFORE the DrvFs check, so a symlink or `..` into /mnt is caught too.
+    # Resolve and check for a WSL/DrvFs mount BEFORE ownership/mode, so a
+    # symlink or `..` into /mnt is caught too, and so the DrvFs-specific
+    # diagnosis pre-empts the generic ownership/mode checks below (see the
+    # docstring). This is a heuristic for one known-bad case; the bind probe
+    # at the end of this function is the real, filesystem-agnostic proof.
     resolved = directory.resolve()
     if is_wsl() and str(resolved).startswith(DRVFS_MOUNT_PREFIX):
         raise TtydSocketDirError(
@@ -226,8 +237,38 @@ def validate_socket_dir(directory: Path) -> None:
             "WSL DrvFs/9p mount. AF_UNIX bind() fails ENOTSUP there, and ttyd does "
             "NOT treat that as fatal -- it busy-retries the bind roughly every "
             "10ms, forever, alive and burning CPU, with no socket ever created and "
-            "no TCP fallback. Set MUXPLEX_TTYD_SOCKET_DIR to a Linux-native path "
-            "(e.g. under $HOME, never under /mnt)."
+            "no TCP fallback. On the default (metadata-less) DrvFs mount, chmod/chown "
+            "on this path are also silent no-ops, so no permission or ownership fix "
+            "can make this directory usable here. Set MUXPLEX_TTYD_SOCKET_DIR to a "
+            "Linux-native path (e.g. under $HOME, never under /mnt)."
+        )
+
+    if st.st_uid != os.getuid():
+        raise TtydSocketDirError(
+            f"ttyd socket dir {directory} is owned by uid {st.st_uid}, not this "
+            f"process's uid {os.getuid()}. Refusing a directory this process does "
+            "not own -- it hosts unauthenticated writable terminals."
+        )
+    if st.st_mode & 0o077:
+        # This process just called chmod(0o700) on this exact directory a few
+        # lines above -- reaching here with group/other bits still set means
+        # that chmod call had no effect. (A TOCTOU race is possible in
+        # principle, but the confirmed, durable cause is a filesystem that
+        # does not persist Unix permission bits at all: WSL DrvFs without the
+        # `metadata` mount option, with FAT/exFAT or some network filesystems
+        # as plausible others.) Say that plainly instead of instructing the
+        # operator to do the one thing this process just tried and failed to do.
+        raise TtydSocketDirError(
+            f"ttyd socket dir {directory} is group/other accessible (mode "
+            f"{oct(st.st_mode & 0o777)}) even though this process just called "
+            "chmod(0700) on it -- that chmod call had no effect. This directory "
+            "hosts unauthenticated writable terminals, so group/other access is a "
+            "full RCE handoff, and a chmod that silently does not persist means no "
+            "amount of retrying chmod will secure this directory to 0700 here. This "
+            "is a known filesystem limitation (e.g. WSL DrvFs, FAT/exFAT, some "
+            "network mounts), not a permissions mistake to fix in place. Set "
+            "MUXPLEX_TTYD_SOCKET_DIR to a path on a filesystem that persists Unix "
+            "permission bits (e.g. under $HOME on a native Linux filesystem)."
         )
 
     projected_len = len(str(resolved)) + 1 + SOCKET_BASENAME_LEN
