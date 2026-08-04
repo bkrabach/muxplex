@@ -219,8 +219,15 @@
             <input type="checkbox" id="setting-show-hover-preview" class="settings-checkbox" checked />
           </div>
           <div class="settings-field">
-            <label class="settings-label" for="setting-show-device-badges">Show device badges</label>
-            <input type="checkbox" id="setting-show-device-badges" class="settings-checkbox" checked />
+            <label class="settings-label" for="setting-device-label-placement">Device label</label>
+            <select id="setting-device-label-placement" class="settings-select">
+              <option value="titlebar" selected>In the title bar</option>
+              <option value="corner">In the preview (lower right)</option>
+              <option value="off">Don't show</option>
+            </select>
+          </div>
+          <div class="settings-field settings-field--column hidden" id="device-label-ambiguity-note">
+            <span class="settings-helper">Sessions from different devices will look identical on the grid. Grouped view and the sidebar still show device headers.</span>
           </div>
           <div class="settings-field">
             <label class="settings-label" for="setting-activity-indicator">Activity indicator</label>

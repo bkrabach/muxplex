@@ -348,7 +348,8 @@ const DISPLAY_DEFAULTS = {
   gridColumns: 'auto',
   bellSound: false,
   viewMode: 'auto',
-  showDeviceBadges: true,        // show device name labels on tiles/sidebar
+  showDeviceBadges: true,        // DERIVED mirror of deviceLabelPlacement; not read by the renderer
+  deviceLabelPlacement: 'titlebar', // 'titlebar' | 'corner' | 'off' -- authoritative
   showHoverPreview: true,        // show hover preview popover on tile hover
   activityIndicator: 'both',     // 'none' | 'glow' | 'dot' | 'both'
   gridViewMode: 'flat',          // 'flat' | 'grouped'
@@ -919,6 +920,21 @@ function formatDeviceVersion(version) {
   return version ? ('v' + version) : 'version unknown';
 }
 
+// Closed vocabulary for deviceLabelPlacement. An unknown value (a hand-edited
+// settings.json, a peer from a future version) resolves to 'titlebar' -- today's
+// behavior -- exactly as activityIndicator resolves unknown values to 'both'.
+const DEVICE_LABEL_PLACEMENTS = ['titlebar', 'corner', 'off'];
+
+/**
+ * Resolve the effective device-label placement from display settings.
+ * @param {object} ds - getDisplaySettings() result
+ * @returns {'titlebar'|'corner'|'off'}
+ */
+function deviceLabelPlacement(ds) {
+  var v = ds && ds.deviceLabelPlacement;
+  return DEVICE_LABEL_PLACEMENTS.indexOf(v) !== -1 ? v : 'titlebar';
+}
+
 /**
  * Build the HTML string for a single session tile.
  * @param {object} session
@@ -944,11 +960,19 @@ function buildTileHTML(session, index, mobile) {
   const escapedName = escapeHtml(name);
   const timeStr = formatTimestamp(session.last_activity_at || null);
 
-  // Device badge — shown inside tile-meta, before timestamp with · separator
-  // Shown when multiple sources configured AND session has a device name
+  // Device label — placement governed by deviceLabelPlacement (see
+  // DEVICE_LABEL_SPEC.md). The multi_device_enabled + deviceName guard is
+  // unchanged from the showDeviceBadges era: a single-device install draws
+  // no label in any placement.
+  var placement = deviceLabelPlacement(ds);
+  var showDeviceLabel = !!(_serverSettings && _serverSettings.multi_device_enabled
+    && session.deviceName) && placement !== 'off';
   let badgeHtml = '';
-  if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
+  let cornerHtml = '';
+  if (showDeviceLabel && placement === 'titlebar') {
     badgeHtml = `<span class="device-badge" title="${escapeHtml(formatDeviceVersion(session.deviceVersion))}">${escapeHtml(session.deviceName)}</span>`;
+  } else if (showDeviceLabel && placement === 'corner') {
+    cornerHtml = `<span class="tile-device-tag">${escapeHtml(session.deviceName)}</span>`;
   }
 
   // Last N lines of snapshot — show more in fit mode so tall tiles fill
@@ -970,15 +994,21 @@ function buildTileHTML(session, index, mobile) {
   // cause openSession() to route local sessions through /api/federation/{deviceId}/…
   // which returns 404 because the local device is not a registered remote instance.
   const remoteIdAttr = session.remoteId != null ? ` data-remote-id="${escapeHtml(String(session.remoteId))}"` : '';
+  // aria-label carries the device name unconditionally across all three
+  // placements (Q3's accessibility guarantee): assistive tech never loses
+  // the disambiguator even when the pixels do.
+  const ariaLabel = (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName)
+    ? `${name} on ${session.deviceName}`
+    : name;
   return (
-    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapedName}">` +
+    `<article class="${classes}" data-session="${escapedName}" data-session-key="${escapeHtml(session.sessionKey || name)}"${remoteIdAttr} tabindex="0" role="listitem" aria-label="${escapeHtml(ariaLabel)}">` +
     `<div class="tile-header">` +
     `<span class="tile-name">${escapeHtml(name)}</span>` +
     `${badgeHtml}` +
     `<span class="tile-meta">${escapeHtml(timeStr)}</span>` +
     `<button class="tile-options-btn" data-session="${escapedName}" aria-label="Session options" aria-haspopup="true">&#8942;</button>` +
     `</div>` +
-    `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
+    `<div class="tile-body"><pre>${ansiToHtml(lastLines)}</pre>${cornerHtml}</div>` +
     `</article>`
   );
 }
@@ -1007,10 +1037,18 @@ function buildSidebarHTML(session, currentSession, currentRemoteId) {
   // Edge bar only (left border amber, no glow): applied when actIndicator is 'dot' or 'both'
   if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) classes += ' sidebar-item--edge-bell';
 
-  // Device badge — shown in header line when multi_device_enabled
+  // Device label — placement governed by deviceLabelPlacement (see
+  // DEVICE_LABEL_SPEC.md). Identical semantics to buildTileHTML: the label
+  // is drawn in the preview, lower-right, everywhere a preview is drawn.
+  var placement = deviceLabelPlacement(ds);
+  var showDeviceLabel = !!(_serverSettings && _serverSettings.multi_device_enabled
+    && session.deviceName) && placement !== 'off';
   let badgeHtml = '';
-  if (_serverSettings && _serverSettings.multi_device_enabled && session.deviceName && ds.showDeviceBadges !== false) {
+  let cornerHtml = '';
+  if (showDeviceLabel && placement === 'titlebar') {
     badgeHtml = `<span class="device-badge" title="${escapeHtml(formatDeviceVersion(session.deviceVersion))}">${escapeHtml(session.deviceName)}</span>`;
+  } else if (showDeviceLabel && placement === 'corner') {
+    cornerHtml = `<span class="tile-device-tag">${escapeHtml(session.deviceName)}</span>`;
   }
 
   // Last 20 lines of snapshot — trim trailing blanks from the FULL snapshot FIRST,
@@ -1035,7 +1073,7 @@ function buildSidebarHTML(session, currentSession, currentRemoteId) {
     badgeHtml +
     `<button class="tile-options-btn" data-session="${escapedName}" aria-label="Session options" aria-haspopup="true">&#8942;</button>` +
     `</div>` +
-    `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre></div>` +
+    `<div class="sidebar-item-body"><pre>${ansiToHtml(lastLines)}</pre>${cornerHtml}</div>` +
     `</article>`
   );
 }
@@ -4263,8 +4301,8 @@ function onDisplaySettingChange() {
     ds.gridColumns = raw === 'auto' ? 'auto' : parseInt(raw, 10);
   }
 
-  var showDeviceBadgesEl = document.getElementById('setting-show-device-badges');
-  if (showDeviceBadgesEl) ds.showDeviceBadges = showDeviceBadgesEl.checked;
+  var deviceLabelPlacementEl = document.getElementById('setting-device-label-placement');
+  if (deviceLabelPlacementEl) ds.deviceLabelPlacement = deviceLabelPlacementEl.value;
 
   var showHoverPreviewEl = document.getElementById('setting-show-hover-preview');
   if (showHoverPreviewEl) ds.showHoverPreview = showHoverPreviewEl.checked;
@@ -4276,7 +4314,7 @@ function onDisplaySettingChange() {
     fontSize: ds.fontSize,
     hoverPreviewDelay: ds.hoverPreviewDelay,
     gridColumns: ds.gridColumns,
-    showDeviceBadges: ds.showDeviceBadges,
+    deviceLabelPlacement: ds.deviceLabelPlacement,
     showHoverPreview: ds.showHoverPreview,
     activityIndicator: ds.activityIndicator,
   };
@@ -4285,6 +4323,27 @@ function onDisplaySettingChange() {
     .then(function() { showToast('Settings saved'); })
     .catch(function(err) { console.warn('[onDisplaySettingChange] failed:', err); });
   applyDisplaySettings(ds);
+  _updateDeviceLabelAmbiguityNote(ds);
+}
+
+/**
+ * Show the "devices will look identical" consequence line under the device-label
+ * control when, and only when, the user has chosen 'off' AND this install actually
+ * aggregates more than one device. Making the consequence visible at the moment of
+ * the decision is deliberately the ONLY place this is surfaced -- the render path
+ * never second-guesses the setting (see DEVICE_LABEL_SPEC.md, Q3).
+ * @param {object} ds - display settings (or server settings; only the one key is read)
+ */
+function _updateDeviceLabelAmbiguityNote(ds) {
+  var el = document.getElementById('device-label-ambiguity-note');
+  if (!el || !el.classList) return;
+  var ambiguous = deviceLabelPlacement(ds) === 'off'
+    && !!(_serverSettings && _serverSettings.multi_device_enabled);
+  if (ambiguous) {
+    el.classList.remove('hidden');
+  } else {
+    el.classList.add('hidden');
+  }
 }
 
 /**
@@ -4332,8 +4391,9 @@ function openSettings() {
   if (viewModeEl) viewModeEl.value = loadGridViewMode();
 
   // Populate display toggle controls
-  const showDeviceBadgesEl = $('setting-show-device-badges');
-  if (showDeviceBadgesEl) showDeviceBadgesEl.checked = settings.showDeviceBadges !== false;
+  const deviceLabelPlacementEl = $('setting-device-label-placement');
+  if (deviceLabelPlacementEl) deviceLabelPlacementEl.value = deviceLabelPlacement(settings);
+  _updateDeviceLabelAmbiguityNote(settings);
   const showHoverPreviewEl = $('setting-show-hover-preview');
   if (showHoverPreviewEl) showHoverPreviewEl.checked = settings.showHoverPreview !== false;
   const activityIndicatorEl = $('setting-activity-indicator');
@@ -5725,7 +5785,7 @@ function bindStaticEventListeners() {
   on($('setting-font-size'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
   on($('setting-grid-columns'), 'change', onDisplaySettingChange);
-  on($('setting-show-device-badges'), 'change', onDisplaySettingChange);
+  on($('setting-device-label-placement'), 'change', onDisplaySettingChange);
   on($('setting-show-hover-preview'), 'change', onDisplaySettingChange);
   on($('setting-activity-indicator'), 'change', onDisplaySettingChange);
   on($('setting-view-mode'), 'change', function() {
@@ -6114,6 +6174,8 @@ if (typeof module !== 'undefined' && module.exports) {
     startStatePolling,
     escapeHtml,
     formatDeviceVersion,
+    deviceLabelPlacement,
+    DEVICE_LABEL_PLACEMENTS,
     buildTileHTML,
     buildSidebarHTML,
     getVisibleSessions,

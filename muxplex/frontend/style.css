@@ -302,6 +302,41 @@ body {
   margin: 0;
 }
 
+/* Device label drawn INSIDE the preview (deviceLabelPlacement === 'corner').
+   Also used inside .sidebar-item-body, which has the same
+   position:relative / overflow:hidden / black background shape.
+
+   LEGIBILITY INVARIANT -- do not weaken. This chip overlays arbitrary, arbitrarily
+   coloured live terminal content, so its contrast must NOT be a function of what is
+   underneath it. It is FULLY OPAQUE, which makes both sides of the contrast
+   calculation constants: #8E95A3 on #0D1117 = 6.28:1 (WCAG AA), identical over a
+   full-bright htop and over an empty prompt. Introducing rgba(), opacity,
+   backdrop-filter, or mix-blend-mode here re-admits the terminal pixel into that
+   calculation, and for every one of them there is a background colour that defeats
+   it. The 1px border makes the chip read as chrome over BLACK content (where the
+   opaque fill alone is shapeless); the UI font makes it read as chrome regardless
+   of colour. See DEVICE_LABEL_SPEC.md §6 and its guard test in
+   frontend/tests/test_app.mjs. */
+.tile-device-tag {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  z-index: 1;
+  max-width: 45%;
+  padding: 1px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: var(--bg-header);   /* #0D1117 -- OPAQUE. never rgba(). */
+  color: var(--text-muted);       /* #8E95A3 -- 6.28:1 on the above */
+  font-family: var(--font-ui);    /* NOT mono: reads as chrome, not as output */
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;           /* tile click + hover-preview delegation must pass through */
+}
+
 /* Loading placeholder tile — shown while a new session is being created */
 .tile--loading {
   opacity: 0.6;
@@ -884,6 +919,14 @@ body {
   .session-tile--tier-idle .tile-name {
     color: var(--text-dim);
   }
+
+  /* The corner chip needs a preview tall enough to have a corner. The 'active'
+     (24px body) and 'idle' (36px body) tiers are single-line strips -- the chip
+     would cover the only visible line. Both tiers still render the title bar, so
+     a tile is never label-less by accident; in 'corner' placement they simply
+     draw no label. 'bell' (90px body) keeps it. */
+  .session-tile--tier-active .tile-device-tag,
+  .session-tile--tier-idle .tile-device-tag { display: none; }
 }
 
 /* ─── Mobile Bottom Sheet ─────────────────────────────────────── */
