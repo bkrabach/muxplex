@@ -199,11 +199,36 @@ def _find_pip() -> str | None:
 def _get_install_info() -> dict:
     """Detect how muxplex was installed using PEP 610 direct_url.json.
 
+    This is the single source of truth `upgrade`/`doctor` use to decide what
+    to reinstall -- never guess or substitute a different origin than what's
+    recorded here. `direct_url.json` records exactly how pip/uv resolved the
+    install; the five shapes it can take (verified against real installs of
+    each):
+
+      absent                          -> pypi
+      vcs_info                        -> git       (a git remote + commit,
+                                                     optionally pinned to a
+                                                     tag/branch/ref)
+      dir_info + editable=True        -> editable   (`pip install -e .`)
+      dir_info (no editable)          -> local-dir  (`pip install /some/dir`)
+      archive_info                    -> archive    (a local wheel/sdist file)
+
+    Anything else is 'unknown' -- should not happen in practice, and is
+    treated conservatively (never auto-upgraded) everywhere it's checked.
+
     Returns dict with keys:
-      source: 'git' | 'editable' | 'pypi' | 'unknown'
+      source: 'pypi' | 'git' | 'editable' | 'local-dir' | 'archive' | 'unknown'
       version: installed version string
-      commit: installed commit sha (git only)
-      url: git repo URL (git only)
+      commit: installed commit sha (git only, may be '')
+      url: origin verbatim from direct_url.json -- a git remote URL for
+           'git', a file:// URL for 'editable'/'local-dir'/'archive'; None
+           for 'pypi'/'unknown'
+      ref: the exact ref requested at install time, i.e. PEP 610's
+           vcs_info.requested_revision (git only) -- None if no ref was
+           given (installed off the default branch), or for any non-git
+           source. This is the pin `upgrade` must preserve; discarding it is
+           what let `muxplex upgrade` silently move a tag-pinned install onto
+           an unreleased default branch.
     """
     import json
     from importlib.metadata import PackageNotFoundError, distribution
@@ -213,6 +238,7 @@ def _get_install_info() -> dict:
         "version": "0.0.0",
         "commit": None,
         "url": None,
+        "ref": None,
     }
 
     try:
@@ -227,17 +253,169 @@ def _get_install_info() -> dict:
                 info["source"] = "git"
                 info["commit"] = du["vcs_info"].get("commit_id", "")
                 info["url"] = du.get("url", "")
+                info["ref"] = du["vcs_info"].get("requested_revision") or None
             elif "dir_info" in du and du["dir_info"].get("editable"):
                 info["source"] = "editable"
+                info["url"] = du.get("url", "")
+            elif "dir_info" in du:
+                info["source"] = "local-dir"
+                info["url"] = du.get("url", "")
+            elif "archive_info" in du:
+                info["source"] = "archive"
+                info["url"] = du.get("url", "")
             else:
                 info["source"] = "unknown"
         else:
-            # No direct_url.json → probably PyPI
+            # No direct_url.json → PyPI
             info["source"] = "pypi"
     except PackageNotFoundError:
         pass
 
     return info
+
+
+def _file_url_to_path(url: str) -> Path | None:
+    """Convert a file:// URL (as PEP 610 records for editable/local-dir/archive
+    installs) to a filesystem Path. Returns None if `url` isn't a file:// URL
+    (or is empty) -- e.g. an archive installed straight from an http(s) URL.
+    """
+    from urllib.parse import unquote, urlparse
+
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "file":
+        return None
+    return Path(unquote(parsed.path))
+
+
+def _latest_tag(tag_names) -> str:
+    """Pick the highest-version tag from a collection of tag name strings.
+
+    Tolerant of a leading 'v' (muxplex tags are `v*`, per AGENTS.md's release
+    section) and non-numeric trailing suffixes -- any non-numeric segment
+    sorts as 0 rather than crashing the comparison, so an odd/malformed tag
+    just sorts low instead of blowing up the whole check.
+    """
+
+    def version_key(tag: str) -> tuple[int, ...]:
+        stripped = tag[1:] if tag[:1] in ("v", "V") else tag
+        parts = []
+        for chunk in stripped.split("."):
+            digits = "".join(ch for ch in chunk if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+        return tuple(parts)
+
+    return max(tag_names, key=version_key)
+
+
+def _git_ref_kind_and_target(
+    url: str, requested_revision: str | None
+) -> tuple[str, str | None, str | None]:
+    """Classify a git install's pinned ref and resolve what to track.
+
+    Ref-kind semantics (preserve installer intent -- see upgrade-source-
+    awareness design):
+      pinned to a tag    -> track the latest tag (not branch HEAD)
+      pinned to a branch -> track that branch's HEAD
+      no ref recorded    -> track the default branch HEAD
+      anything else (an exact commit sha, or a ref that no longer exists on
+      the remote) -> treat as an exact pin; it never moves on its own.
+
+    Returns (kind, target_ref, error):
+      kind='default' -- no ref was requested; target_ref=None (caller tracks
+                         the remote's default branch HEAD, unchanged from the
+                         original behavior)
+      kind='tag'     -- target_ref is the latest tag on the remote (may equal
+                         requested_revision if already current)
+      kind='branch'  -- target_ref is requested_revision itself (installing
+                         '@branch' always tracks that branch's live HEAD)
+      kind='commit'  -- target_ref is requested_revision itself, unchanged
+      kind='error'   -- could not query the remote; `error` explains why
+    """
+    if not requested_revision:
+        return "default", None, None
+
+    try:
+        tags_result = subprocess.run(
+            ["git", "ls-remote", "--tags", url],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        heads_result = subprocess.run(
+            ["git", "ls-remote", "--heads", url],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        return "error", None, f"could not query remote refs: {exc}"
+
+    if tags_result.returncode != 0 or heads_result.returncode != 0:
+        return "error", None, "could not query remote refs"
+
+    tag_names: set[str] = set()
+    for line in tags_result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        ref = parts[1].removesuffix("^{}")
+        if ref.startswith("refs/tags/"):
+            tag_names.add(ref[len("refs/tags/") :])
+
+    branch_names: set[str] = set()
+    for line in heads_result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        ref = parts[1]
+        if ref.startswith("refs/heads/"):
+            branch_names.add(ref[len("refs/heads/") :])
+
+    if requested_revision in tag_names:
+        return "tag", _latest_tag(tag_names), None
+    if requested_revision in branch_names:
+        return "branch", requested_revision, None
+    return "commit", requested_revision, None
+
+
+def _provenance_label(info: dict) -> str:
+    """Human-readable "where this came from" line for `doctor`.
+
+    Purely informational -- running from git, a local checkout, or an
+    archive is a legitimate, deliberate choice, not something to warn about.
+    See doctor()'s update-check line for the one case that DOES warn
+    (updates not checkable from this source).
+    """
+    source = info["source"]
+
+    if source == "pypi":
+        return "PyPI"
+
+    if source == "git":
+        url = info.get("url") or "?"
+        label = f"git+{url}"
+        if info.get("ref"):
+            label += f" @ {info['ref']}"
+        if info.get("commit"):
+            label += f" ({info['commit'][:8]})"
+        return label
+
+    if source == "editable":
+        path = _file_url_to_path(info.get("url") or "")
+        return f"editable checkout at {path}" if path else "editable checkout"
+
+    if source == "local-dir":
+        path = _file_url_to_path(info.get("url") or "")
+        return f"local directory at {path}" if path else "local directory"
+
+    if source == "archive":
+        url = info.get("url") or "?"
+        path = _file_url_to_path(url)
+        return f"local archive at {path}" if path else f"archive at {url}"
+
+    return "unrecognized install record"
 
 
 def _installed_version_on_disk() -> str | None:
@@ -279,44 +457,103 @@ def _installed_version_on_disk() -> str | None:
 def _check_for_update(info: dict) -> tuple[bool, str]:
     """Check if an update is available. Returns (update_available, message).
 
-    For git: compares installed commit_id against remote HEAD sha.
+    Every source is handled explicitly -- there is no catch-all "can't tell,
+    so upgrade anyway" branch. When a real check can't be performed (missing
+    ref info, network failure, an install source we don't recognize), the
+    message says so and is prefixed 'not checkable', and update_available is
+    always False: claiming an update is available without having actually
+    checked is exactly what turned `muxplex upgrade` into a way to silently
+    replace a working install (a tag-pinned git install compared against
+    default-branch HEAD; an unrecognized source defaulting to "upgrade to be
+    safe" and overwriting a local build). Doctor surfaces 'not checkable'
+    messages as a warning (nothing is watching the version) -- never as an
+    "update available" nudge to run upgrade.
+
+    For git: no ref recorded -> compares installed commit against the
+    remote's default-branch HEAD (unchanged from the original behavior).
+    Pinned to a tag -> compares against the latest tag. Pinned to a branch
+    -> compares against that branch's HEAD. Pinned to anything else (an
+    exact commit sha, most likely) -> not checkable; an exact pin has no
+    "latest".
     For pypi: compares installed version against latest PyPI version.
-    For editable: always returns (False, "editable install").
-    For unknown: always returns (True, "unknown install source").
+    For editable/local-dir/archive: never checkable -- these are installs
+    the user manages directly; see _upgrade_target for what `upgrade` does
+    with each.
     """
     import json
     import urllib.request
 
-    if info["source"] == "editable":
+    source = info["source"]
+
+    if source == "editable":
         return False, "editable install — manage updates manually"
 
-    if info["source"] == "git":
-        try:
-            result = subprocess.run(
-                ["git", "ls-remote", info["url"], "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+    if source == "git":
+        url = info.get("url") or ""
+        requested = info.get("ref")
+        local_commit = info.get("commit") or ""
+
+        if not requested:
+            # No ref recorded -> track the remote's default branch HEAD,
+            # exactly as before this fix.
+            try:
+                result = subprocess.run(
+                    ["git", "ls-remote", url, "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except Exception:
+                return False, "not checkable — could not query remote"
             if result.returncode != 0:
-                return True, "could not check remote — upgrading to be safe"
+                return False, "not checkable — could not query remote"
 
             remote_sha = (
                 result.stdout.strip().split()[0] if result.stdout.strip() else ""
             )
-            local_sha = info["commit"] or ""
-
             if not remote_sha:
-                return True, "could not read remote sha — upgrading to be safe"
+                return False, "not checkable — remote returned no HEAD sha"
 
-            if local_sha == remote_sha:
-                return False, f"up to date (commit {local_sha[:8]})"
-            else:
-                return True, f"update available ({local_sha[:8]} → {remote_sha[:8]})"
-        except Exception:
-            return True, "check failed — upgrading to be safe"
+            if local_commit == remote_sha:
+                return False, f"up to date (commit {local_commit[:8]})"
+            return True, f"update available ({local_commit[:8]} → {remote_sha[:8]})"
 
-    if info["source"] == "pypi":
+        kind, target_ref, err = _git_ref_kind_and_target(url, requested)
+        if kind == "error":
+            return False, f"not checkable — {err}"
+
+        if kind == "tag":
+            if target_ref == requested:
+                return False, f"up to date ({requested} — latest tag)"
+            return True, f"update available ({requested} → {target_ref})"
+
+        if kind == "branch":
+            try:
+                result = subprocess.run(
+                    ["git", "ls-remote", url, f"refs/heads/{requested}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except Exception:
+                return False, "not checkable — could not query remote"
+            if result.returncode != 0 or not result.stdout.strip():
+                return False, "not checkable — could not query remote"
+            remote_sha = result.stdout.strip().split()[0]
+            if local_commit == remote_sha:
+                return False, f"up to date (branch {requested} @ {local_commit[:8]})"
+            return (
+                True,
+                "update available"
+                f" (branch {requested}: {local_commit[:8]} → {remote_sha[:8]})",
+            )
+
+        # kind == "commit": pinned to an exact ref that isn't a known tag or
+        # branch (a raw commit sha, most likely) -- there's no "latest" for
+        # an exact pin, so there's nothing to check.
+        return False, f"not checkable — pinned to exact ref {requested}"
+
+    if source == "pypi":
         try:
             req = urllib.request.Request(
                 "https://pypi.org/pypi/muxplex/json",
@@ -327,13 +564,107 @@ def _check_for_update(info: dict) -> tuple[bool, str]:
                 latest = data["info"]["version"]
                 if latest == info["version"]:
                     return False, f"up to date (v{info['version']})"
-                else:
-                    return True, f"update available (v{info['version']} → v{latest})"
+                return True, f"update available (v{info['version']} → v{latest})"
         except Exception:
-            return True, "could not check PyPI — upgrading to be safe"
+            return False, "not checkable — could not reach PyPI"
 
-    # Unknown source
-    return True, "unknown install source — upgrading to be safe"
+    if source == "local-dir":
+        return False, "not checkable — local directory install"
+
+    if source == "archive":
+        return False, "not checkable — local archive install"
+
+    # Unrecognized install record. Never true here -- surfacing an honest
+    # "can't tell" instead of the old "unknown -> upgrade to be safe", which
+    # is exactly what silently overwrote installs _get_install_info couldn't
+    # classify.
+    return False, "not checkable — install source not recognized"
+
+
+def _upgrade_target(info: dict) -> tuple[str | None, str | None]:
+    """Decide the exact string to hand the installer, derived STRICTLY from
+    the recorded install source (never guessed, never substituted).
+
+    Returns (target, refuse_reason) -- exactly one is not None:
+      target set         -- install exactly this (a pip/uv requirement spec,
+                             a local directory path, or an archive path/URL).
+      refuse_reason set  -- do not install automatically; this explains why,
+                             for the caller to print and stop.
+
+    This is the fix for the defect where `upgrade` would silently convert a
+    git install to the PyPI package (because it happened to also be
+    uv-managed), or reinstall canonical upstream over a local build it
+    couldn't classify. `target`'s shape always matches `info["source"]` by
+    construction -- `_target_matches_source` re-checks this mechanically
+    right before install, as a second line of defense.
+    """
+    source = info["source"]
+
+    if source == "pypi":
+        return "muxplex", None
+
+    if source == "git":
+        url = info.get("url") or ""
+        if not url:
+            return None, "git install has no recorded remote URL"
+        requested = info.get("ref")
+        kind, target_ref, err = _git_ref_kind_and_target(url, requested)
+        if kind == "error":
+            return None, f"could not resolve git ref to upgrade to: {err}"
+        if target_ref:
+            return f"git+{url}@{target_ref}", None
+        return f"git+{url}", None
+
+    if source == "editable":
+        return (
+            None,
+            "editable install — manage it yourself (e.g. git pull in the checkout)",
+        )
+
+    if source == "local-dir":
+        path = _file_url_to_path(info.get("url") or "")
+        if path is None:
+            return None, "local directory install has no recorded path"
+        if not path.exists():
+            return None, f"original directory no longer exists ({path})"
+        return str(path), None
+
+    if source == "archive":
+        url = info.get("url") or ""
+        path = _file_url_to_path(url)
+        if path is not None and not path.exists():
+            return None, f"original archive no longer exists ({path})"
+        return url, None
+
+    return (
+        None,
+        "install source not recognized — reinstall manually with the method"
+        " you used originally",
+    )
+
+
+def _target_matches_source(info: dict, target: str) -> bool:
+    """Defense-in-depth: confirm `target`'s shape actually matches the
+    recorded install source, right before it's handed to the installer.
+
+    `_upgrade_target` is built to derive `target` strictly from `info`, so
+    this should always be True. It exists to mechanically catch a future
+    regression that reintroduces a hardcoded or substituted target (this is
+    precisely how the git-install-silently-becomes-PyPI defect happened),
+    rather than relying solely on `_upgrade_target` staying correct forever.
+    """
+    source = info["source"]
+    if source == "pypi":
+        return target == "muxplex"
+    if source == "git":
+        return target.startswith("git+") and (info.get("url") or "") in target
+    if source in ("local-dir", "archive"):
+        expected = info.get("url") or ""
+        expected_path = _file_url_to_path(expected)
+        return target == expected or (
+            expected_path is not None and target == str(expected_path)
+        )
+    return False
 
 
 def generate_federation_key() -> None:
@@ -770,15 +1101,20 @@ def doctor() -> None:
         muxplex_version = "dev"
 
     info = _get_install_info()
-    source_label = info["source"]
-    if info["commit"]:
-        source_label += f" @ {info['commit'][:8]}"
-    print(f"  {ok_mark} muxplex {muxplex_version} (installed via {source_label})")
+    print(f"  {ok_mark} muxplex {muxplex_version}")
+    print(f"    \u21b3 from {_provenance_label(info)}")
 
+    # Provenance above is purely informational (green): running from git, a
+    # local checkout, or an archive is a legitimate, deliberate choice, not
+    # something to warn about. The warning below is reserved for a genuinely
+    # degraded capability -- this source can't be checked for updates at
+    # all, so nothing is watching the installed version.
     update_available, update_msg = _check_for_update(info)
     if update_available:
         print(f"  {warn_mark} Update: {update_msg}")
         print("    Run: muxplex upgrade")
+    elif update_msg.startswith("not checkable"):
+        print(f"  {warn_mark} Update: {update_msg}")
     else:
         print(f"  {ok_mark} {update_msg}")
 
@@ -1063,7 +1399,20 @@ def upgrade(*, force: bool = False) -> None:
     # Show current install info
     info = _get_install_info()
     commit_suffix = f" (commit {info['commit'][:8]})" if info["commit"] else ""
-    print(f"  Installed: v{info['version']}{commit_suffix} via {info['source']}")
+    ref_suffix = f" @ {info['ref']}" if info.get("ref") else ""
+    print(
+        f"  Installed: v{info['version']}{commit_suffix} via {info['source']}{ref_suffix}"
+    )
+
+    # Editable installs are always user-managed -- muxplex must never
+    # reinstall over a checkout the user is actively developing in, --force
+    # or not. See the install-source table in _upgrade_target's docstring.
+    if info["source"] == "editable":
+        print(
+            "\n  Editable install — muxplex does not manage this.\n"
+            "  Update it yourself, e.g.: git -C <your checkout> pull\n"
+        )
+        return
 
     update_available = False
     if not force:
@@ -1072,17 +1421,45 @@ def upgrade(*, force: bool = False) -> None:
 
         if not update_available:
             print(
-                "\n  Already up to date."
-                " Use 'muxplex upgrade --force' to reinstall anyway.\n"
+                f"\n  {message}. Use 'muxplex upgrade --force' to reinstall anyway.\n"
             )
             return
     else:
         print("  Status: --force specified — skipping version check")
 
-    # Bug 3: Detect whether this install is managed by uv tool.
-    # If the resolved muxplex binary lives inside the uv tools directory we
-    # always use `uv tool install --reinstall --force muxplex` regardless of
-    # the PEP-610 source tag so that the correct tool-environment is upgraded.
+    # install_target is derived STRICTLY from the recorded install source
+    # (direct_url.json) -- never guessed, never substituted. This is the fix
+    # for the defect where a git install got silently converted to the PyPI
+    # package (because it also happened to be uv-managed), or a local build
+    # got silently overwritten with upstream canonical. See
+    # _upgrade_target's docstring.
+    install_target, refuse_reason = _upgrade_target(info)
+    if install_target is None:
+        print(f"\n  Refusing to upgrade: {refuse_reason}\n")
+        sys.exit(1)
+
+    # Safety net (defense-in-depth, independent of the above being correct):
+    # if what we're about to install doesn't match the recorded source's
+    # shape, stop and show both rather than silently installing something
+    # else. --force overrides this specific gate only -- the user still has
+    # to have explicitly asked for it.
+    if not _target_matches_source(info, install_target):
+        print(
+            "\n  REFUSING: the computed install target does not match the"
+            " recorded install source.\n"
+            f"    Recorded source : {info['source']} ({info.get('url') or 'n/a'})\n"
+            f"    Computed target : {install_target}\n"
+        )
+        if not force:
+            print("  Not proceeding without --force.\n")
+            sys.exit(1)
+        print("  --force specified — proceeding anyway.\n")
+
+    # Bug 3: Detect whether this install is managed by uv tool. This decides
+    # WHICH uv invocation shape to use below (a --reinstall of the existing
+    # tool environment vs a fresh `uv tool install`) -- it must never decide
+    # WHAT to install; install_target (above) already settled that from the
+    # recorded source alone.
     _uv_tools_dir = str(Path.home() / ".local" / "share" / "uv" / "tools")
     _muxplex_script = shutil.which("muxplex")
     _is_uv_managed = False
@@ -1093,12 +1470,6 @@ def upgrade(*, force: bool = False) -> None:
         except Exception:
             pass
 
-    # install_target: pypi / uv-tool-managed → package name; git → git URL
-    install_target = (
-        "muxplex"
-        if info["source"] == "pypi" or _is_uv_managed
-        else "git+https://github.com/bkrabach/muxplex"
-    )
     uv_path = _find_uv()
 
     # Pre-compute macOS service identifiers — used in both stop and finally blocks.
