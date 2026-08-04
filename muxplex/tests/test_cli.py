@@ -5242,6 +5242,18 @@ def test_upgrade_exits_1_if_service_fails_to_restart(monkeypatch, capsys):
 
     import muxplex.cli as cli_mod
 
+    # This asserts the LINUX/systemd dispatch (the spark-1 dead-service
+    # scenario): _have_systemctl=True / _have_launchctl=False below is only
+    # sufficient to route into that branch when sys.platform is also not
+    # "darwin". Left to the ambient platform, this passes on the Linux
+    # matrix and silently no-ops on macOS -- there upgrade() takes the
+    # darwin branch, sees _have_launchctl() False, prints "skipping service
+    # management step", and never reaches (or fails) the restart-verification
+    # that raises SystemExit(1), so the test's own intended scenario never
+    # runs. Same shape as the nine tests fixed by e6133c5 -- pin the
+    # platform this test is actually about.
+    monkeypatch.setattr("sys.platform", "linux")
+
     calls = []
 
     def mock_run(cmd, **kwargs):
