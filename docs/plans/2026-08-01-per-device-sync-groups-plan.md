@@ -5,11 +5,19 @@ decision record. §0's blocking finding — that a single shared ttyd process
 turns per-device session selection into a silent keystroke-misdirection
 hazard — is the reason this feature shipped with the terminal single-owner
 guard (`terminal_session`/`terminal_group`, `409 terminal_conflict`,
-`?takeover=true`) rather than as sync groups alone. That constraint is still
-live: see AGENTS.md → "ttyd is loopback-only by design" and
-`docs/API_SEMANTICS.md` → "single shared ttyd process". The per-session-ttyd
-architecture that would retire it is being platform-verified by the probes in
-`scripts/` (see `scripts/README.md`).
+`?takeover=true`) rather than as sync groups alone. **That constraint is no
+longer live.** The per-session-ttyd architecture shipped in **v0.35.0** — one
+ttyd per session, each on its own `AF_UNIX` socket — so two devices on two
+different sessions no longer share a resource, and `409 terminal_conflict` was
+deleted outright (it cannot fire; `grep -c terminal_conflict muxplex/main.py`
+is 0). WS 4409 survives with a narrower meaning: "you asked for a session your
+sync group did not select." See `docs/plans/2026-08-02-per-session-ttyd-plan.md`
+§7 for the guard decisions, AGENTS.md → "ttyd is loopback-only by design …  now
+per-session, over AF_UNIX", and `docs/API_SEMANTICS.md` → "Per-session ttyd".
+
+§0 below is retained as written, because the hazard it identifies is exactly
+what motivated the single-owner guard at the time — but read it as history, not
+as a description of how the terminal works today.
 
 ---
 
