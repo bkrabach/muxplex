@@ -3995,9 +3995,10 @@ test('DISPLAY_DEFAULTS does not include showActivityDot (replaced by activityInd
   assert.ok(!defaultsBody.includes('showActivityDot'), 'DISPLAY_DEFAULTS must NOT include showActivityDot — replaced by activityIndicator');
 });
 
-test('HTML index.html has setting-show-device-badges checkbox', () => {
+test('HTML index.html has setting-device-label-placement select (replaces show-device-badges checkbox)', () => {
   const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.ok(source.includes('setting-show-device-badges'), 'Display panel must have setting-show-device-badges checkbox');
+  assert.ok(source.includes('setting-device-label-placement'), 'Display panel must have setting-device-label-placement select');
+  assert.ok(!source.includes('setting-show-device-badges'), 'the retired checkbox must be gone');
 });
 
 test('HTML index.html does not have setting-show-activity-glow checkbox (replaced by activity-indicator)', () => {
@@ -4045,7 +4046,8 @@ test('bindStaticEventListeners binds change events for display toggle controls',
   assert.ok(fnStart !== -1, 'bindStaticEventListeners must exist');
   const fnEnd = source.indexOf('\nfunction ', fnStart + 1);
   const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 10000);
-  assert.ok(fnBody.includes('setting-show-device-badges'), 'must bind setting-show-device-badges');
+  assert.ok(fnBody.includes('setting-device-label-placement'), 'must bind setting-device-label-placement');
+  assert.ok(!fnBody.includes('setting-show-device-badges'), 'must NOT bind the retired setting-show-device-badges checkbox');
   assert.ok(fnBody.includes('setting-show-hover-preview'), 'must bind setting-show-hover-preview');
   assert.ok(fnBody.includes('setting-activity-indicator'), 'must bind setting-activity-indicator');
 });
@@ -4459,7 +4461,11 @@ test('buildTileHTML trim happens BEFORE slice in source (structural order check)
 test('buildSidebarHTML trim happens BEFORE slice in source (structural order check)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('function buildSidebarHTML');
-  const fnBody = source.substring(fnStart, fnStart + 2000);
+  // Window sized generously past the device-label placement block (which
+  // legitimately grew the head of this function, mirroring buildTileHTML
+  // above) so this keeps checking the real trim/slice ordering rather than
+  // an arbitrary byte offset.
+  const fnBody = source.substring(fnStart, fnStart + 2500);
   const trimIdx = fnBody.indexOf('.pop()');
   const sliceIdx = fnBody.indexOf('.slice(');
   assert.ok(
@@ -5253,7 +5259,7 @@ test('DISPLAY_DEFAULTS includes gridViewMode with default flat', () => {
   );
 });
 
-test('DISPLAY_DEFAULTS has exactly 9 keys', () => {
+test('DISPLAY_DEFAULTS has exactly 10 keys', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
   assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
@@ -5261,7 +5267,7 @@ test('DISPLAY_DEFAULTS has exactly 9 keys', () => {
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
   const keyMatches = defaultsBody.match(/^\s+\w+:/gm);
   assert.ok(keyMatches, 'DISPLAY_DEFAULTS must have keys');
-  assert.strictEqual(keyMatches.length, 9, `DISPLAY_DEFAULTS must have exactly 9 keys, got ${keyMatches.length}`);
+  assert.strictEqual(keyMatches.length, 10, `DISPLAY_DEFAULTS must have exactly 10 keys, got ${keyMatches.length}`);
 });
 
 test('getDisplaySettings is exported from app.js', () => {
@@ -5300,6 +5306,238 @@ test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DE
   assert.strictEqual(ds.gridViewMode, 'flat', 'getDisplaySettings must fall back to default gridViewMode');
   assert.ok(!('unknownKey' in ds), 'getDisplaySettings must not include keys not in DISPLAY_DEFAULTS');
   app._setServerSettings(null);
+});
+
+// ---------------------------------------------------------------------------
+// deviceLabelPlacement (DEVICE_LABEL_SPEC.md, test plan section 8.3)
+// ---------------------------------------------------------------------------
+
+test('N1: DISPLAY_DEFAULTS includes deviceLabelPlacement default titlebar', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes('deviceLabelPlacement'), 'app.js source must reference deviceLabelPlacement');
+  app._setServerSettings(null);
+  assert.strictEqual(app.getDisplaySettings().deviceLabelPlacement, 'titlebar');
+});
+
+test('N2: showDeviceBadges is still present in DISPLAY_DEFAULTS / getDisplaySettings', () => {
+  app._setServerSettings(null);
+  const ds = app.getDisplaySettings();
+  assert.strictEqual(ds.showDeviceBadges, true, 'showDeviceBadges must still default to true');
+});
+
+test('N3: deviceLabelPlacement() normalizer resolves known and unknown values', () => {
+  assert.strictEqual(app.deviceLabelPlacement({ deviceLabelPlacement: 'corner' }), 'corner');
+  assert.strictEqual(app.deviceLabelPlacement({ deviceLabelPlacement: 'banana' }), 'titlebar');
+  assert.strictEqual(app.deviceLabelPlacement({ deviceLabelPlacement: undefined }), 'titlebar');
+  assert.strictEqual(app.deviceLabelPlacement(null), 'titlebar');
+});
+
+test('N4: buildTileHTML titlebar placement shows device-badge, not tile-device-tag', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'titlebar' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('device-badge'), 'titlebar placement must include device-badge');
+  assert.ok(!html.includes('tile-device-tag'), 'titlebar placement must NOT include tile-device-tag');
+  app._setServerSettings(null);
+});
+
+test('N5: buildTileHTML corner placement shows tile-device-tag, not device-badge', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'corner' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('tile-device-tag'), 'corner placement must include tile-device-tag');
+  assert.ok(!html.includes('device-badge'), 'corner placement must NOT include device-badge');
+  app._setServerSettings(null);
+});
+
+test('N6: buildTileHTML corner chip is positioned after the pre, inside tile-body', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'corner' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.indexOf('tile-device-tag') > html.indexOf('</pre>'), 'chip must come after </pre>');
+  const bodyStart = html.indexOf('<div class="tile-body">');
+  const bodyEnd = html.indexOf('</div>', bodyStart);
+  const bodySlice = html.substring(bodyStart, bodyEnd);
+  assert.ok(bodySlice.includes('tile-device-tag'), 'chip must be inside .tile-body');
+  app._setServerSettings(null);
+});
+
+test('N7: buildTileHTML off placement shows neither device-badge nor tile-device-tag', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'off' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('device-badge'));
+  assert.ok(!html.includes('tile-device-tag'));
+  app._setServerSettings(null);
+});
+
+test('N8: buildTileHTML single-device guard suppresses label in all three placements', () => {
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '' };
+  for (const placement of ['titlebar', 'corner', 'off']) {
+    app._setServerSettings({ multi_device_enabled: false, deviceLabelPlacement: placement });
+    const html = app.buildTileHTML(session, 0, false);
+    assert.ok(!html.includes('device-badge'), `${placement}: no device-badge when single-device`);
+    assert.ok(!html.includes('tile-device-tag'), `${placement}: no tile-device-tag when single-device`);
+  }
+  app._setServerSettings(null);
+});
+
+test('N9: buildTileHTML missing deviceName suppresses label in all three placements', () => {
+  const session = { name: 'work', deviceName: '', sessionKey: '::work', snapshot: '' };
+  for (const placement of ['titlebar', 'corner', 'off']) {
+    app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: placement });
+    const html = app.buildTileHTML(session, 0, false);
+    assert.ok(!html.includes('device-badge'), `${placement}: no device-badge when deviceName empty`);
+    assert.ok(!html.includes('tile-device-tag'), `${placement}: no tile-device-tag when deviceName empty`);
+  }
+  app._setServerSettings(null);
+});
+
+test('N10: buildTileHTML corner chip escapes HTML in deviceName', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'corner' });
+  const session = { name: 'work', deviceName: '<img src=x onerror=1>', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(!html.includes('<img'), 'corner chip must not contain raw <img');
+  app._setServerSettings(null);
+});
+
+test('N11: buildTileHTML aria-label carries device name in all three placements', () => {
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '' };
+  for (const placement of ['titlebar', 'corner', 'off']) {
+    app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: placement });
+    const html = app.buildTileHTML(session, 0, false);
+    assert.ok(html.includes('on spark-1'), `${placement}: aria-label must contain device name`);
+  }
+  app._setServerSettings(null);
+});
+
+test('N12: buildTileHTML aria-label is the bare session name for single-device', () => {
+  app._setServerSettings({ multi_device_enabled: false, deviceLabelPlacement: 'corner' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '' };
+  const html = app.buildTileHTML(session, 0, false);
+  assert.ok(html.includes('aria-label="work"'), 'aria-label must be the bare session name');
+  app._setServerSettings(null);
+});
+
+test('N13: buildSidebarHTML titlebar placement shows device-badge, not tile-device-tag', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'titlebar' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null, null);
+  assert.ok(html.includes('device-badge'));
+  assert.ok(!html.includes('tile-device-tag'));
+  app._setServerSettings(null);
+});
+
+test('N14: buildSidebarHTML corner placement shows tile-device-tag, not device-badge', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'corner' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null, null);
+  assert.ok(html.includes('tile-device-tag'));
+  assert.ok(!html.includes('device-badge'));
+  app._setServerSettings(null);
+});
+
+test('N15: buildSidebarHTML corner chip is positioned inside sidebar-item-body', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'corner' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null, null);
+  const bodyStart = html.indexOf('<div class="sidebar-item-body">');
+  const bodyEnd = html.indexOf('</div>', bodyStart);
+  const bodySlice = html.substring(bodyStart, bodyEnd);
+  assert.ok(bodySlice.includes('tile-device-tag'), 'chip must be inside .sidebar-item-body');
+  app._setServerSettings(null);
+});
+
+test('N16: buildSidebarHTML off placement shows neither device-badge nor tile-device-tag', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'off' });
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null, null);
+  assert.ok(!html.includes('device-badge'));
+  assert.ok(!html.includes('tile-device-tag'));
+  app._setServerSettings(null);
+});
+
+test('N17: buildSidebarHTML single-device guard suppresses label in all three placements', () => {
+  const session = { name: 'work', deviceName: 'spark-1', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  for (const placement of ['titlebar', 'corner', 'off']) {
+    app._setServerSettings({ multi_device_enabled: false, deviceLabelPlacement: placement });
+    const html = app.buildSidebarHTML(session, null, null);
+    assert.ok(!html.includes('device-badge'), `${placement}: no device-badge when single-device`);
+    assert.ok(!html.includes('tile-device-tag'), `${placement}: no tile-device-tag when single-device`);
+  }
+  app._setServerSettings(null);
+});
+
+test('N18: buildSidebarHTML missing deviceName suppresses label in all three placements', () => {
+  const session = { name: 'work', deviceName: '', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  for (const placement of ['titlebar', 'corner', 'off']) {
+    app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: placement });
+    const html = app.buildSidebarHTML(session, null, null);
+    assert.ok(!html.includes('device-badge'), `${placement}: no device-badge when deviceName empty`);
+    assert.ok(!html.includes('tile-device-tag'), `${placement}: no tile-device-tag when deviceName empty`);
+  }
+  app._setServerSettings(null);
+});
+
+test('N19: buildSidebarHTML corner chip escapes HTML in deviceName', () => {
+  app._setServerSettings({ multi_device_enabled: true, deviceLabelPlacement: 'corner' });
+  const session = { name: 'work', deviceName: '<img src=x onerror=1>', sessionKey: '::work', snapshot: '', bell: { unseen_count: 0 } };
+  const html = app.buildSidebarHTML(session, null, null);
+  assert.ok(!html.includes('<img'), 'corner chip must not contain raw <img');
+  app._setServerSettings(null);
+});
+
+test('N20: index.html has the device-label-placement select with the three options', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(html.includes('setting-device-label-placement'), 'index.html must include the new select control');
+  assert.ok(html.includes('value="titlebar"'));
+  assert.ok(html.includes('value="corner"'));
+  assert.ok(html.includes('value="off"'));
+});
+
+test('N21: index.html no longer includes the old show-device-badges checkbox', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(!html.includes('setting-show-device-badges'), 'index.html must NOT include the retired checkbox control');
+});
+
+test('N22: bindStaticEventListeners binds the new control, not the old one', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const bindStart = source.indexOf('function bindStaticEventListeners');
+  assert.ok(bindStart !== -1, 'bindStaticEventListeners must exist');
+  const bindEnd = source.indexOf('\n}', bindStart);
+  const bindBody = source.substring(bindStart, bindEnd);
+  assert.ok(bindBody.includes('setting-device-label-placement'), 'must bind the new select');
+  assert.ok(!bindBody.includes('setting-show-device-badges'), 'must not bind the retired checkbox');
+});
+
+test('N23: index.html device-label-ambiguity-note exists and starts hidden', () => {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const noteStart = html.indexOf('device-label-ambiguity-note');
+  assert.ok(noteStart !== -1, 'ambiguity note element must exist');
+  const lineStart = html.lastIndexOf('<div', noteStart);
+  const lineEnd = html.indexOf('>', noteStart);
+  const openingTag = html.substring(lineStart, lineEnd);
+  assert.ok(openingTag.includes('hidden'), 'ambiguity note must carry the hidden class in static markup');
+});
+
+test('G3: .tile-device-tag rule never re-admits the terminal pixel via alpha', () => {
+  const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const ruleStart = css.indexOf('.tile-device-tag {');
+  assert.ok(ruleStart !== -1, '.tile-device-tag rule must exist in style.css');
+  const ruleEnd = css.indexOf('}', ruleStart);
+  // Strip inline comments before checking -- a comment explaining the
+  // invariant (e.g. "never rgba()") legitimately contains the forbidden
+  // token as TEXT; only real property values must avoid it.
+  const ruleBody = css.substring(ruleStart, ruleEnd).replace(/\/\*[\s\S]*?\*\//g, '');
+  const forbidden = ['rgba(', 'hsla(', 'opacity', 'backdrop-filter', 'mix-blend-mode'];
+  for (const token of forbidden) {
+    assert.ok(
+      !ruleBody.includes(token),
+      `the corner device label overlays arbitrary terminal content; its contrast is only ` +
+      `provable while it is fully opaque -- see DEVICE_LABEL_SPEC.md §6 (found forbidden token: ${token})`
+    );
+  }
+  assert.ok(ruleBody.includes('background: var(--bg-header)'), 'background must be the opaque --bg-header token');
 });
 
 // --- getVisibleSessions: remoteId=0 falsy-zero bug fix ---
