@@ -86,14 +86,23 @@ def tmux_server():
 
 
 @pytest.fixture(autouse=True)
-def use_tmp_state(tmp_path, monkeypatch):
-    """Redirect state and PID files to tmp_path for test isolation."""
+def use_tmp_state(tmp_path, short_socket_dir, monkeypatch):
+    """Redirect state and PID files to tmp_path for test isolation.
+
+    TTYD_SOCKET_DIR specifically uses short_socket_dir (conftest.py), NOT
+    tmp_path: these integration tests spawn a real ttyd bound to a real
+    AF_UNIX socket under this directory, and tmp_path is deep enough on
+    macOS to blow ttyd's 102-byte sun_path budget (see short_socket_dir's
+    docstring, and test_ttyd.py's identical fix for the same fixture shape).
+    Currently only reachable via `pytest -m integration`, which the macOS CI
+    job does not run -- but the fragility is real the moment it does.
+    """
     tmp_state_dir = tmp_path / "state"
     tmp_state_path = tmp_state_dir / "state.json"
     monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
     monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_path)
 
-    tmp_socket_dir = tmp_path / "ttyd"
+    tmp_socket_dir = short_socket_dir / "ttyd"
     monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", tmp_socket_dir)
 
 
@@ -268,17 +277,23 @@ def isolated_tmux_env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def real_ttyd_app(tmp_path, monkeypatch):
+def real_ttyd_app(tmp_path, short_socket_dir, monkeypatch):
     """Real app wiring for the §12.5 proof: real state dir, real ttyd socket
     dir (real validate_socket_dir(), real spawn/kill), poll loop replaced
     with a no-op so the test drives session discovery deterministically via
     one explicit _run_poll_cycle() call instead of racing a background timer.
+
+    TTYD_SOCKET_DIR uses short_socket_dir (conftest.py), NOT tmp_path --
+    validate_socket_dir()'s real bind probe and the real ttyd spawn both
+    perform a real AF_UNIX bind, and tmp_path is deep enough on macOS to
+    blow the 102-byte sun_path budget (same fragility test_ttyd.py's
+    identical fixture had; see short_socket_dir's docstring).
     """
     tmp_state_dir = tmp_path / "state"
     monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
     monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_dir / "state.json")
 
-    tmp_socket_dir = tmp_path / "ttyd-sockets"
+    tmp_socket_dir = short_socket_dir / "ttyd-sockets"
     tmp_socket_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(ttyd_mod, "TTYD_SOCKET_DIR", tmp_socket_dir)
 

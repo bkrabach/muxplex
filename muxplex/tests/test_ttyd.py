@@ -48,10 +48,19 @@ from muxplex.ttyd import (
 
 
 @pytest.fixture(autouse=True)
-def use_tmp_socket_dir(tmp_path, monkeypatch):
+def use_tmp_socket_dir(tmp_path, short_socket_dir, monkeypatch):
     """Redirect the ttyd socket dir to a fresh temp directory and clear the
-    in-memory registry before and after every test."""
-    tmp_socket_dir = tmp_path / "ttyd"
+    in-memory registry before and after every test.
+
+    Uses ``short_socket_dir`` (conftest.py), NOT ``tmp_path``, for
+    ``TTYD_SOCKET_DIR`` specifically: this file binds real AF_UNIX sockets
+    and asserts against ``SUN_PATH_BUDGET``, and ``tmp_path`` is deep enough
+    on macOS CI to blow that 102-byte budget before a socket filename is even
+    appended (see ``short_socket_dir``'s docstring for the measured example).
+    ``tmp_path`` remains fine for ``LEGACY_TTYD_PID_PATH`` below -- it's a
+    plain file path, never bound as a socket.
+    """
+    tmp_socket_dir = short_socket_dir / "ttyd"
     monkeypatch.setattr(ttyd_mod, "TTYD_SOCKET_DIR", tmp_socket_dir)
     monkeypatch.setattr(
         ttyd_mod, "LEGACY_TTYD_PID_PATH", tmp_path / "legacy" / "ttyd.pid"
@@ -156,8 +165,12 @@ def test_socket_basename_len_matches_components():
 # ---------------------------------------------------------------------------
 
 
-def test_validate_accepts_a_normal_fresh_dir(tmp_path):
-    d = tmp_path / "sockdir"
+def test_validate_accepts_a_normal_fresh_dir(short_socket_dir):
+    """Uses short_socket_dir, NOT tmp_path -- this performs a real bind probe
+    (validate_socket_dir's last step), and tmp_path is deep enough on macOS
+    CI to blow SUN_PATH_BUDGET before that probe ever runs. See
+    short_socket_dir's docstring (conftest.py)."""
+    d = short_socket_dir / "sockdir"
     validate_socket_dir(d)
     assert d.is_dir()
     assert stat.S_IMODE(d.stat().st_mode) == 0o700
@@ -286,9 +299,12 @@ def test_validate_rejects_symlinked_dir(tmp_path):
         validate_socket_dir(link)
 
 
-def test_validate_bind_probe_leaves_no_file(tmp_path):
-    """.probe.sock absent afterward."""
-    d = tmp_path / "sockdir"
+def test_validate_bind_probe_leaves_no_file(short_socket_dir):
+    """.probe.sock absent afterward.
+
+    Uses short_socket_dir, NOT tmp_path -- same real-bind-probe reason as
+    test_validate_accepts_a_normal_fresh_dir above."""
+    d = short_socket_dir / "sockdir"
     validate_socket_dir(d)
     assert not (d / ".probe.sock").exists()
 
@@ -527,10 +543,13 @@ def test_socket_is_live_false_for_missing_file(tmp_path):
     assert socket_is_live(tmp_path / "does-not-exist.sock") is False
 
 
-def test_socket_is_live_true_for_real_listener(tmp_path):
+def test_socket_is_live_true_for_real_listener(short_socket_dir):
+    """Uses short_socket_dir, NOT tmp_path -- this binds a REAL AF_UNIX
+    socket, and tmp_path is deep enough on macOS CI to raise
+    'OSError: AF_UNIX path too long' before bind() ever gets a chance."""
     import socket as socket_mod
 
-    path = tmp_path / "live.sock"
+    path = short_socket_dir / "live.sock"
     server = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
     server.bind(str(path))
     server.listen(1)

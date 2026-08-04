@@ -33,7 +33,10 @@ Twin Universe container). See ``AGENTS.md`` -> "Running the test suite".
 from __future__ import annotations
 
 import os
+import shutil
 import socket
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -186,6 +189,37 @@ def _default_service_ready_wait(request, monkeypatch):
         cli_mod, "_wait_for_service_ready", lambda *a, **k: True, raising=False
     )
     yield
+
+
+@pytest.fixture
+def short_socket_dir():
+    """A scratch directory short enough to host a real AF_UNIX socket.
+
+    ``ttyd``'s socket path must fit ``SUN_PATH_BUDGET`` (102 bytes, the
+    tightest limit across Linux/WSL/macOS -- see ``ttyd.py``'s module
+    docstring and AGENTS.md's "ttyd is loopback-only by design"). pytest's
+    own ``tmp_path`` is NOT safe for this: on macOS CI it resolves to
+    something like
+    ``/private/var/folders/df/<random>/T/pytest-of-runner/pytest-0/<test>0/``,
+    which is already ~120 bytes before a socket filename is even appended --
+    comfortably over budget. Real usage
+    (``~/.local/share/muxplex/ttyd/``) is nowhere near that; only the test
+    fixture was too deep, which is why this was invisible on the Linux CI
+    job (whose ``tmp_path`` is short) and only ever fired on macOS.
+
+    ``/tmp`` (not ``tempfile.gettempdir()``, which macOS CI sets to the deep
+    path above via ``$TMPDIR``) is short on every supported platform --
+    Linux, macOS (a symlink to ``/private/tmp``, still short after
+    ``resolve()``), and WSL (a real, short, ext4-backed path, never
+    ``/mnt/*``) -- so no platform branch is needed; a short path is simply
+    correct everywhere. Same base directory ``scripts/spike_ttyd_harness.py``
+    already uses for the identical reason.
+    """
+    base = Path(tempfile.mkdtemp(prefix="mxt-", dir="/tmp"))
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
