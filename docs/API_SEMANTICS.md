@@ -77,6 +77,28 @@ consumers in ways this repo's tests won't catch:
   follows the active *selection*; this one follows the view *definitions*
   (membership data) themselves.
 
+- **`deviceLabelPlacement` is the authoritative placement key; `showDeviceBadges` is
+  a server-derived mirror** (`showDeviceBadges == deviceLabelPlacement != "off"`),
+  reconciled on every write path (`patch_settings`, `apply_synced_settings`, and a
+  read-time migration in `load_settings`). Clients should read and write
+  `deviceLabelPlacement` and treat `showDeviceBadges` as read-only.
+  A client that writes only `showDeviceBadges` (a pre-v0.36 client, or an old
+  federation peer) still works: `false` sets the placement to `"off"`; `true` moves
+  it off `"off"` **only when it is currently `"off"`**, so an old peer's sync can
+  never silently drag a user from `"corner"` to `"titlebar"`. An unknown
+  `deviceLabelPlacement` on `PATCH /api/settings` is a **400** carrying
+  `unknown_device_label_placement: true` plus an `allowed` list, with no write —
+  the fourth member of the `backstop` / `terminal_conflict` / `unknown_command_id`
+  discriminator convention below. On the **federation sync path** the same value
+  is ignored with a warning and every other key in the payload still applies; a
+  peer must not be able to wedge sync. **This key is deliberately PWA-scoped and
+  is NOT a semantic other clients are expected to re-implement.** At the time of
+  writing neither the soft deck (`frontend/deck/`) nor the `muxplex-deck` sidecar
+  renders a device label on a session tile, and neither fetches federated
+  sessions — so there is nothing for the key to govern there. A sidecar that
+  later grows federated tiles should read this key at that point; until then,
+  ignoring it is correct, not a gap.
+
 Preferred direction as semantics grow: move resolution **server-side** (e.g. a
 resolved-current-view endpoint) rather than expecting each client to port more
 logic — duplication across PWA/sidecar/agents is where drift bugs come from.

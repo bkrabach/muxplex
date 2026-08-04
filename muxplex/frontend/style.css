@@ -303,7 +303,7 @@ body {
 }
 
 /* Device label drawn INSIDE the preview (deviceLabelPlacement === 'corner').
-   Also used inside .sidebar-item-body, which has the same
+   Also used inside the sidebar item's preview body, which has the same
    position:relative / overflow:hidden / black background shape.
 
    LEGIBILITY INVARIANT -- do not weaken. This chip overlays arbitrary, arbitrarily

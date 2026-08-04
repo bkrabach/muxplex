@@ -337,7 +337,8 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `gridColumns` | `"auto"` | Number of grid columns (`"auto"` or integer) |
 | `bellSound` | `false` | Play audio sound on terminal bell |
 | `viewMode` | `"auto"` | Grid tile sizing: `auto` or `fit` |
-| `showDeviceBadges` | `true` | Show device name labels on tiles |
+| `deviceLabelPlacement` | `"titlebar"` | Where a session's device label is drawn: `titlebar` (in the tile/sidebar header, the default), `corner` (inside the preview, anchored lower right), or `off` (not drawn). Presentation only — views store device-qualified keys, so session identity is unaffected. Honored by the PWA only; the soft deck and the `muxplex-deck` sidecar draw no device label at all. |
+| `showDeviceBadges` | `true` | **Derived — do not edit.** Maintained by the server as `deviceLabelPlacement != "off"`. Retained so pre-v0.36 clients keep working; set `deviceLabelPlacement` instead. |
 | `showHoverPreview` | `true` | Show hover preview popover on tile hover |
 | `activityIndicator` | `"both"` | Activity style: `none`, `glow`, `dot`, `both` |
 | `gridViewMode` | `"flat"` | Multi-device grid layout: `flat`, `grouped`, `filtered` |
