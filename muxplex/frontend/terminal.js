@@ -191,10 +191,13 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
       if (ws !== _ws) return; // stale connection — don't reconnect for old sockets
       if (!_currentSession) return; // intentional close — don't reconnect
       if (event && event.code === 4409) {
-        // §0 guard fired: this device's active_session does not match what
-        // the single shared terminal is actually attached to. Looping a
-        // reconnect here would hammer the server and never recover — show
-        // an honest overlay with a Take-over affordance instead.
+        // Per-session-ttyd guard fired (PER_SESSION_TTYD_SPEC.md §7.2): this
+        // device asked to attach to a session its own sync group has not
+        // selected -- a state desync, not a resource conflict (there is no
+        // longer a single shared terminal to contend over). Retrying the
+        // identical request cannot fix a desync, so this must NOT loop or
+        // auto-retry -- show an honest overlay and stop
+        // (_showTerminalConflictOverlay's docstring has the full argument).
         //
         // REACHABLE against a real server as of the accept()-then-close()
         // fix in main.py's terminal_ws_proxy (see _accept_then_close() and
@@ -212,8 +215,9 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
         // server), which remains valid coverage of the client-side logic
         // either way. The HTTP 409 `terminal_conflict` body on the
         // /connect escalation POST below is a second, independent path to
-        // the same overlay/take-over UI -- kept as-is; it's a normal HTTP
-        // response, unaffected by any of the WS wire-encoding issue above.
+        // the same overlay -- kept as a version-tolerant no-op for an
+        // older/federated peer; it's a normal HTTP response, unaffected by
+        // any of the WS wire-encoding issue above.
         _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId);
         return;
       }
@@ -299,27 +303,66 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
  * message (no Take-over affordance -- with per-session ttyd there is no
  * single shared terminal left to take over), and (critically) NO
  * auto-reconnect loop -- looping here would hammer the server and never
- * recover on its own. Re-issues /connect for `name` once (not a loop)
- * before reconnecting, since the 4409 guard is now a per-request
- * consistency check rather than a resource claim (PER_SESSION_TTYD_SPEC.md
- * §7.2, §9.2) -- a stale reconnect after the user switched sessions on
- * another device is the only way this still fires.
+ * recover on its own.
+ *
+ * Under per-session ttyd, WS 4409 no longer means "another device holds the
+ * one shared terminal" (PER_SESSION_TTYD_SPEC.md §7.2) -- there is no shared
+ * resource left to contend over. It means "this device asked to attach to a
+ * session its own sync group has not selected": a STATE DESYNC, not a
+ * transient conflict. Retrying the identical request cannot resolve a
+ * desync -- and re-POSTing /connect for `name` would make it actively
+ * worse: connect_session() unconditionally writes
+ * `{active_session: name}` for the group (main.py), so "retrying" here
+ * would silently overwrite whatever the OTHER device just (correctly)
+ * selected, fighting the very guard this code path exists to enforce.
+ *
+ * So this function does exactly one thing: show the message and stop.
+ * No fetch, no reconnect, no timer -- deliberately, so no code path here
+ * can ever recurse or loop, no matter how a server responds (this is what
+ * makes an unbounded loop structurally impossible rather than merely
+ * capped or backed off). Recovery happens through the channel that
+ * already exists and is already correct: app.js's poll loop
+ * (`followRemoteActiveSession`) picks up the group's real `active_session`
+ * on its next tick and calls `openTerminal()` with the right target, which
+ * resets all reconnect state cleanly (`_reconnectAttempts = 0`, fresh
+ * `_currentSession`, fresh WebSocket). A user action (re-selecting a
+ * session) does the same thing immediately. This mirrors the
+ * pre-per-session-ttyd behavior, which gated any reconnect here behind a
+ * Take-over BUTTON CLICK (a user gesture) rather than firing automatically
+ * -- the button is gone (nothing left to take over), and the "no automatic
+ * loop" invariant it enforced is preserved by doing nothing instead of
+ * substituting an unconditional fetch.
+ *
+ * INCIDENT (fixed here, bisected to 6f44325): the previous version of this
+ * function unconditionally re-POSTed /connect and then called
+ * connectWebSocket(name, ...) regardless of that POST's outcome.
+ * _reconnectAttempts is module-level and is reset only by a successful
+ * data message or a fresh openTerminal() call, so a second 409/4409
+ * response re-entered THIS SAME function from connectWebSocket()'s own
+ * escalation path (`connect()`'s `_reconnectAttempts >= 2` branch) --
+ * with no setTimeout, no cap, and nothing gating the recursion, this was
+ * an unbounded promise-microtask loop (overlay -> fetch -> connectWebSocket
+ * -> escalation -> overlay -> ...) that ran until the JS heap was
+ * exhausted. See tests/test_terminal.mjs's
+ * "_showTerminalConflictOverlay never re-enters itself" test.
+ *
+ * The HTTP 409 `terminal_conflict` branch below (in connect()'s escalation
+ * POST) calls this same function and is therefore covered by the same fix.
+ * That branch is dead against THIS server (§7.1: the 409 gate is deleted
+ * server-side, so /connect can no longer return it) but is kept as a
+ * version-tolerant no-op for an older or federated peer that might still
+ * send one (AGENTS.md: clients tolerate responses a current server no
+ * longer emits).
  */
-function _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId) {
+function _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, _name, _remoteId, _ownDeviceId) {
   if (!reconnectOverlay) return;
   reconnectOverlay.classList.remove('hidden');
   if (reconnectOverlayText) {
-    reconnectOverlayText.textContent = 'Session changed on another device — reconnecting';
+    reconnectOverlayText.textContent = 'Session changed on another device';
   }
   if (takeoverBtn) takeoverBtn.classList.add('hidden');
-
-  var connectPath = '/api/sessions/' + encodeURIComponent(name) + '/connect';
-  if (ownDeviceId) connectPath += '?device_id=' + encodeURIComponent(ownDeviceId);
-  fetch(connectPath, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-    .catch(function() {})
-    .then(function() {
-      connectWebSocket(name, remoteId, ownDeviceId);
-    });
+  // Deliberately no fetch, no connectWebSocket() call, no setTimeout here.
+  // See docstring above.
 }
 function initVisualViewport() {
   if (!window.visualViewport) return;

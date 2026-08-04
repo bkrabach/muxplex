@@ -88,12 +88,37 @@ function loadTerminal() {
 
   globalThis.WebSocket = MockWebSocket;
   globalThis.location = { protocol: 'http:', host: 'localhost' };
+
+  // Stateful reconnect-overlay/takeover-button mocks (persistent objects, not
+  // recreated per getElementById call) so tests can observe the actual
+  // visibility/text state _showTerminalConflictOverlay() leaves behind.
+  let overlayHidden = true;
+  let overlayText = '';
+  let takeoverBtnHidden = true;
+  const overlayEl = {
+    classList: {
+      add: (c) => { if (c === 'hidden') overlayHidden = true; },
+      remove: (c) => { if (c === 'hidden') overlayHidden = false; },
+    },
+  };
+  const overlayTextEl = {
+    get textContent() { return overlayText; },
+    set textContent(v) { overlayText = v; },
+  };
+  const takeoverBtnEl = {
+    classList: {
+      add: (c) => { if (c === 'hidden') takeoverBtnHidden = true; },
+      remove: (c) => { if (c === 'hidden') takeoverBtnHidden = false; },
+    },
+    onclick: null,
+  };
+
   globalThis.document = {
     getElementById: (id) => {
       if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
-      if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
-      if (id === 'reconnect-overlay-text') return { textContent: '' };
-      if (id === 'reconnect-overlay-takeover-btn') return { classList: { add: () => {}, remove: () => {} }, onclick: null };
+      if (id === 'reconnect-overlay') return overlayEl;
+      if (id === 'reconnect-overlay-text') return overlayTextEl;
+      if (id === 'reconnect-overlay-takeover-btn') return takeoverBtnEl;
       return null;
     },
     querySelector: () => null,
@@ -133,8 +158,10 @@ function loadTerminal() {
   // by pulling it from the instance created during openTerminal() call.
   // We expose a fireOpen() helper so tests can simulate WebSocket connection.
   let lastOpenHandler = null;
+  let wsConstructedCount = 0;
   const OrigMockWS = globalThis.WebSocket;
   globalThis.WebSocket = function MockWSTracker(url, protocols) {
+    wsConstructedCount++;
     capturedWsUrl = url;
     capturedWsProtocols = protocols;
     const inst = new OrigMockWS(url);
@@ -161,6 +188,10 @@ function loadTerminal() {
     get termWriteMessages() { return termWriteMessages; },
     get focusCallCount() { return focusCallCount; },
     get clipboardWrites() { return clipboardWrites; },
+    wsConstructedCount() { return wsConstructedCount; },
+    overlayVisible() { return !overlayHidden; },
+    overlayText() { return overlayText; },
+    takeoverBtnVisible() { return !takeoverBtnHidden; },
     fireClose(event) { if (capturedCloseHandler) capturedCloseHandler(event); },
     fireOpen() { if (lastOpenHandler) lastOpenHandler(); },
     fireOsc52(base64Payload) {
@@ -1288,7 +1319,18 @@ test('openTerminal uses passed fontSize to configure xterm.js Terminal construct
   );
 });
 
-// ─── §0 guard: terminal-claim conflict (sync-groups spec §10.4, tests 38-39) ───
+// ─── §0/§7 guard: per-session-ttyd session-desync conflict (formerly the ───
+// ─── shared-terminal "terminal-claim conflict", sync-groups spec §10.4)  ───
+//
+// PER_SESSION_TTYD_SPEC.md §7.2: WS 4409 no longer means "another device
+// holds the one shared terminal" (that resource no longer exists) -- it
+// means "this device asked to attach to a session its own sync group has
+// not selected," a state desync rather than a transient conflict. The tests
+// below guard both the immediate behavior (no reconnect scheduled) AND the
+// structural claim that made 6f44325 an unbounded, OOM-inducing loop: that
+// _showTerminalConflictOverlay() cannot itself trigger any further network
+// call or reconnect, no matter how many times or from how many call sites
+// it fires.
 
 test('close handler with event.code === 4409 schedules NO reconnect', () => {
   const t = loadTerminal();
@@ -1320,14 +1362,51 @@ test('close handler with a normal code still schedules a reconnect (regression g
   assert.strictEqual(reconnectScheduled, true, 'a non-4409 close must still schedule a reconnect');
 });
 
-test('escalation POST returning 409 terminal_conflict does not proceed to open the WS', () => {
+test('4409 close never calls fetch (structural loop guard on the direct path)', () => {
+  const t = loadTerminal();
+  let fetchCallCount = 0;
+  globalThis.fetch = async () => {
+    fetchCallCount++;
+    throw new Error('_showTerminalConflictOverlay must never call fetch -- see its docstring');
+  };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  t.fireClose({ code: 4409 });
+
+  assert.strictEqual(fetchCallCount, 0, 'a 4409 close must not trigger any fetch call');
+});
+
+test('4409 close shows an honest, non-"reconnecting" overlay message with no Take-over affordance', () => {
+  const t = loadTerminal();
+  globalThis.fetch = async () => { throw new Error('must not be called'); };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  t.fireClose({ code: 4409 });
+
+  assert.strictEqual(t.overlayVisible(), true, 'overlay must be shown');
+  assert.strictEqual(t.takeoverBtnVisible(), false, 'Take-over button must stay hidden -- nothing left to take over');
+  // Must not claim a reconnect is in progress, since none is attempted.
+  assert.ok(
+    !/reconnecting/i.test(t.overlayText()),
+    `overlay text must not claim reconnection is happening, got: ${JSON.stringify(t.overlayText())}`,
+  );
+});
+
+// The direct regression test for the bug: bisected to 6f44325, this reproduced
+// as an unbounded promise-microtask loop (escalation POST -> 409/terminal_conflict
+// -> _showTerminalConflictOverlay -> unconditional re-POST -> connectWebSocket()
+// -> connect() sees _reconnectAttempts still >= 2 -> escalation POST -> ...)
+// with no setTimeout and no cap anywhere in the chain, so it ran until the V8
+// heap was exhausted (~6 min, SIGABRT) rather than failing an assertion. This
+// test drains the microtask queue far beyond what even a single extra
+// recursion would require and asserts the fetch count stays flat -- it must
+// complete in milliseconds, not minutes, and it must never grow.
+test('escalation POST returning 409 terminal_conflict does not spawn an unbounded reconnect loop (regression, bisected 6f44325)', async () => {
   const t = loadTerminal();
 
-  let wsConstructed = 0;
-  const OrigWS = globalThis.WebSocket;
-  const fetchCalls = [];
-  globalThis.fetch = async (path, opts) => {
-    fetchCalls.push(path);
+  let fetchCallCount = 0;
+  globalThis.fetch = async () => {
+    fetchCallCount++;
     return {
       status: 409,
       json: async () => ({ terminal_conflict: true, terminal_session: 'other-session' }),
@@ -1342,16 +1421,56 @@ test('escalation POST returning 409 terminal_conflict does not proceed to open t
   t.openTerminal('my-session', '', 14, 'd-abc123');
   // Simulate two prior failed attempts by firing close twice with a normal code.
   t.fireClose({ code: 1006 });
-  if (capturedTimeoutFn) capturedTimeoutFn(); // runs connect() again -> _reconnectAttempts=1
+  if (capturedTimeoutFn) { const fn = capturedTimeoutFn; capturedTimeoutFn = null; fn(); } // -> _reconnectAttempts=1
   t.fireClose({ code: 1006 });
-
-  const wsCountBefore = fetchCalls.length;
-  if (capturedTimeoutFn) capturedTimeoutFn(); // _reconnectAttempts>=2 -> escalation POST path
+  if (capturedTimeoutFn) { const fn = capturedTimeoutFn; capturedTimeoutFn = null; fn(); } // _reconnectAttempts>=2 -> escalation POST fires (in flight)
 
   globalThis.setTimeout = origSetTimeout;
-  globalThis.WebSocket = OrigWS;
 
-  assert.ok(fetchCalls.length > wsCountBefore || fetchCalls.length > 0, 'escalation POST must have been attempted');
+  // Drain the microtask queue generously -- before the fix, each drained
+  // tick fed another escalation fetch via the overlay's unconditional
+  // connectWebSocket() re-entry. 200 ticks is far more than one legitimate
+  // escalation could ever produce.
+  for (let i = 0; i < 200; i++) {
+    await Promise.resolve();
+  }
+
+  assert.strictEqual(
+    fetchCallCount, 1,
+    `expected exactly 1 escalation fetch, got ${fetchCallCount} -- unbounded reconnect loop regression`,
+  );
+});
+
+test('escalation POST returning 409 terminal_conflict shows the overlay and never opens a new WebSocket', async () => {
+  const t = loadTerminal();
+
+  globalThis.fetch = async () => ({
+    status: 409,
+    json: async () => ({ terminal_conflict: true, terminal_session: 'other-session' }),
+  });
+
+  let capturedTimeoutFn = null;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => { capturedTimeoutFn = fn; return 0; };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  t.fireClose({ code: 1006 });
+  if (capturedTimeoutFn) { const fn = capturedTimeoutFn; capturedTimeoutFn = null; fn(); }
+  t.fireClose({ code: 1006 });
+  const wsCountBefore = t.wsConstructedCount();
+  if (capturedTimeoutFn) { const fn = capturedTimeoutFn; capturedTimeoutFn = null; fn(); } // escalation POST path
+
+  globalThis.setTimeout = origSetTimeout;
+
+  for (let i = 0; i < 50; i++) {
+    await Promise.resolve();
+  }
+
+  assert.strictEqual(t.overlayVisible(), true, 'overlay must be shown on 409 terminal_conflict');
+  assert.strictEqual(
+    t.wsConstructedCount(), wsCountBefore,
+    'a 409 terminal_conflict response must never proceed to open a new WebSocket',
+  );
 });
 
 
