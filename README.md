@@ -314,7 +314,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `default_session` | `null` | Session to auto-open on load |
 | `sort_order` | `manual` | Session ordering: `manual`, `alphabetical`, `recent` |
 | `hidden_sessions` | `[]` | Sessions hidden from the dashboard |
-| `views` | `[]` | Named session views for grouping and filtering sessions |
+| `views` | `[]` | Named session views for grouping and filtering sessions. Each view entry may carry an optional `match_names: [str]` -- fnmatch-style glob patterns matched case-insensitively against a session's bare tmux name (never a device-qualified `device_id:name` key, since the qualifier is a UUID nobody would type). A session is in the view if it is pinned in `sessions` **or** matches a pattern -- a strict union; rules are resolved fresh on every read and never written back into `sessions`, so a rule-based view cannot decay. See `docs/API_SEMANTICS.md` and `GET /api/views`. |
 | `stale_key_grace_hours` | `24.0` | Hours before a session key absent from all *known* live sessions is pruned from views/hidden_sessions (syncable; per-device bookkeeping is local-only). Federation-aware: a remote device's keys are only ever evaluated for pruning while that device is currently reachable (see "Stale-key pruning" below) -- an offline device's view membership is never touched. |
 | `window_size_largest` | `false` | Auto-set tmux `window-size largest` on connect |
 | `auto_open_created` | `true` | Auto-open newly created sessions |

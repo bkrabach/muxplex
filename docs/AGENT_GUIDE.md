@@ -307,6 +307,15 @@ session, then recency). Any other value is a **400 — no silent fallback**.
 Deliberately carries **no pane snapshots**, so it stays cheap for frequent
 polling. Local sessions only — federated peers are not merged in.
 
+**Creating a self-maintaining view.** A view can populate itself from a rule
+instead of a hand-curated session list: `PATCH /api/settings` a `views` entry
+with `match_names: ["<glob>", ...]` (fnmatch-style patterns against the bare
+session name -- never a device-qualified key). `{"name": "Agents", "sessions":
+[], "match_names": ["agent-*"]}` then shows every session named `agent-*` on
+any device, updating itself as sessions come and go, with no further writes.
+`GET /api/views` returns the resolved patterns plus any validation errors (a
+pattern containing `:` is rejected, since tmux forbids `:` in session names).
+
 ### `GET /api/state` — persistent state
 
 ```json

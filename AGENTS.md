@@ -16,6 +16,29 @@ Treat the API as a contract:
 - Clients are expected to tolerate unknown fields; the server should tolerate
   their absence (version tolerance in both directions).
 
+## Auto-updating views: rules never get materialized, and the matcher is deliberately duplicated
+
+A view's optional `match_names` glob rules are matched with explicit
+`.casefold()` + `fnmatch.fnmatchcase` (`views.matches_name_pattern`) --
+**deliberately a separate implementation** from
+`terminal_input.session_matches_allowlist`, which uses the identical
+technique for an unrelated reason (that one is the security boundary for
+the RCE-by-design `/input` endpoint; this one is a display filter). Two
+consumers with opposite failure requirements -- fail-closed security vs.
+fail-loud display -- must not share a mutable implementation: a future
+tightening of the input fence must not silently change which sessions a
+view contains, and a future loosening for views must not silently widen an
+RCE fence. The duplication is a handful of lines and is the cheap side of
+that trade.
+
+**Standing prohibition, load-bearing:** the server must NEVER materialize a
+rule match back into `view["sessions"]`. Rules stay rules on disk, forever
+-- `views.filter_visible`/`views.view_names_for_session` resolve membership
+fresh on every read. Materializing would re-introduce the exact decay this
+feature exists to eliminate, turn every poll cycle into a settings write,
+and hand federation LWW a brand-new race. See `docs/plans/2026-08-04-auto-views-plan.md`
+for the full design.
+
 ## API semantics external clients re-implement → `docs/API_SEMANTICS.md`
 
 The *semantics* behind the wire contract — the rules clients currently re-derive

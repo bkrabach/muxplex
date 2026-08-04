@@ -81,6 +81,48 @@ Preferred direction as semantics grow: move resolution **server-side** (e.g. a
 resolved-current-view endpoint) rather than expecting each client to port more
 logic — duplication across PWA/sidecar/agents is where drift bugs come from.
 
+- **Session dicts carry `views`: the resolved list of user-view names that
+  session belongs to** (pins in `view.sessions` UNION glob-rule matches from
+  `view.match_names` -- see "Auto-updating views" below). Present on every
+  entry from `GET /api/sessions` and `GET /api/federation/sessions`.
+  Clients MUST read this field rather than re-deriving membership from raw
+  `settings.views` -- the incident this closes: the PWA grid, its view
+  dropdown counts, the Manage View panel, and the soft deck's own picker
+  counts all used to re-derive membership client-side from
+  `settings.views[].sessions`, so a rule-based view (which never populates
+  `sessions`) rendered correctly on exactly one surface (the soft deck's
+  session list via `GET /api/view`, which already called
+  `views.filter_visible` server-side) and empty everywhere else. `GET
+  /api/view`'s own `sessions[]` entries do NOT carry `views` -- that
+  payload is already the resolved membership; the annotation exists for
+  the payloads that are not.
+- **Auto-updating views**: a view entry may carry an optional
+  `match_names: [str]` -- fnmatch-style glob patterns matched via explicit
+  `.casefold()` + `fnmatch.fnmatchcase` (same technique as, but a
+  deliberately SEPARATE implementation from,
+  `terminal_input.session_matches_allowlist` -- see `../AGENTS.md`)
+  against a session's BARE tmux name. Never the device-qualified
+  `"<device_id>:<name>"` key: the qualifier is `identity.load_device_id()`,
+  a UUID nobody would type, and the payload most clients poll
+  (`GET /api/sessions`) doesn't carry it in single-device mode anyway.
+  Membership is a strict UNION of `sessions` (pins) and `match_names`
+  matches, resolved fresh on every read in `views.filter_visible` /
+  `views.view_names_for_session` -- **the server never materializes a
+  rule match back into `view["sessions"]`**; rules stay rules on disk
+  forever, which is the whole reason a rule-based view cannot decay.
+  `GET /api/views` is the canonical resolution + validation-errors
+  endpoint for view rules (mirrors `GET /api/session-commands`'s
+  established pattern): `match_names` on each view contains only the
+  patterns that will actually be used, with rejected patterns named in
+  `errors`. `invalid_view_rule: true` is a new member of the
+  discriminator convention below, returned by `PATCH /api/settings` (400,
+  no write) when a patch's `match_names` is structurally malformed (a
+  non-list, a non-string entry, an empty string, or a pattern containing
+  `:` -- tmux forbids `:` in session names, so such a pattern could never
+  match anything). A malformed rule arriving via federation sync or a
+  direct file edit is stored as-is (never rejected -- one bad peer must
+  not break fleet-wide sync) and surfaced only at read time via the same
+  `GET /api/views` `errors[]`.
 - **`GET /api/view`** is now the canonical server-side resolution of the
   above: view membership (via `filter_visible`), the needs-attention
   predicate (`bells.needs_attention`), and sort ordering (`?sort=attention`
