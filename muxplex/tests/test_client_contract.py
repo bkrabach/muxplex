@@ -232,6 +232,12 @@ def test_sessions_fields_present(sync_client, raw_http, seeded_session):
     assert parsed.bell.unseen_count == raw_item["bell"]["unseen_count"]
     assert parsed.bell.last_fired_at == raw_item["bell"]["last_fired_at"]
     assert parsed.bell.seen_at == raw_item["bell"]["seen_at"]
+    # AUTO_VIEWS_SPEC.md §10.1: every session dict carries a resolved
+    # `views` list -- the vendored muxplex_client parser must keep parsing
+    # it (this is the test that keeps the vendored copy honest).
+    assert "views" in raw_item
+    assert isinstance(raw_item["views"], list)
+    assert parsed.views == tuple(raw_item["views"])
 
 
 def test_session_snapshot_fields_present(sync_client, raw_http, seeded_session):

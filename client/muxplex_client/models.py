@@ -51,12 +51,20 @@ class Bell:
 
 @dataclass(frozen=True)
 class Session:
-    """One tmux session, as returned by GET /api/sessions."""
+    """One tmux session, as returned by GET /api/sessions.
+
+    `views`: the server-resolved list of user-view names this session
+    belongs to (pins union glob-rule matches -- see
+    `muxplex.views.annotate_view_membership`). Defaults to `()` so every
+    existing construction site keeps compiling and so a pre-feature server
+    (one that omits the field) parses cleanly -- see `parse_session()`.
+    """
 
     name: str
     snapshot: str
     bell: Bell
     last_activity_at: float | None = None
+    views: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

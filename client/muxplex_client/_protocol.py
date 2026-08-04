@@ -68,6 +68,10 @@ def parse_session(raw: Mapping[str, Any]) -> Session:
         snapshot=raw.get("snapshot", ""),
         bell=parse_bell(raw.get("bell") or {}),
         last_activity_at=raw.get("last_activity_at"),
+        # Tolerant of a pre-feature server that omits `views` entirely
+        # (AUTO_VIEWS_SPEC.md §10.1) -- absence parses to an empty tuple,
+        # never a KeyError.
+        views=tuple(raw.get("views") or ()),
     )
 
 

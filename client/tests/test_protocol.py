@@ -98,6 +98,22 @@ def test_parse_session_unknown_extra_fields_tolerated() -> None:
     assert session.name == "alpha"
 
 
+def test_parse_session_with_views() -> None:
+    """A session payload carrying `views` (AUTO_VIEWS_SPEC.md §10.1) parses
+    into the tuple field."""
+    session = protocol.parse_session(
+        {"name": "alpha", "snapshot": "", "bell": {}, "views": ["Work", "Amplifier"]}
+    )
+    assert session.views == ("Work", "Amplifier")
+
+
+def test_parse_session_missing_views_defaults_empty_tuple() -> None:
+    """A pre-feature server that omits `views` entirely parses to `()`,
+    never a KeyError."""
+    session = protocol.parse_session({"name": "alpha", "snapshot": "", "bell": {}})
+    assert session.views == ()
+
+
 def test_parse_sessions_list() -> None:
     raw = [
         {"name": "a", "snapshot": "", "bell": {}},
