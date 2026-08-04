@@ -681,7 +681,7 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
     e.preventDefault();
   });
 
-  connectWebSocket(sessionName, remoteId);
+  connectWebSocket(sessionName, remoteId, ownDeviceId);
   initVisualViewport(); /* defined in Task 14 */
 }
 

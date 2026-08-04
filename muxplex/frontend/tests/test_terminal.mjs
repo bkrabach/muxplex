@@ -853,10 +853,24 @@ test('connectWebSocket uses federation proxy path when remoteId is provided', ()
   globalThis.setTimeout = orig;
 
   assert.ok(t.capturedWsUrl, 'WebSocket URL should have been captured');
+  // Stale-assertion fix: this exact-match literal predates 6f44325 ("address
+  // terminal WebSocket by session, not implicit state"), which deliberately
+  // added `?session=<name>` to BOTH the local and federation branches
+  // (PER_SESSION_TTYD_SPEC.md §9.1) -- the federation branch is no longer
+  // exempt from session-addressing. That commit added a dedicated exact-match
+  // test for the new shape ("connectWebSocket federation branch includes
+  // ?session= with the session name", above) but did not update this
+  // pre-existing test, leaving two contradictory exact-match assertions for
+  // the identical openTerminal('remote-session', 'fed-abc123') call. The
+  // behavior (URL includes ?session=remote-session) is correct and already
+  // covered by that newer test; this one was simply never updated to match.
+  // Per AGENTS.md's test_frontend_js.py precedent: fix the stale assertion to
+  // follow the new structure rather than leave two tests asserting mutually
+  // exclusive outcomes for the same call.
   assert.strictEqual(
     t.capturedWsUrl,
-    'ws://localhost/federation/fed-abc123/terminal/ws',
-    `WebSocket URL should be ws://localhost/federation/fed-abc123/terminal/ws, got: ${t.capturedWsUrl}`,
+    'ws://localhost/federation/fed-abc123/terminal/ws?session=remote-session',
+    `WebSocket URL should be ws://localhost/federation/fed-abc123/terminal/ws?session=remote-session, got: ${t.capturedWsUrl}`,
   );
 });
 
