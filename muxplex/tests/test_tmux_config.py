@@ -119,7 +119,7 @@ def test_install_creates_config_when_none_exists(sandbox: Path) -> None:
     r = tc.install()
     assert r["created"] is True
     assert (sandbox / ".tmux.conf").exists()
-    assert tmux_option(sandbox) == "base-2"
+    assert tmux_option(sandbox) == "base-3"
 
 
 @needs_tmux
@@ -133,7 +133,7 @@ def test_install_preserves_existing_content_and_user_wins(sandbox: Path) -> None
     assert r["backup"] is not None
     assert Path(str(r["backup"])).read_text() == USER_CONF
 
-    assert tmux_option(sandbox) == "base-2"
+    assert tmux_option(sandbox) == "base-3"
     assert tmux_option(sandbox, "@mine") == "untouched"
     assert tmux_option(sandbox, "prefix") == "C-a", "user override must win"
 
@@ -146,7 +146,7 @@ def test_install_leaves_xdg_config_alone_and_user_still_wins(sandbox: Path) -> N
     assert r["target"] == str(sandbox / ".tmux.conf")
     xdg_text = (sandbox / ".config" / "tmux" / "tmux.conf").read_text()
     assert tc.BEGIN_MARKER not in xdg_text, "must never edit the user's XDG file"
-    assert tmux_option(sandbox) == "base-2"
+    assert tmux_option(sandbox) == "base-3"
     assert tmux_option(sandbox, "prefix") == "C-a", "XDG loads after us, so it wins"
 
 
@@ -154,7 +154,7 @@ def test_install_leaves_xdg_config_alone_and_user_still_wins(sandbox: Path) -> N
 def test_install_tolerates_missing_trailing_newline(sandbox: Path) -> None:
     write_user_conf(sandbox, 'set -g @mine "no-newline"')
     tc.install()
-    assert tmux_option(sandbox) == "base-2"
+    assert tmux_option(sandbox) == "base-3"
     assert tmux_option(sandbox, "@mine") == "no-newline"
 
 
@@ -230,7 +230,7 @@ def test_install_through_symlink_preserves_the_link(sandbox: Path) -> None:
 
     assert tc.BEGIN_MARKER in real.read_text(), "wrote through to the real file"
     assert (sandbox / ".tmux.conf").is_symlink(), "symlink must survive the write"
-    assert tmux_option(sandbox) == "base-2"
+    assert tmux_option(sandbox) == "base-3"
 
 
 # ── Uninstall ──────────────────────────────────────────────────────────────
@@ -400,7 +400,7 @@ def test_every_shipped_theme_actually_loads_in_tmux(sandbox: Path) -> None:
     """A theme that tmux rejects would break the user's whole config."""
     for theme in tc.available_themes():
         tc.install(theme=theme)
-        assert tmux_option(sandbox) == "base-2", f"theme {theme} broke config load"
+        assert tmux_option(sandbox) == "base-3", f"theme {theme} broke config load"
 
 
 # ── Verification helpers ───────────────────────────────────────────────────
@@ -411,7 +411,7 @@ def test_verify_proves_the_fragment_loaded(sandbox: Path) -> None:
     tc.install()
     v = tc.verify(socket="muxplex-test-verify")
     assert v["loaded"] is True
-    assert v["sentinel"] == "base-2"
+    assert v["sentinel"] == "base-3"
 
 
 @needs_tmux

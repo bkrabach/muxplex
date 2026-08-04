@@ -1136,6 +1136,67 @@ test('terminal.js does NOT intercept Ctrl+Shift+V in attachCustomKeyEventHandler
     'must NOT intercept KeyV — xterm.js handles paste natively via browser events');
 });
 
+// --- Shift+Enter / Ctrl+Enter: encoded as CSI-u modified Enter ---
+
+test('terminal.js encodes Shift+Enter and Ctrl+Enter as CSI-u, not as a bare newline', () => {
+  // A legacy terminal cannot express a modifier on Enter — Enter, Shift+Enter and
+  // Ctrl+Enter all collapse to 0x0D. We are a browser and DO have the modifier on
+  // the event, so we send the real kitty-protocol encoding. tmux decodes it and our
+  // shipped base.conf rewrites it to C-j for apps that only speak legacy.
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  const handlerStart = source.indexOf('attachCustomKeyEventHandler');
+  const handlerEnd = source.indexOf('onSelectionChange', handlerStart);
+  const handlerBlock = source.substring(handlerStart, handlerEnd);
+
+  assert.ok(handlerBlock.includes("e.key === 'Enter'"),
+    'must intercept the Enter key in the custom key handler');
+  assert.ok(handlerBlock.includes('\\x1b[13;2u'),
+    'Shift+Enter must be sent as CSI-u \\x1b[13;2u');
+  assert.ok(handlerBlock.includes('\\x1b[13;5u'),
+    'Ctrl+Enter must be sent as CSI-u \\x1b[13;5u');
+  assert.ok(handlerBlock.includes('_encodePayload(0x30'),
+    'must send via the ttyd 0x30 INPUT frame, same path as onData');
+
+  // Alt+Enter and Cmd+Enter must fall through: Alt+Enter already has a working
+  // legacy encoding (ESC CR) that apps rely on, and hijacking it would break them.
+  assert.ok(handlerBlock.includes('!e.altKey') && handlerBlock.includes('!e.metaKey'),
+    'must NOT intercept Alt+Enter or Cmd+Enter — Alt+Enter has a working legacy encoding');
+});
+
+test('Shift+Enter branch calls preventDefault (regression: measured 0a 0d double-send)', () => {
+  // Returning false only stops xterm.js's own key handling. Without preventDefault
+  // the browser's default action still delivers Enter to xterm's hidden textarea,
+  // which re-emits it through onData. Measured in a live muxplex pane before the
+  // fix: the app received 0a 0d — our C-j followed by a stray CR, i.e. a newline
+  // and then an immediate submit. Both bytes, one keypress.
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  const handlerStart = source.indexOf('attachCustomKeyEventHandler');
+  const handlerEnd = source.indexOf('onSelectionChange', handlerStart);
+  const handlerBlock = source.substring(handlerStart, handlerEnd);
+  const enterIdx = handlerBlock.indexOf("e.key === 'Enter'");
+  assert.ok(enterIdx !== -1, 'must have an Enter branch to check');
+  const enterBranch = handlerBlock.substring(enterIdx);
+  const returnIdx = enterBranch.indexOf('return false');
+  assert.ok(returnIdx !== -1, 'Enter branch must return false');
+  assert.ok(enterBranch.substring(0, returnIdx).includes('e.preventDefault()'),
+    'Enter branch MUST call e.preventDefault() before returning false — ' +
+    'otherwise the browser default re-delivers Enter and the app gets 0a 0d');
+});
+
+test('terminal.js does NOT send a bare newline for Shift+Enter', () => {
+  // Sending '\n' would be indistinguishable from Ctrl+J and would lie to any app
+  // that wants to know the real key. The translation to C-j is tmux's job.
+  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
+  const handlerStart = source.indexOf('attachCustomKeyEventHandler');
+  const handlerEnd = source.indexOf('onSelectionChange', handlerStart);
+  const handlerBlock = source.substring(handlerStart, handlerEnd);
+  const enterIdx = handlerBlock.indexOf("e.key === 'Enter'");
+  assert.ok(enterIdx !== -1, 'must have an Enter branch to check');
+  const enterBranch = handlerBlock.substring(enterIdx, enterIdx + 400);
+  assert.ok(!enterBranch.includes("_encodePayload(0x30, '\\n')"),
+    "must not send a bare '\\n' — that is Ctrl+J, not Shift+Enter");
+});
+
 // --- UTF-8 output decoding via TextDecoder ---
 
 test('terminal.js uses TextDecoder to decode UTF-8 WebSocket output before writing to xterm', () => {
