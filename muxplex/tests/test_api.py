@@ -6440,7 +6440,7 @@ async def test_poll_cycle_fires_federation_bell_clear_for_remote_session(
     async def mock_snapshot_all(names):
         return {"build": "pane text"}
 
-    async def mock_process_bell_flags(names, state):
+    async def mock_process_bell_flags(names, state, on_transition=None):
         pass
 
     monkeypatch.setattr("muxplex.main.enumerate_sessions", mock_enumerate)
@@ -6552,7 +6552,7 @@ async def test_poll_cycle_fires_federation_bell_clear_for_remote_session_with_uu
     async def mock_snapshot_all(names):
         return {"build": "pane text"}
 
-    async def mock_process_bell_flags(names, state):
+    async def mock_process_bell_flags(names, state, on_transition=None):
         pass
 
     monkeypatch.setattr("muxplex.main.enumerate_sessions", mock_enumerate)

@@ -67,7 +67,14 @@ def patch_startup_and_state(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(monkeypatch):
-    """TestClient with a valid session cookie (bypasses AuthMiddleware)."""
+    """TestClient with a valid session cookie (bypasses AuthMiddleware).
+
+    _bell_hook_armed is (re-)forced True AFTER the lifespan startup runs
+    (inside the `with` block, not before) -- lifespan's own startup path
+    invokes the real _arm_bell_hook(), which fails against no real tmux and
+    resets the flag to False, clobbering any override applied before
+    TestClient.__enter__.
+    """
     monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
     with TestClient(app) as c:
         from muxplex.auth import create_session_cookie
@@ -75,6 +82,7 @@ def client(monkeypatch):
 
         cookie = create_session_cookie(_auth_secret, _auth_ttl)
         c.cookies.set("muxplex_session", cookie)
+        monkeypatch.setattr("muxplex.main._bell_hook_armed", True)
         yield c
 
 
