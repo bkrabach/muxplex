@@ -171,10 +171,24 @@ test('detectBellTransitions returns empty array when unseen_count does not chang
   assert.deepStrictEqual(app.detectBellTransitions(prev, next), []);
 });
 
-test('detectBellTransitions fires for new session not in prev with bell > 0', () => {
+test('detectBellTransitions does NOT fire for a session with no prior entry (new session, not a new bell)', () => {
+  // A session absent from `prev` is a NEW SESSION (just created, or first ever
+  // poll) -- not a bell transition, even though its unseen_count is > 0. Firing
+  // here would notify the user about a session they just created themselves.
   const prev = [];
   const next = [{ name: 'new-session', bell: { unseen_count: 3 } }];
-  assert.deepStrictEqual(app.detectBellTransitions(prev, next), ['new-session']);
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), []);
+});
+
+test('detectBellTransitions does NOT fire for a brand-new session even alongside real transitions', () => {
+  // A genuinely new session (no prior entry) must be excluded even when other,
+  // previously-tracked sessions in the same poll legitimately transition.
+  const prev = [{ name: 'work', bell: { unseen_count: 0 } }];
+  const next = [
+    { name: 'work', bell: { unseen_count: 1 } }, // real transition: fires
+    { name: 'brand-new', bell: { unseen_count: 1 } }, // first appearance: suppressed
+  ];
+  assert.deepStrictEqual(app.detectBellTransitions(prev, next), ['work']);
 });
 
 test('detectBellTransitions fires when unseen_count increases', () => {

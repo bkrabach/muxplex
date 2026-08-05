@@ -70,6 +70,7 @@ from muxplex.sessions import (
     capture_pane,
     enumerate_sessions,
     get_session_activity,
+    get_session_created_times,
     get_session_list,
     get_snapshots,
     is_valid_session_name,
@@ -168,6 +169,18 @@ _log = logging.getLogger(__name__)
 _poll_task: asyncio.Task | None = None
 _federation_client: httpx.AsyncClient | None = None
 _settings_sync_counter: int = 0
+
+# Watermark distinguishing "genuinely created while this instance is
+# running" from "merely first observed by this process" (see the "Ensure
+# bell entries" step of _run_poll_cycle() below). Set at module import as a
+# conservative default (covers tests that call _run_poll_cycle() directly,
+# bypassing lifespan()), and reset to the real startup moment inside
+# lifespan() for production/TestClient use. A tmux session whose own
+# `#{session_created}` timestamp is at or after this watermark was created
+# during this process's lifetime; one from before it predates this instance
+# and must never be treated as newly created, no matter how it first enters
+# state.json (see docs/API_SEMANTICS.md's needs-attention section).
+_server_start_time: float = time.time()
 
 # Bell-hook self-healing state (see _arm_bell_hook()). Starts unarmed;
 # _run_poll_cycle() retries registration each cycle ONLY while this is False,
@@ -392,12 +405,67 @@ async def _run_poll_cycle() -> None:
             if name not in existing_order_set:
                 state["session_order"].append(name)
 
-        # 5. Ensure bell entries exist for every current session
+        # 5. Ensure bell entries exist for every current session.
+        #
+        # A session whose bell is being seeded for the very first time (no
+        # prior "bell" key in state.json) is either (a) genuinely just
+        # created -- most likely via POST /api/sessions moments ago -- or
+        # (b) simply new to THIS PROCESS's bookkeeping: a muxplex restart
+        # with state.json missing/reset, a fresh install observing 50+
+        # pre-existing sessions for the first time, or a session that was
+        # created (by hand, or by another tool) while muxplex was down and
+        # is only now being discovered at startup. All of (b) must fall
+        # back to empty_bell() -- seeding them as attention-worthy would
+        # mass-flag every pre-existing session at once, exactly the
+        # bell-vs-activity regression class this feature must not repeat.
+        #
+        # The discriminator is tmux's own `#{session_created}` timestamp
+        # (get_session_created_times(), sessions.py) compared against
+        # _server_start_time, the moment THIS muxplex process actually came
+        # up (reset in lifespan()). session_created is intrinsic to the
+        # tmux session -- set once, by tmux, never revised -- so unlike
+        # anything muxplex itself tracks (state.json, the presence
+        # manifest, pruning.json) it is unaffected by any of muxplex's own
+        # data being deleted or reset:
+        #   - muxplex restart / state file deleted / fresh install: every
+        #     pre-existing session's session_created predates this
+        #     process's startup -> not flagged, matches pre-fix behavior.
+        #   - a session created while muxplex was down, discovered at the
+        #     next startup: its session_created is still from before THIS
+        #     process started -> not flagged, same bucket as the row above
+        #     (this feature is specifically for the live create-and-look
+        #     flow, not a startup backfill).
+        #   - the real bug this fixes -- POST /api/sessions while muxplex
+        #     is already running: session_created is stamped at (or after)
+        #     creation time, strictly after _server_start_time -> flagged.
+        # Federation peers observing a remote session for the first time
+        # never reach this branch at all: bells are local-sessions-only
+        # state, and a remote session's bell is governed entirely by the
+        # REMOTE instance's own poll cycle (see docs/API_SEMANTICS.md).
+        created_times = get_session_created_times()
         for name in names:
             if name not in state["sessions"]:
                 state["sessions"][name] = {}
             if "bell" not in state["sessions"][name]:
-                state["sessions"][name]["bell"] = empty_bell()
+                created_at = created_times.get(name)
+                if created_at is not None and created_at >= _server_start_time:
+                    # Seed AS IF the bell had just fired: last_fired_at=now,
+                    # unseen_count=1, seen_at=None. This is the ONLY change
+                    # -- needs_attention() and _attention_order() are
+                    # untouched, so the existing tiered sort already places
+                    # a session in this state at the very top of tier 1
+                    # (freshest last_fired_at) with no new sorting logic.
+                    # Once viewed/selected, apply_bell_clear_rule() clears
+                    # this bell exactly like any other, needs_attention()
+                    # flips False, and the session falls through to tier 2
+                    # (active) for free -- the user's follow-on requirement.
+                    state["sessions"][name]["bell"] = {
+                        "last_fired_at": time.time(),
+                        "seen_at": None,
+                        "unseen_count": 1,
+                    }
+                else:
+                    state["sessions"][name]["bell"] = empty_bell()
 
         # 6. Remove state entries for sessions that no longer exist
         deleted = [s for s in list(state["sessions"]) if s not in name_set]
@@ -677,6 +745,15 @@ async def _poll_loop() -> None:
 async def lifespan(app: FastAPI):
     global _poll_task
     global _federation_client
+    global _server_start_time
+
+    # Real startup watermark -- see this name's module-level declaration for
+    # why it exists. Reset here (rather than relying solely on the
+    # module-import-time default) so it reflects the moment THIS server
+    # instance actually came up, which matters for a long-lived Python
+    # process (e.g. a test session) that tears down and re-enters lifespan
+    # multiple times.
+    _server_start_time = time.time()
 
     # One-line frontend identity so "which JS is this server serving?" is a
     # glance at the startup log, not a debugging session.

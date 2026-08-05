@@ -6,25 +6,38 @@ In-memory cache:
     _snapshots     — most-recently-captured pane text, keyed by session name.
     _activity      — most-recently-enumerated last-output-activity timestamp
                      (unix epoch seconds), keyed by session name.
+    _created       — most-recently-enumerated tmux `#{session_created}`
+                     timestamp (unix epoch seconds), keyed by session name.
 
 Public API:
     get_session_list()                    → list[str]
     get_snapshots()                       → dict[str, str]
     get_session_activity()                → dict[str, float]
+    get_session_created_times()           → dict[str, float]
     update_session_cache(names, snapshots) → None
     run_tmux(*args)                       → str   (raises RuntimeError on nonzero exit)
     enumerate_sessions()                  → list[str]
     capture_pane(name, lines)             → str
     snapshot_all(names)                   → dict[str, str]
 
-Note on _activity: unlike _session_list/_snapshots (which are only ever
-swapped together, atomically, via update_session_cache), _activity is
-populated directly by enumerate_sessions() as a side effect of parsing
-tmux's output. It comes from the exact same `tmux list-sessions` call that
-produces the name list, so there's no second subprocess round trip and no
-consistency dependency on the (separately captured) pane snapshots. Each
-call fully replaces _activity, so entries for sessions that have since
+Note on _activity/_created: unlike _session_list/_snapshots (which are only
+ever swapped together, atomically, via update_session_cache), _activity and
+_created are populated directly by enumerate_sessions() as a side effect of
+parsing tmux's output. They come from the exact same `tmux list-sessions`
+call that produces the name list, so there's no second subprocess round trip
+and no consistency dependency on the (separately captured) pane snapshots.
+Each call fully replaces both dicts, so entries for sessions that have since
 closed are dropped on the next poll, same as the other caches.
+
+`_created` (tmux `#{session_created}`) is intrinsic to the tmux session
+itself -- set once, by tmux, at the moment the session was actually created
+-- and is therefore the one signal in this module that survives muxplex
+restarting, its state.json being deleted, or a fresh install: none of those
+events touch tmux's own bookkeeping. This is what lets main.py's poll cycle
+distinguish "genuinely just created" from "merely first observed by this
+process" when deciding whether to seed a session's bell as needing
+attention (see main.py's `_server_start_time` and the "Ensure bell entries"
+step of `_run_poll_cycle()`).
 
 Why `#{window_activity}` and not `#{session_activity}`: tmux's session-level
 `session_activity` only advances when a *client is attached* to the session
@@ -105,6 +118,7 @@ def is_valid_session_name(name: str) -> bool:
 _session_list: list[str] = []
 _snapshots: dict[str, str] = {}
 _activity: dict[str, float] = {}
+_created: dict[str, float] = {}
 
 
 def get_session_list() -> list[str]:
@@ -127,6 +141,20 @@ def get_session_activity() -> dict[str, float]:
     from the dict.
     """
     return dict(_activity)
+
+
+def get_session_created_times() -> dict[str, float]:
+    """Return a copy of the cached session-creation-time dict.
+
+    Values are unix epoch seconds (tmux's `#{session_created}`), set once
+    by tmux at the moment each session was actually created. Unlike
+    `_activity`, this timestamp is intrinsic to the tmux session itself and
+    never changes for the life of the session -- it survives muxplex
+    restarting, its state.json being deleted, or a fresh install, none of
+    which touch tmux's own bookkeeping. Sessions tmux didn't report a
+    creation time for are simply absent from the dict.
+    """
+    return dict(_created)
 
 
 def update_session_cache(names: list[str], snapshots: dict[str, str]) -> None:
@@ -283,11 +311,13 @@ async def probe_tmux_epoch() -> dict | None:
 async def enumerate_sessions() -> list[str]:
     """Return the list of currently running tmux session names.
 
-    Calls ``tmux list-sessions -F #{session_name}<TAB>#{window_activity}``,
-    splits on newlines, and strips whitespace from each entry. As a side
-    effect, caches each session's last-activity epoch timestamp (see
-    get_session_activity()) -- parsed from the same tmux call, so no second
-    subprocess round trip is needed just to learn activity times.
+    Calls ``tmux list-sessions -F
+    #{session_name}<TAB>#{window_activity}<TAB>#{session_created}``, splits
+    on newlines, and strips whitespace from each entry. As a side effect,
+    caches each session's last-activity epoch timestamp (see
+    get_session_activity()) and its tmux-assigned creation epoch (see
+    get_session_created_times()) -- both parsed from the same tmux call, so
+    no second subprocess round trip is needed just to learn either value.
 
     Uses `#{window_activity}` (the session's active window), NOT
     `#{session_activity}`: empirically, tmux only advances session_activity
@@ -296,32 +326,42 @@ async def enumerate_sessions() -> list[str]:
     window_activity tracks real pane output unconditionally. See the module
     docstring for the full rationale.
 
-    A line with no tab (unexpected tmux output, or a caller/mock still using
-    the old single-field format) is tolerated: the name is still returned,
-    just with no activity entry. A non-numeric activity field is dropped and
-    logged rather than raising -- one malformed session must not break
-    enumeration of the rest.
+    `#{session_created}` is tmux's own record of when the session was
+    created -- set once, by tmux, and never revised for the life of the
+    session. See get_session_created_times()'s docstring for why that
+    intrinsic-to-tmux property matters.
+
+    A line with fewer than 2 tabs (unexpected tmux output, or a caller/mock
+    still using an older field format) is tolerated: the name is still
+    returned, just with no activity/created entry for the missing field(s).
+    A non-numeric activity or created field is dropped and logged rather
+    than raising -- one malformed session must not break enumeration of the
+    rest.
 
     Returns [] if tmux is not running (RuntimeError from run_tmux).
     """
     try:
         output = await run_tmux(
-            "list-sessions", "-F", "#{session_name}\t#{window_activity}"
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{window_activity}\t#{session_created}",
         )
     except (RuntimeError, FileNotFoundError):
         return []
 
     names: list[str] = []
     activity: dict[str, float] = {}
+    created: dict[str, float] = {}
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        name, _, activity_field = line.partition("\t")
+        name, _, rest = line.partition("\t")
         name = name.strip()
         if not name:
             continue
         names.append(name)
+        activity_field, _, created_field = rest.partition("\t")
         activity_field = activity_field.strip()
         if activity_field:
             try:
@@ -332,9 +372,20 @@ async def enumerate_sessions() -> list[str]:
                     name,
                     activity_field,
                 )
+        created_field = created_field.strip()
+        if created_field:
+            try:
+                created[name] = float(created_field)
+            except ValueError:
+                _log.warning(
+                    "enumerate_sessions: malformed session_created for %r: %r",
+                    name,
+                    created_field,
+                )
 
-    global _activity
+    global _activity, _created
     _activity = activity
+    _created = created
     return names
 
 

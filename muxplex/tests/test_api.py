@@ -2032,6 +2032,149 @@ async def test_bell_hook_not_retried_once_armed(monkeypatch):
     assert main_mod._bell_hook_armed is True
 
 
+# ---------------------------------------------------------------------------
+# New-session bell seeding (creation-vs-first-observation)
+#
+# Regression coverage for: a newly created session used to seed with
+# empty_bell() (unseen_count=0), which needs_attention() always reports
+# False for -- so a brand-new session never sorted into _attention_order()'s
+# tier 1 and landed at the very bottom of the attention view. The fix seeds
+# a GENUINELY new session's bell as already-fired instead, using tmux's own
+# `#{session_created}` (get_session_created_times()) compared against
+# _server_start_time to distinguish "created while this instance is running"
+# from "merely first observed by this process" -- the latter must NEVER be
+# seeded as attention-worthy, or a state.json reset / fresh install would
+# mass-flag every pre-existing session at once.
+# ---------------------------------------------------------------------------
+
+
+def _mock_poll_dependencies(monkeypatch, main_mod, *, names, created_times):
+    """Wire up `_run_poll_cycle`'s dependencies so it runs deterministically
+    against fake session names/creation-times with no real tmux involved."""
+    from unittest.mock import AsyncMock
+
+    async def mock_enumerate():
+        return list(names)
+
+    async def mock_snapshot_all(_names):
+        return {}
+
+    monkeypatch.setattr(main_mod, "enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr(main_mod, "snapshot_all", mock_snapshot_all)
+    monkeypatch.setattr(
+        main_mod, "get_session_created_times", lambda: dict(created_times)
+    )
+    monkeypatch.setattr(main_mod, "update_session_cache", lambda names, snapshots: None)
+    monkeypatch.setattr(main_mod, "process_bell_flags", AsyncMock())
+    monkeypatch.setattr(main_mod, "apply_bell_clear_rule", lambda state: None)
+    monkeypatch.setattr(main_mod, "prune_devices", lambda state: None)
+    # Bell hook already armed -- keep this test isolated to bell-seeding only.
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", True)
+    monkeypatch.setattr(main_mod, "_bell_hook_last_error", None)
+
+
+async def test_new_session_seeded_as_attention_worthy(monkeypatch):
+    """A session whose tmux session_created is AT OR AFTER _server_start_time
+    (genuinely created while this instance is running) must be seeded with a
+    bell that needs_attention() reports True for: unseen_count=1, seen_at=None,
+    last_fired_at set. This is the ONLY change -- needs_attention() and
+    _attention_order() are untouched -- so the existing tiered sort already
+    places it at the very top with no new sorting logic.
+    """
+    import time
+
+    import muxplex.main as main_mod
+    import muxplex.state as state_mod
+    from muxplex.bells import needs_attention
+
+    server_start = time.time()
+    monkeypatch.setattr(main_mod, "_server_start_time", server_start)
+
+    # Created 1 second AFTER this instance started -- the real bug scenario:
+    # POST /api/sessions while muxplex is already running.
+    _mock_poll_dependencies(
+        monkeypatch,
+        main_mod,
+        names=["brand-new"],
+        created_times={"brand-new": server_start + 1.0},
+    )
+
+    await main_mod._run_poll_cycle()
+
+    state = state_mod.load_state()
+    bell = state["sessions"]["brand-new"]["bell"]
+    assert bell["unseen_count"] == 1
+    assert bell["seen_at"] is None
+    assert bell["last_fired_at"] is not None
+    assert needs_attention(bell) is True
+
+
+async def test_preexisting_session_not_flagged_on_state_reset(monkeypatch):
+    """A session whose tmux session_created PREDATES _server_start_time must
+    seed with the plain empty_bell() default, even though this is the first
+    time THIS process's state.json has a bell entry for it. This is the trap:
+    it must hold for muxplex restart + deleted state.json, a fresh install,
+    AND a session created while muxplex was down -- none of these are
+    "the user just created a session," and none may mass-flag.
+    """
+    import time
+
+    import muxplex.main as main_mod
+    import muxplex.state as state_mod
+    from muxplex.bells import needs_attention
+
+    server_start = time.time()
+    monkeypatch.setattr(main_mod, "_server_start_time", server_start)
+
+    # 52 pre-existing sessions, all created well before this process started
+    # (simulates: muxplex restart with state.json deleted, OR a fresh install
+    # discovering a pre-existing fleet, OR a session created while muxplex
+    # was down and only now observed at startup).
+    names = [f"old-session-{i}" for i in range(52)]
+    created_times = {name: server_start - 3600.0 for name in names}
+
+    _mock_poll_dependencies(
+        monkeypatch, main_mod, names=names, created_times=created_times
+    )
+
+    await main_mod._run_poll_cycle()
+
+    state = state_mod.load_state()
+    for name in names:
+        bell = state["sessions"][name]["bell"]
+        assert bell == {"last_fired_at": None, "seen_at": None, "unseen_count": 0}, (
+            f"{name} was incorrectly seeded as attention-worthy -- mass false positive"
+        )
+        assert needs_attention(bell) is False
+
+
+async def test_session_with_no_created_time_falls_back_to_empty_bell(monkeypatch):
+    """Defensive case: tmux didn't report a session_created value at all
+    (get_session_created_times() has no entry for the name). Must not crash
+    and must not be treated as attention-worthy -- absence of evidence is not
+    evidence of a genuinely new session.
+    """
+    import time
+
+    import muxplex.main as main_mod
+    import muxplex.state as state_mod
+    from muxplex.bells import needs_attention
+
+    server_start = time.time()
+    monkeypatch.setattr(main_mod, "_server_start_time", server_start)
+
+    _mock_poll_dependencies(
+        monkeypatch, main_mod, names=["mystery-session"], created_times={}
+    )
+
+    await main_mod._run_poll_cycle()
+
+    state = state_mod.load_state()
+    bell = state["sessions"]["mystery-session"]["bell"]
+    assert bell == {"last_fired_at": None, "seen_at": None, "unseen_count": 0}
+    assert needs_attention(bell) is False
+
+
 def test_instance_info_reports_bell_hook_armed(client, monkeypatch):
     """GET /api/instance-info surfaces bell_hook_armed, so a dead hook is
     observable without grepping logs -- the previous `except Exception: pass`

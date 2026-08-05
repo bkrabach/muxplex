@@ -16,6 +16,7 @@ from muxplex.sessions import (
     ensure_history_retention,
     enumerate_sessions,
     get_session_activity,
+    get_session_created_times,
     get_session_list,
     get_snapshots,
     probe_tmux_epoch,
@@ -295,6 +296,102 @@ def test_get_session_activity_returns_copy():
     result["injected"] = 999.0
 
     assert get_session_activity() == {"alpha": 1700000000.0}
+
+
+# ---------------------------------------------------------------------------
+# session-created-time tests (sourced from tmux's #{session_created})
+# ---------------------------------------------------------------------------
+
+
+async def test_enumerate_sessions_requests_session_created_field(mock_subprocess):
+    """enumerate_sessions() must ask tmux for #{session_created} alongside
+    #{session_name} and #{window_activity} so creation-time data comes from
+    the same subprocess call (no second round trip). This is the signal
+    main.py's poll cycle uses to distinguish a genuinely new session from one
+    merely first observed by this process (see main.py's _server_start_time).
+    """
+    with mock_subprocess("alpha\t1700000000\t1699999000\n") as mock_create:
+        await enumerate_sessions()
+
+    call_args = mock_create.call_args[0]
+    assert call_args[0] == "tmux"
+    assert call_args[1] == "list-sessions"
+    assert call_args[2] == "-F"
+    assert "#{session_name}" in call_args[3]
+    assert "#{window_activity}" in call_args[3]
+    assert "#{session_created}" in call_args[3]
+
+
+async def test_enumerate_sessions_caches_created_times(mock_subprocess):
+    """enumerate_sessions() parses the third tab-separated field and caches
+    it, keyed by session name, exposed via get_session_created_times()."""
+    with mock_subprocess(
+        "alpha\t1700000000\t1699999000\nbeta\t1700000050\t1699999100\n"
+    ):
+        names = await enumerate_sessions()
+
+    assert names == ["alpha", "beta"]
+    assert get_session_created_times() == {
+        "alpha": 1699999000.0,
+        "beta": 1699999100.0,
+    }
+    # Activity is still parsed correctly alongside it (no cross-contamination).
+    assert get_session_activity() == {"alpha": 1700000000.0, "beta": 1700000050.0}
+
+
+async def test_enumerate_sessions_created_times_replaced_wholesale(mock_subprocess):
+    """A later enumerate_sessions() call fully replaces _created -- a session
+    that has since closed must not linger in get_session_created_times()."""
+    with mock_subprocess(
+        "alpha\t1700000000\t1699999000\nbeta\t1700000050\t1699999100\n"
+    ):
+        await enumerate_sessions()
+    assert "beta" in get_session_created_times()
+
+    with mock_subprocess("alpha\t1700000100\t1699999000\n"):
+        await enumerate_sessions()
+
+    assert get_session_created_times() == {"alpha": 1699999000.0}
+
+
+async def test_enumerate_sessions_missing_created_field_is_tolerated(mock_subprocess):
+    """A line with no second tab (older tmux output, or a mocked test still
+    using the 2-field format) must not crash -- the session name and
+    activity are still returned, just with no created-time entry."""
+    with mock_subprocess("alpha\t1700000000\nbeta\n"):
+        names = await enumerate_sessions()
+
+    assert names == ["alpha", "beta"]
+    assert get_session_activity() == {"alpha": 1700000000.0}
+    assert get_session_created_times() == {}
+
+
+async def test_enumerate_sessions_malformed_created_value_is_skipped_and_logged(
+    mock_subprocess, caplog
+):
+    """A non-numeric session_created field is dropped (not crashed on) and
+    logged -- the session name itself is still returned."""
+    with caplog.at_level("WARNING"):
+        with mock_subprocess(
+            "alpha\t1700000000\tnot-a-number\nbeta\t1700000050\t1699999100\n"
+        ):
+            names = await enumerate_sessions()
+
+    assert names == ["alpha", "beta"]
+    assert get_session_created_times() == {"beta": 1699999100.0}
+    assert "alpha" in caplog.text
+
+
+def test_get_session_created_times_returns_copy():
+    """get_session_created_times() must return a copy -- mutating the result
+    must not corrupt the module's internal cache."""
+    sessions_mod._created = {"alpha": 1699999000.0}
+
+    result = get_session_created_times()
+    result["alpha"] = 0.0
+    result["injected"] = 999.0
+
+    assert get_session_created_times() == {"alpha": 1699999000.0}
 
 
 # ---------------------------------------------------------------------------

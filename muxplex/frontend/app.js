@@ -147,6 +147,14 @@ function filterByQuery(sessions, query) {
  * Detect which sessions have transitioned to a new or increased bell/alert state.
  * Builds a Map of previous session keys (sessionKey || name) to their unseen_count, then returns
  * the names of next sessions whose bell.unseen_count > 0 AND > the previous count.
+ *
+ * A session with NO entry in `prev` (first appearance -- e.g. one the user just
+ * created, or a pre-existing bell surfacing on initial page load) is deliberately
+ * excluded even if its unseen_count > 0: it is a NEW SESSION, not a NEW BELL, and
+ * must not fire a notification the user didn't ask for. Only a key that was
+ * already tracked in `prev` (so a real increase can be measured against it) can
+ * produce a transition -- this is why the filter checks `prevMap.has(key)` before
+ * comparing counts, rather than defaulting an absent key to 0.
  * @param {object[]} prev - previous sessions array
  * @param {object[]} next - updated sessions array
  * @returns {string[]} names of sessions that newly have or increased bell count
@@ -160,7 +168,8 @@ function detectBellTransitions(prev, next) {
       const unseen = s.bell && s.bell.unseen_count;
       if (!unseen || unseen <= 0) return false;
       const key = s.sessionKey || s.name;
-      const prevCount = prevMap.has(key) ? prevMap.get(key) : 0;
+      if (!prevMap.has(key)) return false; // first appearance: new session, not a new bell
+      const prevCount = prevMap.get(key);
       return unseen > prevCount;
     })
     .map((s) => s.name);
