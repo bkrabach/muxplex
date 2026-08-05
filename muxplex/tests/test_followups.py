@@ -122,8 +122,11 @@ def tmux_calls(monkeypatch):
 
 
 def test_normalize_state_fills_followups_when_absent():
+    # empty_state() itself does not include "followups" -- only
+    # normalize_state() adds it (schema-upgrade of a pre-feature state.json,
+    # mirroring how sync_groups/terminal_session are filled).
     state = empty_state()
-    del state["followups"]  # simulate a pre-feature state.json missing the key
+    assert "followups" not in state
     normalize_state(state)
     assert state["followups"] == {}
 

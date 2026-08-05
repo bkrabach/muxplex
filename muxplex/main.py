@@ -2332,33 +2332,45 @@ async def _advance_followup_queue(name: str) -> None:
             halt_reason = "session_missing"
             halt_detail = f"Session '{name}' not found"
         else:
-            await run_tmux(*build_send_text_argv(name, item["text"]))
-            if item.get("enter", True):
-                await run_tmux(*build_send_key_argv(name, "Enter"))
-    except (RuntimeError, OSError) as exc:
-        halt_reason = "send_failed"
-        halt_detail = str(exc)
-
-    try:
-        async with state_lock:
-            state = load_state()
-            entry = state.get("followups", {}).get(name)
-            if entry is None:
-                # The queue was cleared (DELETE) while the send was in
-                # flight -- nothing to record either way; a cleared queue
-                # must stay cleared, never resurrected by a race.
-                pass
-            elif halt_reason is None:
-                followups.remove_item_by_id(state, name, item["id"])
-                save_state(state)
-            else:
-                followups.set_halted(state, name, halt_reason, halt_detail, item["id"])
-                _log.warning(
-                    "followups: halted for %r -- %s: %s", name, halt_reason, halt_detail
-                )
-                save_state(state)
-    finally:
+            # Only the actual send is expected to fail this way (a vanished
+            # session, a broken tmux). A failure HERE becomes an ordinary
+            # halt, retaining the item.
+            try:
+                await run_tmux(*build_send_text_argv(name, item["text"]))
+                if item.get("enter", True):
+                    await run_tmux(*build_send_key_argv(name, "Enter"))
+            except (RuntimeError, OSError) as exc:
+                halt_reason = "send_failed"
+                halt_detail = str(exc)
+    except BaseException:
+        # An exception from the FENCE evaluation itself (e.g.
+        # input_allowed_for_session raising) is not a normal send failure --
+        # there is exactly one fence implementation and no path here may
+        # swallow its errors into an ordinary halt (spec §6.1/T-17). Clean
+        # up the in-flight marker and propagate; the item is left exactly
+        # where it was peeked (still in the list, not halted) since we do
+        # not know what an unexpected fence error actually means.
         followups._followup_sending.discard(name)
+        raise
+
+    async with state_lock:
+        state = load_state()
+        entry = state.get("followups", {}).get(name)
+        if entry is None:
+            # The queue was cleared (DELETE) while the send was in flight --
+            # nothing to record either way; a cleared queue must stay
+            # cleared, never resurrected by a race.
+            pass
+        elif halt_reason is None:
+            followups.remove_item_by_id(state, name, item["id"])
+            save_state(state)
+        else:
+            followups.set_halted(state, name, halt_reason, halt_detail, item["id"])
+            _log.warning(
+                "followups: halted for %r -- %s: %s", name, halt_reason, halt_detail
+            )
+            save_state(state)
+    followups._followup_sending.discard(name)
 
 
 @app.delete("/api/sessions/current")
