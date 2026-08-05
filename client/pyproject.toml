@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muxplex-client"
-version = "0.36.1"
+version = "0.37.0"
 description = "Typed sync/async HTTP client for the muxplex API"
 readme = "README.md"
 license = { text = "MIT" }
