@@ -3760,7 +3760,11 @@ test('DOMContentLoaded sets page title via updatePageTitle after loadServerSetti
   // updatePageTitle() is now inside .then() ~1300 chars into the handler.
   // Updated for named session command pairs (COMMAND_PAIRS_SPEC.md): loadSessionCommands()
   // call added right after loadServerSettings(), pushing updatePageTitle to ~2100 chars.
-  const domBlock = source.substring(domIdx, domIdx + 2300);
+  // Updated for the mobile compose bar: initComposePref() + _composeRenderToggle()
+  // added right after initSyncGroup(), pushing updatePageTitle further in --
+  // window widened to 2400 (a source-text tripwire per AGENTS.md; behavior is
+  // unchanged, only the byte offset moved).
+  const domBlock = source.substring(domIdx, domIdx + 2400);
   // The old direct assignment is replaced by updatePageTitle()
   assert.ok(
     !domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),

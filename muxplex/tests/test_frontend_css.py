@@ -2372,6 +2372,34 @@ def test_device_badge_height_matches_flyout_button() -> None:
 # ── Sidebar flyout menu (feat: add flyout menu to sidebar session items) ──────
 
 
+# ── Mobile compose bar ──────────────────────────────────────────────────
+
+
+def test_css_view_expanded_uses_app_viewport_height() -> None:
+    """#view-expanded must consume --app-viewport-height (set by terminal.js's
+    reworked visualViewport handler), falling back to 100dvh."""
+    css = read_css()
+    assert "--app-viewport-height" in css
+    assert "var(--app-viewport-height, 100dvh)" in css
+
+
+def test_css_compose_bar_classes_defined() -> None:
+    """Every class the compose bar's static markup or JS relies on must have
+    a real rule -- this is the assertion test_css_class_definitions.mjs
+    cannot make for the disabled-state class (a classList.toggle target)."""
+    css = read_css()
+    for cls in (
+        ".compose-bar",
+        ".compose-bar__notice",
+        ".compose-bar__error",
+        ".compose-bar__row",
+        ".compose-bar__input",
+        ".compose-bar__send",
+        ".compose-bar--disabled",
+    ):
+        assert cls in css, f"Missing CSS rule for {cls}"
+
+
 def test_css_sidebar_options_btn_styled() -> None:
     """CSS must contain a rule targeting .tile-options-btn inside .sidebar-item-header or .sidebar-item."""
     css = read_css()

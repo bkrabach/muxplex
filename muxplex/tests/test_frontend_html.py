@@ -1616,6 +1616,75 @@ def test_add_sessions_btn_removed() -> None:
     )
 
 
+def test_html_compose_toggle_btn_in_expanded_header() -> None:
+    """#compose-toggle-btn must exist inside .expanded-header (session view only,
+    per the toggle-placement decision -- the bar only exists in the expanded
+    view, so it lives there and not in the overview header)."""
+    soup = _SOUP
+    view_expanded = soup.find(id="view-expanded")
+    assert view_expanded is not None, "Missing #view-expanded"
+    header = view_expanded.find("header", class_="expanded-header")
+    assert header is not None, "Missing header.expanded-header inside #view-expanded"
+    btn = header.find(id="compose-toggle-btn")
+    assert btn is not None, "Missing #compose-toggle-btn inside .expanded-header"
+    classes = btn.get("class") or []
+    assert "header-btn" in classes, (
+        f"#compose-toggle-btn must have class 'header-btn', has: {classes}"
+    )
+    assert btn.get("aria-pressed") == "false", (
+        "#compose-toggle-btn must start with aria-pressed='false'"
+    )
+    # Must NOT be in the overview header -- see the toggle-placement decision.
+    view_overview = soup.find(id="view-overview")
+    assert view_overview is not None, "Missing #view-overview"
+    assert view_overview.find(id="compose-toggle-btn") is None, (
+        "#compose-toggle-btn must not exist in the overview header"
+    )
+
+
+def test_html_compose_bar_elements() -> None:
+    """#compose-bar, #compose-input, #compose-send-btn, #compose-error,
+    #compose-notice must all exist inside .terminal-wrapper, and #compose-bar
+    must start hidden."""
+    soup = _SOUP
+    wrapper = soup.find(class_="terminal-wrapper")
+    assert wrapper is not None, "Missing .terminal-wrapper"
+    bar = wrapper.find(id="compose-bar")
+    assert bar is not None, "Missing #compose-bar inside .terminal-wrapper"
+    classes = bar.get("class") or []
+    assert "hidden" in classes, "#compose-bar must start with class 'hidden'"
+    for id_ in ("compose-input", "compose-send-btn", "compose-error", "compose-notice"):
+        assert bar.find(id=id_), f"Missing element with id='{id_}' inside #compose-bar"
+
+
+def test_html_compose_input_deliberate_autocorrect_deviation() -> None:
+    """#compose-input must have autocorrect='on' and spellcheck='true' --
+    the deliberate deviation from AUTOFILL_SUPPRESSION_ATTRS (this field
+    holds human-typed/dictated prose, not a name/URL/credential). Must NOT
+    be "corrected" to match the other suppressed fields."""
+    soup = _SOUP
+    input_ = soup.find(id="compose-input")
+    assert input_ is not None, "Missing #compose-input"
+    assert input_.get("autocorrect") == "on", (
+        f"#compose-input must have autocorrect='on', got: {input_.get('autocorrect')!r}"
+    )
+    assert input_.get("spellcheck") == "true", (
+        f"#compose-input must have spellcheck='true', got: {input_.get('spellcheck')!r}"
+    )
+    # Still suppressed from password-manager targeting (a textarea, not a
+    # credential field, but no reason to invite 1Password/LastPass/etc.).
+    for attr in ("data-1p-ignore", "data-lpignore", "data-bwignore"):
+        assert input_.get(attr) == "true", f"#compose-input missing {attr}='true'"
+
+
+def test_html_compose_error_is_role_alert() -> None:
+    """#compose-error must be role='alert' -- never a self-hiding toast."""
+    soup = _SOUP
+    err = soup.find(id="compose-error")
+    assert err is not None, "Missing #compose-error"
+    assert err.get("role") == "alert", "#compose-error must have role='alert'"
+
+
 def test_kill_session_command_label() -> None:
     """Settings Commands tab must use 'Kill session command' not 'Delete session command'.
 
