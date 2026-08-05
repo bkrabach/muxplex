@@ -524,6 +524,13 @@ async def test_halted_queue_ignores_bells_until_resume(client, monkeypatch, tmux
     resp = client.post("/api/sessions/sess/followups/resume")
     assert resp.json()["halted"] is None
 
+    # The settle window applies from the MOMENT OF ATTEMPT, even a failed
+    # one (spec §5.2 step 1 sets _followup_last_send_at before the send is
+    # known to succeed) -- bypass it here so this bell isn't itself
+    # swallowed as "too soon after our own last attempt."
+    followups._followup_last_send_at["sess"] = (
+        time.time() - followups.FOLLOWUP_SETTLE_SECONDS - 1
+    )
     client.post("/api/sessions/sess/bell")
     assert any(c[0] == "send-keys" for c in calls)
 

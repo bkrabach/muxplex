@@ -352,6 +352,7 @@ def normalize_state(state: dict) -> dict:
     if "terminal_session" not in state:
         state["terminal_session"] = state.get("active_session")
     state.setdefault("terminal_group", GLOBAL_GROUP)
+    state.setdefault("followups", {})
 
     return state
 
