@@ -66,9 +66,19 @@ def fire_bell(tmux, session_name: str) -> None:
     """Fire a real tmux bell in *session_name*: literal-mode send of the
     shell command text (matching muxplex's own build_send_text_argv --
     argv, never a shell, so no quoting is needed or wanted), then a
-    SEPARATE named-key send of Enter (matching build_send_key_argv)."""
-    tmux("send-keys", "-l", "-t", session_name, "--", "printf '\\a'")
-    tmux("send-keys", "-t", session_name, "Enter")
+    SEPARATE named-key send of Enter (matching build_send_key_argv).
+
+    check=False here: against a NEVER-ATTACHED detached session (no
+    client has ever connected), tmux queues status/error messages meant
+    for "the current client" and delivers them to the next client that
+    connects -- including our own transient send-keys connection -- which
+    can surface as a nonzero exit / "no current client" on stderr even
+    though the actual send-keys action still takes effect. The real proof
+    of effect is downstream: capture-pane content and GET .../followups
+    state, not this command's exit code.
+    """
+    tmux("send-keys", "-l", "-t", session_name, "--", "printf '\\a'", check=False)
+    tmux("send-keys", "-t", session_name, "Enter", check=False)
 
 
 def main() -> int:
