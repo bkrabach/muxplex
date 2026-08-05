@@ -903,6 +903,120 @@ body {
   cursor: not-allowed;
 }
 
+.compose-bar__queue {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.compose-bar__queue:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.compose-bar__queue:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Follow-up queue panel -- FOLLOWUP_QUEUE_SPEC.md §9. Server-side, shared
+   with every device -- visually distinct from the bell badge (different
+   glyph/color, spec §9.5): a bell says "come look", a follow-up badge says
+   "something will happen without you." */
+.followups-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.followups-panel.hidden {
+  display: none;
+}
+
+.followups-panel__header {
+  color: var(--text-muted);
+}
+
+.followups-panel__halt-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--danger-dim, #4a1c1c);
+  border: 1px solid var(--danger, #c0392b);
+  border-radius: 4px;
+  color: var(--danger, #c0392b);
+}
+
+.followups-panel__halt-banner.hidden {
+  display: none;
+}
+
+.followups-panel__halt-text {
+  flex: 1;
+}
+
+.followups-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.followups-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.followups-panel__item--halted {
+  outline: 1px solid var(--danger, #c0392b);
+}
+
+.followups-panel__ordinal {
+  color: var(--text-muted);
+  min-width: 1.2em;
+}
+
+.followups-panel__text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.followups-panel__clear {
+  align-self: flex-end;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+/* Session tile follow-up badge -- distinct glyph/class from the bell
+   badge (spec §9.5), so the two can coexist without being confused. */
+.tile-followups-badge {
+  color: var(--text-muted);
+}
+
+.tile-followups-badge--halted {
+  color: var(--danger, #c0392b);
+}
+
 /* xterm.js injects overflow-y: scroll on .xterm-viewport — override it */
 .xterm .xterm-viewport {
   overflow-y: hidden !important;

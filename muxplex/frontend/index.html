@@ -125,6 +125,19 @@
             this cannot be changed from this UI.
           </div>
           <div id="compose-error" class="compose-bar__error hidden" role="alert"></div>
+          <!-- Follow-up queue: server-side, shared with every device --
+               see FOLLOWUP_QUEUE_SPEC.md §9. Rendered only when there is
+               something to show (renderFollowups() toggles "hidden"). -->
+          <div id="followups-panel" class="followups-panel hidden">
+            <div id="followups-header" class="followups-panel__header"></div>
+            <div id="followups-halt-banner" class="followups-panel__halt-banner hidden">
+              <span id="followups-halt-text" class="followups-panel__halt-text"></span>
+              <button id="followups-resume-btn" class="followups-panel__halt-action" type="button">Resume</button>
+              <button id="followups-remove-halted-btn" class="followups-panel__halt-action" type="button">Remove this item</button>
+            </div>
+            <ol id="followups-list" class="followups-panel__list"></ol>
+            <button id="followups-clear-btn" class="followups-panel__clear" type="button">Clear all</button>
+          </div>
           <div class="compose-bar__row">
             <!-- Mirrors AUTOFILL_SUPPRESSION_ATTRS in app.js, EXCEPT
                  autocorrect/spellcheck: this field holds prose typed or
@@ -137,6 +150,7 @@
               autocomplete="off" autocapitalize="sentences"
               data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
               autocorrect="on" spellcheck="true"></textarea>
+            <button id="compose-queue-btn" class="compose-bar__queue" type="button" aria-label="Add to follow-ups" title="Add to follow-ups (Ctrl+Shift+Enter)">&#10515;</button>
             <button id="compose-send-btn" class="compose-bar__send" type="button" aria-label="Send">&#8593;</button>
           </div>
         </div>

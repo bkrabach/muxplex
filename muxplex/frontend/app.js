@@ -4111,12 +4111,21 @@ function _composeRenderEnabledState() {
   var bar = $('compose-bar');
   var input = $('compose-input');
   var sendBtn = $('compose-send-btn');
+  var queueBtn = $('compose-queue-btn');
   var notice = $('compose-notice');
   if (!bar) return;
   var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
   bar.classList.toggle('compose-bar--disabled', !enabled);
   if (input) input.disabled = !enabled;
   if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlight;
+  if (queueBtn) {
+    // Follow-ups run only on the host that owns the session (spec §8) --
+    // never offered for a remote-viewed session.
+    queueBtn.disabled = !enabled || !!_viewingRemoteId;
+    queueBtn.title = _viewingRemoteId
+      ? 'Follow-ups run on the host that owns the session'
+      : 'Add to follow-ups (Ctrl+Shift+Enter)';
+  }
   if (notice) notice.classList.toggle('hidden', enabled);
 }
 
@@ -4214,6 +4223,13 @@ function _composeKeydown(e) {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     _composeSend();
+  } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+    // Ctrl/Cmd+Shift+Enter queues instead of sending now (spec §9.2) --
+    // preventDefault() is load-bearing here for the same reason as the
+    // plain Ctrl+Enter branch above (AGENTS.md's "attachCustomKeyEventHandler"
+    // note): without it, Enter would still insert a newline in the textarea.
+    e.preventDefault();
+    _followupsQueueDraft();
   }
 }
 
@@ -4313,10 +4329,242 @@ async function _composeSend() {
 function _bindComposeEventListeners() {
   on($('compose-toggle-btn'), 'click', _composeToggle);
   on($('compose-send-btn'), 'click', _composeSend);
+  on($('compose-queue-btn'), 'click', _followupsQueueDraft);
+  on($('followups-clear-btn'), 'click', _followupsClearAll);
+  on($('followups-resume-btn'), 'click', _followupsResume);
+  on($('followups-remove-halted-btn'), 'click', _followupsRemoveHalted);
   var input = $('compose-input');
   if (input) {
     input.addEventListener('keydown', _composeKeydown);
     input.addEventListener('input', function() { _composeAutoGrow(input); });
+  }
+}
+
+// ─── Follow-up queue ────────────────────────────────────────────────────
+//
+// A per-session, server-side, SHARED list of pending text items -- see
+// FOLLOWUP_QUEUE_SPEC.md. Items fire one at a time, each when that
+// session's bell rings, until the list drains. Unlike the compose bar's
+// send-now action (which stays byte-identical), queuing arms an
+// UNATTENDED write -- deliberately a second, explicit button/shortcut,
+// never a toggled mode (spec §9.2).
+//
+// State is fetched fresh on session open and after every mutating action
+// -- there is no client-side prediction of server state (a queue this
+// small, at most MAX_FOLLOWUPS=16 items, costs nothing to re-fetch).
+
+let _followupsData = null; // last GET .../followups response for _viewingSession, or null
+
+/**
+ * Fetch and render the current session's follow-up queue. No-op (clears
+ * the panel) when no session is open or when viewing a remote session --
+ * follow-ups run on the host that owns the session (spec §8), so the
+ * queue affordance is absent, not present-and-failing, for a remote view.
+ */
+async function _followupsRefresh() {
+  if (!_viewingSession || _viewingRemoteId) {
+    _followupsData = null;
+    _followupsRender();
+    return;
+  }
+  try {
+    const res = await api('GET', '/api/sessions/' + encodeURIComponent(_viewingSession) + '/followups');
+    _followupsData = await res.json();
+  } catch (err) {
+    console.warn('[_followupsRefresh] failed:', err);
+    _followupsData = null;
+  }
+  _followupsRender();
+}
+
+/**
+ * Render #followups-panel from `_followupsData`. Hidden entirely when
+ * there is nothing to show (no items and no halt) -- an empty queue and
+ * an absent queue look identical to the user, matching the server's own
+ * "absence means no queue" convention.
+ */
+function _followupsRender() {
+  var panel = $('followups-panel');
+  if (!panel) return;
+  var data = _followupsData;
+  var hasContent = !!(data && (data.items.length > 0 || data.halted));
+  panel.classList.toggle('hidden', !hasContent);
+  if (!hasContent) return;
+
+  var header = $('followups-header');
+  if (header) {
+    var target = data.target_window ? ('will type into ' + data.target_window) : 'target window unknown';
+    header.textContent = 'Follow-ups \u00b7 shared with every device \u00b7 ' + target;
+  }
+
+  var banner = $('followups-halt-banner');
+  var haltText = $('followups-halt-text');
+  if (banner) banner.classList.toggle('hidden', !data.halted);
+  if (data.halted && haltText) {
+    haltText.textContent = 'Halted: ' + (data.halted.detail || data.halted.reason);
+  }
+
+  var list = $('followups-list');
+  if (list) {
+    list.innerHTML = data.items.map(function(item, idx) {
+      var isHaltedItem = data.halted && data.halted.item_id === item.id;
+      return '<li class="followups-panel__item' + (isHaltedItem ? ' followups-panel__item--halted' : '') + '" data-id="' + escapeHtml(item.id) + '">' +
+        '<span class="followups-panel__ordinal">' + (idx + 1) + '</span>' +
+        '<span class="followups-panel__text">' + escapeHtml(item.text) + '</span>' +
+        '<button class="followups-panel__up" type="button" data-action="up" aria-label="Move up">\u2191</button>' +
+        '<button class="followups-panel__down" type="button" data-action="down" aria-label="Move down">\u2193</button>' +
+        '<button class="followups-panel__edit" type="button" data-action="edit" aria-label="Edit">\u270e</button>' +
+        '<button class="followups-panel__remove" type="button" data-action="remove" aria-label="Remove">\u2715</button>' +
+        '</li>';
+    }).join('');
+    list.querySelectorAll('button[data-action]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var id = btn.closest('li').dataset.id;
+        var action = btn.dataset.action;
+        if (action === 'up') _followupsReorder(id, -1);
+        else if (action === 'down') _followupsReorder(id, 1);
+        else if (action === 'edit') _followupsEditItem(id);
+        else if (action === 'remove') _followupsRemoveItem(id);
+      });
+    });
+  }
+}
+
+/**
+ * PUT the whole item list with the current revision precondition -- the
+ * single write path every mutating queue action (reorder/edit/remove)
+ * funnels through (spec §7.1: the precondition is REQUIRED here, unlike
+ * PATCH /api/settings' optional one, because the queue mutates itself).
+ * On a 409 revision mismatch: re-fetch, then surface server truth (a
+ * single silent retry for send_in_flight, matching patchSettingsGuarded's
+ * pattern -- spec §9.3).
+ */
+async function _followupsPut(items, opts) {
+  opts = opts || {};
+  if (!_viewingSession || !_followupsData) return;
+  try {
+    const res = await api(
+      'PUT',
+      '/api/sessions/' + encodeURIComponent(_viewingSession) + '/followups',
+      { expected_revision: _followupsData.revision, items: items },
+    );
+    _followupsData = await res.json();
+    _followupsRender();
+  } catch (err) {
+    if (err && err.status === 409 && !opts.retried) {
+      await _followupsRefresh();
+      if (err.body && err.body.send_in_flight) {
+        // Single short retry, then surface server truth either way.
+        await new Promise(function(r) { setTimeout(r, 300); });
+        return _followupsPut(items, { retried: true });
+      }
+      return;
+    }
+    console.warn('[_followupsPut] failed:', err);
+  }
+}
+
+function _followupsReorder(id, delta) {
+  if (!_followupsData) return;
+  var items = _followupsData.items.slice();
+  var idx = items.findIndex(function(it) { return it.id === id; });
+  var newIdx = idx + delta;
+  if (idx < 0 || newIdx < 0 || newIdx >= items.length) return;
+  var tmp = items[idx];
+  items[idx] = items[newIdx];
+  items[newIdx] = tmp;
+  _followupsPut(items);
+}
+
+function _followupsEditItem(id) {
+  if (!_followupsData) return;
+  var items = _followupsData.items.slice();
+  var idx = items.findIndex(function(it) { return it.id === id; });
+  if (idx < 0) return;
+  var next = window.prompt('Edit follow-up text:', items[idx].text);
+  if (next === null) return; // cancelled
+  var normalized = _composeNormalizeText(next);
+  if (!normalized.trim()) return;
+  items[idx] = { id: items[idx].id, text: normalized, enter: items[idx].enter };
+  _followupsPut(items);
+}
+
+function _followupsRemoveItem(id) {
+  if (!_followupsData) return;
+  var items = _followupsData.items.filter(function(it) { return it.id !== id; });
+  _followupsPut(items);
+}
+
+/** Clear all -- DELETE, wiping items AND any halt (spec §7.1/§9.3). */
+async function _followupsClearAll() {
+  if (!_viewingSession) return;
+  try {
+    await api('DELETE', '/api/sessions/' + encodeURIComponent(_viewingSession) + '/followups');
+  } catch (err) {
+    console.warn('[_followupsClearAll] failed:', err);
+  }
+  await _followupsRefresh();
+}
+
+/** Resume -- clears the halt only, keeping every pending item (spec §9.4). */
+async function _followupsResume() {
+  if (!_viewingSession) return;
+  try {
+    await api('POST', '/api/sessions/' + encodeURIComponent(_viewingSession) + '/followups/resume');
+  } catch (err) {
+    console.warn('[_followupsResume] failed:', err);
+  }
+  await _followupsRefresh();
+}
+
+/**
+ * "Remove this item" on the halted banner -- a PUT dropping the halted
+ * item, which leaves the halt SET so Resume stays a separate, explicit
+ * action (spec §9.4: nothing clears a halt as a side effect of an edit).
+ */
+function _followupsRemoveHalted() {
+  if (!_followupsData || !_followupsData.halted) return;
+  var itemId = _followupsData.halted.item_id;
+  var items = _followupsData.items.filter(function(it) { return it.id !== itemId; });
+  _followupsPut(items);
+}
+
+/**
+ * Queue the current compose draft instead of sending it now -- POST
+ * .../followups. No precondition (appending is commutative, spec §7.1).
+ * Mirrors _composeSend()'s draft-survives-failure behavior: cleared only
+ * on success.
+ */
+/** Test-only helper: set `_followupsData` directly, bypassing the fetch. */
+function _followupsSetDataForTests(data) {
+  _followupsData = data;
+}
+
+async function _followupsQueueDraft() {
+  var input = $('compose-input');
+  if (!input) return;
+  var normalized = _composeNormalizeText(input.value);
+  if (!normalized.trim()) {
+    _composeShowError('Nothing to queue.');
+    return;
+  }
+  if (!_viewingSession) {
+    _composeShowError('No session is open.');
+    return;
+  }
+  try {
+    await api(
+      'POST',
+      '/api/sessions/' + encodeURIComponent(_viewingSession) + '/followups',
+      { text: normalized, enter: true },
+    );
+    input.value = '';
+    input.style.height = '';
+    _composeHideError();
+    if (window._refitTerminal) window._refitTerminal();
+    await _followupsRefresh();
+  } catch (err) {
+    _composeShowError(_composeErrorMessage(err));
   }
 }
 
@@ -6788,6 +7036,16 @@ if (typeof module !== 'undefined' && module.exports) {
     _composeErrorMessage,
     _composeSend,
     _bindComposeEventListeners,
+    _followupsRefresh,
+    _followupsRender,
+    _followupsQueueDraft,
+    _followupsReorder,
+    _followupsEditItem,
+    _followupsRemoveItem,
+    _followupsClearAll,
+    _followupsResume,
+    _followupsRemoveHalted,
+    _followupsSetDataForTests,
     showTerminalConflictDialog,
     setConnectionStatus,
     pollSessions,
