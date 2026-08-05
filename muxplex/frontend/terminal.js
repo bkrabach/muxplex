@@ -8,6 +8,7 @@ let _ws = null;
 let _reconnectTimer = null;
 let _currentSession = null;
 let _vpHandler = null;
+let _vpScrollHandler = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 let _searchAddon = null;
 let _resizeObserver = null;
@@ -364,26 +365,68 @@ function _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, ta
   // Deliberately no fetch, no connectWebSocket() call, no setTimeout here.
   // See docstring above.
 }
+/**
+ * Refit the terminal to its current container size. Exposed on `window` as
+ * `_refitTerminal` so other classic scripts (app.js's compose bar) can
+ * request a refit after something OTHER than a visualViewport event changes
+ * the terminal's available space -- e.g. showing/hiding the compose bar,
+ * or its textarea auto-growing. A no-op when no terminal is open.
+ */
+function _termRefit() {
+  if (!_fitAddon) return;
+  try { _fitAddon.fit(); } catch (_) {}
+}
+
+window._refitTerminal = _termRefit;
+
+/**
+ * Track the visual viewport (the space actually visible above an on-screen
+ * keyboard, search engines, etc.) via a CSS custom property rather than an
+ * inline height on #terminal-container.
+ *
+ * REWORKED (was: `container.style.height = (vvh - headerHeight) + 'px'`).
+ * That approach hardcoded a single subtracted height (the 44px header) and
+ * had no way to also account for whatever ELSE is stacked in the same
+ * column -- #terminal-search-bar when open, and now #compose-bar when
+ * shown. The old code silently mis-sized the terminal whenever the search
+ * bar was visible (a pre-existing bug, not introduced here) and would have
+ * mis-sized it again for the compose bar had this rework not happened.
+ *
+ * The fix moves the measurement one level UP: instead of computing the
+ * terminal's own height, set `--app-viewport-height` (consumed by
+ * `#view-expanded` in style.css) to the visual viewport's height. Flexbox
+ * then does the subtraction for every sibling in the column
+ * (.expanded-header, .terminal-search-bar, #terminal-container,
+ * #compose-bar) automatically and correctly, no matter how many of them
+ * are visible or how tall each one is. #terminal-container itself gets NO
+ * inline height at all any more -- it is sized purely by its `flex: 1` rule
+ * plus its siblings' actual rendered heights.
+ *
+ * Also listens for visualViewport's `scroll` event (fires on iOS Safari
+ * when the page pans as the keyboard opens) and reapplies the same
+ * handler, since a `scroll` can change `visualViewport.height` too on some
+ * browsers without a corresponding `resize`.
+ */
 function initVisualViewport() {
   if (!window.visualViewport) return;
   if (_vpHandler) window.visualViewport.removeEventListener('resize', _vpHandler);
+  if (_vpScrollHandler) window.visualViewport.removeEventListener('scroll', _vpScrollHandler);
+
+  var expandedView = document.getElementById('view-expanded');
 
   _vpHandler = function() {
-    if (!_term || !_fitAddon) return;
-    var container = document.getElementById('terminal-container');
-    if (!container) return;
-
-    // Resize container to fill visual viewport above keyboard
-    var headerHeight = 44; // matches --header-height CSS custom property
-    var vvh = window.visualViewport.height;
-    var termHeight = Math.max(100, vvh - headerHeight);
-    container.style.height = termHeight + 'px';
-
-    // Refit xterm.js to new container size
-    try { _fitAddon.fit(); } catch (_) {}
+    if (!expandedView) return;
+    expandedView.style.setProperty('--app-viewport-height', window.visualViewport.height + 'px');
+    // Refit xterm.js -- the ResizeObserver in openTerminal() would also
+    // eventually catch this (debounced 50ms), but refitting immediately
+    // here avoids a visible one-frame lag while the keyboard animates.
+    _termRefit();
   };
+  _vpScrollHandler = _vpHandler;
 
   window.visualViewport.addEventListener('resize', _vpHandler);
+  window.visualViewport.addEventListener('scroll', _vpScrollHandler);
+  _vpHandler(); // set the initial value immediately, don't wait for the first resize
 }
 
 // ─── Terminal creation ────────────────────────────────────────────────────────
@@ -718,9 +761,20 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
  */
 function closeTerminal() {
   if (_vpHandler) {
-    if (window.visualViewport) window.visualViewport.removeEventListener('resize', _vpHandler);
+    if (window.visualViewport) {
+      window.visualViewport.removeEventListener('resize', _vpHandler);
+      window.visualViewport.removeEventListener('scroll', _vpScrollHandler);
+    }
     _vpHandler = null;
+    _vpScrollHandler = null;
   }
+  // Clear the custom property this view was using -- #view-expanded falls
+  // back to its CSS default (100dvh) the moment it's set again, but an
+  // explicit clear here means the overview view (which never reads this
+  // property, but shares no ambiguity either way) never inherits a stale
+  // pixel value from the last session's keyboard state.
+  var expandedViewEl = document.getElementById('view-expanded');
+  if (expandedViewEl) expandedViewEl.style.removeProperty('--app-viewport-height');
 
   if (_reconnectTimer) {
     clearTimeout(_reconnectTimer);

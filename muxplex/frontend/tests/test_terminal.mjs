@@ -803,13 +803,17 @@ test('connectWebSocket federation branch includes ?session= with the session nam
   );
 });
 
-test('initVisualViewport registers resize handler on window.visualViewport when present', () => {
-  // RED test: stub does nothing; real impl must call addEventListener('resize', fn)
+test('initVisualViewport registers resize AND scroll handlers on window.visualViewport when present', () => {
+  // Updated for the --app-viewport-height rework: the handler is now also
+  // registered on visualViewport's 'scroll' event (iOS Safari can change
+  // visualViewport.height on scroll, e.g. as the keyboard opens, without a
+  // corresponding 'resize') -- both must be registered, not just 'resize'.
   const t = loadTerminal();
 
-  let addedEvent = null;
+  const addedEvents = [];
   globalThis.window.visualViewport = {
-    addEventListener: (event, _fn) => { addedEvent = event; },
+    height: 400,
+    addEventListener: (event, _fn) => { addedEvents.push(event); },
     removeEventListener: (_event, _fn) => {},
   };
 
@@ -821,8 +825,10 @@ test('initVisualViewport registers resize handler on window.visualViewport when 
   globalThis.setTimeout = orig;
   delete globalThis.window.visualViewport;
 
-  assert.strictEqual(addedEvent, 'resize',
+  assert.ok(addedEvents.includes('resize'),
     '_vpHandler should be registered as a resize listener on window.visualViewport');
+  assert.ok(addedEvents.includes('scroll'),
+    '_vpHandler should also be registered as a scroll listener on window.visualViewport');
 });
 
 test('terminal is auto-focused when WebSocket opens', () => {

@@ -432,6 +432,16 @@ body {
 
 #view-expanded {
   position: relative;
+  /* Set by terminal.js's visualViewport handler (--app-viewport-height) so
+     the whole expanded view -- header, sidebar, terminal, search bar, and
+     compose bar together -- shrinks to the space actually available above
+     the on-screen keyboard. Falls back to 100dvh (the .view default) when
+     unset: desktop, keyboard closed, or visualViewport unsupported. This
+     replaces the old approach of writing an inline height directly onto
+     #terminal-container, which only ever accounted for the header and
+     mis-sized whenever the search bar (or now the compose bar) was also
+     visible, clipping content. See AGENTS.md's "visualViewport rework" note. */
+  height: var(--app-viewport-height, 100dvh);
 }
 
 .expanded-header {
@@ -780,6 +790,117 @@ body {
 .terminal-search-btn:hover {
   color: var(--text);
   border-color: var(--accent);
+}
+
+/* Mobile compose bar -- a plain UI client of the existing, unmodified
+   POST /api/sessions/{name}/input (see AGENTS.md's "Mobile compose bar"
+   note). Sits below #terminal-container inside .terminal-wrapper's column
+   flex layout, so showing/hiding it (or growing the textarea) shrinks or
+   grows the terminal's share of the space automatically -- no JS height
+   math needed here beyond the visualViewport rework above. */
+.compose-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+
+.compose-bar.hidden {
+  display: none;
+}
+
+.compose-bar__notice {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.compose-bar__notice code {
+  font-family: var(--font-mono, monospace);
+  color: var(--text);
+}
+
+.compose-bar__error {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--danger, #f85149);
+  background: var(--bg);
+  border: 1px solid var(--danger, #f85149);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.compose-bar__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Toggled by _composeRenderEnabledState() alongside the `disabled` attribute
+   on the textarea/send button (input_enabled is false server-side) -- the
+   attribute alone already prevents interaction; this rule just dims the
+   row so the disabled state is visually obvious too, not only inferred
+   from a control refusing clicks. */
+.compose-bar--disabled .compose-bar__row {
+  opacity: 0.6;
+}
+
+.compose-bar__input {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+}
+
+.compose-bar__input:focus {
+  border-color: var(--accent);
+}
+
+.compose-bar__input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.compose-bar__send {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.compose-bar__send:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+
+.compose-bar__send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* xterm.js injects overflow-y: scroll on .xterm-viewport — override it */
