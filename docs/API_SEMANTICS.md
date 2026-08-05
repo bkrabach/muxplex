@@ -145,6 +145,20 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   direct file edit is stored as-is (never rejected -- one bad peer must
   not break fleet-wide sync) and surfaced only at read time via the same
   `GET /api/views` `errors[]`.
+- **`POST /api/views/preview`** is the rule editor's live-match preview
+  (the Manage View panel's `match_names` textarea, AUTO_VIEWS_SPEC.md §9.3):
+  given a body `{"match_names": [str, ...]}` -- a DRAFT list, never
+  persisted -- it returns `{"errors": [...], "matches": [<session name>,
+  ...]}` by wrapping the draft in a throwaway view dict and running it
+  through the SAME `validate_view_rules` / `filter_visible` every saved
+  view uses, rather than a second matcher. This is why the frontend can
+  show "these N sessions match" and name a rejected pattern's exact reason
+  as the user types, with `grep -rn "fnmatch" frontend/` staying empty --
+  the client asks the server instead of porting the matcher. Local sessions
+  only (same scope note as `GET /api/view`); never writes anything, so it
+  is safe to call on every keystroke (debounced client-side). Requires
+  auth, same as `GET /api/views` -- which local sessions match a draft
+  pattern is not for an unauthenticated caller.
 - **`GET /api/view`** is now the canonical server-side resolution of the
   above: view membership (via `filter_visible`), the needs-attention
   predicate (`bells.needs_attention`), and sort ordering (`?sort=attention`
