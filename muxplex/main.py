@@ -141,6 +141,7 @@ from muxplex.ttyd import (
     socket_path_for,
 )
 from muxplex.views import (
+    VIEW_RULE_KEY,
     annotate_view_membership,
     assess_views_destruction,
     filter_visible,
@@ -915,6 +916,17 @@ class SessionInputPayload(BaseModel):
     lines: int | None = None
 
 
+class ViewRulePreviewPayload(BaseModel):
+    """Body for POST /api/views/preview.
+
+    match_names -- a DRAFT (not-yet-saved) list of glob patterns, exactly the
+        shape the Manage View rule editor holds in its textarea. Never
+        persisted; this endpoint is read-only.
+    """
+
+    match_names: list[str] = []
+
+
 class SettingsSyncPayload(BaseModel):
     settings: dict
     settings_updated_at: float
@@ -1373,6 +1385,50 @@ async def get_views() -> dict:
         )
 
     return {"views": result_views, "errors": flat_errors}
+
+
+@app.post("/api/views/preview")
+async def preview_view_rule(payload: ViewRulePreviewPayload) -> dict:
+    """Resolve a DRAFT, unsaved `match_names` list against currently-live local
+    sessions -- the Manage View rule editor's live-match preview.
+
+    Never writes anything. Validates and matches the SAME way a saved view
+    would (`validate_view_rules` / `filter_visible`, exactly as `GET
+    /api/views` and `GET /api/sessions` use) by wrapping the draft patterns in
+    a throwaway, never-persisted view dict -- there is deliberately no second
+    matcher here, per AGENTS.md's "the matcher lives in exactly one place."
+
+    This lets the editor show "these N sessions match" and name a rejected
+    pattern's exact reason (e.g. the `':'` rule) as the user types, before
+    they ever attempt a save that would 400.
+
+    Scope: local sessions only, same as `GET /api/view` (`\u00a70.1`/scope note in
+    that handler) -- a pattern also matches identically-named sessions on
+    other devices once saved; this preview only has visibility into this
+    device's own current session list.
+
+    Response:
+        errors  -- validation error strings for structurally invalid entries
+                   in *payload.match_names* (non-str, empty, or containing
+                   ':'), same wording `GET /api/views` uses.
+        matches -- names of currently-live local sessions any valid pattern
+                   matches, order-preserving (session list order).
+    """
+    draft_view = {"name": "", "sessions": [], VIEW_RULE_KEY: payload.match_names}
+    errors = [
+        e.replace("views[0] '': ", "", 1) for e in validate_view_rules([draft_view])
+    ]
+
+    names = get_session_list()
+    raw_sessions = [{"name": name} for name in names]
+    matched = filter_visible(
+        raw_sessions,
+        {"views": [draft_view], "hidden_sessions": []},
+        draft_view["name"] or "",
+        include_hidden=True,
+    )
+
+    return {"errors": errors, "matches": [s["name"] for s in matched]}
 
 
 def _require_valid_session_name(name: str) -> None:
