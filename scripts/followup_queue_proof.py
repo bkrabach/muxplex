@@ -38,7 +38,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import uuid
 from pathlib import Path
 
 POLL_SETTLE_S = 2.6  # > POLL_INTERVAL (2.0s default) so the real poll loop runs
@@ -49,7 +48,16 @@ def log(msg: str) -> None:
 
 
 def main() -> int:
-    socket_name = f"muxq-proof-{uuid.uuid4().hex[:8]}"
+    # NOTE: muxplex's own run_tmux() calls plain `tmux ...` -- the DEFAULT
+    # socket name -- and isolates ONLY via TMUX_TMPDIR (see
+    # sessions.tmux_env()/AGENTS.md's "Running a second instance on one
+    # box"). A custom `-L <name>` socket (the isolation muxplex ITSELF
+    # uses when it must never interact with the session, e.g. proving the
+    # bell-hook-arming hazard) would put our session on a DIFFERENT tmux
+    # server than the one muxplex's own subprocess calls resolve to in the
+    # SAME TMUX_TMPDIR directory -- invisible to it. Here we WANT muxplex
+    # to see and interact with this session, so isolation is TMUX_TMPDIR
+    # alone, default socket name, exactly matching muxplex's own calls.
     tmux_tmpdir = Path(tempfile.mkdtemp(prefix="muxq-tmuxdir-"))
     scratch_home = Path(tempfile.mkdtemp(prefix="muxq-home-"))
     session_name = "itest-followup"
@@ -60,14 +68,14 @@ def main() -> int:
 
     def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["tmux", "-L", socket_name, *args],
+            ["tmux", *args],
             env=env,
             capture_output=True,
             text=True,
             check=check,
         )
 
-    log(f"isolated tmux socket={socket_name} TMUX_TMPDIR={tmux_tmpdir}")
+    log(f"isolated TMUX_TMPDIR={tmux_tmpdir} (default socket, isolated by directory)")
     tmux("new-session", "-d", "-s", session_name, "-x", "80", "-y", "24")
     log(f"created isolated session {session_name!r}")
 
