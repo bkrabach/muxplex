@@ -212,6 +212,259 @@ suggests looking at them):
 
 ---
 
+## 5. Federation key hygiene: per-host generation and a rotation path
+
+**What we want.** Every host in a federation holding its own generated federation
+key, and a documented way to rotate one without taking a running federation down.
+`muxplex generate-federation-key` already exists and already generates correctly.
+What is missing is everything around it: nothing states that the key is meant to
+be per-host, and nothing describes what an operator does when a key has to be
+replaced.
+
+**Why it matters.** The federation key is the highest-value credential muxplex
+issues. It is the shared Bearer credential for the entire `/api/*` surface, and
+`docs/AGENT_GUIDE.md` hands it to headless agents on purpose. What it authorizes
+depends on the host's own fences -- and those fences are precisely what a
+key-holder ends up standing in front of:
+
+- Combined with `input_enabled` and a matching `input_allowed_sessions` entry, it
+  authorizes **typing into a session**, which is RCE by design (`AGENTS.md`).
+- As of the commit this entry is filed against, the terminal WS honors that same
+  fence for `bearer_only` callers, closing the door that used to bypass it
+  entirely. The fence is now consistent across all three typing paths -- which
+  means the key is what gets a caller *to* the fence, and the fence is the only
+  thing left in front of it.
+- It is the same credential `muxplex-client` consumers and `muxplex-deck` carry.
+
+A key that is unique per host scopes a compromise to that host. A key reused
+across N hosts turns any single host's compromise into a fleet compromise, with
+no way to contain it host-by-host after the fact. Generation and rotation are one
+item because they fail together: without a documented rotation path, an operator
+who later decides a key was a mistake has no cheap way to fix it, and that is
+exactly the pressure that makes a bad key persist.
+
+The realistic path to a reused key is not a decision anyone makes deliberately --
+it is copying a working config to a second host because that is the fastest way
+to get federation up. Nothing in the setup flow currently steers away from that.
+
+**What it has to fit alongside.**
+
+- `cli.py:670` `generate_federation_key()` is not the gap: `secrets.token_urlsafe(32)`
+  into `~/.config/muxplex/federation_key`, 0700 parent, 0600 file, printed to
+  stdout so it can be carried to peers. The generator is right; the lifecycle and
+  the guidance around it are what's absent.
+- `settings.load_federation_key()` reads a **single** value from
+  `FEDERATION_KEY_PATH` (env-overridable). Any overlapping-window rotation has to
+  reckon with that shape.
+- Rotation is N-sided. Each peer holds the remote's key in its own per-remote
+  config, so "rotate host A's key" is a simultaneous change on every peer that
+  dials A. It also degrades quietly rather than loudly: per `AGENTS.md`, only
+  `httpx.TransportError` trips the circuit breaker, so a peer that is reachable
+  but now 401ing is reported as reachable.
+- `GET /api/settings` already blanks `federation_key` and per-remote keys
+  (`docs/AGENT_GUIDE.md`). Whatever gets added must not become the thing that
+  un-blanks them.
+- `muxplex doctor` already warns on TLS certificate expiry (`cli.py:1197`) --
+  advisory, non-fatal, printed inline with everything else. That is the precedent
+  for a credential-hygiene check and it is the right shape: a warning, not a
+  refusal to serve.
+
+**Open questions.**
+
+- **What can `doctor` assert without becoming a bad password meter?** Shape is
+  checkable locally and cheaply -- length and charset consistent with
+  `token_urlsafe(32)` -- and would flag a hand-chosen key with no cross-host
+  knowledge at all. Whether two hosts share a key is the more useful signal and
+  the much harder one: it needs comparison across hosts, and moving key material
+  around to enable a warning is a new disclosure surface in service of a warning.
+  Would a salted digest over the existing sync channel be acceptable, or is any
+  cross-host comparison worse than the warning is worth?
+- **Is rotation atomic or overlapping?** Accepting both an old and a new key for
+  a window is the standard answer and makes zero-downtime rotation easy -- but it
+  doubles the credential surface for the duration, on the one credential that
+  fronts an RCE fence. `load_federation_key()` returns one string today; making it
+  a list is a small change with a large security question attached.
+- **Should a key be generated automatically on first serve?** Uniqueness by
+  construction beats uniqueness by instruction. Against it: a key that appears
+  without the operator asking is a key the operator may not know exists, and the
+  current command prints it precisely so a human can carry it to peers.
+- **Where does the rotation procedure get documented?** `docs/AGENT_GUIDE.md` is
+  the vendor-neutral operator-facing doc and already says where the key lives;
+  README's settings table names `federation_key`. Neither describes a lifecycle,
+  and a rotation procedure that lives only in a commit message is not a procedure.
+- **Does the pre-fix-peer residue constrain the ordering?** `docs/API_SEMANTICS.md`'s
+  terminal-WS-fence entry notes a residual gap for peers still running a pre-fix
+  version. If a federation has to be swept for both an upgrade and a rotation,
+  doing them in the wrong order may leave a window where neither property holds.
+
+---
+
+## 6. Referenced design docs that don't exist
+
+**What we want.** Every `.md` filename cited by a tracked file to resolve to
+something. A mechanical sweep of the repo turns up two distinct failures that look
+identical from a reader's seat and need completely different fixes.
+
+**Absent documents -- eight, with nothing to point at.** Counts are occurrences
+across tracked files:
+
+- **`KEY_DESIGN_SYSTEM.md`** -- 48 refs / 7 files. The deck's four surviving
+  `DESIGN_*.md` docs, `deck.css`, `deck.js`, and `test_deck.mjs` all treat it as
+  the authority for key rendering. The most-cited missing document in the repo.
+- **`SOFT_DECK_DESIGN.md`** -- 32 / 5. Cited by all four deck design docs and by
+  `deck/index.html:22`, which defers to its "OQ4" to justify a shipped icon
+  decision.
+- **`SESSION_PERSISTENCE_DESIGN.md`** -- 22 / 11, **including `muxplex restore
+  --help`** (`cli.py:2641`). A user who follows the CLI's own pointer lands
+  nowhere. `restore.py:2` and `manifest.py` both name it as the design of record
+  for the restore milestone.
+- **`DECK_PARITY_ARCHITECTURE.md`** -- 18 / 5, including **this file**
+  (`BACKLOG.md:57`, item 2's open question about staying honest with
+  `muxplex-deck`) and `layout.fixtures.json:3`, where it is named as the source
+  and ownership rationale for the golden fixture both decks assert against.
+- **`muxplex-client-design.md`** -- 15 / 8, including `client/README.md:10` and
+  `:50` (presented as the authoritative design rationale, and as the home of the
+  §3 included/excluded endpoint table), `client/pyproject.toml:29`,
+  `pyproject.toml:75`, both CI workflows, and `test_client_contract.py`, which
+  cites §1/§2/§7/§8 as the contract it is enforcing.
+- **`COMMAND_PAIRS_UI_DESIGN.md`** -- 9 / 4, including `CHANGELOG.md:156`.
+- **`CONTROL_MAPPING_DESIGN.md`** -- 6 / 3.
+- **`COMPOSE_BAR_SPEC.md`** -- 4 / 3 (`app.js`, `index.html:133`,
+  `test_compose.mjs:328`). The newest of the set: the compose bar shipped in the
+  two commits immediately before this entry was written, and its spec never
+  landed alongside it.
+
+**Stale pointers -- 35 files, content that does exist.** Four `*_SPEC.md`
+filenames are cited that never existed in this repo, but whose content *was*
+preserved into `docs/plans/` under dated names:
+
+- `AUTO_VIEWS_SPEC.md` (38 / 16) -> `docs/plans/2026-08-04-auto-views-plan.md`
+- `PER_SESSION_TTYD_SPEC.md` (25 / 14) -> `docs/plans/2026-08-02-per-session-ttyd-plan.md`
+- `COMMAND_PAIRS_SPEC.md` (13 / 9) -> `docs/plans/2026-08-02-named-session-command-pairs-plan.md`
+- `DEVICE_LABEL_SPEC.md` (13 / 7) -> `docs/plans/2026-08-04-device-label-placement-plan.md`
+
+This half is a rename, not a writing job -- but it reaches into `pyproject.toml:31`,
+`CHANGELOG.md:156`, `scripts/README.md:163`, and into the successor plans
+themselves (`2026-08-02-per-session-ttyd-plan.md:47` cites the ghost it replaced).
+Worth noting that `AGENTS.md:39` cites `docs/plans/2026-08-04-auto-views-plan.md`
+by its dated name and resolves cleanly: the convention already works everywhere it
+was actually applied.
+
+**Why it matters.** Two of these are load-bearing for people outside this repo
+right now. `client/README.md` is the first thing a project integrating against
+`muxplex-client` reads, and it hands them a dead link for the design rationale and
+for the endpoint table -- with several such integrations landing this month. And
+`muxplex restore --help` makes the CLI itself the source of the dead end, which is
+worse than a dead link in a document: the user did the right thing and followed
+the tool's own pointer.
+
+**Open questions.**
+
+- **Write them, or delete the citations?** There is not one answer for all eight.
+  A document cited 48 times by four other design docs is load-bearing and probably
+  has to be written; a document cited once from a comment can lose the citation.
+  Reference count is a hint and not a rule -- `muxplex-client-design.md` is
+  mid-pack by count and first by urgency.
+- **Which of these are ADRs rather than designs?** Several describe things that
+  shipped. `docs/plans/README.md` already frames that directory as ADRs and build
+  logs under dated names, which is both the existing convention and the obvious
+  home. Reconstructing a shipped design as a dated ADR after the fact is honest;
+  back-dating it as though it were written before the code is not.
+- **One sweep or two?** The rename and the writing are one symptom and two
+  completely different jobs. Doing them together means a single change touches
+  59 tracked files across source, tests, CI config, and `CHANGELOG.md` -- and
+  `CHANGELOG.md` is release-owner territory per `AGENTS.md`.
+- **Is a test the real fix?** A check that fails when a tracked file cites a `.md`
+  that doesn't resolve would stop eight from becoming nine. But this repo already
+  has a source-text tripwire it regrets (`test_frontend_js.py`, see `AGENTS.md`),
+  and a link checker is exactly that shape. Weigh it against the alternative,
+  which is running this same sweep again in six months.
+- **What is the rule for citing a document that isn't written yet?** The failure
+  mode here is a design doc that existed in someone's workspace, got cited from
+  code as that code was written, and never made it into the repo. If
+  cite-before-landing is going to keep happening, the citation format should make
+  an unlanded document visibly different from a landed one.
+
+---
+
+## 7. Put `session_created` on the wire
+
+**What we want.** A session's creation time on `GET /api/sessions` entries. The
+value already exists inside the server; it just stops before the response.
+
+**Why it matters.** v0.36.1 fixed a real inversion -- the session you just created
+sorted dead last in the attention view -- by seeding a genuinely-new session's bell
+as though it had just fired. The discriminator is tmux's own `#{session_created}`
+compared against `_server_start_time` (`main.py:173`, `main.py:422`): created
+during this process's lifetime means genuinely new, anything earlier means merely
+first observed. That value is parsed out of the same `tmux list-sessions` call
+that already produced `#{window_activity}` (no second round trip), cached in
+`sessions.py`, and handed to the server as `get_session_created_times()`.
+
+It stops there deliberately. `GET /api/sessions` entries remain `name`,
+`snapshot`, `bell`, `last_activity_at`, `views`. That release's own "Known
+limitation" states the consequence and names the remedy: an external client "still
+cannot see when a session was created, and cannot reproduce this ordering decision
+locally... Adding it would be a purely additive field and is the obvious future
+change; it is not made here because nothing yet asks for it."
+
+Something asks for it now. `muxplex-deck` orders sessions itself, and the projects
+integrating against `muxplex-client` this month will each hit the same wall.
+`AGENTS.md`'s standing answer for a rule clients would otherwise re-implement is
+to resolve it server-side -- but that answer presumes the client has the inputs,
+and here the input isn't on the wire at all.
+
+**Urgency -- the reason this one isn't "someday."** It is wanted *before* those
+integrations land, not after. A field that exists before its clients do costs
+nothing. The same field added afterward means every client ships a local
+workaround first and then carries it forever, which is exactly the
+drift-across-clients problem `docs/API_SEMANTICS.md` exists to prevent.
+
+**What it has to fit alongside.**
+
+- Purely additive, which is the change class `AGENTS.md` explicitly prefers: new
+  field, no rename, no semantic change. Clients tolerate unknown fields; the
+  server tolerates their absence.
+- `get_session_created_times()` is already defensive -- returns a copy, keyed by
+  session name, unix epoch seconds, drops malformed values and sessions that have
+  since closed (`test_sessions.py:302`+). The value needs no new hardening to be
+  exposed.
+- `docs/API_SEMANTICS.md` is where the semantics external clients re-derive live,
+  and the needs-attention predicate documented there is the exact rule this field
+  supports. Adding the field without updating that document would reproduce the
+  gap the change exists to close.
+- `muxplex_client`'s models are hand-rolled dataclasses rather than pydantic
+  (`client/muxplex_client/models.py:4`), and client and server versions are locked
+  in step (`test_client_contract.py:416`). The field lands in both at one version
+  or in neither.
+
+**Open questions.**
+
+- **Is the timestamp enough?** The server's decision is `created_at >=
+  _server_start_time`. A client holding only `created_at` cannot make that
+  comparison -- it also needs to know when that server came up.
+  `GET /api/instance-info` is the natural home for the other half, but putting it
+  there means publishing a process-lifetime watermark as part of the contract.
+- **The raw value, or the conclusion?** `AGENTS.md`'s standing answer is to
+  resolve client-facing rules server-side rather than shipping logic to each
+  client, and the purest form of that here is a derived boolean, not a timestamp.
+  The raw value is more honest and more reusable; the boolean is less for each
+  client to get wrong. This deserves an explicit decision rather than defaulting
+  to whichever is easier to add.
+- **Name and shape.** `created`, `created_at`, or `session_created`.
+  `last_activity_at` is the field to match rather than invent against -- both are
+  tmux-derived timestamps on the same entry, and an inconsistent pair is worse
+  than either choice.
+- **Absent value: `null`, or omit the key?** `get_session_created_times()` can
+  legitimately have no entry when tmux reported nothing parseable. Both are
+  tolerable under the two-way version-tolerance rule; picking deliberately beats
+  picking by accident.
+- **Federation and clocks.** A remote session's entry comes from that host's poll
+  cycle and that host's clock. `last_activity_at` already carries that property,
+  so there may be nothing new here -- but "may be" is not "checked."
+
+---
+
 ## Notes
 
 - Item 2 spans both repos in spirit but lands almost entirely here: the soft deck
@@ -222,5 +475,15 @@ suggests looking at them):
 - Item 4 is a direct descendant of item 2's own "what is the escape hatch?" open
   question, split out once the 2026-07 incident and product-council review made
   clear it's a distinct, higher-severity problem from plain discoverability.
+- Item 5 is the only entry here that spans *hosts* rather than repos. Nothing
+  about it can be finished on one machine alone, and that is most of what makes
+  it hard -- both halves (uniqueness, rotation) are properties of a fleet.
+- Item 6 is one symptom and two jobs. The 35-file rename sweep is mechanical and
+  could go first on its own; the eight absent documents are writing work with no
+  shortcut. Splitting them is probably right, but the split has to be deliberate
+  or the mechanical half will ship and the writing half will not.
+- Item 7 is the only entry in this file with a deadline shape. Everything else
+  here is genuinely "someday"; that one has a window, and the window closes when
+  the first external client ships a workaround.
 - No item has an owner or a date. They are written down so they stop occupying
   anyone's head, not to imply they are next.
