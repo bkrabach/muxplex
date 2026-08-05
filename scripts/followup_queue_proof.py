@@ -83,13 +83,19 @@ def main() -> int:
     tmux_env.pop("TMUX", None)
 
     def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-        return subprocess.run(
+        result = subprocess.run(
             ["tmux", *args],
             env=tmux_env,
             capture_output=True,
             text=True,
-            check=check,
+            check=False,
         )
+        if check and result.returncode != 0:
+            raise RuntimeError(
+                f"tmux {list(args)} exited {result.returncode}\n"
+                f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+            )
+        return result
 
     log(f"isolated TMUX_TMPDIR={tmux_tmpdir} (default socket, isolated by directory)")
     tmux("new-session", "-d", "-s", session_name, "-x", "80", "-y", "24")
