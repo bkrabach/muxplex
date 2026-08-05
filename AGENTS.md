@@ -117,28 +117,81 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
    (`is not True` check), and a non-list allowlist is treated as empty (a
    string value would substring-match via `in`).
 
-   **This fence has a sibling, and it is not optional reading.** The `/input`
-   fence above only protects the *typing* path. A Bearer-key holder who
-   cannot type into a session can still get an equivalent RCE through a
-   completely different door: `PATCH /api/settings` the
-   `new_session_template` (or `delete_session_template`) to an arbitrary
-   shell command, then `POST /api/sessions` to make the server run it —
-   never touching `/input` at all. **Incident (confirmed by audit, fixed
-   before it was exploited in the wild):** `new_session_template` and
-   `delete_session_template` were NOT in `LOCAL_ONLY_KEYS`, so this path was
-   open. The fix widens `LOCAL_ONLY_KEYS` to cover every settings key that
-   names a **command or a filesystem path the server itself later executes
-   or reads** — not just the two input-typing keys: `new_session_template`,
-   `delete_session_template` (shell commands run via
-   `create_subprocess_shell`), `tmux_socket_dir` (fed into every tmux
-   invocation as `TMUX_TMPDIR` — a remote caller could otherwise redirect
-   session create/kill to an attacker-controlled socket dir), and
-   `tls_cert`/`tls_key` (paths the server later reads and parses — an
-   unauthenticated file-read primitive on an attacker-chosen path
-   otherwise). Same rationale as above, same remedy: local-file-only,
-   `PATCH` silently ignores them, never in `SYNCABLE_KEYS`. See
-   `settings.LOCAL_ONLY_KEYS`'s module comment for the authoritative list
-   and `docs/API_SEMANTICS.md` for the client-facing semantics.
+   **This fence has two siblings, and neither is optional reading.** The
+   `/input` fence above only protects requests to *this one endpoint*. A
+   Bearer-key holder who cannot type into a session via `/input` could
+   until recently still get equivalent RCE through two completely
+   different doors:
+
+   - **Sibling 1 — settings, not typing.** `PATCH /api/settings` the
+     `new_session_template` (or `delete_session_template`) to an arbitrary
+     shell command, then `POST /api/sessions` to make the server run it —
+     never touching `/input` at all. **Incident (confirmed by audit, fixed
+     before it was exploited in the wild):** `new_session_template` and
+     `delete_session_template` were NOT in `LOCAL_ONLY_KEYS`, so this path
+     was open. The fix widens `LOCAL_ONLY_KEYS` to cover every settings key
+     that names a **command or a filesystem path the server itself later
+     executes or reads** — not just the two input-typing keys:
+     `new_session_template`, `delete_session_template` (shell commands run
+     via `create_subprocess_shell`), `tmux_socket_dir` (fed into every
+     tmux invocation as `TMUX_TMPDIR` — a remote caller could otherwise
+     redirect session create/kill to an attacker-controlled socket dir),
+     and `tls_cert`/`tls_key` (paths the server later reads and parses —
+     an unauthenticated file-read primitive on an attacker-chosen path
+     otherwise). Same rationale as above, same remedy: local-file-only,
+     `PATCH` silently ignores them, never in `SYNCABLE_KEYS`. See
+     `settings.LOCAL_ONLY_KEYS`'s module comment for the authoritative
+     list and `docs/API_SEMANTICS.md` for the client-facing semantics.
+
+   - **Sibling 2 — the terminal WS, not the HTTP endpoint at all.**
+     `WS /terminal/ws?session={name}` is a second, RAW typing path into the
+     exact same tmux pane: `client_to_ttyd` (main.py) forwards every byte
+     the caller sends straight into ttyd, which types it into the pane —
+     a parallel RCE primitive that, until this fix, applied NEITHER
+     `input_enabled` NOR `input_allowed_sessions`, because the WS route
+     only ever checked auth (localhost / cookie / Bearer) and a
+     device/group consistency guard, never "is this caller allowed to
+     TYPE into this session." **Incident (confirmed by audit, fixed before
+     it was exploited in the wild):** a Bearer-key holder — the same
+     credential this file already says is handed to headless AI agents —
+     could type into ANY live session by opening this WS directly and
+     naming it via `?session=`, regardless of `input_enabled` or
+     `input_allowed_sessions`. The fix gates ONLY the WS's client→ttyd
+     TYPING direction (identifying real keystroke frames by the ttyd wire
+     protocol's leading command byte, `0x30`; see `terminal_ws_proxy`'s
+     docstring), and ONLY for callers `_ws_auth_check` classifies as
+     `bearer_only` (Bearer credential present, no valid session cookie —
+     see `WSAuth`'s docstring for why a valid cookie always wins that
+     classification when both are present). A cookie-authenticated
+     browser session — the product's core feature — is completely
+     unaffected, exactly as before. VIEWING (the ttyd→client output
+     direction, plus the ttyd wire handshake and resize control frames) is
+     *never* gated, for anyone, at any classification: a Bearer holder can
+     already read every session's live pane via `GET /api/sessions`'
+     `snapshot` field regardless of this fence, so blocking the identical
+     content over the WS would add no confidentiality — and it would
+     break `federation_terminal_ws_proxy`'s legitimate peer-to-peer relay,
+     which dials this same route with a Bearer header unconditionally
+     (server-to-server, never a cookie) whenever a human uses the
+     aggregated PWA to watch a REMOTE host's session. Net effect for
+     federation: **viewing a remote host's terminal always still works**;
+     **typing into it now requires that remote host's own
+     `input_enabled`/`input_allowed_sessions` to explicitly allow the
+     session**, the same local opt-in every other Bearer-only typing path
+     already requires — because the wire is bit-identical between "my own
+     federation peer relaying a human's keystrokes" and "a Bearer holder
+     typing directly," and an undistinguishable case is denied, never
+     guessed open. See `docs/API_SEMANTICS.md`'s "terminal WS input fence"
+     entry for the full incident writeup, including the residual gap this
+     leaves open for peers running a pre-fix version.
+
+     **Correction to this section's older claim:** an earlier revision of
+     this document said the `input_allowed_sessions` allowlist is "how a
+     human's own working panes stay un-typeable" without qualification.
+     That was true only against the HTTP endpoint — against a
+     Bearer-key-holding WS caller it was false until this fix. It is now
+     true against all three doors (`/input`, the settings-template sibling,
+     and this WS sibling) for every caller class this file documents.
 4. **Fail-closed target gate**: exact `{name} in get_session_list()` → 404
    (empty/unavailable cache rejects everything; same pattern as connect/delete).
 

@@ -25,7 +25,7 @@ import ssl
 import subprocess
 import sys
 import time
-from typing import Literal
+from typing import Literal, NamedTuple
 from urllib.parse import quote
 
 import httpx
@@ -121,8 +121,8 @@ from muxplex.terminal_input import (
     MAX_TEXT_BYTES,
     build_send_key_argv,
     build_send_text_argv,
+    input_allowed_for_session,
     redact_preview,
-    session_matches_allowlist,
 )
 from muxplex.tls import get_local_ca_cert_bytes
 from muxplex.ttyd import (
@@ -1706,21 +1706,21 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
     _require_valid_session_name(name)
 
     settings = load_settings()
-    # Strict-typed fence reads, fail CLOSED. Only the boolean True enables
-    # the endpoint: a hand-edited settings.json with `"input_enabled":
-    # "false"` (a truthy string) must disable, not enable. Likewise the
-    # allowlist must be a real list -- a string value would turn `name in
-    # allowed` into substring matching and silently widen the fence.
+    # Strict-typed fence reads, fail CLOSED -- see input_allowed_for_session()
+    # (terminal_input.py), the SAME evaluation the terminal WS input gate
+    # uses (main.py's terminal_ws_proxy/client_to_ttyd) so the two can never
+    # silently diverge. Only the boolean True enables the endpoint: a
+    # hand-edited settings.json with `"input_enabled": "false"` (a truthy
+    # string) must disable, not enable. Likewise the allowlist must be a
+    # real list -- a string value would turn `name in allowed` into
+    # substring matching and silently widen the fence.
     if settings.get("input_enabled") is not True:
         _log.warning("input: rejected for %r -- input_enabled is false", name)
         raise HTTPException(
             status_code=403,
             detail="Session input is disabled (settings.input_enabled=false)",
         )
-    allowed = settings.get("input_allowed_sessions")
-    if not isinstance(allowed, list):
-        allowed = []
-    if not session_matches_allowlist(name, allowed):
+    if not input_allowed_for_session(name, settings):
         _log.warning("input: rejected for %r -- not in input_allowed_sessions", name)
         raise HTTPException(
             status_code=403,
@@ -2576,17 +2576,44 @@ async def setup_page(request: Request) -> HTMLResponse:
 # ---------------------------------------------------------------------------
 
 
-async def _ws_auth_check(websocket: WebSocket) -> bool:
-    """Return True if the WebSocket caller is authorized.
+class WSAuth(NamedTuple):
+    """Result of a WebSocket authorization check (see ``_ws_auth_check``).
 
-    Closes the WebSocket with code 4001 and returns False if the caller
-    is not authorized.  Localhost connections (127.0.0.1 / ::1) are
+    ``bearer_only`` is True exactly when the ONLY credential that
+    authorized this connection was the federation Bearer key -- localhost
+    did not apply and no valid session cookie was presented. This is the
+    caller classification ``terminal_ws_proxy`` uses to decide whether the
+    ``input_allowed_sessions`` typing fence applies to this connection (see
+    that function's docstring and ``docs/API_SEMANTICS.md``'s "terminal WS
+    input fence" section). A valid cookie ALWAYS wins this classification
+    when present, even alongside a Bearer header: presenting a valid
+    ``muxplex_session`` cookie requires knowing ``_auth_secret`` (verified
+    via ``verify_session_cookie``), which a Bearer-key holder cannot forge
+    -- so "cookie + Bearer both present" is a genuine browser session that
+    also happens to send a Bearer header, never a Bearer-only caller
+    impersonating one. Narrowing (gating a Bearer-only caller) is safe;
+    widening based on a guess never is -- ``ok=True, bearer_only=False``
+    only when the classification is certain (localhost, or a verified
+    cookie).
+    """
+
+    ok: bool
+    bearer_only: bool
+
+
+async def _ws_auth_check(websocket: WebSocket) -> WSAuth:
+    """Return whether the WebSocket caller is authorized, and how.
+
+    Closes the WebSocket with code 4001 and returns ``ok=False`` if the
+    caller is not authorized.  Localhost connections (127.0.0.1 / ::1) are
     unconditionally trusted.  Remote callers must present a valid
     ``muxplex_session`` cookie OR a Bearer token matching ``_federation_key``.
+    See ``WSAuth``'s docstring for what ``bearer_only`` means and why cookie
+    always wins the classification when both are present.
     """
     host = websocket.client.host if websocket.client else ""
     if host in ("127.0.0.1", "::1"):
-        return True
+        return WSAuth(ok=True, bearer_only=False)
     session_cookie = websocket.cookies.get("muxplex_session")
     cookie_ok = session_cookie and verify_session_cookie(
         _auth_secret, session_cookie, _auth_ttl
@@ -2598,8 +2625,8 @@ async def _ws_auth_check(websocket: WebSocket) -> bool:
             bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
     if not cookie_ok and not bearer_ok:
         await websocket.close(code=4001)
-        return False
-    return True
+        return WSAuth(ok=False, bearer_only=False)
+    return WSAuth(ok=True, bearer_only=bool(bearer_ok and not cookie_ok))
 
 
 async def _client_disconnected(websocket: WebSocket) -> None:
@@ -2786,9 +2813,53 @@ async def terminal_ws_proxy(
     function proceeds toward a real relay. The rejection branches return
     immediately after _accept_then_close(), well before reaching the
     ttyd-liveness check, so they never interact with that wait at all.
+
+    THIRD DOOR TO THE input_allowed_sessions FENCE (closed here) -- see
+    AGENTS.md's "Terminal input" section and docs/API_SEMANTICS.md's
+    "terminal WS input fence" entry for the full incident writeup. Before
+    this fix, this endpoint applied NEITHER `settings.input_enabled` NOR
+    `settings.input_allowed_sessions` to the browser<->ttyd byte relay --
+    only the group/device_id consistency checks above, which are about NOT
+    MISDIRECTING a device to a session it didn't select, not about WHETHER
+    a caller may type into a given session at all. A Bearer-key holder (the
+    same credential AGENTS.md documents as handed to headless AI agents for
+    API access) could therefore type into ANY live session by naming it via
+    `?session=`, bypassing both settings keys entirely -- the exact
+    RCE-by-design capability `POST /api/sessions/{name}/input` exists to
+    fence, reached through a completely different door.
+
+    THE FIX GATES TYPING ONLY, NEVER VIEWING, and ONLY for `bearer_only`
+    callers (see `WSAuth`'s docstring: cookie -- a real browser session --
+    and localhost are unaffected, exactly as before this fix). This
+    asymmetry is deliberate, not partial: a Bearer holder can already read
+    every session's live pane content via `GET /api/sessions` (`snapshot`
+    field, gated only by the shared auth middleware, same as this
+    endpoint) -- gating VIEWING here would add no confidentiality that
+    doesn't already leak elsewhere, while gating it WOULD break
+    `federation_terminal_ws_proxy`'s legitimate peer-to-peer relay, which
+    dials this endpoint with a Bearer header unconditionally (server-to-
+    server, never a cookie) whenever a human uses the aggregated PWA to
+    watch a REMOTE host's session. See `client_to_ttyd()` below for the
+    exact mechanism: it inspects the ttyd wire protocol's leading command
+    byte (0x30 = keystroke input; see frontend/terminal.js) and drops ONLY
+    that command for a fenced `bearer_only` connection -- the 0x31 resize
+    command, the initial text AuthToken handshake, and 100% of the
+    ttyd->client output direction all flow unaffected, so a denied
+    connection keeps working as a live, resizable VIEWER, it just cannot
+    type. This means federation typing (not just viewing) is ALSO now
+    subject to the remote host's OWN `input_enabled` / `input_allowed_sessions`
+    -- an accepted, deliberate narrowing: the wire is bit-identical between
+    "my own federation peer relaying a human's keystrokes" and "a bearer
+    holder typing directly," so the two cannot be distinguished, and per
+    the fail-safe rule this file follows, an undistinguishable case is
+    denied by default. Restoring federation typing to a specific session is
+    the same local, settings.json-edit opt-in every other Bearer-only
+    typing path already requires -- never a new capability, just closing
+    the door that let it be skipped.
     """
     # Auth check before accepting — BaseHTTPMiddleware doesn't cover WebSocket scope
-    if not await _ws_auth_check(websocket):
+    auth = await _ws_auth_check(websocket)
+    if not auth.ok:
         return
 
     async with state_lock:
@@ -2878,6 +2949,16 @@ async def terminal_ws_proxy(
 
     await websocket.accept(subprotocol="tty")
 
+    # Terminal WS input fence -- see this function's docstring ("THIRD DOOR
+    # TO THE input_allowed_sessions FENCE"). Evaluated once per connection
+    # (these are LOCAL_ONLY_KEYS -- an operator changing them mid-connection
+    # is a rare edit, not a per-message hot path worth re-reading settings
+    # for). Irrelevant for cookie/localhost callers -- they were never
+    # gated by this fence and stay exactly as before.
+    input_gate_open = True
+    if auth.bearer_only:
+        input_gate_open = input_allowed_for_session(target, load_settings())
+
     acquire_relay(target)
     try:
         async with unix_connect(
@@ -2887,13 +2968,40 @@ async def terminal_ws_proxy(
         ) as ttyd_ws:
 
             async def client_to_ttyd() -> None:
+                # `warned` is scoped to one connection's lifetime -- one log
+                # line per denied connection, not per dropped keystroke.
+                warned = False
                 try:
                     while True:
                         msg = await websocket.receive()
                         if msg["type"] == "websocket.disconnect":
                             return
-                        if msg.get("bytes"):
-                            await ttyd_ws.send(msg["bytes"])
+                        raw_bytes = msg.get("bytes")
+                        if (
+                            not input_gate_open
+                            and raw_bytes
+                            # ttyd wire protocol: leading byte 0x30 ('0') is
+                            # keystroke/input data (see frontend/terminal.js's
+                            # _encodePayload(0x30, ...) call in onData()).
+                            # Every other leading byte -- 0x31 resize, any
+                            # future control command -- is NOT typing and is
+                            # let through unconditionally below, same as the
+                            # text-frame AuthToken handshake: this gate blocks
+                            # TYPING, never VIEWING.
+                            and raw_bytes[0:1] == b"0"
+                        ):
+                            if not warned:
+                                _log.warning(
+                                    "WS proxy: dropped keystroke input for "
+                                    "bearer-only caller on session %r -- not "
+                                    "enabled (settings.input_enabled / "
+                                    "input_allowed_sessions)",
+                                    target,
+                                )
+                                warned = True
+                            continue
+                        if raw_bytes:
+                            await ttyd_ws.send(raw_bytes)
                         elif msg.get("text"):
                             await ttyd_ws.send(msg["text"])
                 except Exception as exc:
@@ -3025,8 +3133,13 @@ async def federation_terminal_ws_proxy(
     live) remote ttyd was never cancelled -- the same hang the gather() fix
     above addresses, from the other side.
     """
-    # Auth check before accepting — same pattern as terminal_ws_proxy
-    if not await _ws_auth_check(websocket):
+    # Auth check before accepting — same pattern as terminal_ws_proxy. This
+    # relay's own `bearer_only` classification is irrelevant here: the input
+    # fence this function's docstring describes is enforced by the REMOTE
+    # host's terminal_ws_proxy (which sees this relay's outbound connection
+    # as Bearer-only, always -- see auth_headers below), not by this hop.
+    auth = await _ws_auth_check(websocket)
+    if not auth.ok:
         return
 
     # Look up remote instance by device_id

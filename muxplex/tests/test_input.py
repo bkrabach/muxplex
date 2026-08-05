@@ -21,6 +21,7 @@ from muxplex.terminal_input import (
     MAX_TEXT_BYTES,
     build_send_key_argv,
     build_send_text_argv,
+    input_allowed_for_session,
     redact_preview,
     session_matches_allowlist,
     session_target,
@@ -766,3 +767,42 @@ def test_oserror_from_exec_returns_clean_500(client, monkeypatch, tmux_calls):
     resp = client.post("/api/sessions/alpha/input", json={"text": "hi"})
     assert resp.status_code == 500
     assert "Failed to send input" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# input_allowed_for_session -- the single fence /input AND the terminal WS
+# input gate (main.py's terminal_ws_proxy/client_to_ttyd) both evaluate.
+# See terminal_input.py's docstring and docs/API_SEMANTICS.md's "terminal
+# WS input fence" entry.
+# ---------------------------------------------------------------------------
+
+
+def test_input_allowed_for_session_false_when_disabled():
+    settings = _settings(input_enabled=False, input_allowed_sessions=["alpha"])
+    assert input_allowed_for_session("alpha", settings) is False
+
+
+def test_input_allowed_for_session_false_when_not_allowlisted():
+    settings = _settings(input_enabled=True, input_allowed_sessions=["beta"])
+    assert input_allowed_for_session("alpha", settings) is False
+
+
+def test_input_allowed_for_session_true_when_enabled_and_allowlisted():
+    settings = _settings(input_enabled=True, input_allowed_sessions=["alpha"])
+    assert input_allowed_for_session("alpha", settings) is True
+
+
+def test_input_allowed_for_session_fails_closed_on_string_allowlist():
+    """A non-list input_allowed_sessions (e.g. a stray string) must not
+    silently widen to substring matching -- treated as empty (deny-all).
+    """
+    settings = _settings(input_enabled=True, input_allowed_sessions="alpha")
+    assert input_allowed_for_session("al", settings) is False
+
+
+def test_input_allowed_for_session_fails_closed_on_truthy_string_enabled():
+    """input_enabled: "false" (a truthy STRING) must disable, not enable --
+    only the literal boolean True enables the fence.
+    """
+    settings = _settings(input_enabled="true", input_allowed_sessions=["alpha"])
+    assert input_allowed_for_session("alpha", settings) is False

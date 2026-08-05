@@ -87,6 +87,35 @@ def session_target(name: str) -> str:
     return name
 
 
+def input_allowed_for_session(name: str, settings: dict) -> bool:
+    """Return True if *settings* permits typing into session *name*.
+
+    This is the SINGLE fence evaluation both ``POST
+    /api/sessions/{name}/input`` (main.py's ``send_session_input``) and the
+    terminal WS input gate (main.py's ``terminal_ws_proxy``, guarding
+    ``client_to_ttyd`` for Bearer-only-authenticated callers -- see
+    ``docs/API_SEMANTICS.md``'s "terminal WS input fence" section) evaluate.
+    Factored out so there is exactly one place that can tighten or loosen
+    either check -- two independent copies of "is this session typeable"
+    is exactly the kind of drift that would let one fence quietly diverge
+    from the other.
+
+    Same fail-closed semantics as the inline check this replaced:
+    - ``input_enabled`` must be the literal boolean ``True`` (a truthy
+      string like ``"false"`` from a hand-edited settings.json must not
+      enable the fence).
+    - ``input_allowed_sessions`` must be a list; a non-list value (e.g. a
+      string, which would substring-match via ``in``) is treated as empty.
+    - The actual name/pattern matching is ``session_matches_allowlist``.
+    """
+    if settings.get("input_enabled") is not True:
+        return False
+    allowed = settings.get("input_allowed_sessions")
+    if not isinstance(allowed, list):
+        allowed = []
+    return session_matches_allowlist(name, allowed)
+
+
 def session_matches_allowlist(name: str, patterns: list) -> bool:
     """Return True if *name* matches at least one glob pattern in *patterns*.
 

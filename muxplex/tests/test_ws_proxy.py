@@ -285,6 +285,222 @@ def test_ws_bearer_auth_accepted(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Tests: terminal WS input fence (bearer-only typing gate) -- the third
+# door to input_allowed_sessions (see AGENTS.md's "Terminal input" section
+# and docs/API_SEMANTICS.md's "terminal WS input fence" entry).
+# ---------------------------------------------------------------------------
+
+
+def _default_settings(**overrides) -> dict:
+    import copy
+
+    from muxplex.settings import DEFAULT_SETTINGS
+
+    s = copy.deepcopy(DEFAULT_SETTINGS)
+    s.update(overrides)
+    return s
+
+
+def _bearer_connect(fed_key: str, session: str = DEFAULT_SESSION):
+    return TestClient(app).websocket_connect(
+        _ws_url(session=session),
+        headers={"Authorization": f"Bearer {fed_key}"},
+    )
+
+
+def test_ws_auth_check_returns_namedtuple_with_bearer_only():
+    """_ws_auth_check's return type carries an explicit bearer_only flag.
+
+    Regression guard for the refactor from a bare bool to WSAuth: callers
+    must be able to distinguish "authorized via Bearer only" from every
+    other authorized case without re-deriving cookie/bearer state.
+    """
+    from muxplex.main import WSAuth
+
+    assert hasattr(WSAuth, "ok")
+    assert hasattr(WSAuth, "bearer_only")
+
+
+def test_bearer_only_input_dropped_by_default(monkeypatch):
+    """Exploit reproduction (unit-test form): a Bearer-only caller's typed
+    keystrokes (ttyd wire command 0x30) must NOT reach ttyd when
+    input_enabled is False (the shipped default) -- this is the exact
+    bypass this fix closes. See sec_proof.py for the live, real-tmux
+    reproduction of this same scenario.
+    """
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _default_settings())
+
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    with _bearer_connect(fed_key) as ws:
+        ws.send_bytes(b"0echo PWNED")
+        _wait_for(lambda: len(fake_ws.sent) > 0 or True, timeout=0.5)
+        time.sleep(0.3)  # give the relay a chance to (wrongly) forward it
+
+    assert b"0echo PWNED" not in fake_ws.sent, (
+        "bearer-only caller's keystroke frame (0x30) must be dropped when "
+        "input_enabled is False -- this is the fence the bypass evaded"
+    )
+
+
+def test_bearer_only_input_dropped_when_session_not_allowlisted(monkeypatch):
+    """input_enabled=True alone is not enough -- the session must also be
+    on input_allowed_sessions, exactly matching the /input endpoint's fence.
+    """
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+    monkeypatch.setattr(
+        "muxplex.main.load_settings",
+        lambda: _default_settings(
+            input_enabled=True, input_allowed_sessions=["other-session"]
+        ),
+    )
+
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    with _bearer_connect(fed_key) as ws:
+        ws.send_bytes(b"0echo PWNED")
+        time.sleep(0.3)
+
+    assert b"0echo PWNED" not in fake_ws.sent
+
+
+def test_bearer_only_input_allowed_when_settings_permit(monkeypatch):
+    """When input_enabled=True and the session matches input_allowed_sessions,
+    a bearer-only caller's keystrokes DO reach ttyd -- the fence is a gate,
+    not a blanket ban, and mirrors /input's own allow path exactly.
+    """
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+    monkeypatch.setattr(
+        "muxplex.main.load_settings",
+        lambda: _default_settings(
+            input_enabled=True, input_allowed_sessions=[DEFAULT_SESSION]
+        ),
+    )
+
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    with _bearer_connect(fed_key) as ws:
+        ws.send_bytes(b"0echo ALLOWED")
+        _wait_for(lambda: b"0echo ALLOWED" in fake_ws.sent)
+
+    assert b"0echo ALLOWED" in fake_ws.sent
+
+
+def test_bearer_only_resize_allowed_even_when_input_denied(monkeypatch):
+    """The fence gates TYPING (0x30) only -- 0x31 resize frames (and any
+    other non-0x30 command) must reach ttyd even when the session is not
+    allowlisted for input, so a denied caller stays a live, resizable
+    VIEWER rather than a broken connection.
+    """
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _default_settings())
+
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    resize_frame = b"1" + b'{"columns": 80, "rows": 24}'
+    with _bearer_connect(fed_key) as ws:
+        ws.send_bytes(resize_frame)
+        _wait_for(lambda: resize_frame in fake_ws.sent)
+
+    assert resize_frame in fake_ws.sent
+
+
+def test_bearer_only_auth_handshake_text_allowed_even_when_input_denied(monkeypatch):
+    """The ttyd AuthToken TEXT handshake must always reach ttyd, even for a
+    denied bearer-only caller -- otherwise a denied connection couldn't
+    view anything at all, which would defeat "gate typing, not viewing."
+    """
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _default_settings())
+
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    with _bearer_connect(fed_key) as ws:
+        ws.send_text('{"AuthToken": ""}')
+        _wait_for(lambda: '{"AuthToken": ""}' in fake_ws.sent)
+
+    assert '{"AuthToken": ""}' in fake_ws.sent
+
+
+def test_bearer_only_viewing_unaffected_when_input_denied(monkeypatch):
+    """ttyd -> client output must flow normally for a denied bearer-only
+    caller -- confirms the gate never tears down or degrades the relay,
+    only drops the one denied frame type.
+    """
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _default_settings())
+
+    fake_ws = FakeTtydWs(responses=[b"\x30some pane output"])
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    with _bearer_connect(fed_key) as ws:
+        msg = ws.receive_bytes()
+    assert msg == b"\x30some pane output"
+
+
+def test_cookie_caller_input_never_gated_regardless_of_settings(monkeypatch):
+    """A cookie-authenticated (real browser) caller must be able to type
+    regardless of input_enabled/input_allowed_sessions -- the fence added
+    by this change applies ONLY to bearer_only callers. This is the
+    regression that would matter most: the product's core feature (a
+    human typing into their own session in the browser) must never be
+    gated by a fence meant for a different caller class.
+    """
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _default_settings())
+
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    with _make_authed_client() as c, c.websocket_connect(_ws_url()) as ws:
+        ws.send_bytes(b"0echo COOKIE_OK")
+        _wait_for(lambda: b"0echo COOKIE_OK" in fake_ws.sent)
+
+    assert b"0echo COOKIE_OK" in fake_ws.sent
+
+
+def test_cookie_wins_classification_when_bearer_header_also_present(monkeypatch):
+    """A caller presenting BOTH a valid session cookie AND a Bearer header
+    is classified as a genuine browser session (bearer_only=False), never
+    as bearer_only -- see WSAuth's docstring: forging a valid cookie
+    requires _auth_secret, which a Bearer-key holder does not have, so the
+    combination can only mean a real cookie session that also sends a
+    Bearer header. Typing must therefore be unaffected by input_enabled.
+    """
+    from muxplex.auth import create_session_cookie
+    from muxplex.main import _auth_secret, _auth_ttl
+
+    fed_key = "test-federation-secret-key"
+    monkeypatch.setattr("muxplex.main._federation_key", fed_key)
+    monkeypatch.setattr("muxplex.main.load_settings", lambda: _default_settings())
+
+    fake_ws = FakeTtydWs(stay_open=True)
+    monkeypatch.setattr("muxplex.main.unix_connect", lambda *a, **kw: fake_ws)
+
+    cookie = create_session_cookie(_auth_secret, _auth_ttl)
+    with TestClient(app) as c:
+        c.cookies.set("muxplex_session", cookie)
+        with c.websocket_connect(
+            _ws_url(), headers={"Authorization": f"Bearer {fed_key}"}
+        ) as ws:
+            ws.send_bytes(b"0echo BOTH_OK")
+            _wait_for(lambda: b"0echo BOTH_OK" in fake_ws.sent)
+
+    assert b"0echo BOTH_OK" in fake_ws.sent
+
+
+# ---------------------------------------------------------------------------
 # Tests: browser → ttyd relay
 # ---------------------------------------------------------------------------
 

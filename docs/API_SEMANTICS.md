@@ -619,3 +619,88 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
     `main.py`: that guard runs only in the branch where device_id is
     absent/matching and the function proceeds toward a real relay, which
     `_accept_then_close()`'s branches return well before reaching.
+
+- **Terminal WS input fence (`WS /terminal/ws`'s `client_to_ttyd`, gating
+  `settings.input_enabled` / `settings.input_allowed_sessions` for
+  Bearer-only callers)** — closes the third door to the RCE-by-design
+  fence `POST /api/sessions/{name}/input` and the settings-template
+  sibling both already document (`../AGENTS.md`'s "Terminal input"
+  section). **Incident (confirmed by audit, fixed before it was exploited
+  in the wild):** `terminal_ws_proxy` checked auth (localhost / cookie /
+  Bearer) and the device/group consistency guard (§ above), but nothing
+  about `input_enabled` / `input_allowed_sessions` at all. `client_to_ttyd`
+  is a raw byte passthrough into ttyd, which types whatever it receives
+  into the pane — identical RCE to `/input`, reachable by any
+  Bearer-key holder simply by opening `WS /terminal/ws?session={name}`
+  directly, regardless of either setting. Since the federation Bearer key
+  is the SAME credential this repo already hands to headless AI agents for
+  API access (`../AGENTS.md`, "The API is a public control surface"), this
+  meant `input_enabled=false` and an empty `input_allowed_sessions`
+  protected `/input` but not the terminal a human is actually looking at.
+
+  **The fix, and why it is narrower than "gate the whole connection":**
+  `_ws_auth_check` (main.py) now returns a `WSAuth(ok, bearer_only)` pair
+  instead of a bare bool. `bearer_only` is True only when the ONLY
+  credential that authorized the connection was the Bearer key — neither
+  localhost nor a valid `muxplex_session` cookie applied. **Cookie always
+  wins the classification when both are present**: forging a valid cookie
+  requires `_auth_secret`, which a Bearer-key holder does not have, so
+  "cookie + Bearer both sent" is a genuine browser session, never a
+  Bearer-only caller in disguise. Localhost and cookie-authenticated
+  callers are completely unaffected by everything below — this is a pure
+  narrowing for the one caller class (`bearer_only`) that a human's own
+  browser session can never be classified as.
+
+  For a `bearer_only` connection, `terminal_ws_proxy` evaluates
+  `terminal_input.input_allowed_for_session(target, settings)` — the SAME
+  helper `send_session_input` (`/input`'s handler) now also calls, so the
+  two enforcement points can never silently diverge — ONCE per connection
+  (these are `LOCAL_ONLY_KEYS`; re-reading them on every keystroke buys
+  nothing) and stores the boolean result as `input_gate_open`.
+  `client_to_ttyd` then inspects each outgoing binary frame's LEADING BYTE,
+  which is ttyd's own wire-protocol command byte (see `frontend/terminal.js`'s
+  `_encodePayload`): `0x30` ('0') is keystroke/input data; `0x31` ('1') is
+  a resize; the one text frame ttyd's client ever sends is the
+  `{"AuthToken": ""}` handshake. When `input_gate_open` is False, ONLY
+  `0x30`-prefixed frames are dropped (logged once per connection, not per
+  keystroke) — the resize frame, the auth handshake, and (unconditionally,
+  regardless of gate state) 100% of the ttyd→client OUTPUT direction all
+  still flow. A denied `bearer_only` connection is therefore a fully live,
+  resizable, real-time VIEWER that simply cannot inject keystrokes — never
+  a closed or degraded connection.
+
+  **Why viewing is deliberately never gated, for anyone:** a Bearer-key
+  holder can already read every session's current pane content via `GET
+  /api/sessions`' `snapshot` field (and `GET /api/sessions/{name}` for a
+  deeper capture) with no per-session fence at all — that read access
+  predates this fix and is unrelated to it. Gating the WS's viewing
+  direction would add no confidentiality the API doesn't already expose,
+  while it WOULD break `federation_terminal_ws_proxy`'s legitimate
+  peer-to-peer relay (main.py), which dials a remote host's `/terminal/ws`
+  with `Authorization: Bearer {remote_key}` **unconditionally** — never a
+  cookie, since a browser session cookie is signed with each host's own
+  `_auth_secret` and does not verify cross-host — every time a human uses
+  the aggregated PWA to open a REMOTE host's terminal. From the remote
+  host's point of view this relayed connection is `bearer_only` by
+  construction, indistinguishable on the wire from a rogue agent holding
+  the identical key and connecting directly. **Net effect for federation,
+  stated precisely:** watching a remote host's terminal through the
+  aggregated PWA keeps working unconditionally, exactly as before this
+  fix. Typing into it now requires that the REMOTE host locally opts the
+  target session into ITS OWN `input_enabled` / `input_allowed_sessions`
+  (a `settings.json` edit on that host — `LOCAL_ONLY_KEYS`, never
+  `PATCH`-able, never federation-synced, same as every other Bearer-only
+  typing path) — this is an accepted, deliberate narrowing, not an
+  oversight: the wire cannot distinguish "my own peer relaying a human's
+  keystrokes" from "a Bearer holder typing directly," and per this
+  fix's fail-safe rule, an undistinguishable case is denied, never
+  guessed open.
+
+  **Residual gap, explicitly not closed by this fix:** a federation PEER
+  running a pre-fix muxplex version has no `bearer_only` classification at
+  all — every caller it accepts over `/terminal/ws` is still ungated for
+  typing, exactly as before, until that peer upgrades. This fix closes the
+  door on every HOST that has it; it cannot retroactively close it on
+  hosts that don't. There is no server-side way to detect a peer's patch
+  level short of a version-negotiation mechanism that does not exist
+  today — flagged here rather than silently assumed away.
