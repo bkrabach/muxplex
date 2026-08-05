@@ -634,6 +634,90 @@ def test_get_views_requires_auth():
 
 
 # ---------------------------------------------------------------------------
+# POST /api/views/preview -- the rule editor's live-match preview (§9.3)
+# ---------------------------------------------------------------------------
+
+
+def test_preview_view_rule_matches_live_sessions(client, monkeypatch):
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list",
+        lambda: ["amplifier-foo", "amplifier-bar", "unrelated"],
+    )
+
+    response = client.post("/api/views/preview", json={"match_names": ["amplifier-*"]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["errors"] == []
+    assert sorted(body["matches"]) == ["amplifier-bar", "amplifier-foo"]
+
+
+def test_preview_view_rule_empty_patterns_returns_no_matches_no_errors(
+    client, monkeypatch
+):
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["foo", "bar"])
+
+    response = client.post("/api/views/preview", json={"match_names": []})
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"errors": [], "matches": []}
+
+
+def test_preview_view_rule_colon_pattern_names_the_reason(client, monkeypatch):
+    """The non-negotiable from AGENTS.md/the spec: a pattern containing ':'
+    can never match (the device qualifier is a UUID), so the editor's
+    preview call must name that reason -- not just silently match nothing.
+    """
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["spark-1-foo"])
+
+    response = client.post("/api/views/preview", json={"match_names": ["spark-1:*"]})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["errors"]) == 1
+    assert "':'" in body["errors"][0]
+    assert body["matches"] == []  # the invalid pattern is excluded from matching
+
+
+def test_preview_view_rule_mixes_valid_and_invalid_patterns(client, monkeypatch):
+    """One invalid pattern excludes only itself -- a sibling valid pattern in
+    the same draft still matches (mirrors view_patterns()'s per-pattern
+    exclusion, exercised here through the preview endpoint)."""
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["amplifier-foo", "other"]
+    )
+
+    response = client.post(
+        "/api/views/preview",
+        json={"match_names": ["amplifier-*", "bad:pattern", ""]},
+    )
+    body = response.json()
+    assert len(body["errors"]) == 2  # the ':' pattern and the empty string
+    assert body["matches"] == ["amplifier-foo"]
+
+
+def test_preview_view_rule_never_writes_settings(client, monkeypatch):
+    """The preview endpoint is read-only -- calling it must never touch
+    settings.json, even with a garbage draft."""
+    from muxplex.settings import save_settings
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["foo"])
+    save_settings({"views": [{"name": "V", "sessions": ["dev1:foo"]}]})
+    before = client.get("/api/settings").json()["views"]
+
+    client.post("/api/views/preview", json={"match_names": ["bad:pattern", "x-*"]})
+
+    after = client.get("/api/settings").json()["views"]
+    assert after == before
+
+
+def test_preview_view_rule_requires_auth():
+    """Same convention as GET /api/views -- session data (which local
+    sessions match a draft pattern) is not for an unauthenticated caller."""
+    from muxplex.auth import _AUTH_EXEMPT_PATHS
+
+    assert "/api/views/preview" not in _AUTH_EXEMPT_PATHS
+
+
+# ---------------------------------------------------------------------------
 # PATCH /api/settings -- malformed view rule (400, invalid_view_rule)
 # ---------------------------------------------------------------------------
 
@@ -6395,6 +6479,107 @@ def test_patch_settings_single_view_deletion_via_api_is_unaffected(
 
     assert response.status_code == 200
     assert len(response.json()["views"]) == 7
+
+
+# ---------------------------------------------------------------------------
+# Rule editor (§9.3) x destructive-write backstop: a normal "add a rule to
+# an existing manual view" write must never trip DESTRUCTIVE_MEMBER_DROP_RATIO
+# -- the editor only ever sets match_names, never touches sessions (the
+# union design, AUTO_VIEWS_SPEC.md §2.2/§0.4). Converting a pile of pins to
+# a rule by unchecking each pin individually (the existing Manage View
+# checkboxes) is likewise always a single-member-at-a-time write. Only a
+# ONE-SHOT bulk rewrite that shrinks match_names dramatically on an
+# otherwise-dominant view can still trip the backstop -- that's the backstop
+# working as designed, not a bug in the editor, and is asserted below too so
+# the boundary is documented rather than silently assumed.
+# ---------------------------------------------------------------------------
+
+
+def test_patch_settings_editor_adds_rule_to_20_pin_view_is_not_destructive(
+    client, tmp_path, monkeypatch
+):
+    """The rule editor's write shape: same `sessions` (20 pins, untouched),
+    new `match_names` added. This is the exact write pattern
+    _renderManageViewRuleEditor's save button issues -- must never 409."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    pinned = [f"dev1:s{i}" for i in range(20)]
+    client.patch("/api/settings", json={"views": [{"name": "V", "sessions": pinned}]})
+
+    response = client.patch(
+        "/api/settings",
+        json={
+            "views": [{"name": "V", "sessions": pinned, "match_names": ["amplifier-*"]}]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["views"][0]["match_names"] == ["amplifier-*"]
+    assert response.json()["views"][0]["sessions"] == pinned
+
+
+def test_patch_settings_editor_incremental_pin_removal_never_trips_backstop(
+    client, tmp_path, monkeypatch
+):
+    """The 'convert a pile of pins into one rule' workflow this task
+    describes happens one checkbox at a time (existing Manage View list
+    behavior, unchanged by this task) -- each single-pin removal, even
+    against a 20-pin view, is far under the 50% total-member drop ratio."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    pinned = [f"dev1:s{i}" for i in range(20)]
+    client.patch(
+        "/api/settings",
+        json={
+            "views": [{"name": "V", "sessions": pinned, "match_names": ["amplifier-*"]}]
+        },
+    )
+
+    remaining = pinned[:]
+    for _ in range(20):
+        remaining = remaining[1:]
+        response = client.patch(
+            "/api/settings",
+            json={
+                "views": [
+                    {"name": "V", "sessions": remaining, "match_names": ["amplifier-*"]}
+                ]
+            },
+        )
+        assert response.status_code == 200, response.json()
+
+    assert client.get("/api/settings").json()["views"][0]["sessions"] == []
+
+
+def test_patch_settings_bulk_pattern_shrink_on_dominant_view_still_trips_backstop(
+    client, tmp_path, monkeypatch
+):
+    """Documents the boundary this task asked to verify, rather than paper
+    over: a ONE-SHOT rewrite that drops most of a *dominant* view's
+    match_names (patterns count as members -- views.py's
+    _view_member_count) is -- correctly -- still caught by the backstop.
+    The rule editor never performs this shape of write (it only ever adds
+    to match_names via Save, one view at a time, alongside its own
+    unchanged `sessions`), so this is a documented, expected 409, not a
+    defect the editor needs to work around."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    many_patterns = [f"team-{i}-*" for i in range(20)]
+    client.patch(
+        "/api/settings",
+        json={"views": [{"name": "V", "sessions": [], "match_names": many_patterns}]},
+    )
+
+    response = client.patch(
+        "/api/settings",
+        json={"views": [{"name": "V", "sessions": [], "match_names": ["team-0-*"]}]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["backstop"] is True
 
 
 def test_patch_settings_backstop_response_includes_current_timestamp(
