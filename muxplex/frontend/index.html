@@ -62,6 +62,9 @@
       <button id="back-btn" class="back-btn" aria-label="Back">&#8592;</button>
       <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle session list">&#9776;</button>
       <span id="expanded-session-name" class="expanded-session-name"></span>
+      <button id="compose-toggle-btn" class="header-btn"
+              aria-pressed="false" aria-label="Toggle compose bar"
+              title="Show compose bar">&#9998;</button>
       <button id="sync-group-btn-expanded" class="header-btn"
               aria-pressed="false" aria-label="Independent view"
               title="Following this server's view">&#128279;</button>
@@ -106,6 +109,37 @@
           <button id="terminal-search-close" class="terminal-search-btn" title="Close (Escape)">&times;</button>
         </div>
         <div id="terminal-container" class="terminal-container"></div>
+        <!-- Mobile compose bar: a plain UI client of the existing, unmodified
+             POST /api/sessions/{name}/input -- no new endpoint, no fence
+             changes (see AGENTS.md's "Mobile compose bar" note). Static
+             markup only (test_css_class_definitions.mjs's template-literal
+             blind spot -- see AGENTS.md -- does not apply here because
+             nothing here is ever built via innerHTML/template literals). -->
+        <div id="compose-bar" class="compose-bar hidden">
+          <div id="compose-notice" class="compose-bar__notice hidden">
+            Session input is disabled on this server
+            (<code>input_enabled</code> is <code>false</code>). An operator
+            can turn it on by editing <code>input_enabled</code> and
+            <code>input_allowed_sessions</code> in
+            <code>~/.config/muxplex/settings.json</code> on the host &mdash;
+            this cannot be changed from this UI.
+          </div>
+          <div id="compose-error" class="compose-bar__error hidden" role="alert"></div>
+          <div class="compose-bar__row">
+            <!-- Mirrors AUTOFILL_SUPPRESSION_ATTRS in app.js, EXCEPT
+                 autocorrect/spellcheck: this field holds prose typed or
+                 dictated by a human, not a name/URL/credential, so native
+                 autocorrect and spellcheck are wanted here (deliberate
+                 deviation -- see COMPOSE_BAR_SPEC.md \u00a74.3). Do not "fix"
+                 these to match the other suppressed fields. -->
+            <textarea id="compose-input" class="compose-bar__input" rows="1"
+              placeholder="Type or dictate... Enter for a new line, Ctrl+Enter to send"
+              autocomplete="off" autocapitalize="sentences"
+              data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
+              autocorrect="on" spellcheck="true"></textarea>
+            <button id="compose-send-btn" class="compose-bar__send" type="button" aria-label="Send">&#8593;</button>
+          </div>
+        </div>
       </div>
     </div>
     <div id="reconnect-overlay" class="reconnect-overlay hidden" aria-live="polite">

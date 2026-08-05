@@ -3865,6 +3865,7 @@ async function openSession(name, opts = {}) {
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
   if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize, _ownDeviceId());
+  _composeOnSessionOpen();
 }
 
 /**
@@ -3874,6 +3875,7 @@ async function openSession(name, opts = {}) {
 function closeSession() {
   _viewMode = 'grid';
   _viewingSession = null;
+  _composeOnSessionClose();
 
   if (window._closeTerminal) window._closeTerminal();
 
@@ -3961,6 +3963,361 @@ function _setSyncGroupMode(mode) {
 /** Test-only helper: set _deviceId directly, bypassing initDeviceId(). */
 function _setDeviceId(id) {
   _deviceId = id;
+}
+
+// ─── Compose bar ─────────────────────────────────────────────────────────
+//
+// A mobile text-compose bar below the terminal in the expanded (session)
+// view: type or dictate multiline text, then Send. It is a PLAIN UI CLIENT
+// of the existing, unmodified POST /api/sessions/{name}/input -- the exact
+// same endpoint an agent, muxplex-deck, or curl already calls, with the
+// exact same fences (settings.input_enabled / settings.input_allowed_sessions,
+// both LOCAL-FILE-ONLY -- see AGENTS.md's "Terminal input" section). There
+// is no new endpoint and no fence change here; a superseded draft spec
+// (COMPOSE_BAR_SPEC.md) proposed a new POST .../compose endpoint gated on
+// cookie-vs-Bearer caller class -- that was rejected by security review
+// (possession of a cookie is not proof of human presence) and none of it
+// was built. See AGENTS.md's "Mobile compose bar" note.
+//
+// Consequence, deliberately not hidden from the user: on a default install
+// this 403s, because input_enabled defaults to false and
+// input_allowed_sessions defaults to []. _composeRenderEnabledState() below
+// reads the ALREADY-LOADED _serverSettings.input_enabled (GET /api/settings
+// does not redact these two keys -- only PATCH fences them, per
+// settings.LOCAL_ONLY_KEYS) and disables the input+send controls with a
+// persistent, host-editing-specific explanation INSTEAD OF letting the user
+// discover the 403 by pressing Send. If input_enabled flips true but this
+// specific session isn't allow-listed, the real 403 from /input still
+// happens on Send -- that one is surfaced inline via _composeErrorMessage()
+// (see the 403 branch), never silently.
+//
+// Render-when-disabled decision: the bar (and its header toggle) render
+// ALWAYS when the user's preference is effectively on -- never hidden
+// outright -- but with its controls actually `disabled` (not merely
+// styled to look disabled) whenever input_enabled is false, so there is no
+// clickable control that could ever produce a silent or surprising 403 for
+// that case. This keeps the feature discoverable (a user on a fresh
+// install sees the bar and the exact reason it's inert, naming the two
+// settings keys and that they live in settings.json on the host) without
+// presenting a button that looks live but always fails.
+//
+// Preference is per-device, in localStorage, deliberately NOT a settings
+// key and NOT federated -- same precedent as SYNC_GROUP_STORAGE_KEY above
+// and the soft deck's own local-only settings. Three states: 'auto' (on
+// for mobile-width devices, off for desktop -- isMobile()'s existing
+// MOBILE_THRESHOLD), 'on', 'off'. An explicit on/off is never silently
+// overridden by a user-agent/width guess, which would get tablets wrong.
+
+const COMPOSE_PREF_STORAGE_KEY = 'muxplex-compose-bar';
+let _composePref = 'auto'; // 'auto' | 'on' | 'off' -- the STORED preference
+let _composeSendInFlight = false;
+
+/**
+ * Restore the compose-bar preference from localStorage. Same defensive
+ * shape as initSyncGroup()/initDeviceId(): localStorage may be blocked
+ * (Tracking Prevention, private browsing) or hold a value from a future/
+ * unknown version -- either case falls back to 'auto' for the session,
+ * never throws.
+ */
+function initComposePref() {
+  try {
+    var stored = localStorage.getItem(COMPOSE_PREF_STORAGE_KEY);
+    if (stored === 'auto' || stored === 'on' || stored === 'off') {
+      _composePref = stored;
+    }
+  } catch (_) {
+    // localStorage blocked -- stay 'auto' for this session, no persistence
+  }
+}
+
+/**
+ * Resolve the stored preference to an effective boolean: 'on'/'off' are
+ * absolute; 'auto' defers to isMobile() (mirrors the toggle's own
+ * MOBILE_THRESHOLD-based judgment, not a separate width check).
+ * @returns {boolean}
+ */
+function _composeEffectiveOn() {
+  if (_composePref === 'on') return true;
+  if (_composePref === 'off') return false;
+  return isMobile();
+}
+
+/**
+ * Set and persist the compose preference, then re-render every dependent
+ * widget. Only ever called with 'on' or 'off' (the toggle button never
+ * writes 'auto' -- there is no UI path back to "let width decide" once a
+ * user has made an explicit choice; that is the point of the three states).
+ * @param {'on'|'off'} mode
+ */
+function _composeSetPref(mode) {
+  _composePref = mode;
+  try { localStorage.setItem(COMPOSE_PREF_STORAGE_KEY, mode); } catch (_) { /* blocked -- ok */ }
+  _composeRenderToggle();
+  _composeRender();
+}
+
+/** Flip the effective on/off state and persist the explicit choice. */
+function _composeToggle() {
+  _composeSetPref(_composeEffectiveOn() ? 'off' : 'on');
+}
+
+/**
+ * Keep the header toggle button's visual/ARIA state in sync with the
+ * effective preference -- same pattern as renderSyncGroupControls().
+ */
+function _composeRenderToggle() {
+  var btn = $('compose-toggle-btn');
+  if (!btn) return;
+  var on = _composeEffectiveOn();
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.classList.toggle('header-btn--active', on);
+  btn.title = on ? 'Hide compose bar' : 'Show compose bar';
+}
+
+/**
+ * Show/hide #compose-bar for the currently-viewed session and (when shown)
+ * refresh its enabled/disabled state from _serverSettings. A no-op-safe
+ * hide when no session is open or the effective preference is off.
+ */
+function _composeRender() {
+  var bar = $('compose-bar');
+  if (!bar) return;
+  if (!_viewingSession || !_composeEffectiveOn()) {
+    bar.classList.add('hidden');
+    // Refit even on hide -- the terminal just reclaimed the compose bar's
+    // share of the flex column and should refit to fill it immediately
+    // rather than waiting on the ResizeObserver's 50ms debounce.
+    if (window._refitTerminal) window._refitTerminal();
+    return;
+  }
+  bar.classList.remove('hidden');
+  _composeRenderEnabledState();
+  if (window._refitTerminal) window._refitTerminal();
+}
+
+/**
+ * Reflect settings.input_enabled (read from the already-loaded
+ * _serverSettings -- GET /api/settings does not redact this key, only
+ * PATCH fences it) into the bar's disabled state and notice text. Does
+ * NOT attempt to evaluate settings.input_allowed_sessions client-side --
+ * that fence uses casefold+fnmatch glob matching
+ * (terminal_input.session_matches_allowlist), and re-deriving it here
+ * would duplicate a fence the codebase deliberately keeps in exactly one
+ * place (AGENTS.md's "Auto-updating views" note makes the same call for a
+ * different pair of matchers). A session-specific allowlist mismatch is
+ * instead surfaced honestly, per real 403, by _composeErrorMessage() below.
+ */
+function _composeRenderEnabledState() {
+  var bar = $('compose-bar');
+  var input = $('compose-input');
+  var sendBtn = $('compose-send-btn');
+  var notice = $('compose-notice');
+  if (!bar) return;
+  var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
+  bar.classList.toggle('compose-bar--disabled', !enabled);
+  if (input) input.disabled = !enabled;
+  if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlight;
+  if (notice) notice.classList.toggle('hidden', enabled);
+}
+
+/** Hide the inline error (role=alert) box. */
+function _composeHideError() {
+  var err = $('compose-error');
+  if (!err) return;
+  err.textContent = '';
+  err.classList.add('hidden');
+}
+
+/**
+ * Show the inline error box. Never auto-hides (unlike showToast(), which
+ * self-hides after 3000ms) -- a user watching the keyboard or mid-dictation
+ * would miss a toast; this persists until the next successful send, the
+ * next attempt, or a session switch.
+ * @param {string} msg
+ */
+function _composeShowError(msg) {
+  var err = $('compose-error');
+  if (!err) return;
+  err.textContent = msg;
+  err.classList.remove('hidden');
+}
+
+/**
+ * Clear the draft and any error, and reset in-flight bookkeeping. Called
+ * on session open (a NEW session never inherits a previous one's draft --
+ * see COMPOSE_BAR_SPEC.md §7.6, deliberately in-memory only, never
+ * localStorage) and on session close.
+ */
+function _composeClearDraft() {
+  var input = $('compose-input');
+  if (input) {
+    input.value = '';
+    input.style.height = '';
+  }
+  _composeHideError();
+  _composeSendInFlight = false;
+}
+
+/** Called from openSession(): clear any stale draft, then render for the new session. */
+function _composeOnSessionOpen() {
+  _composeClearDraft();
+  _composeRender();
+}
+
+/**
+ * Called from closeSession(): clear the draft and hide the bar.
+ * closeSession() sets `_viewingSession = null` BEFORE calling this, so
+ * _composeRender()'s own "no session open" branch is what hides it and
+ * triggers the refit -- one hide path, not two.
+ */
+function _composeOnSessionClose() {
+  _composeClearDraft();
+  _composeRender();
+}
+
+/**
+ * Normalize a textarea's raw value before sending: CRLF/CR -> LF (a
+ * dictation engine or a pasted source may use either), then strip
+ * trailing newlines (the newline the user typed to reach a fresh line
+ * before pressing Send is not part of the message -- it's how they got
+ * there). Example: "a\r\nb\n\n" -> "a\nb".
+ * @param {string} raw
+ * @returns {string}
+ */
+function _composeNormalizeText(raw) {
+  return raw.replace(/\r\n|\r/g, '\n').replace(/\n+$/, '');
+}
+
+/**
+ * Auto-grow a textarea to fit its content, capped by CSS max-height
+ * (style.css's .compose-bar__input; overflow-y:auto takes over past the
+ * cap, giving internal scroll rather than unbounded growth).
+ * @param {HTMLTextAreaElement} el
+ */
+function _composeAutoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+  if (window._refitTerminal) window._refitTerminal();
+}
+
+/**
+ * Keydown handler for #compose-input. A bare Enter is left to the
+ * browser's own textarea default (inserts a newline) -- composing before
+ * sending is the entire point of this feature. Ctrl+Enter or Cmd+Enter is
+ * the separate send action; preventDefault() is load-bearing here for the
+ * same reason terminal.js's Shift+Enter branch needs it (see AGENTS.md's
+ * "attachCustomKeyEventHandler" note) -- without it, Enter would still
+ * insert a newline in the textarea in addition to triggering send.
+ * @param {KeyboardEvent} e
+ */
+function _composeKeydown(e) {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    _composeSend();
+  }
+}
+
+/**
+ * Map a failed POST /api/sessions/{name}/input into an honest, specific,
+ * inline message. Every branch returns something specific -- there is no
+ * silent-failure path through this function or its caller (_composeSend()'s
+ * catch always calls this and always renders the result).
+ * @param {Error & {status?: number, body?: any}} err
+ * @returns {string}
+ */
+function _composeErrorMessage(err) {
+  if (!err || err.status == null) {
+    // fetch() itself rejected (offline, DNS, TLS, CORS) -- no HTTP response at all.
+    return "Couldn't reach the server. Your text is still here.";
+  }
+  var detail = (err.body && err.body.detail) || '';
+  switch (err.status) {
+    case 403:
+      if (detail.indexOf('input_enabled') !== -1) {
+        return 'Session input is disabled on this server (input_enabled is false). ' +
+          'An operator can turn it on by editing input_enabled and input_allowed_sessions ' +
+          'in ~/.config/muxplex/settings.json on the host -- not from this UI.';
+      }
+      return 'This session is not on the server\u2019s input_allowed_sessions list. ' +
+        'An operator can add it by editing input_allowed_sessions in ' +
+        '~/.config/muxplex/settings.json on the host -- not from this UI.';
+    case 404:
+      return 'Session \u2018' + _viewingSession + '\u2019 no longer exists.';
+    case 413:
+      return 'Too long \u2014 the limit is 8 KiB.';
+    case 400:
+      return detail || 'Invalid request.';
+    case 500:
+      return 'The server couldn\u2019t send that: ' + detail;
+    default:
+      return 'Send failed (HTTP ' + err.status + ').';
+  }
+}
+
+/**
+ * Send the current draft via POST /api/sessions/{name}/input -- the same
+ * unmodified, fenced endpoint every other caller uses (see the section
+ * banner above). Exactly one request in flight at a time (the send button
+ * is disabled for the duration; a second Ctrl+Enter while pending is a
+ * no-op). The draft is cleared ONLY on a 200 response -- a user who just
+ * dictated a paragraph must never lose it to a 403.
+ */
+async function _composeSend() {
+  if (_composeSendInFlight) return;
+  var input = $('compose-input');
+  if (!input) return;
+  var normalized = _composeNormalizeText(input.value);
+  if (!normalized.trim()) {
+    _composeShowError('Nothing to send.');
+    return;
+  }
+  if (!_viewingSession) {
+    _composeShowError('No session is open.');
+    return;
+  }
+
+  _composeSendInFlight = true;
+  var sendBtn = $('compose-send-btn');
+  if (sendBtn) sendBtn.disabled = true;
+  input.setAttribute('aria-busy', 'true');
+
+  try {
+    await api(
+      'POST',
+      withDevice('/api/sessions/' + encodeURIComponent(_viewingSession) + '/input'),
+      { text: normalized, enter: true },
+    );
+    input.value = '';
+    input.style.height = '';
+    _composeHideError();
+    if (window._refitTerminal) window._refitTerminal();
+    input.focus();
+  } catch (err) {
+    _composeShowError(_composeErrorMessage(err));
+  } finally {
+    _composeSendInFlight = false;
+    input.removeAttribute('aria-busy');
+    if (sendBtn) sendBtn.disabled = !(_serverSettings && _serverSettings.input_enabled === true);
+  }
+}
+
+/**
+ * Wire the compose bar's static DOM elements. Called once, from the app's
+ * main static-event-listener binder (see its own call site further down).
+ * NOTE: deliberately does not spell that function's name in this comment --
+ * test_frontend_js.py's test_flyout_delegated_on_tile_container locates
+ * that function's body via a literal source.split() on its name, and a
+ * comment repeating the name earlier in the file would shift the split
+ * point (see AGENTS.md's "source-text tripwire" note).
+ */
+function _bindComposeEventListeners() {
+  on($('compose-toggle-btn'), 'click', _composeToggle);
+  on($('compose-send-btn'), 'click', _composeSend);
+  var input = $('compose-input');
+  if (input) {
+    input.addEventListener('keydown', _composeKeydown);
+    input.addEventListener('input', function() { _composeAutoGrow(input); });
+  }
 }
 
 // ─── Server settings ─────────────────────────────────────────────────────────
@@ -6134,6 +6491,9 @@ function bindStaticEventListeners() {
     setSyncGroup(_syncGroup === 'device' ? 'global' : 'device');
   });
 
+  // Compose bar -- toggle button, send button, textarea keydown/auto-grow.
+  _bindComposeEventListeners();
+
   // Multi-Device tab — device name with 500ms debounce; updates document.title immediately
   var _deviceNameDebounceTimer;
   on($('setting-device-name'), 'input', function() {
@@ -6262,6 +6622,12 @@ window.addEventListener('resize', function() {
     var grid = document.getElementById('session-grid');
     if (grid) applyFitLayout(grid);
   }
+  // A width change can flip isMobile() for an 'auto'-mode compose preference
+  // (e.g. rotating a tablet, or resizing a desktop window past the
+  // threshold) -- recompute visibility and re-render the toggle so both
+  // stay correct without requiring the user to touch anything.
+  _composeRenderToggle();
+  _composeRender();
 });
 
 // ─── Release any inherited screen-orientation lock ─────────────────────────
@@ -6316,6 +6682,8 @@ releaseInheritedOrientationLock();
 document.addEventListener('DOMContentLoaded', async function() {
   initDeviceId();
   initSyncGroup();
+  initComposePref();
+  _composeRenderToggle();
 
   // Load ALL settings (now includes display + sidebar) before first render
   await loadServerSettings();
@@ -6400,6 +6768,26 @@ if (typeof module !== 'undefined' && module.exports) {
     withDevice,
     setSyncGroup,
     renderSyncGroupControls,
+    // Compose bar
+    COMPOSE_PREF_STORAGE_KEY,
+    initComposePref,
+    _composeEffectiveOn,
+    _composeSetPref,
+    _composeToggle,
+    _composeRenderToggle,
+    _composeRender,
+    _composeRenderEnabledState,
+    _composeHideError,
+    _composeShowError,
+    _composeClearDraft,
+    _composeOnSessionOpen,
+    _composeOnSessionClose,
+    _composeNormalizeText,
+    _composeAutoGrow,
+    _composeKeydown,
+    _composeErrorMessage,
+    _composeSend,
+    _bindComposeEventListeners,
     showTerminalConflictDialog,
     setConnectionStatus,
     pollSessions,
