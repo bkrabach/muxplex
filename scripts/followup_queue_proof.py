@@ -77,8 +77,7 @@ def fire_bell(tmux, session_name: str) -> None:
     of effect is downstream: capture-pane content and GET .../followups
     state, not this command's exit code.
     """
-    tmux("send-keys", "-l", "-t", session_name, "--", "printf '\\a'", check=False)
-    tmux("send-keys", "-t", session_name, "Enter", check=False)
+    tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter", check=False)
 
 
 def main() -> int:
