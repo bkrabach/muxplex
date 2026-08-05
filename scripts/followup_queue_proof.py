@@ -214,6 +214,10 @@ def main() -> int:
             time.sleep(0.6)  # settle for the hook's own curl round-trip + state write
             pane = tmux("capture-pane", "-t", session_name, "-p").stdout
             state = client.get(f"/api/sessions/{session_name}/followups").json()
+            sessions_now = client.get("/api/sessions").json()
+            bell_now = next(
+                (s["bell"] for s in sessions_now if s["name"] == session_name), None
+            )
             proof_a.append(
                 {
                     "expected": expected,
@@ -221,11 +225,12 @@ def main() -> int:
                     "pane_tail": pane.strip().splitlines()[-3:],
                     "pending": len(state["items"]),
                     "revision": state["revision"],
+                    "bell": bell_now,
                 }
             )
             log(
                 f"bell -> expected={expected!r} present={expected in pane!r} "
-                f"pending={len(state['items'])} revision={state['revision']}"
+                f"pending={len(state['items'])} revision={state['revision']} bell={bell_now}"
             )
             time.sleep(2.1)  # past FOLLOWUP_SETTLE_SECONDS before the next bell
 
