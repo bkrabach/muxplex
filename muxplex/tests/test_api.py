@@ -6524,8 +6524,12 @@ def test_patch_settings_editor_incremental_pin_removal_never_trips_backstop(
 ):
     """The 'convert a pile of pins into one rule' workflow this task
     describes happens one checkbox at a time (existing Manage View list
-    behavior, unchanged by this task) -- each single-pin removal, even
-    against a 20-pin view, is far under the 50% total-member drop ratio."""
+    behavior, unchanged by this task). Down to the LAST pin (20 -> 1), each
+    single-pin removal against a 20-pin view is far under the 50%
+    total-member drop ratio. The very last pin (1 -> 0, i.e. 2 total
+    members -> 1) is a separate, documented edge case -- see
+    test_patch_settings_last_member_removal_can_trip_backstop_even_incrementally
+    below -- deliberately NOT exercised here."""
     import muxplex.settings as settings_mod
 
     monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
@@ -6538,7 +6542,7 @@ def test_patch_settings_editor_incremental_pin_removal_never_trips_backstop(
     )
 
     remaining = pinned[:]
-    for _ in range(20):
+    for _ in range(19):  # down to the last pin, not through it -- see note above
         remaining = remaining[1:]
         response = client.patch(
             "/api/settings",
@@ -6550,7 +6554,61 @@ def test_patch_settings_editor_incremental_pin_removal_never_trips_backstop(
         )
         assert response.status_code == 200, response.json()
 
-    assert client.get("/api/settings").json()["views"][0]["sessions"] == []
+    assert client.get("/api/settings").json()["views"][0]["sessions"] == remaining
+    assert len(remaining) == 1
+
+
+def test_patch_settings_last_member_removal_can_trip_backstop_even_incrementally(
+    client, tmp_path, monkeypatch
+):
+    """DOCUMENTED FINDING (surfaced, not worked around, per this task's
+    explicit instruction): DESTRUCTIVE_MEMBER_DROP_RATIO has no absolute-
+    count floor -- unlike DESTRUCTIVE_VIEW_COLLAPSE_THRESHOLD, which
+    guards small numbers explicitly. Removing a view's LAST session pin
+    when exactly one match_names pattern also remains (2 total members ->
+    1) is EXACTLY a 50% drop and trips the backstop -- even though it is a
+    single, incremental, one-checkbox-at-a-time removal, identical in kind
+    to the 19 harmless ones before it in the test above. This is pre-
+    existing `assess_views_destruction` arithmetic (views.py), unrelated
+    to and not introduced by the rule editor -- the editor cannot avoid it
+    because it never touches `sessions` at all, but the EXISTING Manage
+    View checkbox (unchanged by this task) can hit this 409 on the last
+    pin of any view that also carries exactly one rule. Not fixed here;
+    flagged for the owner to decide whether the ratio needs an absolute
+    floor the way the collapse check already has one.
+    """
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    client.patch(
+        "/api/settings",
+        json={
+            "views": [
+                {"name": "V", "sessions": ["dev1:last"], "match_names": ["amplifier-*"]}
+            ]
+        },
+    )
+
+    response = client.patch(
+        "/api/settings",
+        json={"views": [{"name": "V", "sessions": [], "match_names": ["amplifier-*"]}]},
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["backstop"] is True
+    assert body["counts"]["before_members"] == 2
+    assert body["counts"]["after_members"] == 1
+
+    # The legitimate escape hatch (a local operator confirming intent) still works.
+    forced = client.patch(
+        "/api/settings",
+        json={
+            "views": [{"name": "V", "sessions": [], "match_names": ["amplifier-*"]}],
+            "allow_destructive": True,
+        },
+    )
+    assert forced.status_code == 200
 
 
 def test_patch_settings_bulk_pattern_shrink_on_dominant_view_still_trips_backstop(
