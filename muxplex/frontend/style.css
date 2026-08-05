@@ -2231,6 +2231,80 @@ body {
   font-style: italic;
 }
 
+/* Rule editor (AUTO_VIEWS_SPEC.md §9.3): one textarea, one pattern per
+   line, a live server-checked preview line, and a validation error list --
+   below the member list, above the Close footer. */
+.manage-view-panel__rules {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.manage-view-panel__rules-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.manage-view-panel__rules-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px;
+  resize: vertical;
+  min-height: 48px;
+  outline: none;
+}
+
+.manage-view-panel__rules-input:focus {
+  border-color: var(--accent);
+}
+
+.manage-view-panel__rules-preview {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  word-break: break-word;
+}
+
+.manage-view-panel__rules-errors {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--err);
+}
+
+.manage-view-panel__rules-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.manage-view-panel__rules-save-btn {
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.manage-view-panel__rules-save-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.manage-view-panel__rules-save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Mobile: full-screen sheet for Add Sessions */
 @media (max-width: 599px) {
   .manage-view-panel__content {

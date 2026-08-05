@@ -371,6 +371,30 @@ let _sessionCommandErrors = [];
 // Settings > Views, mirroring _sessionCommandErrors exactly.
 let _viewRuleErrors = [];
 
+// --- Manage View rule editor state (AUTO_VIEWS_SPEC.md §9.3) ---
+// True once the user has typed in the rule textarea since it was last
+// populated from _serverSettings -- guards against a background re-render
+// (a poll pushing a remote settings change, e.g. followRemoteViewDefinitions)
+// clobbering an in-progress, not-yet-saved edit.
+let _manageViewRulesDirty = false;
+// Debounce handle for the live-preview POST /api/views/preview call.
+let _manageViewRulesPreviewTimer = null;
+// Monotonic token: incremented on every new preview request so a slow,
+// out-of-order response can never overwrite a newer one's render.
+let _manageViewRulesPreviewToken = 0;
+
+// Test-only: cancel a pending debounced preview timer without waiting the
+// full 300ms. Prevents a test that only wants to exercise the "dirty" flag
+// (via a direct oninput() call) from leaking a real setTimeout that later
+// fires -- and calls the then-current global fetch -- during an unrelated,
+// later test.
+function _clearManageViewRulesPreviewTimer() {
+  if (_manageViewRulesPreviewTimer) {
+    clearTimeout(_manageViewRulesPreviewTimer);
+    _manageViewRulesPreviewTimer = null;
+  }
+}
+
 // ─── DOM helpers ──────────────────────────────────────────────────────────────
 function $(id) {
   return document.getElementById(id);
@@ -732,6 +756,7 @@ function followRemoteViewDefinitions(state) {
     var manageViewPanel = $('manage-view-panel');
     if (manageViewPanel && !manageViewPanel.classList.contains('hidden')) {
       renderManageViewList();
+      _renderManageViewRuleEditor(false); // false: don't clobber an unsaved in-progress edit
     }
   }).catch(function(err) {
     console.warn('[followRemoteViewDefinitions] could not refresh settings:', err);
@@ -3006,6 +3031,7 @@ function openManageViewPanel() {
   }
 
   renderManageViewList();
+  _renderManageViewRuleEditor(true); // true: always repopulate from server truth on open
   panel.classList.remove('hidden');
 
   // Close on backdrop click
@@ -3263,6 +3289,207 @@ function renderManageViewList() {
         console.warn('[renderManageViewList] PATCH failed:', err);
       });
   };
+}
+
+// ─── Manage View rule editor (AUTO_VIEWS_SPEC.md §9.3) ─────────────────────
+//
+// One textarea, one pattern per line, blank lines ignored. Saved through the
+// existing patchSettingsGuarded() path (so CAS and the destructive-write
+// backstop come for free) as view.match_names -- newline-separated, not
+// comma-separated, because tmux permits commas in session names but not
+// newlines.
+//
+// Validation and match preview both ask the server (POST /api/views/preview)
+// rather than re-implementing the glob matcher client-side (AGENTS.md's "the
+// matcher lives in exactly one place" -- this frontend must never import a
+// glob-matching library or hand-roll one). This is the SAME reason
+// GET /api/views exists for the read-only error badges above; the preview
+// endpoint is its write-side sibling.
+
+/**
+ * Parse the rule textarea's raw value into a pattern list: one pattern per
+ * line, blank lines ignored, no trimming of interior whitespace within a
+ * non-blank line (a leading/trailing space is trimmed per line since it can
+ * never be a meaningful part of a glob and stray whitespace from
+ * copy-paste is the overwhelmingly likely case; a pattern that is ONLY
+ * whitespace is indistinguishable from a blank line and is dropped, same
+ * as a truly empty line).
+ * @param {string} text
+ * @returns {string[]}
+ */
+function _parseViewRulePatterns(text) {
+  return (text || '')
+    .split('\n')
+    .map(function(line) { return line.trim(); })
+    .filter(function(line) { return line.length > 0; });
+}
+
+/**
+ * Render the rule-editor's error list and match-preview line from a
+ * `{errors, matches}` result (either GET /api/views' per-view errors, used
+ * as the initial/at-rest state, or POST /api/views/preview's live result
+ * while the user is typing -- same shape, same renderer).
+ * @param {string[]} errors
+ * @param {string[]|null} matches - null means "not yet computed" (initial
+ *   render before the first preview call resolves) vs [] meaning "computed,
+ *   zero live sessions match".
+ * @param {number} patternCount - how many patterns are currently in the
+ *   textarea, to distinguish "no patterns yet" from "patterns but no match".
+ */
+function _renderManageViewRuleFeedback(errors, matches, patternCount) {
+  var errorsEl = $('manage-view-rules-errors');
+  var previewEl = $('manage-view-rules-preview');
+  var saveBtn = $('manage-view-rules-save');
+
+  if (errorsEl) {
+    if (errors && errors.length > 0) {
+      errorsEl.innerHTML = errors.map(function(e) {
+        return '<li>' + escapeHtml(e) + '</li>';
+      }).join('');
+      errorsEl.classList.remove('hidden');
+    } else {
+      errorsEl.innerHTML = '';
+      errorsEl.classList.add('hidden');
+    }
+  }
+
+  if (previewEl) {
+    if (patternCount === 0) {
+      previewEl.textContent = 'No patterns yet \u2014 sessions must be pinned manually below.';
+    } else if (matches === null) {
+      previewEl.textContent = 'Checking matches\u2026';
+    } else if (matches.length === 0) {
+      previewEl.textContent = 'Matches no currently running sessions.';
+    } else {
+      previewEl.textContent =
+        'Matches ' + matches.length + ' running session' + (matches.length === 1 ? '' : 's') +
+        ': ' + matches.join(', ');
+    }
+  }
+
+  if (saveBtn) {
+    // Never offer Save while a pattern is known-invalid -- validation
+    // feedback belongs in the editor, before a save attempt, not as a
+    // relayed 400 (AUTO_VIEWS_SPEC.md §9.3 / this task's non-negotiables).
+    saveBtn.disabled = !_manageViewRulesDirty || (errors && errors.length > 0);
+  }
+}
+
+/**
+ * Ask the server what a DRAFT pattern list would match, via
+ * POST /api/views/preview -- never a client-side matcher. Debounced by the
+ * caller (oninput handler below); this function itself fires immediately.
+ * A stale, out-of-order response (a fast second call resolving out of
+ * order with a slow first one) is dropped via the token check.
+ * @param {string[]} patterns
+ */
+function _previewManageViewRule(patterns) {
+  var token = ++_manageViewRulesPreviewToken;
+  if (patterns.length === 0) {
+    // Nothing to ask the server -- render the "no patterns yet" state
+    // directly and skip the round trip.
+    _renderManageViewRuleFeedback([], [], 0);
+    return;
+  }
+  api('POST', '/api/views/preview', { match_names: patterns })
+    .then(function(res) { return res.json(); })
+    .then(function(body) {
+      if (token !== _manageViewRulesPreviewToken) return; // superseded
+      _renderManageViewRuleFeedback(body.errors || [], body.matches || [], patterns.length);
+    })
+    .catch(function(err) {
+      if (token !== _manageViewRulesPreviewToken) return;
+      console.warn('[_previewManageViewRule] failed:', err);
+      // Leave the previous render in place rather than clobbering it with
+      // an empty/misleading state on a transient network error.
+    });
+}
+
+/**
+ * Populate and wire the Manage View panel's rule editor for the active view.
+ * Called on open (forceReset: true, always repopulates from server truth)
+ * and on background re-renders that might reflect a remote settings change
+ * (forceReset: false, skips repopulating while the user has an unsaved,
+ * in-progress edit -- see _manageViewRulesDirty).
+ * @param {boolean} forceReset
+ */
+function _renderManageViewRuleEditor(forceReset) {
+  var textarea = $('manage-view-rules-input');
+  var saveBtn = $('manage-view-rules-save');
+  if (!textarea) return;
+
+  var views = (_serverSettings && _serverSettings.views) || [];
+  var view = null;
+  for (var i = 0; i < views.length; i++) {
+    if (views[i].name === _activeView) { view = views[i]; break; }
+  }
+  if (!view) return; // "all"/"hidden" or a just-deleted view -- nothing to edit
+
+  if (forceReset || !_manageViewRulesDirty) {
+    textarea.value = (view.match_names || []).join('\n');
+    _manageViewRulesDirty = false;
+    // At-rest state: reuse the errors this view already reported via
+    // GET /api/views (loadViewRules(), fetched at page load / openSettings)
+    // rather than firing an immediate preview round trip on every open.
+    // Matched by the `'<name>':` fragment every views[i] error line contains
+    // (see main.py's get_views()) -- name-based, not index-based, since this
+    // render doesn't know the server's own array index for this view.
+    var restErrors = (_viewRuleErrors || []).filter(function(e) {
+      return e.indexOf("'" + view.name + "':") !== -1;
+    });
+    _renderManageViewRuleFeedback(restErrors, view.match_names || [], (view.match_names || []).length);
+  }
+
+  var viewNameAtRender = view.name;
+
+  textarea.oninput = function() {
+    _manageViewRulesDirty = true;
+    if (saveBtn) saveBtn.disabled = true; // re-enabled once a clean preview resolves
+    var patterns = _parseViewRulePatterns(textarea.value);
+    if (_manageViewRulesPreviewTimer) clearTimeout(_manageViewRulesPreviewTimer);
+    _manageViewRulesPreviewTimer = setTimeout(function() {
+      _manageViewRulesPreviewTimer = null;
+      _previewManageViewRule(patterns);
+    }, 300);
+  };
+
+  if (saveBtn) {
+    saveBtn.onclick = function() {
+      if (saveBtn.disabled) return;
+      var patterns = _parseViewRulePatterns(textarea.value);
+      saveBtn.disabled = true;
+      patchSettingsGuarded(function(fresh) {
+        var freshViews = (fresh && fresh.views) || [];
+        return {
+          views: freshViews.map(function(v) {
+            return v.name === viewNameAtRender ? Object.assign({}, v, { match_names: patterns }) : v;
+          })
+        };
+      })
+        .then(function(body) {
+          if (_serverSettings) _serverSettings.views = body.views;
+          _manageViewRulesDirty = false;
+          showToast('Rules saved');
+          renderViewsSettingsTab();
+          renderManageViewList();
+          renderGrid(_currentSessions || []);
+          loadViewRules(); // refresh the Settings gear/tab error badges
+        })
+        .catch(function(err) {
+          if (err && err.body && err.body.invalid_view_rule) {
+            _renderManageViewRuleFeedback(err.body.errors || [err.body.detail], null, patterns.length);
+            showToast('Couldn\u2019t save \u2014 fix the highlighted pattern');
+          } else if (err && err.body && err.body.backstop) {
+            showToast('Server rejected this as too large a change \u2014 see console');
+            console.warn('[manage-view-rules save] destructive-write backstop:', err.body.detail);
+          } else {
+            showToast('Couldn\u2019t save \u2014 try again');
+            console.warn('[manage-view-rules save] PATCH failed:', err);
+          }
+          saveBtn.disabled = false;
+        });
+    };
+  }
 }
 
 /**
@@ -3883,6 +4110,7 @@ function _rerenderViewDependentUI() {
   var manageViewPanel = $('manage-view-panel');
   if (manageViewPanel && !manageViewPanel.classList.contains('hidden')) {
     renderManageViewList();
+    _renderManageViewRuleEditor(false); // false: don't clobber an unsaved in-progress edit
   }
 }
 
@@ -6244,6 +6472,12 @@ if (typeof module !== 'undefined' && module.exports) {
     openManageViewPanel,
     closeManageViewPanel,
     renderManageViewList,
+    // Manage View rule editor (§9.3)
+    _parseViewRulePatterns,
+    _renderManageViewRuleFeedback,
+    _renderManageViewRuleEditor,
+    _previewManageViewRule,
+    _clearManageViewRulesPreviewTimer,
     // Flyout menu
     openFlyoutMenu,
     closeFlyoutMenu,

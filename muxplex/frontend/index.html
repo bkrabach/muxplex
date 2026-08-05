@@ -134,6 +134,15 @@
         <p id="manage-view-summary" class="manage-view-panel__summary"></p>
       </div>
       <div id="manage-view-list" class="manage-view-panel__list"></div>
+      <div id="manage-view-rules" class="manage-view-panel__rules">
+        <label class="manage-view-panel__rules-label" for="manage-view-rules-input">Auto-match sessions (one pattern per line)</label>
+        <textarea id="manage-view-rules-input" class="manage-view-panel__rules-input" rows="3" placeholder="amplifier-*"></textarea>
+        <div id="manage-view-rules-preview" class="manage-view-panel__rules-preview"></div>
+        <ul id="manage-view-rules-errors" class="manage-view-panel__rules-errors hidden"></ul>
+        <div class="manage-view-panel__rules-actions">
+          <button id="manage-view-rules-save" class="manage-view-panel__rules-save-btn" disabled>Save rules</button>
+        </div>
+      </div>
       <div class="manage-view-panel__footer">
         <button id="manage-view-close" class="manage-view-panel__close-btn">Close</button>
       </div>
