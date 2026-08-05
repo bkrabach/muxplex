@@ -6403,6 +6403,305 @@ test('Phase 5: isHidden() helper (not inline check) drives the dim class', () =>
     'isHidden must return false when settings is null');
 });
 
+// ─── Manage View rule editor (AUTO_VIEWS_SPEC.md §9.3) ───────────────────
+//
+// One textarea, one pattern per line, blank lines ignored; validation and
+// match preview both ask the server (POST /api/views/preview) rather than
+// re-implementing the glob matcher client-side. See _parseViewRulePatterns,
+// _renderManageViewRuleFeedback, _renderManageViewRuleEditor, and
+// _previewManageViewRule in app.js.
+
+test('_parseViewRulePatterns splits on newline and drops blank lines', () => {
+  const text = 'amplifier-*\n\n  *-agent  \n\n\nliteral-name\n';
+  assert.deepStrictEqual(
+    app._parseViewRulePatterns(text),
+    ['amplifier-*', '*-agent', 'literal-name']
+  );
+});
+
+test('_parseViewRulePatterns returns [] for empty or whitespace-only input', () => {
+  assert.deepStrictEqual(app._parseViewRulePatterns(''), []);
+  assert.deepStrictEqual(app._parseViewRulePatterns('\n\n   \n'), []);
+  assert.deepStrictEqual(app._parseViewRulePatterns(undefined), []);
+});
+
+// Helper: mock document.getElementById for the rule editor and return the
+// fake elements so callers can inspect their rendered state.
+function _withManageViewRulesDOM(fn) {
+  const fakeTextarea = { value: '', oninput: null };
+  const fakeSave = { disabled: true, onclick: null };
+  const fakePreview = { textContent: '' };
+  const fakeErrors = { innerHTML: '', classList: { add() {}, remove() {} } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'manage-view-rules-input') return fakeTextarea;
+    if (id === 'manage-view-rules-save') return fakeSave;
+    if (id === 'manage-view-rules-preview') return fakePreview;
+    if (id === 'manage-view-rules-errors') return fakeErrors;
+    return null;
+  };
+  try {
+    fn({ fakeTextarea, fakeSave, fakePreview, fakeErrors });
+  } finally {
+    globalThis.document.getElementById = origGetById;
+  }
+}
+
+/**
+ * Async sibling of _withManageViewRulesDOM: keeps the DOM stub installed
+ * until the returned promise settles, so assertions inside a setTimeout (or
+ * any other macrotask) still see the mocked elements. The synchronous
+ * version's `finally` runs the instant `fn` RETURNS, not when `fn`'s
+ * internal async work completes -- exactly wrong for tests that assert
+ * after a `.then()` chain or a `setTimeout`.
+ * @param {function({fakeTextarea, fakeSave, fakePreview, fakeErrors}): Promise<void>} fn
+ */
+async function _withManageViewRulesDOMAsync(fn) {
+  const fakeTextarea = { value: '', oninput: null };
+  const fakeSave = { disabled: true, onclick: null };
+  const fakePreview = { textContent: '' };
+  const fakeErrors = { innerHTML: '', classList: { add() {}, remove() {} } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'manage-view-rules-input') return fakeTextarea;
+    if (id === 'manage-view-rules-save') return fakeSave;
+    if (id === 'manage-view-rules-preview') return fakePreview;
+    if (id === 'manage-view-rules-errors') return fakeErrors;
+    return null;
+  };
+  try {
+    await fn({ fakeTextarea, fakeSave, fakePreview, fakeErrors });
+  } finally {
+    globalThis.document.getElementById = origGetById;
+  }
+}
+
+test('_renderManageViewRuleFeedback: no patterns yet shows the manual-pin hint', () => {
+  _withManageViewRulesDOM(({ fakePreview, fakeErrors, fakeSave }) => {
+    fakeSave.disabled = false; // dirty, so we can see the "0 errors" case leaves it alone
+    app._renderManageViewRuleFeedback([], [], 0);
+    assert.match(fakePreview.textContent, /pinned manually/);
+    assert.strictEqual(fakeErrors.innerHTML, '');
+  });
+});
+
+test('_renderManageViewRuleFeedback: zero matches is distinguished from "checking"', () => {
+  _withManageViewRulesDOM(({ fakePreview }) => {
+    app._renderManageViewRuleFeedback([], null, 2);
+    assert.match(fakePreview.textContent, /Checking/);
+    app._renderManageViewRuleFeedback([], [], 2);
+    assert.match(fakePreview.textContent, /Matches no currently running sessions/);
+  });
+});
+
+test('_renderManageViewRuleFeedback: renders match count and session names', () => {
+  _withManageViewRulesDOM(({ fakePreview }) => {
+    app._renderManageViewRuleFeedback([], ['amplifier-foo', 'amplifier-bar'], 1);
+    assert.match(fakePreview.textContent, /Matches 2 running sessions/);
+    assert.match(fakePreview.textContent, /amplifier-foo/);
+    assert.match(fakePreview.textContent, /amplifier-bar/);
+  });
+});
+
+test('_renderManageViewRuleFeedback: renders the server-provided \':\' reason verbatim', () => {
+  // Non-negotiable: a rejected pattern's exact server reason must reach the
+  // editor, not a generic "invalid pattern" message.
+  const colonError =
+    "views[0] 'V': match_names[0] may not contain ':' -- tmux session names cannot contain ':'";
+  _withManageViewRulesDOM(({ fakeErrors, fakeSave }) => {
+    app._renderManageViewRuleFeedback([colonError], [], 1);
+    assert.ok(fakeErrors.innerHTML.includes('may not contain'));
+    assert.ok(fakeErrors.innerHTML.includes(':'));
+    assert.strictEqual(fakeSave.disabled, true, 'Save must be disabled while an error is present');
+  });
+});
+
+test('_renderManageViewRuleFeedback: Save enabled only when dirty AND no errors', () => {
+  _withManageViewRulesDOM(({ fakeSave }) => {
+    app._renderManageViewRuleFeedback([], ['x'], 1); // no errors, but not dirty
+    assert.strictEqual(fakeSave.disabled, true);
+  });
+});
+
+test('_previewManageViewRule: empty pattern list renders the at-rest state without a fetch', async () => {
+  let fetchCalled = false;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { fetchCalled = true; return { ok: true, json: async () => ({ errors: [], matches: [] }) }; };
+  _withManageViewRulesDOM(({ fakePreview }) => {
+    app._previewManageViewRule([]);
+    assert.match(fakePreview.textContent, /pinned manually/);
+  });
+  globalThis.fetch = origFetch;
+  assert.strictEqual(fetchCalled, false, 'must not call the server for an empty draft');
+});
+
+test('_previewManageViewRule: asks POST /api/views/preview, never a client-side matcher', async () => {
+  let calledPath = null;
+  let calledBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (path, opts) => {
+    calledPath = path;
+    calledBody = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ errors: [], matches: ['amplifier-foo'] }) };
+  };
+
+  await _withManageViewRulesDOMAsync(({ fakePreview }) => {
+    app._previewManageViewRule(['amplifier-*']);
+    // _previewManageViewRule's fetch is async; give the microtask/macrotask
+    // queue a turn before asserting on its result.
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        assert.strictEqual(calledPath, '/api/views/preview');
+        assert.deepStrictEqual(calledBody, { match_names: ['amplifier-*'] });
+        assert.match(fakePreview.textContent, /amplifier-foo/);
+        resolve();
+      }, 0);
+    });
+  });
+  globalThis.fetch = origFetch;
+});
+
+test('_previewManageViewRule: a slower stale request never overwrites a newer response', async () => {
+  // Two overlapping preview calls resolve out of order -- the token guard
+  // must keep only the LATEST call's render.
+  const origFetch = globalThis.fetch;
+  let resolveFirst;
+  globalThis.fetch = (path, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.match_names[0] === 'first-*') {
+      return new Promise((resolve) => {
+        resolveFirst = () => resolve({ ok: true, json: async () => ({ errors: [], matches: ['stale-match'] }) });
+      });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({ errors: [], matches: ['fresh-match'] }) });
+  };
+
+  await _withManageViewRulesDOMAsync(({ fakePreview }) => {
+    app._previewManageViewRule(['first-*']); // slow, resolves later
+    app._previewManageViewRule(['second-*']); // fire second (fast)
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        assert.match(fakePreview.textContent, /fresh-match/);
+        resolveFirst(); // let the stale one resolve now
+        setTimeout(() => {
+          assert.match(fakePreview.textContent, /fresh-match/, 'stale response must not clobber the fresh render');
+          resolve();
+        }, 0);
+      }, 0);
+    });
+  });
+  globalThis.fetch = origFetch;
+});
+
+test('_renderManageViewRuleEditor populates the textarea from the view\'s match_names', () => {
+  app._setServerSettings({
+    hidden_sessions: [],
+    views: [{ name: 'Auto', sessions: [], match_names: ['amplifier-*', '*-agent'] }],
+  });
+  app._setActiveView('Auto');
+
+  _withManageViewRulesDOM(({ fakeTextarea }) => {
+    app._renderManageViewRuleEditor(true);
+    assert.strictEqual(fakeTextarea.value, 'amplifier-*\n*-agent');
+  });
+
+  app._setServerSettings(null);
+});
+
+test('_renderManageViewRuleEditor(false) does not clobber an unsaved in-progress edit', () => {
+  app._setServerSettings({
+    hidden_sessions: [],
+    views: [{ name: 'Auto', sessions: [], match_names: ['amplifier-*'] }],
+  });
+  app._setActiveView('Auto');
+
+  _withManageViewRulesDOM(({ fakeTextarea }) => {
+    app._renderManageViewRuleEditor(true); // populate
+    fakeTextarea.value = 'user-is-typing-*';
+    fakeTextarea.oninput(); // marks dirty
+    app._clearManageViewRulesPreviewTimer(); // don't let the debounced preview leak into a later test
+    app._renderManageViewRuleEditor(false); // background re-render (e.g. a poll)
+    assert.strictEqual(fakeTextarea.value, 'user-is-typing-*', 'in-progress edit must survive a non-forced re-render');
+  });
+
+  app._setServerSettings(null);
+});
+
+test('_renderManageViewRuleEditor(true) always repopulates, even mid-edit (used on panel open)', () => {
+  app._setServerSettings({
+    hidden_sessions: [],
+    views: [{ name: 'Auto', sessions: [], match_names: ['amplifier-*'] }],
+  });
+  app._setActiveView('Auto');
+
+  _withManageViewRulesDOM(({ fakeTextarea }) => {
+    app._renderManageViewRuleEditor(true);
+    fakeTextarea.value = 'unsaved-draft-*';
+    fakeTextarea.oninput();
+    app._clearManageViewRulesPreviewTimer(); // don't let the debounced preview leak into a later test
+    app._renderManageViewRuleEditor(true); // forced reset (re-opening the panel)
+    assert.strictEqual(fakeTextarea.value, 'amplifier-*');
+  });
+
+  app._setServerSettings(null);
+});
+
+test('Manage View rule editor Save PATCHes only match_names, preserving the view\'s existing pins', async () => {
+  const pinned = ['dev1:a', 'dev1:b'];
+  app._setServerSettings({
+    hidden_sessions: [],
+    settings_updated_at: 1,
+    views: [{ name: 'Auto', sessions: pinned, match_names: [] }],
+  });
+  app._setActiveView('Auto');
+
+  let patchBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (path, opts) => {
+    if (path === '/api/settings' && opts.method === 'PATCH') {
+      patchBody = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({ views: patchBody.views, settings_updated_at: 2 }),
+      };
+    }
+    // loadServerSettings() re-fetch inside patchSettingsGuarded (views-touching patch)
+    return {
+      ok: true,
+      json: async () => ({
+        hidden_sessions: [],
+        settings_updated_at: 1,
+        views: [{ name: 'Auto', sessions: pinned, match_names: [] }],
+      }),
+    };
+  };
+
+  await _withManageViewRulesDOMAsync(({ fakeTextarea, fakeSave }) => {
+    app._renderManageViewRuleEditor(true);
+    fakeTextarea.value = 'amplifier-*';
+    fakeSave.disabled = false; // simulate a resolved, error-free preview
+    fakeSave.onclick(); // fire-and-forget; assert after it settles below
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        assert.ok(patchBody, 'PATCH /api/settings must have been called');
+        assert.deepStrictEqual(
+          patchBody.views.find((v) => v.name === 'Auto').sessions,
+          pinned,
+          'existing pins must be preserved by the rule-editor save'
+        );
+        assert.deepStrictEqual(
+          patchBody.views.find((v) => v.name === 'Auto').match_names,
+          ['amplifier-*']
+        );
+        resolve();
+      }, 20);
+    });
+  });
+
+  globalThis.fetch = origFetch;
+  app._setServerSettings(null);
+});
+
 // ─── v0.6.3 empty-device suppression ────────────────────────────────────────
 
 test('v0.6.3: grouped view skips device header when device has only hidden sessions', () => {
