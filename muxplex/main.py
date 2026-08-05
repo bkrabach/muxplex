@@ -348,27 +348,60 @@ def _bell_hook_curl(target: str, *, swallow: bool) -> str:
     Args:
         target: session name (real, or the ``#{session_name}`` tmux format
             placeholder) to forward the bell to.
-        swallow: if True, append ``|| true`` so a delivery failure can never
-            surface as a visible tmux error to the user -- used for the
-            REAL hook, which fires on every future bell for the life of the
-            process. The one-time delivery PROBE deliberately leaves this
-            False so its exit code stays meaningful (see _arm_bell_hook).
+        swallow: if True, this is the PERSISTENT REAL hook -- fires on every
+            future bell, in every session, for the life of the process, with
+            a client very likely attached and watching. It is built to be
+            COMPLETELY SILENT, always, even on failure: no ``-S``, stderr
+            explicitly redirected to ``/dev/null``, and ``|| true`` so the
+            shell's own exit status is always 0. If False, this is the
+            one-time delivery PROBE (see ``_arm_bell_hook``), which stays
+            loud on purpose: no swallowing, ``-S`` kept, so its exit code
+            and stderr are both meaningful.
+
+    **Incident, read before touching this function:** an earlier revision
+    made the persistent hook loud (``-sSf``, no stderr redirect) to make the
+    probe's failures diagnosable. Because both paths shared one code path,
+    the loudness leaked into the PERSISTENT hook too -- every real bell whose
+    curl call failed painted curl's error text onto whatever the owner was
+    looking at (tmux's ``run-shell``, per its own manual, displays a
+    background command's output in view mode on the client's active pane).
+    Confirmed live: the owner watched ``returned 52`` replace his screen
+    repeatedly, across every live session, for the life of the process.
+    Loudness is exactly the right instinct -- silence is what hid the
+    original TLS-scheme bug for so long -- but it belongs where someone goes
+    looking (the arm-time probe below, the log, ``GET /api/instance-info``,
+    ``muxplex doctor``), never on a client's screen on every bell. The two
+    branches below must never be merged back into one shared flag set.
     """
     scheme = "https" if SERVER_TLS_ENABLED else "http"
     insecure = "k" if SERVER_TLS_ENABLED else ""
-    # -S (show-error) pairs with -s (silent, suppresses the progress meter)
-    # to keep curl quiet on success while still writing a real diagnostic to
-    # stderr on failure -- without it, `-s` alone suppresses error text too,
-    # leaving _bell_hook_last_error empty on a probe failure (verified: a
-    # plain `-sf` against a TLS-only port produces curl exit 52 with NO
-    # message). run_tmux() surfaces that stderr in its RuntimeError, so this
-    # is what makes the probe's failure "loud and visible" per AGENTS.md
-    # rather than just a bare nonzero exit code.
-    cmd = (
-        f"curl -sS{insecure}fo /dev/null -X POST "
-        f"{scheme}://127.0.0.1:{SERVER_PORT}/api/sessions/{target}/bell"
-    )
-    return f"{cmd} || true" if swallow else cmd
+    # NOTE: never build this via str.format() with a placeholder for the
+    # flags -- `target` can itself be the tmux format placeholder
+    # `#{session_name}`, and a later `.format()` call would try to resolve
+    # THAT `{session_name}` field too, raising KeyError. Two fully separate
+    # f-strings (computed directly, no intermediate template) sidestep this
+    # entirely.
+    url = f"{scheme}://127.0.0.1:{SERVER_PORT}/api/sessions/{target}/bell"
+    if swallow:
+        # PERSISTENT hook: silent, unconditionally, on every code path.
+        # `-s` (no `-S`) already suppresses curl's own error text; the
+        # explicit `2>/dev/null` is a second, independent guarantee that
+        # NOTHING reaches tmux's output capture (e.g. a shared-library
+        # loader warning curl itself doesn't control), and `|| true` keeps
+        # the shell's own exit status at 0 so tmux never displays "returned
+        # N" either. Three independent silences for one requirement: this
+        # must never paint a client's screen, regardless of failure mode.
+        cmd = f"curl -s{insecure}fo /dev/null -X POST {url} 2>/dev/null"
+        return f"{cmd} || true"
+    # One-shot delivery PROBE, run once at arm time -- never per-bell. Loud
+    # on purpose: `-S` (show-error) pairs with `-s` to keep a real
+    # diagnostic on stderr for a failure (verified: plain `-sf` against a
+    # TLS-only port produces curl exit 52 with NO message), and no `|| true`
+    # so the exit code stays meaningful. run_tmux() surfaces that stderr in
+    # its RuntimeError -- this is what makes the probe's failure loud and
+    # actionable at arm time, per AGENTS.md, without ever touching a live
+    # client's screen on a subsequent real bell.
+    return f"curl -sS{insecure}fo /dev/null -X POST {url}"
 
 
 async def _arm_bell_hook() -> bool:

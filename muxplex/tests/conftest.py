@@ -129,6 +129,46 @@ def _isolate_settings_path(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_tmux_socket_dir(tmp_path, monkeypatch):
+    """Force every test's REAL (unmocked) tmux subprocess calls onto an
+    isolated, per-test socket directory -- never the ambient default, which
+    on a developer box that sources ``muxplex env`` in its shell rc (see
+    AGENTS.md's "Running a second instance on one box") IS the live
+    production tmux server.
+
+    **Incident this closes:** a bell-hook delivery proof called the real
+    ``_arm_bell_hook()`` -- which issues tmux's ``set-hook -g``, GLOBAL to
+    the whole tmux server -- against a scratch TLS port, but never
+    overrode ``TMUX_TMPDIR`` or the ``tmux_socket_dir`` setting. Because the
+    proof's own shell had ``TMUX_TMPDIR`` exported (from the owner's
+    ``muxplex env`` integration), ``tmux_env()`` resolved to the OWNER'S
+    REAL tmux server. Every real bell across 53 live sessions then curled
+    a dead scratch port for as long as the hook stayed armed. Hand-repaired
+    once; this fixture is what stops it from ever happening again.
+
+    Belt-and-suspenders with ``_isolate_settings_path`` above: that isolates
+    the *settings-driven* ``tmux_socket_dir`` `tmux_env()` reads first; this
+    isolates the *environment* fallback it falls back to when no setting is
+    configured (``env=None`` -> the subprocess inherits ``os.environ``,
+    which is exactly the value a test or an ad-hoc verification script can
+    forget to override). Every test gets a real, unique, throwaway,
+    guaranteed-empty socket directory by default -- reaching the ambient
+    tmux server now requires an explicit, reviewable override, not silence.
+
+    A test that wants a REAL, working isolated tmux server on top of this
+    (e.g. to fire an actual bell) still layers its own explicit isolation --
+    see ``test_integration.py``'s ``tmux_server`` fixture (``tmux -L
+    <unique-name>``) -- this fixture only guarantees the *default* everyone
+    else gets is never the ambient one.
+    """
+    tmux_dir = tmp_path / "tmux-isolated"
+    tmux_dir.mkdir(exist_ok=True)
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmux_dir))
+    monkeypatch.delenv("TMUX", raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_port_killer(request, monkeypatch):
     """No test may invoke the REAL ``_kill_stale_port_holder`` by accident.
 

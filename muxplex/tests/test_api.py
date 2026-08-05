@@ -1906,8 +1906,9 @@ def test_setup_hooks_curl_discards_response_body(client, monkeypatch):
     # Positional args are: "set-hook", "-g", "alert-bell", <hook_command>
     hook_command = call_args[0][3] if len(call_args[0]) > 3 else None
     assert hook_command is not None
-    # Should have -sfo /dev/null, not just -sf
-    assert "-sSfo /dev/null" in hook_command
+    # Should have -sfo /dev/null, not just -sf -- and NOT -S (see the
+    # persistent-hook silence regression test below for why).
+    assert "-sfo /dev/null" in hook_command
 
 
 def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
@@ -1939,7 +1940,7 @@ def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
 
     # Check the first hook call
     hook_command = hook_calls[0][0][3]
-    assert "-sSfo /dev/null" in hook_command
+    assert "-sfo /dev/null" in hook_command
 
 
 # ---------------------------------------------------------------------------
@@ -2094,7 +2095,7 @@ def test_bell_hook_curl_uses_http_and_no_dash_k_when_tls_disabled(monkeypatch):
     assert "http://127.0.0.1" in cmd
     assert "https://" not in cmd
     assert " -k" not in cmd
-    assert "-sSfo /dev/null" in cmd
+    assert "-sfo /dev/null" in cmd
     assert cmd.endswith("|| true")
 
 
@@ -2114,7 +2115,7 @@ def test_bell_hook_curl_uses_https_and_dash_k_when_tls_enabled(monkeypatch):
     cmd = main_mod._bell_hook_curl("somesession", swallow=True)
     assert "https://127.0.0.1" in cmd
     assert "http://127.0.0.1" not in cmd
-    assert "-sSkfo /dev/null" in cmd
+    assert "-skfo /dev/null" in cmd
     assert cmd.endswith("|| true")
 
 
@@ -2144,6 +2145,62 @@ def test_bell_hook_probe_curl_does_not_swallow_errors(monkeypatch):
     assert not probe_cmd.endswith("|| true")
     hook_cmd = main_mod._bell_hook_curl("#{session_name}", swallow=True)
     assert hook_cmd.endswith("|| true")
+
+
+# ---------------------------------------------------------------------------
+# Bell hook SILENCE (regression: a later revision made the persistent hook's
+# curl loud (-sS, no stderr redirect) to help diagnose the probe -- and that
+# loudness leaked into the PERSISTENT per-bell hook too. tmux's `run-shell`
+# displays a background command's output in view mode on the client's
+# active pane; the owner watched `returned 52` repeatedly replace his screen
+# across every live session as a result. The persistent hook must be
+# silent, ALWAYS -- loudness belongs only in the one-shot arm-time probe,
+# the log, and `muxplex doctor` / `GET /api/instance-info`.
+# ---------------------------------------------------------------------------
+
+
+def test_persistent_hook_never_includes_dash_S(monkeypatch):
+    """The PERSISTENT (swallow=True) hook must never pass curl's -S
+    (show-error) flag, in either TLS posture -- -S is what makes a failed
+    curl call write diagnostic text to stderr, which is exactly what tmux's
+    `run-shell` paints onto a client's screen on failure. Loudness belongs
+    only in the one-shot probe (swallow=False), never the per-bell hook.
+    """
+    import muxplex.main as main_mod
+
+    for tls in (False, True):
+        monkeypatch.setattr(main_mod, "SERVER_TLS_ENABLED", tls)
+        cmd = main_mod._bell_hook_curl("#{session_name}", swallow=True)
+        # The only "S" that may legitimately appear is inside "https"/
+        # "127.0.0.1" -- assert directly against the flag cluster instead
+        # of a bare substring check.
+        assert "-sS" not in cmd, f"persistent hook must not be loud: {cmd!r}"
+
+
+def test_persistent_hook_redirects_stderr_to_devnull(monkeypatch):
+    """The PERSISTENT hook's curl invocation must explicitly redirect
+    stderr to /dev/null -- independent of curl's own `-s` silence -- so
+    that ANY unexpected output (not just curl's own error text) can never
+    reach tmux's run-shell output capture and be displayed to a client.
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "SERVER_TLS_ENABLED", False)
+    cmd = main_mod._bell_hook_curl("#{session_name}", swallow=True)
+    assert "2>/dev/null" in cmd
+
+
+def test_probe_curl_keeps_dash_S_for_diagnostics(monkeypatch):
+    """The one-shot arm-time PROBE (swallow=False) must still carry -S --
+    it runs once, at arm time, never per-bell, so keeping its failure
+    diagnostic is safe and is what makes `_bell_hook_last_error` actionable.
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "SERVER_TLS_ENABLED", False)
+    probe_cmd = main_mod._bell_hook_curl(main_mod._BELL_PROBE_SESSION, swallow=False)
+    assert "-sS" in probe_cmd
+    assert "2>/dev/null" not in probe_cmd
 
 
 # ---------------------------------------------------------------------------

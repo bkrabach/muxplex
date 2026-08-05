@@ -87,6 +87,39 @@ def test_settings_path_is_isolated(tmp_path):
     )
 
 
+def test_tmux_socket_dir_is_isolated_by_default():
+    """Every test's real tmux subprocess calls must default to an isolated
+    TMUX_TMPDIR, never the ambient one.
+
+    Regression guard for the bell-hook delivery-proof incident: a script
+    that called the real ``_arm_bell_hook()`` (tmux ``set-hook -g``, global
+    to the whole tmux server) without overriding ``TMUX_TMPDIR`` reached the
+    OWNER'S REAL tmux server, because the ambient shell already had it
+    exported. This asserts the autouse isolation fixture is actually active
+    and actually not the ambient default.
+    """
+    import os
+
+    from . import conftest as ct
+
+    assert hasattr(ct, "_isolate_tmux_socket_dir"), (
+        "conftest._isolate_tmux_socket_dir was removed. That autouse fixture "
+        "is what stops a test's real tmux calls (e.g. _arm_bell_hook's "
+        "`set-hook -g`) from reaching the ambient/production tmux server."
+    )
+    tmpdir = os.environ.get("TMUX_TMPDIR", "")
+    assert tmpdir, "TMUX_TMPDIR must be set (to an isolated dir) during tests"
+    assert "tmux-isolated" in tmpdir, (
+        f"TMUX_TMPDIR ({tmpdir!r}) does not look like the isolated per-test "
+        f"directory -- the autouse fixture may have been weakened."
+    )
+    assert "TMUX" not in os.environ, (
+        "TMUX must be unset during tests -- tmux prioritizes $TMUX over "
+        "TMUX_TMPDIR when resolving which server socket to talk to, so a "
+        "leaked $TMUX would silently defeat the isolation above."
+    )
+
+
 def test_no_test_calls_serve_without_a_guard():
     """Structural scan: catch careless NEW tests, not just the known six.
 

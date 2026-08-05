@@ -425,6 +425,54 @@ a counter -- is correct-as-designed and already documented in
 matters here, since the poll fallback is meant to cover only the brief
 window before the hook arms.
 
+**The PERSISTENT hook must be silent, always -- loudness belongs only at
+arm time.** `_bell_hook_curl()` builds two different commands from one
+function, and they must stay different: the one-shot arm-time PROBE
+(`swallow=False`) is deliberately loud (`-S`, no `|| true`) so a failure is
+diagnosable in `_bell_hook_last_error`; the PERSISTENT hook (`swallow=True`,
+registered via `set-hook -g`) fires on every real bell, in every session,
+for the life of the process, with a client very likely attached and
+watching -- it must never carry `-S`, and its stderr is explicitly
+redirected to `/dev/null` on top of that, independent of curl's own
+silence.
+
+**Incident:** a revision meant to make probe failures diagnosable made
+`_bell_hook_curl()` build ONE command for both callers (`-sSf`, no stderr
+redirect) and only varied the trailing `|| true`. tmux's `run-shell`, per
+its own manual, displays a background command's output in view mode on the
+client's active pane when the command isn't `-C`/quiet -- so every real
+bell whose curl call failed (independent of whether `|| true` swallowed the
+*exit code*) painted curl's stderr text onto whatever the owner was looking
+at. Confirmed live: `returned 52` repeatedly replaced the owner's screen,
+across every one of his live sessions, for the life of the process. The
+instinct to make failure loud was correct -- silence is what hid the
+original TLS-scheme bug for so long -- but the hook is the wrong place for
+it: loudness belongs in the one-shot probe, the log, `muxplex doctor`, and
+`GET /api/instance-info`'s `bell_hook_armed`, never on a live client's
+screen on every bell. See `test_persistent_hook_never_includes_dash_S` /
+`test_persistent_hook_redirects_stderr_to_devnull` in `test_api.py` --
+these are regression guards for exactly this, not incidental assertions.
+
+**Any test or proof that arms this hook for real must run against an
+isolated tmux server -- never the ambient one.** `_arm_bell_hook()`'s
+`set-hook -g` is GLOBAL TO THE WHOLE TMUX SERVER. A delivery proof for this
+exact fix once called the real function against a scratch TLS port but
+never overrode `TMUX_TMPDIR`/`tmux_socket_dir` -- and because the proof's
+own shell already had `TMUX_TMPDIR` exported (from `muxplex env`, see
+"Running a second instance on one box" below), `tmux_env()` resolved to the
+OWNER'S REAL tmux server. Every real bell across 53 live sessions then
+curled the dead scratch port for as long as the hook stayed armed.
+Hand-repaired once; not something to rediscover. `muxplex/tests/conftest.py`
+now enforces this structurally rather than relying on a future author
+remembering: `_isolate_tmux_socket_dir` is an AUTOUSE fixture that forces
+`TMUX_TMPDIR` to a fresh per-test directory (and unsets `$TMUX`) for every
+test by default -- see that fixture's docstring, and
+`test_safety_rails.py`'s `test_tmux_socket_dir_is_isolated_by_default`,
+which fails if it is ever removed or weakened. A test that wants a REAL,
+working isolated tmux server on top of this still layers its own explicit
+`-L <unique-name>` socket, same as `test_integration.py`'s `tmux_server`
+fixture already does.
+
 ## Clean shutdown ordering
 
 - On lifespan shutdown: cancel the poll loop + open WS-relay tasks FIRST
