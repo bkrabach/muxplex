@@ -34,18 +34,33 @@ _bell_seen: dict[str, bool] = {}
 
 
 async def poll_bell_flag(session_name: str) -> bool:
-    """Poll the tmux window_bell_flag for session_name.
+    """Poll ALL windows of session_name's tmux window_bell_flag.
 
-    Calls: tmux display-message -t <name> -p #{window_bell_flag}
+    Calls: tmux list-windows -t <name> -F #{window_bell_flag}
 
-    Returns True if the output is '1', False otherwise (including on errors).
+    Returns True if ANY window in the session reports '1', False otherwise
+    (including on errors, or zero windows).
+
+    Incident (verified against real tmux): this used to call
+    ``display-message -t <name> -p '#{window_bell_flag}'``, whose session-only
+    target resolves to the session's CURRENT (active) window -- not
+    necessarily the window a bell fired in. Confirmed live: firing a bell in
+    an inactive window set THAT window's flag to '1' while the active
+    window's flag stayed '0', and ``display-message -t <session>`` (no window
+    qualifier) reported the active window's ('0') flag -- the bell was
+    invisible to this fallback despite the tmux-native flag being correctly
+    set. A multi-window session (e.g. an amplifier-workspace-style layout)
+    whose bell fires in a background window went undetected by this path.
+    ``list-windows -t <session>`` enumerates every window in the session, so
+    a bell in ANY of them is now seen regardless of which window is active.
+
     Note: reading does NOT clear the tmux bell flag.
     """
     try:
         output = await run_tmux(
-            "display-message", "-t", session_name, "-p", "#{window_bell_flag}"
+            "list-windows", "-t", session_name, "-F", "#{window_bell_flag}"
         )
-        return output.strip() == "1"
+        return "1" in output.split()
     except RuntimeError:
         return False
 

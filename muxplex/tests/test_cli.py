@@ -2261,6 +2261,154 @@ def test_doctor_shows_running_not_serving_distinctly(tmp_path, monkeypatch, caps
 
 
 # ---------------------------------------------------------------------------
+# doctor(): bell hook armed advisory (regression: "armed" used to mean only
+# that tmux accepted `set-hook` -- never that a bell could actually arrive.
+# Surfaced the same way TLS expiry is: a non-fatal advisory line.)
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_warns_when_bell_hook_not_armed(tmp_path, monkeypatch, capsys):
+    """doctor() must warn when the running instance reports bell_hook_armed=False."""
+    import json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {
+            "device_id": "abc",
+            "version": "0.0.0",
+            "bell_hook_armed": False,
+        },
+    )
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "Bell hook" in out
+    assert "NOT armed" in out
+    assert "setup-hooks" in out
+
+
+def test_doctor_shows_bell_hook_armed_ok(tmp_path, monkeypatch, capsys):
+    """doctor() must show a green line when bell_hook_armed=True."""
+    import json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {
+            "device_id": "abc",
+            "version": "0.0.0",
+            "bell_hook_armed": True,
+        },
+    )
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "Bell hook: armed" in out
+    assert "NOT armed" not in out
+
+
+def test_doctor_omits_bell_hook_line_when_not_serving(tmp_path, monkeypatch, capsys):
+    """doctor() must not mention the bell hook at all when nothing is running
+    (no running_info to read bell_hook_armed from)."""
+    import json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(
+        cli_mod, "_fetch_local_instance_info", lambda port, timeout=2.0: None
+    )
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "Bell hook" not in out
+
+
+def test_doctor_omits_bell_hook_line_for_different_machine(
+    tmp_path, monkeypatch, capsys
+):
+    """doctor() must not report on a DIFFERENT machine's bell-hook state --
+    that host's hook says nothing about this one (same guard as the running-
+    version comparison above)."""
+    import json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {
+            "device_id": "someone-else",
+            "name": "other-host",
+            "version": "0.0.0",
+            "bell_hook_armed": False,
+        },
+    )
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "Bell hook" not in out
+
+
+def test_doctor_omits_bell_hook_line_for_old_peer_missing_field(
+    tmp_path, monkeypatch, capsys
+):
+    """An older peer that predates bell_hook_armed must not produce a
+    warning or an ok line -- version tolerance, per AGENTS.md."""
+    import json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda port, timeout=2.0: {"device_id": "abc", "version": "0.0.0"},
+    )
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "Bell hook" not in out
+
+
+# ---------------------------------------------------------------------------
 # service subcommand dispatch tests
 # ---------------------------------------------------------------------------
 

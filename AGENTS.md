@@ -363,6 +363,68 @@ and distinguishes "our handler never fired" from "our handler fired twice."
   graceful degradation in the service (circuit breaker), not by asking the
   user to prune config.
 
+## Bell hook: "armed" means delivered, not merely registered
+
+`_arm_bell_hook()` (main.py) registers tmux's `alert-bell` hook so a real
+bell forwards to `POST /api/sessions/{name}/bell` via a `run-shell 'curl
+...'` hook string. Two lessons, both found by testing the ACTUAL delivery
+path rather than trusting a green health check:
+
+- **The hook must dial the scheme the server is actually serving, and
+  cli.py is the only place that knows it.** `serve()` resolves TLS
+  (`ssl_certfile`/`ssl_keyfile`) from settings/CLI flags immediately before
+  `uvicorn.run()` -- so it sets `MUXPLEX_TLS_ENABLED` in `os.environ`
+  *before* importing `muxplex.main`, exactly the pattern `MUXPLEX_PORT`
+  already used for `SERVER_PORT`. `main.py`'s `SERVER_TLS_ENABLED` reads it
+  at import time; `_bell_hook_curl()` is the ONLY place that builds the
+  hook's curl command, and it is the single source of truth for scheme
+  (`http`/`https`), host (`127.0.0.1`, never `localhost` -- unambiguous, and
+  exactly the address the auth middleware's localhost bypass checks), and
+  cert posture (`-k` whenever TLS is on -- this is a same-host loopback
+  call, so there's no MITM to guard against, and the cert may be
+  self-signed / signed by muxplex's own local CA / a Tailscale-hostname-only
+  cert that doesn't cover `127.0.0.1` at all; mirrors the identical
+  established pattern in `_probe_service_port` / `_fetch_local_instance_info`).
+  **Incident:** the hook hardcoded `http://localhost` unconditionally. On
+  any host actually serving TLS, `curl -sfo /dev/null ... || true` failed
+  silently on every real bell (curl exit 52, swallowed by `-sf` + `|| true`)
+  for the life of every process, forever -- while `bell_hook_armed` reported
+  `true` the entire time, because registration (`set-hook`) succeeded
+  perfectly. `bells.process_bell_flags()`'s fallback (see below) carried
+  bell detection the whole time, which is exactly what hid it.
+- **"Armed" must mean a delivery PROBE actually arrived, not that `set-hook`
+  was accepted.** After registering, `_arm_bell_hook()` now fires the EXACT
+  command tmux would run on a real bell (same `_bell_hook_curl()`, targeting
+  the reserved sentinel session `_BELL_PROBE_SESSION`, which `receive_bell()`
+  recognizes and never persists to `state.json`), and waits for that request
+  to actually reach `receive_bell()` before reporting armed. Two independent
+  failure surfaces, both honest: the probe's `run_tmux("run-shell", ...)`
+  raising (curl's own nonzero exit propagates through tmux -- verified
+  against real tmux: `tmux run-shell "exit 7"` itself exits 7), or the
+  request never arriving within `_BELL_PROBE_TIMEOUT_S`. **Gotcha (verified
+  against real tmux):** a detached `run-shell`'s exit code propagates this
+  way, but its stdout/stderr TEXT does not -- tmux captures a run-shell
+  command's output for its own status-line message display to an attached
+  client, and there isn't one here, so curl's own diagnostic text is
+  frequently unavailable even though the failure is real. `curl -S`
+  (show-error, paired with `-s`) plus a type-name fallback keeps
+  `_bell_hook_last_error` from ever being a bare trailing colon.
+  `muxplex doctor` surfaces `bell_hook_armed` (from `GET /api/instance-info`)
+  the same non-fatal-advisory way it already surfaces TLS cert expiry.
+
+`bells.poll_bell_flag()`'s fallback has its own window-scoping gotcha, also
+verified live: `display-message -t <session>` (no window qualifier) reads
+only the session's CURRENT (active) window's `window_bell_flag` -- a bell in
+a background window sets THAT window's flag while the active window's stays
+`0`, and goes completely undetected. Fixed by polling `list-windows -t
+<session>` (every window) instead. The *stuck*-flag behavior this fallback
+also has -- a flag that never clears (no client ever views that window)
+means only the first bell is ever counted, since tmux exposes a boolean, not
+a counter -- is correct-as-designed and already documented in
+`process_bell_flags()`'s docstring; the hook fix above is what actually
+matters here, since the poll fallback is meant to cover only the brief
+window before the hook arms.
+
 ## Clean shutdown ordering
 
 - On lifespan shutdown: cancel the poll loop + open WS-relay tasks FIRST

@@ -160,6 +160,16 @@ POLL_INTERVAL: float = float(os.environ.get("POLL_INTERVAL", "2.0"))
 SERVER_PORT: int = int(os.environ.get("MUXPLEX_PORT", "8088"))
 SETTINGS_SYNC_INTERVAL: int = 15  # sync every ~30 seconds (15 * 2s poll interval)
 
+# Whether cli.py's serve() actually handed uvicorn ssl_certfile/ssl_keyfile.
+# cli.py sets MUXPLEX_TLS_ENABLED before importing this module -- the same
+# pattern SERVER_PORT above already uses for MUXPLEX_PORT. This is the
+# SOURCE OF TRUTH _arm_bell_hook() uses to pick http vs https: the hook must
+# dial the scheme uvicorn is actually serving, never assume http (see
+# AGENTS.md's bell-hook incident). Defaults to False (plain import, e.g.
+# tests using TestClient directly without going through cli.py's serve()),
+# matching SERVER_PORT's same import-without-cli fallback behavior.
+SERVER_TLS_ENABLED: bool = os.environ.get("MUXPLEX_TLS_ENABLED", "0") == "1"
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -188,8 +198,26 @@ _server_start_time: float = time.time()
 # costs nothing further -- no per-cycle tmux subprocess once armed. Exposed
 # via GET /api/instance-info so an operator/agent can tell bells are (not)
 # armed without grepping logs.
+#
+# CRITICAL: "armed" means a delivery PROBE actually arrived at receive_bell()
+# below -- not merely that `tmux set-hook` was accepted. Registration success
+# and delivery success are different facts (an http/https scheme mismatch is
+# exactly the incident that proved it): a hook can be registered perfectly
+# and still never deliver a single bell. See _arm_bell_hook()'s docstring.
 _bell_hook_armed: bool = False
 _bell_hook_last_error: str | None = None
+
+# Reserved sentinel session name _arm_bell_hook() targets when proving
+# delivery. Never a real tmux session -- receive_bell() recognizes it and
+# signals _bell_probe_event instead of writing to state.json. The double
+# underscores + fixed name make an accidental collision with a real user
+# session name vanishingly unlikely.
+_BELL_PROBE_SESSION: str = "__muxplex_bell_probe__"
+_bell_probe_event: asyncio.Event | None = None
+# Generous for a same-host loopback curl (which should resolve in low tens of
+# milliseconds); this is a one-time cost paid only while unarmed (see above),
+# never a per-cycle tax once the probe succeeds.
+_BELL_PROBE_TIMEOUT_S: float = 3.0
 
 # Tasks currently running a terminal WebSocket proxy relay.  Tracked so the
 # lifespan shutdown can cancel any still-open relays: a relay blocked on
@@ -294,9 +322,59 @@ async def _sync_settings_with_remotes(
 # ---------------------------------------------------------------------------
 
 
+def _bell_hook_curl(target: str, *, swallow: bool) -> str:
+    """Build the curl command used to forward a bell to *target*'s
+    ``POST /api/sessions/{target}/bell``.
+
+    Scheme and cert posture are derived from ``SERVER_TLS_ENABLED`` -- the
+    same source of truth cli.py's ``serve()`` used to decide whether uvicorn
+    got ``ssl_certfile``/``ssl_keyfile`` -- so this NEVER hardcodes ``http``
+    while the server is actually speaking TLS (the incident this function
+    exists to prevent). Dials ``127.0.0.1`` rather than ``localhost``:
+    unambiguous (no DNS/hosts-file/IPv6-vs-IPv4 resolution surprise), and is
+    exactly the address the auth middleware's localhost bypass checks (see
+    docs/API_SEMANTICS.md / the auth-tls-patterns skill), so this call never
+    needs credentials.
+
+    ``-k`` (skip certificate verification) is added whenever TLS is on. This
+    loopback call never leaves the host, so there is no MITM this
+    verification would meaningfully guard against -- and the cert in use may
+    be self-signed, signed by muxplex's own local CA, or (for the Tailscale
+    method) issued for a hostname that doesn't cover ``127.0.0.1`` at all.
+    This mirrors the identical, already-established pattern in cli.py's
+    ``_probe_service_port`` / ``_fetch_local_instance_info`` (both use
+    ``ssl.CERT_NONE`` for the same same-host reason).
+
+    Args:
+        target: session name (real, or the ``#{session_name}`` tmux format
+            placeholder) to forward the bell to.
+        swallow: if True, append ``|| true`` so a delivery failure can never
+            surface as a visible tmux error to the user -- used for the
+            REAL hook, which fires on every future bell for the life of the
+            process. The one-time delivery PROBE deliberately leaves this
+            False so its exit code stays meaningful (see _arm_bell_hook).
+    """
+    scheme = "https" if SERVER_TLS_ENABLED else "http"
+    insecure = "k" if SERVER_TLS_ENABLED else ""
+    # -S (show-error) pairs with -s (silent, suppresses the progress meter)
+    # to keep curl quiet on success while still writing a real diagnostic to
+    # stderr on failure -- without it, `-s` alone suppresses error text too,
+    # leaving _bell_hook_last_error empty on a probe failure (verified: a
+    # plain `-sf` against a TLS-only port produces curl exit 52 with NO
+    # message). run_tmux() surfaces that stderr in its RuntimeError, so this
+    # is what makes the probe's failure "loud and visible" per AGENTS.md
+    # rather than just a bare nonzero exit code.
+    cmd = (
+        f"curl -sS{insecure}fo /dev/null -X POST "
+        f"{scheme}://127.0.0.1:{SERVER_PORT}/api/sessions/{target}/bell"
+    )
+    return f"{cmd} || true" if swallow else cmd
+
+
 async def _arm_bell_hook() -> bool:
     """(Re-)register tmux's ``alert-bell`` hook so a bell forwards to
-    ``POST /api/sessions/{name}/bell`` (see ``receive_bell()``).
+    ``POST /api/sessions/{name}/bell`` (see ``receive_bell()``), THEN prove
+    it actually delivers before reporting armed.
 
     Idempotent: ``set-hook -g`` simply overwrites whatever hook is already
     set, so calling this repeatedly is always safe.
@@ -308,21 +386,49 @@ async def _arm_bell_hook() -> bool:
     retrying, so a healthy process pays this subprocess cost once, not every
     2s for its lifetime.
 
+    CRITICAL: registration succeeding is NOT proof of delivery. The incident
+    this function was rewritten for: ``set-hook`` was accepted every time,
+    yet the hook's own ``curl ... || true`` silently discarded a TLS scheme
+    mismatch forever -- bells never arrived, and nothing ever said so. So
+    after registering, this fires the EXACT command tmux would run on a real
+    bell (same scheme/host/port/cert posture, see ``_bell_hook_curl``),
+    targeting the reserved ``_BELL_PROBE_SESSION`` sentinel, and waits for
+    ``receive_bell()`` to actually signal ``_bell_probe_event``. "Armed"
+    means THAT succeeded -- not that tmux accepted a command string.
+
+    Two independent signals must both agree for success:
+      1. ``run_tmux("run-shell", ...)`` must not raise -- tmux's
+         ``run-shell`` waits for the shell command and propagates ITS exit
+         code as its own (verified against real tmux: ``exit 7`` -> tmux
+         exits 7), so a connection failure, TLS handshake failure, or
+         missing ``curl`` surfaces immediately as a ``RuntimeError``. NOTE
+         (also verified against real tmux): only the EXIT CODE propagates
+         this way -- a detached ``run-shell``'s stdout/stderr TEXT does not;
+         tmux captures it for its own status-line message display to an
+         attached client, which there isn't one here. So curl's own
+         diagnostic text is frequently unavailable; see the fallback below.
+      2. The probe's HTTP request must actually reach ``receive_bell()`` and
+         set ``_bell_probe_event`` within ``_BELL_PROBE_TIMEOUT_S`` --
+         catches the (unlikely but real) case where something answers the
+         socket without it being *this* server's bell endpoint.
+
     Failure is never silent: every failure is logged at WARNING with the
-    tmux error (unlike the previous ``except Exception: pass``), and the
+    concrete error (unlike the previous ``except Exception: pass``), and the
     outcome is recorded in ``_bell_hook_armed`` / ``_bell_hook_last_error``
-    so ``GET /api/instance-info`` reflects it without grepping logs.
+    so ``GET /api/instance-info`` (and ``muxplex doctor``) reflect it
+    without grepping logs.
 
     Returns:
-        True if tmux accepted the hook registration, False otherwise.
+        True if the hook is registered AND a real delivery probe was
+        confirmed, False otherwise.
     """
-    global _bell_hook_armed, _bell_hook_last_error
+    global _bell_hook_armed, _bell_hook_last_error, _bell_probe_event
     try:
         await run_tmux(
             "set-hook",
             "-g",
             "alert-bell",
-            f"run-shell 'curl -sfo /dev/null -X POST http://localhost:{SERVER_PORT}/api/sessions/#{{session_name}}/bell || true'",
+            f"run-shell '{_bell_hook_curl('#{session_name}', swallow=True)}'",
         )
     except Exception as exc:
         _bell_hook_last_error = str(exc)
@@ -333,6 +439,43 @@ async def _arm_bell_hook() -> bool:
         )
         _bell_hook_armed = False
         return False
+
+    # Registration accepted is NOT proof of delivery -- prove it. Fire the
+    # EXACT command tmux would run on a real bell (same scheme/host/port/cert
+    # posture, see _bell_hook_curl), targeting the reserved sentinel session
+    # _BELL_PROBE_SESSION, and wait for receive_bell() to actually signal
+    # _bell_probe_event. "Armed" means THIS succeeded, not that tmux merely
+    # accepted a command string -- see this function's docstring for why
+    # that distinction is exactly the incident being fixed.
+    event = asyncio.Event()
+    _bell_probe_event = event
+    try:
+        await run_tmux("run-shell", _bell_hook_curl(_BELL_PROBE_SESSION, swallow=False))
+        await asyncio.wait_for(event.wait(), timeout=_BELL_PROBE_TIMEOUT_S)
+    except Exception as exc:
+        # NOTE (verified against real tmux): a detached `tmux run-shell`
+        # invocation's exit code propagates through run_tmux() as designed,
+        # but its stdout/stderr TEXT does not -- tmux captures a run-shell
+        # command's output for its own internal status-line message display
+        # (meant for an attached client), not for the process that invoked
+        # `tmux run-shell`. So a curl failure surfaces here as a genuine,
+        # nonzero-exit RuntimeError, but frequently with an EMPTY message.
+        # Fall back to the exception type so the log/instance-info line is
+        # never just a bare trailing colon.
+        detail = (
+            str(exc)
+            or f"{type(exc).__name__} (curl exited nonzero; tmux run-shell does not forward a detached command's output text)"
+        )
+        _bell_hook_last_error = (
+            "bell hook is registered but the delivery probe failed -- bells "
+            f"will not fire until this heals: {detail}"
+        )
+        _log.warning("%s", _bell_hook_last_error)
+        _bell_hook_armed = False
+        return False
+    finally:
+        if _bell_probe_event is event:
+            _bell_probe_event = None
 
     _bell_hook_last_error = None
     _bell_hook_armed = True
@@ -2022,7 +2165,17 @@ async def receive_bell(name: str) -> dict:
     This is more reliable than polling window_bell_flag because tmux only
     sets that flag when no client is attached -- with an SSH/WezTerm session
     attached, the flag never gets set even though the bell fires.
+
+    ``name == _BELL_PROBE_SESSION`` is a reserved internal target: never a
+    real tmux session, used only by ``_arm_bell_hook()`` to PROVE delivery
+    (see that function's docstring). Handled first and returned immediately
+    -- it must never be written to state.json as if it were a real session.
     """
+    if name == _BELL_PROBE_SESSION:
+        if _bell_probe_event is not None:
+            _bell_probe_event.set()
+        return {"ok": True, "probe": True}
+
     async with state_lock:
         state = load_state()
         if name not in state["sessions"]:

@@ -18,7 +18,6 @@ from muxplex.bells import (
 )
 from muxplex.state import empty_bell, empty_state
 
-
 # ---------------------------------------------------------------------------
 # autouse fixture — clear _bell_seen before/after each test
 # ---------------------------------------------------------------------------
@@ -38,7 +37,8 @@ def reset_bell_seen():
 
 
 async def test_poll_bell_flag_returns_true_when_flag_is_1():
-    """poll_bell_flag returns True when tmux reports window_bell_flag=1."""
+    """poll_bell_flag returns True when tmux reports window_bell_flag=1
+    for a single-window session."""
     with patch("muxplex.bells.run_tmux", new=AsyncMock(return_value="1\n")):
         result = await poll_bell_flag("my-session")
     assert result is True
@@ -57,6 +57,45 @@ async def test_poll_bell_flag_returns_false_on_error():
         "muxplex.bells.run_tmux",
         new=AsyncMock(side_effect=RuntimeError("session not found")),
     ):
+        result = await poll_bell_flag("my-session")
+    assert result is False
+
+
+async def test_poll_bell_flag_uses_list_windows_not_display_message():
+    """Regression test for the window-scoping bug: poll_bell_flag must call
+    `tmux list-windows -t <session> -F #{window_bell_flag}` (every window),
+    NOT `display-message -t <session> -p ...` (only the session's current/
+    active window -- verified against real tmux to silently miss a bell in
+    any other window).
+    """
+    mock_run_tmux = AsyncMock(return_value="0\n0\n")
+    with patch("muxplex.bells.run_tmux", mock_run_tmux):
+        await poll_bell_flag("my-session")
+
+    mock_run_tmux.assert_awaited_once_with(
+        "list-windows", "-t", "my-session", "-F", "#{window_bell_flag}"
+    )
+
+
+async def test_poll_bell_flag_true_when_any_background_window_flag_set():
+    """Regression test for the window-scoping bug (verified against real
+    tmux): a bell in a BACKGROUND (non-active) window must still be
+    detected. The old `display-message -t <session>` implementation only
+    ever read the session's currently-active window, so a background-window
+    bell -- confirmed live to set that window's own flag to '1' while the
+    active window's flag stayed '0' -- went completely undetected. Multiple
+    windows' flags are returned one per line by `list-windows`; ANY '1'
+    among them must count.
+    """
+    # window 1 (active) = '0', window 2 (background, where the bell fired) = '1'
+    with patch("muxplex.bells.run_tmux", new=AsyncMock(return_value="0\n1\n")):
+        result = await poll_bell_flag("my-session")
+    assert result is True
+
+
+async def test_poll_bell_flag_false_when_all_windows_clear():
+    """No window in the session has its bell flag set -> False."""
+    with patch("muxplex.bells.run_tmux", new=AsyncMock(return_value="0\n0\n0\n")):
         result = await poll_bell_flag("my-session")
     assert result is False
 

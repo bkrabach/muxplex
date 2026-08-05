@@ -85,6 +85,33 @@ def client(monkeypatch):
         yield c
 
 
+def _mock_run_tmux_with_bell_probe(*, register_side_effect: Exception | None = None):
+    """Build a ``run_tmux`` replacement for tests exercising ``_arm_bell_hook()``.
+
+    ``_arm_bell_hook()`` makes TWO tmux calls: register (``set-hook``) then a
+    delivery probe (``run-shell``). In production the probe's curl call
+    actually reaches ``receive_bell()`` and signals ``_bell_probe_event``;
+    this simulates that instantly so tests don't block for the real
+    ``_BELL_PROBE_TIMEOUT_S``.
+
+    Args:
+        register_side_effect: if given, raised on the FIRST (registration)
+            call instead of succeeding (so the probe call never happens).
+    """
+    import muxplex.main as main_mod
+
+    async def _run_tmux(*args):
+        if args and args[0] == "run-shell":
+            if main_mod._bell_probe_event is not None:
+                main_mod._bell_probe_event.set()
+            return ""
+        if register_side_effect is not None:
+            raise register_side_effect
+        return ""
+
+    return _run_tmux
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -1835,10 +1862,9 @@ def test_bell_clear_noop_when_no_session(client):
 
 
 def test_setup_hooks_returns_ok(client, monkeypatch):
-    """POST /api/internal/setup-hooks returns {"ok": True} when tmux hook registers."""
-    from unittest.mock import AsyncMock
-
-    monkeypatch.setattr("muxplex.main.run_tmux", AsyncMock(return_value=""))
+    """POST /api/internal/setup-hooks returns {"ok": True} when tmux hook
+    registers AND the delivery probe confirms (see _arm_bell_hook())."""
+    monkeypatch.setattr("muxplex.main.run_tmux", _mock_run_tmux_with_bell_probe())
 
     response = client.post("/api/internal/setup-hooks")
     assert response.status_code == 200
@@ -1866,20 +1892,22 @@ def test_setup_hooks_curl_discards_response_body(client, monkeypatch):
     """POST /api/internal/setup-hooks passes curl with -o /dev/null to discard response."""
     from unittest.mock import AsyncMock
 
-    mock_run_tmux = AsyncMock(return_value="")
+    mock_run_tmux = AsyncMock(side_effect=_mock_run_tmux_with_bell_probe())
     monkeypatch.setattr("muxplex.main.run_tmux", mock_run_tmux)
 
     response = client.post("/api/internal/setup-hooks")
     assert response.status_code == 200
 
-    # Verify run_tmux was called with the correct hook command
+    # Verify run_tmux was called with the correct hook command. _arm_bell_hook()
+    # now makes TWO calls (register, then the delivery probe) -- the register
+    # call is always first (call_args_list[0]).
     assert mock_run_tmux.called
-    call_args = mock_run_tmux.call_args
+    call_args = mock_run_tmux.call_args_list[0]
     # Positional args are: "set-hook", "-g", "alert-bell", <hook_command>
     hook_command = call_args[0][3] if len(call_args[0]) > 3 else None
     assert hook_command is not None
     # Should have -sfo /dev/null, not just -sf
-    assert "-sfo /dev/null" in hook_command
+    assert "-sSfo /dev/null" in hook_command
 
 
 def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
@@ -1890,8 +1918,9 @@ def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
 
     from muxplex.main import app
 
-    # Mock run_tmux to capture the hook command
-    mock_run_tmux = AsyncMock(return_value="")
+    # Mock run_tmux to capture the hook command (and simulate the delivery
+    # probe arriving instantly, since _arm_bell_hook() now makes two calls).
+    mock_run_tmux = AsyncMock(side_effect=_mock_run_tmux_with_bell_probe())
     monkeypatch.setattr("muxplex.main.run_tmux", mock_run_tmux)
 
     # Trigger lifespan by entering/exiting TestClient context
@@ -1910,7 +1939,7 @@ def test_lifespan_alert_bell_hook_discards_response(monkeypatch):
 
     # Check the first hook call
     hook_command = hook_calls[0][0][3]
-    assert "-sfo /dev/null" in hook_command
+    assert "-sSfo /dev/null" in hook_command
 
 
 # ---------------------------------------------------------------------------
@@ -1944,6 +1973,12 @@ async def test_bell_hook_self_heals_after_startup_failure(monkeypatch):
     Against the pre-fix code this test fails at step 3: nothing in
     `_run_poll_cycle` ever called `run_tmux` for the hook, so `call_count`
     would stay at 1 and the hook would never be proven armed.
+
+    Updated for the delivery-probe rewrite: `_arm_bell_hook()` now makes TWO
+    `run_tmux` calls per successful attempt (register, then the delivery
+    probe) -- so the failed startup attempt makes 1 call (registration only;
+    it never reaches the probe), and the poll cycle's successful retry makes
+    2 more (register + probe) for a total of 3.
     """
     from unittest.mock import AsyncMock
 
@@ -1955,10 +1990,18 @@ async def test_bell_hook_self_heals_after_startup_failure(monkeypatch):
     monkeypatch.setattr(main_mod, "_bell_hook_last_error", None)
 
     # First call (the startup-equivalent) fails, simulating "tmux not up yet
-    # at boot"; second call (inside the poll cycle, tmux now up) succeeds.
-    mock_run_tmux = AsyncMock(
-        side_effect=[RuntimeError("no server running on /tmp/tmux-0/default"), ""]
-    )
+    # at boot"; subsequent calls (inside the poll cycle, tmux now up) succeed
+    # -- including a simulated instant delivery for the probe's run-shell call.
+    call_log: list[tuple] = []
+
+    async def mock_run_tmux(*args):
+        call_log.append(args)
+        if len(call_log) == 1:
+            raise RuntimeError("no server running on /tmp/tmux-0/default")
+        if args and args[0] == "run-shell" and main_mod._bell_probe_event is not None:
+            main_mod._bell_probe_event.set()
+        return ""
+
     monkeypatch.setattr(main_mod, "run_tmux", mock_run_tmux)
 
     # Step 1: the real startup call must genuinely fail here.
@@ -1966,7 +2009,7 @@ async def test_bell_hook_self_heals_after_startup_failure(monkeypatch):
     assert startup_result is False
     assert main_mod._bell_hook_armed is False
     assert main_mod._bell_hook_last_error is not None
-    assert mock_run_tmux.call_count == 1
+    assert len(call_log) == 1
 
     # Step 2: drive a REAL poll cycle. Everything else it touches is mocked
     # out to isolate the hook-arming behavior -- crucially, the self-healing
@@ -1986,9 +2029,10 @@ async def test_bell_hook_self_heals_after_startup_failure(monkeypatch):
 
     await main_mod._run_poll_cycle()
 
-    # The poll cycle's self-healing retry is what fixed it.
-    assert mock_run_tmux.call_count == 2, (
-        "expected _run_poll_cycle to retry bell-hook registration while unarmed"
+    # The poll cycle's self-healing retry is what fixed it: 1 (failed
+    # startup) + 2 (successful retry: register + probe) = 3.
+    assert len(call_log) == 3, (
+        "expected _run_poll_cycle to retry bell-hook registration (and probe) while unarmed"
     )
     assert main_mod._bell_hook_armed is True
     assert main_mod._bell_hook_last_error is None
@@ -2030,6 +2074,181 @@ async def test_bell_hook_not_retried_once_armed(monkeypatch):
         "an already-armed hook must not be re-registered every poll cycle"
     )
     assert main_mod._bell_hook_armed is True
+
+
+# ---------------------------------------------------------------------------
+# Bell hook scheme correctness (regression: hook hardcoded http:// while the
+# server actually serves TLS -- curl failed silently on every real bell)
+# ---------------------------------------------------------------------------
+
+
+def test_bell_hook_curl_uses_http_and_no_dash_k_when_tls_disabled(monkeypatch):
+    """With SERVER_TLS_ENABLED False (the default), the curl command must
+    dial http:// and must NOT pass -k (nothing to skip-verify for plain HTTP).
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "SERVER_TLS_ENABLED", False)
+
+    cmd = main_mod._bell_hook_curl("somesession", swallow=True)
+    assert "http://127.0.0.1" in cmd
+    assert "https://" not in cmd
+    assert " -k" not in cmd
+    assert "-sSfo /dev/null" in cmd
+    assert cmd.endswith("|| true")
+
+
+def test_bell_hook_curl_uses_https_and_dash_k_when_tls_enabled(monkeypatch):
+    """Regression test for the core bug: when the server is actually serving
+    TLS (SERVER_TLS_ENABLED True), the hook's curl command must dial
+    https:// -- not the hardcoded http:// that silently failed on every real
+    bell (curl exit 52, swallowed by `-sf ... || true`) -- and must pass -k
+    to skip certificate verification for this same-host loopback call (the
+    cert may be self-signed / local-CA / a Tailscale-hostname-only cert that
+    doesn't cover 127.0.0.1 at all).
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "SERVER_TLS_ENABLED", True)
+
+    cmd = main_mod._bell_hook_curl("somesession", swallow=True)
+    assert "https://127.0.0.1" in cmd
+    assert "http://127.0.0.1" not in cmd
+    assert "-sSkfo /dev/null" in cmd
+    assert cmd.endswith("|| true")
+
+
+def test_bell_hook_curl_dials_127_0_0_1_not_localhost(monkeypatch):
+    """Dials 127.0.0.1 explicitly rather than 'localhost' -- unambiguous
+    (no DNS/hosts-file/IPv6-vs-IPv4 resolution surprise), and exactly the
+    address the auth middleware's localhost bypass checks.
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "SERVER_TLS_ENABLED", False)
+    cmd = main_mod._bell_hook_curl("somesession", swallow=True)
+    assert "127.0.0.1" in cmd
+    assert "localhost" not in cmd
+
+
+def test_bell_hook_probe_curl_does_not_swallow_errors(monkeypatch):
+    """The one-time delivery PROBE must NOT append `|| true` -- its exit code
+    is how _arm_bell_hook() detects a genuine delivery failure. Only the
+    persistent REAL hook (which fires for the life of the process) swallows
+    errors so a transient failure never surfaces as a visible tmux error.
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "SERVER_TLS_ENABLED", False)
+    probe_cmd = main_mod._bell_hook_curl(main_mod._BELL_PROBE_SESSION, swallow=False)
+    assert not probe_cmd.endswith("|| true")
+    hook_cmd = main_mod._bell_hook_curl("#{session_name}", swallow=True)
+    assert hook_cmd.endswith("|| true")
+
+
+# ---------------------------------------------------------------------------
+# Bell hook delivery probe honesty (regression: "armed" used to mean only
+# that tmux accepted `set-hook`, never that a bell could actually arrive)
+# ---------------------------------------------------------------------------
+
+
+async def test_bell_hook_unarmed_when_probe_never_arrives(monkeypatch):
+    """If `set-hook` is accepted AND the probe's `run-shell` call succeeds
+    (no exception) but the HTTP request never actually reaches
+    `receive_bell()` -- simulating something answering the socket without
+    being *this* server's bell endpoint -- `_arm_bell_hook()` must report
+    unarmed with an honest, actionable error, not silently report success.
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", False)
+    monkeypatch.setattr(main_mod, "_bell_hook_last_error", None)
+    # Keep the test fast: the real timeout is generous for production use.
+    monkeypatch.setattr(main_mod, "_BELL_PROBE_TIMEOUT_S", 0.05)
+
+    async def mock_run_tmux(*args):
+        # Both calls "succeed" (no exception) -- but never signal the probe
+        # event, simulating a delivery that never actually reaches us.
+        return ""
+
+    monkeypatch.setattr(main_mod, "run_tmux", mock_run_tmux)
+
+    result = await main_mod._arm_bell_hook()
+
+    assert result is False
+    assert main_mod._bell_hook_armed is False
+    assert main_mod._bell_hook_last_error is not None
+    assert "probe" in main_mod._bell_hook_last_error.lower()
+
+
+async def test_bell_hook_unarmed_when_probe_curl_fails(monkeypatch):
+    """If the probe's `run-shell` call itself raises (curl connection
+    failure, TLS handshake failure, missing curl binary -- all surface as a
+    nonzero exit propagated through `run_tmux`), `_arm_bell_hook()` must
+    report unarmed immediately, with curl's own error message preserved.
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", False)
+    monkeypatch.setattr(main_mod, "_bell_hook_last_error", None)
+    monkeypatch.setattr(main_mod, "_BELL_PROBE_TIMEOUT_S", 0.05)
+
+    async def mock_run_tmux(*args):
+        if args and args[0] == "run-shell":
+            raise RuntimeError("curl: (7) Failed to connect to 127.0.0.1 port 8088")
+        return ""  # set-hook registration succeeds
+
+    monkeypatch.setattr(main_mod, "run_tmux", mock_run_tmux)
+
+    result = await main_mod._arm_bell_hook()
+
+    assert result is False
+    assert main_mod._bell_hook_armed is False
+    last_error = main_mod._bell_hook_last_error
+    assert last_error is not None
+    assert "Failed to connect" in last_error
+
+
+async def test_bell_hook_armed_true_when_probe_actually_arrives(monkeypatch):
+    """Positive case: registration succeeds, the probe's run-shell call
+    succeeds, AND the probe's HTTP request actually reaches receive_bell()
+    (simulated here exactly as the real request would: by calling the
+    endpoint, not by reaching into internals) -- only THEN is armed True.
+    """
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_bell_hook_armed", False)
+    monkeypatch.setattr(main_mod, "_bell_hook_last_error", None)
+
+    async def mock_run_tmux(*args):
+        if args and args[0] == "run-shell":
+            # Simulate the real request path: call the actual endpoint
+            # function, exactly what a real curl->uvicorn round trip would
+            # invoke, rather than reaching into _bell_probe_event directly.
+            await main_mod.receive_bell(main_mod._BELL_PROBE_SESSION)
+        return ""
+
+    monkeypatch.setattr(main_mod, "run_tmux", mock_run_tmux)
+
+    result = await main_mod._arm_bell_hook()
+
+    assert result is True
+    assert main_mod._bell_hook_armed is True
+    assert main_mod._bell_hook_last_error is None
+
+
+def test_receive_bell_probe_sentinel_never_persisted_to_state(client, monkeypatch):
+    """POST to the reserved probe sentinel name must never create a
+    state.json session entry -- it is an internal signal, not a real bell.
+    """
+    import muxplex.main as main_mod
+
+    response = client.post(f"/api/sessions/{main_mod._BELL_PROBE_SESSION}/bell")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "probe": True}
+
+    state_response = client.get("/api/state")
+    assert main_mod._BELL_PROBE_SESSION not in state_response.json()["sessions"]
 
 
 # ---------------------------------------------------------------------------

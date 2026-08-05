@@ -1018,13 +1018,13 @@ def serve(
     os.environ["MUXPLEX_AUTH"] = auth
     os.environ["MUXPLEX_SESSION_TTL"] = str(session_ttl)
 
-    # Prevent crash-loop on restart: free the port from a STALE holder only.
-    # Refuses to terminate a healthy running server -- see _kill_stale_port_holder.
-    _kill_stale_port_holder(port, force=force_take_port)
-
-    from muxplex.main import app
-
-    # Resolve SSL configuration
+    # Resolve SSL configuration BEFORE importing muxplex.main, and set
+    # MUXPLEX_TLS_ENABLED alongside the env vars above -- main.py's
+    # SERVER_TLS_ENABLED reads it at import time (same pattern SERVER_PORT
+    # already uses for MUXPLEX_PORT). This is the single source of truth
+    # main.py's bell hook (_arm_bell_hook / _bell_hook_curl) uses to pick
+    # http vs https: it must dial the scheme uvicorn is actually about to
+    # serve below, never assume http (see AGENTS.md's bell-hook incident).
     ssl_kwargs: dict = {}
     if tls_cert and tls_key:
         cert_path = Path(tls_cert)
@@ -1034,6 +1034,13 @@ def serve(
             print(f"  TLS {', '.join(missing)} not found, falling back to HTTP")
         else:
             ssl_kwargs = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
+    os.environ["MUXPLEX_TLS_ENABLED"] = "1" if ssl_kwargs else "0"
+
+    # Prevent crash-loop on restart: free the port from a STALE holder only.
+    # Refuses to terminate a healthy running server -- see _kill_stale_port_holder.
+    _kill_stale_port_holder(port, force=force_take_port)
+
+    from muxplex.main import app
 
     scheme = "https" if ssl_kwargs else "http"
     print(f"  muxplex → {scheme}://{host}:{port}")
@@ -1178,6 +1185,28 @@ def doctor() -> None:
                 f" (installed v{muxplex_version} \u2014 restart the service to pick up the new install)"
             )
             print("    Run: muxplex service restart   (or) muxplex upgrade")
+
+        # Bell hook: honest "armed" means a real delivery probe succeeded
+        # (see main.py's _arm_bell_hook()), not merely that tmux accepted
+        # `set-hook` -- surfaced here the same way TLS expiry is below: a
+        # non-fatal advisory line, not a hard failure. Skipped for a
+        # different machine's muxplex (running_info above) -- that host's
+        # hook state says nothing about this one. `.get()` also makes this
+        # silently absent against an older peer that predates the field
+        # (version tolerance, per AGENTS.md).
+        if _instance_is_this_host(running_info) is not False:
+            hook_armed = running_info.get("bell_hook_armed")
+            if hook_armed is False:
+                print(
+                    f"  {warn_mark} Bell hook: NOT armed \u2014 bells will not"
+                    " fire until this heals"
+                )
+                print(
+                    "    Run: muxplex service restart   (or) POST"
+                    " /api/internal/setup-hooks"
+                )
+            elif hook_armed is True:
+                print(f"  {ok_mark} Bell hook: armed (delivery probe confirmed)")
 
     # TLS status
     tls_cert = cfg.get("tls_cert", "")
