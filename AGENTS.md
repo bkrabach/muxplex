@@ -231,6 +231,51 @@ helpers in `terminal_input.py`. Injection-safety is verified by `test_input.py:3
 end-of-options prevent shell interpretation, text goes as a single uninterpreted
 argv element.
 
+## Follow-up queue: muxplex's first autonomous write
+
+A per-session, server-side, persisted list of text items (`state["followups"]`,
+`muxplex/followups.py`) that fires one item per bell, until it drains. See
+`FOLLOWUP_QUEUE_SPEC.md` for the full design; the load-bearing points a
+contributor must not break silently:
+
+- **The queue is a THIRD caller of `terminal_input.input_allowed_for_session()`**
+  — the same fence `/input` and the terminal WS gate already both use. No
+  bypass, no separate implementation. Re-evaluated at fire time against
+  FRESH settings (an append-time check is UX only, not the safety boundary).
+- **The seeded bell (v0.36.1, new-session-sorts-to-top) must NEVER advance the
+  queue.** It writes `state["sessions"][name]["bell"]` directly inside
+  `_run_poll_cycle`'s step 5, never through `receive_bell()` or
+  `process_bell_flags()` — the queue's advance hangs off exactly those two
+  functions, so the exclusion is structural (a property of where the code
+  lives), not a runtime check. Do not route the seed through either function
+  "for consistency" — that would silently give the queue a spurious advance.
+- **Two live bell-detection paths, one advance rule.** `receive_bell()` (the
+  tmux hook) always triggers an advance attempt. `process_bell_flags()` (the
+  poll fallback) triggers one ONLY while `_bell_hook_armed` is False —
+  a detached session's bell is independently observed by BOTH mechanisms at
+  once (see the spec's case A), so triggering from both while armed would
+  drain two items for one physical bell. Unarmed, the poll path is what
+  keeps the queue from silently stalling until the hook heals.
+- **State is a top-level `followups` key, never nested under
+  `sessions[name]`** — nesting would inherit the poll cycle's free cleanup
+  of vanished session entries, which cannot tell "tmux is briefly
+  unreachable" from "every session was deleted" and would wipe queued,
+  user-authored text on a transient hiccup. The explicit reaper
+  (`followups.reap_stale_queues`, step 6b) only runs when
+  `probe_tmux_epoch()` confirms tmux is alive this cycle.
+- **`/input`'s argv builders are duplicated, not extracted**, into the
+  advance path (`_advance_followup_queue` in main.py) — same rationale as
+  `views.matches_name_pattern` vs `terminal_input.session_matches_allowlist`
+  above: the two callers have different failure models (`/input` returns
+  500 to a waiting caller; the queue halts and preserves the item), so a
+  shared mutable implementation would let one silently change the other's
+  behavior. Both still call the same `build_send_text_argv`/
+  `build_send_key_argv`, so injection-safety is inherited, not re-derived.
+- **Federation is out of scope.** Endpoints live only under
+  `/api/sessions/{name}/followups` — no
+  `/api/federation/{device_id}/sessions/{name}/followups` proxy. Bells are
+  local-only state; a remote session's bell is the REMOTE's own concern.
+
 ## ttyd is loopback-only by design (unauthenticated writable terminal) — now per-session, over AF_UNIX
 
 **One ttyd process per tmux session**, each bound to its own UNIX domain

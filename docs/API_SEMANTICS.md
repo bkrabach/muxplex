@@ -26,6 +26,56 @@ you can verify rather than trust.
 
 ---
 
+## Follow-up queues: `/api/sessions/{name}/followups` (additive, local-only)
+
+Five endpoints (`GET`/`POST`/`PUT`/`DELETE`/`POST .../resume`) implementing a
+per-session, server-side, persisted queue of text items that fire one at a
+time, each on that session's next bell. See `FOLLOWUP_QUEUE_SPEC.md` for the
+full design and `../AGENTS.md`'s "Follow-up queue" section for the
+invariants a contributor must not break.
+
+- **`GET`** returns `{session, revision, items, halted, target_window}`.
+  An unknown-but-valid session with no queue returns `revision: 0, items:
+  [], halted: null` — an empty queue and an absent queue are the same thing
+  to a client. `target_window` is `"<index>:<name>"` resolved live from the
+  session's CURRENT window (display-only: `tmux send-keys` types into
+  whatever window is current at fire time, not necessarily the window that
+  belled — this is surfaced honestly rather than the queue trying to be
+  clever about targeting).
+- **`POST`** appends one item, no precondition (appending is commutative).
+  New members of the discriminator convention (see `backstop` /
+  `terminal_conflict` / `unknown_command_id` above): `bell_hook_unarmed`
+  (409 — refuses new items while the bell hook isn't confirmed delivering,
+  since a queue armed against a dead trigger is worse than no queue) and
+  `queue_full` (409 at `MAX_FOLLOWUPS`, 16).
+- **`PUT`** replaces the whole item list — edit + reorder + remove in one
+  call. `expected_revision` is a **REQUIRED** precondition (unlike `PATCH
+  /api/settings`' optional `expected_settings_updated_at`): the queue
+  mutates itself, so a stale `PUT` built from a pre-bell snapshot could
+  re-add an item that has already been typed into the session — a second
+  execution, not a lost update. Also 409s with `send_in_flight` while a
+  send for that session is in progress (the window between peek and
+  remove-by-id in the advance sequence below).
+- **`DELETE`** clears items AND any halt. **`POST .../resume`** clears the
+  halt only, keeping every item — nothing else clears a halt implicitly
+  (an implicit unhalt is how an autonomous writer would restart without
+  anyone deciding it should).
+- **`GET /api/sessions`, `GET /api/view`, and `GET /api/federation/sessions`**
+  each gain a `followups: {pending: int, halted: bool}` summary field
+  (`{"pending": 0, "halted": false}` when there is no queue) — a summary,
+  not the items, so PWA/sidecar/agent clients render a badge without a
+  second per-session fetch. Version-tolerant in both directions: a
+  pre-feature peer's federation entry simply lacks the key.
+- **The advance sequence (peek → fence-check-and-send → remove-by-id) is
+  a THIRD caller of `terminal_input.input_allowed_for_session()`** — no
+  bypass, re-evaluated at fire time against fresh settings, regardless of
+  what was true when the item was enqueued. A failed send halts the queue
+  (retaining the item) rather than skipping it — see `../AGENTS.md`.
+- **No federation proxy.** `/api/federation/{device_id}/sessions/{name}/followups`
+  does not exist and must not be added without a version-negotiation
+  mechanism this codebase doesn't have yet (arming an autonomous writer on
+  a peer whose patch level can't be verified is out of scope for v1).
+
 ## Semantics external clients re-implement today (change with care)
 
 These rules are currently ported into clients; silently changing them breaks
