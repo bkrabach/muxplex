@@ -11,6 +11,13 @@ serving a live muxplex) -- see AGENTS.md. This script:
   3. Runs the muxplex FastAPI app in-process (Starlette TestClient) with
      input_enabled=true / input_allowed_sessions matching the test session,
      with REAL (unmocked) tmux calls targeting the isolated server above.
+     Deliberately synchronous top-to-bottom (no asyncio.run wrapper): the
+     app's own background poll loop runs inside TestClient's internally
+     managed event loop, and mixing that with an externally driven asyncio
+     loop for direct _run_poll_cycle() calls binds muxplex.state.state_lock
+     to two different event loops and raises. Relying on the REAL poll
+     loop (never mocked here) is also more honest as a proof: it exercises
+     the exact same code path production runs.
   4. Proof A: queues 3 items, fires 3 real bells (tmux send-keys printf '\\a'),
      and shows them landing one per bell, in order, via capture-pane and
      GET .../followups.
@@ -24,7 +31,6 @@ Teardown is socket-scoped (`tmux -L <name> kill-server`), never a bare
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
@@ -35,12 +41,14 @@ import time
 import uuid
 from pathlib import Path
 
+POLL_SETTLE_S = 2.6  # > POLL_INTERVAL (2.0s default) so the real poll loop runs
+
 
 def log(msg: str) -> None:
     print(f"[proof] {msg}", flush=True)
 
 
-async def main() -> int:
+def main() -> int:
     socket_name = f"muxq-proof-{uuid.uuid4().hex[:8]}"
     tmux_tmpdir = Path(tempfile.mkdtemp(prefix="muxq-tmuxdir-"))
     scratch_home = Path(tempfile.mkdtemp(prefix="muxq-home-"))
@@ -70,7 +78,6 @@ async def main() -> int:
     os.environ["HOME"] = str(scratch_home)  # settings.json etc. isolated too
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    import importlib
 
     import muxplex.settings as settings_mod
     import muxplex.state as state_mod
@@ -80,15 +87,8 @@ async def main() -> int:
     state_mod.STATE_PATH = state_mod.STATE_DIR / "state.json"
 
     import muxplex.main as main_mod
-
-    importlib.reload(main_mod)  # pick up the env vars set above
-
     from starlette.testclient import TestClient
 
-    # Enable input for the test session, arm nothing external (bell hook
-    # arming would try to set-hook against the isolated server, which is
-    # fine since it's isolated -- but the probe self-check needs the app
-    # actually serving; TestClient's lifespan handles startup).
     settings_mod.save_settings(
         {
             **settings_mod.load_settings(),
@@ -98,6 +98,8 @@ async def main() -> int:
     )
 
     results: dict = {}
+    proof_a: list[dict] = []
+    proof_a_final_pending = None
 
     with TestClient(main_mod.app) as client:
         from muxplex.auth import create_session_cookie
@@ -105,9 +107,10 @@ async def main() -> int:
         cookie = create_session_cookie(main_mod._auth_secret, main_mod._auth_ttl)
         client.cookies.set("muxplex_session", cookie)
 
-        # One poll cycle so the session is known to the app.
-        await main_mod._run_poll_cycle()
-
+        # Let the app's REAL background poll loop (started by lifespan,
+        # never mocked here) discover the session and attempt to arm the
+        # bell hook against the isolated server.
+        time.sleep(POLL_SETTLE_S)
         results["bell_hook_armed"] = main_mod._bell_hook_armed
         log(f"bell_hook_armed = {main_mod._bell_hook_armed!r}")
 
@@ -119,17 +122,16 @@ async def main() -> int:
             assert r.status_code == 200, r.text
         log("queued MARK_ONE, MARK_TWO, MARK_THREE")
 
-        proof_a: list[dict] = []
         for expected in ("MARK_ONE", "MARK_TWO", "MARK_THREE"):
             tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
-            await asyncio.sleep(0.3)  # settle for send-keys + state write
+            time.sleep(0.5)  # settle for send-keys + state write
             pane = tmux("capture-pane", "-t", session_name, "-p").stdout
             state = client.get(f"/api/sessions/{session_name}/followups").json()
             proof_a.append(
                 {
                     "expected": expected,
                     "pane_contains_expected": expected in pane,
-                    "pane": pane.strip().splitlines()[-3:],
+                    "pane_tail": pane.strip().splitlines()[-3:],
                     "pending": len(state["items"]),
                     "revision": state["revision"],
                 }
@@ -149,7 +151,7 @@ async def main() -> int:
 
         # Fourth bell: no-op, no error.
         tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
-        await asyncio.sleep(0.3)
+        time.sleep(0.5)
         r = client.get(f"/api/sessions/{session_name}/followups")
         assert r.status_code == 200
         results["proof_a"] = proof_a
@@ -176,7 +178,7 @@ async def main() -> int:
         state_mod.save_state(state)
 
         tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
-        await asyncio.sleep(0.3)
+        time.sleep(0.5)
         pane_after = tmux("capture-pane", "-t", session_name, "-p").stdout
         halted_state = client.get(f"/api/sessions/{session_name}/followups").json()
 
@@ -194,7 +196,7 @@ async def main() -> int:
         client.post(f"/api/sessions/{session_name}/followups/resume")
         main_mod.followups._followup_last_send_at.pop(session_name, None)
         tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
-        await asyncio.sleep(0.3)
+        time.sleep(0.5)
         resumed_state = client.get(f"/api/sessions/{session_name}/followups").json()
         results["proof_b_fires_after_resume"] = len(resumed_state["items"]) == 0
         log(f"fires after resume: {results['proof_b_fires_after_resume']}")
@@ -221,4 +223,4 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(main())
