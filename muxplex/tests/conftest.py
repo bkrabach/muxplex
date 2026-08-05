@@ -129,7 +129,7 @@ def _isolate_settings_path(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_tmux_socket_dir(tmp_path, monkeypatch):
+def _isolate_tmux_socket_dir(monkeypatch):
     """Force every test's REAL (unmocked) tmux subprocess calls onto an
     isolated, per-test socket directory -- never the ambient default, which
     on a developer box that sources ``muxplex env`` in its shell rc (see
@@ -155,17 +155,47 @@ def _isolate_tmux_socket_dir(tmp_path, monkeypatch):
     guaranteed-empty socket directory by default -- reaching the ambient
     tmux server now requires an explicit, reviewable override, not silence.
 
+    **Deliberately NOT built on pytest's own ``tmp_path``.** tmux derives its
+    actual AF_UNIX socket path from ``TMUX_TMPDIR`` as
+    ``$TMUX_TMPDIR/tmux-<uid>/<socket-name>``, and that path must fit the
+    kernel's ``sun_path`` budget (~104 bytes on macOS -- see ``ttyd.py``'s
+    ``SUN_PATH_BUDGET`` and its module docstring). ``tmp_path`` on macOS
+    (CI and real hardware alike) resolves to a long, deeply-nested path
+    (``/private/var/folders/<x>/<y>/T/pytest-of-<user>/pytest-<n>/<test
+    name>0/...``) that is already 100+ bytes before a socket filename is
+    even appended -- the exact class of bug ``short_socket_dir`` below was
+    added to avoid for ttyd's own sockets. Stacking `/tmux-isolated` and
+    then tmux's own `/tmux-<uid>/<socket-name>` on top of that pushes the
+    total well past budget, and tmux's ``new-session`` then fails with
+    ``error connecting to ... (File name too long)`` -- indistinguishable,
+    to a caller reading an option back, from tmux never having started at
+    all. Confirmed live on macOS (arm64, tmux 3.6a): a 115-byte
+    ``tmp_path``-derived socket path failed with exactly that error; every
+    ``test_tmux_config.py`` assertion reading a real tmux option back then
+    saw an empty string. **Incident:** this is what broke CI job
+    ``test (macOS, arm64)`` -- 12 failures in ``test_tmux_config.py``,
+    Linux unaffected because its ``tmp_path`` is short enough to stay
+    under budget by coincidence, not by design.
+
+    Fixed the same way ``short_socket_dir`` already fixes it for ttyd: mkdtemp
+    directly under ``/tmp`` (not ``tempfile.gettempdir()``, which macOS sets
+    to the deep ``$TMPDIR`` path above) -- short on every supported platform,
+    with its own explicit cleanup since it is no longer inside pytest's
+    managed ``tmp_path`` tree.
+
     A test that wants a REAL, working isolated tmux server on top of this
     (e.g. to fire an actual bell) still layers its own explicit isolation --
     see ``test_integration.py``'s ``tmux_server`` fixture (``tmux -L
     <unique-name>``) -- this fixture only guarantees the *default* everyone
     else gets is never the ambient one.
     """
-    tmux_dir = tmp_path / "tmux-isolated"
-    tmux_dir.mkdir(exist_ok=True)
+    tmux_dir = Path(tempfile.mkdtemp(prefix="tmux-isolated-", dir="/tmp"))
     monkeypatch.setenv("TMUX_TMPDIR", str(tmux_dir))
     monkeypatch.delenv("TMUX", raising=False)
-    yield
+    try:
+        yield
+    finally:
+        shutil.rmtree(tmux_dir, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
