@@ -17,6 +17,7 @@ Public API:
 """
 
 import time
+from collections.abc import Callable
 
 from muxplex.sessions import run_tmux
 from muxplex.state import empty_bell
@@ -70,7 +71,11 @@ async def poll_bell_flag(session_name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def process_bell_flags(session_names: list[str], state: dict) -> bool:
+async def process_bell_flags(
+    session_names: list[str],
+    state: dict,
+    on_transition: Callable[[str], None] | None = None,
+) -> bool:
     """Poll bell flags for all sessions and update state accordingly.
 
     NOTE: The tmux alert-bell hook (POST /api/sessions/{name}/bell) is the
@@ -89,6 +94,26 @@ async def process_bell_flags(session_names: list[str], state: dict) -> bool:
     Args:
         session_names: List of session names to poll.
         state:         Mutable state dict (modified in-place).
+        on_transition: Optional callback invoked with *name* at the exact
+            moment a 0→1 transition is detected for that session -- the
+            follow-up queue's advance hangs off this (see
+            FOLLOWUP_QUEUE_SPEC.md and main.py's _run_poll_cycle), so the
+            queue is not permanently stalled whenever this poll fallback,
+            rather than the tmux hook, is the path that actually observes a
+            given bell (before the hook arms, or while it's unarmed after
+            arming once). Callers pass this ONLY while the hook is unarmed:
+            while armed, receive_bell() is the sole advance trigger, because
+            a detached session's bell is independently observed by BOTH
+            mechanisms at once (see FOLLOWUP_QUEUE_SPEC.md's case A), and
+            triggering an advance from both would drain two items for one
+            physical bell. Never invoked from the bell-seeding branch in
+            _run_poll_cycle (that branch writes state["sessions"][name]
+            ["bell"] directly, never through this function) -- that
+            omission is what structurally keeps a freshly-created session's
+            seeded "look at me" bell from draining someone's queued
+            follow-ups (spec §4). Default None preserves this function's
+            pre-existing, unchanged behavior for every caller/test that
+            doesn't pass it.
 
     Returns:
         True if any bell state changed (new bell detected), False otherwise.
@@ -112,6 +137,8 @@ async def process_bell_flags(session_names: list[str], state: dict) -> bool:
             bell["last_fired_at"] = time.time()
             _bell_seen[name] = True
             changed = True
+            if on_transition is not None:
+                on_transition(name)
         elif not flag_set and previously_seen:
             # 1→0: flag cleared — reset tracking so next '1' is a new bell
             # Do NOT decrement unseen_count

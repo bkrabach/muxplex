@@ -43,6 +43,30 @@ State schema (all values are plain JSON-serialisable dicts):
         # -- per-request WS fallback target + provenance (see below) --
         "terminal_session": str | None,  # fallback target for a WS with no ?session=
         "terminal_group": str,           # informational: group that last connected it
+
+        # -- per-session follow-up queues (see muxplex/followups.py) --
+        # A NEW TOP-LEVEL KEY, deliberately NOT nested under sessions[name] --
+        # the poll cycle's free cleanup of sessions[name] for any name absent
+        # from enumerate_sessions() is a trap for user-authored queued text
+        # (enumerate_sessions() returns [] on a transient tmux hiccup, which
+        # is indistinguishable from "zero sessions" -- see
+        # FOLLOWUP_QUEUE_SPEC.md §3.2). Absence of a key here means "no
+        # queue"; an entry is deleted entirely once its items list is empty
+        # and its halt is cleared (see followups.py).
+        "followups": {
+            "<session name>": {
+                "revision": int,
+                "items": [
+                    {"id": str, "text": str, "enter": bool, "created_at": float}
+                ],
+                "halted": {
+                    "reason": str,
+                    "detail": str,
+                    "at": float,
+                    "item_id": str,
+                } | None,
+            }
+        },
     }
 
 GET /api/state additionally merges in ``settings_updated_at: float`` (mirrors
@@ -302,6 +326,13 @@ def normalize_state(state: dict) -> dict:
                                    groups, ttyd was always attached to
                                    active_session; this restates that
                                    invariant rather than guessing)
+        followups               -> {} (no invariant to enforce -- unlike
+                                   sync_groups' GLOBAL_GROUP check above,
+                                   there is no reserved key to guard against.
+                                   Deliberately no repair of malformed
+                                   entries either: a hand-edited or corrupt
+                                   entry is caught fail-closed at fire time,
+                                   not here -- see followups.py.)
 
     Raises ValueError if GLOBAL_GROUP is present in state["sync_groups"] —
     that is a bug (the mirroring this schema deliberately avoids) and must
