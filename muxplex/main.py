@@ -39,7 +39,7 @@ from starlette.types import Scope
 from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
-from muxplex import tmux_config
+from muxplex import followups, tmux_config
 from muxplex import ttyd as ttyd_mod
 from muxplex.auth import (
     AuthMiddleware,
@@ -558,6 +558,7 @@ async def _run_poll_cycle() -> None:
         #     the rest of the poll cycle (session enumeration, bells, and
         #     everything below all still need to run).
         _manifest: dict = {}
+        _epoch_now: dict | None = None
         try:
             _epoch_now = await probe_tmux_epoch()
             _manifest = load_manifest()
@@ -648,6 +649,26 @@ async def _run_poll_cycle() -> None:
         for name in deleted:
             del state["sessions"][name]
 
+        # 6b. Reap follow-up queues for sessions no longer live -- ONLY when
+        # tmux is CONFIRMED alive this cycle (_epoch_now is not None, the
+        # value already computed at step 1b above). A transient enumeration
+        # failure (enumerate_sessions() returning [] because tmux itself is
+        # briefly unreachable, not because there are zero sessions) must
+        # never be indistinguishable from "every session was deleted" --
+        # that ambiguity is exactly why probe_tmux_epoch() is a separate
+        # call in the first place (see step 1b's comment and
+        # FOLLOWUP_QUEUE_SPEC.md §3.2/§3.4). Dropping user-authored queued
+        # text is never silent: one warning per dropped queue.
+        if _epoch_now is not None:
+            for _dropped_name, _dropped_count in followups.reap_stale_queues(
+                state, name_set
+            ):
+                _log.warning(
+                    "followups: reaped queue for vanished session %r (%d item(s))",
+                    _dropped_name,
+                    _dropped_count,
+                )
+
         # 7. Clear active_session if the session is gone -- every group, not
         # just global. A private group whose session was killed from another
         # machine must not keep pointing at a corpse -- that would strand its
@@ -668,8 +689,24 @@ async def _run_poll_cycle() -> None:
             state["terminal_session"] = None
             state["terminal_group"] = GLOBAL_GROUP
 
-        # 8. Process bell flags (detect 0→1 transitions, update unseen_count)
-        await process_bell_flags(names, state)
+        # 8. Process bell flags (detect 0→1 transitions, update unseen_count).
+        # Collect names whose queue may need advancing via THIS path -- see
+        # process_bell_flags()'s on_transition docstring for why the
+        # callback is wired ONLY while the hook is unarmed (armed, a
+        # detached session's bell is independently observed by BOTH the
+        # hook and this poll, and advancing from both would drain two
+        # items for one physical bell). Advancing happens AFTER this
+        # `async with state_lock` block releases (a queue advance runs a
+        # subprocess and must never do so while the poll cycle holds the
+        # lock) -- see the loop just below the block.
+        _followup_poll_candidates: list[str] = []
+        await process_bell_flags(
+            names,
+            state,
+            on_transition=(
+                _followup_poll_candidates.append if not _bell_hook_armed else None
+            ),
+        )
 
         # 9. Apply bell clear rule (acknowledge bells when device is watching fullscreen)
         apply_bell_clear_rule(state)
@@ -723,6 +760,15 @@ async def _run_poll_cycle() -> None:
 
         # 12. Atomically persist the updated state
         save_state(state)
+
+    # 12a. Advance any follow-up queue whose session had a bell-fired
+    # transition detected via the poll path at step 8 above (only ever
+    # populated while the hook was unarmed -- see that step's comment and
+    # process_bell_flags()'s on_transition docstring). Outside state_lock:
+    # each advance re-acquires the lock itself, and a send must not run
+    # while the poll cycle holds it.
+    for _followup_name in _followup_poll_candidates:
+        await _advance_followup_queue(_followup_name)
 
     # 12b. Resource hygiene: reap idle (relays == 0, past IDLE_REAP_SECONDS)
     # per-session ttyds. No new timer -- rides this poll cycle exactly as
@@ -1169,6 +1215,48 @@ class SessionInputPayload(BaseModel):
     lines: int | None = None
 
 
+class FollowupAppendPayload(BaseModel):
+    """Body for POST /api/sessions/{name}/followups.
+
+    text  -- typed literally into the pane (same tmux send-keys -l path as
+             /input) when this item eventually fires.
+    enter -- press Enter after text when this item fires (default True --
+             the common case; /input defaults enter to False since it also
+             supports a bare `keys` action, but a queued follow-up is
+             always "type this line and submit it").
+    """
+
+    text: str
+    enter: bool = True
+
+
+class FollowupItemInput(BaseModel):
+    """One item within a PUT /api/sessions/{name}/followups body.
+
+    id, when present and matching an existing item, keeps that item's
+    identity and created_at (spec §7.1) -- this is what makes reorder/edit
+    expressible without the client inventing ids. Absent or unknown id ->
+    treated as a new item.
+    """
+
+    id: str | None = None
+    text: str
+    enter: bool = True
+
+
+class FollowupReplacePayload(BaseModel):
+    """Body for PUT /api/sessions/{name}/followups.
+
+    expected_revision is a REQUIRED precondition (unlike PATCH /api/settings'
+    optional expected_settings_updated_at) -- the queue mutates itself, so a
+    stale PUT built from a snapshot taken before a bell fired could re-add
+    an item that has already been typed into the session (spec §7.1).
+    """
+
+    expected_revision: int
+    items: list[FollowupItemInput]
+
+
 class ViewRulePreviewPayload(BaseModel):
     """Body for POST /api/views/preview.
 
@@ -1338,6 +1426,7 @@ async def get_sessions() -> list[dict]:
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
                 "last_activity_at": activity.get(name),
+                "followups": followups.summary(state, name),
             }
         )
     annotated = annotate_view_membership(result, settings)
@@ -1556,6 +1645,7 @@ async def get_view(sort: str | None = None, device_id: str | None = None) -> dic
             "needs_attention": needs_attention(s["bell"]),
             "bell": s["bell"],
             "last_activity_at": s["last_activity_at"],
+            "followups": followups.summary(state, s["name"]),
         }
         for s in visible
     ]
@@ -1977,6 +2067,300 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
     return {"ok": True, "session": name, "snapshot": snapshot}
 
 
+# ---------------------------------------------------------------------------
+# Follow-up queues -- see FOLLOWUP_QUEUE_SPEC.md and muxplex/followups.py
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_target_window(name: str) -> str | None:
+    """Return ``"<index>:<name>"`` for session *name*'s CURRENT window, or
+    None if tmux does not answer.
+
+    Display-only (spec §7.3/§9.1): `tmux send-keys -t <session>` types into
+    whatever window is CURRENT for that session at fire time, not
+    necessarily the window that belled (§0.3's second finding) -- the queue
+    deliberately does not try to be clever about targeting the belled
+    window (that would mean storing a per-item window target, which is a
+    workflow engine). Instead this is surfaced honestly so a human queuing
+    follow-ups knows where they will land.
+    """
+    try:
+        output = await run_tmux(
+            "display-message", "-t", name, "-p", "#{window_index}:#{window_name}"
+        )
+        return output.strip() or None
+    except RuntimeError:
+        return None
+
+
+def _followup_not_found(name: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+
+@app.get("/api/sessions/{name}/followups")
+async def get_followups(name: str) -> dict:
+    """Read session *name*'s follow-up queue.
+
+    Unknown-but-valid session with no queue returns revision 0, empty
+    items, no halt -- an empty queue and an absent queue are the same thing
+    to a client (spec §7.1).
+    """
+    _require_valid_session_name(name)
+    if name not in get_session_list():
+        raise _followup_not_found(name)
+
+    async with state_lock:
+        state = load_state()
+        entry = followups.get_queue(state, name)
+
+    target_window = await _resolve_target_window(name)
+    return {
+        "session": name,
+        "revision": entry["revision"],
+        "items": entry["items"],
+        "halted": entry["halted"],
+        "target_window": target_window,
+    }
+
+
+@app.post("/api/sessions/{name}/followups")
+async def append_followup(name: str, payload: FollowupAppendPayload) -> dict:
+    """Append one item to session *name*'s follow-up queue.
+
+    Enqueue-time fence check (spec §6.2): rejects here with the SAME 403
+    status/detail wording `/input` uses, so the compose bar's existing
+    `_composeErrorMessage()` branches apply unchanged -- this is a UX
+    convenience (the user learns now, not after a bell), NOT the safety
+    boundary. The safety boundary is the re-evaluation inside
+    `_advance_followup_queue()` at fire time, against fresh settings, which
+    runs regardless of what was true when this request was accepted.
+    """
+    _require_valid_session_name(name)
+    if name not in get_session_list():
+        raise _followup_not_found(name)
+
+    settings = load_settings()
+    if settings.get("input_enabled") is not True:
+        raise HTTPException(
+            status_code=403,
+            detail="Session input is disabled (settings.input_enabled=false)",
+        )
+    if not input_allowed_for_session(name, settings):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Session '{name}' does not match any input_allowed_sessions pattern",
+        )
+    if not _bell_hook_armed:
+        # A queue armed against a dead trigger is worse than no queue at
+        # all (spec §0.2/§6.5) -- refuse to accept new items while the
+        # bell hook is not confirmed delivering, rather than accepting
+        # them into a queue nothing will ever advance.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "bell_hook_unarmed": True,
+                "detail": _bell_hook_last_error
+                or "bell hook is not armed -- follow-ups would never fire",
+            },
+        )
+    if len(payload.text.encode("utf-8")) > MAX_TEXT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"text too large (max {MAX_TEXT_BYTES} bytes UTF-8)",
+        )
+
+    async with state_lock:
+        state = load_state()
+        existing = followups.get_queue(state, name)
+        if len(existing["items"]) >= followups.MAX_FOLLOWUPS:
+            raise HTTPException(
+                status_code=409,
+                detail={"queue_full": True, "max": followups.MAX_FOLLOWUPS},
+            )
+        item = followups.append_item(state, name, payload.text, payload.enter)
+        entry = state["followups"][name]
+        save_state(state)
+
+    return {"session": name, "revision": entry["revision"], "item": item}
+
+
+@app.put("/api/sessions/{name}/followups")
+async def replace_followups(name: str, payload: FollowupReplacePayload) -> dict:
+    """Replace session *name*'s ENTIRE follow-up list -- edit + reorder +
+    remove in one call (spec §7.1). ``expected_revision`` is a REQUIRED
+    precondition: a stale PUT built from a snapshot taken before a bell
+    fired could re-add an item that has already been typed into the
+    session, which is not a lost update -- it is a second execution.
+    """
+    _require_valid_session_name(name)
+    if name not in get_session_list():
+        raise _followup_not_found(name)
+
+    if len(payload.items) > followups.MAX_FOLLOWUPS:
+        raise HTTPException(
+            status_code=409,
+            detail={"queue_full": True, "max": followups.MAX_FOLLOWUPS},
+        )
+    for item_in in payload.items:
+        if len(item_in.text.encode("utf-8")) > MAX_TEXT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"text too large (max {MAX_TEXT_BYTES} bytes UTF-8)",
+            )
+
+    async with state_lock:
+        # Closes the last hole in the peek-send-remove race: without this, a
+        # PUT landing between peek and remove could resurrect the item
+        # currently being sent (spec §7.1).
+        if followups.is_sending(name):
+            raise HTTPException(status_code=409, detail={"send_in_flight": True})
+
+        state = load_state()
+        raw_items = [it.model_dump() for it in payload.items]
+        ok, error = followups.replace_items(
+            state, name, payload.expected_revision, raw_items
+        )
+        if not ok:
+            raise HTTPException(status_code=409, detail=error)
+        save_state(state)
+        entry = followups.get_queue(state, name)
+
+    return {
+        "session": name,
+        "revision": entry["revision"],
+        "items": entry["items"],
+        "halted": entry["halted"],
+    }
+
+
+@app.delete("/api/sessions/{name}/followups")
+async def clear_followups(name: str) -> dict:
+    """Clear session *name*'s follow-up queue entirely -- items AND any
+    halt (spec §7.1). Distinct from POST .../resume, which clears only the
+    halt."""
+    _require_valid_session_name(name)
+    if name not in get_session_list():
+        raise _followup_not_found(name)
+
+    async with state_lock:
+        state = load_state()
+        followups.clear_queue(state, name)
+        save_state(state)
+
+    return {"session": name, "revision": 0, "items": [], "halted": None}
+
+
+@app.post("/api/sessions/{name}/followups/resume")
+async def resume_followups(name: str) -> dict:
+    """Clear session *name*'s follow-up halt only, keeping every pending
+    item and the current revision (spec §7.1). Nothing else clears a halt
+    -- there is no implicit unhalt as a side effect of any edit, because a
+    silent unhalt is how an autonomous writer restarts without anyone
+    deciding it should.
+    """
+    _require_valid_session_name(name)
+    if name not in get_session_list():
+        raise _followup_not_found(name)
+
+    async with state_lock:
+        state = load_state()
+        followups.resume_queue(state, name)
+        entry = followups.get_queue(state, name)
+        save_state(state)
+
+    return {
+        "session": name,
+        "revision": entry["revision"],
+        "items": entry["items"],
+        "halted": entry["halted"],
+    }
+
+
+async def _advance_followup_queue(name: str) -> None:
+    """Advance session *name*'s follow-up queue by exactly one item, if a
+    bell was just accepted for it (spec §5.2: peek-send-remove, never
+    pop-send).
+
+    Called after EVERY bell-fired state transition this process detects --
+    both receive_bell() (the tmux hook, main.py) and process_bell_flags()
+    (the poll fallback, bells.py, but ONLY while the hook is unarmed -- see
+    that function's on_transition docstring for why triggering off BOTH
+    unconditionally would double-advance a detached session's queue) -- so
+    the queue is not stuck relying on exactly one physical code path.
+    NEVER called from the bell-seeding branch in _run_poll_cycle (that
+    branch assigns state["sessions"][name]["bell"] directly, never through
+    receive_bell()/process_bell_flags()) -- that omission is what
+    structurally keeps a freshly-created session's seeded "look at me" bell
+    from draining someone's queued follow-ups (spec §4; see
+    test_followups.py's seeded-bell isolation test).
+
+    Step 1 (peek, under state_lock), step 2 (fence + send, outside the
+    lock -- a subprocess must not run while the poll cycle's lock is
+    held), step 3 (remove-by-id or halt, under state_lock again), step 4
+    (finally: discard the in-flight marker on every path).
+    """
+    item: dict | None = None
+    async with state_lock:
+        state = load_state()
+        if not followups.acceptance_ok(state, name):
+            return
+        entry = state["followups"][name]
+        item = entry["items"][0]
+        followups._followup_sending.add(name)
+        followups._followup_last_send_at[name] = time.time()
+        save_state(state)
+
+    assert item is not None  # acceptance_ok() guarantees a non-empty items list
+    halt_reason: str | None = None
+    halt_detail: str = ""
+    try:
+        # The queue is a THIRD caller of input_allowed_for_session() -- the
+        # same fence /input and the terminal WS gate already both use (spec
+        # §6.1). Re-evaluated against FRESH settings at fire time -- this is
+        # the evaluation that actually matters; the append-time check is UX
+        # only. No bypass, no "the server is trusted."
+        settings = load_settings()
+        if settings.get("input_enabled") is not True:
+            halt_reason = "input_disabled"
+            halt_detail = "Session input is disabled (settings.input_enabled=false)"
+        elif not input_allowed_for_session(name, settings):
+            halt_reason = "input_not_allowed"
+            halt_detail = (
+                f"Session '{name}' does not match any input_allowed_sessions pattern"
+            )
+        elif name not in get_session_list():
+            halt_reason = "session_missing"
+            halt_detail = f"Session '{name}' not found"
+        else:
+            await run_tmux(*build_send_text_argv(name, item["text"]))
+            if item.get("enter", True):
+                await run_tmux(*build_send_key_argv(name, "Enter"))
+    except (RuntimeError, OSError) as exc:
+        halt_reason = "send_failed"
+        halt_detail = str(exc)
+
+    try:
+        async with state_lock:
+            state = load_state()
+            entry = state.get("followups", {}).get(name)
+            if entry is None:
+                # The queue was cleared (DELETE) while the send was in
+                # flight -- nothing to record either way; a cleared queue
+                # must stay cleared, never resurrected by a race.
+                pass
+            elif halt_reason is None:
+                followups.remove_item_by_id(state, name, item["id"])
+                save_state(state)
+            else:
+                followups.set_halted(state, name, halt_reason, halt_detail, item["id"])
+                _log.warning(
+                    "followups: halted for %r -- %s: %s", name, halt_reason, halt_detail
+                )
+                save_state(state)
+    finally:
+        followups._followup_sending.discard(name)
+
+
 @app.delete("/api/sessions/current")
 async def delete_current_session(device_id: str | None = None) -> dict:
     """Disconnect the caller's own session and, if no one else is relaying
@@ -2219,6 +2603,11 @@ async def receive_bell(name: str) -> dict:
         bell["unseen_count"] = bell.get("unseen_count", 0) + 1
         bell["last_fired_at"] = time.time()
         save_state(state)
+
+    # The follow-up queue's advance hangs off THIS bell-fired transition --
+    # see _advance_followup_queue()'s docstring. Outside state_lock (a
+    # queue advance re-acquires it itself and runs a subprocess).
+    await _advance_followup_queue(name)
     return {"ok": True, "session": name}
 
 
@@ -3625,6 +4014,7 @@ async def federation_sessions(request: Request) -> list[dict]:
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
                 "last_activity_at": activity.get(name),
+                "followups": followups.summary(state, name),
                 "deviceId": local_device_id,
                 "deviceName": local_device_name,
                 # This process's own version -- same value /api/instance-info
