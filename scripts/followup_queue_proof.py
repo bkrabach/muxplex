@@ -62,6 +62,15 @@ def log(msg: str) -> None:
     print(f"[proof] {msg}", flush=True)
 
 
+def fire_bell(tmux, session_name: str) -> None:
+    """Fire a real tmux bell in *session_name*: literal-mode send of the
+    shell command text (matching muxplex's own build_send_text_argv --
+    argv, never a shell, so no quoting is needed or wanted), then a
+    SEPARATE named-key send of Enter (matching build_send_key_argv)."""
+    tmux("send-keys", "-l", "-t", session_name, "--", "printf '\\a'")
+    tmux("send-keys", "-t", session_name, "Enter")
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     tmux_tmpdir = Path(tempfile.mkdtemp(prefix="muxq-tmuxdir-"))
@@ -185,7 +194,7 @@ def main() -> int:
         log("queued MARK_ONE, MARK_TWO, MARK_THREE")
 
         for expected in ("MARK_ONE", "MARK_TWO", "MARK_THREE"):
-            tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
+            fire_bell(tmux, session_name)
             time.sleep(0.6)  # settle for the hook's own curl round-trip + state write
             pane = tmux("capture-pane", "-t", session_name, "-p").stdout
             state = client.get(f"/api/sessions/{session_name}/followups").json()
@@ -209,7 +218,7 @@ def main() -> int:
         log(f"after 3 bells: pending={proof_a_final_pending} (expect 0)")
 
         # Fourth bell: no-op, no error.
-        tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
+        fire_bell(tmux, session_name)
         time.sleep(0.6)
         r = client.get(f"/api/sessions/{session_name}/followups")
         assert r.status_code == 200
@@ -231,7 +240,7 @@ def main() -> int:
         log(f"enqueue while input_enabled=false -> {r.status_code} (expect 403)")
 
         time.sleep(2.1)  # past the settle window from proof A's last send
-        tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
+        fire_bell(tmux, session_name)
         time.sleep(0.6)
         pane_after = tmux("capture-pane", "-t", session_name, "-p").stdout
         halted_state = client.get(f"/api/sessions/{session_name}/followups").json()
@@ -249,7 +258,7 @@ def main() -> int:
         client.patch("/api/settings", json=settings_now)
         client.post(f"/api/sessions/{session_name}/followups/resume")
         time.sleep(2.1)
-        tmux("send-keys", "-t", session_name, "printf '\\a'", "Enter")
+        fire_bell(tmux, session_name)
         time.sleep(0.6)
         resumed_state = client.get(f"/api/sessions/{session_name}/followups").json()
         results["proof_b_fires_after_resume"] = len(resumed_state["items"]) == 0
