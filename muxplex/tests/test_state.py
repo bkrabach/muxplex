@@ -13,13 +13,13 @@ from muxplex.state import (
     empty_bell,
     empty_device,
     empty_state,
+    normalize_state,
     prune_devices,
     read_state,
     register_device,
     state_lock,
     write_state,
 )
-
 
 # ---------------------------------------------------------------------------
 # autouse fixture — redirect STATE_DIR and STATE_PATH to a tmp directory
@@ -191,9 +191,13 @@ def test_state_lock_is_asyncio_lock():
 
 
 async def test_read_state_returns_empty_when_no_file():
-    """read_state() returns empty_state() when STATE_PATH does not exist."""
+    """read_state() returns normalize_state(empty_state()) when STATE_PATH
+    does not exist -- normalize_state() fills schema keys (e.g. followups)
+    that empty_state() itself deliberately leaves absent (see its
+    docstring), so the comparison is against the normalized form, not the
+    raw empty_state() dict."""
     state = await read_state()
-    assert state == empty_state()
+    assert state == normalize_state(empty_state())
 
 
 async def test_write_then_read_roundtrip():
@@ -203,7 +207,9 @@ async def test_write_then_read_roundtrip():
     original["session_order"] = ["my-session"]
     await write_state(original)
     loaded = await read_state()
-    assert loaded == original
+    # load_state() normalizes on read (fills followups, etc.) -- compare
+    # against the same normalization rather than the raw original.
+    assert loaded == normalize_state(dict(original))
 
 
 async def test_write_creates_state_dir_if_missing():
@@ -239,8 +245,11 @@ async def test_concurrent_writes_do_not_corrupt():
     )
 
     final = await read_state()
-    # Final state must be exactly one of the two known states — no corruption.
-    assert final == state_a or final == state_b
+    # Final state must be exactly one of the two known states (normalized
+    # on read, same as the roundtrip test above) — no corruption.
+    normalized_a = normalize_state(dict(state_a))
+    normalized_b = normalize_state(dict(state_b))
+    assert final == normalized_a or final == normalized_b
 
 
 # ---------------------------------------------------------------------------
