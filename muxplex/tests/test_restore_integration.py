@@ -283,7 +283,7 @@ def test_full_scale_restore_recreates_correct_structure(isolated, tmp_path):
     socket_dir = isolated
     workspace_root = tmp_path / "dev"
     workspace_root.mkdir()
-    settings_mod.patch_settings(
+    settings_mod.save_settings(
         {"new_session_template": _fake_workspace_template(workspace_root)}
     )
 
@@ -340,7 +340,7 @@ def test_tombstoned_session_never_returns_via_restore(isolated, tmp_path):
     socket_dir = isolated
     workspace_root = tmp_path / "dev"
     workspace_root.mkdir()
-    settings_mod.patch_settings(
+    settings_mod.save_settings(
         {"new_session_template": _fake_workspace_template(workspace_root)}
     )
 
@@ -407,7 +407,7 @@ def test_restore_uses_recorded_pair(isolated, tmp_path):
     execute_restore() must not silently fall back to the default pair."""
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
-    settings_mod.patch_settings(
+    settings_mod.save_settings(
         {
             "session_commands": [
                 {
@@ -472,7 +472,7 @@ def test_restore_twice_is_idempotent(isolated, tmp_path):
     socket_dir = isolated
     workspace_root = tmp_path / "dev"
     workspace_root.mkdir()
-    settings_mod.patch_settings(
+    settings_mod.save_settings(
         {"new_session_template": _fake_workspace_template(workspace_root)}
     )
 
@@ -522,7 +522,7 @@ def test_forget_then_restore_is_a_noop(isolated, tmp_path):
     socket_dir = isolated
     workspace_root = tmp_path / "dev"
     workspace_root.mkdir()
-    settings_mod.patch_settings(
+    settings_mod.save_settings(
         {"new_session_template": _fake_workspace_template(workspace_root)}
     )
 
@@ -557,7 +557,7 @@ def test_partial_failure_is_named_and_others_still_succeed(isolated, tmp_path):
     socket_dir = isolated
     workspace_root = tmp_path / "dev"
     workspace_root.mkdir()
-    settings_mod.patch_settings(
+    settings_mod.save_settings(
         {
             "new_session_template": _fake_workspace_template_with_failure(
                 workspace_root, fail_name="bad-one"
@@ -606,7 +606,7 @@ def test_cli_partial_failure_exits_nonzero_end_to_end(isolated, tmp_path, capsys
     socket_dir = isolated
     workspace_root = tmp_path / "dev"
     workspace_root.mkdir()
-    settings_mod.patch_settings(
+    settings_mod.save_settings(
         {
             "new_session_template": _fake_workspace_template_with_failure(
                 workspace_root, fail_name="bad-one"
