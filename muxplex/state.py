@@ -50,7 +50,7 @@ State schema (all values are plain JSON-serialisable dicts):
         # from enumerate_sessions() is a trap for user-authored queued text
         # (enumerate_sessions() returns [] on a transient tmux hiccup, which
         # is indistinguishable from "zero sessions" -- see
-        # FOLLOWUP_QUEUE_SPEC.md §3.2). Absence of a key here means "no
+        # docs/plans/2026-08-05-per-session-followup-queue-plan.md §3.2). Absence of a key here means "no
         # queue"; an entry is deleted entirely once its items list is empty
         # and its halt is cleared (see followups.py).
         "followups": {

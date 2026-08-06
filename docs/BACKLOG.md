@@ -305,7 +305,7 @@ to get federation up. Nothing in the setup flow currently steers away from that.
 something. A mechanical sweep of the repo turns up two distinct failures that look
 identical from a reader's seat and need completely different fixes.
 
-**Absent documents -- eight, with nothing to point at.** Counts are occurrences
+**Absent documents -- six, with nothing to point at.** Counts are occurrences
 across tracked files:
 
 - **`KEY_DESIGN_SYSTEM.md`** -- 48 refs / 7 files. The deck's four surviving
@@ -327,40 +327,55 @@ across tracked files:
   §3 included/excluded endpoint table), `client/pyproject.toml:29`,
   `pyproject.toml:75`, both CI workflows, and `test_client_contract.py`, which
   cites §1/§2/§7/§8 as the contract it is enforcing.
-- **`COMMAND_PAIRS_UI_DESIGN.md`** -- 9 / 4, including `CHANGELOG.md:156`.
 - **`CONTROL_MAPPING_DESIGN.md`** -- 6 / 3.
-- **`COMPOSE_BAR_SPEC.md`** -- 4 / 3 (`app.js`, `index.html:133`,
-  `test_compose.mjs:328`). The newest of the set: the compose bar shipped in the
-  two commits immediately before this entry was written, and its spec never
-  landed alongside it.
 
-**Stale pointers -- 35 files, content that does exist.** Four `*_SPEC.md`
+Two entries that used to be in this bucket were miscatalogued -- both existed the
+whole time in the same throwaway cross-repo workspace as the `*_SPEC.md` set below,
+and have since been moved to the stale-pointers bucket rather than written from
+scratch: `COMMAND_PAIRS_UI_DESIGN.md` and `COMPOSE_BAR_SPEC.md`. The latter was a
+particularly costly miscatalog: a prior sweep of this list read `COMPOSE_BAR_SPEC.md`
+as a name with nothing behind it, concluded the compose bar's spec was "a rejected
+draft that never shipped," and deleted its citations outright. The compose bar
+shipped; only one sub-proposal inside that spec (a new `/compose` endpoint) was
+rejected. The citations are restored below, pointed at the preserved file.
+
+**Stale pointers -- content that does exist.** `*_SPEC.md`/`*_DESIGN.md`
 filenames are cited that never existed in this repo, but whose content *was*
 preserved into `docs/plans/` under dated names:
 
-- `docs/plans/2026-08-04-auto-views-plan.md` (38 / 16) -> `docs/plans/2026-08-04-auto-views-plan.md`
-- `docs/plans/2026-08-02-per-session-ttyd-plan.md` (25 / 14) -> `docs/plans/2026-08-02-per-session-ttyd-plan.md`
-- `docs/plans/2026-08-02-named-session-command-pairs-plan.md` (13 / 9) -> `docs/plans/2026-08-02-named-session-command-pairs-plan.md`
-- `docs/plans/2026-08-04-device-label-placement-plan.md` (13 / 7) -> `docs/plans/2026-08-04-device-label-placement-plan.md`
+- `AUTO_VIEWS_SPEC.md` (38 / 16) -> `docs/plans/2026-08-04-auto-views-plan.md`
+- `PER_SESSION_TTYD_SPEC.md` (25 / 14) -> `docs/plans/2026-08-02-per-session-ttyd-plan.md`
+- `COMMAND_PAIRS_SPEC.md` (13 / 9) -> `docs/plans/2026-08-02-named-session-command-pairs-plan.md`
+- `DEVICE_LABEL_SPEC.md` (13 / 7) -> `docs/plans/2026-08-04-device-label-placement-plan.md`
+- `FOLLOWUP_QUEUE_SPEC.md` (14 / 12) -> `docs/plans/2026-08-05-per-session-followup-queue-plan.md`
+- `COMMAND_PAIRS_UI_DESIGN.md` (7 / 2) -> `docs/plans/2026-08-02-named-session-command-pairs-ui-design.md`
+  (this one already had a preserved copy in `docs/plans/` from an earlier pass;
+  only the source-tree citations needed repointing)
+- `COMPOSE_BAR_SPEC.md` (4 / 3) -> `docs/plans/2026-08-05-mobile-compose-bar-plan.md`
 
-This half is a rename, not a writing job -- but it reaches into `pyproject.toml:31`,
-`CHANGELOG.md:156`, `scripts/README.md:163`, and into the successor plans
-themselves (`2026-08-02-per-session-ttyd-plan.md:47` cites the ghost it replaced).
-Worth noting that `AGENTS.md:39` cites `docs/plans/2026-08-04-auto-views-plan.md`
-by its dated name and resolves cleanly: the convention already works everywhere it
-was actually applied.
+All seven are now a rename, not a writing job, and all source-tree citations have
+been repointed to the dated files above. `AGENTS.md:39` and similar citations that
+already used the dated name continue to resolve cleanly, as they did before.
 
-**Why it matters.** Two of these are load-bearing for people outside this repo
-right now. `client/README.md` is the first thing a project integrating against
-`muxplex-client` reads, and it hands them a dead link for the design rationale and
-for the endpoint table -- with several such integrations landing this month. And
-`muxplex restore --help` makes the CLI itself the source of the dead end, which is
-worse than a dead link in a document: the user did the right thing and followed
-the tool's own pointer.
+One further preservation, not a rename: `FOCUS_GRAB_SPEC.md`, written for backlog
+item 3 ("move focus-grabbing out of the deck and into muxplex") and not yet
+built, also lived only in that same throwaway workspace. It is now
+`docs/plans/2026-08-05-focus-grab-plan.md` -- the one file in `docs/plans/` that
+is not a record of something shipped; its own header says so, and so does
+`docs/plans/README.md`. Nothing in the source tree cites it yet, since the
+feature it specifies has not been built.
+
+**Why it matters.** Two of the remaining six absent documents are load-bearing for
+people outside this repo right now. `client/README.md` is the first thing a project
+integrating against `muxplex-client` reads, and it hands them a dead link for the
+design rationale and for the endpoint table -- with several such integrations
+landing this month. And `muxplex restore --help` makes the CLI itself the source of
+the dead end, which is worse than a dead link in a document: the user did the right
+thing and followed the tool's own pointer.
 
 **Open questions.**
 
-- **Write them, or delete the citations?** There is not one answer for all eight.
+- **Write them, or delete the citations?** There is not one answer for all six.
   A document cited 48 times by four other design docs is load-bearing and probably
   has to be written; a document cited once from a comment can lose the citation.
   Reference count is a hint and not a rule -- `muxplex-client-design.md` is
@@ -371,19 +386,22 @@ the tool's own pointer.
   home. Reconstructing a shipped design as a dated ADR after the fact is honest;
   back-dating it as though it were written before the code is not.
 - **One sweep or two?** The rename and the writing are one symptom and two
-  completely different jobs. Doing them together means a single change touches
-  59 tracked files across source, tests, CI config, and `CHANGELOG.md` -- and
-  `CHANGELOG.md` is release-owner territory per `AGENTS.md`.
+  completely different jobs. The rename half is now done; the six-document
+  writing half remains, and it alone touches `CHANGELOG.md` territory if any of
+  the six turn out to already be described there -- `CHANGELOG.md` is
+  release-owner territory per `AGENTS.md`.
 - **Is a test the real fix?** A check that fails when a tracked file cites a `.md`
-  that doesn't resolve would stop eight from becoming nine. But this repo already
+  that doesn't resolve would stop six from becoming seven. But this repo already
   has a source-text tripwire it regrets (`test_frontend_js.py`, see `AGENTS.md`),
   and a link checker is exactly that shape. Weigh it against the alternative,
   which is running this same sweep again in six months.
 - **What is the rule for citing a document that isn't written yet?** The failure
   mode here is a design doc that existed in someone's workspace, got cited from
-  code as that code was written, and never made it into the repo. If
-  cite-before-landing is going to keep happening, the citation format should make
-  an unlanded document visibly different from a landed one.
+  code as that code was written, and never made it into the repo. `FOCUS_GRAB_SPEC.md`
+  is the inverse case done right: preserved before anything cited it, so there is
+  no dangling reference to create in the first place. If cite-before-landing is
+  going to keep happening for the other six, the citation format should make an
+  unlanded document visibly different from a landed one.
 
 ---
 

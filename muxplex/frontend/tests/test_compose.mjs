@@ -325,8 +325,8 @@ test('send hits POST /api/sessions/{name}/input with device_id', async () => {
   assert.ok(capturedPath.includes('device_id=dev-1'), capturedPath);
 });
 
-// --- Failure surfacing (one row per distinct error response, adapted for
-// the real /input endpoint's actual response shapes) ---
+// --- Failure surfacing (one row per docs/plans/2026-08-05-mobile-compose-bar-plan.md
+// §7.4-equivalent table, adapted for the real /input endpoint's actual response shapes) ---
 
 test('403 input_enabled=false surfaces host-editing guidance', async () => {
   app._setViewingSession('s1');

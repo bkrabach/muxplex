@@ -4019,10 +4019,11 @@ function _setDeviceId(id) {
 // same endpoint an agent, muxplex-deck, or curl already calls, with the
 // exact same fences (settings.input_enabled / settings.input_allowed_sessions,
 // both LOCAL-FILE-ONLY -- see AGENTS.md's "Terminal input" section). There
-// is no new endpoint and no fence change here; an earlier draft proposed a
-// new POST .../compose endpoint gated on cookie-vs-Bearer caller class --
-// that was rejected by security review (possession of a cookie is not proof
-// of human presence) and none of it was built. See AGENTS.md's "Mobile
+// is no new endpoint and no fence change here; an earlier draft spec
+// (docs/plans/2026-08-05-mobile-compose-bar-plan.md) proposed a new POST
+// .../compose endpoint gated on cookie-vs-Bearer caller class -- that was
+// rejected by security review (possession of a cookie is not proof of human
+// presence) and none of it was built. See AGENTS.md's "Mobile
 // compose bar" note.
 //
 // Consequence, deliberately not hidden from the user: on a default install
@@ -4200,7 +4201,8 @@ function _composeShowError(msg) {
 /**
  * Clear the draft and any error, and reset in-flight bookkeeping. Called
  * on session open (a NEW session never inherits a previous one's draft --
- * deliberately in-memory only, never localStorage) and on session close.
+ * see docs/plans/2026-08-05-mobile-compose-bar-plan.md §7.6, deliberately
+ * in-memory only, never localStorage) and on session close.
  */
 function _composeClearDraft() {
   var input = $('compose-input');
@@ -4456,7 +4458,7 @@ function _bindComposeEventListeners() {
 // ─── Follow-up queue ────────────────────────────────────────────────────
 //
 // A per-session, server-side, SHARED list of pending text items -- see
-// FOLLOWUP_QUEUE_SPEC.md. Items fire one at a time, each when that
+// docs/plans/2026-08-05-per-session-followup-queue-plan.md. Items fire one at a time, each when that
 // session's bell rings, until the list drains. Unlike the compose bar's
 // send-now action (which stays byte-identical), queuing arms an
 // UNATTENDED write -- deliberately a second, explicit button/shortcut,
@@ -5486,7 +5488,8 @@ function openSettings() {
   // Commands tab -- re-fetch (not just re-render from possibly-stale module
   // state left over from the one-time page-load fetch) so "apply, then
   // reopen Settings" reflects what's actually on disk. Mirrors
-  // loadTmuxConfigSettings() immediately above (see COMMAND_PAIRS_UI_DESIGN.md
+  // loadTmuxConfigSettings() immediately above (see
+  // docs/plans/2026-08-02-named-session-command-pairs-ui-design.md
   // §6 item 2 -- this is what closes the apply→verify loop for command pairs).
   loadSessionCommands().then(renderCommandPairsSettings);
 
@@ -5510,7 +5513,7 @@ function _shellQuote(value) {
 /**
  * Build the ready-to-run `muxplex commands add ...` line for *cmd* (an
  * existing pair, or an in-progress composer draft) -- see
- * COMMAND_PAIRS_UI_DESIGN.md's verdict: "the thing you copy should be a
+ * docs/plans/2026-08-02-named-session-command-pairs-ui-design.md's verdict: "the thing you copy should be a
  * command, not JSON."
  * @param {{id: string, label: string, new_session_template: string, delete_session_template: string}} cmd
  * @returns {string}
@@ -5569,7 +5572,7 @@ var _commandComposerSourceId = null;
 /**
  * Recompute the composer's advisory warnings, `muxplex commands add` line,
  * and JSON preview from its current field values. Advisory-only, by design
- * (COMMAND_PAIRS_UI_DESIGN.md §4): these checks exist to catch obvious typos
+ * (docs/plans/2026-08-02-named-session-command-pairs-ui-design.md §4): these checks exist to catch obvious typos
  * before copying, never to gate the copy buttons -- the authoritative
  * verdict is the server's own GET /api/session-commands `errors[]` after the
  * user actually applies the command and reopens Settings > Commands.
@@ -5649,7 +5652,7 @@ function _closeCommandPairComposer() {
  * Open the Duplicate composer, prefilled from *sourceCmd*. Builds an
  * editable id/label/create/delete form, a live-updating copyable
  * `muxplex commands add ...` line, and a "Show JSON" disclosure for
- * hand-editors -- see COMMAND_PAIRS_UI_DESIGN.md §6 item 3. There is
+ * hand-editors -- see docs/plans/2026-08-02-named-session-command-pairs-ui-design.md §6 item 3. There is
  * deliberately NO Save button anywhere in this composer and nothing in it
  * ever calls patchServerSetting() / api('PATCH', ...) -- editing the fields
  * only updates what gets copied; applying it is the user's own shell.
@@ -5825,7 +5828,8 @@ function _buildCommandPairRow(cmd) {
 /**
  * Reflect config-error counts as small badges OUTSIDE the Settings dialog
  * (both gear buttons) and on each relevant tab button itself, so a config
- * error is visible without opening Settings at all -- COMMAND_PAIRS_UI_DESIGN.md
+ * error is visible without opening Settings at all --
+ * docs/plans/2026-08-02-named-session-command-pairs-ui-design.md
  * §6 item 5 ("fail loud" for a config error the user otherwise cannot see),
  * extended by docs/plans/2026-08-04-auto-views-plan.md §9.2 to cover view-rule errors too.
  *
@@ -5877,7 +5881,7 @@ function _updateCommandErrorBadges() {
 
 /**
  * Render the "Command pairs" (ALL configured pairs, including the built-in
- * `default` -- see COMMAND_PAIRS_UI_DESIGN.md §6 item 1) and "Command pair
+ * `default` -- see docs/plans/2026-08-02-named-session-command-pairs-ui-design.md §6 item 1) and "Command pair
  * configuration errors" sections in Settings > Commands, from the module
  * state populated by loadSessionCommands() (_sessionCommands,
  * _sessionCommandErrors).

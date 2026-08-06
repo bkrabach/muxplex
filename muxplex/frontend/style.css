@@ -315,7 +315,7 @@ body {
    calculation, and for every one of them there is a background colour that defeats
    it. The 1px border makes the chip read as chrome over BLACK content (where the
    opaque fill alone is shapeless); the UI font makes it read as chrome regardless
-   of colour. See DEVICE_LABEL_SPEC.md §6 and its guard test in
+   of colour. See docs/plans/2026-08-04-device-label-placement-plan.md §6 and its guard test in
    frontend/tests/test_app.mjs. */
 .tile-device-tag {
   position: absolute;
@@ -925,7 +925,7 @@ body {
   cursor: not-allowed;
 }
 
-/* Follow-up queue panel -- FOLLOWUP_QUEUE_SPEC.md §9. Server-side, shared
+/* Follow-up queue panel -- docs/plans/2026-08-05-per-session-followup-queue-plan.md §9. Server-side, shared
    with every device -- visually distinct from the bell badge (different
    glyph/color, spec §9.5): a bell says "come look", a follow-up badge says
    "something will happen without you." */
@@ -1507,7 +1507,7 @@ body {
 
 /* Small count badge for a config error the user otherwise cannot see without
    opening Settings > Commands -- see _updateCommandErrorBadges() in app.js
-   (COMMAND_PAIRS_UI_DESIGN.md §6 item 5). Used both on the header gear
+   (docs/plans/2026-08-02-named-session-command-pairs-ui-design.md §6 item 5). Used both on the header gear
    buttons (positioned absolute, relative to .header-btn) and on the Commands
    settings-tab button (positioned inline, no relative-positioned ancestor
    needed since .settings-tab is a normal flow button). */
@@ -2466,7 +2466,7 @@ body {
   font-style: italic;
 }
 
-/* Rule editor (AUTO_VIEWS_SPEC.md §9.3): one textarea, one pattern per
+/* Rule editor (docs/plans/2026-08-04-auto-views-plan.md §9.3): one textarea, one pattern per
    line, a live server-checked preview line, and a validation error list --
    below the member list, above the Close footer. */
 .manage-view-panel__rules {

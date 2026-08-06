@@ -1,6 +1,6 @@
 // Tests for the follow-up queue's client-side behavior (app.js's
 // _followups* functions and the compose bar's queue button/shortcut).
-// See FOLLOWUP_QUEUE_SPEC.md §9 and §10.3.
+// See docs/plans/2026-08-05-per-session-followup-queue-plan.md §9 and §10.3.
 
 let _localStorageStore = {};
 globalThis.localStorage = {

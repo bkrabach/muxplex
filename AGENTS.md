@@ -235,7 +235,7 @@ argv element.
 
 A per-session, server-side, persisted list of text items (`state["followups"]`,
 `muxplex/followups.py`) that fires one item per bell, until it drains. See
-`FOLLOWUP_QUEUE_SPEC.md` for the full design; the load-bearing points a
+`docs/plans/2026-08-05-per-session-followup-queue-plan.md` for the full design; the load-bearing points a
 contributor must not break silently:
 
 - **The queue is a THIRD caller of `terminal_input.input_allowed_for_session()`**

@@ -30,7 +30,7 @@ you can verify rather than trust.
 
 Five endpoints (`GET`/`POST`/`PUT`/`DELETE`/`POST .../resume`) implementing a
 per-session, server-side, persisted queue of text items that fire one at a
-time, each on that session's next bell. See `FOLLOWUP_QUEUE_SPEC.md` for the
+time, each on that session's next bell. See `docs/plans/2026-08-05-per-session-followup-queue-plan.md` for the
 full design and `../AGENTS.md`'s "Follow-up queue" section for the
 invariants a contributor must not break.
 

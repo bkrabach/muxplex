@@ -622,7 +622,7 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
     // event still bubbles to `document`, where app.js's queue shortcut acts
     // on it -- this is what makes the queue gesture work no matter where
     // focus is (terminal or compose textarea). See AGENTS.md's follow-up
-    // queue section / FOLLOWUP_QUEUE_SPEC.md §9.2.
+    // queue section / docs/plans/2026-08-05-per-session-followup-queue-plan.md §9.2.
     if (e.key === 'Enter' && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       return false;

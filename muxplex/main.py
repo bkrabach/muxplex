@@ -664,7 +664,7 @@ async def _run_poll_cycle() -> None:
         # never be indistinguishable from "every session was deleted" --
         # that ambiguity is exactly why probe_tmux_epoch() is a separate
         # call in the first place (see step 1b's comment and
-        # FOLLOWUP_QUEUE_SPEC.md §3.2/§3.4). Dropping user-authored queued
+        # docs/plans/2026-08-05-per-session-followup-queue-plan.md §3.2/§3.4). Dropping user-authored queued
         # text is never silent: one warning per dropped queue.
         if _epoch_now is not None:
             for _dropped_name, _dropped_count in followups.reap_stale_queues(
@@ -2090,7 +2090,7 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Follow-up queues -- see FOLLOWUP_QUEUE_SPEC.md and muxplex/followups.py
+# Follow-up queues -- see docs/plans/2026-08-05-per-session-followup-queue-plan.md and muxplex/followups.py
 # ---------------------------------------------------------------------------
 
 

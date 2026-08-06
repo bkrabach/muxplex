@@ -97,14 +97,16 @@ async def process_bell_flags(
         on_transition: Optional callback invoked with *name* at the exact
             moment a 0→1 transition is detected for that session -- the
             follow-up queue's advance hangs off this (see
-            FOLLOWUP_QUEUE_SPEC.md and main.py's _run_poll_cycle), so the
+            docs/plans/2026-08-05-per-session-followup-queue-plan.md and
+            main.py's _run_poll_cycle), so the
             queue is not permanently stalled whenever this poll fallback,
             rather than the tmux hook, is the path that actually observes a
             given bell (before the hook arms, or while it's unarmed after
             arming once). Callers pass this ONLY while the hook is unarmed:
             while armed, receive_bell() is the sole advance trigger, because
             a detached session's bell is independently observed by BOTH
-            mechanisms at once (see FOLLOWUP_QUEUE_SPEC.md's case A), and
+            mechanisms at once (see
+            docs/plans/2026-08-05-per-session-followup-queue-plan.md's case A), and
             triggering an advance from both would drain two items for one
             physical bell. Never invoked from the bell-seeding branch in
             _run_poll_cycle (that branch writes state["sessions"][name]

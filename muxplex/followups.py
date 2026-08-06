@@ -1,7 +1,7 @@
 """
 Per-session follow-up queue: storage shape, item lifecycle, and pure,
 no-I/O helpers over the ``state["followups"]`` dict. See
-FOLLOWUP_QUEUE_SPEC.md for the full design; this module mirrors bells.py's
+docs/plans/2026-08-05-per-session-followup-queue-plan.md for the full design; this module mirrors bells.py's
 split (pure logic here, tmux/settings I/O orchestration in main.py's
 ``_advance_followup_queue()``).
 

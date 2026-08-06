@@ -2,7 +2,7 @@
 Tests for the per-session follow-up queue -- muxplex/followups.py, the
 follow-up endpoints in main.py, and the bell-transition advance wiring.
 
-See FOLLOWUP_QUEUE_SPEC.md for the full design. Test IDs in comments below
+See docs/plans/2026-08-05-per-session-followup-queue-plan.md for the full design. Test IDs in comments below
 map to the spec's §10 test plan where a direct correspondence exists.
 """
 

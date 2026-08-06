@@ -54,10 +54,10 @@ This is the UI follow-on to `2026-08-02-named-session-command-pairs-plan.md`,
 which established the fence it works within. See also AGENTS.md → "Terminal
 input" and `docs/API_SEMANTICS.md` → "Named session command pairs".
 
-The source tree cites this document as **`COMMAND_PAIRS_UI_DESIGN.md`** — its
+The source tree cited this document as **`COMMAND_PAIRS_UI_DESIGN.md`** — its
 name in the workspace where it was written — from `frontend/app.js` and
-`frontend/style.css`, by section and item number. Those citations refer to
-this file.
+`frontend/style.css`, by section and item number, until those citations were
+repointed to this file's dated path (`docs/BACKLOG.md` item 6).
 
 ---
 

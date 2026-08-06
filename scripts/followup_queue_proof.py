@@ -11,7 +11,7 @@ hook's arm-time delivery PROBE (`_arm_bell_hook()`) does a real HTTP
 round-trip to the server's own port, which only exists when something is
 actually listening -- an in-process ASGI transport has no such thing, so
 `_bell_hook_armed` can never go True against one. This is also the
-faithful shape of FOLLOWUP_QUEUE_SPEC.md's own T-40 ("start a muxplex
+faithful shape of docs/plans/2026-08-05-per-session-followup-queue-plan.md's own T-40 ("start a muxplex
 instance... on a monkeypatched port").
 
 Steps:
