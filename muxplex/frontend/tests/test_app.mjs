@@ -3145,24 +3145,30 @@ test('renderGrid and renderSidebar agree on order for every sort_order mode', ()
   app._setServerSettings(null);
 });
 
-// --- sortByAttention tier 2 (the currently-open/"active" session) ---
+// --- sortByAttention: no "active session" tier (removed) ---
 //
-// Regression for the live bug: in the focus view (a session open), the
-// session the user is actively working in sank to the BOTTOM of the
-// attention-sorted list instead of sitting at/near the top. Root cause:
-// tier 2 ("the active session") was omitted from sortByAttention entirely,
-// so the active session fell into tier 3, which sorts by
-// bell.last_fired_at descending -- and an actively-watched session's bell
-// is continuously cleared/never (re)fires, so it has the OLDEST
-// last_fired_at of any session and sorted dead last. The server's
-// _attention_order() already placed it correctly via its own tier 2; these
-// tests pin the client doing the same.
+// muxplex briefly had a dedicated "active session" tier (v0.38.1, commit
+// e7b3929) to fix a real symptom: in the focus view, the session the user
+// was actively working in sank to the BOTTOM of the attention-sorted list.
+// That diagnosis was wrong. The real cause was the server's bell hook
+// curling the wrong scheme at a TLS port, so bells never delivered for an
+// attached session and its bell.last_fired_at froze -- fixed server-side in
+// the same release. With bells actually delivering, the actively-worked
+// session rises on bell recency alone, and the tier was removed: it
+// produced a real, user-visible wrong behavior (selecting a session bumped
+// it up the list, when this sort's contract is to track agent-turn
+// completions, not user actions) and masked bell-hook failures (if the
+// hook broke again, the tier would silently prop the session up instead of
+// letting the symptom surface). These tests pin the two-tier contract and
+// guard against the tier's reintroduction.
 
-test('sortByAttention: the active session with the OLDEST bell lands at/near the top, not the bottom (regression)', () => {
-  // Real-shape regression case: every OTHER session's bell.last_fired_at is
-  // 1785984000+; the active session's is 1785975900 -- clearly the oldest
-  // of the set -- which is exactly what sank it to last place under the
-  // old (tier-2-omitted) implementation.
+test('sortByAttention: selecting a session must not change its position (no active-session tier)', () => {
+  // Real-shape case from the incident this closes: every OTHER session's
+  // bell.last_fired_at is 1785984000+; one session's is 1785975900 --
+  // clearly the oldest of the set. Under the old (tier-2) implementation,
+  // passing this session as "active" would have promoted it to the top;
+  // now sortByAttention doesn't even accept that argument, and ordering is
+  // purely bell.last_fired_at descending, oldest last.
   const sessions = [
     { name: 'other-1', bell: { unseen_count: 0, last_fired_at: 1785984000, seen_at: 1785984000 } },
     { name: 'other-2', bell: { unseen_count: 0, last_fired_at: 1785990000, seen_at: 1785990000 } },
@@ -3172,93 +3178,83 @@ test('sortByAttention: the active session with the OLDEST bell lands at/near the
     },
     { name: 'other-3', bell: { unseen_count: 0, last_fired_at: 1785999000, seen_at: 1785999000 } },
   ];
-  const ordered = app.sortByAttention(sessions, 'muxplex-qol-updates', '');
-  assert.strictEqual(ordered[0].name, 'muxplex-qol-updates',
-    'the active session must be first (tier 2), even though its own bell is the oldest of the set');
-  // Sanity: without the active-session context, the old (buggy) behavior
-  // reproduces exactly -- it sorts LAST because its bell is oldest.
-  const withoutActive = app.sortByAttention(sessions, null);
-  assert.strictEqual(withoutActive[withoutActive.length - 1].name, 'muxplex-qol-updates',
-    'sanity check: with no active-session context, the oldest bell sorts last -- this is the bug being fixed');
+  const ordered = app.sortByAttention(sessions);
+  assert.strictEqual(ordered[ordered.length - 1].name, 'muxplex-qol-updates',
+    'the session with the oldest bell sorts last, regardless of whether the user is actively working in it -- ' +
+    'there is no tier that would promote it for being selected');
 });
 
-test('sortByAttention: a needs-attention (bell) session still outranks the merely-active session (tier 1 beats tier 2)', () => {
+test('sortByAttention: a needs-attention (bell) session outranks a merely idle one, no active tier involved', () => {
   const sessions = [
-    { name: 'active-idle', bell: { unseen_count: 0, last_fired_at: 100, seen_at: 100 } },
+    { name: 'idle', bell: { unseen_count: 0, last_fired_at: 100, seen_at: 100 } },
     { name: 'other-belled', bell: { unseen_count: 1, last_fired_at: 500, seen_at: null } },
   ];
-  const ordered = app.sortByAttention(sessions, 'active-idle', '');
-  assert.deepStrictEqual(ordered.map((s) => s.name), ['other-belled', 'active-idle'],
-    'a session that genuinely needs attention (tier 1) must still come before the active session (tier 2)');
+  const ordered = app.sortByAttention(sessions);
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['other-belled', 'idle'],
+    'a session that genuinely needs attention (tier 1) comes before the merely-idle one (tier 2)');
 });
 
-test('sortByAttention: the active session that ALSO needs attention appears once, in tier 1 position (no duplicate)', () => {
+test('sortByAttention: a needs-attention session appears exactly once, no duplication risk from a removed tier', () => {
   const sessions = [
     { name: 'idle', bell: { unseen_count: 0, last_fired_at: 10, seen_at: 10 } },
-    { name: 'active-and-belled', bell: { unseen_count: 1, last_fired_at: 999, seen_at: null } },
+    { name: 'belled', bell: { unseen_count: 1, last_fired_at: 999, seen_at: null } },
   ];
-  const ordered = app.sortByAttention(sessions, 'active-and-belled', '');
-  assert.deepStrictEqual(ordered.map((s) => s.name), ['active-and-belled', 'idle']);
-  assert.strictEqual(ordered.length, 2, 'the active+belled session must appear exactly once, not duplicated');
+  const ordered = app.sortByAttention(sessions);
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['belled', 'idle']);
+  assert.strictEqual(ordered.length, 2, 'each session must appear exactly once');
 });
 
-test('sortByAttention: active-session matching is federation-aware (name alone is not enough)', () => {
-  // Two sessions named "work" on different devices -- only the one whose
-  // remoteId matches is the one actually open in the focus view.
-  const sessions = [
-    { name: 'work', remoteId: 'device-a', bell: { unseen_count: 0, last_fired_at: 10, seen_at: 10 } },
-    { name: 'work', remoteId: 'device-b', bell: { unseen_count: 0, last_fired_at: 20, seen_at: 20 } },
-    { name: 'other', remoteId: '', bell: { unseen_count: 0, last_fired_at: 999, seen_at: 999 } },
-  ];
-  const ordered = app.sortByAttention(sessions, 'work', 'device-a');
-  assert.strictEqual(ordered[0].remoteId, 'device-a',
-    'tier 2 must match on (name, remoteId), not name alone -- otherwise the wrong device\'s session would be promoted');
-});
-
-test('sortByAttention: with no active session (grid context), behavior is unchanged from before this fix', () => {
+test('sortByAttention: takes exactly one argument now -- extra legacy arguments are ignored, not consulted', () => {
   const sessions = [
     { name: 'never-belled', bell: { unseen_count: 0 } },
     { name: 'old-bell', bell: { unseen_count: 0, last_fired_at: 100, seen_at: 100 } },
     { name: 'new-bell', bell: { unseen_count: 0, last_fired_at: 300, seen_at: 300 } },
   ];
   const orderedNoArgs = app.sortByAttention(sessions);
-  const orderedNullActive = app.sortByAttention(sessions, null);
+  // Passing legacy (now-removed) currentSessionName/currentRemoteId arguments
+  // must have NO effect -- there is nothing left in the function that reads them.
+  const orderedWithLegacyArgs = app.sortByAttention(sessions, 'new-bell', '');
   assert.deepStrictEqual(orderedNoArgs.map((s) => s.name), ['new-bell', 'old-bell', 'never-belled']);
-  assert.deepStrictEqual(orderedNullActive.map((s) => s.name), ['new-bell', 'old-bell', 'never-belled']);
+  assert.deepStrictEqual(orderedWithLegacyArgs.map((s) => s.name), ['new-bell', 'old-bell', 'never-belled']);
 });
 
-test('applySortOrder forwards currentSession/currentRemoteId to attention sort\'s tier 2', () => {
+test('applySortOrder no longer accepts or forwards a currently-open-session argument', () => {
   const sessions = [
-    { name: 'active', bell: { unseen_count: 0, last_fired_at: 1, seen_at: 1 } },
+    { name: 'selected', bell: { unseen_count: 0, last_fired_at: 1, seen_at: 1 } },
     { name: 'idle', bell: { unseen_count: 0, last_fired_at: 999, seen_at: 999 } },
   ];
-  const ordered = app.applySortOrder(sessions, 'attention', false, 'active', '');
-  assert.strictEqual(ordered[0].name, 'active',
-    'applySortOrder must forward the active-session context through to sortByAttention');
+  // Legacy call shape (fifth/sixth args) must be silently ignored -- ordering
+  // is purely bell.last_fired_at descending, so 'idle' (999) outranks
+  // 'selected' (1) even though 'selected' is passed as if it were active.
+  const ordered = app.applySortOrder(sessions, 'attention', false, 'selected', '');
+  assert.deepStrictEqual(ordered.map((s) => s.name), ['idle', 'selected'],
+    'applySortOrder must not promote a session based on a legacy active-session argument');
 });
 
 // --- Focus view: the sidebar shown alongside an open session must surface ---
 // --- that session near the top under 'attention' sort (the reported bug) ---
 
-test('renderSidebar (focus view): the currently-open session with the oldest bell surfaces at the top, not the bottom', () => {
+test('renderSidebar (focus view): the currently-open session\'s position is unaffected by being open (no active-session tier)', () => {
   app._setServerSettings({ sort_order: 'attention' });
   const sessions = [
     { name: 'other-1', bell: { unseen_count: 0, last_fired_at: 1785984000, seen_at: 1785984000 } },
     { name: 'other-2', bell: { unseen_count: 0, last_fired_at: 1785990000, seen_at: 1785990000 } },
     { name: 'working-session', bell: { unseen_count: 0, last_fired_at: 1785975900, seen_at: 1785975900 } },
   ];
-  // "working-session" is the one open in the focus view right now.
+  // "working-session" is the one open in the focus view right now, and it
+  // has the OLDEST bell of the three -- since there is no active-session
+  // tier, it must sort LAST, exactly as if it weren't open at all.
   const html = renderSidebarToHTML(sessions, 'working-session');
   const iWorking = html.indexOf('data-session="working-session"');
   const iOther1 = html.indexOf('data-session="other-1"');
   const iOther2 = html.indexOf('data-session="other-2"');
   assert.ok(iWorking > -1 && iOther1 > -1 && iOther2 > -1, 'all three sidebar items should render');
-  assert.ok(iWorking < iOther1 && iWorking < iOther2,
-    'the currently-open session must render before every other session in the focus view (regression for the reported bug)');
+  assert.ok(iWorking > iOther1 && iWorking > iOther2,
+    'the currently-open session must render LAST when it has the oldest bell -- opening it must not bump its position');
   app._setServerSettings(null);
 });
 
-test('grid, sidebar, and focus view agree on order under attention sort when a session is open', () => {
+test('grid, sidebar, and focus view agree on order under attention sort when a session is open, and opening it does not move it', () => {
   const sessions = [
     { name: 'other-1', bell: { unseen_count: 0, last_fired_at: 1785984000, seen_at: 1785984000 } },
     { name: 'other-2', bell: { unseen_count: 0, last_fired_at: 1785990000, seen_at: 1785990000 } },
@@ -3282,9 +3278,9 @@ test('grid, sidebar, and focus view agree on order under attention sort when a s
       .sort((a, b) => a.i - b.i)
       .map((x) => x.n);
     assert.deepStrictEqual(gridOrder, sidebarOrder,
-      'grid and sidebar/focus-view must still agree on order once a session is open -- the fix must not break this invariant');
-    assert.strictEqual(sidebarOrder[0], 'working-session',
-      'and that shared order must put the open session first (the bug is actually fixed)');
+      'grid and sidebar/focus-view must still agree on order once a session is open');
+    assert.strictEqual(sidebarOrder[sidebarOrder.length - 1], 'working-session',
+      'the open session has the oldest bell, so it must still sort LAST -- selecting/opening it must not change its position');
   } finally {
     app._setViewingSession(null);
     app._setViewingRemoteId('');

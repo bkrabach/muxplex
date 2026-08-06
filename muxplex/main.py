@@ -642,7 +642,10 @@ async def _run_poll_cycle() -> None:
                     # Once viewed/selected, apply_bell_clear_rule() clears
                     # this bell exactly like any other, needs_attention()
                     # flips False, and the session falls through to tier 2
-                    # (active) for free -- the user's follow-on requirement.
+                    # (the last_fired_at-ordered remainder) for free -- its
+                    # seeded last_fired_at is still fresh relative to
+                    # sessions that never belled, so it stays near the top
+                    # of that tier rather than sinking immediately.
                     state["sessions"][name]["bell"] = {
                         "last_fired_at": time.time(),
                         "seen_at": None,
@@ -1535,15 +1538,28 @@ def _attention_order(sessions: list[dict]) -> list[dict]:
     """Tiered ordering for GET /api/view?sort=attention.
 
     Tier 1: needs_attention sessions, ordered by bell.last_fired_at desc.
-    Tier 2: the active session, if it wasn't already placed in tier 1
-        (at most one entry).
-    Tier 3: everything else, ordered by bell.last_fired_at desc (sessions
+    Tier 2: everything else, ordered by bell.last_fired_at desc (sessions
         that have never belled sort last) -- NOT last_activity_at, because
         that timestamp derives from tmux #{window_activity} and bumps on ANY
         pane output (spinners, redraws, status-line clocks), which reordered
         the grid on every ~2s poll cycle even with no real event; bell fires
         only on the actual agent-turn-completion signal, so ordering is
         stable between bells.
+
+    There is deliberately NO separate "active session" tier. A prior
+    revision (v0.38.1, commit e7b3929) added one to fix "the session I'm
+    working in sinks to the bottom" -- but that diagnosis was wrong. The
+    real cause was `_arm_bell_hook()` curling `http://` at a TLS port, so
+    bells never delivered for an attached session and its bell.last_fired_at
+    froze; fixed in the same release. With bells actually delivering, the
+    actively-worked session rises on bell recency alone -- a dedicated
+    active-session tier is not just redundant, it is actively wrong: it
+    bumps a session because the user SELECTED it, when this sort's whole
+    contract is to track agent-turn-completion events, not user navigation.
+    It also masks bell-hook regressions -- if the hook breaks again, an
+    active-session tier silently props the session up and hides the
+    symptom that would otherwise reveal it. See docs/API_SEMANTICS.md's
+    "?sort=attention" entry.
 
     All ties (including "all None") preserve the incoming order -- Python's
     sort is stable, and remains so with reverse=True.
@@ -1556,19 +1572,15 @@ def _attention_order(sessions: list[dict]) -> list[dict]:
     tier1_names = {s["name"] for s in tier1}
     remaining = [s for s in sessions if s["name"] not in tier1_names]
 
-    tier2 = [s for s in remaining if s["active"]]
-    tier2_names = {s["name"] for s in tier2}
-    tier3_source = [s for s in remaining if s["name"] not in tier2_names]
-
-    tier3 = sorted(
-        tier3_source,
+    tier2 = sorted(
+        remaining,
         key=lambda s: (
             s["bell"].get("last_fired_at") is not None,
             s["bell"].get("last_fired_at") or 0,
         ),
         reverse=True,
     )
-    return tier1 + tier2 + tier3
+    return tier1 + tier2
 
 
 @app.get("/api/view")
@@ -1588,10 +1600,12 @@ async def get_view(sort: str | None = None, device_id: str | None = None) -> dic
             does today (`"alphabetical"` sorts by name; any other value
             preserves /api/sessions enumeration order, reported back as
             `"server"`). `"attention"` requests tiered ordering: sessions
-            needing attention first (freshest bell first), then the active
-            session (if not already surfaced), then the rest ordered by
-            last_activity_at descending (unknown activity sorts last). Any
-            other value is rejected with 400 -- no silent fallback.
+            needing attention first (freshest bell first), then everything
+            else ordered by bell.last_fired_at descending (sessions that
+            have never belled sort last). There is no separate tier for the
+            active session -- selecting a session does not change its
+            position; see `_attention_order()`'s docstring. Any other value
+            is rejected with 400 -- no silent fallback.
 
     Response shape:
         {

@@ -1,0 +1,81 @@
+{
+  "$schema_note": "Canonical cross-implementation fixture for the attention sort's two-tier contract (tier 1: needs_attention by bell.last_fired_at desc; tier 2: everything else by bell.last_fired_at desc, never-belled last). Consumed identically by muxplex's main.py (_attention_order), frontend/app.js (sortByAttention), and muxplex-deck's attention.py (apply_attention_sort). This file is DUPLICATED byte-for-byte into muxplex-deck/tests/fixtures/attention_sort_cases.json because the two are separate git repos with independently versioned releases -- see docs/API_SEMANTICS.md's '?sort=attention' entry ('all three must move together'). If you change the expected behavior here, update BOTH copies and re-verify all three suites.",
+  "cases": [
+    {
+      "name": "bell tier orders multiple bells by last_fired_at descending, freshest first",
+      "sessions": [
+        { "name": "quiet", "bell": { "unseen_count": 0, "last_fired_at": null, "seen_at": null } },
+        { "name": "older-bell", "bell": { "unseen_count": 1, "last_fired_at": 1000.0, "seen_at": null } },
+        { "name": "newer-bell", "bell": { "unseen_count": 1, "last_fired_at": 2000.0, "seen_at": null } }
+      ],
+      "active_session": null,
+      "expected_order": ["newer-bell", "older-bell", "quiet"]
+    },
+    {
+      "name": "tier 2 orders by bell.last_fired_at descending, never-belled sorts last",
+      "sessions": [
+        { "name": "never-belled", "bell": { "unseen_count": 0, "last_fired_at": null, "seen_at": null } },
+        { "name": "old-bell", "bell": { "unseen_count": 0, "last_fired_at": 100.0, "seen_at": 100.0 } },
+        { "name": "new-bell", "bell": { "unseen_count": 0, "last_fired_at": 300.0, "seen_at": 300.0 } }
+      ],
+      "active_session": null,
+      "expected_order": ["new-bell", "old-bell", "never-belled"]
+    },
+    {
+      "name": "tier 2 follows bell.last_fired_at, NOT last_activity_at (regression guard)",
+      "sessions": [
+        {
+          "name": "fresh-activity-old-bell",
+          "bell": { "unseen_count": 0, "last_fired_at": 100.0, "seen_at": 100.0 },
+          "last_activity_at": 2000.0
+        },
+        {
+          "name": "old-activity-fresh-bell",
+          "bell": { "unseen_count": 0, "last_fired_at": 2000.0, "seen_at": 2000.0 },
+          "last_activity_at": 100.0
+        }
+      ],
+      "active_session": null,
+      "expected_order": ["old-activity-fresh-bell", "fresh-activity-old-bell"]
+    },
+    {
+      "name": "a needs-attention session outranks every tier-2 session regardless of bell recency",
+      "sessions": [
+        { "name": "idle-recent-bell", "bell": { "unseen_count": 0, "last_fired_at": 999999.0, "seen_at": 999999.0 } },
+        { "name": "needs-attention", "bell": { "unseen_count": 1, "last_fired_at": 1.0, "seen_at": null } }
+      ],
+      "active_session": null,
+      "expected_order": ["needs-attention", "idle-recent-bell"]
+    },
+    {
+      "name": "selecting a session must not change its position (no active-session tier)",
+      "sessions": [
+        { "name": "first", "bell": { "unseen_count": 0, "last_fired_at": null, "seen_at": null } },
+        { "name": "middle", "bell": { "unseen_count": 0, "last_fired_at": null, "seen_at": null } },
+        { "name": "last", "bell": { "unseen_count": 0, "last_fired_at": null, "seen_at": null } }
+      ],
+      "active_session": "middle",
+      "expected_order": ["first", "middle", "last"]
+    },
+    {
+      "name": "the active session's OLDEST bell still sorts it last -- being active confers no boost",
+      "sessions": [
+        { "name": "other-1", "bell": { "unseen_count": 0, "last_fired_at": 1785984000.0, "seen_at": 1785984000.0 } },
+        { "name": "other-2", "bell": { "unseen_count": 0, "last_fired_at": 1785990000.0, "seen_at": 1785990000.0 } },
+        { "name": "muxplex-qol-updates", "bell": { "unseen_count": 0, "last_fired_at": 1785975900.0, "seen_at": 1785975900.0 } },
+        { "name": "other-3", "bell": { "unseen_count": 0, "last_fired_at": 1785999000.0, "seen_at": 1785999000.0 } }
+      ],
+      "active_session": "muxplex-qol-updates",
+      "expected_order": ["other-3", "other-2", "other-1", "muxplex-qol-updates"]
+    },
+    {
+      "name": "an active session that also needs attention is ranked by tier 1 only, appears once",
+      "sessions": [
+        { "name": "idle", "bell": { "unseen_count": 0, "last_fired_at": 10.0, "seen_at": 10.0 } },
+        { "name": "active-and-belled", "bell": { "unseen_count": 1, "last_fired_at": 999.0, "seen_at": null } }
+      ],
+      "active_session": "active-and-belled",
+      "expected_order": ["active-and-belled", "idle"]
+    }
+  ]
+}

@@ -1192,48 +1192,71 @@ def test_get_view_sort_attention_bell_tier_ordered_by_last_fired_desc(
     assert data["sessions"][2]["needs_attention"] is False
 
 
-def test_get_view_sort_attention_active_session_second_tier(client, monkeypatch):
-    """?sort=attention places the active session right after any bell tier,
-    ahead of plain recency-ordered sessions."""
+def test_get_view_sort_attention_active_session_does_not_change_position(
+    client, monkeypatch
+):
+    """Selecting a session (state.active_session) must NOT change its position
+    in ?sort=attention -- ordering tracks bell/agent-turn-completion events,
+    not user navigation. A prior revision (v0.38.1) added a dedicated
+    "active session" tier to fix a symptom (the actively-worked session
+    sinking to the bottom) whose real cause was a dead bell hook -- fixed in
+    the same release. With bells actually delivering, a bumping tier is not
+    just redundant, it's wrong: it moves a session because the user selected
+    it. See docs/API_SEMANTICS.md."""
     from muxplex.state import load_state, save_state
 
     monkeypatch.setattr(
         "muxplex.main.get_session_list", lambda: ["recent", "active-one", "old"]
     )
-    monkeypatch.setattr(
-        "muxplex.main.get_session_activity",
-        lambda: {"recent": 2000.0, "active-one": 500.0, "old": 100.0},
-    )
+    monkeypatch.setattr("muxplex.main.get_session_activity", dict)
     monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
+
+    # No bells fired -> tier 1 empty, tier 2 preserves incoming order (stable
+    # sort, all bell.last_fired_at None) regardless of which session is active.
+    response_before = client.get("/api/view", params={"sort": "attention"})
+    names_before = [s["name"] for s in response_before.json()["sessions"]]
+    assert names_before == ["recent", "active-one", "old"]
 
     state = load_state()
     state["active_session"] = "active-one"
     save_state(state)
 
-    response = client.get("/api/view", params={"sort": "attention"})
-    assert response.status_code == 200
-    data = response.json()
-    names = [s["name"] for s in data["sessions"]]
-    # No bells fired -> tier 1 empty. active-one is tier 2 (first), then
-    # recency-ordered tier 3: recent (2000) before old (100).
-    assert names == ["active-one", "recent", "old"]
-    assert data["sessions"][0]["active"] is True
+    response_after = client.get("/api/view", params={"sort": "attention"})
+    assert response_after.status_code == 200
+    data = response_after.json()
+    names_after = [s["name"] for s in data["sessions"]]
+    assert names_after == names_before, (
+        "selecting a session must not reorder the attention sort"
+    )
+    by_name = {s["name"]: s["active"] for s in data["sessions"]}
+    assert by_name == {"recent": False, "active-one": True, "old": False}, (
+        "the 'active' field itself must still reflect the selection -- only"
+        " the ORDERING is unaffected"
+    )
 
 
-def test_get_view_sort_attention_active_session_already_in_bell_tier_not_duplicated(
+def test_get_view_sort_attention_active_and_belled_session_ranked_by_bell_only(
     client, monkeypatch
 ):
-    """If the active session also needs attention, it appears once (in tier 1),
-    not duplicated in tier 2."""
+    """A session that is BOTH the active session and needs_attention is
+    ordered purely by tier 1 bell recency -- being active confers no
+    additional ordering boost, and there is no separate tier to place it in
+    or duplicate it out of."""
     from muxplex.state import load_state, save_state
 
-    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["bell-and-active"])
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list",
+        lambda: ["other-belled", "active-and-belled"],
+    )
     monkeypatch.setattr("muxplex.main.get_session_activity", dict)
     monkeypatch.setattr("muxplex.main.load_settings", lambda: _view_settings())
 
     state = load_state()
-    state["active_session"] = "bell-and-active"
-    state["sessions"]["bell-and-active"] = {
+    state["active_session"] = "active-and-belled"
+    state["sessions"]["other-belled"] = {
+        "bell": {"unseen_count": 1, "last_fired_at": 2000.0, "seen_at": None}
+    }
+    state["sessions"]["active-and-belled"] = {
         "bell": {"unseen_count": 1, "last_fired_at": 1000.0, "seen_at": None}
     }
     save_state(state)
@@ -1241,10 +1264,14 @@ def test_get_view_sort_attention_active_session_already_in_bell_tier_not_duplica
     response = client.get("/api/view", params={"sort": "attention"})
     assert response.status_code == 200
     data = response.json()
-    assert len(data["sessions"]) == 1
-    assert data["sessions"][0]["name"] == "bell-and-active"
-    assert data["sessions"][0]["active"] is True
-    assert data["sessions"][0]["needs_attention"] is True
+    assert len(data["sessions"]) == 2, "no session may be duplicated"
+    names = [s["name"] for s in data["sessions"]]
+    assert names == ["other-belled", "active-and-belled"], (
+        "a fresher bell must outrank the active session -- active status"
+        " confers no ordering boost"
+    )
+    by_name = {s["name"]: s["active"] for s in data["sessions"]}
+    assert by_name == {"other-belled": False, "active-and-belled": True}
 
 
 def test_get_view_sort_attention_third_tier_orders_by_bell_last_fired_nulls_last(

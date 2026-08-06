@@ -279,25 +279,53 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
 - **`GET /api/view`** is now the canonical server-side resolution of the
   above: view membership (via `filter_visible`), the needs-attention
   predicate (`bells.needs_attention`), and sort ordering (`?sort=attention`
-  for tiered bell/active/recency ordering, or the default that mirrors
+  for tiered bell/recency ordering, or the default that mirrors
   `settings.sort_order`). New clients should prefer it over re-deriving
   these rules; local sessions only in v1.
-- **`?sort=attention`'s non-bell tier orders by `bell.last_fired_at`, NOT
-  `last_activity_at`** (`main.py`'s `_attention_order()`; mirrored in
-  `frontend/app.js`'s `sortByAttention()` and re-implemented in
-  muxplex-deck's `attention.py` -- all three must move together). Sessions
-  that have never belled (`last_fired_at is None`) sort last within this
-  tier, preserving incoming order among themselves (stable sort). This
-  closed a real bug: `last_activity_at` derives from tmux
+- **`?sort=attention` is a TWO-tier ordering: tier 1 is needs_attention
+  sessions (freshest bell first); tier 2 is everything else** (`main.py`'s
+  `_attention_order()`; mirrored in `frontend/app.js`'s `sortByAttention()`
+  and re-implemented in muxplex-deck's `attention.py` -- all three must
+  move together). There is deliberately NO separate "active session" tier
+  -- selecting a session has no effect on its position. This was not
+  always true:
+
+  **Incident, and why the fix was reverted.** v0.38.1 (commit e7b3929)
+  added a dedicated active-session tier to fix a real, observed symptom:
+  the session the user was actively working in sank to the bottom of the
+  attention-sorted list, because that session's bell is continuously
+  cleared (or never fires) while it's the one being watched, giving it the
+  OLDEST `last_fired_at` of any session. **That diagnosis was wrong.** The
+  actual root cause was `_arm_bell_hook()` curling `http://` at a TLS
+  port, so the persistent bell hook silently failed on every real bell for
+  an attached session (`curl` exit 52, swallowed by `-sf \|\| true`) and
+  that session's `bell.last_fired_at` simply never advanced -- fixed
+  server-side in the same v0.38.1 release (see AGENTS.md's bell-hook
+  section). With bells actually delivering, the actively-worked session
+  rises to the top on bell recency alone, with no special-casing required.
+  The active-session tier was therefore not just redundant, it was
+  actively harmful in two ways: (1) it produced a real, user-visible wrong
+  behavior -- selecting a session bumped it up the list, when this sort's
+  contract is to track agent-turn-completion events, not user navigation;
+  (2) it masked bell-hook regressions -- if the hook broke again, the tier
+  would silently prop the active session up instead of letting it sink,
+  which is exactly the symptom that would otherwise reveal the failure.
+  The tier was removed in the release after v0.38.1, restoring the
+  two-tier contract described above.
+
+  **Tier 2 orders by `bell.last_fired_at`, NOT `last_activity_at`.**
+  Sessions that have never belled (`last_fired_at is None`) sort last
+  within this tier, preserving incoming order among themselves (stable
+  sort). This closed a real bug: `last_activity_at` derives from tmux
   `#{window_activity}`, which bumps on ANY pane output -- spinners,
   redraws, status-line clocks -- not just the agent-turn-completion event
-  `attention` sort exists to surface. Keying tier 3 off it meant the grid
+  `attention` sort exists to surface. Keying tier 2 off it meant the grid
   reordered on essentially every ~2s poll cycle even when nothing the user
   cared about had happened. `bell.last_fired_at` only changes when a real
   bell fires, so ordering is now stable between bells -- the whole point of
   an "attention" sort. **`last_activity_at` itself is unchanged** and still
   the sort key for the `recent` sort mode; this fix touches ONLY the
-  `attention` mode's tier-3 key.
+  `attention` mode's tier-2 key.
 - **`PATCH /api/settings` accepts an OPTIONAL `expected_settings_updated_at`
   precondition** (compare-and-swap). When present, it must equal the
   server's current `settings_updated_at` or the request is rejected with
