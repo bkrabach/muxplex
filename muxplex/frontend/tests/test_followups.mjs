@@ -309,3 +309,71 @@ test('resume calls POST .../followups/resume', async () => {
   assert.ok(_fetchCalls[0].url.includes('/followups/resume'));
   assert.strictEqual(_fetchCalls[0].opts.method, 'POST');
 });
+
+// --- Cross-session contamination guard (bug 2) ---
+//
+// Reproduces the reported hazard directly: `_followupsData` is a snapshot
+// fetched for session A (stale, left over from before a session switch);
+// `_viewingSession` has since moved to session B. `_followupsReorder()` (and
+// every other mutation helper) funnels through `_followupsPut()`, which must
+// refuse to write session A's stale items onto session B's queue instead of
+// silently overwriting it. `revision` alone can't catch this -- it's a
+// coincidence that two different sessions' revisions could match -- so the
+// guard is on `_followupsData.session` vs `_viewingSession`, both drawn from
+// the server's own responses.
+
+test('_followupsPut refuses to write when _followupsData.session does not match _viewingSession', async () => {
+  // _followupsData was fetched for session A (two items, so _followupsReorder's
+  // own bounds-check below is a genuinely valid move, isolating the session
+  // guard as the thing under test) ...
+  app._followupsSetDataForTests({
+    session: 'session-A', revision: 3,
+    items: [
+      { id: 'a1', text: 'A item one', enter: true },
+      { id: 'a2', text: 'A item two', enter: true },
+    ],
+    halted: null, target_window: null,
+  });
+  // ... but the user has since switched to session B.
+  app._setViewingSession('session-B');
+
+  // A re-fetch for session B (what the guard triggers instead of writing).
+  queueResponse(200, { session: 'session-B', revision: 0, items: [], halted: null, target_window: null });
+
+  await app._followupsReorder('a1', 1); // valid move (idx 0 -> 1, 2 items) -- funnels through _followupsPut()
+
+  // No PUT was ever sent to EITHER session -- the stale write was refused,
+  // not silently redirected or silently dropped.
+  const putCalls = _fetchCalls.filter((c) => c.opts && c.opts.method === 'PUT');
+  assert.strictEqual(putCalls.length, 0, 'must never PUT a stale cross-session snapshot');
+
+  // The guard's recovery path re-fetches the CURRENTLY viewed session.
+  assert.strictEqual(_fetchCalls.length, 1);
+  assert.ok(_fetchCalls[0].url.includes('/sessions/session-B/followups'));
+  assert.strictEqual(_fetchCalls[0].opts.method, 'GET');
+});
+
+test('_followupsPut proceeds normally once _followupsData.session matches _viewingSession', async () => {
+  app._followupsSetDataForTests({
+    session: 'sess', revision: 3,
+    items: [
+      { id: 'a1', text: 'item one', enter: true },
+      { id: 'a2', text: 'item two', enter: true },
+    ],
+    halted: null, target_window: null,
+  });
+  app._setViewingSession('sess');
+  queueResponse(200, {
+    session: 'sess', revision: 4,
+    items: [
+      { id: 'a2', text: 'item two', enter: true },
+      { id: 'a1', text: 'item one', enter: true },
+    ],
+    halted: null, target_window: null,
+  });
+
+  await app._followupsReorder('a1', 1); // valid move, same session -- must be allowed through
+
+  const putCalls = _fetchCalls.filter((c) => c.opts && c.opts.method === 'PUT');
+  assert.strictEqual(putCalls.length, 1, 'matching session must still be allowed to write');
+});
