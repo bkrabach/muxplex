@@ -71,6 +71,7 @@ from muxplex.sessions import (
     enumerate_sessions,
     get_session_activity,
     get_session_created_times,
+    get_session_cwds,
     get_session_list,
     get_snapshots,
     is_valid_session_name,
@@ -562,7 +563,13 @@ async def _run_poll_cycle() -> None:
         try:
             _epoch_now = await probe_tmux_epoch()
             _manifest = load_manifest()
-            _manifest, _manifest_changed = update_manifest(_manifest, _epoch_now, names)
+            # get_session_cwds() reads the cache enumerate_sessions() just
+            # populated above (same tmux call, no extra subprocess) -- see
+            # manifest.py's "Restore fidelity" section for why this is
+            # recorded at all.
+            _manifest, _manifest_changed = update_manifest(
+                _manifest, _epoch_now, names, cwds=get_session_cwds()
+            )
             if _manifest_changed:
                 save_manifest(_manifest)
         except Exception:

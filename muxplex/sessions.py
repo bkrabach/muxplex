@@ -8,12 +8,16 @@ In-memory cache:
                      (unix epoch seconds), keyed by session name.
     _created       — most-recently-enumerated tmux `#{session_created}`
                      timestamp (unix epoch seconds), keyed by session name.
+    _cwds          — most-recently-enumerated tmux `#{pane_current_path}`
+                     (the active window's active pane's current working
+                     directory), keyed by session name.
 
 Public API:
     get_session_list()                    → list[str]
     get_snapshots()                       → dict[str, str]
     get_session_activity()                → dict[str, float]
     get_session_created_times()           → dict[str, float]
+    get_session_cwds()                    → dict[str, str]
     update_session_cache(names, snapshots) → None
     run_tmux(*args)                       → str   (raises RuntimeError on nonzero exit)
     enumerate_sessions()                  → list[str]
@@ -119,6 +123,7 @@ _session_list: list[str] = []
 _snapshots: dict[str, str] = {}
 _activity: dict[str, float] = {}
 _created: dict[str, float] = {}
+_cwds: dict[str, str] = {}
 
 
 def get_session_list() -> list[str]:
@@ -155,6 +160,28 @@ def get_session_created_times() -> dict[str, float]:
     creation time for are simply absent from the dict.
     """
     return dict(_created)
+
+
+def get_session_cwds() -> dict[str, str]:
+    """Return a copy of the cached session-cwd dict.
+
+    Values are tmux's `#{pane_current_path}` for each session's active
+    window's active pane -- the directory the session is (or, for a bare
+    shell that has since `cd`'d elsewhere, currently appears to be) running
+    from. Observed, not asserted: this is the SAME technique
+    `~/dotfiles/bin/amplifier-workspace-snapshot` uses via `/proc/<pid>/cwd`
+    (see manifest.py's module docstring for why this observation exists --
+    the session-presence manifest's restore-fidelity check). tmux resolves
+    `#{pane_current_path}` itself (no `/proc` read needed here); it tracks
+    the pane's REAL current directory, so a long-running daemon that never
+    `cd`s reports its true root faithfully, while a plain interactive shell
+    reports wherever it happens to be right now -- an honest limitation
+    manifest.py's restore-fidelity check accounts for explicitly (a typed-
+    into shell is not proof of a session's original launch directory, only
+    of where it is at observation time). Sessions tmux didn't report a cwd
+    for are simply absent from the dict.
+    """
+    return dict(_cwds)
 
 
 def update_session_cache(names: list[str], snapshots: dict[str, str]) -> None:
@@ -312,12 +339,14 @@ async def enumerate_sessions() -> list[str]:
     """Return the list of currently running tmux session names.
 
     Calls ``tmux list-sessions -F
-    #{session_name}<TAB>#{window_activity}<TAB>#{session_created}``, splits
-    on newlines, and strips whitespace from each entry. As a side effect,
-    caches each session's last-activity epoch timestamp (see
-    get_session_activity()) and its tmux-assigned creation epoch (see
-    get_session_created_times()) -- both parsed from the same tmux call, so
-    no second subprocess round trip is needed just to learn either value.
+    #{session_name}<TAB>#{window_activity}<TAB>#{session_created}<TAB>#{pane_current_path}``,
+    splits on newlines, and strips whitespace from each entry. As a side
+    effect, caches each session's last-activity epoch timestamp (see
+    get_session_activity()), its tmux-assigned creation epoch (see
+    get_session_created_times()), and its active pane's current working
+    directory (see get_session_cwds()) -- all parsed from the same tmux
+    call, so no second subprocess round trip is needed just to learn any of
+    them.
 
     Uses `#{window_activity}` (the session's active window), NOT
     `#{session_activity}`: empirically, tmux only advances session_activity
@@ -331,12 +360,18 @@ async def enumerate_sessions() -> list[str]:
     session. See get_session_created_times()'s docstring for why that
     intrinsic-to-tmux property matters.
 
-    A line with fewer than 2 tabs (unexpected tmux output, or a caller/mock
+    `#{pane_current_path}` is the active window's active pane's current
+    directory -- see get_session_cwds()'s docstring for what this is used
+    for (the session-presence manifest's restore-fidelity check) and its
+    honest limitations.
+
+    A line with fewer than 3 tabs (unexpected tmux output, or a caller/mock
     still using an older field format) is tolerated: the name is still
-    returned, just with no activity/created entry for the missing field(s).
-    A non-numeric activity or created field is dropped and logged rather
-    than raising -- one malformed session must not break enumeration of the
-    rest.
+    returned, just with no activity/created/cwd entry for the missing
+    field(s). A non-numeric activity or created field is dropped and logged
+    rather than raising -- one malformed session must not break enumeration
+    of the rest. An empty cwd field is simply omitted (not logged -- tmux
+    can legitimately report an empty path for a pane in a transient state).
 
     Returns [] if tmux is not running (RuntimeError from run_tmux).
     """
@@ -344,7 +379,7 @@ async def enumerate_sessions() -> list[str]:
         output = await run_tmux(
             "list-sessions",
             "-F",
-            "#{session_name}\t#{window_activity}\t#{session_created}",
+            "#{session_name}\t#{window_activity}\t#{session_created}\t#{pane_current_path}",
         )
     except (RuntimeError, FileNotFoundError):
         return []
@@ -352,6 +387,7 @@ async def enumerate_sessions() -> list[str]:
     names: list[str] = []
     activity: dict[str, float] = {}
     created: dict[str, float] = {}
+    cwds: dict[str, str] = {}
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if not line:
@@ -361,7 +397,8 @@ async def enumerate_sessions() -> list[str]:
         if not name:
             continue
         names.append(name)
-        activity_field, _, created_field = rest.partition("\t")
+        activity_field, _, rest2 = rest.partition("\t")
+        created_field, _, cwd_field = rest2.partition("\t")
         activity_field = activity_field.strip()
         if activity_field:
             try:
@@ -372,6 +409,9 @@ async def enumerate_sessions() -> list[str]:
                     name,
                     activity_field,
                 )
+        cwd_field = cwd_field.strip()
+        if cwd_field:
+            cwds[name] = cwd_field
         created_field = created_field.strip()
         if created_field:
             try:
@@ -383,9 +423,10 @@ async def enumerate_sessions() -> list[str]:
                     created_field,
                 )
 
-    global _activity, _created
+    global _activity, _created, _cwds
     _activity = activity
     _created = created
+    _cwds = cwds
     return names
 
 

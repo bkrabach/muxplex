@@ -48,7 +48,7 @@ import muxplex.manifest as manifest_mod
 import muxplex.restore as restore_mod
 import muxplex.settings as settings_mod
 from muxplex.manifest import load_manifest, save_manifest, update_manifest
-from muxplex.sessions import enumerate_sessions, probe_tmux_epoch
+from muxplex.sessions import enumerate_sessions, get_session_cwds, probe_tmux_epoch
 
 pytestmark = pytest.mark.integration
 
@@ -160,8 +160,22 @@ def isolated(tmp_path, monkeypatch):
     per-test tmux socket directory. Settings.json is already redirected to
     tmp_path by conftest.py's autouse _isolate_settings_path fixture -- this
     fixture layers on top of that by setting tmux_socket_dir explicitly.
+
+    Also redirects restore.py's ``_default_workspace_root()`` (the
+    conventional ``~/dev`` the reserved-default restore fidelity check
+    assumes -- see restore.py's module docstring) to ``tmp_path / "dev"``,
+    the SAME directory every test in this file already uses as
+    ``workspace_root``. This makes the real ``Path.home()`` on the test
+    runner irrelevant: every existing test's `workspace_root` IS the
+    conventional root the new fidelity check compares against, so tests
+    that pre-create `workspace_root/<name>` (see `_record_pre_crash_state`)
+    are indistinguishable, from the check's point of view, from a real
+    `~/dev/<name>` that genuinely existed before the crash.
     """
     monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+    monkeypatch.setattr(
+        restore_mod, "_default_workspace_root", lambda: tmp_path / "dev"
+    )
     socket_dir = tmp_path / "tmux-socket"
     socket_dir.mkdir()
     settings_mod.patch_settings({"tmux_socket_dir": str(socket_dir)})
@@ -169,21 +183,38 @@ def isolated(tmp_path, monkeypatch):
     _tmux(socket_dir, "kill-server", check=False)
 
 
-def _record_pre_crash_state(socket_dir: Path, names: list[str]) -> int:
+def _record_pre_crash_state(
+    socket_dir: Path, names: list[str], workspace_root: Path | None = None
+) -> int:
     """Create *names* as bare 1-window sessions (the pre-crash state -- their
     internal shape doesn't matter, only that they exist so the manifest
     records them) on a fresh server under *socket_dir*, then run one
-    "poll cycle" (probe_tmux_epoch + update_manifest + save) against the
-    REAL production functions. Returns the old server's pid.
+    "poll cycle" (probe_tmux_epoch + enumerate_sessions + get_session_cwds +
+    update_manifest + save) against the REAL production functions. Returns
+    the old server's pid.
+
+    When *workspace_root* is given, each session is created ALREADY rooted
+    at `workspace_root/<name>` (directory pre-created, session started with
+    `-c` pointed at it) -- modeling a session that genuinely was a
+    `~/dev/<name>` workspace before the crash, the case restore.py's new
+    fidelity check must let through unchanged. Tests proving the check
+    REFUSES a session omit this (or pass a cwd that doesn't match), see
+    test_restore_fidelity.py.
     """
     for name in names:
-        _tmux(socket_dir, "new-session", "-d", "-s", name)
+        if workspace_root is not None:
+            session_dir = workspace_root / name
+            session_dir.mkdir(parents=True, exist_ok=True)
+            _tmux(socket_dir, "new-session", "-d", "-s", name, "-c", str(session_dir))
+        else:
+            _tmux(socket_dir, "new-session", "-d", "-s", name)
 
     async def _poll():
         epoch = await probe_tmux_epoch()
         live = await enumerate_sessions()
+        cwds = get_session_cwds()
         manifest = load_manifest()
-        manifest, _ = update_manifest(manifest, epoch, live)
+        manifest, _ = update_manifest(manifest, epoch, live, cwds=cwds)
         save_manifest(manifest)
         return epoch
 
@@ -241,7 +272,7 @@ def test_full_scale_restore_recreates_correct_structure(isolated, tmp_path):
     )
 
     names = [f"proj-{i:02d}" for i in range(N_FULL_SCALE)]
-    old_pid = _record_pre_crash_state(socket_dir, names)
+    old_pid = _record_pre_crash_state(socket_dir, names, workspace_root=workspace_root)
     _simulate_cold_start(socket_dir, old_pid)
 
     plan = asyncio.run(restore_mod.load_plan())
@@ -298,7 +329,7 @@ def test_tombstoned_session_never_returns_via_restore(isolated, tmp_path):
     )
 
     names = ["keep-a", "keep-b", "killed-on-purpose"]
-    old_pid = _record_pre_crash_state(socket_dir, names)
+    old_pid = _record_pre_crash_state(socket_dir, names, workspace_root=workspace_root)
 
     # Deliberate kill: the server is untouched, only this ONE session dies.
     _tmux(socket_dir, "kill-session", "-t", "killed-on-purpose")
@@ -306,8 +337,9 @@ def test_tombstoned_session_never_returns_via_restore(isolated, tmp_path):
     async def _poll_after_kill():
         epoch = await probe_tmux_epoch()
         live = await enumerate_sessions()
+        cwds = get_session_cwds()
         manifest = load_manifest()
-        manifest, _ = update_manifest(manifest, epoch, live)
+        manifest, _ = update_manifest(manifest, epoch, live, cwds=cwds)
         save_manifest(manifest)
 
     asyncio.run(_poll_after_kill())
@@ -387,8 +419,17 @@ def test_restore_uses_recorded_pair(isolated, tmp_path):
 
 
 def test_restore_no_record_uses_default(isolated, tmp_path):
-    """Byte-identity: a name with no created_with record restores with the
-    default pair -- identical to pre-feature behavior."""
+    """Byte-identity for the common, correctly-rooted case: a name with no
+    created_with record, whose conventional ~/dev/<name> directory already
+    exists (and no cwd was ever recorded for it -- no poll cycle ran before
+    this restore, mirroring an operator running `muxplex restore <name>`
+    with zero manifest history), restores with the default pair -- same as
+    pre-feature behavior. See test_restore_fidelity.py for the refusal case
+    this fix adds when that directory does NOT already exist.
+    """
+    workspace_root = tmp_path / "dev"
+    (workspace_root / "plain-restore").mkdir(parents=True)
+
     report = asyncio.run(restore_mod.execute_restore(["plain-restore"]))
     assert report.ok_count == 1
     live = asyncio.run(enumerate_sessions())
@@ -420,7 +461,7 @@ def test_restore_twice_is_idempotent(isolated, tmp_path):
     )
 
     names = ["a2a", "bbs", "ccc"]
-    old_pid = _record_pre_crash_state(socket_dir, names)
+    old_pid = _record_pre_crash_state(socket_dir, names, workspace_root=workspace_root)
     _simulate_cold_start(socket_dir, old_pid)
 
     plan1 = asyncio.run(restore_mod.load_plan())
@@ -509,7 +550,7 @@ def test_partial_failure_is_named_and_others_still_succeed(isolated, tmp_path):
     )
 
     names = ["good-one", "bad-one", "also-good"]
-    old_pid = _record_pre_crash_state(socket_dir, names)
+    old_pid = _record_pre_crash_state(socket_dir, names, workspace_root=workspace_root)
     _simulate_cold_start(socket_dir, old_pid)
 
     plan = asyncio.run(restore_mod.load_plan())
@@ -558,7 +599,7 @@ def test_cli_partial_failure_exits_nonzero_end_to_end(isolated, tmp_path, capsys
     )
 
     names = ["good-one", "bad-one"]
-    old_pid = _record_pre_crash_state(socket_dir, names)
+    old_pid = _record_pre_crash_state(socket_dir, names, workspace_root=workspace_root)
     _simulate_cold_start(socket_dir, old_pid)
 
     with pytest.raises(SystemExit) as exc_info:

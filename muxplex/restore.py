@@ -34,18 +34,74 @@ belong to the poll loop). Losing a poll cycle's `sessions` update to this
 race is self-healing (the next ~2s poll cycle simply re-observes the still-
 live session); losing track of a name we just restored is not, which is why
 that field gets the careful treatment.
+
+Restore fidelity for sessions with no recorded command (2026-08-05)
+--------------------------------------------------------------------
+
+**The gap:** `get_created_with(manifest, name)` returning ``None`` means
+"muxplex has no record of how this session was made" -- and this module's
+long-standing, byte-identical-to-pre-feature answer to that was to hand the
+name to the RESERVED DEFAULT session command unconditionally. That default
+substitutes `{name}` directly (default template `tmux new-session -d -s
+{name}`; the common real-world configuration is something like
+`amplifier-workspace {name}`, which conventionally resolves to
+`~/dev/{name}` -- see AGENTS.md's "Recovering sessions after they are lost").
+For a session that really was a `~/dev/<name>` workspace, this is correct
+and exactly what a human would do by hand. For a hand-started, long-running
+daemon rooted anywhere else -- the case this fix closes -- it is silent
+data loss dressed up as a success: the WRONG process starts, under the
+RIGHT name, and (per AGENTS.md's own account of the incident this closes)
+the dashboard shows green.
+
+**The fix is a refusal, not a smarter guess.** `_check_unrecorded_restore_fidelity()`
+gates ONLY the `recorded is None` branch of `execute_restore()` below --
+named `session_commands` pairs are unaffected (an operator who configured
+one explicitly owns its behavior, directory creation included; see
+`test_restore_uses_recorded_pair` in the test suite). Two independent
+checks, either one refuses with an actionable reason instead of spawning
+anything:
+
+  1. **Known divergence.** `manifest.get_restore_cwd()` returns the cwd
+     ACTUALLY observed for this session, every poll cycle, right up until
+     it was lost (see manifest.py's "Restore fidelity" section). If it is
+     known and does not match the conventional `~/dev/<name>` the default
+     pair assumes, that is positive, dated evidence the session was never
+     such a workspace at all -- restoring it via the default pair would
+     reproduce this incident exactly.
+  2. **The hard floor.** Independent of (1): the conventional directory
+     must ALREADY EXIST. Restore must never be the thing that creates
+     `~/dev/<name>` for the first time -- if it doesn't exist, either check
+     (1) already caught the real reason, or muxplex has no history for this
+     name at all, and either way, silently creating it is the exact failure
+     this fix closes. This check is unconditional (fires even when no cwd
+     was ever recorded) and is what makes "restore never creates a
+     directory that didn't exist" true structurally rather than by
+     heuristic -- see `_check_unrecorded_restore_fidelity()`'s docstring
+     and `test_restore_fidelity.py`'s hard-floor proof.
+
+No recorded cwd AND the directory already exists: nothing to refuse, and
+byte-identical to the pre-fix result -- the common, correct case of a
+legacy manifest entry or a plain tmux session genuinely rooted where the
+default pair expects.
+
+**What is deliberately NOT attempted:** recovering the session's original
+launch COMMAND. See manifest.py's module docstring for why that signal
+isn't trustworthy enough to act on, and why this fix only ever refuses or
+proceeds -- it never fabricates a best-guess command.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 from muxplex.manifest import (
     RESTORE_MAX_AGE_SECONDS,
     compute_restore_plan,
     get_created_with,
+    get_restore_cwd,
     load_manifest,
     mark_restored,
     save_manifest,
@@ -54,6 +110,70 @@ from muxplex.sessions import enumerate_sessions, run_tmux, spawn_session_command
 from muxplex.settings import find_session_command
 
 Status = Literal["ok", "fail", "warn"]
+
+
+def _default_workspace_root() -> Path:
+    """The conventional root the RESERVED DEFAULT session command assumes a
+    session lives under: ``~/dev/`` -- see AGENTS.md's "Recovering sessions
+    after they are lost" (`amplifier-workspace ~/dev/<name>`, the exact
+    manual recovery procedure this fidelity check automates the honest half
+    of). A thin, deliberately mockable wrapper around ``Path.home()`` so
+    tests can redirect it without patching the stdlib -- see
+    `test_restore_fidelity.py`.
+    """
+    return Path.home() / "dev"
+
+
+def _check_unrecorded_restore_fidelity(
+    name: str, manifest: dict[str, Any]
+) -> str | None:
+    """Return an actionable refusal reason if restoring *name* via the
+    RESERVED DEFAULT session command (``get_created_with()`` returned
+    ``None`` for it) would not faithfully reproduce it -- or ``None`` if
+    proceeding is safe. Called ONLY from that branch of `execute_restore()`;
+    a name with a recorded, resolvable `session_commands` pair never reaches
+    this function at all (see this module's docstring).
+
+    Two independent checks, either one refuses:
+
+    1. Known divergence: `get_restore_cwd()` returns the cwd ACTUALLY
+       observed for *name* every poll cycle up until it was lost. When
+       known and it does not match the conventional `~/dev/<name>`, that is
+       positive, dated evidence this was never such a workspace -- e.g. a
+       hand-started daemon rooted at `$HOME` or nested several directories
+       below `~/dev/`.
+    2. The hard floor: `~/dev/<name>` must ALREADY EXIST, independent of
+       (1). Restore must never be what creates it for the first time -- see
+       this module's docstring and `test_restore_fidelity.py`'s hard-floor
+       proof.
+
+    No recorded cwd AND the directory already exists: returns ``None`` --
+    byte-identical to pre-fix behavior for the common, correctly-rooted
+    case (see `test_restore_no_record_uses_default`).
+    """
+    expected_dir = _default_workspace_root() / name
+    observed_cwd = get_restore_cwd(manifest, name)
+
+    if observed_cwd is not None and Path(observed_cwd) != expected_dir:
+        return (
+            f"last observed running from {observed_cwd!r}, not "
+            f"{str(expected_dir)!r} -- restoring via the default session "
+            "command would start the wrong process there. Restart it "
+            "manually from its real location, and configure a session "
+            "command pair (see docs/API_SEMANTICS.md's command-pairs "
+            "section) so it can be restored faithfully next time."
+        )
+
+    if not expected_dir.is_dir():
+        return (
+            f"{str(expected_dir)!r} does not exist -- restoring via the "
+            "default session command would create it fresh and start the "
+            "wrong thing inside it. Restart this session manually from "
+            "wherever it actually runs, and configure a session command "
+            "pair so it can be restored faithfully next time."
+        )
+
+    return None
 
 
 @dataclass
@@ -212,7 +332,21 @@ async def execute_restore(names: list[str]) -> RestoreReport:
         # explicitly designed to run while the poll loop is live, and a
         # per-iteration read is consistent with _persist_restored()'s
         # read-right-before-write discipline.
-        recorded = get_created_with(load_manifest(), name)
+        current_manifest = load_manifest()
+        recorded = get_created_with(current_manifest, name)
+
+        if recorded is None:
+            # No configured session command pair -- this session would
+            # fall through to the RESERVED DEFAULT. Verify restoring it
+            # that way would be faithful before spawning anything; see this
+            # module's docstring and _check_unrecorded_restore_fidelity()'s.
+            fidelity_error = _check_unrecorded_restore_fidelity(name, current_manifest)
+            if fidelity_error is not None:
+                report.results.append(
+                    SessionResult(name=name, status="fail", detail=fidelity_error)
+                )
+                continue
+
         if recorded is not None and find_session_command(recorded) is None:
             # The pair this session was created with no longer resolves
             # (deleted or renamed in settings). Not a substitution, not a

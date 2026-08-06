@@ -26,6 +26,7 @@ from muxplex.manifest import (
     RESTORE_MAX_AGE_SECONDS,
     compute_restore_plan,
     get_created_with,
+    get_restore_cwd,
     load_manifest,
     mark_restored,
     save_manifest,
@@ -675,3 +676,161 @@ def test_created_with_pop_does_not_add_spurious_change():
 
 def test_restore_max_age_is_seven_days():
     assert RESTORE_MAX_AGE_SECONDS == pytest.approx(7 * 86400.0)
+
+
+# ---------------------------------------------------------------------------
+# cwd tracking -- restore-fidelity groundwork (2026-08-05 incident)
+# ---------------------------------------------------------------------------
+
+
+def test_update_manifest_first_run_records_cwd_when_given():
+    """cwds is optional (default None, byte-identical for every existing
+    caller/test above); when supplied, each live session's cwd is recorded
+    on first adoption."""
+    manifest = manifest_mod._empty_manifest()
+
+    new_manifest, _changed = update_manifest(
+        manifest, EPOCH_A, ["a2a"], now=1000.0, cwds={"a2a": "/home/user/dev/a2a"}
+    )
+
+    assert new_manifest["sessions"]["a2a"]["cwd"] == "/home/user/dev/a2a"
+
+
+def test_update_manifest_no_cwds_arg_omits_cwd_key():
+    """A caller that never passes cwds (every pre-fix caller) gets no `cwd`
+    key at all -- not a None placeholder. Byte-identical shape to pre-fix."""
+    manifest = manifest_mod._empty_manifest()
+
+    new_manifest, _changed = update_manifest(manifest, EPOCH_A, ["a2a"], now=1000.0)
+
+    assert "cwd" not in new_manifest["sessions"]["a2a"]
+
+
+def test_update_manifest_same_server_updates_cwd_without_signaling_changed():
+    """A session reporting a (possibly new) cwd on an otherwise-quiet cycle
+    must NOT set changed=True -- cwd tracking must not blow the
+    '< 1 write/minute' steady-state budget any more than last_seen_at does."""
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {
+            "a2a": {
+                "first_seen_at": 100.0,
+                "last_seen_at": 100.0,
+                "cwd": "/home/user/dev/a2a",
+            }
+        },
+        "pending_restore": None,
+        "created_with": {},
+    }
+
+    new_manifest, changed = update_manifest(
+        manifest, EPOCH_A, ["a2a"], now=600.0, cwds={"a2a": "/home/user/dev/a2a-moved"}
+    )
+
+    assert changed is False
+    assert new_manifest["sessions"]["a2a"]["cwd"] == "/home/user/dev/a2a-moved"
+
+
+def test_update_manifest_cwd_missing_this_cycle_keeps_previous_value():
+    """tmux occasionally omits pane_current_path transiently -- a name
+    absent from *cwds* this cycle must keep its last-known cwd, not lose it."""
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 500.0},
+        "sessions": {
+            "a2a": {
+                "first_seen_at": 100.0,
+                "last_seen_at": 100.0,
+                "cwd": "/home/user/dev/a2a",
+            }
+        },
+        "pending_restore": None,
+        "created_with": {},
+    }
+
+    new_manifest, _changed = update_manifest(
+        manifest, EPOCH_A, ["a2a"], now=600.0, cwds={}
+    )
+
+    assert new_manifest["sessions"]["a2a"]["cwd"] == "/home/user/dev/a2a"
+
+
+def test_cold_start_freezes_last_known_cwd_into_pending_restore():
+    """The exact mechanism restore.py's fidelity check depends on: a
+    session's LAST OBSERVED cwd, recorded every cycle right up until the
+    server died, survives into the frozen pending_restore snapshot."""
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 100.0},
+        "sessions": {
+            "attention-manager": {
+                "first_seen_at": 50.0,
+                "last_seen_at": 100.0,
+                "cwd": "/home/user",
+            }
+        },
+        "pending_restore": None,
+        "created_with": {},
+    }
+
+    new_manifest, changed = update_manifest(manifest, EPOCH_B, [], now=5000.0)
+
+    assert changed is True
+    pending = new_manifest["pending_restore"]
+    assert pending["sessions"]["attention-manager"]["cwd"] == "/home/user"
+
+
+def test_cold_start_new_epoch_records_cwd_for_freshly_seen_sessions():
+    """A session appearing for the first time under the NEW epoch (the
+    'bootstrap' session in a cold start) also gets its cwd recorded when
+    supplied -- not just carried-over entries."""
+    manifest = {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 100.0},
+        "sessions": {},
+        "pending_restore": None,
+        "created_with": {},
+    }
+
+    new_manifest, _changed = update_manifest(
+        manifest,
+        EPOCH_B,
+        ["bootstrap-only"],
+        now=5000.0,
+        cwds={"bootstrap-only": "/home/user/dev/bootstrap-only"},
+    )
+
+    assert (
+        new_manifest["sessions"]["bootstrap-only"]["cwd"]
+        == "/home/user/dev/bootstrap-only"
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_restore_cwd() -- accessor for the frozen pending_restore snapshot
+# ---------------------------------------------------------------------------
+
+
+def test_get_restore_cwd_returns_recorded_value():
+    manifest = _manifest_with_pending(["a2a"])
+    manifest["pending_restore"]["sessions"]["a2a"]["cwd"] = "/home/user/dev/a2a"
+    assert get_restore_cwd(manifest, "a2a") == "/home/user/dev/a2a"
+
+
+def test_get_restore_cwd_no_pending_restore_returns_none():
+    manifest = manifest_mod._empty_manifest()
+    assert get_restore_cwd(manifest, "anything") is None
+
+
+def test_get_restore_cwd_name_not_pending_returns_none():
+    manifest = _manifest_with_pending(["a2a"])
+    assert get_restore_cwd(manifest, "unrelated-name") is None
+
+
+def test_get_restore_cwd_legacy_entry_with_no_cwd_key_returns_none():
+    """A pending_restore entry frozen before this feature existed (no `cwd`
+    key at all) must return None, not raise -- indistinguishable from
+    'never observed', by design (see get_restore_cwd()'s docstring)."""
+    manifest = _manifest_with_pending(["a2a"])  # no "cwd" key in the fixture
+    assert get_restore_cwd(manifest, "a2a") is None

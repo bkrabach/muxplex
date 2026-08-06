@@ -53,6 +53,53 @@ removed by exactly one thing -- observed individual death against a live,
 identity-matched server. It is never removed by a TTL, a "tidy up" sweep, or
 as a side effect of anything else (mirroring the trap in pruning.json that
 this module exists to not repeat).
+
+Restore fidelity: recording an observed working directory
+-----------------------------------------------------------
+
+**Incident (2026-08-05):** a real tmux-server death took 52 sessions; 44 came
+back on their own, `muxplex restore` recreated 8 more with 0 reported
+failures -- but two of those eight came back WRONG, in the exact way
+AGENTS.md warns about ("a bare tmux session ... looks restored and isn't"):
+long-running hand-started daemons rooted OUTSIDE the `~/dev/<name>`
+convention (one at `$HOME`, one at a nested project directory several levels
+below `~/dev/`). Neither had a `created_with` record (see below), so restore
+fell through to the reserved default session command -- which not only
+started the wrong process, it CREATED `~/dev/<name>` for both, directories
+that had never existed. The dashboard then showed both green.
+
+The gap: this module recorded PRESENCE faithfully but not HOW a session came
+to be, unless it came through a configured `session_commands` pair (see
+`created_with` below). The sessions least reconstructible from their name
+alone -- hand-started daemons rooted anywhere but the convention -- are
+exactly the ones `created_with` has nothing to say about.
+
+The fix, scoped to what is actually observable: every poll cycle,
+`sessions.get_session_cwds()` reports each live session's active pane's
+current directory (tmux's own `#{pane_current_path}` -- the SAME technique
+`~/dotfiles/bin/amplifier-workspace-snapshot` uses via `/proc/<pid>/cwd`, one
+layer higher since tmux already resolves it). `update_manifest()` records
+this as `cwd` on each session entry, updated in place every cycle exactly
+like `last_seen_at` -- never triggering `changed=True` on its own, so the
+"< 1 write/minute" steady-state budget is unaffected. When a cold start
+freezes a session into `pending_restore`, whatever `cwd` was last observed
+freezes with it -- a real, dated fact about where the session was actually
+running moments before it was lost.
+
+**What is deliberately NOT attempted: recovering the launch COMMAND.** A
+daemon's original command line is only as durable as its own process's
+`/proc/<pid>/cmdline` (or tmux's `#{pane_start_command}`, which reflects the
+pane's first command, not necessarily anything a user later typed into an
+interactive shell) -- and a shell that has since been typed into is not
+proof of what it started as. Rather than fabricate a maybe-right command
+from an unreliable signal, this module records only the ONE thing that is
+genuinely, continuously observable while a session is alive: where it runs
+from. `restore.py`'s fidelity check uses this fact to decide between two
+honest outcomes -- restore via the default pair (the recorded root matches
+the convention it assumes), or REFUSE with an actionable reason (it
+doesn't) -- never a silent substitution that fabricates the missing
+command. See restore.py's module docstring for the refusal itself, and its
+`_default_workspace_root()` / fidelity-check functions for the mechanism.
 """
 
 from __future__ import annotations
@@ -195,8 +242,23 @@ def update_manifest(
     live_names: list[str],
     *,
     now: float | None = None,
+    cwds: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Apply one poll cycle's observation to *manifest*.
+
+    *cwds* (optional, defaults to ``None`` -- byte-identical to pre-fix
+    behavior for any caller that doesn't pass it, including every existing
+    test in this suite) is ``sessions.get_session_cwds()``'s output: each
+    live session's observed working directory this cycle. When provided,
+    each live session's ``cwd`` field is set/updated in place -- exactly
+    like ``last_seen_at`` below, this NEVER sets ``changed=True`` on its own
+    (a session merely continuing to report the same, or a different, cwd is
+    not a structural change worth an extra write). A name absent from
+    *cwds* simply keeps whatever ``cwd`` (if any) it already had -- tmux
+    occasionally omits `#{pane_current_path}` transiently, and losing a
+    known-good value to a single blank read would defeat the whole point of
+    recording it. See the module docstring's "Restore fidelity" section and
+    restore.py for what this field is used for.
 
     Pure and side-effect-free: the caller decides whether/when to persist
     the result (see main.py's poll-cycle call site, which only calls
@@ -264,7 +326,10 @@ def update_manifest(
         # First run ever, or first run after upgrade: adopt. Nothing is
         # "lost" relative to an epoch we've never recorded.
         for name in live_names:
-            sessions[name] = {"first_seen_at": now, "last_seen_at": now}
+            entry: dict[str, Any] = {"first_seen_at": now, "last_seen_at": now}
+            if cwds and name in cwds:
+                entry["cwd"] = cwds[name]
+            sessions[name] = entry
         new_manifest = {
             "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
             "epoch": {**epoch_now, "observed_at": now},
@@ -280,8 +345,13 @@ def update_manifest(
         for name in live_names:
             if name in sessions:
                 sessions[name]["last_seen_at"] = now
+                if cwds and name in cwds:
+                    sessions[name]["cwd"] = cwds[name]
             else:
-                sessions[name] = {"first_seen_at": now, "last_seen_at": now}
+                entry: dict[str, Any] = {"first_seen_at": now, "last_seen_at": now}
+                if cwds and name in cwds:
+                    entry["cwd"] = cwds[name]
+                sessions[name] = entry
                 changed = True
         for name in list(sessions):
             if name not in live_set:
@@ -327,9 +397,12 @@ def update_manifest(
     # Either way, nothing from the stale `sessions` dict should survive
     # un-frozen, or a later same-server cycle could tombstone a name that
     # was never truly re-observed under this epoch.
-    new_sessions = {
-        name: {"first_seen_at": now, "last_seen_at": now} for name in live_names
-    }
+    new_sessions: dict[str, Any] = {}
+    for name in live_names:
+        entry: dict[str, Any] = {"first_seen_at": now, "last_seen_at": now}
+        if cwds and name in cwds:
+            entry["cwd"] = cwds[name]
+        new_sessions[name] = entry
     # Reap rule 2: retain only created_with records for names that are
     # either currently live or frozen into pending_restore -- everything
     # else is garbage-collected here (this is the only place a
@@ -412,6 +485,35 @@ def mark_restored(manifest: dict[str, Any], restored_names: set[str]) -> dict[st
     }
     new_pending = None if not remaining else {**pending, "sessions": remaining}
     return {**manifest, "pending_restore": new_pending}
+
+
+def get_restore_cwd(manifest: dict[str, Any], name: str) -> str | None:
+    """Return the ``cwd`` last observed for *name* in a frozen
+    ``pending_restore`` snapshot, or None.
+
+    None means "no observed cwd" -- either *name* is not currently pending
+    restore at all, or it was pending before this field existed (an
+    upgraded manifest whose frozen snapshot predates cwd tracking), or tmux
+    never reported a `#{pane_current_path}` for it during any cycle it was
+    alive. All three are indistinguishable and deliberately treated the
+    same way by restore.py's fidelity check: absence of evidence, not
+    evidence of a mismatch -- see that module's docstring.
+
+    Reads ONLY the frozen snapshot (``pending_restore["sessions"][name]``),
+    never the live ``sessions[name]`` -- restore only ever needs the cwd a
+    session had at the moment it was lost, and by the time restore runs the
+    live ``sessions`` entry for a still-dead name has already been dropped
+    (see update_manifest()'s cold-start branch: the stale dict does not
+    carry forward un-frozen).
+    """
+    pending = manifest.get("pending_restore")
+    if not pending:
+        return None
+    entry = (pending.get("sessions") or {}).get(name)
+    if not entry:
+        return None
+    cwd = entry.get("cwd")
+    return cwd if isinstance(cwd, str) and cwd else None
 
 
 # ---------------------------------------------------------------------------
