@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import stat
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -462,9 +463,20 @@ def test_cmd_env_falls_back_to_tmux_default_when_nothing_configured(
 # ---------------------------------------------------------------------------
 
 
-def _save_pending_manifest(
-    manifest_mod, names, *, detected_at=1785378123.0, lost_pid=1519962
-):
+def _save_pending_manifest(manifest_mod, names, *, detected_at=None, lost_pid=1519962):
+    """*detected_at* defaults to a few hours ago (computed at call time, NOT
+    a hardcoded absolute epoch) -- comfortably inside
+    manifest.RESTORE_MAX_AGE_SECONDS (7 days) regardless of what day the
+    suite happens to run on. A prior version of this helper hardcoded an
+    absolute unix timestamp, which is a ticking time bomb: every test using
+    the default eventually starts failing, for reasons having nothing to do
+    with the behavior under test, the moment wall-clock time crosses 7 days
+    past whenever that constant was written. Pass an explicit *detected_at*
+    (as the staleness test below does) when a test specifically needs to
+    control the age.
+    """
+    if detected_at is None:
+        detected_at = time.time() - 3600.0  # 1 hour ago
     manifest = {
         "schema": 1,
         "epoch": {
@@ -481,7 +493,10 @@ def _save_pending_manifest(
                 "inode": 5,
             },
             "sessions": {
-                name: {"first_seen_at": 1785372115.0, "last_seen_at": 1785378000.0}
+                name: {
+                    "first_seen_at": detected_at - 6008.0,
+                    "last_seen_at": detected_at - 123.0,
+                }
                 for name in names
             },
         },
