@@ -331,7 +331,7 @@ error: 'session_commands' is local-file-only and cannot be set through patch_set
        Or edit ~/.config/muxplex/settings.json directly.
 ```
 
-Non-zero exit. This is a pre-existing bug (documented in `COMMAND_PAIRS_SPEC.md` §0.4 as out of
+Non-zero exit. This is a pre-existing bug (documented in `docs/plans/2026-08-02-named-session-command-pairs-plan.md` §0.4 as out of
 scope there) that this feature walks users straight into. ~10 lines.
 
 **D2 — `muxplex commands list | add | remove`**, writing via `save_settings()` rather than
@@ -523,7 +523,7 @@ Steps 1–3 are roughly an hour and already move the needle. Steps 4–6 are the
 - **No `settings.json` locking.** Pre-existing hazard, out of scope, documented.
 - **No new `DEFAULT_SETTINGS` key.** Nothing in the recommendation needs one — which also means
   nothing here can be silently erased by `save_settings()`'s unknown-key drop
-  (`settings.py:583-586`), the trap `COMMAND_PAIRS_SPEC.md` §0.2 recorded.
+  (`settings.py:583-586`), the trap `docs/plans/2026-08-02-named-session-command-pairs-plan.md` §0.2 recorded.
 
 **API contract impact: none.** No endpoint is added, removed, or changed in shape. muxplex-deck,
 federation peers, and agents are unaffected. That is not incidental — it is the strongest available

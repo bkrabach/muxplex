@@ -1174,7 +1174,7 @@ def test_apply_synced_settings_does_not_use_time_now():
 
 # ============================================================
 # deviceLabelPlacement: authoritative key + showDeviceBadges mirror
-# (DEVICE_LABEL_SPEC.md, sections 2.2-2.4, test plan section 8.1)
+# (docs/plans/2026-08-04-device-label-placement-plan.md, sections 2.2-2.4, test plan section 8.1)
 # ============================================================
 
 
@@ -1597,7 +1597,7 @@ def test_patch_settings_malformed_rule_raises_and_writes_nothing(
 ):
     """A malformed match_names rule raises InvalidViewRuleRejected and
     writes NOTHING -- including an unrelated key in the same patch
-    (AUTO_VIEWS_SPEC.md §11.2)."""
+    (docs/plans/2026-08-04-auto-views-plan.md §11.2)."""
     save_settings({"views": [{"name": "V", "sessions": []}], "fontSize": 14})
 
     with pytest.raises(InvalidViewRuleRejected) as excinfo:
@@ -1827,7 +1827,7 @@ def test_apply_synced_settings_newer_views_updated_at_applies(redirect_settings_
 
 
 # ============================================================
-# Named session command pairs (COMMAND_PAIRS_SPEC.md)
+# Named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md)
 # ============================================================
 
 

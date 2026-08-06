@@ -625,7 +625,7 @@ def test_local_only_keys_are_exactly_the_input_fences():
     session_commands is included: it's a LIST of additional named
     create/kill pairs, each holding the same two arbitrary shell commands as
     the singular keys -- the API may list/select a pair, never define one
-    (COMMAND_PAIRS_SPEC.md)."""
+    (docs/plans/2026-08-02-named-session-command-pairs-plan.md)."""
     assert LOCAL_ONLY_KEYS == frozenset(
         {
             "input_enabled",

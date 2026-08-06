@@ -225,7 +225,7 @@ def test_heartbeat_omitting_sync_group_does_not_reset_private_device(client):
 
 # ---------------------------------------------------------------------------
 # 22-23: connect no longer arbitrates a single contended terminal
-# (PER_SESSION_TTYD_SPEC.md §7.1 -- 409 terminal_conflict is retired, it can
+# (docs/plans/2026-08-02-per-session-ttyd-plan.md §7.1 -- 409 terminal_conflict is retired, it can
 # no longer fire)
 # ---------------------------------------------------------------------------
 
@@ -317,7 +317,7 @@ def test_delete_current_owner_kills_ttyd(monkeypatch, client):
     assert kill_called["count"] == 1
 
     # terminal_session/terminal_group are now informational-only bookkeeping
-    # (PER_SESSION_TTYD_SPEC.md §7.4/§8) -- delete no longer clears them; only
+    # (docs/plans/2026-08-02-per-session-ttyd-plan.md §7.4/§8) -- delete no longer clears them; only
     # /connect writes them and the poll cycle clears them if the session vanishes.
     state = client.get("/api/state").json()
     assert state["terminal_session"] == "sessX"

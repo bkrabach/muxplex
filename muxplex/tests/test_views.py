@@ -1281,7 +1281,7 @@ def test_normalize_then_prune_stale_canonical_key_is_pruned_after_grace():
 
 
 # ---------------------------------------------------------------------------
-# Auto-updating views (AUTO_VIEWS_SPEC.md §11.1)
+# Auto-updating views (docs/plans/2026-08-04-auto-views-plan.md §11.1)
 # ---------------------------------------------------------------------------
 
 

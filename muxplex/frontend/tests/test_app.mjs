@@ -2533,7 +2533,7 @@ test('createNewSession polls for session before auto-opening (not immediate setT
   assert.ok(start !== -1, 'createNewSession function must exist');
   // Updated in v0.6.0: snippet size increased from 2000 to 3500 — function grew with
   // loading tile injection and auto-add-to-view logic; setInterval is now ~2800 chars in.
-  // Updated for named session command pairs (COMMAND_PAIRS_SPEC.md): command_id body
+  // Updated for named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md): command_id body
   // construction added near the top of the function, pushing setInterval to ~3600 chars.
   const snippet = source.slice(start, start + 3800);
   // Must NOT contain the old immediate-open pattern inside createNewSession
@@ -3905,7 +3905,7 @@ test('DOMContentLoaded sets page title via updatePageTitle after loadServerSetti
   // Updated in v0.6.0: window increased from 800 to 2000 — DOMContentLoaded handler grew
   // with federation init, view-mode setup, and restoreState().then() scaffolding;
   // updatePageTitle() is now inside .then() ~1300 chars into the handler.
-  // Updated for named session command pairs (COMMAND_PAIRS_SPEC.md): loadSessionCommands()
+  // Updated for named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md): loadSessionCommands()
   // call added right after loadServerSettings(), pushing updatePageTitle to ~2100 chars.
   // Updated for the mobile compose bar: initComposePref() + _composeRenderToggle()
   // added right after initSyncGroup(), pushing updatePageTitle further in --
@@ -5474,7 +5474,7 @@ test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DE
 });
 
 // ---------------------------------------------------------------------------
-// deviceLabelPlacement (DEVICE_LABEL_SPEC.md, test plan section 8.3)
+// deviceLabelPlacement (docs/plans/2026-08-04-device-label-placement-plan.md, test plan section 8.3)
 // ---------------------------------------------------------------------------
 
 test('N1: DISPLAY_DEFAULTS includes deviceLabelPlacement default titlebar', () => {
@@ -5699,7 +5699,7 @@ test('G3: .tile-device-tag rule never re-admits the terminal pixel via alpha', (
     assert.ok(
       !ruleBody.includes(token),
       `the corner device label overlays arbitrary terminal content; its contrast is only ` +
-      `provable while it is fully opaque -- see DEVICE_LABEL_SPEC.md §6 (found forbidden token: ${token})`
+      `provable while it is fully opaque -- see docs/plans/2026-08-04-device-label-placement-plan.md §6 (found forbidden token: ${token})`
     );
   }
   assert.ok(ruleBody.includes('background: var(--bg-header)'), 'background must be the opaque --bg-header token');
@@ -6035,7 +6035,7 @@ test('filterVisible overlap state: hidden filter wins by default, includeHidden 
 });
 
 // ---------------------------------------------------------------------------
-// Auto-updating views (AUTO_VIEWS_SPEC.md §11.5, §9.1): filterVisible's
+// Auto-updating views (docs/plans/2026-08-04-auto-views-plan.md §11.5, §9.1): filterVisible's
 // user-view branch reads the server's resolved `s.views` annotation --
 // membership is a lookup, not a re-derivation from view.sessions.
 // ---------------------------------------------------------------------------
@@ -6568,7 +6568,7 @@ test('Phase 5: isHidden() helper (not inline check) drives the dim class', () =>
     'isHidden must return false when settings is null');
 });
 
-// ─── Manage View rule editor (AUTO_VIEWS_SPEC.md §9.3) ───────────────────
+// ─── Manage View rule editor (docs/plans/2026-08-04-auto-views-plan.md §9.3) ───────────────────
 //
 // One textarea, one pattern per line, blank lines ignored; validation and
 // match preview both ask the server (POST /api/views/preview) rather than

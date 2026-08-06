@@ -1230,7 +1230,7 @@ function pickerOptionContent(viewName, sessionCount) {
 /**
  * Per-view session counts for the picker's STATE enrichment.
  *
- * Two calling shapes, kept backward compatible (AUTO_VIEWS_SPEC.md §9.4):
+ * Two calling shapes, kept backward compatible (docs/plans/2026-08-04-auto-views-plan.md §9.4):
  *
  *   1. viewSessionCounts(sessionsWithViews, viewsList) -- PREFERRED. When
  *      `sessionsWithViews` entries carry a `views` array (the server's
@@ -1845,7 +1845,7 @@ if (typeof document !== 'undefined') {
           allSessionNames = sessData.map(function (s) {
             return s.name;
           });
-          // Keep the full annotated payload too (AUTO_VIEWS_SPEC.md §9.4) --
+          // Keep the full annotated payload too (docs/plans/2026-08-04-auto-views-plan.md §9.4) --
           // it is already fetched here and already carries the server's
           // resolved `views` membership per session. loadViewCounts() reads
           // this for user-view counts instead of re-deriving membership by
@@ -2364,7 +2364,7 @@ if (typeof document !== 'undefined') {
         .then(function (settings) {
           // User-view counts now come from allSessionsAnnotated (the
           // already-fetched GET /api/sessions payload, carrying the
-          // server's resolved `views` membership -- AUTO_VIEWS_SPEC.md
+          // server's resolved `views` membership -- docs/plans/2026-08-04-auto-views-plan.md
           // §9.4) rather than re-deriving membership from
           // settings.views[].sessions by suffix match, which cannot see
           // rule-matched sessions (they are never written into

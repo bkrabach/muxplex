@@ -99,7 +99,7 @@ def test_parse_session_unknown_extra_fields_tolerated() -> None:
 
 
 def test_parse_session_with_views() -> None:
-    """A session payload carrying `views` (AUTO_VIEWS_SPEC.md §10.1) parses
+    """A session payload carrying `views` (docs/plans/2026-08-04-auto-views-plan.md §10.1) parses
     into the tuple field."""
     session = protocol.parse_session(
         {"name": "alpha", "snapshot": "", "bell": {}, "views": ["Work", "Amplifier"]}

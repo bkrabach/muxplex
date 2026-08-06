@@ -86,7 +86,7 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
   // "the" terminal a session-less WS could fall back to on this browser's
   // behalf. `name` is the session this UI believes it is showing, which is
   // exactly the point: the URL now STATES the target instead of inheriting
-  // it from server-side state. See PER_SESSION_TTYD_SPEC.md §9.1.
+  // it from server-side state. See docs/plans/2026-08-02-per-session-ttyd-plan.md §9.1.
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var url;
   if (remoteId) {
@@ -192,7 +192,7 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
       if (ws !== _ws) return; // stale connection — don't reconnect for old sockets
       if (!_currentSession) return; // intentional close — don't reconnect
       if (event && event.code === 4409) {
-        // Per-session-ttyd guard fired (PER_SESSION_TTYD_SPEC.md §7.2): this
+        // Per-session-ttyd guard fired (docs/plans/2026-08-02-per-session-ttyd-plan.md §7.2): this
         // device asked to attach to a session its own sync group has not
         // selected -- a state desync, not a resource conflict (there is no
         // longer a single shared terminal to contend over). Retrying the
@@ -307,7 +307,7 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
  * recover on its own.
  *
  * Under per-session ttyd, WS 4409 no longer means "another device holds the
- * one shared terminal" (PER_SESSION_TTYD_SPEC.md §7.2) -- there is no shared
+ * one shared terminal" (docs/plans/2026-08-02-per-session-ttyd-plan.md §7.2) -- there is no shared
  * resource left to contend over. It means "this device asked to attach to a
  * session its own sync group has not selected": a STATE DESYNC, not a
  * transient conflict. Retrying the identical request cannot resolve a

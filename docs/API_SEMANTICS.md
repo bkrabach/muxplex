@@ -263,7 +263,7 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   not break fleet-wide sync) and surfaced only at read time via the same
   `GET /api/views` `errors[]`.
 - **`POST /api/views/preview`** is the rule editor's live-match preview
-  (the Manage View panel's `match_names` textarea, AUTO_VIEWS_SPEC.md §9.3):
+  (the Manage View panel's `match_names` textarea, docs/plans/2026-08-04-auto-views-plan.md §9.3):
   given a body `{"match_names": [str, ...]}` -- a DRAFT list, never
   persisted -- it returns `{"errors": [...], "matches": [<session name>,
   ...]}` by wrapping the draft in a throwaway view dict and running it
@@ -579,7 +579,7 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   question to answer.
 - **Per-session ttyd (formerly "the single shared ttyd process"): now ONE
   ttyd PER SESSION, each bound to its own UNIX domain socket** — see
-  `ttyd.py`'s module docstring and `PER_SESSION_TTYD_SPEC.md` for the full
+  `ttyd.py`'s module docstring and `docs/plans/2026-08-02-per-session-ttyd-plan.md` for the full
   design. Two devices connecting to two DIFFERENT sessions now get two
   independent ttyds and never interact; that used to be a **conflict**
   muxplex had to detect and refuse (`terminal_conflict`, below), and is now

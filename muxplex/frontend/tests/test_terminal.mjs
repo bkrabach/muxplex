@@ -751,7 +751,7 @@ test('connectWebSocket URL uses /terminal/ws path', () => {
   );
 });
 
-// --- ?session= addressing (PER_SESSION_TTYD_SPEC.md §9.1) --------------------
+// --- ?session= addressing (docs/plans/2026-08-02-per-session-ttyd-plan.md §9.1) --------------------
 
 test('connectWebSocket local branch includes ?session= with the session name', () => {
   const t = loadTerminal();
@@ -862,7 +862,7 @@ test('connectWebSocket uses federation proxy path when remoteId is provided', ()
   // Stale-assertion fix: this exact-match literal predates 6f44325 ("address
   // terminal WebSocket by session, not implicit state"), which deliberately
   // added `?session=<name>` to BOTH the local and federation branches
-  // (PER_SESSION_TTYD_SPEC.md §9.1) -- the federation branch is no longer
+  // (docs/plans/2026-08-02-per-session-ttyd-plan.md §9.1) -- the federation branch is no longer
   // exempt from session-addressing. That commit added a dedicated exact-match
   // test for the new shape ("connectWebSocket federation branch includes
   // ?session= with the session name", above) but did not update this
@@ -1403,7 +1403,7 @@ test('openTerminal uses passed fontSize to configure xterm.js Terminal construct
 // ─── §0/§7 guard: per-session-ttyd session-desync conflict (formerly the ───
 // ─── shared-terminal "terminal-claim conflict", sync-groups spec §10.4)  ───
 //
-// PER_SESSION_TTYD_SPEC.md §7.2: WS 4409 no longer means "another device
+// docs/plans/2026-08-02-per-session-ttyd-plan.md §7.2: WS 4409 no longer means "another device
 // holds the one shared terminal" (that resource no longer exists) -- it
 // means "this device asked to attach to a session its own sync group has
 // not selected," a state desync rather than a transient conflict. The tests

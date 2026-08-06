@@ -827,7 +827,7 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
 
 # ---------------------------------------------------------------------------
 # spawn_session_command(command_id=...) -- named session command pairs
-# (COMMAND_PAIRS_SPEC.md)
+# (docs/plans/2026-08-02-named-session-command-pairs-plan.md)
 # ---------------------------------------------------------------------------
 
 

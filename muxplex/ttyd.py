@@ -6,7 +6,7 @@ under ``ttyd_socket_dir()``. This superseded the single, server-wide ttyd on
 a hardcoded TCP port (7682) that made two devices on two different sessions
 a *conflict* muxplex had to detect and refuse -- see
 ``docs/plans/2026-08-01-per-device-sync-groups-plan.md`` §0 and
-``PER_SESSION_TTYD_SPEC.md`` for the full history and design.
+``docs/plans/2026-08-02-per-session-ttyd-plan.md`` for the full history and design.
 
 SECURITY -- carried forward verbatim in substance from the single-ttyd era,
 because it is still exactly as true: ttyd runs ``-W`` (writable) with no

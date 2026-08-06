@@ -727,7 +727,7 @@ class InvalidViewRuleRejected(Exception):
     destructive-write backstop and before any mutation of the in-memory
     settings dict. `apply_synced_settings()` (federation sync / background
     writers) deliberately never raises this: a malformed rule from a peer
-    is stored as sent and surfaced at read time instead (AUTO_VIEWS_SPEC.md
+    is stored as sent and surfaced at read time instead (docs/plans/2026-08-04-auto-views-plan.md
     §5.2) -- one bad peer must never break fleet-wide settings sync.
     """
 
@@ -773,7 +773,7 @@ def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
         # should not be reported as a near-miss on a backstop threshold.
         # Rejects the entire patch, writing nothing -- not even unrelated
         # keys in the same request -- consistent with the backstop's own
-        # all-or-nothing rule (AUTO_VIEWS_SPEC.md §5.2).
+        # all-or-nothing rule (docs/plans/2026-08-04-auto-views-plan.md §5.2).
         rule_errors = validate_view_rules(patch["views"])
         if rule_errors:
             for e in rule_errors:

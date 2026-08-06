@@ -1002,7 +1002,7 @@ async def lifespan(app: FastAPI):
     else:
         _log.info("session_commands: %d pair(s) configured", len(_commands) - 1)
 
-    # Startup, in order (PER_SESSION_TTYD_SPEC.md §10.1):
+    # Startup, in order (docs/plans/2026-08-02-per-session-ttyd-plan.md §10.1):
     # 1. Validate the ttyd socket dir -- fail loud before anything else. A
     #    bad socket dir must abort startup, not surface later as a
     #    mysterious per-attach failure. Read via the module object (not a
@@ -1408,7 +1408,7 @@ async def get_sessions() -> list[dict]:
     `views.annotate_view_membership`). This is the mechanism that lets rule-
     based views reach every client polling this endpoint (PWA grid/counts/
     sidebar/Manage View, the soft deck's picker counts) without each one
-    re-deriving membership from raw `settings.views` (AUTO_VIEWS_SPEC.md §0.1).
+    re-deriving membership from raw `settings.views` (docs/plans/2026-08-04-auto-views-plan.md §0.1).
 
     `created_at` is tmux's own `#{session_created}` (see
     `sessions.get_session_created_times()`) -- the raw timestamp, not a
@@ -1707,7 +1707,7 @@ async def get_views() -> dict:
     established pattern for "canonical resolution + the validation errors
     that go with it"). Clients MUST use this endpoint rather than deciding
     rule validity themselves from raw `GET /api/settings` data -- same
-    rationale as `GET /api/session-commands` (AUTO_VIEWS_SPEC.md §5.4/§6.4).
+    rationale as `GET /api/session-commands` (docs/plans/2026-08-04-auto-views-plan.md §5.4/§6.4).
 
     Reports USER-DEFINED views only -- no "all", no "hidden" (`GET /api/view`
     already publishes the cycle list including the pseudo-views; this
@@ -1902,7 +1902,7 @@ async def connect_session(
     With one ttyd per session, `ensure_ttyd()` is idempotent: connecting to a
     session that's already live is free, and connecting to session X never
     disturbs any OTHER session's ttyd -- that is the entire point of this
-    architecture (see PER_SESSION_TTYD_SPEC.md).
+    architecture (see docs/plans/2026-08-02-per-session-ttyd-plan.md).
 
     Returns {active_session: name, ttyd_port: 7682, sync_group, terminal_session}.
     `ttyd_port` is a legacy wire field -- see ttyd.py's module docstring --
@@ -2741,7 +2741,7 @@ async def update_settings(request: Request):
         "deviceLabelPlacement" in body
         and body["deviceLabelPlacement"] not in DEVICE_LABEL_PLACEMENTS
     ):
-        # Reject, never coerce (DEVICE_LABEL_SPEC.md 2.5): a value that was
+        # Reject, never coerce (docs/plans/2026-08-04-device-label-placement-plan.md 2.5): a value that was
         # never valid cannot have a working client behind it, so this is not
         # a breaking change. Checked before patch_settings() is ever called
         # so no partial write occurs. Fourth member of the discriminator
@@ -2774,7 +2774,7 @@ async def update_settings(request: Request):
     except InvalidViewRuleRejected as exc:
         # 400, not 409: the body is malformed, not conflicted -- retrying
         # with fresh settings cannot help, so a client must not treat this
-        # like a CAS miss (AUTO_VIEWS_SPEC.md §5.5). No write was made.
+        # like a CAS miss (docs/plans/2026-08-04-auto-views-plan.md §5.5). No write was made.
         return JSONResponse(
             status_code=400,
             content={
@@ -3349,7 +3349,7 @@ async def _prepare_ttyd(target: str) -> bool:
     Replaces `_prepare_ttyd_for_reconnect()`: `ensure_ttyd()` already proves
     the socket is bound and live before returning, so there is no fixed
     settle sleep here at all (the old 0.8s wait for ttyd to bind its port is
-    gone -- see PER_SESSION_TTYD_SPEC.md §3.6, typical readiness is 20-100ms).
+    gone -- see docs/plans/2026-08-02-per-session-ttyd-plan.md §3.6, typical readiness is 20-100ms).
     Does not read/write state itself -- the caller already resolved *target*.
     Never raises: a spawn/capacity failure is logged at warning and reported
     as False so the caller can bail out without relaying.
@@ -3395,7 +3395,7 @@ async def terminal_ws_proxy(
 
     device_id (optional query param) is the §0 hazard's loud backstop,
     REDEFINED and NARROWER now that there is no single contended terminal to
-    arbitrate (PER_SESSION_TTYD_SPEC.md §7.2): it now means "you asked to
+    arbitrate (docs/plans/2026-08-02-per-session-ttyd-plan.md §7.2): it now means "you asked to
     attach to a session your own group has not selected," a per-request
     consistency check rather than a resource claim.
         - No device_id -> today's path exactly, no new behavior.
@@ -3728,7 +3728,7 @@ async def federation_terminal_ws_proxy(
     session rather than whatever its ``terminal_session`` fallback happens
     to hold. Absent, the upstream call omits it and the remote falls back
     identically to its own no-`session` behavior -- purely additive in both
-    directions (PER_SESSION_TTYD_SPEC.md §11).
+    directions (docs/plans/2026-08-02-per-session-ttyd-plan.md §11).
 
     Auth check uses the same cookie + bearer pattern as terminal_ws_proxy.
     Closes with code 4004 if device_id does not match any remote.
@@ -4239,7 +4239,7 @@ async def federation_sessions(request: Request) -> list[dict]:
 
     # Annotate the FINAL MERGED list, not the per-remote `tagged` lists
     # cached above in `_federation_cache` -- this is what keeps the cache
-    # un-annotated (AUTO_VIEWS_SPEC.md §5.3). In-place annotation of a
+    # un-annotated (docs/plans/2026-08-04-auto-views-plan.md §5.3). In-place annotation of a
     # cached object would bake a point-in-time membership answer into the
     # cache and serve it after the settings that produced it had changed.
     # Local views apply to remote sessions too, and that is correct:

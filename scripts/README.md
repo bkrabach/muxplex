@@ -160,7 +160,7 @@ that resolves under `/mnt/`, rather than handing ttyd a path it will spin on.
 ### Shipped
 
 The per-session-ttyd-over-UNIX-sockets architecture these probes qualified
-has shipped (`muxplex/ttyd.py`, see `PER_SESSION_TTYD_SPEC.md`). These probes
+has shipped (`muxplex/ttyd.py`, see `docs/plans/2026-08-02-per-session-ttyd-plan.md`). These probes
 remain the platform-qualification gate: re-run them when qualifying a new
 platform, a new ttyd release, or a new tmux release.
 

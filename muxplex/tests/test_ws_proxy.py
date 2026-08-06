@@ -1,7 +1,7 @@
 """
 Comprehensive tests for the WebSocket proxy in muxplex/main.py.
 
-Per-session ttyd (PER_SESSION_TTYD_SPEC.md §12.3): dials session-specific
+Per-session ttyd (docs/plans/2026-08-02-per-session-ttyd-plan.md §12.3): dials session-specific
 UNIX sockets via `unix_connect` and `socket_is_live` rather than a single
 TCP port and `_ttyd_is_listening`. `?session=` is the new addressing
 mechanism on both `/terminal/ws` and the federation route.
@@ -869,7 +869,7 @@ def test_spawn_failure_does_not_hang_client(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # §0 guard: device_id on /terminal/ws, now redefined + session addressing
-# (PER_SESSION_TTYD_SPEC.md §5.1, §7.2, §12.3)
+# (docs/plans/2026-08-02-per-session-ttyd-plan.md §5.1, §7.2, §12.3)
 # ---------------------------------------------------------------------------
 
 

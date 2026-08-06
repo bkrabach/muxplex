@@ -1,6 +1,6 @@
 """
 Real-tmux end-to-end proof for named session command pairs
-(COMMAND_PAIRS_SPEC.md §13.8).
+(docs/plans/2026-08-02-named-session-command-pairs-plan.md §13.8).
 
 Unit tests with mocked subprocesses (test_sessions.py, test_api.py) prove the
 WIRING. They cannot prove that pair B's teardown ran and pair A's did not,

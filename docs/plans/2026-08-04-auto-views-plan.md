@@ -150,7 +150,7 @@ dict.
 back intact on the next sync. That is real version tolerance in both directions, and it is what
 makes §3's storage decision safe. (Contrast: a new **top-level** settings key would be silently
 erased by any older peer's next write — the `session_commands`/`DEFAULT_SETTINGS` data-loss trap
-documented in `COMMAND_PAIRS_SPEC.md` §0.2.)
+documented in `docs/plans/2026-08-02-named-session-command-pairs-plan.md` §0.2.)
 
 ### 0.6 Do NOT build: attention-as-a-view, and set composition
 
@@ -1127,7 +1127,7 @@ A builder is done when all of these hold:
 - Extending `GET /api/view` to federated sessions.
 - A live "these sessions match" preview in the rule editor (useful; a separate design).
 - Fixing `muxplex config set`'s silent-success on fenced keys (pre-existing;
-  `COMMAND_PAIRS_SPEC.md` §0.4 already files it).
+  `docs/plans/2026-08-02-named-session-command-pairs-plan.md` §0.4 already files it).
 - Making the background `views` writers advance `views_updated_at` (§7.2) — recorded, not
   changed, deliberately.
 - Retiring `test_frontend_js.py`'s source-scraping assertions (AGENTS.md: "a project, not a

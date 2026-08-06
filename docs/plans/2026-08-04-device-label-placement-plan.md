@@ -440,7 +440,7 @@ Replace the badge block:
 
 ```js
   // Device label — placement governed by deviceLabelPlacement (see
-  // DEVICE_LABEL_SPEC.md). The multi_device_enabled + deviceName guard is
+  // docs/plans/2026-08-04-device-label-placement-plan.md). The multi_device_enabled + deviceName guard is
   // unchanged from the showDeviceBadges era: a single-device install draws
   // no label in any placement.
   var placement = deviceLabelPlacement(ds);
@@ -620,7 +620,7 @@ change is `.tile-device-tag` (§6).
  * control when, and only when, the user has chosen 'off' AND this install actually
  * aggregates more than one device. Making the consequence visible at the moment of
  * the decision is deliberately the ONLY place this is surfaced -- the render path
- * never second-guesses the setting (see DEVICE_LABEL_SPEC.md, Q3).
+ * never second-guesses the setting (see docs/plans/2026-08-04-device-label-placement-plan.md, Q3).
  * @param {object} ds - display settings (or server settings; only the one key is read)
  */
 function _updateDeviceLabelAmbiguityNote(ds) {
@@ -713,7 +713,7 @@ of a status bar has none either.
    calculation, and for every one of them there is a background colour that defeats
    it. The 1px border makes the chip read as chrome over BLACK content (where the
    opaque fill alone is shapeless); the UI font makes it read as chrome regardless
-   of colour. See DEVICE_LABEL_SPEC.md §6 and its guard test in
+   of colour. See docs/plans/2026-08-04-device-label-placement-plan.md §6 and its guard test in
    frontend/tests/test_app.mjs. */
 .tile-device-tag {
   position: absolute;
@@ -922,7 +922,7 @@ read `frontend/style.css`, extract the `.tile-device-tag` rule body, and assert 
 contains **none of** `rgba(`, `hsla(`, `opacity`, `backdrop-filter`, `mix-blend-mode`,
 and that its `background` value is `var(--bg-header)`. Message: *"the corner device
 label overlays arbitrary terminal content; its contrast is only provable while it is
-fully opaque — see DEVICE_LABEL_SPEC.md §6."* This is the guard against the actual
+fully opaque — see docs/plans/2026-08-04-device-label-placement-plan.md §6."* This is the guard against the actual
 likely regression: someone "softening" the chip with `rgba(13,17,23,0.6)`.
 
 ### 8.5 Legibility over hostile terminal content — verifying the pixels, not the class

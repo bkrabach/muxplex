@@ -1048,6 +1048,6 @@ closing, the feature is not safe to ship.
 server-wide ttyd as a shared resource requiring `terminal_conflict`/4409
 arbitration — is now retired. Each tmux session gets its own ttyd bound to
 its own UNIX domain socket; two devices on two different sessions are no
-longer a conflict at all. See `PER_SESSION_TTYD_SPEC.md` for the design and
+longer a conflict at all. See `docs/plans/2026-08-02-per-session-ttyd-plan.md` for the design and
 `muxplex/ttyd.py` for the implementation. This plan's record of the
 original constraint and the sync-groups work it shaped is left as-is above.

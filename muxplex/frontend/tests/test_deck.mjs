@@ -513,7 +513,7 @@ test('viewSessionCounts: empty/missing membership returns an empty map, never th
   assert.deepStrictEqual(deck.viewSessionCounts(null, null), {});
 });
 
-// --- viewSessionCounts: annotated shape (AUTO_VIEWS_SPEC.md §9.4) ---
+// --- viewSessionCounts: annotated shape (docs/plans/2026-08-04-auto-views-plan.md §9.4) ---
 //
 // When entries carry the server's resolved `views` (from GET /api/sessions),
 // counts are read straight from the annotation -- the ONLY path that counts

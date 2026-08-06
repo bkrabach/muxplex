@@ -411,11 +411,11 @@ let _sessionCommands = null;
 // session_commands entries) -- rendered read-only in Settings > Commands.
 let _sessionCommandErrors = [];
 // Human-readable strings from GET /api/views' `errors` (rejected
-// match_names rules -- AUTO_VIEWS_SPEC.md §9.2) -- rendered read-only in
+// match_names rules -- docs/plans/2026-08-04-auto-views-plan.md §9.2) -- rendered read-only in
 // Settings > Views, mirroring _sessionCommandErrors exactly.
 let _viewRuleErrors = [];
 
-// --- Manage View rule editor state (AUTO_VIEWS_SPEC.md §9.3) ---
+// --- Manage View rule editor state (docs/plans/2026-08-04-auto-views-plan.md §9.3) ---
 // True once the user has typed in the rule textarea since it was last
 // populated from _serverSettings -- guards against a background re-render
 // (a poll pushing a remote settings change, e.g. followRemoteViewDefinitions)
@@ -1030,7 +1030,7 @@ function buildTileHTML(session, index, mobile) {
   const timeStr = formatTimestamp(session.last_activity_at || null);
 
   // Device label — placement governed by deviceLabelPlacement (see
-  // DEVICE_LABEL_SPEC.md). The multi_device_enabled + deviceName guard is
+  // docs/plans/2026-08-04-device-label-placement-plan.md). The multi_device_enabled + deviceName guard is
   // unchanged from the showDeviceBadges era: a single-device install draws
   // no label in any placement.
   var placement = deviceLabelPlacement(ds);
@@ -1107,7 +1107,7 @@ function buildSidebarHTML(session, currentSession, currentRemoteId) {
   if (isBell && (actIndicator === 'dot' || actIndicator === 'both')) classes += ' sidebar-item--edge-bell';
 
   // Device label — placement governed by deviceLabelPlacement (see
-  // DEVICE_LABEL_SPEC.md). Identical semantics to buildTileHTML: the label
+  // docs/plans/2026-08-04-device-label-placement-plan.md). Identical semantics to buildTileHTML: the label
   // is drawn in the preview, lower-right, everywhere a preview is drawn.
   var placement = deviceLabelPlacement(ds);
   var showDeviceLabel = !!(_serverSettings && _serverSettings.multi_device_enabled
@@ -1208,7 +1208,7 @@ function filterVisible(sessions, settings, view, options) {
   if (!userView) return []; // keep: the documented "unknown view -> empty" contract
 
   // Membership is a lookup against the server's resolved answer, not a
-  // client-side re-derivation (AUTO_VIEWS_SPEC.md §0.1/§9.1): every session
+  // client-side re-derivation (docs/plans/2026-08-04-auto-views-plan.md §0.1/§9.1): every session
   // dict from GET /api/sessions and GET /api/federation/sessions carries
   // `views` (pins union glob-rule matches). No fallback to the old dual-key
   // search against `userView.sessions` -- deliberately: the PWA is served by
@@ -2766,7 +2766,7 @@ function _openFlyoutSubmenu(triggerItem, unhideFirst) {
 
   var sessionKey = _flyoutSessionKey;
   // Session's server-resolved view membership (pins union glob-rule
-  // matches -- AUTO_VIEWS_SPEC.md §9.3). Used to distinguish "pinned"
+  // matches -- docs/plans/2026-08-04-auto-views-plan.md §9.3). Used to distinguish "pinned"
   // (togglable) from "matched by rule" (member, but the toggle would
   // silently do nothing since it's not pinned -- so it's disabled and
   // labeled instead of offered as a no-op).
@@ -3257,7 +3257,7 @@ function renderManageViewList() {
   }
 
   // Membership per session: pinned (in viewSessions -- togglable) or
-  // matched-by-rule (in s.views but not pinned -- AUTO_VIEWS_SPEC.md §9.3,
+  // matched-by-rule (in s.views but not pinned -- docs/plans/2026-08-04-auto-views-plan.md §9.3,
   // shown as a member but not removable here, since there's no pin to
   // remove). Both count as "in view" for partitioning purposes.
   function isPinned(s) {
@@ -3346,7 +3346,7 @@ function renderManageViewList() {
   };
 }
 
-// ─── Manage View rule editor (AUTO_VIEWS_SPEC.md §9.3) ─────────────────────
+// ─── Manage View rule editor (docs/plans/2026-08-04-auto-views-plan.md §9.3) ─────────────────────
 //
 // One textarea, one pattern per line, blank lines ignored. Saved through the
 // existing patchSettingsGuarded() path (so CAS and the destructive-write
@@ -3425,7 +3425,7 @@ function _renderManageViewRuleFeedback(errors, matches, patternCount) {
   if (saveBtn) {
     // Never offer Save while a pattern is known-invalid -- validation
     // feedback belongs in the editor, before a save attempt, not as a
-    // relayed 400 (AUTO_VIEWS_SPEC.md §9.3 / this task's non-negotiables).
+    // relayed 400 (docs/plans/2026-08-04-auto-views-plan.md §9.3 / this task's non-negotiables).
     saveBtn.disabled = !_manageViewRulesDirty || (errors && errors.length > 0);
   }
 }
@@ -4019,11 +4019,11 @@ function _setDeviceId(id) {
 // same endpoint an agent, muxplex-deck, or curl already calls, with the
 // exact same fences (settings.input_enabled / settings.input_allowed_sessions,
 // both LOCAL-FILE-ONLY -- see AGENTS.md's "Terminal input" section). There
-// is no new endpoint and no fence change here; a superseded draft spec
-// (COMPOSE_BAR_SPEC.md) proposed a new POST .../compose endpoint gated on
-// cookie-vs-Bearer caller class -- that was rejected by security review
-// (possession of a cookie is not proof of human presence) and none of it
-// was built. See AGENTS.md's "Mobile compose bar" note.
+// is no new endpoint and no fence change here; an earlier draft proposed a
+// new POST .../compose endpoint gated on cookie-vs-Bearer caller class --
+// that was rejected by security review (possession of a cookie is not proof
+// of human presence) and none of it was built. See AGENTS.md's "Mobile
+// compose bar" note.
 //
 // Consequence, deliberately not hidden from the user: on a default install
 // this 403s, because input_enabled defaults to false and
@@ -4200,8 +4200,7 @@ function _composeShowError(msg) {
 /**
  * Clear the draft and any error, and reset in-flight bookkeeping. Called
  * on session open (a NEW session never inherits a previous one's draft --
- * see COMPOSE_BAR_SPEC.md §7.6, deliberately in-memory only, never
- * localStorage) and on session close.
+ * deliberately in-memory only, never localStorage) and on session close.
  */
 function _composeClearDraft() {
   var input = $('compose-input');
@@ -4768,7 +4767,7 @@ async function loadSessionCommands() {
 /**
  * Load view-rule validation errors from GET /api/views into
  * _viewRuleErrors -- the same "fail loud" treatment as
- * loadSessionCommands()/_sessionCommandErrors (AUTO_VIEWS_SPEC.md §9.2).
+ * loadSessionCommands()/_sessionCommandErrors (docs/plans/2026-08-04-auto-views-plan.md §9.2).
  * Called from the same two places loadSessionCommands() is (page load and
  * every openSettings()), PLUS from followRemoteViewDefinitions()'s
  * settings-changed branch -- so a rule that arrives by federation sync or
@@ -5322,7 +5321,7 @@ function onDisplaySettingChange() {
  * control when, and only when, the user has chosen 'off' AND this install actually
  * aggregates more than one device. Making the consequence visible at the moment of
  * the decision is deliberately the ONLY place this is surfaced -- the render path
- * never second-guesses the setting (see DEVICE_LABEL_SPEC.md, Q3).
+ * never second-guesses the setting (see docs/plans/2026-08-04-device-label-placement-plan.md, Q3).
  * @param {object} ds - display settings (or server settings; only the one key is read)
  */
 function _updateDeviceLabelAmbiguityNote(ds) {
@@ -5492,7 +5491,7 @@ function openSettings() {
   loadSessionCommands().then(renderCommandPairsSettings);
 
   // Views tab errors -- same re-fetch-on-reopen rationale as Commands
-  // immediately above (AUTO_VIEWS_SPEC.md §9.2).
+  // immediately above (docs/plans/2026-08-04-auto-views-plan.md §9.2).
   loadViewRules().then(renderViewsSettingsTab);
 }
 
@@ -5828,7 +5827,7 @@ function _buildCommandPairRow(cmd) {
  * (both gear buttons) and on each relevant tab button itself, so a config
  * error is visible without opening Settings at all -- COMMAND_PAIRS_UI_DESIGN.md
  * §6 item 5 ("fail loud" for a config error the user otherwise cannot see),
- * extended by AUTO_VIEWS_SPEC.md §9.2 to cover view-rule errors too.
+ * extended by docs/plans/2026-08-04-auto-views-plan.md §9.2 to cover view-rule errors too.
  *
  * The two GEAR badges show the SUM across every error source (so the user
  * always sees "something needs attention" from one glance at the gear);

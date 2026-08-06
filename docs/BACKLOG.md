@@ -338,10 +338,10 @@ across tracked files:
 filenames are cited that never existed in this repo, but whose content *was*
 preserved into `docs/plans/` under dated names:
 
-- `AUTO_VIEWS_SPEC.md` (38 / 16) -> `docs/plans/2026-08-04-auto-views-plan.md`
-- `PER_SESSION_TTYD_SPEC.md` (25 / 14) -> `docs/plans/2026-08-02-per-session-ttyd-plan.md`
-- `COMMAND_PAIRS_SPEC.md` (13 / 9) -> `docs/plans/2026-08-02-named-session-command-pairs-plan.md`
-- `DEVICE_LABEL_SPEC.md` (13 / 7) -> `docs/plans/2026-08-04-device-label-placement-plan.md`
+- `docs/plans/2026-08-04-auto-views-plan.md` (38 / 16) -> `docs/plans/2026-08-04-auto-views-plan.md`
+- `docs/plans/2026-08-02-per-session-ttyd-plan.md` (25 / 14) -> `docs/plans/2026-08-02-per-session-ttyd-plan.md`
+- `docs/plans/2026-08-02-named-session-command-pairs-plan.md` (13 / 9) -> `docs/plans/2026-08-02-named-session-command-pairs-plan.md`
+- `docs/plans/2026-08-04-device-label-placement-plan.md` (13 / 7) -> `docs/plans/2026-08-04-device-label-placement-plan.md`
 
 This half is a rename, not a writing job -- but it reaches into `pyproject.toml:31`,
 `CHANGELOG.md:156`, `scripts/README.md:163`, and into the successor plans

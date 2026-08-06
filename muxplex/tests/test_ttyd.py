@@ -1,7 +1,7 @@
 """
 Tests for muxplex/ttyd.py -- per-session ttyd over UNIX domain sockets.
 
-Full rewrite for PER_SESSION_TTYD_SPEC.md §12.2. The old single-ttyd,
+Full rewrite for docs/plans/2026-08-02-per-session-ttyd-plan.md §12.2. The old single-ttyd,
 TCP-port, PID-file tests are gone; this covers the new socket-path
 derivation, directory validation, spawn/kill lifecycle, both reapers, and
 the relay-refcounted idle reaper.

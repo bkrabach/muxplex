@@ -44,7 +44,7 @@ ttyd". This document is the architecture that retires the shared-ttyd
 constraint recorded in `2026-08-01-per-device-sync-groups-plan.md` §0 (whose
 header still describes that work as pending platform verification).
 
-The source tree cites this document as **`PER_SESSION_TTYD_SPEC.md`** — its
+The source tree cites this document as **`docs/plans/2026-08-02-per-session-ttyd-plan.md`** — its
 name in the workspace where it was written — from `muxplex/ttyd.py`,
 `main.py`, `pyproject.toml`, `docs/API_SEMANTICS.md`, `scripts/README.md`,
 `frontend/terminal.js`, and the test suite, usually by section number. Those

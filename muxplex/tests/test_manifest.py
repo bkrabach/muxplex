@@ -68,7 +68,7 @@ def test_load_manifest_returns_empty_when_file_absent():
     """load_manifest() returns an empty-but-well-formed manifest when absent.
 
     schema is 2 (MANIFEST_SCHEMA_VERSION) and created_with is {} -- added
-    for named session command pairs (COMMAND_PAIRS_SPEC.md)."""
+    for named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md)."""
     result = load_manifest()
     assert result == {
         "schema": 2,
@@ -525,7 +525,7 @@ def test_mark_restored_is_pure_does_not_mutate_input():
 
 
 # ---------------------------------------------------------------------------
-# created_with -- named session command pairs (COMMAND_PAIRS_SPEC.md)
+# created_with -- named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md)
 # ---------------------------------------------------------------------------
 
 

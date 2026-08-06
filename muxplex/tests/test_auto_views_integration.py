@@ -1,6 +1,6 @@
 """
 Integration tests for auto-updating (rule-based) views -- the self-healing
-proof (AUTO_VIEWS_SPEC.md §11.4).
+proof (docs/plans/2026-08-04-auto-views-plan.md §11.4).
 
 Real tmux, an isolated named socket (`-L auto-views-test`), driven through
 the real ASGI app via `TestClient`. This is the actual evidence the feature

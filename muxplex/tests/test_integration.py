@@ -227,7 +227,7 @@ async def test_state_file_written_atomically_by_poll_cycle(tmux_server):
 # §12.5 -- real tmux, real ttyd, real sockets, through the real ASGI app.
 #
 # This is the acceptance test for the whole per-session-ttyd architecture
-# (PER_SESSION_TTYD_SPEC.md §12.5, §14.1). It must run against real binaries
+# (docs/plans/2026-08-02-per-session-ttyd-plan.md §12.5, §14.1). It must run against real binaries
 # because the failure this change fixes -- one device's connect tearing down
 # another device's live terminal -- is a process-lifecycle failure that no
 # mock can reproduce.
@@ -383,7 +383,7 @@ def _drain_ws(ws, marker: str, timeout: float = 5.0) -> str:
 
 @pytest.mark.integration
 def test_two_simultaneous_independent_terminals(isolated_tmux_env, real_ttyd_app):
-    """The acceptance test for this entire change (PER_SESSION_TTYD_SPEC.md
+    """The acceptance test for this entire change (docs/plans/2026-08-02-per-session-ttyd-plan.md
     §12.5, §14.1): two devices attach to two DIFFERENT sessions simultaneously
     through the real, authenticated ASGI app, each gets its own ttyd on its
     own UNIX socket, neither's keystrokes cross into the other's session, and

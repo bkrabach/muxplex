@@ -24,7 +24,7 @@ from typing import NamedTuple
 RESERVED_VIEW_NAMES = frozenset({"all", "hidden"})
 MAX_VIEW_NAME_LENGTH = 30
 
-# Settings key for a view's auto-updating glob rules (AUTO_VIEWS_SPEC.md §3.1).
+# Settings key for a view's auto-updating glob rules (docs/plans/2026-08-04-auto-views-plan.md §3.1).
 # A view is optionally extended with {"match_names": [<glob>, ...]} -- patterns
 # matched against the bare tmux session name (never a device-qualified key;
 # see matches_name_pattern's docstring for why). Membership is the UNION of
@@ -89,7 +89,7 @@ def _view_member_count(views: list) -> int:
             sessions = v.get("sessions")
             if isinstance(sessions, list):
                 total += len(sessions)
-            # Rules count as members too (AUTO_VIEWS_SPEC.md §3.4): a
+            # Rules count as members too (docs/plans/2026-08-04-auto-views-plan.md §3.4): a
             # rule-bearing view with zero pins must not contribute 0 to the
             # backstop's total, or the DESTRUCTIVE_MEMBER_DROP_RATIO
             # protection weakens exactly as views migrate to rules -- a
@@ -204,7 +204,7 @@ def is_hidden(key: str, settings: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Auto-updating views: glob rule matching (AUTO_VIEWS_SPEC.md §2.1, §4, §5.1)
+# Auto-updating views: glob rule matching (docs/plans/2026-08-04-auto-views-plan.md §2.1, §4, §5.1)
 #
 # Rules are matched against the bare tmux session name only -- never a
 # device-qualified "<device_id>:<name>" key. The qualifier is a UUID
@@ -229,7 +229,7 @@ def matches_name_pattern(name: object, pattern: object) -> bool:
 
     This is the SAME technique as
     `terminal_input.session_matches_allowlist`, and is DELIBERATELY a
-    separate implementation (AUTO_VIEWS_SPEC.md §2.1): that function is the
+    separate implementation (docs/plans/2026-08-04-auto-views-plan.md §2.1): that function is the
     entire security boundary for the RCE-by-design `/input` endpoint;
     this one is a display filter. Two consumers with opposite failure
     requirements (fail-closed security vs. fail-loud display) must not
@@ -280,7 +280,7 @@ def view_names_for_session(session: dict, settings: dict) -> list[str]:
     dual-lookup against `sessionKey`/`name`, unchanged) OR its bare `name`
     matches one of the view's structurally-valid `match_names` patterns
     (see `view_patterns`/`matches_name_pattern`) -- a strict UNION, never a
-    replacement (AUTO_VIEWS_SPEC.md §2.2).
+    replacement (docs/plans/2026-08-04-auto-views-plan.md §2.2).
 
     Returns `[]` for an entry with a truthy `status` (federation status
     tiles are not sessions). Never returns "all" or "hidden" -- those are
@@ -332,7 +332,7 @@ def validate_view_rules(views: object) -> list[str]:
     error strings (empty list = clean).
 
     Only `match_names` is inspected here -- nothing else about a `views`
-    entry gains validation (AUTO_VIEWS_SPEC.md §6.3): a non-dict entry, a
+    entry gains validation (docs/plans/2026-08-04-auto-views-plan.md §6.3): a non-dict entry, a
     missing `name`, a non-list `sessions`, etc. are all tolerated exactly
     as they are today, by the existing defensive `isinstance`/`.get()`
     reads throughout this module. `PATCH /api/settings` accepts those

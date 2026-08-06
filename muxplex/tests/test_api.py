@@ -451,7 +451,7 @@ def test_get_sessions_returns_empty_list_when_no_sessions(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/sessions -- `views` annotation (AUTO_VIEWS_SPEC.md §11.3)
+# GET /api/sessions -- `views` annotation (docs/plans/2026-08-04-auto-views-plan.md §11.3)
 # ---------------------------------------------------------------------------
 
 
@@ -2972,7 +2972,7 @@ def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# deviceLabelPlacement (DEVICE_LABEL_SPEC.md, test plan section 8.2)
+# deviceLabelPlacement (docs/plans/2026-08-04-device-label-placement-plan.md, test plan section 8.2)
 # ---------------------------------------------------------------------------
 
 
@@ -4193,7 +4193,7 @@ def test_create_session_shlex_quote_defense_in_depth(client, monkeypatch, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# Named session command pairs (COMMAND_PAIRS_SPEC.md)
+# Named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md)
 # ---------------------------------------------------------------------------
 
 
@@ -6955,7 +6955,7 @@ def test_patch_settings_single_view_deletion_via_api_is_unaffected(
 # Rule editor (§9.3) x destructive-write backstop: a normal "add a rule to
 # an existing manual view" write must never trip DESTRUCTIVE_MEMBER_DROP_RATIO
 # -- the editor only ever sets match_names, never touches sessions (the
-# union design, AUTO_VIEWS_SPEC.md §2.2/§0.4). Converting a pile of pins to
+# union design, docs/plans/2026-08-04-auto-views-plan.md §2.2/§0.4). Converting a pile of pins to
 # a rule by unchecking each pin individually (the existing Manage View
 # checkboxes) is likewise always a single-member-at-a-time write. Only a
 # ONE-SHOT bulk rewrite that shrinks match_names dramatically on an

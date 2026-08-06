@@ -28,7 +28,7 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "aiofiles>=23.0",
     "websockets>=14.0",  # unix_connect() (websockets.asyncio.client) requires >=14.0 --
-                         # see PER_SESSION_TTYD_SPEC.md §0.4. Not the version floor
+                         # see docs/plans/2026-08-02-per-session-ttyd-plan.md §0.4. Not the version floor
                          # AGENTS.md's uvicorn/websockets incident deliberately rejected
                          # (that was about forcing one implementation for one bug; this is
                          # a hard API requirement -- below 14.0 the import fails outright).
