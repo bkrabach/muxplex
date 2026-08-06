@@ -607,12 +607,34 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
       return false;
     }
 
-    // Shift+Enter / Ctrl+Enter → encode as a real modified Enter (kitty
-    // keyboard protocol, CSI-u). A legacy terminal CANNOT express these: the
-    // encoding has no field for a modifier on Enter, so Enter, Shift+Enter and
-    // Ctrl+Enter all collapse to 0x0D and every chat TUI has to fall back to
-    // Ctrl+J. We are a browser, not a legacy terminal -- the modifier is right
-    // there on the event, so send it faithfully instead of throwing it away.
+    // Ctrl+Shift+Enter is reserved for the compose bar's follow-up-queue
+    // shortcut (app.js's document-level _followupsQueueKeydown listener) --
+    // never encode or forward this exact combo into the pty, regardless of
+    // which element currently has focus. This carves out ZERO existing
+    // terminal capability: the branch below already collapses Shift+Enter
+    // and Ctrl+Shift+Enter to the IDENTICAL CSI-u sequence (`e.shiftKey ?
+    // '\x1b[13;2u' : ...` picks the shift-encoded form whenever shiftKey is
+    // true, irrespective of ctrlKey) -- so a user who wants that encoded
+    // Shift+Enter still gets it via plain Shift+Enter, and plain Ctrl+Enter
+    // (below) is untouched. preventDefault() only suppresses the
+    // bare-newline browser default (stops it reaching the shell as a stray
+    // Enter); it does NOT stop propagation, so the same native keydown
+    // event still bubbles to `document`, where app.js's queue shortcut acts
+    // on it -- this is what makes the queue gesture work no matter where
+    // focus is (terminal or compose textarea). See AGENTS.md's follow-up
+    // queue section / FOLLOWUP_QUEUE_SPEC.md §9.2.
+    if (e.key === 'Enter' && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      return false;
+    }
+
+    // Shift+Enter / Ctrl+Enter (alone) → encode as a real modified Enter
+    // (kitty keyboard protocol, CSI-u). A legacy terminal CANNOT express
+    // these: the encoding has no field for a modifier on Enter, so Enter,
+    // Shift+Enter and Ctrl+Enter all collapse to 0x0D and every chat TUI has
+    // to fall back to Ctrl+J. We are a browser, not a legacy terminal -- the
+    // modifier is right there on the event, so send it faithfully instead of
+    // throwing it away.
     //
     // Downstream, tmux decodes CSI-u and our shipped config rewrites these to
     // C-j for apps that only speak the legacy encoding (tmux_templates/

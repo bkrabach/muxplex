@@ -142,14 +142,22 @@ beforeEach(() => {
 
 // --- Keyboard: Ctrl+Shift+Enter queues, Ctrl+Enter still sends now ---
 
-test('Ctrl+Shift+Enter queues and calls preventDefault, does not send-now', async () => {
+// Bound at `document`, not #compose-input -- see _followupsQueueKeydown()'s
+// docstring: a local-only binding meant the shortcut only fired when the
+// compose textarea itself had focus, and the terminal's own xterm key
+// handler independently claimed the identical Ctrl+Shift+Enter chord, so
+// the shortcut was silently swallowed whenever the terminal had focus
+// (which is most of the time). This is now a document-level listener so it
+// fires regardless of the currently-focused element.
+test('Ctrl+Shift+Enter (document-level) queues and calls preventDefault, does not send-now', async () => {
   app._setViewingSession('sess');
+  app._setServerSettings({ input_enabled: true });
   elements['compose-input'].value = 'queue me';
   queueResponse(200, { session: 'sess', revision: 1, item: { id: 'a', text: 'queue me', enter: true } });
   queueResponse(200, { session: 'sess', revision: 1, items: [], halted: null, target_window: '1:amplifier' });
 
   let prevented = false;
-  const pending = app._composeKeydown({
+  const pending = app._followupsQueueKeydown({
     key: 'Enter', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false,
     preventDefault() { prevented = true; },
   });
@@ -159,6 +167,42 @@ test('Ctrl+Shift+Enter queues and calls preventDefault, does not send-now', asyn
   // First call is the queue POST, never /input.
   assert.ok(_fetchCalls[0].url.includes('/followups'));
   assert.ok(!_fetchCalls[0].url.includes('/input'));
+});
+
+test('Ctrl+Shift+Enter (document-level) is a no-op when no session is open', () => {
+  app._setViewingSession(null);
+  let prevented = false;
+  app._followupsQueueKeydown({
+    key: 'Enter', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false,
+    preventDefault() { prevented = true; },
+  });
+  assert.strictEqual(prevented, false);
+  assert.strictEqual(_fetchCalls.length, 0);
+});
+
+test('Ctrl+Shift+Enter (document-level) is a no-op when input_enabled is false', () => {
+  app._setViewingSession('sess');
+  app._setServerSettings({ input_enabled: false });
+  let prevented = false;
+  app._followupsQueueKeydown({
+    key: 'Enter', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false,
+    preventDefault() { prevented = true; },
+  });
+  assert.strictEqual(prevented, false);
+  assert.strictEqual(_fetchCalls.length, 0);
+});
+
+test('Ctrl+Shift+Enter (document-level) is a no-op while viewing a remote session', () => {
+  app._setViewingSession('sess');
+  app._setServerSettings({ input_enabled: true });
+  app._setViewingRemoteId('remote-1');
+  let prevented = false;
+  app._followupsQueueKeydown({
+    key: 'Enter', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false,
+    preventDefault() { prevented = true; },
+  });
+  assert.strictEqual(prevented, false);
+  assert.strictEqual(_fetchCalls.length, 0);
 });
 
 test('bare Ctrl+Enter still sends now (unchanged)', async () => {

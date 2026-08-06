@@ -4167,21 +4167,39 @@ function _composeClearDraft() {
   _composeSendInFlight = false;
 }
 
-/** Called from openSession(): clear any stale draft, then render for the new session. */
+/**
+ * Called from openSession(): clear any stale draft, render for the new
+ * session, and refresh the follow-up panel from the server.
+ *
+ * The `_followupsRefresh()` call is load-bearing, not decorative: before
+ * this fix, `_followupsRefresh()` was only ever called from inside the
+ * follow-up mutation handlers (queue/reorder/edit/remove/clear/resume) --
+ * never on the session-open path. Switching sessions left `_followupsData`
+ * holding the PREVIOUS session's queue while `_viewingSession` already
+ * pointed at the new one, so the panel showed stale, wrong-session data
+ * until the user happened to trigger some mutation. See `_followupsPut()`'s
+ * `_followupsData.session` guard for the second half of this fix -- it
+ * refuses to let a stale snapshot be written back over the WRONG session.
+ */
 function _composeOnSessionOpen() {
   _composeClearDraft();
   _composeRender();
+  _followupsRefresh();
 }
 
 /**
  * Called from closeSession(): clear the draft and hide the bar.
  * closeSession() sets `_viewingSession = null` BEFORE calling this, so
  * _composeRender()'s own "no session open" branch is what hides it and
- * triggers the refit -- one hide path, not two.
+ * triggers the refit -- one hide path, not two. `_followupsRefresh()`
+ * mirrors that: called with `_viewingSession` already null, its own
+ * no-session branch clears `_followupsData` and hides the panel -- the
+ * same one-path pattern, applied to the follow-up panel instead of the bar.
  */
 function _composeOnSessionClose() {
   _composeClearDraft();
   _composeRender();
+  _followupsRefresh();
 }
 
 /**
@@ -4217,20 +4235,53 @@ function _composeAutoGrow(el) {
  * same reason terminal.js's Shift+Enter branch needs it (see AGENTS.md's
  * "attachCustomKeyEventHandler" note) -- without it, Enter would still
  * insert a newline in the textarea in addition to triggering send.
+ *
+ * The QUEUE shortcut (Ctrl/Cmd+Shift+Enter) is deliberately NOT handled
+ * here -- see `_followupsQueueKeydown()` below, bound at `document` instead
+ * of this element. A local-only binding meant the shortcut only worked
+ * when #compose-input itself had focus; in practice the terminal has focus
+ * almost all the time, and terminal.js's own xterm key handler was ALSO
+ * bound to Ctrl/Shift+Enter (for its unrelated CSI-u passthrough feature),
+ * so the terminal silently swallowed the identical chord before it ever
+ * reached this element -- the queue action fired for nobody watching the
+ * terminal. Root-caused via a real Playwright browser session: with the
+ * terminal focused, Ctrl+Shift+Enter produced zero `/followups` requests
+ * and the typed text landed in the terminal, not the compose draft.
  * @param {KeyboardEvent} e
  */
 function _composeKeydown(e) {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     _composeSend();
-  } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
-    // Ctrl/Cmd+Shift+Enter queues instead of sending now (spec §9.2) --
-    // preventDefault() is load-bearing here for the same reason as the
-    // plain Ctrl+Enter branch above (AGENTS.md's "attachCustomKeyEventHandler"
-    // note): without it, Enter would still insert a newline in the textarea.
-    e.preventDefault();
-    _followupsQueueDraft();
   }
+}
+
+/**
+ * Document-level keydown listener for the follow-up queue shortcut
+ * (Ctrl/Cmd+Shift+Enter, spec §9.2) -- bound at `document` (not
+ * #compose-input) so it fires regardless of which element currently has
+ * focus. This is the fix for the queue shortcut being silently swallowed
+ * by the terminal (see _composeKeydown()'s docstring and terminal.js's
+ * matching carve-out for this exact chord): terminal.js now excludes
+ * Ctrl+Shift+Enter from its own handling and calls preventDefault() without
+ * stopPropagation(), so the native keydown event still bubbles here even
+ * when the terminal itself had focus when the chord was pressed.
+ *
+ * Gating mirrors `_composeRenderEnabledState()`'s own queue-button
+ * enablement exactly (session open, not a remote view, input_enabled
+ * true) so the shortcut and the button always agree on when queuing is
+ * possible -- one source of truth for "can this session queue right now",
+ * read from the same `_serverSettings`/`_viewingSession`/`_viewingRemoteId`
+ * state the button's render already uses.
+ * @param {KeyboardEvent} e
+ */
+function _followupsQueueKeydown(e) {
+  if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
+  if (!_viewingSession || _viewingRemoteId) return; // no session open, or a remote view
+  var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
+  if (!enabled) return; // matches compose-queue-btn's own disabled state
+  e.preventDefault();
+  _followupsQueueDraft();
 }
 
 /**
@@ -4263,6 +4314,17 @@ function _composeErrorMessage(err) {
       return 'Too long \u2014 the limit is 8 KiB.';
     case 400:
       return detail || 'Invalid request.';
+    case 409:
+      // Queue-specific 409s (POST/PUT .../followups) -- /input never returns
+      // 409, so these two branches only ever fire from the follow-up queue.
+      if (err.body && err.body.bell_hook_unarmed) {
+        return 'Follow-ups are refused right now: the bell hook is not armed, ' +
+          'so a queued item would never fire. ' + (err.body.detail || '');
+      }
+      if (err.body && err.body.queue_full) {
+        return 'Follow-up queue is full (max ' + (err.body.max || 16) + ' items).';
+      }
+      return detail || 'Conflict (HTTP 409).';
     case 500:
       return 'The server couldn\u2019t send that: ' + detail;
     default:
@@ -4338,6 +4400,12 @@ function _bindComposeEventListeners() {
     input.addEventListener('keydown', _composeKeydown);
     input.addEventListener('input', function() { _composeAutoGrow(input); });
   }
+  // Queue shortcut is document-level, not local to #compose-input -- see
+  // _followupsQueueKeydown()'s docstring for why (the terminal has focus
+  // almost all the time; a local-only binding meant the shortcut only ever
+  // fired for the rare case where the user had already clicked into the
+  // compose textarea first).
+  document.addEventListener('keydown', _followupsQueueKeydown);
 }
 
 // ─── Follow-up queue ────────────────────────────────────────────────────
@@ -4438,10 +4506,35 @@ function _followupsRender() {
  * On a 409 revision mismatch: re-fetch, then surface server truth (a
  * single silent retry for send_in_flight, matching patchSettingsGuarded's
  * pattern -- spec §9.3).
+ *
+ * Structural guard against cross-session contamination: `_followupsData`
+ * must have been fetched FOR the session we're about to write to. Without
+ * this, a stale `_followupsData` left over from a previous session (see
+ * `_composeOnSessionOpen()`'s refresh-on-switch fix above) could be
+ * PUT onto a DIFFERENT session's queue the instant the user reorders/edits/
+ * removes an item before the panel catches up -- silently overwriting
+ * session B's real queue with session A's stale snapshot. `revision` alone
+ * does not catch this: revision is only unique WITHIN one session's queue,
+ * so a coincidentally-matching revision on the wrong session would sail
+ * straight through the `expected_revision` precondition on the server.
+ * Every GET/PUT response already carries `session` (the server's own
+ * source of truth for which queue a snapshot belongs to) -- this reuses
+ * that field rather than inventing new client-side state to track it.
  */
 async function _followupsPut(items, opts) {
   opts = opts || {};
   if (!_viewingSession || !_followupsData) return;
+  if (_followupsData.session !== _viewingSession) {
+    // Refuse rather than silently writing the wrong session's items --
+    // re-fetch so the panel (and any retry) reflects the CURRENT session.
+    console.warn(
+      '[_followupsPut] refused: snapshot is for session ' +
+      JSON.stringify(_followupsData.session) + ' but viewing ' +
+      JSON.stringify(_viewingSession),
+    );
+    await _followupsRefresh();
+    return;
+  }
   try {
     const res = await api(
       'PUT',
@@ -4564,7 +4657,17 @@ async function _followupsQueueDraft() {
     if (window._refitTerminal) window._refitTerminal();
     await _followupsRefresh();
   } catch (err) {
-    _composeShowError(_composeErrorMessage(err));
+    // A failed queue attempt must be impossible to miss: the inline
+    // compose-error box is easy to overlook (no auto-dismiss, but also no
+    // attention-grabbing motion) -- especially since this shortcut is meant
+    // to work while the user's attention is on the TERMINAL, not the
+    // compose bar. showToast() is the same loud, transient, hard-to-miss
+    // surface used elsewhere in this file for other errors; using it here
+    // too means "nothing happened" and "it failed" are never visually
+    // identical outcomes.
+    var msg = _composeErrorMessage(err);
+    _composeShowError(msg);
+    showToast('Follow-up not queued: ' + msg);
   }
 }
 
@@ -7033,6 +7136,7 @@ if (typeof module !== 'undefined' && module.exports) {
     _composeNormalizeText,
     _composeAutoGrow,
     _composeKeydown,
+    _followupsQueueKeydown,
     _composeErrorMessage,
     _composeSend,
     _bindComposeEventListeners,

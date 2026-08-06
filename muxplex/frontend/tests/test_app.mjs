@@ -11,7 +11,7 @@ globalThis.document = {
   getElementById: () => null,
   querySelector: () => null,
   querySelectorAll: () => [],
-  createElement: () => ({ style: {}, classList: { add: () => {}, remove: () => {} } }),
+  createElement: () => ({ style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } }),
   addEventListener: () => {},
   removeEventListener: () => {},
 };
@@ -435,8 +435,8 @@ test('pollSessions calls renderSidebar when viewMode is fullscreen', async () =>
 
   const mockStatusEl = { textContent: '', className: '' };
   const mockGrid = { innerHTML: '' };
-  const mockEmptyState = { style: {}, classList: { add: () => {}, remove: () => {} } };
-  const mockPillBell = { classList: { add: () => {}, remove: () => {} } };
+  const mockEmptyState = { style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
+  const mockPillBell = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const mockSidebarList = {
     get innerHTML() { return ''; },
     set innerHTML(v) { sidebarRendered = true; },
@@ -671,7 +671,7 @@ test('buildTileHTML includes data-remote-id attribute when session has remoteId'
 test('renderGrid clears grid and shows empty-state when sessions array is empty', () => {
   const mockGrid = { innerHTML: 'existing-content' };
   const removedClasses = [];
-  const mockEmpty = { style: {}, classList: { add: () => {}, remove: (c) => removedClasses.push(c) } };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: (c) => removedClasses.push(c) , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-grid') return mockGrid;
@@ -689,7 +689,7 @@ test('renderGrid clears grid and shows empty-state when sessions array is empty'
 test('renderGrid hides empty-state and populates grid when sessions exist', () => {
   const mockGrid = { innerHTML: '' };
   const addedClasses = [];
-  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} } };
+  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   const origQSA = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -710,7 +710,7 @@ test('renderGrid hides empty-state and populates grid when sessions exist', () =
 
 test('renderGrid includes auth tile HTML when a session has auth_failed status', () => {
   const mockGrid = { innerHTML: '' };
-  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -735,7 +735,7 @@ test('renderGrid includes auth tile HTML when a session has auth_failed status',
 
 test('renderGrid includes offline tile HTML when a session has unreachable status', () => {
   const mockGrid = { innerHTML: '' };
-  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -762,7 +762,7 @@ test('renderGrid shows auth tile and hides empty-state when session has auth_fai
   const addedClasses = [];
   const removedClasses = [];
   const mockGrid = { innerHTML: '' };
-  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: (c) => removedClasses.push(c) } };
+  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: (c) => removedClasses.push(c) , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-grid') return mockGrid;
@@ -783,7 +783,7 @@ test('renderGrid shows auth tile and hides empty-state when session has auth_fai
 test('renderGrid shows offline tile and hides empty-state when session has unreachable status', () => {
   const addedClasses = [];
   const mockGrid = { innerHTML: '' };
-  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} } };
+  const mockEmpty = { style: {}, classList: { add: (c) => addedClasses.push(c), remove: () => {} , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-grid') return mockGrid;
@@ -1067,7 +1067,7 @@ test('showToast sets toast textContent and removes hidden class', () => {
     classList: {
       remove: (cls) => removedClasses.push(cls),
       add: () => {},
-    },
+     toggle: () => {},},
   };
   const orig = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => (id === 'toast' ? mockToast : null);
@@ -1087,7 +1087,7 @@ test('showToast schedules hidden class restore after 3000ms', () => {
     classList: {
       remove: () => {},
       add: (cls) => addedClasses.push(cls),
-    },
+     toggle: () => {},},
   };
   const origGetById = globalThis.document.getElementById;
   const origSetTimeout = globalThis.setTimeout;
@@ -1110,13 +1110,13 @@ test('updatePillBell is exported', () => {
 
 test('updatePillBell shows pill bell when another session has unseen bell', async () => {
   const pillRemovedClasses = [];
-  const mockPillBell = { classList: { add: () => {}, remove: (c) => pillRemovedClasses.push(c) } };
+  const mockPillBell = { classList: { add: () => {}, remove: (c) => pillRemovedClasses.push(c) , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   const origQSA = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-pill-bell') return mockPillBell;
     if (id === 'session-grid') return { innerHTML: '' };
-    if (id === 'empty-state') return { style: {}, classList: { add: () => {}, remove: () => {} } };
+    if (id === 'empty-state') return { style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
     return null;
   };
   globalThis.document.querySelectorAll = () => [];
@@ -1143,13 +1143,13 @@ test('updatePillBell shows pill bell when another session has unseen bell', asyn
 
 test('updatePillBell hides pill bell when no other session has unseen bells', async () => {
   const pillAddedClasses = [];
-  const mockPillBell = { classList: { add: (c) => pillAddedClasses.push(c), remove: () => {} } };
+  const mockPillBell = { classList: { add: (c) => pillAddedClasses.push(c), remove: () => {} , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   const origQSA = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-pill-bell') return mockPillBell;
     if (id === 'session-grid') return { innerHTML: '' };
-    if (id === 'empty-state') return { style: {}, classList: { add: () => {}, remove: () => {} } };
+    if (id === 'empty-state') return { style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
     return null;
   };
   globalThis.document.querySelectorAll = () => [];
@@ -1182,7 +1182,7 @@ test('openSession returns a Promise', () => {
   const origGetById = globalThis.document.getElementById;
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1203,7 +1203,7 @@ test('openSession with skipAnimation calls window._openTerminal after connect PO
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   // Use a synchronous mock so setTimeout callbacks run immediately
   globalThis.setTimeout = (fn) => { fn(); };
@@ -1225,7 +1225,7 @@ test('openSession without skipConnect POSTs to /api/sessions/{name}/connect', as
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1244,7 +1244,7 @@ test('openSession without skipConnect POSTs to /api/sessions/{name}/connect', as
 
 test('openSession shows toast and calls closeSession on connect failure', async () => {
   let closeTerminalCalled = false;
-  const mockToast = { textContent: '', classList: { remove: () => {}, add: () => {} } };
+  const mockToast = { textContent: '', classList: { remove: () => {}, add: () => {} , toggle: () => {}} };
   const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
   const origQS = globalThis.document.querySelector;
@@ -1255,7 +1255,7 @@ test('openSession shows toast and calls closeSession on connect failure', async 
   };
   globalThis.document.getElementById = (id) => {
     if (id === 'toast') return mockToast;
-    return { textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } };
+    return { textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} };
   };
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
@@ -1279,7 +1279,7 @@ test('openSession with remoteId POSTs connect to federation proxy URL', async ()
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1302,7 +1302,7 @@ test('openSession with remoteId passes remoteId to window._openTerminal', async 
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async () => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = (fn) => { fn(); };
   globalThis.window._openTerminal = (...args) => { openTerminalArgs = args; };
@@ -1326,7 +1326,7 @@ test('openSession passes getDisplaySettings().fontSize to window._openTerminal a
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async () => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = (fn) => { fn(); };
   globalThis.window._openTerminal = (...args) => { openTerminalArgs = args; };
@@ -1351,7 +1351,7 @@ test('openSession for local session still POSTs to local /api/sessions/{name}/co
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1375,7 +1375,7 @@ test('openSession bails early when name is empty string', async () => {
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1398,7 +1398,7 @@ test('openSession bails early when name is whitespace only', async () => {
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1422,7 +1422,7 @@ test('closeSession is exported', () => {
 
 test('closeSession returns a Promise', async () => {
   const origGetById = globalThis.document.getElementById;
-  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {} } });
+  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } });
   globalThis.window._closeTerminal = () => {};
   globalThis.fetch = async () => ({ ok: true });
 
@@ -1437,7 +1437,7 @@ test('closeSession returns a Promise', async () => {
 test('closeSession calls window._closeTerminal', async () => {
   let closeTerminalCalled = false;
   const origGetById = globalThis.document.getElementById;
-  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {} } });
+  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } });
   globalThis.window._closeTerminal = () => { closeTerminalCalled = true; };
   globalThis.fetch = async () => ({ ok: true });
 
@@ -1453,7 +1453,7 @@ test('closeSession fires DELETE /api/sessions/current', async () => {
   const origFetch = globalThis.fetch;
   const origGetById = globalThis.document.getElementById;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {} } });
+  globalThis.document.getElementById = () => ({ style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } });
   globalThis.window._closeTerminal = () => {};
 
   await app.closeSession();
@@ -1474,7 +1474,7 @@ test('closeSession does NOT fire DELETE for remote session (non-empty _viewingRe
 
   // Setup to call openSession with remote remoteId
   globalThis.fetch = async () => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1512,7 +1512,7 @@ test('closeSession still fires DELETE /api/sessions/current for local session', 
 
   // Setup to call openSession for a local session (no remoteId)
   globalThis.fetch = async () => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -1726,7 +1726,7 @@ test('renderSheetList uses null check for remoteId (not falsy)', () => {
 
 test('openBottomSheet does not dynamically add click listener to sheet-backdrop', () => {
   let backdropAddCalled = false;
-  const mockSheet = { classList: { remove: () => {} } };
+  const mockSheet = { classList: { remove: () => {} , toggle: () => {}} };
   const mockList = { innerHTML: '', querySelectorAll: () => [] };
   const mockBackdrop = {
     addEventListener: (ev) => { if (ev === 'click') backdropAddCalled = true; },
@@ -1748,7 +1748,7 @@ test('openBottomSheet does not dynamically add click listener to sheet-backdrop'
 
 test('closeBottomSheet does not call removeEventListener on sheet-backdrop', () => {
   let backdropRemoveCalled = false;
-  const mockSheet = { classList: { add: () => {} } };
+  const mockSheet = { classList: { add: () => {} , toggle: () => {}} };
   const mockBackdrop = {
     removeEventListener: (ev) => { if (ev === 'click') backdropRemoveCalled = true; },
   };
@@ -1961,7 +1961,7 @@ test('initSidebar defaults to open (removes sidebar--collapsed) on wide screens 
   const removedClasses = [];
   const addedClasses = [];
   const mockSidebar = {
-    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) },
+    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) , toggle: () => {}},
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -1988,7 +1988,7 @@ test('initSidebar defaults to closed (adds sidebar--collapsed) on narrow screens
   const removedClasses = [];
   const addedClasses = [];
   const mockSidebar = {
-    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) },
+    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) , toggle: () => {}},
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -2015,7 +2015,7 @@ test('initSidebar respects stored value true regardless of screen width — even
   const removedClasses = [];
   const addedClasses = [];
   const mockSidebar = {
-    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) },
+    classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) , toggle: () => {}},
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -2042,7 +2042,7 @@ test('toggleSidebar persists state to _serverSettings — from open toggles to c
 
   // Sidebar is open (no sidebar--collapsed class) — contains returns false
   const mockSidebar = {
-    classList: { remove: () => {}, add: () => {}, contains: () => false },
+    classList: { remove: () => {}, add: () => {}, contains: () => false , toggle: () => {}},
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -2066,7 +2066,7 @@ test('toggleSidebar adds sidebar--collapsed class when closing (from open)', () 
   const addedClasses = [];
   // Sidebar is open (no sidebar--collapsed class) — contains returns false
   const mockSidebar = {
-    classList: { remove: () => {}, add: (c) => addedClasses.push(c), contains: () => false },
+    classList: { remove: () => {}, add: (c) => addedClasses.push(c), contains: () => false , toggle: () => {}},
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -2090,7 +2090,7 @@ test('toggleSidebar removes sidebar--collapsed class when opening (from closed) 
   const removedClasses = [];
   // Sidebar is closed (has sidebar--collapsed class) — contains returns true
   const mockSidebar = {
-    classList: { remove: (c) => removedClasses.push(c), add: () => {}, contains: (c) => c === 'sidebar--collapsed' },
+    classList: { remove: (c) => removedClasses.push(c), add: () => {}, contains: (c) => c === 'sidebar--collapsed' , toggle: () => {}},
   };
   const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
@@ -2353,7 +2353,7 @@ test('openSettings populates setting-template textarea from server settings', as
         style: {},
         appendChild: () => {},
         querySelectorAll: () => [],
-        classList: { add: () => {}, remove: () => {} },
+        classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
         showModal: () => {},
         close: () => {},
         addEventListener: () => {},
@@ -2411,7 +2411,7 @@ test('openSettings uses default template when new_session_template not in server
         style: {},
         appendChild: () => {},
         querySelectorAll: () => [],
-        classList: { add: () => {}, remove: () => {} },
+        classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
         showModal: () => {},
         close: () => {},
         addEventListener: () => {},
@@ -2822,7 +2822,7 @@ test('renderGrid in grouped mode produces device-group-header elements', () => {
     get innerHTML() { return collectedHTML[0] || ''; },
     set innerHTML(v) { collectedHTML[0] = v; },
   };
-  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -2865,7 +2865,7 @@ function renderGridToHTML(sessions) {
     get innerHTML() { return collectedHTML[0] || ''; },
     set innerHTML(v) { collectedHTML[0] = v; },
   };
-  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { style: {}, classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-grid') return mockGrid;
@@ -3414,7 +3414,7 @@ test('openSession always POSTs to connect even when skipConnect option is passed
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: { removeProperty: () => {} }, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: { removeProperty: () => {} }, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -4604,7 +4604,7 @@ test('openSession with integer remoteId=0 POSTs to federation proxy URL, not loc
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -4632,7 +4632,7 @@ test('openSession with integer remoteId=0 passes 0 to window._openTerminal as se
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async () => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = (fn) => { fn(); };
   globalThis.window._openTerminal = (...args) => { openTerminalArgs = args; };
@@ -4657,7 +4657,7 @@ test('closeSession after openSession with remoteId=0 does NOT fire DELETE /api/s
 
   // Open a remote session with remoteId=0 — sets _viewingRemoteId = 0
   globalThis.fetch = async () => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = () => {};
   globalThis.window._openTerminal = () => {};
@@ -5180,7 +5180,7 @@ test('openSession PATCHes /api/state with active_remote_id after successful conn
   const origQS = globalThis.document.querySelector;
   const origSetTimeout = globalThis.setTimeout;
   globalThis.fetch = async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: true }; };
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = (fn) => { fn(); };  // invoke immediately so animation resolves
   globalThis.window._openTerminal = () => {};
@@ -5206,7 +5206,7 @@ test('closeSession PATCHes /api/state to clear active_remote_id', async () => {
 
   // Open a remote session first so _viewingRemoteId is set
   globalThis.fetch = async () => ({ ok: true });
-  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} } });
+  globalThis.document.getElementById = () => ({ textContent: '', style: {}, classList: { remove: () => {}, add: () => {} , toggle: () => {}} });
   globalThis.document.querySelector = () => null;
   globalThis.setTimeout = (fn) => { fn(); };
   globalThis.window._openTerminal = () => {};
@@ -5649,7 +5649,7 @@ test('renderGrid status tiles use session.deviceName not session.name for offlin
   // Status entries (unreachable/auth_failed) have deviceName but no name.
   // buildStatusTileHTML must receive session.deviceName so the tile shows the device label.
   const grid = { innerHTML: '' };
-  const emptyState = { style: {}, classList: { add() {}, remove() {} } };
+  const emptyState = { style: {}, classList: { add() {}, remove() {} , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-grid') return grid;
@@ -5682,7 +5682,7 @@ test('renderGrid silently drops status=empty devices (no tile emitted) [v0.6.5]'
   // Previously (pre-v0.6.5) a "No sessions" status tile was emitted; that
   // behaviour is intentionally removed.
   const grid = { innerHTML: '' };
-  const emptyState = { style: {}, classList: { add() {}, remove() {} } };
+  const emptyState = { style: {}, classList: { add() {}, remove() {} , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-grid') return grid;
@@ -6449,7 +6449,7 @@ function _withManageViewRulesDOM(fn) {
   const fakeTextarea = { value: '', oninput: null };
   const fakeSave = { disabled: true, onclick: null };
   const fakePreview = { textContent: '' };
-  const fakeErrors = { innerHTML: '', classList: { add() {}, remove() {} } };
+  const fakeErrors = { innerHTML: '', classList: { add() {}, remove() {} , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'manage-view-rules-input') return fakeTextarea;
@@ -6478,7 +6478,7 @@ async function _withManageViewRulesDOMAsync(fn) {
   const fakeTextarea = { value: '', oninput: null };
   const fakeSave = { disabled: true, onclick: null };
   const fakePreview = { textContent: '' };
-  const fakeErrors = { innerHTML: '', classList: { add() {}, remove() {} } };
+  const fakeErrors = { innerHTML: '', classList: { add() {}, remove() {} , toggle: () => {}} };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'manage-view-rules-input') return fakeTextarea;
@@ -6741,7 +6741,7 @@ test('v0.6.3: grouped view skips device header when device has only hidden sessi
     get innerHTML() { return capturedHTML; },
     set innerHTML(v) { capturedHTML = v; },
   };
-  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA    = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -6785,7 +6785,7 @@ test('v0.6.3: grouped view still shows device header when device has at least on
     get innerHTML() { return capturedHTML; },
     set innerHTML(v) { capturedHTML = v; },
   };
-  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA    = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -6828,7 +6828,7 @@ test('v0.6.4: status:empty block is NOT rendered in grouped grid mode for a remo
 
   let capturedHTML = '';
   const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
-  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA    = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -6878,7 +6878,7 @@ test('v0.6.4: auth_failed and unreachable tiles still appear in grouped mode', (
 
   let capturedHTML = '';
   const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
-  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA    = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -6922,7 +6922,7 @@ test('v0.6.5: flat view — status:empty sentinel produces NO tile', () => {
 
   let capturedHTML = '';
   const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
-  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA    = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -6968,7 +6968,7 @@ test('v0.6.5: grouped view — status:empty sentinel still produces NO tile (reg
 
   let capturedHTML = '';
   const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
-  const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+  const mockEmpty = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
   const origGetById = globalThis.document.getElementById;
   const origQSA    = globalThis.document.querySelectorAll;
   globalThis.document.getElementById = (id) => {
@@ -7011,7 +7011,7 @@ test('v0.6.5: real sessions still render alongside an empty sentinel', () => {
 
     let capturedHTML = '';
     const mockGrid  = { get innerHTML() { return capturedHTML; }, set innerHTML(v) { capturedHTML = v; } };
-    const mockEmpty = { classList: { add: () => {}, remove: () => {} } };
+    const mockEmpty = { classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false } };
     const origGetById = globalThis.document.getElementById;
     const origQSA    = globalThis.document.querySelectorAll;
     globalThis.document.getElementById = (id) => {
@@ -7063,7 +7063,7 @@ test('v0.6.3: empty-state still appears when every device has zero visible sessi
     classList: {
       add:    () => {},
       remove: (c) => removedFromEmpty.push(c),
-    },
+     toggle: () => {},},
   };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
