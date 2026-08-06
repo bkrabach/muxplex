@@ -43,7 +43,6 @@ import pytest
 
 import muxplex.manifest as manifest_mod
 import muxplex.restore as restore_mod
-import muxplex.settings as settings_mod
 from muxplex.manifest import load_manifest, save_manifest, update_manifest
 from muxplex.sessions import enumerate_sessions, get_session_cwds, probe_tmux_epoch
 
@@ -84,11 +83,14 @@ def _live_names(socket_dir: Path) -> list[str]:
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     """Same wiring as test_restore_integration.py's `isolated` fixture:
-    manifest + settings + tmux_socket_dir redirected to tmp_path, and
-    restore._default_workspace_root() redirected to `tmp_path / "home" /
-    "dev"` -- a directory that stands in for the real `~/dev` without ever
-    touching Path.home(). `tmp_path / "home"` (its PARENT) stands in for
-    the real `$HOME` in these tests.
+    manifest redirected to tmp_path, tmux isolated via the `TMUX_TMPDIR`
+    environment variable directly (NOT `settings.tmux_socket_dir`, which is
+    a `settings.LOCAL_ONLY_KEYS` member and therefore silently ignored by
+    `patch_settings()` -- see that fixture's docstring for the full
+    rationale), and restore._default_workspace_root() redirected to
+    `tmp_path / "home" / "dev"` -- a directory that stands in for the real
+    `~/dev` without ever touching Path.home(). `tmp_path / "home"` (its
+    PARENT) stands in for the real `$HOME` in these tests.
     """
     monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
     monkeypatch.setattr(
@@ -96,7 +98,8 @@ def isolated(tmp_path, monkeypatch):
     )
     socket_dir = tmp_path / "tmux-socket"
     socket_dir.mkdir()
-    settings_mod.patch_settings({"tmux_socket_dir": str(socket_dir)})
+    monkeypatch.setenv("TMUX_TMPDIR", str(socket_dir))
+    monkeypatch.delenv("TMUX", raising=False)
     yield socket_dir
     _tmux(socket_dir, "kill-server", check=False)
 

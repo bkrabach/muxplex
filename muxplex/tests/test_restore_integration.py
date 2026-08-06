@@ -156,10 +156,25 @@ def _fake_workspace_template_with_failure(workspace_root: Path, fail_name: str) 
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
-    """Wire manifest + settings to per-test isolated paths, and return the
-    per-test tmux socket directory. Settings.json is already redirected to
-    tmp_path by conftest.py's autouse _isolate_settings_path fixture -- this
-    fixture layers on top of that by setting tmux_socket_dir explicitly.
+    """Wire manifest + tmux isolation to per-test paths, and return the
+    per-test tmux socket directory.
+
+    Isolation is via the ``TMUX_TMPDIR`` environment variable, NOT
+    ``settings.tmux_socket_dir`` -- that setting joined
+    ``settings.LOCAL_ONLY_KEYS`` (see AGENTS.md's "Terminal input" section,
+    sibling 1: it's fed into every tmux invocation as ``TMUX_TMPDIR``, so a
+    remote PATCH could otherwise redirect session create/kill to an
+    attacker-controlled socket dir). ``settings.patch_settings()``
+    accordingly now SILENTLY IGNORES a ``tmux_socket_dir`` key (logs a
+    warning, applies the rest of the patch) -- a prior version of this
+    fixture called exactly that and every test using it was silently
+    talking to whatever directory conftest.py's OWN autouse
+    ``_isolate_tmux_socket_dir`` fixture had already put in ``TMUX_TMPDIR``
+    (a different, empty directory), not this fixture's ``socket_dir`` at
+    all. Setting the env var directly is what `sessions.tmux_env()` itself
+    falls back to when no setting override is configured (``env=None`` ->
+    subprocess inherits ``os.environ``) -- exactly the mechanism AGENTS.md's
+    "Running a second instance on one box" section documents.
 
     Also redirects restore.py's ``_default_workspace_root()`` (the
     conventional ``~/dev`` the reserved-default restore fidelity check
@@ -178,7 +193,8 @@ def isolated(tmp_path, monkeypatch):
     )
     socket_dir = tmp_path / "tmux-socket"
     socket_dir.mkdir()
-    settings_mod.patch_settings({"tmux_socket_dir": str(socket_dir)})
+    monkeypatch.setenv("TMUX_TMPDIR", str(socket_dir))
+    monkeypatch.delenv("TMUX", raising=False)
     yield socket_dir
     _tmux(socket_dir, "kill-server", check=False)
 
