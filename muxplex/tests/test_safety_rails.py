@@ -146,3 +146,72 @@ def test_no_test_calls_serve_without_a_guard():
         f"pinning a port, so they will target the production default port: "
         f"{offenders}. Pin a scratch port or drop the marker."
     )
+
+
+# ---------------------------------------------------------------------------
+# Standing rule: muxplex must never emit anything that renders on a user's
+# terminal (see AGENTS.md). This has been learned twice, in the same file,
+# by the same class of fix: a loud persistent bell hook painted curl errors
+# onto the owner's live panes, and the FIX for that (an arm-time delivery
+# probe) was itself a diagnostic `tmux run-shell` call that reproduced the
+# identical incident during restart windows. The probe was removed rather
+# than re-silenced -- this guard makes sure a FUTURE diagnostic `run-shell`
+# (a new probe, a new health check, anything) cannot be added back without
+# this suite catching it immediately, rather than waiting to be discovered
+# on a live host a third time.
+# ---------------------------------------------------------------------------
+
+
+def test_no_diagnostic_tmux_run_shell_construction_exists():
+    """Structural scan of production source: exactly ONE place may ever
+    build a `run-shell` command string, and it must be the persistent bell
+    hook's own registration call inside `_arm_bell_hook()` -- never a
+    diagnostic, probe, or health-check call.
+
+    This scans the actual muxplex/*.py source tree (not just main.py) so a
+    future diagnostic added to any module is caught, not just a regression
+    in the one file this incident happened in twice.
+    """
+    package_dir = Path(__file__).parent.parent
+    offenders: list[str] = []
+    for path in sorted(package_dir.glob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=str(path))
+        for node in ast.walk(tree):
+            # Look for a string literal that IS (or begins) an actual
+            # `run-shell` command argument -- e.g. the exact positional arg
+            # `"run-shell"` passed to run_tmux(), or an f-string's leading
+            # literal segment `"run-shell '"`. Deliberately `.startswith()`,
+            # NOT a bare substring match: docstrings and comments legitimately
+            # DISCUSS `run-shell` in prose (e.g. this file's own module
+            # docstring, or a docstring explaining WHY a command is silent)
+            # without ever constructing one, and a substring match would
+            # flag every one of those as a false positive.
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value.strip().startswith("run-shell")
+            ):
+                offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
+
+    # Exactly one production call site is allowed: main.py's registration
+    # string inside _arm_bell_hook(), built as
+    # f"run-shell '{_bell_hook_curl(...)}'". Anything else -- a second
+    # occurrence anywhere, in any module -- is a new diagnostic/probe call
+    # site and must be rejected outright, not silenced.
+    assert len(offenders) == 1, (
+        f"Expected exactly ONE `run-shell` construction site in production "
+        f"source (the persistent bell hook's registration string), found "
+        f"{len(offenders)}: {offenders}. A second `run-shell` call site is "
+        f"almost certainly a new diagnostic/probe -- see AGENTS.md's "
+        f"'never render to a pane' rule. tmux's `run-shell` paints a "
+        f"background command's output onto a live client's active pane; "
+        f"this has caused real, repeated production incidents. Server "
+        f"diagnostics belong in the log, `GET /api/instance-info`, and "
+        f"`muxplex doctor` -- never behind a new `run-shell` call."
+    )
+    assert "main.py" in offenders[0], (
+        f"the sole run-shell construction site moved out of main.py: "
+        f"{offenders[0]!r} -- verify this is still the persistent hook's "
+        f"registration string, not a relocated diagnostic."
+    )

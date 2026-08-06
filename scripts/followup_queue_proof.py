@@ -6,13 +6,13 @@ Run ONLY inside an isolated environment (a DTU container, never a host
 serving a live muxplex) -- see AGENTS.md.
 
 Unlike an in-process TestClient, this launches a REAL muxplex server
-(uvicorn, bound to a scratch loopback port) as a subprocess: the bell
-hook's arm-time delivery PROBE (`_arm_bell_hook()`) does a real HTTP
-round-trip to the server's own port, which only exists when something is
-actually listening -- an in-process ASGI transport has no such thing, so
-`_bell_hook_armed` can never go True against one. This is also the
-faithful shape of docs/plans/2026-08-05-per-session-followup-queue-plan.md's own T-40 ("start a muxplex
-instance... on a monkeypatched port").
+(uvicorn, bound to a scratch loopback port) as a subprocess -- the faithful
+shape of docs/plans/2026-08-05-per-session-followup-queue-plan.md's own T-40
+("start a muxplex instance... on a monkeypatched port"), and closer to how a
+real deployment behaves than an in-process ASGI transport. `_arm_bell_hook()`
+itself has no arm-time HTTP dependency (there is no delivery probe -- see
+AGENTS.md's "never render to a pane" rule): `_bell_hook_armed` goes True as
+soon as `set-hook` is accepted, whether or not anything is listening yet.
 
 Steps:
   1. Spin up an ISOLATED tmux server (TMUX_TMPDIR-scoped, default socket

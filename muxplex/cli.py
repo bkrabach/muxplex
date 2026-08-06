@@ -1186,14 +1186,17 @@ def doctor() -> None:
             )
             print("    Run: muxplex service restart   (or) muxplex upgrade")
 
-        # Bell hook: honest "armed" means a real delivery probe succeeded
-        # (see main.py's _arm_bell_hook()), not merely that tmux accepted
-        # `set-hook` -- surfaced here the same way TLS expiry is below: a
-        # non-fatal advisory line, not a hard failure. Skipped for a
-        # different machine's muxplex (running_info above) -- that host's
-        # hook state says nothing about this one. `.get()` also makes this
-        # silently absent against an older peer that predates the field
-        # (version tolerance, per AGENTS.md).
+        # Bell hook: "armed" means tmux accepted `set-hook` -- NOT proof of
+        # delivery (see main.py's _arm_bell_hook() and AGENTS.md's bell-hook
+        # section; a prior revision required a real delivery probe here, but
+        # that probe was itself a diagnostic `tmux run-shell` call and was
+        # removed per AGENTS.md's "never render to a pane" rule). Surfaced
+        # here the same way TLS expiry is below: a non-fatal advisory line,
+        # not a hard failure. Skipped for a different machine's muxplex
+        # (running_info above) -- that host's hook state says nothing about
+        # this one. `.get()` also makes this silently absent against an
+        # older peer that predates the field (version tolerance, per
+        # AGENTS.md).
         if _instance_is_this_host(running_info) is not False:
             hook_armed = running_info.get("bell_hook_armed")
             if hook_armed is False:
@@ -1206,7 +1209,7 @@ def doctor() -> None:
                     " /api/internal/setup-hooks"
                 )
             elif hook_armed is True:
-                print(f"  {ok_mark} Bell hook: armed (delivery probe confirmed)")
+                print(f"  {ok_mark} Bell hook: armed (registered with tmux)")
 
     # TLS status
     tls_cert = cfg.get("tls_cert", "")

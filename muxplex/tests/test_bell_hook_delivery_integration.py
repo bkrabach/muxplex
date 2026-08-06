@@ -1,13 +1,19 @@
 """Real tmux + real TLS server proofs for the bell-hook TLS-scheme fix.
 
-See AGENTS.md's "Bell hook: 'armed' means delivered, not merely registered"
-for the incident these guard against, and its follow-up entry about the two
-corrections this file specifically proves:
+See AGENTS.md's "Bell hook: 'armed' means registered, not delivered" and its
+"never render to a pane" standing rule for the incidents these guard
+against, and this file's three corrections:
 
   1. SILENCE: the persistent per-bell hook must never paint anything onto a
      live client's screen, even when delivery fails.
   2. ISOLATION: proving any of this must never touch the ambient tmux
      server -- only an isolated one.
+  3. NO ARM-TIME PROBE: registration (`set-hook`) must succeed with ZERO
+     dependency on the server's own HTTP listener being up -- there is no
+     more in-band `tmux run-shell` self-call at arm time, so the restart-
+     window failure mode (arm racing the accept loop, producing `curl ...
+     returned 7` painted onto a live pane) is now structurally impossible,
+     not merely retried-until-healed.
 
 Everything here runs against an ISOLATED tmux server. Isolation is layered
 twice, deliberately: `conftest.py`'s autouse `_isolate_tmux_socket_dir`
@@ -201,16 +207,18 @@ async def _attached_client(session: str):
 
 
 @contextlib.asynccontextmanager
-async def _real_server(tmp_path: Path, *, tls: bool, claim_tls: bool | None = None):
+async def _real_server(tmp_path: Path, *, tls: bool):
     """Run the REAL muxplex ASGI app on a REAL loopback socket.
 
     Args:
         tls: whether uvicorn actually serves TLS (a real self-signed cert).
-        claim_tls: what `main_mod.SERVER_TLS_ENABLED` is set to -- i.e. what
-            the bell hook BELIEVES the server is serving. Defaults to `tls`
-            (the honest, matching case). Pass the opposite of `tls` to
-            reproduce the exact incident: a scheme mismatch between what
-            the hook dials and what the server actually speaks.
+            `main_mod.SERVER_TLS_ENABLED` is set to match -- there is no
+            longer a way to make the hook BELIEVE something different than
+            what the server actually serves (an earlier revision's
+            `claim_tls` parameter existed only to reproduce that exact
+            mismatch for the since-removed arm-time delivery probe's
+            honesty proof; removed along with that proof, see this file's
+            module docstring).
 
     Isolates state/ttyd paths the same way test_api.py's unit tests do, but
     deliberately does NOT mock `run_tmux` -- this is the point: real tmux,
@@ -221,7 +229,6 @@ async def _real_server(tmp_path: Path, *, tls: bool, claim_tls: bool | None = No
     import muxplex.ttyd as ttyd_mod
 
     port = _free_port()
-    resolved_claim = tls if claim_tls is None else claim_tls
 
     state_dir = tmp_path / "state"
     ttyd_dir = tmp_path / "ttyd"
@@ -230,7 +237,7 @@ async def _real_server(tmp_path: Path, *, tls: bool, claim_tls: bool | None = No
     ttyd_mod.TTYD_SOCKET_DIR = ttyd_dir
 
     main_mod.SERVER_PORT = port
-    main_mod.SERVER_TLS_ENABLED = resolved_claim
+    main_mod.SERVER_TLS_ENABLED = tls
     # Fresh per-server arming state -- module globals persist across tests
     # in the same process otherwise.
     main_mod._bell_hook_armed = False
@@ -333,9 +340,8 @@ async def _retry_arm_until(
     reproduces the self-healing retry production relies on, on ITS terms.
 
     ``scheme`` must match what the server ACTUALLY serves (the ``tls``
-    argument passed to ``_real_server``), never what the hook merely
-    believes (``claim_tls``) -- a client always dials the real scheme; only
-    the hook itself can be fooled about it.
+    argument passed to ``_real_server``) -- a client always dials the real
+    scheme.
     """
     deadline = time.monotonic() + timeout
     last = None
@@ -451,39 +457,78 @@ async def test_delivery_real_bell_reaches_server_through_tls_hook(
 
 
 # ---------------------------------------------------------------------------
-# Proof 2: HONESTY -- deliberately break delivery (scheme mismatch,
-# reproducing the exact original incident), health check reports unhealthy.
+# Proof 2: NO ARM-TIME PROBE -- registration succeeds with zero dependency
+# on the server's own HTTP listener, which is the direct proof that the
+# restart-window failure mode (arm racing the accept loop, painting
+# `curl ... returned 7` onto a live pane) is now structurally impossible.
+#
+# NOTE on scope: this file previously had a "HONESTY" proof here that
+# deliberately mismatched the hook's believed scheme against the server's
+# real one and asserted `bell_hook_armed` reported False. That proof no
+# longer holds and was removed rather than reworked to expect the opposite:
+# the mechanism that caught a scheme mismatch at arm time WAS the delivery
+# probe, and the probe was removed because it was itself a diagnostic
+# `tmux run-shell` call that violated the "never render to a pane" rule (see
+# AGENTS.md). `test_registration_succeeding_with_wrong_scheme_is_a_known_
+# limitation` in test_api.py now documents the opposite, honest expectation:
+# `set-hook` accepts any command string, so a scheme mismatch registers
+# successfully. There is no replacement detection mechanism -- see this
+# file's module docstring and AGENTS.md's bell-hook section.
 # ---------------------------------------------------------------------------
 
 
-async def test_honesty_scheme_mismatch_reports_unarmed(tmp_path, bell_session):
-    """Reproduce the original incident directly: the server actually serves
-    TLS, but the hook is made to believe it doesn't (dials http:// against
-    an https-only port). `bell_hook_armed` must honestly report False, with
-    an actionable error -- never silently report armed."""
+async def test_arm_succeeds_with_no_http_round_trip_at_arm_time(tmp_path, bell_session):
+    """Registration reaches `bell_hook_armed=True` via `set-hook` alone --
+    proven here by confirming a SINGLE `POST /api/internal/setup-hooks` call
+    (one `_arm_bell_hook()` invocation, hence at most one `run_tmux` call)
+    is sufficient, with no retry loop needed to "wait out" an HTTP self-call
+    racing the accept loop the way the removed probe once required.
+    """
     async with (
-        _real_server(tmp_path, tls=True, claim_tls=False) as (port, _tls),
+        _real_server(tmp_path, tls=False) as (port, _tls),
         httpx.AsyncClient(verify=False, timeout=2.0) as client,
     ):
-        # The real server only accepts TLS; poke it in plain HTTP terms via
-        # instance-info over TLS (the client side, not the hook, always
-        # knows the real scheme) to confirm the server is actually up.
-        resp = await client.get(f"https://127.0.0.1:{port}/api/instance-info")
+        resp = await client.post(f"http://127.0.0.1:{port}/api/internal/setup-hooks")
         assert resp.status_code == 200
-
-        armed = await _retry_arm_until(port, scheme="https", expect=False, timeout=8.0)
-        assert armed is False, (
-            "bell hook must report unarmed when it dials the wrong scheme"
+        assert resp.json().get("ok") is True, (
+            "a single setup-hooks call must arm the hook -- registration "
+            "has no dependency on any in-band HTTP round trip"
         )
 
-        info = (await client.get(f"https://127.0.0.1:{port}/api/instance-info")).json()
-        # `bell_hook_armed` absent-vs-False both mean "not armed"; assert
-        # the field is present and explicitly False, with SOME actionable
-        # detail available via doctor/instance-info surfacing (the error
-        # itself lives in-process; instance-info intentionally does not
-        # leak internals, but the armed=False signal itself is the
-        # honesty contract under test here).
-        assert info.get("bell_hook_armed") is False
+        info = (await client.get(f"http://127.0.0.1:{port}/api/instance-info")).json()
+        assert info.get("bell_hook_armed") is True
+
+
+async def test_arm_bell_hook_never_calls_run_shell_for_a_probe(tmp_path, bell_session):
+    """Direct proof, against the real ASGI app (not a mock), that arming
+    never issues a `tmux run-shell` for any purpose other than the
+    persistent hook's own registration string -- there is no second,
+    diagnostic `run-shell` call at arm time.
+    """
+    import muxplex.main as main_mod
+
+    async with _real_server(tmp_path, tls=False) as (port, _tls):
+        calls: list[tuple] = []
+        orig_run_tmux = main_mod.run_tmux
+
+        async def _spying_run_tmux(*args):
+            calls.append(args)
+            return await orig_run_tmux(*args)
+
+        main_mod.run_tmux = _spying_run_tmux
+        try:
+            async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
+                resp = await client.post(
+                    f"http://127.0.0.1:{port}/api/internal/setup-hooks"
+                )
+                assert resp.status_code == 200
+        finally:
+            main_mod.run_tmux = orig_run_tmux
+
+        run_shell_calls = [c for c in calls if c and c[0] == "run-shell"]
+        assert run_shell_calls == [], (
+            f"arming must never call tmux run-shell for a probe -- saw: {run_shell_calls!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

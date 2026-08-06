@@ -408,12 +408,52 @@ and distinguishes "our handler never fired" from "our handler fired twice."
   graceful degradation in the service (circuit breaker), not by asking the
   user to prune config.
 
-## Bell hook: "armed" means delivered, not merely registered
+## Standing rule: muxplex must never emit anything that renders on a user's terminal
+
+**This is load-bearing and applies to every future feature, not just bells.**
+Server diagnostics -- health checks, self-tests, arm-time probes, anything
+whose purpose is to verify muxplex's OWN behavior -- belong in the log, in
+`GET /api/instance-info`, and in `muxplex doctor`. They must NEVER be built
+as a `tmux run-shell` (or any other mechanism that writes to a pane), because
+`run-shell`'s output (and a failing command's exit status) is displayed by
+tmux in view mode on the client's *active* pane, per tmux's own manual --
+completely independent of which session the command logically "belongs" to.
+A user attached to any session, watching anything, can have their screen
+overwritten by a background diagnostic that has nothing to do with what they
+are looking at.
+
+This was learned the hard way, **twice, in the same file, by the same class
+of fix**: a revision meant to make a probe's failures diagnosable made the
+persistent per-bell hook loud too (see below); the fix for that added a
+*separate* arm-time delivery probe that was itself a `tmux run-shell` call,
+loud by design -- and because it re-fired on every retry while unarmed (e.g.
+every poll cycle during a restart window, before the server was listening),
+a `curl ... returned 7` message replaced the owner's live panes just as
+surely as the first incident did. The probe was removed entirely rather than
+silenced a second time: **the rule is not "keep diagnostic `run-shell` calls
+silent," it is "never construct a `run-shell` call for a diagnostic purpose
+at all."** A silenced probe is still a probe that can be un-silenced by a
+future "make this loud for debugging" change; a probe that structurally does
+not exist cannot regress.
+
+**Enforcement:** `_bell_hook_curl()` (main.py) has no parameter that can
+request a loud variant -- there is exactly one code path, and it is always
+silent (`test_persistent_hook_never_includes_dash_S`,
+`test_persistent_hook_redirects_stderr_to_devnull`, and
+`test_bell_hook_curl_has_no_loud_variant` in `test_api.py` guard this
+structurally, not just by convention). `test_safety_rails.py`'s
+`test_no_diagnostic_tmux_run_shell_construction_exists` greps the production
+source tree for every `run-shell` call site and asserts there is exactly
+one -- the persistent hook's own registration string -- so a future
+diagnostic `run-shell` (arm-time probe, health check, anything) fails the
+suite the moment it's added, rather than waiting to be discovered on a
+live host.
+
+## Bell hook: "armed" means registered, not delivered
 
 `_arm_bell_hook()` (main.py) registers tmux's `alert-bell` hook so a real
 bell forwards to `POST /api/sessions/{name}/bell` via a `run-shell 'curl
-...'` hook string. Two lessons, both found by testing the ACTUAL delivery
-path rather than trusting a green health check:
+...'` hook string.
 
 - **The hook must dial the scheme the server is actually serving, and
   cli.py is the only place that knows it.** `serve()` resolves TLS
@@ -437,25 +477,26 @@ path rather than trusting a green health check:
   `true` the entire time, because registration (`set-hook`) succeeded
   perfectly. `bells.process_bell_flags()`'s fallback (see below) carried
   bell detection the whole time, which is exactly what hid it.
-- **"Armed" must mean a delivery PROBE actually arrived, not that `set-hook`
-  was accepted.** After registering, `_arm_bell_hook()` now fires the EXACT
-  command tmux would run on a real bell (same `_bell_hook_curl()`, targeting
-  the reserved sentinel session `_BELL_PROBE_SESSION`, which `receive_bell()`
-  recognizes and never persists to `state.json`), and waits for that request
-  to actually reach `receive_bell()` before reporting armed. Two independent
-  failure surfaces, both honest: the probe's `run_tmux("run-shell", ...)`
-  raising (curl's own nonzero exit propagates through tmux -- verified
-  against real tmux: `tmux run-shell "exit 7"` itself exits 7), or the
-  request never arriving within `_BELL_PROBE_TIMEOUT_S`. **Gotcha (verified
-  against real tmux):** a detached `run-shell`'s exit code propagates this
-  way, but its stdout/stderr TEXT does not -- tmux captures a run-shell
-  command's output for its own status-line message display to an attached
-  client, and there isn't one here, so curl's own diagnostic text is
-  frequently unavailable even though the failure is real. `curl -S`
-  (show-error, paired with `-s`) plus a type-name fallback keeps
-  `_bell_hook_last_error` from ever being a bare trailing colon.
-  `muxplex doctor` surfaces `bell_hook_armed` (from `GET /api/instance-info`)
-  the same non-fatal-advisory way it already surfaces TLS cert expiry.
+- **`bell_hook_armed` means `set-hook` was accepted -- nothing more, and
+  this is a deliberate reversion.** A later revision (superseded by this
+  one) tried to strengthen "armed" to mean "a delivery PROBE actually
+  arrived": after registering, `_arm_bell_hook()` fired the EXACT command
+  tmux would run on a real bell via `run_tmux("run-shell", ...)`, targeting
+  a reserved sentinel session, and waited for that request to reach
+  `receive_bell()` before reporting armed. That probe violated the standing
+  rule above -- it was itself a diagnostic `run-shell` call, and it re-fired
+  on every retry while unarmed, painting `curl ... returned 7` onto the
+  owner's live panes during restart windows. **It was removed, not
+  re-silenced.** The honest, weaker contract this reverts to: `set-hook`
+  succeeding is real information (it rules out "tmux unreachable," the
+  common startup-ordering failure this self-heals from), but it is NOT
+  proof of delivery -- a scheme mismatch, for example, registers perfectly
+  and still never delivers a bell, and there is currently no arm-time
+  mechanism that would catch that class of bug without reintroducing the
+  standing-rule violation. `muxplex doctor` surfaces `bell_hook_armed` (from
+  `GET /api/instance-info`) the same non-fatal-advisory way it already
+  surfaces TLS cert expiry -- read it as "registered," not "verified
+  working."
 
 `bells.poll_bell_flag()`'s fallback has its own window-scoping gotcha, also
 verified live: `display-message -t <session>` (no window qualifier) reads

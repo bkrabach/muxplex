@@ -45,8 +45,11 @@ invariants a contributor must not break.
 - **`POST`** appends one item, no precondition (appending is commutative).
   New members of the discriminator convention (see `backstop` /
   `terminal_conflict` / `unknown_command_id` above): `bell_hook_unarmed`
-  (409 — refuses new items while the bell hook isn't confirmed delivering,
-  since a queue armed against a dead trigger is worse than no queue) and
+  (409 — refuses new items while the bell hook isn't even registered with
+  tmux, since a queue armed against a dead trigger is worse than no queue;
+  see `../AGENTS.md`'s bell-hook section — "armed" means registration
+  accepted, not delivery proven, so this catches the common case (tmux
+  unreachable) but not every misconfiguration) and
   `queue_full` (409 at `MAX_FOLLOWUPS`, 16).
 - **`PUT`** replaces the whole item list — edit + reorder + remove in one
   call. `expected_revision` is a **REQUIRED** precondition (unlike `PATCH
