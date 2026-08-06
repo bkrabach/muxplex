@@ -45,11 +45,13 @@ function sortByPriority(sessions) {
 
 /**
  * Sort sessions attention-first: bell/needs-attention sessions first (newest
- * bell fire first), then everything else by bell.last_fired_at descending
- * (sessions that have never belled sort last). Mirrors the two ordering
- * criteria that matter most from the tiered ordering already implemented
- * server-side (main.py's _attention_order(), used by GET /api/view?sort=attention)
- * and in muxplex-deck's attention.py.
+ * bell fire first), then the currently-open session (if it isn't already in
+ * tier 1), then everything else by bell.last_fired_at descending (sessions
+ * that have never belled sort last). Mirrors the full three-tier ordering
+ * already implemented server-side (main.py's _attention_order(), used by
+ * GET /api/view?sort=attention) and in muxplex-deck's attention.py
+ * (apply_attention_sort()) -- all three now genuinely "move together";
+ * see the regression this closes below.
  *
  * Tier 3 deliberately keys off bell.last_fired_at, NOT last_activity_at:
  * that timestamp derives from tmux #{window_activity} and bumps on ANY pane
@@ -58,22 +60,39 @@ function sortByPriority(sessions) {
  * only fires on the actual agent-turn-completion signal, so this ordering
  * is stable between bells.
  *
- * Deliberately does NOT reproduce that ordering's middle "active session"
- * tier: the grid has no single session that is "active" while it's on
- * screen (viewing the grid means no session is open), so an active-tier
- * concept would only ever be meaningful for the sidebar (which has a
- * `currentSession`) -- and the two surfaces sorting differently would
- * violate the very invariant this sort exists to serve (main view and
- * sidebar must agree on order). Omitting tier 2 keeps both surfaces
- * identical for every input.
+ * Tier 2 (the currently-open session) is identified by (name, remoteId) --
+ * the same identity pair buildSidebarHTML() already uses for its own
+ * `isActive` highlight -- so it works uniformly for local AND federated
+ * sessions, unlike main.py's server-side `active` flag (GET /api/view is
+ * local-sessions-only; it has no concept of a session open on a remote
+ * device). `currentSessionName`/`currentRemoteId` are omitted (undefined)
+ * by the grid, which has no open session while it's on screen, so tier 2 is
+ * naturally empty there -- the SAME function, called with the SAME
+ * (sessions, currentSessionName, currentRemoteId) input, is what keeps the
+ * grid, the sidebar, and the focus view (the sidebar shown alongside an
+ * open session) in agreement, not a separate omission of the tier.
+ *
+ * REGRESSION (found via GET /api/view?sort=attention vs. the client): the
+ * session the user is actively working in has its bell cleared continuously
+ * (bell.last_fired_at effectively "never" refreshes while it's the one
+ * being watched), so with tier 2 previously omitted entirely it fell into
+ * tier 3 and sorted BEHIND every other session -- the more a session was
+ * used, the further it sank. Server-side `_attention_order()` already
+ * placed it correctly via tier 2; the client just wasn't reproducing that
+ * tier at all. See the 'currently-active session with the oldest bell'
+ * test below, which pins the exact real-world shape that surfaced this.
  *
  * Returns a new array; does not mutate the original. Array.prototype.sort
  * is stable, so ties (including "no bell, ever" for two sessions) preserve
  * incoming order.
  * @param {object[]} sessions
+ * @param {string|null} [currentSessionName] - name of the currently-open
+ *   session (the grid passes nothing/null since no session is open there)
+ * @param {string|null} [currentRemoteId] - remoteId of the currently-open
+ *   session ('' or null/undefined for a local session)
  * @returns {object[]}
  */
-function sortByAttention(sessions) {
+function sortByAttention(sessions, currentSessionName, currentRemoteId) {
   const tier1 = sessions.filter((s) => sessionPriority(s) === 'bell');
   tier1.sort((a, b) => {
     const aFired = (a.bell && a.bell.last_fired_at) || 0;
@@ -81,7 +100,15 @@ function sortByAttention(sessions) {
     return bFired - aFired;
   });
   const tier1Keys = new Set(tier1.map((s) => s.sessionKey || s.name));
-  const tier3 = sessions.filter((s) => !tier1Keys.has(s.sessionKey || s.name));
+  const remaining = sessions.filter((s) => !tier1Keys.has(s.sessionKey || s.name));
+
+  const tier2 = currentSessionName == null
+    ? []
+    : remaining.filter((s) =>
+        s.name === currentSessionName && (s.remoteId ?? '') === (currentRemoteId ?? ''));
+  const tier2Keys = new Set(tier2.map((s) => s.sessionKey || s.name));
+
+  const tier3 = remaining.filter((s) => !tier2Keys.has(s.sessionKey || s.name));
   tier3.sort((a, b) => {
     const aTime = a.bell && a.bell.last_fired_at;
     const bTime = b.bell && b.bell.last_fired_at;
@@ -89,7 +116,7 @@ function sortByAttention(sessions) {
     if (bTime == null) return -1;
     return bTime - aTime;
   });
-  return tier1.concat(tier3);
+  return tier1.concat(tier2, tier3);
 }
 
 /**
@@ -101,9 +128,17 @@ function sortByAttention(sessions) {
  * @param {object[]} visible - already view-filtered sessions
  * @param {string|undefined} sortOrder - _serverSettings.sort_order value
  * @param {boolean} mobile - isMobile() result for the current viewport
+ * @param {string|null} [currentSessionName] - name of the currently-open
+ *   session, forwarded to sortByAttention()'s tier 2 (see its docstring).
+ *   Both call sites pass `_viewingSession`, which is null while the grid is
+ *   on screen -- so this is a genuinely IDENTICAL call (same three
+ *   arguments) for the grid and the sidebar/focus view whenever no session
+ *   is open, and still one shared code path (not a branch) whenever one is.
+ * @param {string|null} [currentRemoteId] - remoteId of the currently-open
+ *   session, forwarded the same way (see sortByAttention()).
  * @returns {object[]}
  */
-function applySortOrder(visible, sortOrder, mobile) {
+function applySortOrder(visible, sortOrder, mobile, currentSessionName, currentRemoteId) {
   if (sortOrder === 'alphabetical') {
     return visible.slice().sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
   }
@@ -111,7 +146,7 @@ function applySortOrder(visible, sortOrder, mobile) {
     // Unlike 'recent', attention already puts bell/urgent sessions first --
     // the same signal sortByPriority's mobile substitute exists to surface --
     // so it applies identically on mobile and desktop; no carve-out needed.
-    return sortByAttention(visible);
+    return sortByAttention(visible, currentSessionName, currentRemoteId);
   }
   if (sortOrder === 'recent' && !mobile) {
     // Sort by last_activity_at descending (most recently active first); sessions
@@ -1389,9 +1424,13 @@ function renderSidebar(sessions, currentSession, currentRemoteId) {
   // applySortOrder() helper -- previously the sidebar applied no sort_order
   // logic at all and always showed server-provided order, so it silently
   // disagreed with the grid whenever a non-default sort was selected.
+  // currentSession/currentRemoteId (this render's own params -- the session
+  // open alongside this very sidebar, i.e. the focus view) are forwarded so
+  // 'attention' sort's tier 2 lands the open session at/near the top here,
+  // exactly mirroring server-side `_attention_order()` (see sortByAttention).
   const sortOrder = _serverSettings && _serverSettings.sort_order;
   const mobile = isMobile();
-  const ordered = applySortOrder(visible, sortOrder, mobile);
+  const ordered = applySortOrder(visible, sortOrder, mobile, currentSession, currentRemoteId);
 
   let html = '';
 
@@ -2222,9 +2261,16 @@ function renderGrid(sessions) {
 
   // Apply sort order from server settings. Shared with renderSidebar() via
   // applySortOrder() so the two surfaces can never disagree about ordering.
+  // _viewingSession/_viewingRemoteId are forwarded exactly as renderSidebar
+  // forwards its own currentSession/currentRemoteId params -- while the
+  // grid is on screen no session is open, so _viewingSession is null and
+  // 'attention' sort's tier 2 is naturally empty here, same as before this
+  // fix. This is what keeps the grid and the sidebar/focus view from ever
+  // disagreeing: both call sites pass the SAME three arguments whenever no
+  // session is open, rather than one surface omitting the parameter.
   var sortOrder = _serverSettings && _serverSettings.sort_order;
   var mobile = isMobile();
-  var ordered = applySortOrder(visible, sortOrder, mobile);
+  var ordered = applySortOrder(visible, sortOrder, mobile, _viewingSession, _viewingRemoteId);
 
   var html;
   if (_gridViewMode === 'grouped') {
