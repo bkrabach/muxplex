@@ -925,12 +925,13 @@ body {
   cursor: not-allowed;
 }
 
-/* On-device dictation mic button (spike). Starts with the `hidden` class in
-   markup and is only un-hidden by _sttInit() once a feature-detect confirms
-   on-device (processLocally) recognition is available for this browser+lang
-   -- see app.js's "On-device dictation (STT)" section. Base/idle state below;
-   .compose-bar__mic--listening and .compose-bar__mic--downloading are the
-   only two state modifiers _sttSetState() ever applies. */
+/* Dictation mic button: on-device preferred, cloud by explicit opt-in.
+   Starts with the `hidden` class in markup and is only un-hidden by
+   _sttInit() once a feature-detect confirms EITHER on-device OR cloud
+   recognition is available for this browser+lang -- see app.js's
+   "On-device dictation (STT)" section. Base/idle state below is the
+   ON-DEVICE look; .compose-bar__mic--cloud, --listening and --downloading
+   are the modifiers _sttRenderButton() applies on top of it. */
 .compose-bar__mic {
   width: 36px;
   height: 36px;
@@ -944,6 +945,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative; /* anchors the --cloud badge below */
 }
 
 .compose-bar__mic:hover:not(:disabled) {
@@ -956,12 +958,32 @@ body {
   cursor: not-allowed;
 }
 
+/* Persistent, AT-REST signal that this button goes off-device -- applied
+   whenever _sttMode === 'cloud', independent of listening/idle/downloading
+   state, so the user can tell before ever clicking, not only once audio is
+   already being captured. A small corner dot rather than a border-color
+   change, so it doesn't fight with the --listening/--downloading looks
+   that get layered on top of it. */
+.compose-bar__mic--cloud::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning, #d29922);
+  border: 1px solid var(--bg);
+}
+
 /* Actively listening -- a clearly different, attention-grabbing state so the
-   user always knows the mic is live (and streaming to a MODEL RUNNING
-   ON-DEVICE, never a cloud service -- see app.js's section banner). Pulses
-   with the same bell-pulse animation already used for attention badges,
-   applied to the whole button rather than introducing a second keyframe
-   rule for a near-identical effect. */
+   user always knows the mic is live. Pulses with the same bell-pulse
+   animation already used for attention badges, applied to the whole button
+   rather than introducing a second keyframe rule for a near-identical
+   effect. On-device (default) pulses red; cloud pulses amber/orange below
+   -- a live mic already picks up whoever else is in the room or a call in
+   the background, so the case where that audio actually LEAVES the device
+   gets the more conspicuous color, not just the shared corner dot. */
 .compose-bar__mic--listening {
   background: var(--danger, #f85149);
   border-color: var(--danger, #f85149);
@@ -974,10 +996,19 @@ body {
   color: #fff;
 }
 
-/* Downloading the on-device model (SpeechRecognition.install()). Disabled
-   attribute (set by _sttSetState()) already blocks re-clicks; the spin
-   keyframe is the only visual cue since a text label would need to fit in a
-   36px square button that otherwise carries no text anywhere in this row. */
+.compose-bar__mic--listening.compose-bar__mic--cloud {
+  background: var(--warning, #d29922);
+  border-color: var(--warning, #d29922);
+}
+
+.compose-bar__mic--listening.compose-bar__mic--cloud:hover:not(:disabled) {
+  border-color: var(--warning, #d29922);
+}
+
+/* Downloading the model (SpeechRecognition.install()). Disabled attribute
+   (set by _sttSetState()) already blocks re-clicks; the spin keyframe is
+   the only visual cue since a text label would need to fit in a 36px
+   square button that otherwise carries no text anywhere in this row. */
 .compose-bar__mic--downloading {
   color: var(--accent);
   animation: stt-download-spin 1s linear infinite;
@@ -987,6 +1018,59 @@ body {
   0% { opacity: 1; }
   50% { opacity: 0.35; }
   100% { opacity: 1; }
+}
+
+/* Cloud-dictation opt-in gate (app.js's _sttShowCloudConsent()/
+   _sttHideCloudConsent()). Shown inline in the compose bar, same visual
+   register as .compose-bar__notice/.compose-bar__error above it, but with
+   its own accent color (amber, matching --mic--cloud) since this is a
+   choice being asked for, not a passive notice or an error. */
+.compose-bar__cloud-consent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--warning, #d29922);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.compose-bar__cloud-consent-text {
+  margin: 0;
+}
+
+.compose-bar__cloud-consent-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.compose-bar__cloud-consent-allow,
+.compose-bar__cloud-consent-cancel {
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.compose-bar__cloud-consent-allow {
+  background: var(--warning, #d29922);
+  border: 1px solid var(--warning, #d29922);
+  color: #1a1a1a;
+}
+
+.compose-bar__cloud-consent-cancel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.compose-bar__cloud-consent-cancel:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* Follow-up queue panel -- docs/plans/2026-08-05-per-session-followup-queue-plan.md §9. Server-side, shared

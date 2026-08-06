@@ -1706,6 +1706,37 @@ def test_html_compose_mic_btn_exists_and_starts_hidden() -> None:
     assert btn.get("aria-label"), "#compose-mic-btn must have an aria-label"
 
 
+def test_html_compose_cloud_consent_exists_and_starts_hidden() -> None:
+    """#compose-cloud-consent (cloud-dictation opt-in gate) must exist inside
+    #compose-bar, start with class 'hidden' -- only
+    _sttShowCloudConsent()/_sttHideCloudConsent() in app.js toggle it -- and
+    must plainly disclose, in its own static text, that audio leaves the
+    device. It must also expose exactly the two buttons app.js binds
+    listeners to (_sttCloudConsentAllow / _sttCloudConsentCancel)."""
+    soup = _SOUP
+    bar = soup.find(id="compose-bar")
+    assert bar is not None, "Missing #compose-bar"
+    panel = bar.find(id="compose-cloud-consent")
+    assert panel is not None, "Missing #compose-cloud-consent inside #compose-bar"
+    classes = panel.get("class") or []
+    assert "hidden" in classes, "#compose-cloud-consent must start with class 'hidden'"
+
+    text_el = panel.find(id="compose-cloud-consent-text")
+    assert text_el is not None, "Missing #compose-cloud-consent-text"
+    text = text_el.get_text().lower()
+    assert "off this device" in text or "leave" in text, (
+        "consent text must plainly disclose that audio leaves the device"
+    )
+    assert "cloud" in text, (
+        "consent text must name the cloud speech-recognition service"
+    )
+
+    allow_btn = panel.find(id="compose-cloud-consent-allow-btn")
+    cancel_btn = panel.find(id="compose-cloud-consent-cancel-btn")
+    assert allow_btn is not None, "Missing #compose-cloud-consent-allow-btn"
+    assert cancel_btn is not None, "Missing #compose-cloud-consent-cancel-btn"
+
+
 def test_kill_session_command_label() -> None:
     """Settings Commands tab must use 'Kill session command' not 'Delete session command'.
 

@@ -4185,6 +4185,10 @@ function _composeClearDraft() {
   // A live dictation session belongs to the session/draft being cleared --
   // see _sttForceStop()'s docstring for why this is abort(), not stop().
   _sttForceStop();
+  // A pending cloud-consent gate belongs to the same draft: leaving it
+  // showing across a session switch would let a click meant for the NEW
+  // session silently grant cloud consent triggered by the OLD one.
+  _sttHideCloudConsent();
 }
 
 /**
@@ -4427,28 +4431,72 @@ function _bindComposeEventListeners() {
   // compose textarea first).
   document.addEventListener('keydown', _followupsQueueKeydown);
   on($('compose-mic-btn'), 'click', _sttHandleClick);
+  on($('compose-cloud-consent-allow-btn'), 'click', _sttCloudConsentAllow);
+  on($('compose-cloud-consent-cancel-btn'), 'click', _sttCloudConsentCancel);
 }
 
 // ─── On-device dictation (STT) ──────────────────────────────────────────
 //
-// A SPIKE: click-to-dictate into #compose-input using the Web Speech API's
-// on-device recognition (Chrome/Edge 139+, desktop only --
-// `recognition.processLocally = true`). This does NOT fall back to cloud
-// recognition -- not as an option, not behind a setting, not with a
-// warning. #compose-mic-btn (static markup in index.html, starts `hidden`)
-// is un-hidden ONLY when `SpeechRecognition.available({langs,
-// processLocally: true})` resolves 'available' or 'downloadable' for this
-// browser and the user's language. Every other case -- no SpeechRecognition
-// at all, a pre-139 Chrome with no `.available`/`processLocally` signal,
-// Safari (no on-device signal on macOS or iOS), Firefox (still flagged
-// off), or Chrome-Android (no `processLocally` support) -- leaves the
-// button hidden: from the user's perspective it does not exist.
+// Click-to-dictate into #compose-input using the Web Speech API
+// (Chrome/Edge 139+, desktop only). Gate: on-device preferred, cloud by
+// explicit opt-in.
 //
-// This is a deliberate SINGLE condition, not two. `processLocally` exists
-// only on desktop Chromium, so gating on it alone already excludes every
-// mobile browser -- where the OS keyboard's own dictation is strictly
-// better and free. No width/user-agent sniffing is layered on top of the
-// capability gate; the capability gate IS the platform split.
+// This spike originally shipped fail-closed-to-nothing: the button only
+// ever appeared for on-device (processLocally:true) recognition, with no
+// cloud path at all, because that felt like the safe/private default. It
+// wasn't -- on real hardware (macOS Edge 151, Windows Edge 150) on-device
+// recognition is unavailable and cloud is the only thing either machine
+// ever reports, so the original gate could never open where its owner
+// actually works. A gate that can only ever stay closed isn't a safety
+// property, it's a dead feature. See the PR/report for the full reasoning;
+// the short version: "no silent fallback" is about a user believing X is
+// happening while Y actually is. A disclosed, explicitly-opted-into cloud
+// mode is not that -- it's a choice, made in the open, exactly once per
+// device, the same way this owner already chooses to run cloud LLM agents
+// in his terminal sessions.
+//
+// _sttCheckAvailability() tries on-device (processLocally:true) FIRST; only
+// if that's unavailable does it try cloud (processLocally:false). Whichever
+// wins becomes `_sttMode` ('ondevice' | 'cloud') for the rest of this
+// button's lifetime until the next full `_sttInit()` (i.e. the next page
+// load) -- the mode is never re-decided or silently upgraded mid-session.
+// If on-device recognition degrades after the check (e.g. the model is
+// evicted -- surfaces as the 'language-not-supported' error), the gate
+// closes entirely (`_sttStatus`/`_sttMode` both reset to null); it does
+// NOT fall through to cloud. That would be exactly the silent-substitution
+// failure mode the "no fallback" rule actually guards against.
+//
+// #compose-mic-btn (static markup in index.html, starts `hidden`) is
+// un-hidden whenever EITHER path resolves 'available'/'downloadable'. Every
+// other case -- no SpeechRecognition at all, a pre-139 Chrome with no
+// `.available` signal, Safari, Firefox, or Chrome-Android (neither
+// processLocally value is meaningful on mobile Chromium; the OS keyboard's
+// own dictation is better and free there anyway, so this single capability
+// gate still excludes every mobile browser with no separate width/
+// user-agent sniffing needed) -- leaves the button hidden: it does not
+// exist, exactly as before.
+//
+// On-device dictation starts the instant the button is clicked -- silent,
+// no prompt, unchanged from the original design. Cloud dictation shows
+// #compose-cloud-consent (static markup, starts `hidden`) on its FIRST use
+// per device, naming plainly where the audio goes; only after the user
+// clicks "Use cloud dictation" does recognition.start() ever run with
+// `processLocally: false`. The choice is then remembered in localStorage
+// (STT_CLOUD_CONSENT_STORAGE_KEY) -- per-device, like
+// COMPOSE_PREF_STORAGE_KEY above, deliberately never a federated/server
+// setting.
+//
+// The active mode is visible at a glance whenever the mic is live:
+// `_sttRenderButton()` applies a distinct `.compose-bar__mic--cloud`
+// modifier (present any time `_sttMode === 'cloud'`, not just while
+// listening) and a mode-specific title/aria-label, and the LISTENING pulse
+// itself renders in a different color for cloud than for on-device (see
+// style.css) -- a live mic already picks up whoever else is in the room or
+// a call in the background, so cloud specifically (audio actually leaving
+// the device) gets the more conspicuous treatment. A true push-to-talk
+// (hold-to-record) interaction would sharpen this further -- a deliberate,
+// separately-justified redesign of the whole click-to-toggle model, not
+// something this change bundles in.
 //
 // Click-only. No keyboard shortcut in v1: terminal.js's own
 // attachCustomKeyEventHandler already owns several Ctrl/Shift+Enter chords
@@ -4488,7 +4536,15 @@ const STT_PHRASE_BOOST = 8.0;
  * call cheap and stops one huge session list from dominating the boost set. */
 const STT_MAX_PHRASES = 24;
 
+/** localStorage key for the per-device cloud-dictation opt-in. Same
+ * precedent as COMPOSE_PREF_STORAGE_KEY/SYNC_GROUP_STORAGE_KEY above:
+ * deliberately NOT a settings key, NOT federated -- a device that hasn't
+ * granted this consent must ask again, even if another of the owner's
+ * devices already has. */
+const STT_CLOUD_CONSENT_STORAGE_KEY = 'muxplex-stt-cloud-consent';
+
 let _sttStatus = null;              // null | 'available' | 'downloadable' -- from the availability check; null means the button stays hidden
+let _sttMode = null;                // null | 'ondevice' | 'cloud' -- which path _sttStatus came from; fixed by _sttInit(), never re-decided mid-session
 let _sttLang = null;                // resolved BCP-47 language tag used for both the check and recognition itself
 let _sttState = 'idle';             // 'idle' | 'listening' | 'downloading'
 let _sttRecognition = null;         // the live SpeechRecognition instance, or null
@@ -4496,6 +4552,7 @@ let _sttInsertPos = 0;              // textarea offset where the NEXT committed 
 let _sttInterimLength = 0;          // length of the currently-displayed (not-yet-final) preview text
 let _sttUserStopped = false;        // true only across an explicit _sttStop()/_sttForceStop() call
 let _sttSuppressEndMessage = false; // true once onerror (or a forced stop) already rendered a specific message
+let _sttConsentPending = false;     // true while #compose-cloud-consent is showing, awaiting the user's choice
 
 /**
  * The constructor the current browser exposes, or null. A tiny indirection
@@ -4507,29 +4564,38 @@ function _sttCtor() {
 }
 
 /**
- * Feature-detect on-device availability for the user's language. Resolves
- * null (no button, ever) unless the browser BOTH exposes SpeechRecognition
- * AND its static `.available()` reports 'available' or 'downloadable' for
- * `{processLocally: true}` -- the exact contract that makes fail-closed
- * on-device recognition possible: with processLocally=true and no local
- * model, start() fails with 'language-not-supported' rather than silently
- * using the cloud. 'downloading' (someone else's install already in
- * flight) and 'unavailable' both resolve null here -- this spike does not
+ * Feature-detect dictation availability for the user's language --
+ * on-device FIRST, cloud only if on-device isn't there. Resolves null (no
+ * button, ever) unless the browser exposes SpeechRecognition AND its
+ * static `.available()` reports 'available' or 'downloadable' for EITHER
+ * `{processLocally: true}` (checked first -- with processLocally=true and
+ * no local model, start() fails with 'language-not-supported' rather than
+ * silently using the cloud, so this branch never risks a surprise network
+ * call) or `{processLocally: false}` (checked only when the first call
+ * comes back neither 'available' nor 'downloadable'). Whichever branch
+ * resolves wins outright -- there is no "prefer cloud" or "merge both"
+ * path, and the loser is never consulted again for this check.
+ * 'downloading' (someone else's install already in flight) and
+ * 'unavailable' resolve null for a given branch -- this spike does not
  * poll a third state to completion; see the report's "not proven" list.
- * @returns {Promise<{status: 'available'|'downloadable', lang: string}|null>}
+ * @returns {Promise<{status: 'available'|'downloadable', lang: string, mode: 'ondevice'|'cloud'}|null>}
  */
 async function _sttCheckAvailability() {
   try {
     var SR = _sttCtor();
-    if (!SR || typeof SR.available !== 'function') return null; // no Speech API, or a build with no on-device signal at all
+    if (!SR || typeof SR.available !== 'function') return null; // no Speech API, or a build with no availability signal at all
     var lang = (typeof navigator !== 'undefined' && navigator.language) || 'en-US';
-    var status = await SR.available({ langs: [lang], processLocally: true });
-    if (status === 'available' || status === 'downloadable') {
-      return { status: status, lang: lang };
+    var onDeviceStatus = await SR.available({ langs: [lang], processLocally: true });
+    if (onDeviceStatus === 'available' || onDeviceStatus === 'downloadable') {
+      return { status: onDeviceStatus, lang: lang, mode: 'ondevice' };
+    }
+    var cloudStatus = await SR.available({ langs: [lang], processLocally: false });
+    if (cloudStatus === 'available' || cloudStatus === 'downloadable') {
+      return { status: cloudStatus, lang: lang, mode: 'cloud' };
     }
     return null;
   } catch (_) {
-    return null; // any failure here means "cannot prove on-device works" -- never show the button
+    return null; // any failure here means "cannot prove dictation works" -- never show the button
   }
 }
 
@@ -4580,12 +4646,16 @@ function _sttBuildPhrases() {
 }
 
 /**
- * Reflect `_sttStatus`/`_sttState` onto #compose-mic-btn: visibility
- * (hidden unless a capability was ever detected), disabled state
- * (downloading, or the compose row itself is disabled), the listening/
- * downloading modifier classes, aria-pressed, and title. Called after
- * every state transition and from _composeRenderEnabledState() so it stays
- * in sync with the rest of the compose bar's enabled/disabled logic.
+ * Reflect `_sttStatus`/`_sttMode`/`_sttState` onto #compose-mic-btn:
+ * visibility (hidden unless a capability was ever detected), disabled
+ * state (downloading, or the compose row itself is disabled), the
+ * listening/downloading/cloud modifier classes, aria-pressed, and title.
+ * `.compose-bar__mic--cloud` is applied whenever `_sttMode === 'cloud'`
+ * REGARDLESS of state -- a persistent, at-rest signal that this button
+ * goes off-device, not only a warning that appears once listening starts.
+ * Called after every state transition and from
+ * _composeRenderEnabledState() so it stays in sync with the rest of the
+ * compose bar's enabled/disabled logic.
  */
 function _sttRenderButton() {
   var btn = $('compose-mic-btn');
@@ -4597,14 +4667,18 @@ function _sttRenderButton() {
   btn.classList.remove('hidden');
   var listening = _sttState === 'listening';
   var downloading = _sttState === 'downloading';
+  var cloud = _sttMode === 'cloud';
   btn.classList.toggle('compose-bar__mic--listening', listening);
   btn.classList.toggle('compose-bar__mic--downloading', downloading);
+  btn.classList.toggle('compose-bar__mic--cloud', cloud);
   btn.setAttribute('aria-pressed', listening ? 'true' : 'false');
   btn.disabled = downloading || !(_serverSettings && _serverSettings.input_enabled === true);
   if (downloading) {
-    btn.title = 'Downloading on-device speech model\u2026';
+    btn.title = cloud ? 'Downloading\u2026' : 'Downloading on-device speech model\u2026';
   } else if (listening) {
-    btn.title = 'Stop dictation';
+    btn.title = cloud ? 'Stop dictation (cloud \u2014 your voice is leaving this device)' : 'Stop dictation (on-device)';
+  } else if (cloud) {
+    btn.title = 'Dictate (cloud speech-to-text \u2014 sends audio off this device)';
   } else {
     btn.title = 'Dictate (on-device speech-to-text)';
   }
@@ -4617,6 +4691,80 @@ function _sttRenderButton() {
 function _sttSetState(next) {
   _sttState = next;
   _sttRenderButton();
+}
+
+// --- Cloud-dictation opt-in gate -------------------------------------------
+//
+// Cloud dictation is never started without a recorded, explicit choice.
+// _sttHandleClick() consults _sttCloudConsentGranted() before ever
+// constructing a SpeechRecognition with processLocally:false; if consent
+// hasn't been granted on this device yet, it shows #compose-cloud-consent
+// instead of starting anything. The two functions below are the ONLY path
+// that can flip the stored flag to granted -- there is no server-side or
+// federated equivalent, matching COMPOSE_PREF_STORAGE_KEY's precedent.
+
+/**
+ * Has this device already opted in to cloud dictation? Same defensive
+ * localStorage-may-be-blocked shape as initComposePref().
+ * @returns {boolean}
+ */
+function _sttCloudConsentGranted() {
+  try {
+    return localStorage.getItem(STT_CLOUD_CONSENT_STORAGE_KEY) === 'granted';
+  } catch (_) {
+    return false; // localStorage blocked -- ask again every time, never assume consent
+  }
+}
+
+/** Show the cloud-consent gate and re-render it. */
+function _sttShowCloudConsent() {
+  _sttConsentPending = true;
+  _sttRenderConsent();
+}
+
+/** Hide the cloud-consent gate (cancel, session switch, or gate re-close). */
+function _sttHideCloudConsent() {
+  _sttConsentPending = false;
+  _sttRenderConsent();
+}
+
+/** Reflect `_sttConsentPending` onto #compose-cloud-consent's visibility. */
+function _sttRenderConsent() {
+  var panel = $('compose-cloud-consent');
+  if (!panel) return;
+  panel.classList.toggle('hidden', !_sttConsentPending);
+}
+
+/**
+ * User clicked "Use cloud dictation": persist the opt-in for this device,
+ * hide the gate, and proceed exactly as a normal click would have (the
+ * downloadable/available branch _sttHandleClick() would have taken had
+ * consent already been granted).
+ */
+function _sttCloudConsentAllow() {
+  try { localStorage.setItem(STT_CLOUD_CONSENT_STORAGE_KEY, 'granted'); } catch (_) { /* blocked -- ok, this session still proceeds */ }
+  _sttHideCloudConsent();
+  _sttProceedToStart();
+}
+
+/**
+ * User clicked "Not now": hide the gate, stay idle. Not treated as a
+ * dictation failure -- no error message, since declining is an ordinary,
+ * expected choice, not something gone wrong.
+ */
+function _sttCloudConsentCancel() {
+  _sttHideCloudConsent();
+}
+
+/**
+ * The actual start branch (download-then-start for 'downloadable', start
+ * for 'available') -- factored out of _sttHandleClick() so the consent
+ * gate's "Use cloud dictation" button can resume exactly where the click
+ * left off, without duplicating the branching logic.
+ */
+function _sttProceedToStart() {
+  if (_sttStatus === 'downloadable') { _sttInstallThenStart(); return; }
+  if (_sttStatus === 'available') { _sttStart(); return; }
 }
 
 /**
@@ -4694,13 +4842,19 @@ function _sttHandleError(event) {
       _composeShowError('No microphone was found.');
       break;
     case 'language-not-supported':
-      // The whole feature is gated on on-device availability for this
-      // exact language; hitting this means that capability regressed after
-      // the check (e.g. the model was evicted). Re-close the gate rather
-      // than leaving a button that will only fail again -- never fall back
-      // to cloud, not even implicitly by leaving a broken button visible.
-      _composeShowError('The on-device speech model for this language is no longer available. Dictation has been disabled.');
+      // Hitting this means the mode this session started in (usually
+      // on-device) regressed after the check (e.g. the model was
+      // evicted). Re-close the gate entirely -- both _sttStatus AND
+      // _sttMode -- rather than leaving a button that will only fail
+      // again. Never fall through to the OTHER mode, not even implicitly
+      // by leaving a broken button visible: that would be exactly the
+      // silent mid-session mode switch this design forbids.
+      _composeShowError((_sttMode === 'cloud'
+        ? 'The cloud speech-recognition service no longer supports this language.'
+        : 'The on-device speech model for this language is no longer available.') + ' Dictation has been disabled.');
       _sttStatus = null;
+      _sttMode = null;
+      _sttHideCloudConsent();
       break;
     case 'aborted':
       _composeShowError('Dictation was interrupted.');
@@ -4744,8 +4898,9 @@ function _sttStart() {
   if (!input || input.disabled) return;
   var SR = _sttCtor();
   if (!SR) {
-    _composeShowError('On-device dictation is no longer available in this browser.');
+    _composeShowError((_sttMode === 'cloud' ? 'Cloud' : 'On-device') + ' dictation is no longer available in this browser.');
     _sttStatus = null;
+    _sttMode = null;
     _sttRenderButton();
     return;
   }
@@ -4759,7 +4914,10 @@ function _sttStart() {
   try {
     recognition = new SR();
     recognition.lang = _sttLang || (typeof navigator !== 'undefined' && navigator.language) || 'en-US';
-    recognition.processLocally = true; // the whole feature's premise -- never omit this
+    // Explicit either way -- never left ambiguous/omitted. `_sttMode` was
+    // fixed once by _sttInit() (or, for cloud, confirmed again by the
+    // consent gate) and is never re-decided here.
+    recognition.processLocally = _sttMode !== 'cloud';
     recognition.continuous = true;
     recognition.interimResults = true;
     var phrases = _sttBuildPhrases();
@@ -4809,25 +4967,31 @@ function _sttForceStop() {
 }
 
 /**
- * Download flow for a 'downloadable' (not yet 'available') on-device
- * model. Disables the button for the duration; on success, immediately
- * starts dictation (the download was the only thing blocking it); on
- * failure or rejection, returns to idle with an inline reason.
+ * Download flow for a 'downloadable' (not yet 'available') model --
+ * on-device or cloud, per `_sttMode` (a cloud model is not expected to
+ * ever report 'downloadable' since there is nothing to download, but the
+ * install flow is kept symmetric rather than guessed away, so an
+ * unexpected 'downloadable' from a cloud check still resolves cleanly
+ * instead of falling into an unhandled state). Disables the button for
+ * the duration; on success, immediately starts dictation (the download
+ * was the only thing blocking it); on failure or rejection, returns to
+ * idle with an inline reason.
  */
 async function _sttInstallThenStart() {
   var SR = _sttCtor();
   if (!SR || typeof SR.install !== 'function') {
     _sttStatus = null;
+    _sttMode = null;
     _sttRenderButton();
-    _composeShowError('This browser cannot install the on-device speech model.');
+    _composeShowError('This browser cannot install the speech model.');
     return;
   }
   _sttSetState('downloading');
   try {
-    var ok = await SR.install({ langs: [_sttLang || 'en-US'], processLocally: true });
+    var ok = await SR.install({ langs: [_sttLang || 'en-US'], processLocally: _sttMode !== 'cloud' });
     if (!ok) {
       _sttSetState('idle');
-      _composeShowError('The on-device speech model could not be installed.');
+      _composeShowError('The speech model could not be installed.');
       return;
     }
     _sttStatus = 'available';
@@ -4835,25 +4999,42 @@ async function _sttInstallThenStart() {
     _sttStart();
   } catch (e) {
     _sttSetState('idle');
-    _composeShowError('The on-device speech model could not be installed: ' + (e && e.message ? e.message : e));
+    _composeShowError('The speech model could not be installed: ' + (e && e.message ? e.message : e));
   }
 }
 
-/** Click handler for #compose-mic-btn. */
+/**
+ * Click handler for #compose-mic-btn. On-device dictation starts
+ * immediately, same as always. Cloud dictation is gated on
+ * `_sttCloudConsentGranted()`: the FIRST time this device tries cloud
+ * dictation, this shows #compose-cloud-consent instead of starting
+ * anything -- `_sttProceedToStart()` only runs once that gate is passed
+ * (here, because it was already granted on a prior use; or later, from
+ * `_sttCloudConsentAllow()`, if the user grants it right now).
+ */
 function _sttHandleClick() {
   if (_sttState === 'downloading') return; // already in flight -- button is `disabled` too, this is belt-and-suspenders
   if (_sttState === 'listening') { _sttStop(); return; }
-  if (_sttStatus === 'downloadable') { _sttInstallThenStart(); return; }
-  if (_sttStatus === 'available') { _sttStart(); return; }
-  _composeShowError('On-device dictation is not available.'); // should be unreachable -- the button is hidden otherwise
+  if (_sttConsentPending) return; // gate is already showing -- its own buttons drive the next step
+  if (_sttStatus !== 'downloadable' && _sttStatus !== 'available') {
+    _composeShowError('Dictation is not available.'); // should be unreachable -- the button is hidden otherwise
+    return;
+  }
+  if (_sttMode === 'cloud' && !_sttCloudConsentGranted()) {
+    _sttShowCloudConsent();
+    return;
+  }
+  _sttProceedToStart();
 }
 
 /**
  * Run once at startup (called from the DOMContentLoaded handler, after
  * initComposePref()). Resolves the availability check and shows/hides the
- * mic button accordingly -- see this section's banner for the full
- * fail-closed rationale. Never throws: any detection failure leaves the
- * button hidden, matching "no button" being the safe default.
+ * mic button accordingly, fixing `_sttMode` for the rest of this page
+ * load -- see this section's banner for the full "on-device preferred,
+ * cloud by explicit opt-in, never re-decided mid-session" rationale.
+ * Never throws: any detection failure leaves the button hidden, matching
+ * "no button" being the safe default.
  */
 async function _sttInit() {
   var result = null;
@@ -4864,9 +5045,11 @@ async function _sttInit() {
   }
   if (result) {
     _sttStatus = result.status;
+    _sttMode = result.mode;
     _sttLang = result.lang;
   } else {
     _sttStatus = null;
+    _sttMode = null;
     _sttLang = null;
   }
   _sttRenderButton();
@@ -7409,9 +7592,25 @@ function _getSttStatus() {
   return _sttStatus;
 }
 
+/** Test-only: set _sttMode directly ('ondevice' | 'cloud' | null),
+ * bypassing the async availability check. */
+function _setSttMode(mode) {
+  _sttMode = mode;
+}
+
+/** Test-only: get _sttMode. */
+function _getSttMode() {
+  return _sttMode;
+}
+
 /** Test-only: get the current _sttState. */
 function _getSttState() {
   return _sttState;
+}
+
+/** Test-only: get whether #compose-cloud-consent is currently pending. */
+function _getSttConsentPending() {
+  return _sttConsentPending;
 }
 
 /** Test-only: get/set the live _sttRecognition handle, so a test can
@@ -7649,12 +7848,20 @@ if (typeof module !== 'undefined' && module.exports) {
     // On-device dictation (STT)
     STT_PHRASE_BOOST,
     STT_MAX_PHRASES,
+    STT_CLOUD_CONSENT_STORAGE_KEY,
     _sttCtor,
     _sttCheckAvailability,
     _sttPhraseSourceTerms,
     _sttBuildPhrases,
     _sttRenderButton,
     _sttSetState,
+    _sttCloudConsentGranted,
+    _sttShowCloudConsent,
+    _sttHideCloudConsent,
+    _sttRenderConsent,
+    _sttCloudConsentAllow,
+    _sttCloudConsentCancel,
+    _sttProceedToStart,
     _sttApplyTranscript,
     _sttHandleResult,
     _sttHandleError,
@@ -7667,7 +7874,10 @@ if (typeof module !== 'undefined' && module.exports) {
     _sttInit,
     _setSttStatus,
     _getSttStatus,
+    _setSttMode,
+    _getSttMode,
     _getSttState,
+    _getSttConsentPending,
     _setSttRecognition,
     _getSttRecognition,
     _setSttInsertState,

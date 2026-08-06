@@ -125,6 +125,27 @@
             this cannot be changed from this UI.
           </div>
           <div id="compose-error" class="compose-bar__error hidden" role="alert"></div>
+          <!-- Cloud-dictation opt-in gate: shown ONLY the first time a
+               device with no on-device speech recognition tries to
+               dictate. Static markup, starts `hidden` -- _sttRenderConsent()
+               is the only thing that un-hides it (see app.js's "On-device
+               dictation (STT)" section). This is a DISCLOSED choice, not a
+               silent fallback: dictation never leaves the device without
+               the user reading this and clicking "Use cloud dictation"
+               once; the choice is then remembered per-device (localStorage,
+               never federated). -->
+          <div id="compose-cloud-consent" class="compose-bar__cloud-consent hidden" aria-live="polite">
+            <p id="compose-cloud-consent-text" class="compose-bar__cloud-consent-text">
+              On-device dictation isn&rsquo;t available in this browser. If you
+              continue, your voice recording will be sent off this device to
+              your browser&rsquo;s cloud speech-recognition service to be
+              converted to text.
+            </p>
+            <div class="compose-bar__cloud-consent-actions">
+              <button id="compose-cloud-consent-allow-btn" class="compose-bar__cloud-consent-allow" type="button">Use cloud dictation</button>
+              <button id="compose-cloud-consent-cancel-btn" class="compose-bar__cloud-consent-cancel" type="button">Not now</button>
+            </div>
+          </div>
           <!-- Follow-up queue: server-side, shared with every device --
                see docs/plans/2026-08-05-per-session-followup-queue-plan.md §9. Rendered only when there is
                something to show (renderFollowups() toggles "hidden"). -->
@@ -150,12 +171,17 @@
               autocomplete="off" autocapitalize="sentences"
               data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
               autocorrect="on" spellcheck="true"></textarea>
-            <!-- On-device dictation (spike). Starts hidden -- _sttInit() only
-                 un-hides it after SpeechRecognition.available({processLocally:true})
-                 resolves 'available'/'downloadable' for this browser+language, so
-                 a user who cannot get on-device (fail-closed, never cloud) recognition
-                 never sees a mic control that would silently stream their audio
-                 elsewhere. See app.js's "On-device dictation (STT)" section. -->
+            <!-- Dictation: on-device preferred, cloud by explicit opt-in.
+                 Starts hidden -- _sttInit() only un-hides it once
+                 SpeechRecognition.available() confirms EITHER on-device
+                 (processLocally:true, tried first) OR cloud
+                 (processLocally:false) recognition for this browser+
+                 language; neither available leaves the button hidden, as
+                 today. On-device dictation starts the instant the button
+                 is clicked -- no prompt. Cloud dictation shows the
+                 #compose-cloud-consent gate above on its first use per
+                 device; it is never started silently. See app.js's
+                 "On-device dictation (STT)" section. -->
             <button id="compose-mic-btn" class="compose-bar__mic hidden" type="button"
                     aria-pressed="false" aria-label="Dictate" title="Dictate (on-device speech-to-text)">&#127908;</button>
             <button id="compose-queue-btn" class="compose-bar__queue" type="button" aria-label="Add to follow-ups" title="Add to follow-ups (Ctrl+Shift+Enter)">&#10515;</button>
