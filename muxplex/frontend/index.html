@@ -150,6 +150,14 @@
               autocomplete="off" autocapitalize="sentences"
               data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
               autocorrect="on" spellcheck="true"></textarea>
+            <!-- On-device dictation (spike). Starts hidden -- _sttInit() only
+                 un-hides it after SpeechRecognition.available({processLocally:true})
+                 resolves 'available'/'downloadable' for this browser+language, so
+                 a user who cannot get on-device (fail-closed, never cloud) recognition
+                 never sees a mic control that would silently stream their audio
+                 elsewhere. See app.js's "On-device dictation (STT)" section. -->
+            <button id="compose-mic-btn" class="compose-bar__mic hidden" type="button"
+                    aria-pressed="false" aria-label="Dictate" title="Dictate (on-device speech-to-text)">&#127908;</button>
             <button id="compose-queue-btn" class="compose-bar__queue" type="button" aria-label="Add to follow-ups" title="Add to follow-ups (Ctrl+Shift+Enter)">&#10515;</button>
             <button id="compose-send-btn" class="compose-bar__send" type="button" aria-label="Send">&#8593;</button>
           </div>

@@ -1685,6 +1685,27 @@ def test_html_compose_error_is_role_alert() -> None:
     assert err.get("role") == "alert", "#compose-error must have role='alert'"
 
 
+def test_html_compose_mic_btn_exists_and_starts_hidden() -> None:
+    """#compose-mic-btn (on-device dictation, spike) must exist inside
+    #compose-bar and start with class 'hidden' -- _sttInit() is the only
+    thing allowed to un-hide it, and only after confirming on-device
+    (processLocally) recognition is actually available. Static markup
+    only (test_css_class_definitions.mjs's template-literal blind spot
+    does not apply here -- nothing under #compose-bar is ever built via
+    innerHTML/template literals)."""
+    soup = _SOUP
+    bar = soup.find(id="compose-bar")
+    assert bar is not None, "Missing #compose-bar"
+    btn = bar.find(id="compose-mic-btn")
+    assert btn is not None, "Missing #compose-mic-btn inside #compose-bar"
+    classes = btn.get("class") or []
+    assert "hidden" in classes, "#compose-mic-btn must start with class 'hidden'"
+    assert btn.get("aria-pressed") == "false", (
+        "#compose-mic-btn must start with aria-pressed='false'"
+    )
+    assert btn.get("aria-label"), "#compose-mic-btn must have an aria-label"
+
+
 def test_kill_session_command_label() -> None:
     """Settings Commands tab must use 'Kill session command' not 'Delete session command'.
 

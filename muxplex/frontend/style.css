@@ -925,6 +925,70 @@ body {
   cursor: not-allowed;
 }
 
+/* On-device dictation mic button (spike). Starts with the `hidden` class in
+   markup and is only un-hidden by _sttInit() once a feature-detect confirms
+   on-device (processLocally) recognition is available for this browser+lang
+   -- see app.js's "On-device dictation (STT)" section. Base/idle state below;
+   .compose-bar__mic--listening and .compose-bar__mic--downloading are the
+   only two state modifiers _sttSetState() ever applies. */
+.compose-bar__mic {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.compose-bar__mic:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.compose-bar__mic:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Actively listening -- a clearly different, attention-grabbing state so the
+   user always knows the mic is live (and streaming to a MODEL RUNNING
+   ON-DEVICE, never a cloud service -- see app.js's section banner). Pulses
+   with the same bell-pulse animation already used for attention badges,
+   applied to the whole button rather than introducing a second keyframe
+   rule for a near-identical effect. */
+.compose-bar__mic--listening {
+  background: var(--danger, #f85149);
+  border-color: var(--danger, #f85149);
+  color: #fff;
+  animation: bell-pulse 1.2s ease-in-out infinite;
+}
+
+.compose-bar__mic--listening:hover:not(:disabled) {
+  border-color: var(--danger, #f85149);
+  color: #fff;
+}
+
+/* Downloading the on-device model (SpeechRecognition.install()). Disabled
+   attribute (set by _sttSetState()) already blocks re-clicks; the spin
+   keyframe is the only visual cue since a text label would need to fit in a
+   36px square button that otherwise carries no text anywhere in this row. */
+.compose-bar__mic--downloading {
+  color: var(--accent);
+  animation: stt-download-spin 1s linear infinite;
+}
+
+@keyframes stt-download-spin {
+  0% { opacity: 1; }
+  50% { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+
 /* Follow-up queue panel -- docs/plans/2026-08-05-per-session-followup-queue-plan.md §9. Server-side, shared
    with every device -- visually distinct from the bell badge (different
    glyph/color, spec §9.5): a bell says "come look", a follow-up badge says

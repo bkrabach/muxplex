@@ -4174,6 +4174,7 @@ function _composeRenderEnabledState() {
       : 'Add to follow-ups (Ctrl+Shift+Enter)';
   }
   if (notice) notice.classList.toggle('hidden', enabled);
+  _sttRenderButton();
 }
 
 /** Hide the inline error (role=alert) box. */
@@ -4212,6 +4213,9 @@ function _composeClearDraft() {
   }
   _composeHideError();
   _composeSendInFlight = false;
+  // A live dictation session belongs to the session/draft being cleared --
+  // see _sttForceStop()'s docstring for why this is abort(), not stop().
+  _sttForceStop();
 }
 
 /**
@@ -4453,6 +4457,450 @@ function _bindComposeEventListeners() {
   // fired for the rare case where the user had already clicked into the
   // compose textarea first).
   document.addEventListener('keydown', _followupsQueueKeydown);
+  on($('compose-mic-btn'), 'click', _sttHandleClick);
+}
+
+// ─── On-device dictation (STT) ──────────────────────────────────────────
+//
+// A SPIKE: click-to-dictate into #compose-input using the Web Speech API's
+// on-device recognition (Chrome/Edge 139+, desktop only --
+// `recognition.processLocally = true`). This does NOT fall back to cloud
+// recognition -- not as an option, not behind a setting, not with a
+// warning. #compose-mic-btn (static markup in index.html, starts `hidden`)
+// is un-hidden ONLY when `SpeechRecognition.available({langs,
+// processLocally: true})` resolves 'available' or 'downloadable' for this
+// browser and the user's language. Every other case -- no SpeechRecognition
+// at all, a pre-139 Chrome with no `.available`/`processLocally` signal,
+// Safari (no on-device signal on macOS or iOS), Firefox (still flagged
+// off), or Chrome-Android (no `processLocally` support) -- leaves the
+// button hidden: from the user's perspective it does not exist.
+//
+// This is a deliberate SINGLE condition, not two. `processLocally` exists
+// only on desktop Chromium, so gating on it alone already excludes every
+// mobile browser -- where the OS keyboard's own dictation is strictly
+// better and free. No width/user-agent sniffing is layered on top of the
+// capability gate; the capability gate IS the platform split.
+//
+// Click-only. No keyboard shortcut in v1: terminal.js's own
+// attachCustomKeyEventHandler already owns several Ctrl/Shift+Enter chords
+// (AGENTS.md's "attachCustomKeyEventHandler" note; see also this file's own
+// _followupsQueueKeydown() carve-out for the queue shortcut above), and the
+// terminal holds focus almost all the time. A dictation shortcut is a
+// separately-justified v2 cost, not a v1 default.
+//
+// Interim results are shown live, replaced in place as they firm up, so a
+// user speaking into the field can see it working; a FINAL result is
+// committed permanently and the insertion point advances past it, so
+// continued speech never overwrites already-committed text (see
+// _sttApplyTranscript()).
+//
+// Two documented Chrome traps, both deliberately NOT worked around by
+// auto-restarting: (1) a continuous session is ended by the browser after
+// about a minute of silence -- whether that surfaces as an 'error' event, a
+// bare 'end', or both, this code never calls .start() again from
+// onend/onerror, only an explicit click does (_sttHandleClick -> _sttStart).
+// (2) auto-restarting on 'end'/'no-speech' gets the origin RATE-LIMITED by
+// the browser -- a naive restart loop is exactly the bug this avoids. Every
+// stop, explicit or not, surfaces an honest, specific, inline reason via
+// #compose-error -- never silent (_sttHandleError / _sttHandleEnd).
+//
+// NOT PROVEN BY THIS SPIKE'S OWN TEST SUITE: that real speech becomes real
+// text. There is no microphone and no Chromium 139+ available to drive in
+// this environment. The tests below prove the gating logic, the DOM
+// wiring, the transcript-insertion algorithm (against synthetic
+// SpeechRecognitionEvent-shaped objects), and every error path. The actual
+// browser<->on-device-model round trip needs a real device and a human (or
+// a browser-driving agent) to verify -- see the report, not implied here.
+
+/** SpeechRecognitionPhrase boost (0.0-10.0) applied to every sourced term. */
+const STT_PHRASE_BOOST = 8.0;
+
+/** Cap on how many phrase-biasing terms are sent per session -- keeps the
+ * call cheap and stops one huge session list from dominating the boost set. */
+const STT_MAX_PHRASES = 24;
+
+let _sttStatus = null;              // null | 'available' | 'downloadable' -- from the availability check; null means the button stays hidden
+let _sttLang = null;                // resolved BCP-47 language tag used for both the check and recognition itself
+let _sttState = 'idle';             // 'idle' | 'listening' | 'downloading'
+let _sttRecognition = null;         // the live SpeechRecognition instance, or null
+let _sttInsertPos = 0;              // textarea offset where the NEXT committed word lands
+let _sttInterimLength = 0;          // length of the currently-displayed (not-yet-final) preview text
+let _sttUserStopped = false;        // true only across an explicit _sttStop()/_sttForceStop() call
+let _sttSuppressEndMessage = false; // true once onerror (or a forced stop) already rendered a specific message
+
+/**
+ * The constructor the current browser exposes, or null. A tiny indirection
+ * so tests can stub `window.SpeechRecognition` without a real one existing.
+ * @returns {Function|null}
+ */
+function _sttCtor() {
+  return (typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)) || null;
+}
+
+/**
+ * Feature-detect on-device availability for the user's language. Resolves
+ * null (no button, ever) unless the browser BOTH exposes SpeechRecognition
+ * AND its static `.available()` reports 'available' or 'downloadable' for
+ * `{processLocally: true}` -- the exact contract that makes fail-closed
+ * on-device recognition possible: with processLocally=true and no local
+ * model, start() fails with 'language-not-supported' rather than silently
+ * using the cloud. 'downloading' (someone else's install already in
+ * flight) and 'unavailable' both resolve null here -- this spike does not
+ * poll a third state to completion; see the report's "not proven" list.
+ * @returns {Promise<{status: 'available'|'downloadable', lang: string}|null>}
+ */
+async function _sttCheckAvailability() {
+  try {
+    var SR = _sttCtor();
+    if (!SR || typeof SR.available !== 'function') return null; // no Speech API, or a build with no on-device signal at all
+    var lang = (typeof navigator !== 'undefined' && navigator.language) || 'en-US';
+    var status = await SR.available({ langs: [lang], processLocally: true });
+    if (status === 'available' || status === 'downloadable') {
+      return { status: status, lang: lang };
+    }
+    return null;
+  } catch (_) {
+    return null; // any failure here means "cannot prove on-device works" -- never show the button
+  }
+}
+
+/**
+ * Sourced phrase-biasing terms for SpeechRecognition.phrases (same
+ * processLocally-generation feature). Sourced from REAL, currently-loaded
+ * data -- live session names (a terminal tool's session names are
+ * frequently command/hostname-shaped identifiers a user is likely to say)
+ * and this device's own configured hostname (_serverSettings.device_name)
+ * -- never a hardcoded word list. Pure function of already-loaded state,
+ * so it's cheap to call fresh before every _sttStart().
+ * @returns {string[]} de-duplicated, non-empty terms, capped at STT_MAX_PHRASES
+ */
+function _sttPhraseSourceTerms() {
+  var terms = [];
+  var seen = {};
+  function add(t) {
+    if (typeof t !== 'string') return;
+    var v = t.trim();
+    if (!v || seen[v]) return;
+    seen[v] = true;
+    terms.push(v);
+  }
+  (_currentSessions || []).forEach(function(s) { if (s && s.name) add(s.name); });
+  if (_serverSettings && _serverSettings.device_name) add(_serverSettings.device_name);
+  return terms.slice(0, STT_MAX_PHRASES);
+}
+
+/**
+ * Build SpeechRecognitionPhrase instances for the current recognition
+ * session, or null if the browser doesn't expose the `phrases` /
+ * SpeechRecognitionPhrase feature (checked independently -- never assumed
+ * present just because processLocally is) or there are no real terms to
+ * offer. Failures here are non-fatal: dictation still works without
+ * biasing.
+ * @returns {Array<object>|null}
+ */
+function _sttBuildPhrases() {
+  try {
+    var Ctor = typeof window !== 'undefined' ? window.SpeechRecognitionPhrase : undefined;
+    if (typeof Ctor !== 'function') return null;
+    var terms = _sttPhraseSourceTerms();
+    if (!terms.length) return null;
+    return terms.map(function(t) { return new Ctor(t, STT_PHRASE_BOOST); });
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Reflect `_sttStatus`/`_sttState` onto #compose-mic-btn: visibility
+ * (hidden unless a capability was ever detected), disabled state
+ * (downloading, or the compose row itself is disabled), the listening/
+ * downloading modifier classes, aria-pressed, and title. Called after
+ * every state transition and from _composeRenderEnabledState() so it stays
+ * in sync with the rest of the compose bar's enabled/disabled logic.
+ */
+function _sttRenderButton() {
+  var btn = $('compose-mic-btn');
+  if (!btn) return;
+  if (!_sttStatus) {
+    btn.classList.add('hidden');
+    return;
+  }
+  btn.classList.remove('hidden');
+  var listening = _sttState === 'listening';
+  var downloading = _sttState === 'downloading';
+  btn.classList.toggle('compose-bar__mic--listening', listening);
+  btn.classList.toggle('compose-bar__mic--downloading', downloading);
+  btn.setAttribute('aria-pressed', listening ? 'true' : 'false');
+  btn.disabled = downloading || !(_serverSettings && _serverSettings.input_enabled === true);
+  if (downloading) {
+    btn.title = 'Downloading on-device speech model\u2026';
+  } else if (listening) {
+    btn.title = 'Stop dictation';
+  } else {
+    btn.title = 'Dictate (on-device speech-to-text)';
+  }
+}
+
+/**
+ * Move `_sttState` to `next` and re-render the button.
+ * @param {'idle'|'listening'|'downloading'} next
+ */
+function _sttSetState(next) {
+  _sttState = next;
+  _sttRenderButton();
+}
+
+/**
+ * Apply one SpeechRecognitionResult's transcript into #compose-input at the
+ * tracked insertion point. FINAL results are committed permanently
+ * (advancing `_sttInsertPos` past them, with a single trailing space so the
+ * next word/result doesn't run on) and reset the interim preview; INTERIM
+ * results overwrite only the still-in-flight preview region so repeated
+ * updates for the same not-yet-final utterance never duplicate text. The
+ * caret is left at the end of whatever was just written, so the textarea
+ * visibly tracks along with speech -- the same way native OS dictation
+ * looks while it's working.
+ * @param {HTMLTextAreaElement} input
+ * @param {string} transcript
+ * @param {boolean} isFinal
+ */
+function _sttApplyTranscript(input, transcript, isFinal) {
+  var value = input.value;
+  var before = value.slice(0, _sttInsertPos);
+  var after = value.slice(_sttInsertPos + _sttInterimLength);
+  if (isFinal) {
+    var committed = String(transcript).replace(/\s+$/, '');
+    if (committed) committed += ' ';
+    input.value = before + committed + after;
+    _sttInsertPos = before.length + committed.length;
+    _sttInterimLength = 0;
+  } else {
+    var preview = String(transcript);
+    input.value = before + preview + after;
+    _sttInterimLength = preview.length;
+  }
+  var caret = _sttInsertPos + _sttInterimLength;
+  if (typeof input.setSelectionRange === 'function') input.setSelectionRange(caret, caret);
+}
+
+/**
+ * SpeechRecognition 'result' handler: applies every NEW result (from
+ * event.resultIndex forward -- a spec-compliant implementation never
+ * re-sends an already-committed prior result) in order, then auto-grows
+ * the textarea the same way manual typing does.
+ * @param {SpeechRecognitionEvent} event
+ */
+function _sttHandleResult(event) {
+  var input = $('compose-input');
+  if (!input || !event || !event.results) return;
+  for (var i = event.resultIndex || 0; i < event.results.length; i++) {
+    var result = event.results[i];
+    var alt = result && result[0];
+    if (!alt) continue;
+    _sttApplyTranscript(input, alt.transcript || '', !!result.isFinal);
+  }
+  _composeAutoGrow(input);
+}
+
+/**
+ * Map a SpeechRecognitionErrorEvent's `.error` code to an honest, specific,
+ * inline message -- dictation has no silent-failure path either, mirroring
+ * _composeErrorMessage()'s discipline for the send path. Sets
+ * `_sttSuppressEndMessage` so the 'end' event that always follows an error
+ * doesn't ALSO render a second, more generic message for the same failure.
+ * @param {SpeechRecognitionErrorEvent} event
+ */
+function _sttHandleError(event) {
+  _sttSuppressEndMessage = true;
+  var code = event && event.error;
+  switch (code) {
+    case 'no-speech':
+      _composeShowError('No speech detected \u2014 dictation stopped. Tap the mic to try again.');
+      break;
+    case 'not-allowed':
+    case 'service-not-allowed':
+      _composeShowError('Microphone access was blocked. Allow microphone access for this site, then tap the mic to try again.');
+      break;
+    case 'audio-capture':
+      _composeShowError('No microphone was found.');
+      break;
+    case 'language-not-supported':
+      // The whole feature is gated on on-device availability for this
+      // exact language; hitting this means that capability regressed after
+      // the check (e.g. the model was evicted). Re-close the gate rather
+      // than leaving a button that will only fail again -- never fall back
+      // to cloud, not even implicitly by leaving a broken button visible.
+      _composeShowError('The on-device speech model for this language is no longer available. Dictation has been disabled.');
+      _sttStatus = null;
+      break;
+    case 'aborted':
+      _composeShowError('Dictation was interrupted.');
+      break;
+    case 'network':
+      _composeShowError('Dictation error: network. (Unexpected for on-device recognition.)');
+      break;
+    default:
+      _composeShowError('Dictation error: ' + (code || 'unknown') + '.');
+  }
+}
+
+/**
+ * SpeechRecognition 'end' handler: always fires, whether the session ended
+ * because the user clicked stop, because of an error, or because Chrome
+ * silently closed it after about a minute of continuous silence. This
+ * function NEVER calls _sttStart() again -- auto-restarting on
+ * 'end'/'no-speech' is a documented trap that gets the origin
+ * rate-limited by the browser. Only an explicit click resumes dictation.
+ */
+function _sttHandleEnd() {
+  var wasUserStopped = _sttUserStopped;
+  var suppressed = _sttSuppressEndMessage;
+  _sttRecognition = null;
+  _sttUserStopped = false;
+  _sttSuppressEndMessage = false;
+  _sttSetState('idle');
+  if (!wasUserStopped && !suppressed) {
+    _composeShowError('Dictation stopped (Chrome ends listening after about a minute of silence). Tap the mic to resume.');
+  }
+}
+
+/**
+ * Start a new recognition session. Captures the textarea's current cursor
+ * position (or its end) as the insertion point so dictated text lands
+ * where the user was about to type, not blindly appended.
+ */
+function _sttStart() {
+  if (_sttRecognition || _sttState !== 'idle') return;
+  var input = $('compose-input');
+  if (!input || input.disabled) return;
+  var SR = _sttCtor();
+  if (!SR) {
+    _composeShowError('On-device dictation is no longer available in this browser.');
+    _sttStatus = null;
+    _sttRenderButton();
+    return;
+  }
+
+  _sttInsertPos = typeof input.selectionStart === 'number' ? input.selectionStart : input.value.length;
+  _sttInterimLength = 0;
+  _sttUserStopped = false;
+  _sttSuppressEndMessage = false;
+
+  var recognition;
+  try {
+    recognition = new SR();
+    recognition.lang = _sttLang || (typeof navigator !== 'undefined' && navigator.language) || 'en-US';
+    recognition.processLocally = true; // the whole feature's premise -- never omit this
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    var phrases = _sttBuildPhrases();
+    if (phrases) {
+      try { recognition.phrases = phrases; } catch (_) { /* optional biasing -- ignore if the setter rejects it */ }
+    }
+    recognition.onresult = _sttHandleResult;
+    recognition.onerror = _sttHandleError;
+    recognition.onend = _sttHandleEnd;
+    recognition.start();
+  } catch (e) {
+    _sttRecognition = null;
+    _sttSetState('idle');
+    _composeShowError('Could not start dictation: ' + (e && e.message ? e.message : e));
+    return;
+  }
+  _sttRecognition = recognition;
+  _composeHideError();
+  _sttSetState('listening');
+}
+
+/**
+ * User-initiated stop -- graceful (.stop(), not .abort()) so any final
+ * result already spoken is still delivered before 'end' fires.
+ */
+function _sttStop() {
+  if (!_sttRecognition) return;
+  _sttUserStopped = true;
+  try { _sttRecognition.stop(); } catch (_) { /* already stopping/stopped */ }
+}
+
+/**
+ * Force dictation off without waiting for the browser's own 'end' event --
+ * used when the compose bar's target session changes or closes out from
+ * under a live recognition session (see _composeClearDraft()). Deliberately
+ * abort() rather than stop(): the in-flight utterance belongs to a session
+ * the user is leaving, and letting its eventual final result land in a
+ * DIFFERENT session's draft (or a hidden bar) would be a silent
+ * cross-session leak, not a courtesy. Not treated as a dictation failure --
+ * no error message, since switching sessions is an ordinary action.
+ */
+function _sttForceStop() {
+  if (!_sttRecognition) return;
+  _sttUserStopped = true;
+  _sttSuppressEndMessage = true;
+  try { _sttRecognition.abort(); } catch (_) { /* already stopped */ }
+}
+
+/**
+ * Download flow for a 'downloadable' (not yet 'available') on-device
+ * model. Disables the button for the duration; on success, immediately
+ * starts dictation (the download was the only thing blocking it); on
+ * failure or rejection, returns to idle with an inline reason.
+ */
+async function _sttInstallThenStart() {
+  var SR = _sttCtor();
+  if (!SR || typeof SR.install !== 'function') {
+    _sttStatus = null;
+    _sttRenderButton();
+    _composeShowError('This browser cannot install the on-device speech model.');
+    return;
+  }
+  _sttSetState('downloading');
+  try {
+    var ok = await SR.install({ langs: [_sttLang || 'en-US'], processLocally: true });
+    if (!ok) {
+      _sttSetState('idle');
+      _composeShowError('The on-device speech model could not be installed.');
+      return;
+    }
+    _sttStatus = 'available';
+    _sttSetState('idle');
+    _sttStart();
+  } catch (e) {
+    _sttSetState('idle');
+    _composeShowError('The on-device speech model could not be installed: ' + (e && e.message ? e.message : e));
+  }
+}
+
+/** Click handler for #compose-mic-btn. */
+function _sttHandleClick() {
+  if (_sttState === 'downloading') return; // already in flight -- button is `disabled` too, this is belt-and-suspenders
+  if (_sttState === 'listening') { _sttStop(); return; }
+  if (_sttStatus === 'downloadable') { _sttInstallThenStart(); return; }
+  if (_sttStatus === 'available') { _sttStart(); return; }
+  _composeShowError('On-device dictation is not available.'); // should be unreachable -- the button is hidden otherwise
+}
+
+/**
+ * Run once at startup (called from the DOMContentLoaded handler, after
+ * initComposePref()). Resolves the availability check and shows/hides the
+ * mic button accordingly -- see this section's banner for the full
+ * fail-closed rationale. Never throws: any detection failure leaves the
+ * button hidden, matching "no button" being the safe default.
+ */
+async function _sttInit() {
+  var result = null;
+  try {
+    result = await _sttCheckAvailability();
+  } catch (_) {
+    result = null;
+  }
+  if (result) {
+    _sttStatus = result.status;
+    _sttLang = result.lang;
+  } else {
+    _sttStatus = null;
+    _sttLang = null;
+  }
+  _sttRenderButton();
 }
 
 // ─── Follow-up queue ────────────────────────────────────────────────────
@@ -6980,6 +7428,42 @@ function _setServerSettings(settings) {
   _serverSettings = settings;
 }
 
+/** Test-only: set _sttStatus directly, bypassing the async availability
+ * check -- lets tests drive _sttRenderButton()/_sttHandleClick() without a
+ * real SpeechRecognition.available(). */
+function _setSttStatus(status) {
+  _sttStatus = status;
+}
+
+/** Test-only: get _sttStatus. */
+function _getSttStatus() {
+  return _sttStatus;
+}
+
+/** Test-only: get the current _sttState. */
+function _getSttState() {
+  return _sttState;
+}
+
+/** Test-only: get/set the live _sttRecognition handle, so a test can
+ * install a fake recognition object and assert _sttStop()/_sttForceStop()
+ * call the right method on it. */
+function _setSttRecognition(recognition) {
+  _sttRecognition = recognition;
+}
+function _getSttRecognition() {
+  return _sttRecognition;
+}
+
+/** Test-only: reset the transcript-insertion tracking directly (normally
+ * only set by _sttStart() at the top of a real session), so each test can
+ * start _sttApplyTranscript()/_sttHandleResult() from a known position
+ * instead of inheriting whatever the previous test left behind. */
+function _setSttInsertState(pos, interimLength) {
+  _sttInsertPos = pos;
+  _sttInterimLength = interimLength || 0;
+}
+
 /** Test-only: set _sessionCommands / _sessionCommandErrors directly,
  * bypassing loadSessionCommands(). */
 function _setSessionCommands(commands, errors) {
@@ -7084,6 +7568,10 @@ document.addEventListener('DOMContentLoaded', async function() {
   initSyncGroup();
   initComposePref();
   _composeRenderToggle();
+  // Fire-and-forget: _sttInit() never throws (every failure inside it
+  // resolves to "leave the mic button hidden"), so nothing here needs to
+  // await or .catch() it.
+  _sttInit();
 
   // Load ALL settings (now includes display + sidebar) before first render
   await loadServerSettings();
@@ -7189,6 +7677,31 @@ if (typeof module !== 'undefined' && module.exports) {
     _composeErrorMessage,
     _composeSend,
     _bindComposeEventListeners,
+    // On-device dictation (STT)
+    STT_PHRASE_BOOST,
+    STT_MAX_PHRASES,
+    _sttCtor,
+    _sttCheckAvailability,
+    _sttPhraseSourceTerms,
+    _sttBuildPhrases,
+    _sttRenderButton,
+    _sttSetState,
+    _sttApplyTranscript,
+    _sttHandleResult,
+    _sttHandleError,
+    _sttHandleEnd,
+    _sttStart,
+    _sttStop,
+    _sttForceStop,
+    _sttInstallThenStart,
+    _sttHandleClick,
+    _sttInit,
+    _setSttStatus,
+    _getSttStatus,
+    _getSttState,
+    _setSttRecognition,
+    _getSttRecognition,
+    _setSttInsertState,
     _followupsRefresh,
     _followupsRender,
     _followupsQueueDraft,

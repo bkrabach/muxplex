@@ -3911,7 +3911,12 @@ test('DOMContentLoaded sets page title via updatePageTitle after loadServerSetti
   // added right after initSyncGroup(), pushing updatePageTitle further in --
   // window widened to 2400 (a source-text tripwire per AGENTS.md; behavior is
   // unchanged, only the byte offset moved).
-  const domBlock = source.substring(domIdx, domIdx + 2400);
+  // Updated for on-device dictation (STT spike): _sttInit() call + its
+  // fire-and-forget explanatory comment added right after
+  // _composeRenderToggle(), pushing updatePageTitle further in again --
+  // window widened to 2600. Behavior is unchanged; only the byte offset
+  // moved (same source-text-tripwire class, per AGENTS.md).
+  const domBlock = source.substring(domIdx, domIdx + 2600);
   // The old direct assignment is replaced by updatePageTitle()
   assert.ok(
     !domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),
