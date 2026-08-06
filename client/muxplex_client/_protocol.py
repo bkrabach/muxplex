@@ -72,6 +72,7 @@ def parse_session(raw: Mapping[str, Any]) -> Session:
         # (AUTO_VIEWS_SPEC.md §10.1) -- absence parses to an empty tuple,
         # never a KeyError.
         views=tuple(raw.get("views") or ()),
+        created_at=raw.get("created_at"),
     )
 
 
@@ -141,6 +142,7 @@ def parse_instance_info(raw: Mapping[str, Any]) -> InstanceInfo:
         federation_enabled=bool(raw.get("federation_enabled", False)),
         tmux_socket_dir=raw.get("tmux_socket_dir"),
         bell_hook_armed=raw.get("bell_hook_armed"),
+        server_started_at=raw.get("server_started_at"),
         raw=raw,
     )
 

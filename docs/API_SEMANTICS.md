@@ -89,6 +89,73 @@ consumers in ways this repo's tests won't catch:
 - **`last_activity_at`** derives from tmux `#{window_activity}` — deliberately
   NOT `#{session_activity}`, which freezes for unattended sessions (rationale
   and empirical evidence documented in `sessions.py`).
+- **`created_at`** on every `GET /api/sessions` entry (BACKLOG.md #7) is tmux's
+  own `#{session_created}` (`sessions.get_session_created_times()`), unix
+  epoch seconds, set once by tmux at creation and never revised for the life
+  of the session. Absent exactly like `last_activity_at`: the key is always
+  present, `null` when tmux reported nothing parseable for that session (a
+  malformed value, or a session enumerated via a line with fewer than 3
+  tabs — see `enumerate_sessions()`'s docstring). A pre-this-field server
+  simply omits the key; `muxplex_client.parse_session()` defaults it to
+  `None` either way.
+
+  **This is the other half of a rule that already ships, and shipping it now
+  closes the gap v0.36.1's own CHANGELOG named.** `_run_poll_cycle()`'s
+  "Ensure bell entries exist" step (`main.py`) already seeds a session's bell
+  as attention-worthy — the fix that keeps a just-created session from
+  sorting to the bottom of the attention view — using exactly this value,
+  compared against `_server_start_time` (the moment THIS process came up):
+  `created_at >= _server_start_time` means genuinely new to this process;
+  anything earlier means merely first observed (muxplex restart, state.json
+  reset, or a fresh install backfilling pre-existing sessions). That decision
+  was always made server-side and its RESULT was always visible (the seeded
+  `bell.last_fired_at`/`unseen_count`, which `?sort=attention` already
+  reflects) — what was missing was the ability for an external client
+  (`muxplex-deck`, which orders sessions itself; `muxplex-client` consumers)
+  to inspect the underlying signal directly, e.g. to render "created 3m ago"
+  or to apply its own freshness window rather than "since this server's last
+  restart."
+
+  **Raw value, not a derived boolean — an explicit decision, not a default.**
+  `../AGENTS.md`'s standing rule is to resolve a client-facing RULE
+  server-side rather than ship the logic to every client (`GET /api/view`'s
+  resolved membership/sort is the reference example). That rule is already
+  fully satisfied here: the "is this session new enough to need attention"
+  decision is resolved server-side, once, at bell-seed time, and its outcome
+  is already on the wire via `bell`. `created_at` is not that rule re-exposed
+  as duplicate logic — it is the raw INPUT the rule already consumed,
+  shipped for the different, legitimate uses a raw timestamp serves that a
+  single boolean cannot (display, a client's own threshold, future features
+  nobody has asked for yet). Precedent: `last_activity_at` is itself a raw
+  timestamp on this same entry, not a `stale: bool` — `created_at` matches
+  the shape of the field it sits beside, not just its `_at` naming
+  convention.
+- **`GET /api/instance-info` includes `server_started_at`** — the process-
+  lifetime value of `_server_start_time` (`main.py`), unix epoch seconds,
+  reset in `lifespan()` on every muxplex start. This is the watermark half of
+  the comparison above: a client holding only a session's `created_at` cannot
+  reproduce "is this session new to that server's current process" without
+  also knowing when that server came up, so publishing the timestamp alone
+  (this section, above) would have been half the fix. `None` on a
+  pre-this-field server. Like `bell_hook_armed` and `tmux_socket_dir`
+  already on this endpoint, this is process-lifetime state, not a secret,
+  and this endpoint is already unauthenticated for exactly that class of
+  value.
+  - **Federation and clocks: no new problem, same existing caveat as
+    `last_activity_at`.** A federated session's `created_at` (reached via
+    `GET /api/federation/sessions`, which spreads the local `/api/sessions`
+    entry verbatim — see `federation_sessions()`) comes from that REMOTE
+    host's own tmux and its own poll cycle, exactly as `last_activity_at`
+    already does. Reproducing the "genuinely new" comparison for a remote
+    session requires that SAME remote's own `server_started_at` — fetched
+    from `<remote_url>/api/instance-info` directly, the same unauthenticated,
+    per-host pattern `_fetch_remote_version()` already uses for
+    `deviceVersion` — never the local instance's `server_started_at`, which
+    is a different process's watermark entirely and would produce a
+    comparison across two unrelated clocks. No new federation code was
+    needed to carry `created_at` through `GET /api/federation/sessions`: the
+    dict-spread (`{**s, "deviceId": ..., ...}`) that already forwards
+    `last_activity_at` forwards any new session key the same way.
 - **`active_view` / `active_session` are server-global BY DEFAULT** — last
   writer wins, across every connected client (browsers, deck, agents),
   *unless* a device has opted into its own private **sync group** (see "Sync

@@ -271,10 +271,18 @@ curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
     "name": "agent-build",
     "snapshot": "…captured pane text…",
     "bell": {"last_fired_at": 1753500000.0, "seen_at": null, "unseen_count": 1},
-    "last_activity_at": 1753500123.0
+    "last_activity_at": 1753500123.0,
+    "created_at": 1753499900.0
   }
 ]
 ```
+
+`created_at` is tmux's own session-creation timestamp; `null` when tmux
+reported nothing parseable. Compare it against `GET /api/instance-info`'s
+`server_started_at` (`created_at >= server_started_at`) to tell "genuinely
+new to this server process" from "merely first observed" — the same rule
+the server itself uses to decide whether a session's bell should be seeded
+as attention-worthy. See `docs/API_SEMANTICS.md` for the full rationale.
 
 `snapshot` is the pane capture — this is how an agent *reads* what a terminal is
 showing. Comparatively expensive; don't poll it at high frequency.

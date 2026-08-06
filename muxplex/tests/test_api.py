@@ -934,6 +934,43 @@ def test_get_sessions_last_activity_at_null_when_unknown(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/sessions -- `created_at` (BACKLOG.md #7 / docs/API_SEMANTICS.md)
+# ---------------------------------------------------------------------------
+
+
+def test_get_sessions_includes_created_at(client, monkeypatch):
+    """GET /api/sessions must include created_at with the cached
+    tmux #{session_created} epoch timestamp."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["eta"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"eta": "pane"})
+    monkeypatch.setattr(
+        "muxplex.main.get_session_created_times", lambda: {"eta": 1690000000.0}
+    )
+
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert items[0]["created_at"] == 1690000000.0
+
+
+def test_get_sessions_created_at_null_when_unknown(client, monkeypatch):
+    """GET /api/sessions must return created_at: null for a session tmux
+    reported no parseable #{session_created} for, rather than omitting the
+    field -- same version-tolerant shape as last_activity_at."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["theta"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"theta": "pane"})
+    monkeypatch.setattr("muxplex.main.get_session_created_times", dict)
+
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert "created_at" in items[0]
+    assert items[0]["created_at"] is None
+
+
+# ---------------------------------------------------------------------------
 # GET /api/view
 # ---------------------------------------------------------------------------
 
@@ -3272,6 +3309,20 @@ def test_instance_info_uses_explicit_device_name(client, tmp_path, monkeypatch):
     data = response.json()
     assert data["name"] == "My Workstation"
     assert "version" in data and isinstance(data["version"], str) and data["version"]
+
+
+def test_instance_info_includes_server_started_at(client, monkeypatch):
+    """GET /api/instance-info must report server_started_at as the process's
+    own _server_start_time -- the watermark half of the created_at
+    comparison (BACKLOG.md #7 / docs/API_SEMANTICS.md)."""
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "_server_start_time", 1690000000.0)
+
+    response = client.get("/api/instance-info")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["server_started_at"] == 1690000000.0
 
 
 def test_instance_info_no_auth_required(tmp_path, monkeypatch):

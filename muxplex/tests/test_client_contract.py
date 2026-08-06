@@ -217,6 +217,7 @@ def test_instance_info_fields_present(sync_client, raw_http):
     assert info.federation_enabled == raw["federation_enabled"]
     assert info.tmux_socket_dir == raw["tmux_socket_dir"]
     assert info.bell_hook_armed == raw["bell_hook_armed"]
+    assert info.server_started_at == raw["server_started_at"]
     assert info.raw == raw
 
 
@@ -238,6 +239,11 @@ def test_sessions_fields_present(sync_client, raw_http, seeded_session):
     assert "views" in raw_item
     assert isinstance(raw_item["views"], list)
     assert parsed.views == tuple(raw_item["views"])
+    # BACKLOG.md #7 / docs/API_SEMANTICS.md: created_at is always present
+    # (null when tmux reported nothing parseable), same shape as
+    # last_activity_at above.
+    assert "created_at" in raw_item
+    assert parsed.created_at == raw_item["created_at"]
 
 
 def test_session_snapshot_fields_present(sync_client, raw_http, seeded_session):

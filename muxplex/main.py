@@ -1409,10 +1409,24 @@ async def get_sessions() -> list[dict]:
     based views reach every client polling this endpoint (PWA grid/counts/
     sidebar/Manage View, the soft deck's picker counts) without each one
     re-deriving membership from raw `settings.views` (AUTO_VIEWS_SPEC.md §0.1).
+
+    `created_at` is tmux's own `#{session_created}` (see
+    `sessions.get_session_created_times()`) -- the raw timestamp, not a
+    derived "is this new" boolean. It is the other half of the rule
+    `_run_poll_cycle()` already applies server-side to seed a just-created
+    session's bell (see step 5, "Ensure bell entries exist" below): a
+    session is genuinely new to THIS process iff `created_at >=
+    server_started_at`, where the latter is `GET /api/instance-info`'s
+    `server_started_at`. A client needs BOTH values to reproduce that
+    comparison; see docs/API_SEMANTICS.md for the full rationale for
+    shipping the raw pair instead of a precomputed boolean. Absent exactly
+    like `last_activity_at`: the key is always present, `null` when tmux
+    reported no parseable `#{session_created}` for that session.
     """
     names = get_session_list()
     snapshots = get_snapshots()
     activity = get_session_activity()
+    created_times = get_session_created_times()
     state = await read_state()
     settings = load_settings()
     local_device_id = load_device_id()
@@ -1433,6 +1447,7 @@ async def get_sessions() -> list[dict]:
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
                 "last_activity_at": activity.get(name),
+                "created_at": created_times.get(name),
                 "followups": followups.summary(state, name),
             }
         )
@@ -3029,6 +3044,17 @@ async def instance_info() -> dict:
         # retry hasn't succeeded yet. This is how an operator/agent tells
         # bells are unarmed without grepping logs.
         "bell_hook_armed": _bell_hook_armed,
+        # The moment THIS process actually came up (reset in lifespan()) --
+        # the exact watermark `_run_poll_cycle()`'s "Ensure bell entries
+        # exist" step already compares each session's `created_at` against
+        # to decide whether to seed a just-created session's bell (see that
+        # step's comment). Exposed so a client holding a session's
+        # `created_at` (GET /api/sessions, docs/API_SEMANTICS.md) has the
+        # other half of that comparison and can reproduce it, rather than
+        # being handed only a timestamp with no watermark to compare it to.
+        # A process-lifetime value, not a persisted one: it changes on every
+        # muxplex restart, same as `bell_hook_armed` above.
+        "server_started_at": _server_start_time,
     }
 
 

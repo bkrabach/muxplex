@@ -58,6 +58,16 @@ class Session:
     `muxplex.views.annotate_view_membership`). Defaults to `()` so every
     existing construction site keeps compiling and so a pre-feature server
     (one that omits the field) parses cleanly -- see `parse_session()`.
+
+    `created_at`: tmux's own `#{session_created}`, unix epoch seconds.
+    `None` when tmux reported no parseable value for this session, or when
+    talking to a pre-this-field server (defaults to `None` so every
+    existing construction site keeps compiling, same rationale as `views`
+    above). Paired with `InstanceInfo.server_started_at`: a session is
+    genuinely new to that server's current process iff `created_at >=
+    server_started_at` -- see ../../docs/API_SEMANTICS.md for why both
+    halves are shipped as raw values rather than a single precomputed
+    boolean.
     """
 
     name: str
@@ -65,6 +75,7 @@ class Session:
     bell: Bell
     last_activity_at: float | None = None
     views: tuple[str, ...] = ()
+    created_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -134,7 +145,14 @@ class Settings:
 
 @dataclass(frozen=True)
 class InstanceInfo:
-    """GET /api/instance-info."""
+    """GET /api/instance-info.
+
+    `server_started_at`: the moment THIS instance's process actually came
+    up (unix epoch seconds); `None` on a server older than this field.
+    This is the watermark a `Session.created_at` must be compared against
+    to reproduce the server's own "genuinely new" rule -- see
+    `Session.created_at`'s docstring and ../../docs/API_SEMANTICS.md.
+    """
 
     name: str
     device_id: str
@@ -142,6 +160,7 @@ class InstanceInfo:
     federation_enabled: bool
     tmux_socket_dir: str | None
     bell_hook_armed: bool | None  # None on servers < 0.18.0
+    server_started_at: float | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
