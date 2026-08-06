@@ -442,12 +442,20 @@ def test_restore_no_record_uses_default(isolated, tmp_path):
     with zero manifest history), restores with the default pair -- same as
     pre-feature behavior. See test_restore_fidelity.py for the refusal case
     this fix adds when that directory does NOT already exist.
+
+    Status is "warn", not "ok": DEFAULT_SETTINGS' own `new_session_template`
+    (`tmux new-session -d -s {name}`, never overridden by this test) is a
+    bare 1-window session, and execute_restore() correctly flags any
+    1-window result as a divergence (see restore.py's windows<=1 check) --
+    this is NOT a failure. `any_failed` is the correct invariant here.
     """
     workspace_root = tmp_path / "dev"
     (workspace_root / "plain-restore").mkdir(parents=True)
 
     report = asyncio.run(restore_mod.execute_restore(["plain-restore"]))
-    assert report.ok_count == 1
+    assert not report.any_failed, [
+        (r.name, r.detail) for r in report.results if r.status == "fail"
+    ]
     live = asyncio.run(enumerate_sessions())
     assert "plain-restore" in live
 
