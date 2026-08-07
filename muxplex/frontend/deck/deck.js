@@ -599,9 +599,14 @@ function stripSwipeBindingsFromConfig(bindings) {
  *
  * Evaluation order is address-level first, then action-level: a
  * `key.20 -> focus_app` binding on a 12-key grid reports
- * `key-out-of-range`, not `unsupported-on-soft-deck`, because the address
- * problem is the more actionable fix and the one that will still be true
- * after backlog item 3 lands (\u00a77.5).
+ * `key-out-of-range`, the address problem, rather than any action-level
+ * classification -- the address problem is the more actionable fix.
+ * `focus_app` itself carries no action-level classification here:
+ * backlog item 3 (docs/plans/2026-08-05-focus-grab-plan.md) moved
+ * focus-grabbing server-side behind `POST /api/focus`, so the action now
+ * applies structurally on the soft deck exactly like every other
+ * momentary action -- there is no more `unsupported-on-soft-deck` reason
+ * to report.
  *
  * @param {Object<string,string>} bindings   sanitized address -> action
  * @param {{rows:number, cols:number, dialCount:number, stripCount:number}} shape
@@ -641,7 +646,6 @@ function bindingApplicability(bindings, shape) {
         reason = 'strip-zone-out-of-range';
       }
     }
-    if (!reason && action === 'focus_app') reason = 'unsupported-on-soft-deck';
     out.push({ address: addr, action: action, applies: reason === '', reason: reason });
   }
   return out;
@@ -2690,13 +2694,33 @@ if (typeof document !== 'undefined') {
           setBrightness(deckSettings.brightness - 10);
           return;
         case 'focus_app':
-          // Not yet implemented -- BACKLOG.md item 3 moves focus-grabbing
-          // server-side so any client (including this one, over the
-          // network) can request it. Until that lands this is a documented
-          // no-op rather than a silent dead binding.
-          if (typeof console !== 'undefined' && console.info) {
-            console.info('muxplex deck: focus_app is not yet implemented (see BACKLOG.md item 3)');
-          }
+          // Backlog item 3: focus-grabbing now lives server-side, behind
+          // POST /api/focus. Same-origin -- the soft deck's own muxplex
+          // origin IS the host whose PWA window should be raised
+          // (docs/plans/2026-08-05-focus-grab-plan.md §1.2), no federation
+          // needed. The endpoint accepts no target of any kind; the app
+          // raised is always whatever that host's operator configured in
+          // settings.json (§6.1) -- this client sends nothing but the POST.
+          // No optimistic UI: focus has no local highlight to paint ahead
+          // of the response. Errors are NOT swallowed -- surfaced via
+          // console, matching the hardware deck's no-toast-affordance rule
+          // (this file's own "Defer UI polish" convention): the browser
+          // console is this client's status display for an action with no
+          // tile of its own to turn FAILED.
+          postJSON('/api/focus')
+            .then(function (result) {
+              if (typeof console !== 'undefined' && console.info) {
+                console.info('muxplex deck: focus_app -> raised', result && result.app);
+              }
+            })
+            .catch(function (err) {
+              if (typeof console !== 'undefined' && console.warn) {
+                console.warn(
+                  'muxplex deck: focus_app failed (HTTP ' + (err && err.status) + ')',
+                  err
+                );
+              }
+            });
           return;
         case 'none':
         case 'session':
@@ -3456,8 +3480,6 @@ if (typeof document !== 'undefined') {
           return (
             'only ' + shape.stripCount + ' strip zone(s) configured \u2014 use strip.0\u2026strip.' + (shape.stripCount - 1)
           );
-        case 'unsupported-on-soft-deck':
-          return 'focus_app is not supported on the soft deck yet (see BACKLOG.md item 3) \u2014 it will do nothing';
         default:
           return '';
       }

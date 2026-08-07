@@ -181,6 +181,14 @@ class InputResult:
 
 
 @dataclass(frozen=True)
+class FocusResult:
+    """POST /api/focus -- see MuxplexClient.raise_focus()."""
+
+    platform: str
+    app: str
+
+
+@dataclass(frozen=True)
 class CommandResult:
     """Result of `run_shell_command()`."""
 

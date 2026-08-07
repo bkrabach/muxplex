@@ -552,6 +552,26 @@ in which case retry the same request with `&takeover=true`. Do that only
 when it's genuinely what you mean: it moves the terminal away from whichever
 device/session held it.
 
+### Foreground focus: `POST /api/focus`
+
+A separate, much smaller capability: bring THIS host's muxplex PWA window to
+the OS foreground. No body, no parameters -- it's a bare `POST` with nothing
+to configure per-request. The app it raises is whatever the operator
+configured server-side (`settings.json`'s `focus_app`); an agent cannot
+name a target.
+
+**On a default install (no `focus_app` configured), this is a `409`** with
+`{"focus_not_configured": true, "detail": "..."}` -- not a silent no-op and
+not something to retry differently. Treat it the same way you'd treat
+`input_enabled=false` on `/input`: a local-operator opt-in that hasn't
+happened yet, not a bug in your request.
+
+Also expect `501` (`focus_unsupported_platform`) on any non-macOS host --
+this is a real platform limit, not a transient failure worth retrying. See
+`docs/API_SEMANTICS.md`'s `POST /api/focus` section for the full response
+table and the `GET /api/instance-info` `focus` capability block, which lets
+you check `supported`/`configured` before ever calling this endpoint.
+
 ---
 
 ## 5. Typing into a session: `POST /api/sessions/{name}/input`

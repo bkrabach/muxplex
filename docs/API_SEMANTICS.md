@@ -79,6 +79,100 @@ invariants a contributor must not break.
   mechanism this codebase doesn't have yet (arming an autonomous writer on
   a peer whose patch level can't be verified is out of scope for v1).
 
+## `POST /api/focus` -- server-side foreground-focus (macOS only, v1)
+
+Brings THIS host's muxplex PWA window to the foreground. See
+`docs/plans/2026-08-05-focus-grab-plan.md` for the full design; this section
+is the durable summary a client author needs.
+
+- **No request body. No query parameters. No target of any kind.** This is
+  the load-bearing security property of the whole endpoint: the app raised
+  is always exactly `settings["focus_app"]` -- a value only a LOCAL
+  operator can set, by editing `~/.config/muxplex/settings.json` directly
+  (see `../AGENTS.md`'s `focus_app` entry and `settings.LOCAL_ONLY_KEYS`).
+  A caller who fully controls the request body can still only trigger the
+  one app the operator already chose. A hypothetical `{"app": "..."}` body
+  would turn this into `open -a <arbitrary>` -- remote process execution
+  one thin layer removed from `/input`'s RCE-by-design -- which is exactly
+  why the endpoint accepts nothing. **There is no separate `focus_enabled`
+  boolean** -- rejected as theater, since `focus_app` in `LOCAL_ONLY_KEYS`
+  already gates the only capability that exists (one host, one configured
+  app, no scoping dimension to narrow further, unlike
+  `input_allowed_sessions`).
+- **Platform support: macOS only.** muxplex's launchd agent is bootstrapped
+  into the `gui/$UID` Aqua domain (`service.py`), which has access to the
+  window server -- confirmed live against an installed (not foreground)
+  launchd service. Linux/X11 is unreliable (a systemd user service does not
+  reliably carry `DISPLAY`/`XAUTHORITY`); Linux/Wayland cannot work at all,
+  structurally (`xdg-activation-v1` requires the REQUESTING process to
+  already be a Wayland client holding a surface and an input serial --
+  muxplex is a headless HTTP server); WSL has a Windows browser window to
+  raise, not a Linux one; Windows has no muxplex port at all. Every
+  unsupported platform is an honest `501`, never a silent no-op -- see
+  `muxplex.focus.resolve_focus_capability()`.
+- **Response ordering, and why it's in this order:**
+
+  | Condition | Status | Body |
+  |---|---|---|
+  | Platform has no implementation | `501` | `{"focus_unsupported_platform": true, "platform": "<p>", "detail": "<reason>"}` |
+  | `settings["focus_app"]` is empty / not a string | `409` | `{"focus_not_configured": true, "detail": "..."}` |
+  | Mechanism ran and failed | `502` | `{"focus_failed": true, "detail": "<real stderr or exception text>"}` |
+  | Success | `200` | `{"ok": true, "platform": "darwin", "app": "<focus_app>"}` |
+
+  `focus_unsupported_platform`, `focus_not_configured`, and `focus_failed`
+  join the discriminator convention alongside `backstop` /
+  `terminal_conflict` / `unknown_command_id` / `invalid_view_rule` /
+  `bell_hook_unarmed` / `queue_full` above -- a client distinguishes the
+  three by the discriminator key, never by parsing `detail`. The platform
+  check runs BEFORE the configuration check deliberately: the platform
+  answer is public/non-sensitive, while whether an operator configured
+  `focus_app` is a fact about this host's local settings file. Answering
+  `501` first means a caller on an unsupported host learns nothing about
+  whether anything was ever configured (same ordering discipline
+  `../AGENTS.md` applies to `/input`'s allowlist-before-existence check).
+- **On macOS, `open -a` LAUNCHES the app if it is not already running** --
+  this is contract, not an implementation detail a client author should be
+  surprised by. "Bring the PWA to the foreground" means that either way;
+  the alternative (probe for a running instance first) is a second
+  mechanism for a behavior nobody asked for.
+- **`GET /api/instance-info` gains an additive `focus` block** (same
+  purpose as `bell_hook_armed` on that endpoint -- an operator/agent can
+  render an honest disabled state without grepping logs):
+
+  ```
+  "focus": {
+    "supported":  <bool>,   // this platform has an implementation
+    "configured": <bool>,   // focus_app is a non-empty string in settings
+    "platform":   "<str>",  // "darwin" | "linux" | "wsl" | ...
+    "mechanism":  "<str>"   // "open -a" when supported, "" otherwise
+  }
+  ```
+
+  **The `focus_app` VALUE is deliberately never exposed here.**
+  `/api/instance-info` is unauthenticated; `configured: true` is the fact a
+  client needs, and a local-host app name is not something an
+  unauthenticated caller needs to read. An authenticated client that
+  genuinely wants the value can read `GET /api/settings`.
+- **`focus_app` never federates.** It's in `settings.LOCAL_ONLY_KEYS` (a
+  `.app` bundle name on one machine means nothing on another -- same
+  structural reason `session_commands`/`tmux_socket_dir` are local-only)
+  and is NOT in `SYNCABLE_KEYS`; `PATCH /api/settings` and federation sync
+  both silently ignore it (with a warning log on the PATCH path).
+- **No federation proxy in v1.** The reported motivating bug (phone can't
+  raise the Mac's PWA) needs none: the soft deck fetches `/api/focus`
+  same-origin, and "same origin" already means "the Mac's own muxplex" when
+  the phone is pointed at that server. A targeted
+  `POST /api/federation/{device_id}/focus` (mirroring
+  `federation_bell_clear`) is the correct Phase 2 shape if cross-host focus
+  is ever needed; a server-side broadcast to every peer is explicitly
+  rejected as the more expensive option, not the simpler one.
+- **`muxplex-deck` and the soft deck both call this endpoint** (via
+  `muxplex_client.raise_focus()` / a same-origin `postJSON('/api/focus')`
+  respectively) instead of raising focus locally. `muxplex-deck`'s own
+  local macOS/Windows focus implementation (`focus.py`) was deleted in
+  full -- see that project's `AGENTS.md` for the Windows regression this
+  accepts.
+
 ## Semantics external clients re-implement today (change with care)
 
 These rules are currently ported into clients; silently changing them breaks

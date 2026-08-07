@@ -962,6 +962,24 @@ test('ACTION_CATALOG mirrors muxplex-deck controls.py\'s 19-action catalog exact
   }
 });
 
+// BACKLOG.md item 3 / docs/plans/2026-08-05-focus-grab-plan.md \u00a77.5: the
+// dispatchAction 'focus_app' case is nested inside the DOM-wiring block
+// (not exported as a pure function -- it needs a live `mode`/`grid`/dial
+// closure this file's harness deliberately doesn't build), so this is a
+// source-text regression guard rather than a behavioral unit test: it pins
+// that the case calls the same-origin POST helper and never silently
+// reverts to the old console.info no-op.
+test('deck.js source (guard): focus_app dispatch calls postJSON(\'/api/focus\'), not the old console.info no-op', () => {
+  const deckSourcePath = join(__dirname, '..', 'deck', 'deck.js');
+  const src = fs.readFileSync(deckSourcePath, 'utf8');
+  const caseIndex = src.indexOf("case 'focus_app':");
+  assert.ok(caseIndex !== -1, 'deck.js must still have a focus_app dispatch case');
+  const nextCaseIndex = src.indexOf("case '", caseIndex + 1);
+  const caseBody = src.slice(caseIndex, nextCaseIndex === -1 ? undefined : nextCaseIndex);
+  assert.ok(caseBody.includes("postJSON('/api/focus')"), 'focus_app must POST /api/focus (same-origin, no target)');
+  assert.ok(!caseBody.includes('is not yet implemented'), 'the old no-op console.info message must be gone');
+});
+
 test('parseControlAddress: valid key/dial forms', () => {
   assert.deepEqual(deck.parseControlAddress('key.0'), { control: 'key', index: 0, sub: null, text: 'key.0' });
   assert.deepEqual(deck.parseControlAddress('key.31'), { control: 'key', index: 31, sub: null, text: 'key.31' });
@@ -1808,18 +1826,20 @@ test('bindingApplicability: no-strip covers both zone and swipe addresses; strip
   assert.strictEqual(appliesSwipe[0].reason, '');
 });
 
-// U5 (F4): focus_app reports unsupported-on-soft-deck at a valid address --
-// but evaluation order is address-level FIRST: key.20 -> focus_app on a
-// 3x4 grid must report key-out-of-range, NOT the action reason, because
-// the address problem is the more actionable fix (\u00a77.1).
-test('bindingApplicability (F4): focus_app is unsupported-on-soft-deck at a valid address, but address problems win the evaluation order', () => {
+// U5 (F4, superseded by BACKLOG.md item 3 / docs/plans/2026-08-05-focus-grab-plan.md):
+// focus_app now runs server-side (POST /api/focus) and applies on the soft
+// deck exactly like any other momentary action -- it carries NO
+// action-level "unsupported" reason any more. A valid address applies; an
+// out-of-range address still reports key-out-of-range, since address-level
+// evaluation runs first regardless of which action is bound.
+test('bindingApplicability (F4, post-item-3): focus_app applies at a valid address like any other momentary action', () => {
   const valid = deck.bindingApplicability({ 'key.1': 'focus_app' }, { rows: 3, cols: 4, dialCount: 0, stripCount: 0 });
-  assert.strictEqual(valid[0].applies, false);
-  assert.strictEqual(valid[0].reason, 'unsupported-on-soft-deck');
+  assert.strictEqual(valid[0].applies, true);
+  assert.strictEqual(valid[0].reason, '');
 
   const outOfRange = deck.bindingApplicability({ 'key.20': 'focus_app' }, { rows: 3, cols: 4, dialCount: 0, stripCount: 0 });
   assert.strictEqual(outOfRange[0].applies, false);
-  assert.strictEqual(outOfRange[0].reason, 'key-out-of-range', 'address-level reason must win over the action-level reason');
+  assert.strictEqual(outOfRange[0].reason, 'key-out-of-range', 'address-level reason must still win over any action-level reason');
 });
 
 // U6: ascending by address, one entry per configured binding, no drops, no

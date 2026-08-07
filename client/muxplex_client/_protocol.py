@@ -20,6 +20,7 @@ from .errors import ApiError, AuthError, InputForbidden, MuxplexError, SessionNo
 from .models import (
     Bell,
     ConnectResult,
+    FocusResult,
     InputResult,
     InstanceInfo,
     ServerState,
@@ -45,6 +46,7 @@ __all__ = [
     "parse_instance_info",
     "parse_connect_result",
     "parse_input_result",
+    "parse_focus_result",
     "version_tuple",
 ]
 
@@ -158,6 +160,13 @@ def parse_input_result(raw: Mapping[str, Any]) -> InputResult:
     return InputResult(
         session=raw["session"],
         snapshot=raw.get("snapshot", ""),
+    )
+
+
+def parse_focus_result(raw: Mapping[str, Any]) -> FocusResult:
+    return FocusResult(
+        platform=raw.get("platform", ""),
+        app=raw.get("app", ""),
     )
 
 

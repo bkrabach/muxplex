@@ -39,7 +39,7 @@ from starlette.types import Scope
 from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
-from muxplex import followups, tmux_config
+from muxplex import focus, followups, tmux_config
 from muxplex import ttyd as ttyd_mod
 from muxplex.auth import (
     AuthMiddleware,
@@ -2951,6 +2951,83 @@ async def put_settings_sync(payload: SettingsSyncPayload):
         )
 
 
+@app.post("/api/focus")
+async def raise_focus():
+    """Bring THIS host's muxplex PWA window to the foreground.
+
+    **No request body. No query parameters. No target of any kind.** This
+    is the load-bearing security property of the whole endpoint: the app
+    that gets raised is always exactly ``settings["focus_app"]``, the value
+    a LOCAL operator wrote to ``~/.config/muxplex/settings.json`` (see
+    ``settings.LOCAL_ONLY_KEYS``) -- never anything a caller supplies. A
+    caller who fully controls this request can still only trigger the one
+    app the operator already chose. See
+    ``docs/plans/2026-08-05-focus-grab-plan.md`` \u00a76 for the full security
+    argument, including why this needs no fence of its own beyond
+    ``focus_app`` being ``LOCAL_ONLY``.
+
+    Auth is the shared middleware (federation Bearer key / localhost bypass
+    / session cookie) -- deliberately NOT a second key, same reasoning
+    ``AGENTS.md`` records for ``/input``.
+
+    Checks run in this order, and the order is deliberate (\u00a76.4): the
+    platform check is public/non-sensitive and must never leak whether an
+    operator configured anything on an unsupported host.
+
+    1. Platform capability (``focus.resolve_focus_capability()``) -- ``501
+       focus_unsupported_platform`` when this host has no implementation
+       (Linux, Wayland, WSL -- see ``focus.py``'s module docstring).
+    2. ``settings["focus_app"]`` is a non-empty string -- ``409
+       focus_not_configured`` otherwise (fail-closed: a non-string or empty
+       value is treated as unconfigured, never crashes the endpoint).
+    3. The mechanism ran and failed -- ``502 focus_failed`` carrying the
+       real stderr/exception text (the operator needs this verbatim to fix
+       a misconfigured ``focus_app``).
+    4. Success -- ``200 {"ok": true, "platform": ..., "app": ...}``.
+
+    On macOS, ``open -a`` LAUNCHES the configured app if it is not already
+    running -- this is deliberate, not a bug: "bring the PWA to the
+    foreground" means that either way, and probing for a running instance
+    first would be a second mechanism for a behavior nobody asked for.
+    """
+    capability = focus.resolve_focus_capability()
+    if not capability.supported:
+        return JSONResponse(
+            status_code=501,
+            content={
+                "focus_unsupported_platform": True,
+                "platform": capability.platform,
+                "detail": capability.reason,
+            },
+        )
+
+    settings = load_settings()
+    app_name = settings.get("focus_app")
+    if not isinstance(app_name, str) or not app_name:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "focus_not_configured": True,
+                "detail": (
+                    "focus_app is not set in ~/.config/muxplex/settings.json "
+                    "on this host"
+                ),
+            },
+        )
+
+    try:
+        await focus.raise_window(app_name)
+    except focus.FocusFailedError as exc:
+        _log.warning("focus: %r failed: %s", app_name, exc.detail)
+        return JSONResponse(
+            status_code=502,
+            content={"focus_failed": True, "detail": exc.detail},
+        )
+
+    _log.info("focus: raised %r", app_name)
+    return {"ok": True, "platform": capability.platform, "app": app_name}
+
+
 @app.get("/api/instance-info")
 async def instance_info() -> dict:
     """Return this instance's display name, device identity, and version.
@@ -2961,6 +3038,9 @@ async def instance_info() -> dict:
     settings = load_settings()
     # Read fresh so the UI reflects key-file changes without requiring a restart.
     fed_key = load_federation_key()
+    focus_capability = focus.resolve_focus_capability()
+    focus_app_value = settings.get("focus_app")
+    focus_configured = isinstance(focus_app_value, str) and bool(focus_app_value)
     return {
         "name": settings["device_name"],
         "device_id": load_device_id(),
@@ -3001,6 +3081,20 @@ async def instance_info() -> dict:
         # A process-lifetime value, not a persisted one: it changes on every
         # muxplex restart, same as `bell_hook_armed` above.
         "server_started_at": _server_start_time,
+        # Capability advertisement for POST /api/focus, so a client can
+        # render an honest disabled state instead of a dead key (same
+        # purpose as bell_hook_armed above). The focus_app VALUE is
+        # deliberately NOT exposed here -- this endpoint is unauthenticated
+        # ("Public endpoint" docstring above), and a local-host app name is
+        # not a fact an unauthenticated caller needs; an authenticated
+        # client that genuinely wants it can read GET /api/settings. See
+        # docs/plans/2026-08-05-focus-grab-plan.md \u00a73.3.
+        "focus": {
+            "supported": focus_capability.supported,
+            "configured": focus_configured,
+            "platform": focus_capability.platform,
+            "mechanism": focus_capability.mechanism,
+        },
     }
 
 

@@ -19,6 +19,7 @@ from .errors import CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
+    FocusResult,
     InputResult,
     InstanceInfo,
     ServerState,
@@ -268,6 +269,26 @@ class MuxplexClient:
                     snapshot=snap.snapshot,
                 )
             time.sleep(poll_interval)
+
+    # ---- focus ----
+
+    def raise_focus(self) -> FocusResult:
+        """POST /api/focus -- bring the SERVER's host muxplex PWA window to the foreground.
+
+        No parameters: the endpoint accepts no target of any kind, always
+        raising exactly the app the operator configured in that server's own
+        ``settings.json`` (``focus_app``). See ../../docs/API_SEMANTICS.md's
+        ``POST /api/focus`` section for the full contract, including the
+        macOS-only ``open -a`` launch-if-not-running behavior.
+
+        Raises ``ApiError`` (via ``map_status_error``) for every documented
+        failure mode -- ``status`` distinguishes them: 501 (unsupported
+        platform), 409 (``focus_app`` not configured on that host), 502
+        (the mechanism ran and failed). Callers that want best-effort,
+        never-raise semantics (e.g. firing focus alongside an unrelated
+        action) should catch ``MuxplexError`` around this call.
+        """
+        return protocol.parse_focus_result(self._request("POST", "/api/focus"))
 
     # ---- opt-in version check ----
 

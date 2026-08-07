@@ -24,6 +24,7 @@ from .errors import CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
+    FocusResult,
     InputResult,
     InstanceInfo,
     ServerState,
@@ -246,6 +247,12 @@ class AsyncMuxplexClient:
                     snapshot=snap.snapshot,
                 )
             await asyncio.sleep(poll_interval)
+
+    # ---- focus ----
+
+    async def raise_focus(self) -> FocusResult:
+        """POST /api/focus -- see `sync_client.MuxplexClient.raise_focus` for the full contract."""
+        return protocol.parse_focus_result(await self._request("POST", "/api/focus"))
 
     # ---- opt-in version check ----
 

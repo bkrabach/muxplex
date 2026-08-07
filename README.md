@@ -326,6 +326,7 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `input_enabled` | `false` | Global opt-in for `POST /api/sessions/{name}/input` (typing into sessions over the API). **RCE by design** — `false` makes the endpoint a hard 403. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` (a Bearer-key holder must not be able to self-authorize input) and not federation-syncable. |
 | `input_allowed_sessions` | `[]` | **Glob patterns** (matched case-INsensitively — both name and pattern are `.casefold()`-ed before `fnmatch.fnmatchcase`, so behavior is deterministic across platforms) naming sessions that may receive API terminal input, e.g. `["*"]` for all sessions, `["amplifier-*"]` for a prefix family, or an exact name (matches only itself). A session matching none of the patterns is a 403 even when `input_enabled` is true — this is how your own working panes stay un-typeable. Empty list = deny everything. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` and not federation-syncable. |
 | `tmux_socket_dir` | `""` | Override tmux's socket directory (maps to `TMUX_TMPDIR`). Set this if your tmux sessions live somewhere other than `/tmp/tmux-$UID` (e.g. a custom `TMUX_TMPDIR` in your shell rc) -- a systemd/launchd service does not inherit your login shell's environment, so without this the service can't see sessions created with a custom socket directory. |
+| `focus_app` | `""` | **macOS only.** The `.app` bundle name `POST /api/focus` runs `open -a` against to bring the muxplex PWA window to the foreground on this host. Empty = unconfigured (the endpoint returns `409` rather than silently doing nothing). **Wayland and Windows are not supported** -- Wayland has no portable activation path a headless server process can use; Windows has no muxplex port at all (see `docs/API_SEMANTICS.md`'s `POST /api/focus` section for the full platform table). **Local-file-only**: can ONLY be set by editing `settings.json` on disk -- not settable via `PATCH /api/settings` and not federation-syncable. |
 | `device_name` | `""` (hostname) | Display name for this device |
 | `federation_key` | `""` | Server-to-server authentication key for federation |
 | `remote_instances` | `[]` | Remote muxplex instances to aggregate |
@@ -380,6 +381,14 @@ Mouse select in the terminal auto-copies to the system clipboard on release.
 | Linux (Ubuntu/Debian) | systemd user service | PAM |
 | macOS | launchd agent | PAM |
 | WSL | systemd user service | PAM |
+
+`POST /api/focus` (foreground-focus for the muxplex PWA window) is
+**macOS-only**. Linux/X11 is unreliable (a systemd user service doesn't
+reliably carry `DISPLAY`), Wayland cannot work at all (no portable
+activation path a headless server process can use), WSL has a Windows
+browser window to raise rather than a Linux one, and Windows has no
+muxplex port at all. See `docs/API_SEMANTICS.md`'s `POST /api/focus`
+section for the full per-platform table.
 
 ---
 

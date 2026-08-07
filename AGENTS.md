@@ -276,6 +276,44 @@ contributor must not break silently:
   `/api/federation/{device_id}/sessions/{name}/followups` proxy. Bells are
   local-only state; a remote session's bell is the REMOTE's own concern.
 
+## Foreground focus: `POST /api/focus` (server-side, macOS only)
+
+Brings THIS host's muxplex PWA window to the foreground -- moved server-side
+from `muxplex-deck` (backlog item 3 / `docs/plans/2026-08-05-focus-grab-plan.md`)
+so every client (hardware deck, soft deck, an agent) asks the same way, over
+HTTP, instead of each reimplementing platform-specific focus-stealing.
+
+**`focus_app` is `LOCAL_ONLY_KEYS` for the exact same rule this file already
+states for `input_enabled`/`new_session_template`/`session_commands`/etc.:
+it names a value the server later feeds to a command it executes (`open -a
+<focus_app>`). It must never become `PATCHable` or join `SYNCABLE_KEYS` --
+doing so would let a federation Bearer-key holder self-authorize which app
+gets launched on the operator's machine, reconstituting the exact
+launch-anything capability this fence exists to contain. If you find
+yourself "adding flexibility" by letting a request configure this, stop:
+that is precisely how the `new_session_template` sibling incident above
+happened.**
+
+**The endpoint takes no target of any kind -- no request body, no query
+parameter, nothing.** This is the entire security design, and it is why
+`focus_app` needs no fence of its own beyond `LOCAL_ONLY_KEYS`: the app
+raised is always exactly `settings["focus_app"]`, a value only a local
+operator can set by editing `settings.json` on disk. A caller who fully
+controls the request can still only trigger the one app the operator
+already chose -- there is no `{"app": "..."}` field to add "for
+flexibility." Doing so would turn this into `open -a <arbitrary>`, remote
+process execution one thin layer removed from `/input`'s RCE-by-design.
+`test_focus_endpoint_accepts_no_target` (`tests/test_focus.py`) guards this
+property directly -- do not weaken it to accept a target "just for
+testing" or "just for federation," either.
+
+Platform support is macOS-only in v1: `muxplex.focus.resolve_focus_capability()`
+is the single dispatch point (mirrors `service.py`'s `_is_darwin()` /
+`_have_systemctl()` pattern), and every unsupported platform returns an
+honest `501`, never a silent no-op. See `docs/API_SEMANTICS.md`'s
+`POST /api/focus` section for the full response-ordering rationale and the
+`GET /api/instance-info` capability block.
+
 ## ttyd is loopback-only by design (unauthenticated writable terminal) — now per-session, over AF_UNIX
 
 **One ttyd process per tmux session**, each bound to its own UNIX domain

@@ -625,7 +625,11 @@ def test_local_only_keys_are_exactly_the_input_fences():
     session_commands is included: it's a LIST of additional named
     create/kill pairs, each holding the same two arbitrary shell commands as
     the singular keys -- the API may list/select a pair, never define one
-    (docs/plans/2026-08-02-named-session-command-pairs-plan.md)."""
+    (docs/plans/2026-08-02-named-session-command-pairs-plan.md).
+
+    focus_app is included for the same reason: it's the argument to a
+    command (`open -a <focus_app>`) the server executes on POST /api/focus
+    (docs/plans/2026-08-05-focus-grab-plan.md)."""
     assert LOCAL_ONLY_KEYS == frozenset(
         {
             "input_enabled",
@@ -636,6 +640,7 @@ def test_local_only_keys_are_exactly_the_input_fences():
             "tmux_socket_dir",
             "tls_cert",
             "tls_key",
+            "focus_app",
         }
     )
     assert LOCAL_ONLY_KEYS.isdisjoint(SYNCABLE_KEYS)

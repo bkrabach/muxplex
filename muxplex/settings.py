@@ -176,6 +176,16 @@ DEFAULT_SETTINGS: dict = {
     # host, exactly as machine-scoped as tmux_theme/tmux_socket_dir.
     # Deliberately NOT in SYNCABLE_KEYS.
     "tmux_copy_mode": "desktop",
+    # macOS-only: the .app bundle name POST /api/focus runs `open -a` against
+    # to bring the muxplex PWA window to the foreground on THIS host. Empty
+    # (the default) means the feature is unconfigured -- the endpoint 409s
+    # rather than silently no-op-ing. Machine-specific by nature (a bundle
+    # name on one Mac means nothing on another), so this is LOCAL_ONLY_KEYS
+    # and never SYNCABLE -- see that frozenset's comment block and
+    # docs/plans/2026-08-05-focus-grab-plan.md \u00a73.5/\u00a76 for the full
+    # security rationale (the endpoint accepts no target of any kind; this
+    # setting is the ONLY source of the app POST /api/focus can raise).
+    "focus_app": "",
 }
 
 # Keys that can ONLY be changed by editing the settings file on disk
@@ -215,6 +225,13 @@ DEFAULT_SETTINGS: dict = {
 #     parses (cli.py's TLS status/serve commands). A remote caller could
 #     point these at an arbitrary path, an unauthenticated file-read
 #     primitive on whatever the server has permission to open.
+#   - `focus_app` is the .app bundle name POST /api/focus runs `open -a`
+#     against (see main.py's raise_focus() / focus.py). The endpoint itself
+#     accepts no target, so this setting is the ONLY thing that determines
+#     which app a caller can trigger -- a PATCHable focus_app would let a
+#     Bearer-key holder point `open -a` at an app of their choosing,
+#     reconstituting the launch-anything capability the no-target design
+#     exists to prevent. See docs/plans/2026-08-05-focus-grab-plan.md \u00a76.
 #
 # These keys are also deliberately NOT in SYNCABLE_KEYS (federation sync must
 # never widen them).
@@ -228,6 +245,7 @@ LOCAL_ONLY_KEYS: frozenset[str] = frozenset(
         "tmux_socket_dir",
         "tls_cert",
         "tls_key",
+        "focus_app",
     }
 )
 
