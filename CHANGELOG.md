@@ -21,6 +21,24 @@
   - **`bell_hook_armed` reverts to its pre-v0.38.1 meaning: `set-hook` was accepted, not that delivery was proven.** This is a deliberate, honest downgrade rather than a silent one -- `_arm_bell_hook()`'s docstring, `GET /api/instance-info`'s field comment, `muxplex doctor`'s advisory line, and `docs/API_SEMANTICS.md`'s `bell_hook_unarmed` entry were all updated to say so. The public field name and shape are unchanged (`bell_hook_armed: bool`, `/api/instance-info`) -- `muxplex-client` and `muxplex-deck` consumers are unaffected -- only the documented meaning of `True` is weaker. The known cost: a scheme mismatch (the ORIGINAL bell-hook incident this whole line of work started from) now registers successfully and reports armed, because `set-hook` cannot validate the command string it's given and there is no longer an arm-time HTTP round trip that could. `test_registration_succeeding_with_wrong_scheme_is_a_known_limitation` (`test_api.py`) documents this explicitly rather than leaving it implicit.
   - **New standing rule, encoded structurally, not just in prose: muxplex must never emit anything that renders on a user's terminal.** `AGENTS.md` gained a dedicated section ahead of the bell-hook entry. Enforcement is mechanical: `_bell_hook_curl()`'s signature no longer accepts a parameter that could request a loud variant (`test_bell_hook_curl_has_no_loud_variant` asserts this via `inspect.signature`), and a new structural scan (`test_safety_rails.py`'s `test_no_diagnostic_tmux_run_shell_construction_exists`) walks every `muxplex/*.py` source file and asserts exactly ONE `run-shell` string construction exists anywhere in production code -- the persistent hook's own registration call. A future diagnostic, probe, or health check built as a `tmux run-shell` call fails this test immediately, in any module, rather than waiting to be discovered on a live host a third time.
   - **Dead code removed**: `_BELL_PROBE_SESSION`, `_bell_probe_event`, `_BELL_PROBE_TIMEOUT_S` module state, and `receive_bell()`'s sentinel-session branch -- nothing else referenced them.
+- **Dictation transcribed a ladder of every intermediate state instead of the sentence.** Dictating
+  "what needs to be worked on next" on Android Chrome produced `what what needs what needs to what
+  needs to be what needs to be worked what needs to be worked on what needs to be worked on next`.
+  `_sttHandleResult()` iterated `event.resultIndex … results.length` and applied each result
+  incrementally; the `isFinal` branch committed text and **advanced the insertion point past it**.
+  That is correct only for an engine that never re-sends an already-finalized result -- an assumption
+  the handler's own docstring stated outright (*"a spec-compliant implementation never re-sends an
+  already-committed prior result"*). Android Chrome instead re-delivers a single, still-growing entry
+  marked `isFinal: true` on every event, so each one landed after the previous.
+  - **The fix makes transcript application idempotent rather than special-casing a browser.** Every
+    `result` event now rebuilds the entire dictated region from the full `SpeechRecognitionResultList`
+    against a fixed per-session anchor -- the output is a pure function of (anchor, current results),
+    never of what a prior call did. Correct for both engine behaviors from one code path: a cumulative
+    re-delivery replaces the region instead of appending after it, and a spec-clean disjoint list
+    concatenates exactly as before. `event.resultIndex` is no longer consulted at all.
+  - Pinned with the real observed failure: `test_stt.mjs` asserts the Android-shaped sequence ends with
+    exactly the spoken sentence, plus the spec-clean shape, idempotency under event replay, and that a
+    stop/restart mid-dictation cannot clobber previously committed text.
 
 ### Verification
 
