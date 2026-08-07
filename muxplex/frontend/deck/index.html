@@ -68,7 +68,14 @@
          never alongside it. -->
     <div id="deck-disconnected" class="hidden">
       <p id="deck-disconnected-message"></p>
-      <button type="button" id="deck-retry">RETRY</button>
+      <!-- SETTINGS sits beside RETRY unconditionally (BACKLOG.md item 4 /
+           docs/plans/2026-08-06-settings-recovery-plan.md \u00a76.4) -- the one
+           affordance that no grid shape, binding, or brightness value can
+           remove, since this takeover replaces the grid entirely. -->
+      <div class="deck-takeover-actions">
+        <button type="button" id="deck-retry" class="deck-takeover-key">RETRY</button>
+        <button type="button" id="deck-settings-open" class="deck-takeover-key">SETTINGS</button>
+      </div>
     </div>
 
     <!-- Settings panel (BACKLOG.md item 2). Reached via a long-press on the
@@ -76,6 +83,14 @@
          (deck.js's checkURLEscapeHatch) -- never a default key slot. This is
          the one element on the surface allowed to scroll (deck.css). -->
     <div id="deck-settings" class="hidden">
+      <!-- Boot-time reachability detector's banner (BACKLOG.md item 4 /
+           docs/plans/2026-08-06-settings-recovery-plan.md \u00a76.3). Hidden by
+           default; deck.js populates and unhides it only when the persisted
+           settings left no usable way back into this panel for the current
+           grid. role="alert" gives it an accessibility-tree presence -- the
+           property whose absence caused the 2026-07 incident this whole area
+           of work exists to prevent. Never repairs anything; only explains. -->
+      <div id="settings-recovery-banner" class="hidden" role="alert"></div>
       <button type="button" id="settings-close">&larr; BACK</button>
       <h1>Deck Settings</h1>
 
@@ -102,6 +117,7 @@
         <label>Rows <input type="number" id="settings-rows" min="1" max="12" /></label>
         <label>Cols <input type="number" id="settings-cols" min="1" max="12" /></label>
         <button type="button" id="settings-grid-auto">Auto</button>
+        <p id="settings-grid-error" class="settings-error"></p>
       </section>
 
       <section>
@@ -124,6 +140,7 @@
         <label>Brightness (10-100%)
           <input type="range" id="settings-brightness" min="10" max="100" />
         </label>
+        <p>Session only &mdash; resets to 100% when the deck restarts, like the hardware deck.</p>
       </section>
 
       <section>

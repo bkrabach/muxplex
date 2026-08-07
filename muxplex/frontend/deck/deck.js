@@ -829,7 +829,7 @@ function defaultDeckSettings() {
     gridOverride: null, // {rows, cols} | null (null = auto, computeGrid)
     dialCount: 0, // 0-4
     stripCount: 0, // 0-4 touch-strip zones (independent of dialCount)
-    brightness: 100, // 10-100, applied as a CSS filter on the whole surface
+    brightness: 100, // 10-100, session-local, never persisted -- see persistableDeckSettings
     bindings: {}, // address (key.N | dial.N.turn | dial.N.push | strip.N.tap | strip.N.drag | strip.swipe.left | strip.swipe.right) -> action
   };
 }
@@ -840,6 +840,12 @@ function defaultDeckSettings() {
  * wrong-typed field is silently dropped in favor of its default rather
  * than rejecting the whole object (an import/localStorage read should
  * recover as much of a partially-valid settings blob as it safely can).
+ *
+ * `incoming.brightness` is deliberately never read: brightness is
+ * session-local (see `persistableDeckSettings`), so `out.brightness` stays
+ * at `defaultDeckSettings()`'s 100 regardless of what a stored or imported
+ * blob contains -- an old install with a persisted dim value gets it
+ * dropped on the next load, exactly like a reload undoing `setBrightness`.
  * @param {object} defaults - defaultDeckSettings(), or another rebase point
  * @param {object} incoming
  * @returns {object}
@@ -874,9 +880,6 @@ function mergeDeckSettings(defaults, incoming) {
   if (Number.isInteger(incoming.stripCount) && incoming.stripCount >= 0 && incoming.stripCount <= STRIP_MAX_ZONES) {
     out.stripCount = incoming.stripCount;
   }
-  if (Number.isInteger(incoming.brightness) && incoming.brightness >= 10 && incoming.brightness <= 100) {
-    out.brightness = incoming.brightness;
-  }
   out.bindings = sanitizeBindings(incoming.bindings);
   return out;
 }
@@ -909,16 +912,40 @@ function loadDeckSettings(storage) {
 }
 
 /**
+ * The subset of deck settings that is written to storage / export.
+ *
+ * `brightness` is deliberately EXCLUDED -- it is session-local, exactly like
+ * the hardware sidecar's (muxplex-deck/src/muxplex_deck/main.py:490-497,
+ * "writing a dimmed value to config.json would ... leave a deck that looks
+ * dead after a replug with the cause stored invisibly in a file"). A
+ * persisted 10% is self-sealing on the soft deck for the same reason and
+ * worse: the CSS filter that dims the surface also dims the Settings panel
+ * that would undo it. See docs/plans/2026-08-06-settings-recovery-plan.md.
+ * @param {object} settings
+ * @returns {object}
+ */
+function persistableDeckSettings(settings) {
+  var out = {};
+  for (var key in settings) {
+    if (!Object.prototype.hasOwnProperty.call(settings, key)) continue;
+    if (key === 'brightness') continue;
+    out[key] = settings[key];
+  }
+  return out;
+}
+
+/**
  * Persist deck settings. Best-effort: a full/unavailable storage (e.g.
  * private browsing) is swallowed, never thrown -- losing a settings write
- * must not break the deck itself.
+ * must not break the deck itself. Brightness is never written -- see
+ * `persistableDeckSettings`.
  * @param {{setItem:function(string,string):void}|null|undefined} storage
  * @param {object} settings
  */
 function saveDeckSettings(storage, settings) {
   if (!storage) return;
   try {
-    storage.setItem(DECK_SETTINGS_KEY, JSON.stringify(settings));
+    storage.setItem(DECK_SETTINGS_KEY, JSON.stringify(persistableDeckSettings(settings)));
   } catch (e) {
     // best-effort; see docstring
   }
@@ -927,11 +954,12 @@ function saveDeckSettings(storage, settings) {
 /**
  * Serialize settings for the settings panel's Export field -- the backup
  * story for a local-only, per-device settings model (see section header).
+ * Brightness is never included -- see `persistableDeckSettings`.
  * @param {object} settings
  * @returns {string}
  */
 function exportSettingsJSON(settings) {
-  return JSON.stringify(settings, null, 2);
+  return JSON.stringify(persistableDeckSettings(settings), null, 2);
 }
 
 /**
@@ -1130,6 +1158,68 @@ function sessionSlotIndices(rows, cols, reserved, boundIndices) {
     if (!reservedSet[i] && !(i in bound)) slots.push(i);
   }
   return slots;
+}
+
+/**
+ * Whether a grid shape leaves a way back into Settings.
+ *
+ * Deliberately passes an EMPTY boundIndices map: this asks about the SHAPE,
+ * not about today's bindings. A shape that is only reachable because nothing
+ * happens to be bound is a shape that strands the moment a binding is added.
+ * Refuses every degenerate shape (every 1xN / Nx1) and 2x2 (`slots.length`
+ * is 1 there -- corners mode with only one open slot, below the 2 the
+ * picker needs to place the SETTINGS key alongside a session tile). Accepts
+ * 2x3, 3x2, and everything larger. See
+ * docs/plans/2026-08-06-settings-recovery-plan.md \u00a75.2 / \u00a76.2.
+ * @param {number} rows
+ * @param {number} cols
+ * @returns {{ok: boolean, reason: string}} reason: '' | 'degenerate' | 'no-settings-slot'
+ */
+function gridOverrideReachability(rows, cols) {
+  var reserved = reservedControlKeys(rows, cols);
+  if (reserved.mode === 'degenerate') return { ok: false, reason: 'degenerate' };
+  if (sessionSlotIndices(rows, cols, reserved, {}).length < 2) {
+    return { ok: false, reason: 'no-settings-slot' };
+  }
+  return { ok: true, reason: '' };
+}
+
+/**
+ * Whether the persisted settings leave a usable way into the Settings panel,
+ * for the CURRENT grid. See docs/plans/2026-08-06-settings-recovery-plan.md
+ * \u00a73 for the definition and the three (and only three) code paths that open
+ * the panel.
+ *
+ * `level`:
+ *   'full'           -- SETTINGS key present on the picker AND long-press armed
+ *   'longpress-only' -- only the accessibility-invisible path remains
+ *   'none'           -- no path at all
+ * Anything other than 'full' is a failure: 'longpress-only' is the exact state
+ * the 2026-07 settings-discoverability fix exists to eliminate.
+ *
+ * The last two reason codes are distinguished by evaluating
+ * `sessionSlotIndices` twice (once with `p.boundKeys`, once with `{}`) so the
+ * banner can name the actual culprit instead of blaming the grid for a
+ * binding problem.
+ * @param {{rows:number, cols:number, tooSmall:boolean,
+ *          boundKeys:Object<number,string>, gridOverride:?{rows:number,cols:number}}} p
+ * @returns {{level:string, reasons:string[]}}
+ */
+function settingsReachability(p) {
+  if (p.tooSmall) {
+    return { level: 'none', reasons: ['grid-too-small'] };
+  }
+  var reserved = reservedControlKeys(p.rows, p.cols);
+  if (reserved.mode === 'degenerate') {
+    return { level: 'none', reasons: ['grid-degenerate'] };
+  }
+  var slots = sessionSlotIndices(p.rows, p.cols, reserved, p.boundKeys || {});
+  if (slots.length < 2) {
+    var slotsUnbound = sessionSlotIndices(p.rows, p.cols, reserved, {});
+    var reason = slotsUnbound.length < 2 ? 'grid-too-few-keys' : 'bindings-consumed-slots';
+    return { level: 'longpress-only', reasons: [reason] };
+  }
+  return { level: 'full', reasons: [] };
 }
 
 /**
@@ -1904,9 +1994,19 @@ if (typeof document !== 'undefined') {
 
     function applyBrightness() {
       // A soft analogue of the hardware's LED-backlight brightness action:
-      // dims the whole deck surface via a CSS filter. Meaningful for the
-      // "phone left on a desk overnight" case BACKLOG.md item 2 names.
-      root.style.filter = deckSettings.brightness >= 100 ? '' : 'brightness(' + deckSettings.brightness / 100 + ')';
+      // dims the deck's CONTENT via a CSS filter. Meaningful for the "phone
+      // left on a desk overnight" case BACKLOG.md item 2 names.
+      //
+      // Deliberately a custom property on #deck-root, not a filter set here
+      // -- #deck-settings and #deck-disconnected are direct children of
+      // #deck-root, and a CSS filter on an ancestor composites the WHOLE
+      // subtree (a descendant cannot opt out). deck.css applies the actual
+      // `filter: brightness(var(--deck-dim))` only to #deck-grid /
+      // #deck-dial-strip / #deck-touch-strip, so the recovery surfaces --
+      // Settings and the disconnected takeover -- stay legible at every
+      // brightness, including the 10% floor. See
+      // docs/plans/2026-08-06-settings-recovery-plan.md \u00a76.1.
+      root.style.setProperty('--deck-dim', String(deckSettings.brightness / 100));
     }
 
     function applyGridTokens(g, t) {
@@ -2236,10 +2336,35 @@ if (typeof document !== 'undefined') {
       renderStripStatus(result);
     }
 
+    /**
+     * Message for the disconnected/too-small takeover. Names the actual
+     * override shape when one is responsible for the takeover (the case
+     * this fixes -- see render()'s tooSmall branch below); falls back to the
+     * pre-existing generic message otherwise.
+     * @returns {string}
+     */
+    function takeoverMessage() {
+      if (grid && grid.tooSmall && deckSettings.gridOverride) {
+        return (
+          'This screen is too small for a ' + deckSettings.gridOverride.rows + '\u00d7' +
+          deckSettings.gridOverride.cols + ' grid.'
+        );
+      }
+      return 'Screen too small for the deck.';
+    }
+
     function render() {
       if (mode === 'settings') return; // settings panel owns the surface entirely
-      if (!grid || grid.rows === 0 || grid.cols === 0) {
-        showDisconnected('Screen too small for the deck.');
+      // grid.tooSmall (added to this guard): computeGridForShape can return
+      // non-zero rows/cols with `tooSmall: true` for a gridOverride that
+      // doesn't fit THIS viewport -- previously that set `.too-small` on
+      // #deck-root (CSS hides #deck-surface) while this guard only checked
+      // rows/cols === 0, so neither branch fired: renderKeys() painted into
+      // a display:none container and the user saw a completely blank black
+      // screen -- no keys, no message, no RETRY. See
+      // docs/plans/2026-08-06-settings-recovery-plan.md \u00a72.3 B.
+      if (!grid || grid.rows === 0 || grid.cols === 0 || grid.tooSmall) {
+        showDisconnected(takeoverMessage());
         return;
       }
 
@@ -2270,6 +2395,19 @@ if (typeof document !== 'undefined') {
     retryButton.addEventListener('click', function () {
       poll();
     });
+
+    // The takeover's SETTINGS button (\u00a76.4): shown unconditionally, including
+    // for ordinary connection failures -- the takeover screen is by
+    // definition non-functional, spends no key slot, and one button with no
+    // branch is easier to keep correct than two states. It is also the one
+    // affordance in this design that no grid shape, no binding, and (after
+    // \u00a76.1) no brightness value can remove.
+    var takeoverSettingsButton = document.getElementById('deck-settings-open');
+    if (takeoverSettingsButton) {
+      takeoverSettingsButton.addEventListener('click', function () {
+        openSettings(null);
+      });
+    }
 
     // Re-render on a fast tick so relative STATE ages stay current between
     // polls, without re-fetching or rebuilding the grid.
@@ -2479,7 +2617,11 @@ if (typeof document !== 'undefined') {
       if (value > 100) value = 100;
       if (value < 10) value = 10;
       deckSettings.brightness = value;
-      saveDeckSettings(storage, deckSettings);
+      // Deliberately no saveDeckSettings() call here -- brightness is
+      // session-local (persistableDeckSettings excludes it), matching the
+      // hardware sidecar's re-assert-to-100%-on-bring-up behavior. A
+      // persisted dim value would be self-sealing: the CSS filter that
+      // dims the surface also dims the Settings panel that would undo it.
       applyBrightness();
     }
 
@@ -2985,13 +3127,80 @@ if (typeof document !== 'undefined') {
 
     var settingsWired = false;
 
-    function openSettings() {
+    /**
+     * Copy for the boot-time recovery banner (\u00a76.3), keyed by
+     * settingsReachability's reason codes. Names the actual current shape
+     * (from `grid`/`deckSettings`, both in scope at the call site) so the
+     * banner names the offending value rather than speaking in the abstract.
+     * @param {string[]} reasons
+     * @returns {string}
+     */
+    function recoveryBannerMessage(reasons) {
+      var override = deckSettings.gridOverride;
+      var shape = override ? override.rows + '\u00d7' + override.cols : (grid ? grid.rows + '\u00d7' + grid.cols : '');
+      if (reasons.indexOf('grid-too-small') !== -1) {
+        return (
+          'Your saved ' + shape + ' grid is too small to draw on this screen, so the deck could ' +
+          'not render. Settings has been opened because nothing else would have been ' +
+          'visible. Nothing has been changed \u2014 pick a larger cell count or tap Auto.'
+        );
+      }
+      if (reasons.indexOf('grid-degenerate') !== -1) {
+        return (
+          'Your saved ' + shape + ' grid leaves no room for the VIEW key, so there is no way to ' +
+          'switch views or pages, or to reach this panel again. Nothing has been changed ' +
+          '\u2014 pick a grid with both dimensions \u2265 2 (minimum 2\u00d73), or tap Auto.'
+        );
+      }
+      if (reasons.indexOf('grid-too-few-keys') !== -1) {
+        return (
+          'Your saved ' + shape + ' grid has no room left for the SETTINGS key, so the only way ' +
+          'back into this panel is an invisible long-press. Nothing has been changed \u2014 use a ' +
+          'larger grid (minimum 2\u00d73), or tap Auto.'
+        );
+      }
+      if (reasons.indexOf('bindings-consumed-slots') !== -1) {
+        return (
+          'Your key bindings have filled every open slot on the ' + shape + ' grid, so the ' +
+          'SETTINGS key has nowhere to go \u2014 only an invisible long-press remains. Nothing has ' +
+          'been changed \u2014 remove a binding below to free a slot.'
+        );
+      }
+      return 'Settings has been opened because part of your saved configuration is unreachable. Nothing has been changed.';
+    }
+
+    /**
+     * Populate or hide `#settings-recovery-banner` (\u00a76.3). Never modifies
+     * `deckSettings` -- this only explains; it changes nothing.
+     * @param {string[]|null|undefined} reasons
+     */
+    function updateRecoveryBanner(reasons) {
+      if (!settingsEl) return;
+      var banner = settingsEl.querySelector('#settings-recovery-banner');
+      if (!banner) return;
+      if (reasons && reasons.length > 0) {
+        banner.textContent = recoveryBannerMessage(reasons);
+        banner.classList.remove('hidden');
+      } else {
+        banner.textContent = '';
+        banner.classList.add('hidden');
+      }
+    }
+
+    /**
+     * @param {string[]|null} [reasons] - non-null/non-empty only when called
+     *   by the boot-time detector (\u00a76.3); every interactive open (SETTINGS
+     *   key tap, long-press, URL escape hatch) passes nothing, which hides
+     *   the banner.
+     */
+    function openSettings(reasons) {
       mode = 'settings';
       if (!settingsWired) {
         wireSettingsPanel();
         settingsWired = true;
       }
       populateSettingsForm();
+      updateRecoveryBanner(reasons);
       if (settingsEl) settingsEl.classList.remove('hidden');
       if (surface) surface.classList.add('hidden');
       if (dialStripEl) dialStripEl.classList.add('hidden');
@@ -3004,6 +3213,11 @@ if (typeof document !== 'undefined') {
       if (surface) surface.classList.remove('hidden');
       recomputeGrid(); // pick up any grid-override/dial-count/strip-count change made in settings
       render();
+      // Deliberately no "you're still stranded" warning here: if the config
+      // is still unreachable, the detector fires again on the next cold
+      // start (\u00a76.3). This surface has no toast/banner vocabulary outside
+      // the two whole-surface takeovers, and inventing one for an edge case
+      // the user just chose is worse than a bounded, self-explaining loop.
     }
 
     function populateSettingsForm() {
@@ -3096,14 +3310,31 @@ if (typeof document !== 'undefined') {
 
       var rowsInput = settingsEl.querySelector('#settings-rows');
       var colsInput = settingsEl.querySelector('#settings-cols');
+      var gridError = settingsEl.querySelector('#settings-grid-error');
       var applyGridOverride = function () {
         var r = parseInt(rowsInput.value, 10);
         var c = parseInt(colsInput.value, 10);
-        if (Number.isFinite(r) && Number.isFinite(c) && r >= 1 && c >= 1 && r <= 12 && c <= 12 && r * c <= N_MAX) {
-          deckSettings.gridOverride = { rows: r, cols: c };
-          saveDeckSettings(storage, deckSettings);
-          populateSettingsForm();
+        if (!(Number.isFinite(r) && Number.isFinite(c) && r >= 1 && c >= 1 && r <= 12 && c <= 12 && r * c <= N_MAX)) {
+          return;
         }
+        // Refuse to SAVE a shape that leaves no way back into this panel --
+        // decidable purely from (r, c), so it's caught here rather than only
+        // discovered later at boot (\u00a76.2). Degenerate (1xN/Nx1) and 2x2 both
+        // fail; the smallest shape that works is 2x3 or 3x2.
+        var reach = gridOverrideReachability(r, c);
+        if (!reach.ok) {
+          if (gridError) {
+            gridError.textContent =
+              r + '\u00d7' + c + ' leaves no room for the VIEW key, so the deck would have no way ' +
+              'back into this panel \u2014 and no way to switch views or pages either. The ' +
+              'smallest grid that works is 2\u00d73.';
+          }
+          return; // no save -- the stored value is unchanged
+        }
+        if (gridError) gridError.textContent = '';
+        deckSettings.gridOverride = { rows: r, cols: c };
+        saveDeckSettings(storage, deckSettings);
+        populateSettingsForm();
       };
       if (rowsInput) rowsInput.addEventListener('change', applyGridOverride);
       if (colsInput) colsInput.addEventListener('change', applyGridOverride);
@@ -3112,6 +3343,7 @@ if (typeof document !== 'undefined') {
       if (autoBtn) {
         autoBtn.addEventListener('click', function () {
           deckSettings.gridOverride = null;
+          if (gridError) gridError.textContent = '';
           saveDeckSettings(storage, deckSettings);
           populateSettingsForm();
         });
@@ -3210,11 +3442,26 @@ if (typeof document !== 'undefined') {
             if (importError) importError.textContent = result.error;
             return;
           }
-          if (importError) importError.textContent = '';
           deckSettings = result.settings;
           saveDeckSettings(storage, deckSettings);
           applyBrightness();
           populateSettingsForm();
+          // A WARNING, not a refusal: import is a restore path, and refusing
+          // a whole blob over one field would contradict mergeDeckSettings's
+          // documented "recover as much as it safely can" posture. The panel
+          // stays open, so the user is already standing where they'd fix it
+          // -- and \u00a76.3's boot detector catches it on the next cold start
+          // regardless if they don't.
+          if (importError) {
+            var override = deckSettings.gridOverride;
+            if (override && !gridOverrideReachability(override.rows, override.cols).ok) {
+              importError.textContent =
+                'Imported, but the ' + override.rows + '\u00d7' + override.cols + ' grid it set leaves no ' +
+                'way back into Settings. Nothing further has been changed \u2014 fix the grid above or tap Auto.';
+            } else {
+              importError.textContent = '';
+            }
+          }
         });
       }
     }
@@ -3253,11 +3500,24 @@ if (typeof document !== 'undefined') {
       var wantsSettings = checkURLEscapeHatch();
       recomputeGrid();
       render();
+      // Boot-time reachability detector (\u00a76.3): if the persisted settings
+      // leave no usable way back into this panel for the CURRENT grid, open
+      // it automatically and say why -- changing nothing. This is the
+      // migration path for installs that already carry a stranding value;
+      // write-time refusal (\u00a76.2) only helps FUTURE writes.
+      var reach = settingsReachability({
+        rows: grid.rows,
+        cols: grid.cols,
+        tooSmall: !!grid.tooSmall,
+        boundKeys: boundKeys,
+        gridOverride: deckSettings.gridOverride,
+      });
       requestWakeLock();
       lockLandscapeOrientation();
       registerServiceWorker();
       poll().then(schedulePoll);
-      if (wantsSettings) openSettings();
+      if (wantsSettings) openSettings(null);
+      else if (reach.level !== 'full') openSettings(reach.reasons);
     }
 
     if (document.readyState === 'loading') {
@@ -3326,6 +3586,10 @@ if (typeof module !== 'undefined' && module.exports) {
     importSettingsJSON: importSettingsJSON,
     computeGridForShape: computeGridForShape,
     computeEffectiveGrid: computeEffectiveGrid,
+    // Settings recovery (BACKLOG.md item 4 / docs/plans/2026-08-06-settings-recovery-plan.md)
+    persistableDeckSettings: persistableDeckSettings,
+    gridOverrideReachability: gridOverrideReachability,
+    settingsReachability: settingsReachability,
     contentBoxForDials: contentBoxForDials,
     stripReservationOffsets: stripReservationOffsets,
     DECK_SETTINGS_KEY: DECK_SETTINGS_KEY,

@@ -88,6 +88,16 @@ html, body {
   grid-template-rows: repeat(var(--rows), var(--cell-h));
   gap: var(--gap);
   transition: opacity 0.4s ease, filter 0.4s ease;
+  /* The brightness dim applies to the deck's CONTENT, never to its
+     recovery surfaces: #deck-settings and #deck-disconnected must stay
+     legible at any brightness, because they are what a user at 10% is
+     trying to reach. A CSS filter on an ancestor (e.g. #deck-root)
+     composites the whole subtree and a descendant cannot opt out -- which
+     is why this is applied per-element, here and on #deck-dial-strip /
+     #deck-touch-strip below, rather than on #deck-root. --deck-dim is set
+     by deck.js's applyBrightness(); it defaults to 1 (full brightness) so
+     nothing here renders dim before deck.js's first paint. */
+  filter: brightness(var(--deck-dim, 1));
 }
 
 /* Stale (poll late but not failed): every face dims -- a global VALUE
@@ -386,6 +396,9 @@ html, body {
   gap: 12px;
   padding: 0 12px env(safe-area-inset-bottom, 0px);
   z-index: 4;
+  /* See #deck-grid's --deck-dim comment above -- same per-element dim,
+     never on #deck-root. */
+  filter: brightness(var(--deck-dim, 1));
 }
 #deck-dial-strip.hidden {
   display: none;
@@ -467,6 +480,9 @@ html, body {
   padding: 0 8px env(safe-area-inset-bottom, 0px);
   z-index: 4;
   gap: 2px;
+  /* See #deck-grid's --deck-dim comment above -- same per-element dim,
+     never on #deck-root. */
+  filter: brightness(var(--deck-dim, 1));
 }
 #deck-touch-strip.hidden {
   display: none;
@@ -683,10 +699,20 @@ html, body {
   max-width: 32rem;
 }
 
-#deck-retry {
+/* RETRY and SETTINGS side by side (BACKLOG.md item 4 /
+   docs/plans/2026-08-06-settings-recovery-plan.md \u00a76.4): row, not column --
+   a landscape phone is only ~390px tall, and two stacked 160px faces plus
+   the message text above them would overflow that. */
+.deck-takeover-actions {
+  display: flex;
+  gap: 24px;
+}
+
+.deck-takeover-key {
   /* Styled as a single key face, at a fixed, readable size regardless of
      the grid's own token values -- there may be no valid grid at all when
-     this is shown. */
+     this is shown. Shared by #deck-retry and #deck-settings-open so both
+     faces stay visually identical. */
   width: 160px;
   height: 160px;
   background: #101036;
@@ -699,7 +725,7 @@ html, body {
   -webkit-tap-highlight-color: transparent;
   transition: transform 100ms ease, filter 100ms ease;
 }
-#deck-retry:active {
+.deck-takeover-key:active {
   transform: scale(0.96);
   filter: brightness(1.15);
 }

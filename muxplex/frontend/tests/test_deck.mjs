@@ -63,6 +63,10 @@ test('deck.js exports all pure functions', () => {
     'importSettingsJSON',
     'computeGridForShape',
     'computeEffectiveGrid',
+    // Settings recovery (BACKLOG.md item 4)
+    'persistableDeckSettings',
+    'gridOverrideReachability',
+    'settingsReachability',
     'contentBoxForDials',
     'buildStripStatusMessage',
     'buildStripPickerStatusMessage',
@@ -1480,14 +1484,18 @@ test('mergeDeckSettings: valid incoming fields are adopted', () => {
     pollIntervalMs: 3000,
     gridOverride: { rows: 3, cols: 5 },
     dialCount: 2,
-    brightness: 60,
+    // brightness deliberately NOT asserted "adopted" here: BACKLOG.md item 4
+    // (docs/plans/2026-08-06-settings-recovery-plan.md §6.1) made brightness
+    // session-local -- mergeDeckSettings never reads it from `incoming` at
+    // all now. See the dedicated
+    // "mergeDeckSettings: ignores incoming brightness entirely" test below.
     bindings: { 'key.1': 'refresh_now' },
   });
   assert.strictEqual(merged.sort, 'server');
   assert.strictEqual(merged.pollIntervalMs, 3000);
   assert.deepEqual(merged.gridOverride, { rows: 3, cols: 5 });
   assert.strictEqual(merged.dialCount, 2);
-  assert.strictEqual(merged.brightness, 60);
+  assert.strictEqual(merged.brightness, 100);
   assert.deepEqual(merged.bindings, { 'key.1': 'refresh_now' });
 });
 
@@ -1589,6 +1597,185 @@ test('computeEffectiveGrid: a valid override forces the shape', () => {
   const g = deck.computeEffectiveGrid(1000, 600, { rows: 2, cols: 4 });
   assert.strictEqual(g.rows, 2);
   assert.strictEqual(g.cols, 4);
+});
+
+// ─── Settings recovery (BACKLOG.md item 4 / docs/plans/2026-08-06-settings-recovery-plan.md) ───
+
+// U3: gridOverrideReachability -- false for every degenerate shape and for
+// 2x2; true for 2x3 and 3x2. Table taken verbatim from the plan's §2.3
+// fixture (verified against the real exported functions).
+test('gridOverrideReachability: refuses every degenerate shape and 2x2, accepts 2x3/3x2 and larger', () => {
+  const refused = [
+    [1, 1],
+    [1, 4],
+    [4, 1],
+    [2, 2],
+  ];
+  for (const [rows, cols] of refused) {
+    const r = deck.gridOverrideReachability(rows, cols);
+    assert.strictEqual(r.ok, false, `${rows}x${cols} must be refused`);
+    assert.ok(r.reason, `${rows}x${cols} must carry a reason`);
+  }
+  const accepted = [
+    [2, 3],
+    [3, 2],
+    [12, 2],
+    [2, 12],
+    [8, 4],
+    [4, 8],
+  ];
+  for (const [rows, cols] of accepted) {
+    const r = deck.gridOverrideReachability(rows, cols);
+    assert.strictEqual(r.ok, true, `${rows}x${cols} must be accepted`);
+    assert.strictEqual(r.reason, '');
+  }
+});
+
+// U1: settingsReachability -- the plan's §2.3 fixture table, verbatim, run
+// through computeEffectiveGrid at the same 844x390 landscape-phone content
+// box the plan verified against, then through settingsReachability. Expected
+// levels are derived from §3's definition table.
+test('settingsReachability: matches the §2.3 fixture table at an 844x390 content box', () => {
+  const CONTENT_W = 844;
+  const CONTENT_H = 390;
+  const fixture = [
+    { rows: 1, cols: 1, level: 'none', reason: 'grid-degenerate' },
+    { rows: 1, cols: 4, level: 'none', reason: 'grid-degenerate' },
+    { rows: 4, cols: 1, level: 'none', reason: 'grid-degenerate' },
+    { rows: 2, cols: 2, level: 'longpress-only', reason: 'grid-too-few-keys' },
+    { rows: 2, cols: 3, level: 'full', reason: null },
+    { rows: 3, cols: 2, level: 'full', reason: null },
+    { rows: 12, cols: 2, level: 'none', reason: 'grid-too-small' },
+    { rows: 2, cols: 12, level: 'none', reason: 'grid-too-small' },
+    { rows: 8, cols: 4, level: 'none', reason: 'grid-too-small' },
+    { rows: 4, cols: 8, level: 'full', reason: null },
+  ];
+  for (const row of fixture) {
+    const g = deck.computeEffectiveGrid(CONTENT_W, CONTENT_H, { rows: row.rows, cols: row.cols });
+    const reach = deck.settingsReachability({
+      rows: g.rows,
+      cols: g.cols,
+      tooSmall: g.tooSmall,
+      boundKeys: {},
+      gridOverride: { rows: row.rows, cols: row.cols },
+    });
+    assert.strictEqual(
+      reach.level,
+      row.level,
+      `${row.rows}x${row.cols}: expected level "${row.level}", got "${reach.level}" (reasons: ${JSON.stringify(reach.reasons)})`
+    );
+    if (row.reason) {
+      assert.ok(
+        reach.reasons.includes(row.reason),
+        `${row.rows}x${row.cols}: expected reason "${row.reason}" in ${JSON.stringify(reach.reasons)}`
+      );
+    } else {
+      assert.deepEqual(reach.reasons, []);
+    }
+  }
+});
+
+// U2: settingsReachability distinguishes 'grid-too-few-keys' (the grid
+// itself has no room, even unbound) from 'bindings-consumed-slots' (the
+// grid WOULD have room, but bindings ate it) -- same 3x2 grid, evaluated
+// once bare and once with two of its three open slots bound.
+test('settingsReachability: distinguishes grid-too-few-keys from bindings-consumed-slots on the same grid', () => {
+  const bare = deck.settingsReachability({ rows: 3, cols: 2, tooSmall: false, boundKeys: {}, gridOverride: { rows: 3, cols: 2 } });
+  assert.strictEqual(bare.level, 'full');
+  assert.deepEqual(bare.reasons, []);
+
+  // 3x2 corners mode: reserved = {view:0, prev:4, next:5}; open slots are 1,2,3
+  // (3 slots). Binding two of them (1 and 2) leaves only 1 open slot -- below
+  // the 2 the picker needs to place SETTINGS alongside a session tile.
+  const bound = deck.settingsReachability({
+    rows: 3,
+    cols: 2,
+    tooSmall: false,
+    boundKeys: { 1: 'refresh_now', 2: 'refresh_now' },
+    gridOverride: { rows: 3, cols: 2 },
+  });
+  assert.strictEqual(bound.level, 'longpress-only');
+  assert.deepEqual(bound.reasons, ['bindings-consumed-slots']);
+});
+
+// Regression test: gridOverride 12x2 on a landscape phone (844x390 content
+// box) must never produce a completely blank black screen. This pins the
+// live bug the plan's §2.3 B section documents: computeGridForShape can
+// return `tooSmall: true` with NON-ZERO rows/cols, which defeated the old
+// render() guard (`grid.rows === 0 || grid.cols === 0`) entirely -- CSS hid
+// #deck-surface via `.too-small` while the takeover never appeared. This
+// suite has no DOM (see file header), so it cannot execute the real
+// render()/boot() DOM closure directly; instead it pins the exact guard
+// PREDICATE render() now uses (`!grid || grid.rows === 0 || grid.cols === 0
+// || grid.tooSmall`, deck.js's render()) against the real, exported
+// computeEffectiveGrid()/settingsReachability() outputs for this shape --
+// proving both that the bug precondition reproduces and that the fixed
+// guard (unlike the old one) fires for it. The DOM-level assertion that the
+// takeover actually renders is smoke test S1 (see plan §8) -- run against a
+// real installed PWA.
+test('regression: 12x2 gridOverride on a landscape phone reproduces tooSmall with non-zero rows/cols (deck.js:2241 blank-screen bug)', () => {
+  const g = deck.computeEffectiveGrid(844, 390, { rows: 12, cols: 2 });
+
+  // Reproduce the bug's exact precondition, verbatim against the plan's own
+  // verified table (§2.3 B): tooSmall is true, but rows/cols are NOT zero.
+  assert.strictEqual(g.rows, 12);
+  assert.strictEqual(g.cols, 2);
+  assert.strictEqual(g.tooSmall, true);
+
+  // The OLD guard (pre-fix) would never have shown the takeover for this
+  // shape -- this is the bug itself, pinned so it cannot silently return.
+  const oldGuardShowsTakeover = g.rows === 0 || g.cols === 0;
+  assert.strictEqual(oldGuardShowsTakeover, false, 'reproduces the blank-screen bug precondition exactly');
+
+  // The FIXED guard (deck.js's render(), current source) must show the
+  // takeover instead.
+  const fixedGuardShowsTakeover = !g || g.rows === 0 || g.cols === 0 || g.tooSmall;
+  assert.strictEqual(fixedGuardShowsTakeover, true, 'the fixed render() guard must show the takeover, not a blank screen');
+
+  // And the boot-time detector must independently agree this is unreachable,
+  // for the right reason -- not just "no keys rendered" but "here is why."
+  const reach = deck.settingsReachability({ rows: g.rows, cols: g.cols, tooSmall: g.tooSmall, boundKeys: {}, gridOverride: { rows: 12, cols: 2 } });
+  assert.deepEqual(reach, { level: 'none', reasons: ['grid-too-small'] });
+});
+
+// U4: persistableDeckSettings has no brightness key; every other key
+// round-trips unchanged.
+test('persistableDeckSettings: excludes brightness, keeps every other key unchanged', () => {
+  const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), {
+    sort: 'server',
+    pollIntervalMs: 2000,
+    gridOverride: { rows: 3, cols: 5 },
+    dialCount: 2,
+    stripCount: 1,
+    bindings: { 'key.2': 'refresh_now' },
+  });
+  settings.brightness = 42; // simulate a session-local dim, in-memory only
+  const persisted = deck.persistableDeckSettings(settings);
+  assert.strictEqual('brightness' in persisted, false);
+  assert.strictEqual(persisted.sort, 'server');
+  assert.strictEqual(persisted.pollIntervalMs, 2000);
+  assert.deepEqual(persisted.gridOverride, { rows: 3, cols: 5 });
+  assert.strictEqual(persisted.dialCount, 2);
+  assert.strictEqual(persisted.stripCount, 1);
+  assert.deepEqual(persisted.bindings, { 'key.2': 'refresh_now' });
+});
+
+// U5: mergeDeckSettings ignores an incoming brightness, always yielding 100.
+test('mergeDeckSettings: ignores incoming brightness entirely, always yields 100', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), { brightness: 10 });
+  assert.strictEqual(merged.brightness, 100);
+  const merged2 = deck.mergeDeckSettings(deck.defaultDeckSettings(), { brightness: 55, sort: 'server' });
+  assert.strictEqual(merged2.brightness, 100);
+  assert.strictEqual(merged2.sort, 'server');
+});
+
+// U6: JSON.parse(exportSettingsJSON(s)) has no brightness key.
+test('exportSettingsJSON: exported JSON has no brightness key', () => {
+  const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), { sort: 'server' });
+  settings.brightness = 33;
+  const parsed = JSON.parse(deck.exportSettingsJSON(settings));
+  assert.strictEqual('brightness' in parsed, false);
+  assert.strictEqual(parsed.sort, 'server');
 });
 
 test('contentBoxForDials: dialCount 0 is a no-op (byte-identical box)', () => {
