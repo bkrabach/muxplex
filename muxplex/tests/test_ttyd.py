@@ -110,6 +110,40 @@ def _patch_successful_spawn(
 
 
 # ---------------------------------------------------------------------------
+# Deterministic fake pids
+# ---------------------------------------------------------------------------
+#
+# Three tests below used to build a "fake" pid via `hash(name) % 50000 + N`.
+# CPython randomizes str hash() per-process (PYTHONHASHSEED, on by default
+# since 3.3, to prevent hash-flooding attacks) -- that expression is a
+# DIFFERENT real integer on every test run, never reproducible across
+# processes. Two of these tests feed that value into a REAL, unmocked
+# os.kill() call, reached via kill_ttyd() (through kill_all_ttyd() or
+# reap_idle_ttyds()): an unlucky run can land on a pid that is actually alive
+# on the host. ProcessLookupError (no such process) is harmlessly suppressed
+# by kill_ttyd(), but PermissionError (a real, live process this user can't
+# signal -- common for low-pid system daemons on CI runners) is NOT in that
+# suppress() and escapes uncaught. In kill_all_ttyd() that exception is
+# captured by asyncio.gather(return_exceptions=True) as a lost `True`,
+# silently undercounting -- confirmed to be exactly
+# test_kill_all_ttyd_kills_every_registered_session's `assert 2 == 3`, seen
+# three times in CI (twice macOS, once Python 3.13), always green on an
+# unchanged rerun (see that test's docstring for the reproduction). Fixed two
+# ways: deterministic pids (below, instead of hash()) so a run can never
+# collide with itself, and mocking os.kill in the tests that actually reach
+# it for real, matching test_kill_removes_socket_and_run_file's existing
+# pattern -- that closes the residual hazard even on a host where one of
+# these fixed literals happens to be live.
+_FAKE_PID_KILL_ALL_A = 40101
+_FAKE_PID_KILL_ALL_B = 40102
+_FAKE_PID_KILL_ALL_C = 40103
+_FAKE_PID_REAP_A = 40201
+_FAKE_PID_REAP_B = 40202
+_FAKE_PID_BUSY_A = 40301
+_FAKE_PID_BUSY_B = 40302
+
+
+# ---------------------------------------------------------------------------
 # socket_path_for()
 # ---------------------------------------------------------------------------
 
@@ -590,15 +624,34 @@ async def test_kill_unknown_session_returns_false():
 
 
 async def test_kill_all_ttyd_kills_every_registered_session(monkeypatch):
-    for name in ("a", "b", "c"):
+    """Deterministic fake pids (not hash(name), which is only stable within a
+    single interpreter process and produces a different value on every run --
+    see the module comment above _FAKE_PID_KILL_ALL_A for the incident this
+    caused).
+
+    os.kill is mocked here for the same reason test_kill_removes_socket_and_run_file
+    mocks it: kill_ttyd() calls the REAL os.kill(pid, SIGTERM) on whatever pid a
+    TtydProc records. An unmocked call sends a real signal to whatever process on
+    the host happens to own that pid -- at best a permission-denied OSError that
+    kill_ttyd doesn't catch (only ProcessLookupError is suppressed), silently
+    dropping this call's `True` from kill_all_ttyd()'s count via
+    asyncio.gather(return_exceptions=True); at worst, a real, unrelated process
+    the test happens to have permission to signal.
+    """
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    fake_pids = (_FAKE_PID_KILL_ALL_A, _FAKE_PID_KILL_ALL_B, _FAKE_PID_KILL_ALL_C)
+    for name, pid in zip(("a", "b", "c"), fake_pids):
         sock = socket_path_for(name)
-        _patch_successful_spawn(monkeypatch, sock, pid=hash(name) % 50000 + 100)
+        _patch_successful_spawn(monkeypatch, sock, pid=pid)
         await ttyd_mod.spawn_ttyd(name)
 
     count = await kill_all_ttyd()
 
     assert count == 3
     assert ttyd_mod._ttyds == {}
+    assert {pid for pid, _sig in kill_calls} == set(fake_pids)
 
 
 # ---------------------------------------------------------------------------
@@ -631,12 +684,20 @@ async def test_ensure_is_idempotent(monkeypatch):
 
 
 async def test_cap_reaps_idle_then_spawns(monkeypatch):
-    """MAX_TTYDS=2; third ensure reaps the idle one."""
-    monkeypatch.setattr(ttyd_mod, "MAX_TTYDS", 2)
+    """MAX_TTYDS=2; third ensure reaps the idle one.
 
-    for name in ("a", "b"):
+    os.kill is mocked (see the module comment above _FAKE_PID_KILL_ALL_A):
+    ensure_ttyd("c") drives reap_idle_ttyds(force_one=True), which calls the
+    real kill_ttyd() -> os.kill() on the reaped session's pid. Unmocked, that
+    is a real signal to whatever the deterministic literal happens to be on
+    the host running the test.
+    """
+    monkeypatch.setattr(ttyd_mod, "MAX_TTYDS", 2)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+    for name, pid in zip(("a", "b"), (_FAKE_PID_REAP_A, _FAKE_PID_REAP_B)):
         sock = socket_path_for(name)
-        _patch_successful_spawn(monkeypatch, sock, pid=hash(name) % 50000 + 200)
+        _patch_successful_spawn(monkeypatch, sock, pid=pid)
         await ttyd_mod.spawn_ttyd(name)
     # Both idle (relays == 0, idle_since set at spawn) -- "a" is older.
     ttyd_mod._ttyds["a"].idle_since = 1.0
@@ -651,12 +712,16 @@ async def test_cap_reaps_idle_then_spawns(monkeypatch):
 
 
 async def test_cap_raises_when_all_busy(monkeypatch):
-    """MAX_TTYDS=2, both relays=1 -> TtydCapacityError."""
+    """MAX_TTYDS=2, both relays=1 -> TtydCapacityError.
+
+    No os.kill mock needed here: both sessions hold an acquired relay, so
+    reap_idle_ttyds() (relays == 0 filter) never calls kill_ttyd() at all.
+    """
     monkeypatch.setattr(ttyd_mod, "MAX_TTYDS", 2)
 
-    for name in ("a", "b"):
+    for name, pid in zip(("a", "b"), (_FAKE_PID_BUSY_A, _FAKE_PID_BUSY_B)):
         sock = socket_path_for(name)
-        _patch_successful_spawn(monkeypatch, sock, pid=hash(name) % 50000 + 300)
+        _patch_successful_spawn(monkeypatch, sock, pid=pid)
         await ttyd_mod.spawn_ttyd(name)
         acquire_relay(name)
 
