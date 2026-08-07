@@ -670,6 +670,65 @@ html, body {
   min-height: 1em;
 }
 
+/* A binding that resolves to nothing on the CURRENT device shape --
+   reported, never removed (BACKLOG.md item 2 /
+   docs/plans/2026-08-06-soft-deck-settings-menu-plan.md \u00a77.2). */
+.settings-binding-row--unapplied {
+  opacity: 0.55;
+}
+.settings-binding-reason {
+  flex-basis: 100%;
+  color: #8888AA;
+  font-size: 0.75rem;
+}
+
+/* Read-only key-address legend inside the bindings section (\u00a77.3). Capped
+   at ~30% of the viewport height and shrinks its cells (both axes are
+   `1fr` grid tracks, not fixed sizes) rather than overflowing -- a 4x8
+   (32-cell) map must still fit above a scroll the user can reach. */
+.settings-key-map {
+  display: grid;
+  gap: 4px;
+  max-height: 30vh;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.settings-key-map-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #101018;
+  border: 1px solid #2A2A4A;
+  border-radius: 4px;
+  color: #E6EDF3;
+  font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.settings-key-map-cell > div:first-child {
+  font-size: 8px;
+  opacity: 0.6;
+  line-height: 1.1;
+}
+.settings-key-map-cell > div:last-child {
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.settings-key-map-cell--reserved {
+  border-color: #4A2A6A;
+  color: #C9A0FF;
+}
+.settings-key-map-cell--bound {
+  border-color: #1C4A2A;
+  color: #7FE0A0;
+}
+
 /* ─── Disconnected / too-small takeover ──────────────────────────────────── */
 /*
  * Identical mechanism to the picker: the grid is replaced by one message

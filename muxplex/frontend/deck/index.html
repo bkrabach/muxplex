@@ -146,6 +146,9 @@
       <section>
         <h2>Key/dial/strip bindings</h2>
         <p>Address form: <code>key.N</code>, <code>dial.N.turn</code>, <code>dial.N.push</code>, <code>strip.N.tap</code>, <code>strip.N.drag</code>, <code>strip.swipe.left</code>, <code>strip.swipe.right</code>.</p>
+        <p>Tap a key below to fill the address field.</p>
+        <p id="settings-key-map-note" class="settings-error"></p>
+        <div id="settings-key-map" class="settings-key-map" role="list" aria-label="key addresses"></div>
         <div id="settings-bindings-list"></div>
         <div class="settings-add-binding">
           <input type="text" id="settings-add-address" placeholder="key.3" />
@@ -153,6 +156,7 @@
           <button type="button" id="settings-add-binding">Add</button>
         </div>
         <p id="settings-add-error" class="settings-error"></p>
+        <p id="settings-bindings-warning" class="settings-error"></p>
       </section>
 
       <section>

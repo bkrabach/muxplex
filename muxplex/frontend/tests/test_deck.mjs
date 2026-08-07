@@ -70,6 +70,8 @@ test('deck.js exports all pure functions', () => {
     'contentBoxForDials',
     'buildStripStatusMessage',
     'buildStripPickerStatusMessage',
+    // Soft deck settings menu defects (BACKLOG.md item 2)
+    'bindingApplicability',
   ];
   for (const fn of expected) {
     assert.ok(fn in deck, `deck.js should export "${fn}"`);
@@ -1736,6 +1738,173 @@ test('regression: 12x2 gridOverride on a landscape phone reproduces tooSmall wit
   // for the right reason -- not just "no keys rendered" but "here is why."
   const reach = deck.settingsReachability({ rows: g.rows, cols: g.cols, tooSmall: g.tooSmall, boundKeys: {}, gridOverride: { rows: 12, cols: 2 } });
   assert.deepEqual(reach, { level: 'none', reasons: ['grid-too-small'] });
+});
+
+// ─── Soft deck settings menu defects (BACKLOG.md item 2 / docs/plans/2026-08-06-soft-deck-settings-menu-plan.md) ───
+
+// U1: bindingApplicability -- key.20 is out-of-range on a 3x4 (12-key)
+// grid; key.1 on the same grid applies.
+test('bindingApplicability: key-out-of-range for key.N beyond the grid, applies for an in-range key', () => {
+  const shape = { rows: 3, cols: 4, dialCount: 0, stripCount: 0 };
+  const entries = deck.bindingApplicability({ 'key.20': 'refresh_now', 'key.1': 'refresh_now' }, shape);
+  const byAddr = Object.fromEntries(entries.map((e) => [e.address, e]));
+  assert.strictEqual(byAddr['key.20'].applies, false);
+  assert.strictEqual(byAddr['key.20'].reason, 'key-out-of-range');
+  assert.strictEqual(byAddr['key.1'].applies, true);
+  assert.strictEqual(byAddr['key.1'].reason, '');
+});
+
+// U2 (design's F1-D, the highest-value finding): key.0 is the VIEW control
+// on a 3x2 corners-mode grid -- computeKeyPlan paints the bound face, then
+// _setControlFace silently overwrites it (deck.js:1651-1653). Bound but
+// dead. The SAME index on a 2x3 bottom-row-mode grid is NOT reserved, and
+// must apply -- this is the case that MOVES with grid mode (\u00a70.1.2 point 1),
+// so both directions are pinned, not just one.
+test('bindingApplicability (F1-D): key.0 is the reserved VIEW control in corners mode, but NOT in bottom-row mode', () => {
+  const corners = deck.bindingApplicability({ 'key.0': 'refresh_now' }, { rows: 3, cols: 2, dialCount: 0, stripCount: 0 });
+  assert.strictEqual(corners[0].applies, false);
+  assert.strictEqual(corners[0].reason, 'key-is-reserved-control');
+
+  const bottomRow = deck.bindingApplicability({ 'key.0': 'refresh_now' }, { rows: 2, cols: 3, dialCount: 0, stripCount: 0 });
+  assert.strictEqual(bottomRow[0].applies, true);
+  assert.strictEqual(bottomRow[0].reason, '');
+});
+
+// U3: dial.N.* -- no-dials at dialCount 0, dial-out-of-range beyond the
+// configured count, applies within range.
+test('bindingApplicability: no-dials at dialCount 0, dial-out-of-range beyond count, applies within range', () => {
+  const noDials = deck.bindingApplicability({ 'dial.0.turn': 'view_cycle' }, { rows: 3, cols: 3, dialCount: 0, stripCount: 0 });
+  assert.strictEqual(noDials[0].applies, false);
+  assert.strictEqual(noDials[0].reason, 'no-dials');
+
+  const outOfRange = deck.bindingApplicability({ 'dial.2.push': 'refresh_now' }, { rows: 3, cols: 3, dialCount: 2, stripCount: 0 });
+  assert.strictEqual(outOfRange[0].applies, false);
+  assert.strictEqual(outOfRange[0].reason, 'dial-out-of-range');
+
+  const applies = deck.bindingApplicability({ 'dial.1.turn': 'view_cycle' }, { rows: 3, cols: 3, dialCount: 2, stripCount: 0 });
+  assert.strictEqual(applies[0].applies, true);
+  assert.strictEqual(applies[0].reason, '');
+});
+
+// U4: strip.N.* and strip.swipe.* -- no-strip at stripCount 0 covers BOTH
+// the zone-scoped and whole-strip-swipe sub-cases (F1-C's distinct
+// sub-case: stripSwipeBindingsFromConfig resolves regardless of
+// stripCount, but the strip element itself is hidden at stripCount 0).
+test('bindingApplicability: no-strip covers both zone and swipe addresses; strip-zone-out-of-range beyond count; applies within range', () => {
+  const noStripZone = deck.bindingApplicability({ 'strip.0.tap': 'refresh_now' }, { rows: 3, cols: 3, dialCount: 0, stripCount: 0 });
+  assert.strictEqual(noStripZone[0].applies, false);
+  assert.strictEqual(noStripZone[0].reason, 'no-strip');
+
+  const noStripSwipe = deck.bindingApplicability({ 'strip.swipe.left': 'page_next' }, { rows: 3, cols: 3, dialCount: 0, stripCount: 0 });
+  assert.strictEqual(noStripSwipe[0].applies, false);
+  assert.strictEqual(noStripSwipe[0].reason, 'no-strip');
+
+  const outOfRange = deck.bindingApplicability({ 'strip.3.drag': 'view_cycle' }, { rows: 3, cols: 3, dialCount: 0, stripCount: 2 });
+  assert.strictEqual(outOfRange[0].applies, false);
+  assert.strictEqual(outOfRange[0].reason, 'strip-zone-out-of-range');
+
+  const appliesSwipe = deck.bindingApplicability({ 'strip.swipe.left': 'page_next' }, { rows: 3, cols: 3, dialCount: 0, stripCount: 1 });
+  assert.strictEqual(appliesSwipe[0].applies, true);
+  assert.strictEqual(appliesSwipe[0].reason, '');
+});
+
+// U5 (F4): focus_app reports unsupported-on-soft-deck at a valid address --
+// but evaluation order is address-level FIRST: key.20 -> focus_app on a
+// 3x4 grid must report key-out-of-range, NOT the action reason, because
+// the address problem is the more actionable fix (\u00a77.1).
+test('bindingApplicability (F4): focus_app is unsupported-on-soft-deck at a valid address, but address problems win the evaluation order', () => {
+  const valid = deck.bindingApplicability({ 'key.1': 'focus_app' }, { rows: 3, cols: 4, dialCount: 0, stripCount: 0 });
+  assert.strictEqual(valid[0].applies, false);
+  assert.strictEqual(valid[0].reason, 'unsupported-on-soft-deck');
+
+  const outOfRange = deck.bindingApplicability({ 'key.20': 'focus_app' }, { rows: 3, cols: 4, dialCount: 0, stripCount: 0 });
+  assert.strictEqual(outOfRange[0].applies, false);
+  assert.strictEqual(outOfRange[0].reason, 'key-out-of-range', 'address-level reason must win over the action-level reason');
+});
+
+// U6: ascending by address, one entry per configured binding, no drops, no
+// duplicates.
+test('bindingApplicability: output is ascending by address, one entry per binding, no drops or duplicates', () => {
+  const bindings = { 'key.5': 'refresh_now', 'key.1': 'page_next', 'dial.0.turn': 'view_cycle' };
+  const entries = deck.bindingApplicability(bindings, { rows: 3, cols: 3, dialCount: 1, stripCount: 0 });
+  assert.strictEqual(entries.length, Object.keys(bindings).length);
+  const addrs = entries.map((e) => e.address);
+  assert.deepEqual(addrs, [...addrs].sort());
+  assert.deepEqual(new Set(addrs).size, addrs.length);
+});
+
+// U7: bindingApplicability does not mutate its bindings argument.
+test('bindingApplicability: does not mutate its bindings argument', () => {
+  const bindings = { 'key.0': 'refresh_now', 'key.20': 'page_next' };
+  const before = JSON.parse(JSON.stringify(bindings));
+  deck.bindingApplicability(bindings, { rows: 3, cols: 2, dialCount: 0, stripCount: 0 });
+  assert.deepEqual(bindings, before);
+});
+
+// U8: sanitizeBindings is unaffected by this change -- it still accepts
+// out-of-range addresses regardless of shape. Guard against the tempting
+// wrong fix: filtering applicability at write time. sanitizeBindings has
+// no shape parameter at all, so this pins the absence of one.
+test('sanitizeBindings (guard): still accepts key.20/dial.2.turn/strip.3.tap regardless of any shape -- it has no shape parameter', () => {
+  assert.strictEqual(deck.sanitizeBindings.length <= 1, true, 'sanitizeBindings must take no shape/device parameter');
+  const result = deck.sanitizeBindings({ 'key.20': 'refresh_now', 'dial.2.turn': 'view_cycle', 'strip.3.tap': 'page_next' });
+  assert.deepEqual(result, { 'key.20': 'refresh_now', 'dial.2.turn': 'view_cycle', 'strip.3.tap': 'page_next' });
+});
+
+// U9: defaultDeckSettings() is unchanged by this item -- no new setting.
+// This discharges docs/plans/2026-08-06-settings-recovery-plan.md \u00a710's
+// standing rule vacuously (\u00a710 of the settings-menu plan).
+test('defaultDeckSettings (U9): unchanged shape -- this item adds no new soft-deck setting', () => {
+  const d = deck.defaultDeckSettings();
+  assert.deepEqual(Object.keys(d).sort(), ['bindings', 'brightness', 'dialCount', 'gridOverride', 'pollIntervalMs', 'sort', 'stripCount', 'version']);
+  assert.deepEqual(d.bindings, {});
+  assert.strictEqual(d.brightness, 100);
+  assert.strictEqual(d.dialCount, 0);
+  assert.strictEqual(d.stripCount, 0);
+  assert.strictEqual(d.gridOverride, null);
+  assert.strictEqual(d.pollIntervalMs > 0, true);
+  assert.strictEqual(d.version, 1);
+});
+
+// U10: ACTION_CATALOG/STRIP_ACTION_CATALOG are untouched by this item --
+// still exactly 19 + 1. (The cross-repo mirror fixture test itself lives
+// elsewhere in this file; this is a cheap local re-assertion that this
+// item did not add a 20th action.)
+test('ACTION_CATALOG/STRIP_ACTION_CATALOG (U10): untouched by the settings-menu-defects item -- still 19 + 1', () => {
+  assert.strictEqual(Object.keys(deck.ACTION_CATALOG).length, 19);
+  assert.strictEqual(Object.keys(deck.STRIP_ACTION_CATALOG).length, 1);
+});
+
+// F3 regression, the design doc's own repro (\u00a75.3): 3x2 corners mode with
+// TWO bindings on the three open session slots drops the picker below the
+// 2 slots it needs to place SETTINGS -- 'longpress-only', reason
+// 'bindings-consumed-slots'. Bare and one-binding stay 'full'.
+test('regression (F3): 3x2 grid + two bindings strands to longpress-only via bindings-consumed-slots', () => {
+  const bare = deck.settingsReachability({ rows: 3, cols: 2, tooSmall: false, boundKeys: {}, gridOverride: { rows: 3, cols: 2 } });
+  assert.strictEqual(bare.level, 'full');
+
+  const oneBound = deck.settingsReachability({
+    rows: 3,
+    cols: 2,
+    tooSmall: false,
+    boundKeys: { 1: 'refresh_now' },
+    gridOverride: { rows: 3, cols: 2 },
+  });
+  assert.strictEqual(oneBound.level, 'full');
+
+  const twoBound = deck.settingsReachability({
+    rows: 3,
+    cols: 2,
+    tooSmall: false,
+    boundKeys: { 1: 'refresh_now', 2: 'page_next' },
+    gridOverride: { rows: 3, cols: 2 },
+  });
+  assert.strictEqual(twoBound.level, 'longpress-only');
+  assert.deepEqual(twoBound.reasons, ['bindings-consumed-slots']);
+
+  // gridOverrideReachability must still say the SHAPE is fine -- this is a
+  // bindings problem, not a grid problem (\u00a75.3's own distinction).
+  assert.strictEqual(deck.gridOverrideReachability(3, 2).ok, true);
 });
 
 // U4: persistableDeckSettings has no brightness key; every other key

@@ -576,6 +576,78 @@ function stripSwipeBindingsFromConfig(bindings) {
 }
 
 /**
+ * Classify every configured binding against the CURRENT device shape --
+ * which of them actually do something here, and why the rest don't
+ * (BACKLOG.md item 2 / docs/plans/2026-08-06-soft-deck-settings-menu-plan.md
+ * \u00a77.1).
+ *
+ * Deliberately a READ-TIME classification, never a write-time filter:
+ * `sanitizeBindings` validates grammar and catalog membership only, and
+ * must keep doing exactly that -- a binding that is inert on today's grid
+ * may be correct after a rotation or a dialCount change, and silently
+ * repairing it would destroy a choice the user made (same reasoning
+ * docs/plans/2026-08-06-settings-recovery-plan.md \u00a75.3 applies to
+ * `tooSmall`).
+ *
+ * "unapplied" is muxplex-deck's own word for this condition
+ * (cli.py::controls_show / layout.plan_layout's `plan.unapplied`) --
+ * deliberately reused so the two surfaces stay legible to one reader.
+ *
+ * Reserved-key detection calls `reservedControlKeys` rather than
+ * reimplementing the corners/bottom-row rule; that rule is pinned by
+ * deck/layout.fixtures.json and must have exactly one implementation.
+ *
+ * Evaluation order is address-level first, then action-level: a
+ * `key.20 -> focus_app` binding on a 12-key grid reports
+ * `key-out-of-range`, not `unsupported-on-soft-deck`, because the address
+ * problem is the more actionable fix and the one that will still be true
+ * after backlog item 3 lands (\u00a77.5).
+ *
+ * @param {Object<string,string>} bindings   sanitized address -> action
+ * @param {{rows:number, cols:number, dialCount:number, stripCount:number}} shape
+ * @returns {Array<{address:string, action:string, applies:boolean, reason:string}>}
+ *          ascending by address (same order renderBindingsList already used)
+ */
+function bindingApplicability(bindings, shape) {
+  var reserved = reservedControlKeys(shape.rows, shape.cols);
+  var reservedSet = {};
+  if (reserved.view != null) reservedSet[reserved.view] = true;
+  if (reserved.prev != null) reservedSet[reserved.prev] = true;
+  if (reserved.next != null) reservedSet[reserved.next] = true;
+  var keyCount = shape.rows * shape.cols;
+  var addrs = Object.keys(bindings).sort();
+  var out = [];
+  for (var i = 0; i < addrs.length; i++) {
+    var addr = addrs[i];
+    var action = bindings[addr];
+    var a = parseControlAddress(addr);
+    var reason = '';
+    if (a && a.control === 'key') {
+      if (a.index < 0 || a.index >= keyCount) {
+        reason = 'key-out-of-range';
+      } else if (reservedSet[a.index]) {
+        reason = 'key-is-reserved-control';
+      }
+    } else if (a && a.control === 'dial') {
+      if (!(shape.dialCount > 0)) {
+        reason = 'no-dials';
+      } else if (a.index < 0 || a.index >= shape.dialCount) {
+        reason = 'dial-out-of-range';
+      }
+    } else if (a && a.control === 'strip') {
+      if (!(shape.stripCount > 0)) {
+        reason = 'no-strip';
+      } else if (a.index != null && (a.index < 0 || a.index >= shape.stripCount)) {
+        reason = 'strip-zone-out-of-range';
+      }
+    }
+    if (!reason && action === 'focus_app') reason = 'unsupported-on-soft-deck';
+    out.push({ address: addr, action: action, applies: reason === '', reason: reason });
+  }
+  return out;
+}
+
+/**
  * Content for a key face whose slot is bound to a fixed action (as opposed
  * to an auto-assigned session tile). NAME/BODY come from the catalog's
  * `label` (split on the one `\n`); STATE is always blank -- action keys
@@ -2186,11 +2258,38 @@ if (typeof document !== 'undefined') {
       root.style.setProperty('--touch-strip-bottom', offsets.touchStripBottom + 'px');
     }
 
-    function recomputeGrid() {
-      if (mode === 'picker') return; // never regrid under an open picker
+    /**
+     * The grid the deck will use for the CURRENT settings, computed without
+     * any of recomputeGrid()'s DOM rebuilding -- safe to call while the
+     * Settings panel is open (BACKLOG.md item 2 /
+     * docs/plans/2026-08-06-soft-deck-settings-menu-plan.md \u00a77.4).
+     *
+     * applyStripOffsets() MUST run first: it writes --reserved-bottom onto
+     * #deck-root, whose padding contributes to root.clientHeight, which
+     * contentBox() reads. Calling this after a dialCount/stripCount change
+     * without it measures the OLD padding and returns a stale shape.
+     */
+    function effectiveGridNow() {
       applyStripOffsets();
       var box = contentBoxForDials(contentBoxForStrip(contentBox(), deckSettings.stripCount), deckSettings.dialCount);
-      var g = computeEffectiveGrid(box.w, box.h, deckSettings.gridOverride);
+      return computeEffectiveGrid(box.w, box.h, deckSettings.gridOverride);
+    }
+
+    /** The shape triple bindingApplicability/renderKeyMap take. */
+    function shapeNow() {
+      var g = effectiveGridNow();
+      return {
+        rows: g.rows,
+        cols: g.cols,
+        dialCount: deckSettings.dialCount,
+        stripCount: deckSettings.stripCount,
+        tooSmall: !!g.tooSmall,
+      };
+    }
+
+    function recomputeGrid() {
+      if (mode === 'picker') return; // never regrid under an open picker
+      var g = effectiveGridNow();
       grid = g;
       reserved = reservedControlKeys(g.rows, g.cols);
       tokens = deriveTokens(g.s, g.cellH);
@@ -3242,32 +3341,182 @@ if (typeof document !== 'undefined') {
       if (brightInput) brightInput.value = String(deckSettings.brightness);
       if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
 
+      renderKeyMap();
       renderBindingsList();
+    }
+
+    /**
+     * Read-only legend inside the panel: one cell per key index, showing
+     * whether it's a reserved control, a bound action, or a plain session
+     * slot -- so `key.N` stops being a number the user has to guess.
+     * Tapping a cell fills the address field and re-dispatches the same
+     * `input` event the field's own listener uses, so the action dropdown
+     * refreshes through the existing refreshActionOptions path (no second
+     * code path). See
+     * docs/plans/2026-08-06-soft-deck-settings-menu-plan.md \u00a77.3.
+     *
+     * Deliberately read-only and deliberately no dial/strip map -- see the
+     * design doc for why (there is no spatial question to answer there).
+     */
+    function renderKeyMap() {
+      if (!settingsEl) return;
+      var mapEl = settingsEl.querySelector('#settings-key-map');
+      var noteEl = settingsEl.querySelector('#settings-key-map-note');
+      if (!mapEl) return;
+      mapEl.innerHTML = '';
+      var shape = shapeNow();
+      var reserved = reservedControlKeys(shape.rows, shape.cols);
+      var boundKeys = keyBindingsFromConfig(deckSettings.bindings, shape.rows * shape.cols);
+      var count = shape.rows * shape.cols;
+
+      if (noteEl) {
+        if (shape.tooSmall) {
+          noteEl.textContent =
+            'This ' + shape.rows + '\u00d7' + shape.cols + ' grid is too small to render on this screen ' +
+            'right now \u2014 the map below still reflects the configured shape.';
+        } else if (reserved.mode === 'degenerate') {
+          noteEl.textContent =
+            'This grid has no VIEW/PREV/NEXT controls (too few keys, or a 1\u00d7N shape) \u2014 nothing below ' +
+            'is reachable until the grid is fixed.';
+        } else {
+          noteEl.textContent = '';
+        }
+      }
+
+      mapEl.style.gridTemplateColumns = 'repeat(' + Math.max(1, shape.cols) + ', 1fr)';
+      mapEl.style.gridTemplateRows = 'repeat(' + Math.max(1, shape.rows) + ', 1fr)';
+
+      for (var i = 0; i < count; i++) {
+        (function (index) {
+          var cell = document.createElement('div');
+          cell.className = 'settings-key-map-cell';
+          var tag = '\u00b7';
+          if (reserved.view === index) {
+            tag = 'VIEW';
+            cell.classList.add('settings-key-map-cell--reserved');
+          } else if (reserved.prev === index) {
+            tag = 'PREV';
+            cell.classList.add('settings-key-map-cell--reserved');
+          } else if (reserved.next === index) {
+            tag = 'NEXT';
+            cell.classList.add('settings-key-map-cell--reserved');
+          } else if (Object.prototype.hasOwnProperty.call(boundKeys, index)) {
+            tag = boundKeys[index];
+            cell.classList.add('settings-key-map-cell--bound');
+          }
+          var idxEl = document.createElement('div');
+          idxEl.textContent = String(index);
+          var tagEl = document.createElement('div');
+          tagEl.textContent = tag;
+          cell.appendChild(idxEl);
+          cell.appendChild(tagEl);
+          cell.setAttribute('role', 'listitem');
+          cell.addEventListener('click', function () {
+            var addrInput = settingsEl.querySelector('#settings-add-address');
+            if (!addrInput) return;
+            addrInput.value = 'key.' + index;
+            addrInput.dispatchEvent(new Event('input', { bubbles: true }));
+          });
+          mapEl.appendChild(cell);
+        })(i);
+      }
+    }
+
+    /**
+     * Copy for one unapplied binding's reason code -- keyed by the stable
+     * reason string `bindingApplicability` returns, matching the tone of
+     * `#settings-grid-error` and the recovery banner: name the condition
+     * AND the fix. See docs/plans/2026-08-06-soft-deck-settings-menu-plan.md
+     * \u00a77.2.
+     */
+    function bindingReasonCopy(entry, shape) {
+      var a = parseControlAddress(entry.address);
+      var idx = a ? a.index : null;
+      switch (entry.reason) {
+        case 'key-out-of-range':
+          return (
+            'no key ' + idx + ' on this ' + shape.rows + '\u00d7' + shape.cols + ' grid \u2014 use a larger ' +
+            'grid, or an address below key.' + shape.rows * shape.cols
+          );
+        case 'key-is-reserved-control': {
+          var reserved = reservedControlKeys(shape.rows, shape.cols);
+          var role = reserved.view === idx ? 'VIEW' : reserved.prev === idx ? 'PREV' : 'NEXT';
+          return (
+            'key ' + idx + ' is the ' + role + ' control on this grid \u2014 that face always wins, so this ' +
+            'binding never shows'
+          );
+        }
+        case 'no-dials':
+          return 'no dials configured \u2014 set Dial count above 0';
+        case 'dial-out-of-range':
+          return 'only ' + shape.dialCount + ' dial(s) configured \u2014 use dial.0\u2026dial.' + (shape.dialCount - 1);
+        case 'no-strip':
+          return 'no touch strip configured \u2014 set Strip zone count above 0';
+        case 'strip-zone-out-of-range':
+          return (
+            'only ' + shape.stripCount + ' strip zone(s) configured \u2014 use strip.0\u2026strip.' + (shape.stripCount - 1)
+          );
+        case 'unsupported-on-soft-deck':
+          return 'focus_app is not supported on the soft deck yet (see BACKLOG.md item 3) \u2014 it will do nothing';
+        default:
+          return '';
+      }
     }
 
     function renderBindingsList() {
       var list = settingsEl.querySelector('#settings-bindings-list');
       if (!list) return;
       list.innerHTML = '';
-      var addrs = Object.keys(deckSettings.bindings).sort();
-      for (var i = 0; i < addrs.length; i++) {
-        (function (addr) {
+      var shape = shapeNow();
+      var entries = bindingApplicability(deckSettings.bindings, shape);
+      for (var i = 0; i < entries.length; i++) {
+        (function (entry) {
           var row = document.createElement('div');
           row.className = 'settings-binding-row';
+          if (!entry.applies) row.classList.add('settings-binding-row--unapplied');
           var label = document.createElement('span');
-          label.textContent = addr + ' \u2192 ' + deckSettings.bindings[addr];
+          label.textContent = entry.address + ' \u2192 ' + entry.action;
           row.appendChild(label);
+          if (!entry.applies) {
+            var reasonEl = document.createElement('span');
+            reasonEl.className = 'settings-binding-reason';
+            reasonEl.textContent = bindingReasonCopy(entry, shape);
+            row.appendChild(reasonEl);
+          }
           var removeBtn = document.createElement('button');
           removeBtn.type = 'button';
           removeBtn.textContent = 'Remove';
           removeBtn.addEventListener('click', function () {
-            delete deckSettings.bindings[addr];
+            delete deckSettings.bindings[entry.address];
             saveDeckSettings(storage, deckSettings);
             renderBindingsList();
           });
           row.appendChild(removeBtn);
           list.appendChild(row);
-        })(addrs[i]);
+        })(entries[i]);
+      }
+
+      // Warn -- never refuse -- when the current binding set has consumed
+      // the picker's SETTINGS slot. Recomputed on every render, so it can
+      // never go stale after an add or a remove, and needs no separate
+      // event wiring. See \u00a77.4.
+      var warningEl = settingsEl.querySelector('#settings-bindings-warning');
+      if (warningEl) {
+        var reach = settingsReachability({
+          rows: shape.rows,
+          cols: shape.cols,
+          tooSmall: shape.tooSmall,
+          boundKeys: keyBindingsFromConfig(deckSettings.bindings, shape.rows * shape.cols),
+          gridOverride: deckSettings.gridOverride,
+        });
+        if (reach.reasons.indexOf('bindings-consumed-slots') !== -1) {
+          warningEl.textContent =
+            'Your bindings have filled every open slot, so the SETTINGS key has nowhere to go on the picker \u2014 ' +
+            'after you leave this panel, only the invisible long-press would get you back. Remove a binding ' +
+            'above, or use a larger grid.';
+        } else {
+          warningEl.textContent = '';
+        }
       }
     }
 
@@ -3356,6 +3605,10 @@ if (typeof document !== 'undefined') {
           if (Number.isFinite(v) && v >= 0 && v <= 4) {
             deckSettings.dialCount = v;
             saveDeckSettings(storage, deckSettings);
+            // dialCount changes what applies (\u00a77.1) and what the key map
+            // draws (\u00a77.3) -- every handler that mutates gridOverride,
+            // dialCount, or stripCount must call populateSettingsForm().
+            populateSettingsForm();
           } else {
             dialInput.value = String(deckSettings.dialCount);
           }
@@ -3369,6 +3622,9 @@ if (typeof document !== 'undefined') {
           if (Number.isFinite(v) && v >= 0 && v <= STRIP_MAX_ZONES) {
             deckSettings.stripCount = v;
             saveDeckSettings(storage, deckSettings);
+            // stripCount changes what applies (\u00a77.1) and what the key map
+            // draws (\u00a77.3) -- same invariant as the dial handler above.
+            populateSettingsForm();
           } else {
             stripInput.value = String(deckSettings.stripCount);
           }
@@ -3590,6 +3846,9 @@ if (typeof module !== 'undefined' && module.exports) {
     persistableDeckSettings: persistableDeckSettings,
     gridOverrideReachability: gridOverrideReachability,
     settingsReachability: settingsReachability,
+    // Soft deck settings menu defects (BACKLOG.md item 2 /
+    // docs/plans/2026-08-06-soft-deck-settings-menu-plan.md)
+    bindingApplicability: bindingApplicability,
     contentBoxForDials: contentBoxForDials,
     stripReservationOffsets: stripReservationOffsets,
     DECK_SETTINGS_KEY: DECK_SETTINGS_KEY,
