@@ -1053,6 +1053,13 @@ the allowlist would be decorative.
 tell the human what to add to their `settings.json`.** There is no API path
 around it, and attempting one is a signal that something has gone wrong.
 
+Both keys are read fresh from disk on every request, so the human's edit takes
+effect on your next call — **don't tell them to restart the server**; retry
+instead. If the retry still 403s, the likeliest cause is a JSON syntax error in
+the file, which silently discards *every* setting and reverts to defaults with
+nothing in the log (`python3 -m json.tool ~/.config/muxplex/settings.json`
+confirms it parses). See the README's "Editing local-file-only keys".
+
 ---
 
 ## 8. Configuration postures — read this before assuming you're safe

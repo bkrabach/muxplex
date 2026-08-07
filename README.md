@@ -305,6 +305,11 @@ without SSH access or tribal knowledge.
 
 All settings are stored in `~/.config/muxplex/settings.json`.
 
+A **†** on a key means **local-file-only** (`settings.LOCAL_ONLY_KEYS`): it can
+ONLY be changed by editing `settings.json` on disk. `muxplex config set` refuses
+it with an error, `PATCH /api/settings` silently ignores it, and federation never
+syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) below.
+
 | Key | Default | Description |
 |---|---|---|
 | `host` | `127.0.0.1` | Bind address (set to `0.0.0.0` for network access) |
@@ -318,21 +323,21 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `stale_key_grace_hours` | `24.0` | Hours before a session key absent from all *known* live sessions is pruned from views/hidden_sessions (syncable; per-device bookkeeping is local-only). Federation-aware: a remote device's keys are only ever evaluated for pruning while that device is currently reachable (see "Stale-key pruning" below) -- an offline device's view membership is never touched. |
 | `window_size_largest` | `false` | Auto-set tmux `window-size largest` on connect |
 | `auto_open_created` | `true` | Auto-open newly created sessions |
-| `new_session_template` | `tmux new-session -d -s {name}` | Command template for creating sessions |
-| `delete_session_template` | `tmux kill-session -t {name}` | Command template for deleting sessions |
-| `session_commands` | `[]` | Additional NAMED create/kill command pairs (see "Command pairs" below) |
+| `new_session_template` † | `tmux new-session -d -s {name}` | Command template for creating sessions |
+| `delete_session_template` † | `tmux kill-session -t {name}` | Command template for deleting sessions |
+| `session_commands` † | `[]` | Additional NAMED create/kill command pairs (see "Command pairs" below) |
 | `tmux_theme` | `brand` | Which shipped tmux theme `muxplex tmux install` renders. `brand` is built from muxplex's own UI tokens, so a window that rings a bell turns the same amber in your terminal that its tile turns in the dashboard. Alternatives: `steel`, `catppuccin-mocha`. Not federation-syncable -- it renders to a file on this host. |
 | `tmux_copy_mode` | `desktop` | Which copy-mode keybinding scheme `muxplex tmux install` (and `PATCH /api/tmux-config`) renders as `~/.config/muxplex/tmux.d/30-copy-mode.conf`. `desktop` is tmux's own default (arrow keys, Page Up/Down, Home/End, and Ctrl+C behave like every other desktop text field; no fragment is written). `vi` renders the modal `v`/`y` selection flow for vi/vim muscle memory. Not federation-syncable -- it renders to a file on this host. |
-| `input_enabled` | `false` | Global opt-in for `POST /api/sessions/{name}/input` (typing into sessions over the API). **RCE by design** — `false` makes the endpoint a hard 403. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` (a Bearer-key holder must not be able to self-authorize input) and not federation-syncable. |
-| `input_allowed_sessions` | `[]` | **Glob patterns** (matched case-INsensitively — both name and pattern are `.casefold()`-ed before `fnmatch.fnmatchcase`, so behavior is deterministic across platforms) naming sessions that may receive API terminal input, e.g. `["*"]` for all sessions, `["amplifier-*"]` for a prefix family, or an exact name (matches only itself). A session matching none of the patterns is a 403 even when `input_enabled` is true — this is how your own working panes stay un-typeable. Empty list = deny everything. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` and not federation-syncable. |
-| `tmux_socket_dir` | `""` | Override tmux's socket directory (maps to `TMUX_TMPDIR`). Set this if your tmux sessions live somewhere other than `/tmp/tmux-$UID` (e.g. a custom `TMUX_TMPDIR` in your shell rc) -- a systemd/launchd service does not inherit your login shell's environment, so without this the service can't see sessions created with a custom socket directory. |
-| `focus_app` | `""` | **macOS only.** The `.app` bundle name `POST /api/focus` runs `open -a` against to bring the muxplex PWA window to the foreground on this host. Empty = unconfigured (the endpoint returns `409` rather than silently doing nothing). **Wayland and Windows are not supported** -- Wayland has no portable activation path a headless server process can use; Windows has no muxplex port at all (see `docs/API_SEMANTICS.md`'s `POST /api/focus` section for the full platform table). **Local-file-only**: can ONLY be set by editing `settings.json` on disk -- not settable via `PATCH /api/settings` and not federation-syncable. |
+| `input_enabled` † | `false` | Global opt-in for `POST /api/sessions/{name}/input` (typing into sessions over the API). **RCE by design** — `false` makes the endpoint a hard 403. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` (a Bearer-key holder must not be able to self-authorize input) and not federation-syncable. |
+| `input_allowed_sessions` † | `[]` | **Glob patterns** (matched case-INsensitively — both name and pattern are `.casefold()`-ed before `fnmatch.fnmatchcase`, so behavior is deterministic across platforms) naming sessions that may receive API terminal input, e.g. `["*"]` for all sessions, `["amplifier-*"]` for a prefix family, or an exact name (matches only itself). A session matching none of the patterns is a 403 even when `input_enabled` is true — this is how your own working panes stay un-typeable. Empty list = deny everything. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` and not federation-syncable. |
+| `tmux_socket_dir` † | `""` | Override tmux's socket directory (maps to `TMUX_TMPDIR`). Set this if your tmux sessions live somewhere other than `/tmp/tmux-$UID` (e.g. a custom `TMUX_TMPDIR` in your shell rc) -- a systemd/launchd service does not inherit your login shell's environment, so without this the service can't see sessions created with a custom socket directory. |
+| `focus_app` † | `""` | **macOS only.** The `.app` bundle name `POST /api/focus` runs `open -a` against to bring the muxplex PWA window to the foreground on this host. Empty = unconfigured (the endpoint returns `409` rather than silently doing nothing). **Wayland and Windows are not supported** -- Wayland has no portable activation path a headless server process can use; Windows has no muxplex port at all (see `docs/API_SEMANTICS.md`'s `POST /api/focus` section for the full platform table). **Local-file-only**: can ONLY be set by editing `settings.json` on disk -- not settable via `PATCH /api/settings` and not federation-syncable. |
 | `device_name` | `""` (hostname) | Display name for this device |
 | `federation_key` | `""` | Server-to-server authentication key for federation |
 | `remote_instances` | `[]` | Remote muxplex instances to aggregate |
 | `multi_device_enabled` | `false` | Enable multi-instance federation |
-| `tls_cert` | `""` | Path to TLS certificate file (empty = HTTP) |
-| `tls_key` | `""` | Path to TLS private key file (empty = HTTP) |
+| `tls_cert` † | `""` | Path to TLS certificate file (empty = HTTP) |
+| `tls_key` † | `""` | Path to TLS private key file (empty = HTTP) |
 | `fontSize` | `14` | Terminal and tile preview font size (px) |
 | `hoverPreviewDelay` | `1500` | Hover preview popup delay (ms) |
 | `gridColumns` | `"auto"` | Number of grid columns (`"auto"` or integer) |
@@ -348,6 +353,41 @@ All settings are stored in `~/.config/muxplex/settings.json`.
 | `views_updated_at` | `0.0` | Unix timestamp of last change to `views`/`hidden_sessions` specifically. Metadata like `settings_updated_at`, used to arbitrate views-specific federation sync conflicts independently of unrelated field changes (e.g. a `fontSize` edit no longer bumps this). Not itself a syncable setting -- see `docs/API_SEMANTICS.md`. |
 
 **Priority:** CLI flags > `settings.json` > defaults.
+
+### Editing local-file-only keys
+
+Keys marked **†** above are refused by the write path, by design:
+
+```
+$ muxplex config set focus_app "Muxplex"
+error: 'focus_app' is local-file-only and cannot be set through patch_settings()
+```
+
+Edit the file directly instead. The path is the same on every platform —
+`~/.config/muxplex/settings.json` — because it always derives from `$HOME`
+(`XDG_CONFIG_HOME` is ignored):
+
+```bash
+$EDITOR ~/.config/muxplex/settings.json     # add "focus_app": "Muxplex"
+curl -s localhost:8088/api/instance-info    # verify the SERVER sees it
+```
+
+**Most †-keys take effect on the next request — no restart.** The server
+re-reads `settings.json` from disk every time it consults a setting (the same
+way the federation key is read fresh per request), so a `†` edit is live as soon
+as the file is saved. `tls_cert` / `tls_key` are the exception: `muxplex serve`
+reads them once at startup to build its listener, so changing those needs
+`muxplex service restart`.
+
+Two things that make a good edit look like a no-op:
+
+- **A JSON syntax error silently discards the whole file.** A stray trailing
+  comma reverts *every* setting to its default — no error, nothing in the
+  server log. If a change appears to do nothing, validate first:
+  `python3 -m json.tool ~/.config/muxplex/settings.json`.
+- **A hand edit does not bump `settings_updated_at`.** Clients that refetch only
+  when that timestamp changes won't notice; reload the PWA to pick the change up.
+  The server itself is unaffected — it never consults the timestamp when reading.
 
 > **→ Writing something that drives muxplex?** The rows above define
 > `input_enabled` / `input_allowed_sessions` as *configuration*. For the
