@@ -364,30 +364,54 @@ test('_composeRenderEnabledState() keeps the mic button in sync', async () => {
 });
 
 // --- Transcript insertion algorithm ---
+//
+// NOTE ON CONTRACT: _sttApplyTranscript() now takes the FULL `results`
+// array (the same shape as a SpeechRecognitionEvent's `.results`), not a
+// single (transcript, isFinal) pair. Every call rebuilds the entire
+// session's dictated region from that array and REPLACES whatever was
+// there before at the fixed `_sttInsertPos` anchor -- see app.js's
+// _sttApplyTranscript()/_sttHandleResult() docstrings for the full
+// rationale (this replaced an incremental commit-and-advance design that
+// broke on Android Chrome's cumulative result delivery).
 
-test('final result is committed with a trailing space and advances the insertion point', () => {
+test('final result is committed with a trailing space', () => {
   const input = elements['compose-input'];
   input.value = '';
-  app._sttApplyTranscript(input, 'hello world', true);
+  app._setSttInsertState(0, 0);
+  app._sttApplyTranscript(input, [{ 0: { transcript: 'hello world' }, isFinal: true }]);
   assert.strictEqual(input.value, 'hello world ');
 });
 
 test('interim result is shown live but does not commit', () => {
   const input = elements['compose-input'];
   input.value = '';
-  app._sttApplyTranscript(input, 'hel', false);
+  app._setSttInsertState(0, 0);
+  app._sttApplyTranscript(input, [{ 0: { transcript: 'hel' }, isFinal: false }]);
   assert.strictEqual(input.value, 'hel');
-  app._sttApplyTranscript(input, 'hello', false); // replaces the preview, not appends
+  app._sttApplyTranscript(input, [{ 0: { transcript: 'hello' }, isFinal: false }]); // replaces the preview, not appends
   assert.strictEqual(input.value, 'hello');
 });
 
 test('a final result after interim updates replaces the preview exactly once', () => {
   const input = elements['compose-input'];
   input.value = '';
-  app._sttApplyTranscript(input, 'hel', false);
-  app._sttApplyTranscript(input, 'hello', false);
-  app._sttApplyTranscript(input, 'hello', true);
+  app._setSttInsertState(0, 0);
+  app._sttApplyTranscript(input, [{ 0: { transcript: 'hel' }, isFinal: false }]);
+  app._sttApplyTranscript(input, [{ 0: { transcript: 'hello' }, isFinal: false }]);
+  app._sttApplyTranscript(input, [{ 0: { transcript: 'hello' }, isFinal: true }]);
   assert.strictEqual(input.value, 'hello ');
+});
+
+test('a trailing interim result after finals is appended without committing (finals + live preview)', () => {
+  const input = elements['compose-input'];
+  input.value = '';
+  app._setSttInsertState(0, 0);
+  app._sttApplyTranscript(input, [{ 0: { transcript: 'hello' }, isFinal: true }]);
+  app._sttApplyTranscript(input, [
+    { 0: { transcript: 'hello' }, isFinal: true },
+    { 0: { transcript: 'wor' }, isFinal: false },
+  ]);
+  assert.strictEqual(input.value, 'hello wor');
 });
 
 test('dictation inserts at the cursor position, not always at the end', () => {
@@ -403,30 +427,112 @@ test('dictation inserts at the cursor position, not always at the end', () => {
   assert.strictEqual(input.value, 'AAAAmiddle BBBB');
 });
 
-test('multiple final results in one continuous session commit sequentially, never overwriting prior text', () => {
+test('spec-clean shape: disjoint incremental finals across sequential events accumulate correctly (results list is genuinely cumulative, as the spec requires)', () => {
   const input = elements['compose-input'];
   input.value = '';
-  app._sttApplyTranscript(input, 'first', true);
-  app._sttApplyTranscript(input, 'second', true);
-  assert.strictEqual(input.value, 'first second ');
-});
-
-test('_sttHandleResult processes only results from event.resultIndex forward', () => {
-  const input = elements['compose-input'];
-  input.value = '';
+  app._setSttInsertState(0, 0);
+  // Event 1: engine has finalized "first" so far.
+  app._sttHandleResult({ resultIndex: 0, results: [{ 0: { transcript: 'first' }, isFinal: true }] });
+  assert.strictEqual(input.value, 'first ');
+  // Event 2: "first" is still in the list (never re-sent/mutated), "second" is newly appended.
   app._sttHandleResult({
     resultIndex: 1,
     results: [
-      { 0: { transcript: 'SHOULD NOT APPEAR' }, isFinal: true },
+      { 0: { transcript: 'first' }, isFinal: true },
       { 0: { transcript: 'second' }, isFinal: true },
     ],
   });
-  assert.strictEqual(input.value, 'second ');
+  assert.strictEqual(input.value, 'first second ', 'never overwrite prior committed text');
+});
+
+test('regression (Android Chrome cloud dictation): cumulative growing final results end with the clean sentence, not a ladder of every intermediate state', () => {
+  // The exact field bug: dictating "what needs to be worked on next" on
+  // Android Chrome cloud dictation delivered ONE 'result' event per
+  // intermediate utterance state, each marked isFinal:true, with the
+  // SAME single result entry re-delivered holding a longer transcript
+  // each time (not a growing list -- a single entry that keeps changing).
+  const input = elements['compose-input'];
+  input.value = '';
+  app._setSttInsertState(0, 0);
+  const steps = [
+    'what',
+    'what needs',
+    'what needs to',
+    'what needs to be',
+    'what needs to be worked',
+    'what needs to be worked on',
+    'what needs to be worked on next',
+  ];
+  for (const s of steps) {
+    app._sttHandleResult({ resultIndex: 0, results: [{ 0: { transcript: s }, isFinal: true }] });
+  }
+  assert.strictEqual(
+    input.value,
+    'what needs to be worked on next ',
+    'must NOT be the ladder of every intermediate utterance state concatenated together'
+  );
+});
+
+test('idempotency: replaying the identical result event twice does not change the value', () => {
+  const input = elements['compose-input'];
+  input.value = '';
+  app._setSttInsertState(0, 0);
+  const event = {
+    resultIndex: 0,
+    results: [
+      { 0: { transcript: 'what needs to' }, isFinal: true },
+      { 0: { transcript: 'be' }, isFinal: false },
+    ],
+  };
+  app._sttHandleResult(event);
+  const afterFirst = input.value;
+  app._sttHandleResult(event); // exact same event object, re-delivered
+  assert.strictEqual(input.value, afterFirst, 're-processing the same event must be a no-op');
+});
+
+test('_sttHandleResult ignores event.resultIndex entirely -- always rebuilds from the full results array', () => {
+  const input = elements['compose-input'];
+  input.value = '';
+  app._setSttInsertState(0, 0);
+  app._sttHandleResult({
+    resultIndex: 1, // a spec-compliant engine would set this to skip already-applied entries; the new algorithm must not depend on it
+    results: [
+      { 0: { transcript: 'first' }, isFinal: true },
+      { 0: { transcript: 'second' }, isFinal: true },
+    ],
+  });
+  assert.strictEqual(input.value, 'first second ');
+});
+
+test('stop then restart mid-dictation: the new SpeechRecognition session\'s fresh results list does not clobber previously committed text', () => {
+  const input = elements['compose-input'];
+  input.value = '';
+  input.selectionStart = 0;
+  app._setSttStatus('available');
+  app._setSttMode('ondevice');
+
+  let recognition1;
+  globalThis.window.SpeechRecognition = function() { recognition1 = this; this.start = () => {}; this.stop = () => { this.onend(); }; };
+  app._sttStart(); // session 1: anchor = 0
+  app._sttHandleResult({ resultIndex: 0, results: [{ 0: { transcript: 'hello' }, isFinal: true }] });
+  assert.strictEqual(input.value, 'hello ');
+  app._sttStop(); // graceful stop -- fires onend synchronously per the stub above
+
+  // Caret was left after "hello " by the prior session -- a fresh click
+  // starts a brand-new SpeechRecognition instance whose `results` list
+  // starts over from empty, exactly as a real browser's would.
+  input.selectionStart = input.value.length;
+  let recognition2;
+  globalThis.window.SpeechRecognition = function() { recognition2 = this; this.start = () => {}; };
+  app._sttStart(); // session 2: anchor advances to end of "hello "
+  app._sttHandleResult({ resultIndex: 0, results: [{ 0: { transcript: 'world' }, isFinal: true }] });
+  assert.strictEqual(input.value, 'hello world ', 'previously committed text from session 1 must survive session 2');
 });
 
 test('_sttHandleResult calls _refitTerminal (auto-grow)', () => {
   const input = elements['compose-input'];
   input.value = '';
+  app._setSttInsertState(0, 0);
   _refitCallCount = 0;
   app._sttHandleResult({ resultIndex: 0, results: [{ 0: { transcript: 'hi' }, isFinal: true }] });
   assert.ok(_refitCallCount > 0);

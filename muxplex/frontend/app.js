@@ -4548,8 +4548,8 @@ let _sttMode = null;                // null | 'ondevice' | 'cloud' -- which path
 let _sttLang = null;                // resolved BCP-47 language tag used for both the check and recognition itself
 let _sttState = 'idle';             // 'idle' | 'listening' | 'downloading'
 let _sttRecognition = null;         // the live SpeechRecognition instance, or null
-let _sttInsertPos = 0;              // textarea offset where the NEXT committed word lands
-let _sttInterimLength = 0;          // length of the currently-displayed (not-yet-final) preview text
+let _sttInsertPos = 0;              // fixed anchor for the WHOLE recognition session -- set once by _sttStart(), never advanced by result handling (see _sttApplyTranscript())
+let _sttInterimLength = 0;          // length of the text currently written at _sttInsertPos for this session (finals + trailing interim preview together, not just the interim tail -- see _sttApplyTranscript())
 let _sttUserStopped = false;        // true only across an explicit _sttStop()/_sttForceStop() call
 let _sttSuppressEndMessage = false; // true once onerror (or a forced stop) already rendered a specific message
 let _sttConsentPending = false;     // true while #compose-cloud-consent is showing, awaiting the user's choice
@@ -4768,54 +4768,99 @@ function _sttProceedToStart() {
 }
 
 /**
- * Apply one SpeechRecognitionResult's transcript into #compose-input at the
- * tracked insertion point. FINAL results are committed permanently
- * (advancing `_sttInsertPos` past them, with a single trailing space so the
- * next word/result doesn't run on) and reset the interim preview; INTERIM
- * results overwrite only the still-in-flight preview region so repeated
- * updates for the same not-yet-final utterance never duplicate text. The
- * caret is left at the end of whatever was just written, so the textarea
- * visibly tracks along with speech -- the same way native OS dictation
- * looks while it's working.
+ * Apply a SpeechRecognitionEvent's ENTIRE `results` list into #compose-input
+ * at the session's fixed insertion anchor (`_sttInsertPos`, set once by
+ * _sttStart() and never advanced here). Every call REBUILDS the session's
+ * whole dictated region from scratch -- concatenating every finalized
+ * result's transcript (space-joined), then any still-interim transcript
+ * after it -- and replaces whatever this session had previously written at
+ * that anchor (tracked by `_sttInterimLength`, which despite the name now
+ * tracks the length of the ENTIRE current-session region: committed text
+ * and interim preview together, not just the interim tail). A single
+ * trailing space is added when the region ends on committed (non-interim)
+ * text, so the next word/result -- or anything the user types after
+ * stopping -- doesn't run on.
+ *
+ * Rebuilding from the full list on every event (rather than applying only
+ * what looks "new") is what makes this idempotent: the result is a pure
+ * function of the anchor plus whatever `results` currently says, never of
+ * what a PRIOR call did. That holds regardless of how the engine re-delivers
+ * results:
+ *   - A spec-compliant engine's `results` list is genuinely cumulative --
+ *     every previously finalized entry stays in the list forever, and new
+ *     entries are appended after it. Rebuilding just re-concatenates the
+ *     same finals plus whatever's new: identical output to committing
+ *     incrementally, and replaying the same event twice is a no-op.
+ *   - Android Chrome's cloud engine (the confirmed field bug -- see
+ *     _sttHandleResult()'s docstring) instead re-delivers a single,
+ *     still-growing entry marked `isFinal` on every 'result' event: "what",
+ *     then "what needs", then "what needs to", etc. An incremental
+ *     "commit-and-advance" implementation appends each of these after the
+ *     last, producing the ladder of every intermediate utterance state.
+ *     Rebuilding instead REPLACES the same region with the new, longer
+ *     transcript every time, so only the final, complete sentence survives.
+ *
+ * The caret is left at the end of whatever was just written, so the
+ * textarea visibly tracks along with speech -- the same way native OS
+ * dictation looks while it's working.
  * @param {HTMLTextAreaElement} input
- * @param {string} transcript
- * @param {boolean} isFinal
+ * @param {SpeechRecognitionResultList|Array} results
  */
-function _sttApplyTranscript(input, transcript, isFinal) {
+function _sttApplyTranscript(input, results) {
+  var finals = [];
+  var interims = [];
+  for (var i = 0; i < results.length; i++) {
+    var result = results[i];
+    var alt = result && result[0];
+    var transcript = alt ? String(alt.transcript || '') : '';
+    if (result && result.isFinal) {
+      var committed = transcript.replace(/\s+$/, '');
+      if (committed) finals.push(committed);
+    } else if (transcript) {
+      interims.push(transcript);
+    }
+  }
+  var combined = finals.join(' ');
+  if (combined && interims.length) combined += ' ';
+  combined += interims.join(' ');
+  if (finals.length && !interims.length && combined) combined += ' ';
+
   var value = input.value;
   var before = value.slice(0, _sttInsertPos);
   var after = value.slice(_sttInsertPos + _sttInterimLength);
-  if (isFinal) {
-    var committed = String(transcript).replace(/\s+$/, '');
-    if (committed) committed += ' ';
-    input.value = before + committed + after;
-    _sttInsertPos = before.length + committed.length;
-    _sttInterimLength = 0;
-  } else {
-    var preview = String(transcript);
-    input.value = before + preview + after;
-    _sttInterimLength = preview.length;
-  }
+  input.value = before + combined + after;
+  _sttInterimLength = combined.length;
+
   var caret = _sttInsertPos + _sttInterimLength;
   if (typeof input.setSelectionRange === 'function') input.setSelectionRange(caret, caret);
 }
 
 /**
- * SpeechRecognition 'result' handler: applies every NEW result (from
- * event.resultIndex forward -- a spec-compliant implementation never
- * re-sends an already-committed prior result) in order, then auto-grows
- * the textarea the same way manual typing does.
+ * SpeechRecognition 'result' handler: rebuilds the entire dictated region
+ * from `event.results` on every event (see _sttApplyTranscript()) and
+ * auto-grows the textarea the same way manual typing does.
+ *
+ * Deliberately does NOT use `event.resultIndex` to slice to "just the new
+ * results" -- that incremental approach was this handler's ORIGINAL design,
+ * on the assumption (once documented right here) that "a spec-compliant
+ * implementation never re-sends an already-committed prior result". That
+ * assumption is false in the field: dictating "what needs to be worked on
+ * next" on Android Chrome (cloud mode) delivered a 'result' event per
+ * intermediate utterance state -- "what", "what needs", "what needs to",
+ * ... "what needs to be worked on next" -- EACH marked `isFinal`. Committing
+ * and advancing past each one in turn appended every intermediate state
+ * after the last, landing "what what needs what needs to ... what needs to
+ * be worked on next" in the compose bar instead of the one sentence the
+ * owner actually said. Treating `event.results` as the complete, current
+ * authoritative state of the session -- and always rebuilding the whole
+ * region from it -- fixes this without any Android-specific branch, and
+ * without changing behavior for an engine that never re-delivers results.
  * @param {SpeechRecognitionEvent} event
  */
 function _sttHandleResult(event) {
   var input = $('compose-input');
   if (!input || !event || !event.results) return;
-  for (var i = event.resultIndex || 0; i < event.results.length; i++) {
-    var result = event.results[i];
-    var alt = result && result[0];
-    if (!alt) continue;
-    _sttApplyTranscript(input, alt.transcript || '', !!result.isFinal);
-  }
+  _sttApplyTranscript(input, event.results);
   _composeAutoGrow(input);
 }
 
