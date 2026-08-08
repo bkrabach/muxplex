@@ -66,6 +66,7 @@ markers = [
     "integration: marks tests as integration tests requiring real tmux (deselect with '-m not integration')",
     "allow_real_port_killer: test intentionally exercises the real _kill_stale_port_holder (see tests/conftest.py)",
     "allow_real_service_ready_wait: test intentionally exercises the real _wait_for_service_ready (see tests/conftest.py)",
+    "differential: the tmux-lib extraction differential harness -- replays recorded real inputs, re-run per extraction stage with 'pytest -m differential' (see docs/plans/2026-08-08-tmux-lib-extraction-plan.md \\u00a78.2)",
 ]
 
 [dependency-groups]

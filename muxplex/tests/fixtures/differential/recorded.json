@@ -1,0 +1,1482 @@
+{
+  "_meta": {
+    "plan": "docs/plans/2026-08-08-tmux-lib-extraction-plan.md \u00a78.2",
+    "platform": "Linux-6.17.0-1014-nvidia-aarch64-with-glibc2.39",
+    "recorded_at": "2026-08-08T10:58:15.968196+00:00",
+    "recorder": "scripts/record_differential_fixtures.py",
+    "tmux_version": "tmux 3.4"
+  },
+  "capture": {
+    "capture_pane": {
+      "expected": "echo muxplex-differential-marker\nType 'spark-help' for cluster commands.\n\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$ echo muxplex-differential-marker\nmuxplex-differential-marker\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "tape": [
+        {
+          "args": [
+            "capture-pane",
+            "-e",
+            "-p",
+            "-t",
+            "alpha",
+            "-S",
+            "-30"
+          ],
+          "stdout": "echo muxplex-differential-marker\nType 'spark-help' for cluster commands.\n\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$ echo muxplex-differential-marker\nmuxplex-differential-marker\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        }
+      ]
+    },
+    "capture_pane_metadata": {
+      "expected": [
+        0,
+        50,
+        50000
+      ],
+      "tape": [
+        {
+          "args": [
+            "display-message",
+            "-p",
+            "-t",
+            "alpha",
+            "#{history_size}\t#{pane_height}\t#{history_limit}"
+          ],
+          "stdout": "0\t50\t50000\n"
+        }
+      ]
+    },
+    "capture_pane_window": {
+      "args": {
+        "e": null,
+        "s": -30
+      },
+      "expected": [
+        0,
+        50,
+        50000,
+        "echo muxplex-differential-marker\nType 'spark-help' for cluster commands.\n\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$ echo muxplex-differential-marker\nmuxplex-differential-marker\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+      ],
+      "tape": [
+        {
+          "args": [
+            "display-message",
+            "-p",
+            "-t",
+            "alpha",
+            "#{history_size}\t#{pane_height}\t#{history_limit}",
+            ";",
+            "capture-pane",
+            "-e",
+            "-p",
+            "-t",
+            "alpha",
+            "-S",
+            "-30"
+          ],
+          "stdout": "0\t50\t50000\necho muxplex-differential-marker\nType 'spark-help' for cluster commands.\n\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$ echo muxplex-differential-marker\nmuxplex-differential-marker\n\u001b[1m\u001b[32mbkrabach@spark-1\u001b[0m:\u001b[1m\u001b[34m~/dev/muxplex-qol-updates/muxplex\u001b[0m$\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        }
+      ]
+    }
+  },
+  "enumerate_sessions": {
+    "derived": [
+      {
+        "derived_from_real": true,
+        "description": "real line truncated to name-only (fewer than 3 tabs)",
+        "expected": {
+          "activity": {},
+          "created": {},
+          "cwds": {},
+          "names": [
+            "alpha"
+          ]
+        },
+        "mutation": "kept only the #{session_name} field of a real line",
+        "stdout": "alpha\n"
+      },
+      {
+        "derived_from_real": true,
+        "description": "real line with window_activity made non-numeric",
+        "expected": {
+          "activity": {},
+          "created": {
+            "alpha": 1786186695.0
+          },
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "names": [
+            "alpha"
+          ]
+        },
+        "mutation": "replaced #{window_activity} with 'not-a-number'",
+        "stdout": "alpha\tnot-a-number\t1786186695\t/home/bkrabach/dev/muxplex-qol-updates/muxplex\n"
+      },
+      {
+        "derived_from_real": true,
+        "description": "real stdout with a blank line interleaved",
+        "expected": {
+          "activity": {
+            "alpha": 1786186695.0,
+            "beta": 1786186696.0
+          },
+          "created": {
+            "alpha": 1786186695.0,
+            "beta": 1786186695.0
+          },
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "beta": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "names": [
+            "alpha",
+            "beta"
+          ]
+        },
+        "mutation": "inserted one blank line between real lines",
+        "stdout": "alpha\t1786186695\t1786186695\t/home/bkrabach/dev/muxplex-qol-updates/muxplex\n\nbeta\t1786186696\t1786186695\t/home/bkrabach/dev/muxplex-qol-updates/muxplex\n"
+      }
+    ],
+    "no_server": {
+      "expected": {
+        "activity": {},
+        "created": {},
+        "cwds": {},
+        "names": []
+      },
+      "tape": [
+        {
+          "args": [
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{window_activity}\t#{session_created}\t#{pane_current_path}"
+          ],
+          "error": "no server running on /tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default\n"
+        }
+      ]
+    },
+    "real": {
+      "expected": {
+        "activity": {
+          "alpha": 1786186695.0,
+          "beta": 1786186696.0
+        },
+        "created": {
+          "alpha": 1786186695.0,
+          "beta": 1786186695.0
+        },
+        "cwds": {
+          "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+          "beta": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+        },
+        "names": [
+          "alpha",
+          "beta"
+        ]
+      },
+      "tape": [
+        {
+          "args": [
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{window_activity}\t#{session_created}\t#{pane_current_path}"
+          ],
+          "stdout": "alpha\t1786186695\t1786186695\t/home/bkrabach/dev/muxplex-qol-updates/muxplex\nbeta\t1786186696\t1786186695\t/home/bkrabach/dev/muxplex-qol-updates/muxplex\n"
+        }
+      ]
+    }
+  },
+  "keys": {
+    "allowlist": [
+      {
+        "expected": false,
+        "name": "alpha",
+        "patterns": []
+      },
+      {
+        "expected": true,
+        "name": "alpha",
+        "patterns": [
+          "*"
+        ]
+      },
+      {
+        "expected": true,
+        "name": "alpha",
+        "patterns": [
+          "alpha"
+        ]
+      },
+      {
+        "expected": true,
+        "name": "alpha",
+        "patterns": [
+          "ALPHA"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "alpha",
+        "patterns": [
+          "amplifier-*"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "alpha",
+        "patterns": [
+          "bet*"
+        ]
+      },
+      {
+        "expected": true,
+        "name": "alpha",
+        "patterns": [
+          null,
+          42,
+          "alpha"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "patterns": []
+      },
+      {
+        "expected": true,
+        "name": "beta",
+        "patterns": [
+          "*"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "patterns": [
+          "alpha"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "patterns": [
+          "ALPHA"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "patterns": [
+          "amplifier-*"
+        ]
+      },
+      {
+        "expected": true,
+        "name": "beta",
+        "patterns": [
+          "bet*"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "patterns": [
+          null,
+          42,
+          "alpha"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "patterns": []
+      },
+      {
+        "expected": true,
+        "name": "gamma",
+        "patterns": [
+          "*"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "patterns": [
+          "alpha"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "patterns": [
+          "ALPHA"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "patterns": [
+          "amplifier-*"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "patterns": [
+          "bet*"
+        ]
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "patterns": [
+          null,
+          42,
+          "alpha"
+        ]
+      }
+    ],
+    "constants": {
+      "ALLOWED_KEYS": [
+        "C-c",
+        "C-d",
+        "Down",
+        "Enter",
+        "Escape",
+        "Left",
+        "PageDown",
+        "PageUp",
+        "Right",
+        "Tab",
+        "Up"
+      ],
+      "MAX_KEYS": 64,
+      "MAX_TEXT_BYTES": 8192
+    },
+    "input_allowed": [
+      {
+        "expected": false,
+        "name": "alpha",
+        "settings": {}
+      },
+      {
+        "expected": false,
+        "name": "alpha",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": false
+        }
+      },
+      {
+        "expected": false,
+        "name": "alpha",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": "true"
+        }
+      },
+      {
+        "expected": false,
+        "name": "alpha",
+        "settings": {
+          "input_allowed_sessions": [],
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": true,
+        "name": "alpha",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": false,
+        "name": "alpha",
+        "settings": {
+          "input_allowed_sessions": "alpha",
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "settings": {}
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": false
+        }
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": "true"
+        }
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "settings": {
+          "input_allowed_sessions": [],
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": true,
+        "name": "beta",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": false,
+        "name": "beta",
+        "settings": {
+          "input_allowed_sessions": "alpha",
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "settings": {}
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": false
+        }
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": "true"
+        }
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "settings": {
+          "input_allowed_sessions": [],
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": true,
+        "name": "gamma",
+        "settings": {
+          "input_allowed_sessions": [
+            "*"
+          ],
+          "input_enabled": true
+        }
+      },
+      {
+        "expected": false,
+        "name": "gamma",
+        "settings": {
+          "input_allowed_sessions": "alpha",
+          "input_enabled": true
+        }
+      }
+    ],
+    "send_key": [
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "C-c"
+        ],
+        "key": "C-c",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "C-d"
+        ],
+        "key": "C-d",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "Down"
+        ],
+        "key": "Down",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "Enter"
+        ],
+        "key": "Enter",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "Escape"
+        ],
+        "key": "Escape",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "Left"
+        ],
+        "key": "Left",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "PageDown"
+        ],
+        "key": "PageDown",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "PageUp"
+        ],
+        "key": "PageUp",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "Right"
+        ],
+        "key": "Right",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "Tab"
+        ],
+        "key": "Tab",
+        "name": "alpha"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-t",
+          "alpha",
+          "Up"
+        ],
+        "key": "Up",
+        "name": "alpha"
+      }
+    ],
+    "send_text": [
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "alpha",
+          "--",
+          "echo muxplex-differential-marker"
+        ],
+        "name": "alpha",
+        "text": "echo muxplex-differential-marker"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "alpha",
+          "--",
+          "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
+        ],
+        "name": "alpha",
+        "text": "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "alpha",
+          "--",
+          "-leading-dash text"
+        ],
+        "name": "alpha",
+        "text": "-leading-dash text"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "beta",
+          "--",
+          "echo muxplex-differential-marker"
+        ],
+        "name": "beta",
+        "text": "echo muxplex-differential-marker"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "beta",
+          "--",
+          "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
+        ],
+        "name": "beta",
+        "text": "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "beta",
+          "--",
+          "-leading-dash text"
+        ],
+        "name": "beta",
+        "text": "-leading-dash text"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "gamma",
+          "--",
+          "echo muxplex-differential-marker"
+        ],
+        "name": "gamma",
+        "text": "echo muxplex-differential-marker"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "gamma",
+          "--",
+          "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
+        ],
+        "name": "gamma",
+        "text": "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
+      },
+      {
+        "expected": [
+          "send-keys",
+          "-l",
+          "-t",
+          "gamma",
+          "--",
+          "-leading-dash text"
+        ],
+        "name": "gamma",
+        "text": "-leading-dash text"
+      }
+    ]
+  },
+  "manifest_io": {
+    "load_absent_file": {
+      "expected": {
+        "created_with": {},
+        "epoch": null,
+        "pending_restore": null,
+        "rename_in_flight": null,
+        "schema": 2,
+        "sessions": {}
+      }
+    },
+    "reload_expected": {
+      "created_with": {},
+      "epoch": {
+        "inode": 4752698,
+        "observed_at": 1786186696.9832957,
+        "server_pid": 2523545,
+        "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+      },
+      "pending_restore": null,
+      "rename_in_flight": null,
+      "schema": 2,
+      "sessions": {
+        "alpha": {
+          "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+          "first_seen_at": 1786186696.9832957,
+          "last_seen_at": 1786186696.9832957
+        },
+        "beta": {
+          "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+          "first_seen_at": 1786186696.9832957,
+          "last_seen_at": 1786186696.9832957
+        }
+      }
+    },
+    "saved_file_content": "{\n  \"schema\": 2,\n  \"epoch\": {\n    \"socket_path\": \"/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default\",\n    \"server_pid\": 2523545,\n    \"inode\": 4752698,\n    \"observed_at\": 1786186696.9832957\n  },\n  \"sessions\": {\n    \"alpha\": {\n      \"first_seen_at\": 1786186696.9832957,\n      \"last_seen_at\": 1786186696.9832957,\n      \"cwd\": \"/home/bkrabach/dev/muxplex-qol-updates/muxplex\"\n    },\n    \"beta\": {\n      \"first_seen_at\": 1786186696.9832957,\n      \"last_seen_at\": 1786186696.9832957,\n      \"cwd\": \"/home/bkrabach/dev/muxplex-qol-updates/muxplex\"\n    }\n  },\n  \"pending_restore\": null,\n  \"created_with\": {}\n}\n"
+  },
+  "poll_bell_flag": {
+    "background_window_bell": {
+      "expected": true,
+      "tape": [
+        {
+          "args": [
+            "list-windows",
+            "-t",
+            "beta",
+            "-F",
+            "#{window_bell_flag}"
+          ],
+          "stdout": "0\n1\n"
+        }
+      ]
+    },
+    "pre_bell": {
+      "expected": false,
+      "tape": [
+        {
+          "args": [
+            "list-windows",
+            "-t",
+            "beta",
+            "-F",
+            "#{window_bell_flag}"
+          ],
+          "stdout": "0\n0\n"
+        }
+      ]
+    }
+  },
+  "probe_tmux_epoch": {
+    "live": {
+      "expected": {
+        "inode": 4752698,
+        "server_pid": 2523545,
+        "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+      },
+      "inode": 4752698,
+      "tape": [
+        {
+          "args": [
+            "display-message",
+            "-p",
+            "#{pid}\t#{socket_path}"
+          ],
+          "stdout": "2523545\t/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default\n"
+        }
+      ]
+    },
+    "no_server": {
+      "expected": null,
+      "tape": [
+        {
+          "args": [
+            "display-message",
+            "-p",
+            "#{pid}\t#{socket_path}"
+          ],
+          "error": "no server running on /tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default\n"
+        }
+      ]
+    }
+  },
+  "restore_helpers": {
+    "compute_restore_plan": {
+      "expected": [
+        "beta"
+      ],
+      "inputs": {
+        "live_names": [
+          "alpha"
+        ],
+        "manifest": {
+          "created_with": {},
+          "epoch": {
+            "inode": 4752698,
+            "observed_at": 1786186697.3380475,
+            "server_pid": 2524946,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "pending_restore": {
+            "detected_at": 1786186697.3380475,
+            "lost_epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "sessions": {
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          },
+          "schema": 2,
+          "sessions": {
+            "alpha": {
+              "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+              "first_seen_at": 1786186697.3380475,
+              "last_seen_at": 1786186697.3380475
+            }
+          }
+        }
+      }
+    },
+    "get_restore_cwd": {
+      "expected": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+      "inputs": {
+        "manifest": {
+          "created_with": {},
+          "epoch": {
+            "inode": 4752698,
+            "observed_at": 1786186697.3380475,
+            "server_pid": 2524946,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "pending_restore": {
+            "detected_at": 1786186697.3380475,
+            "lost_epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "sessions": {
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          },
+          "schema": 2,
+          "sessions": {
+            "alpha": {
+              "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+              "first_seen_at": 1786186697.3380475,
+              "last_seen_at": 1786186697.3380475
+            }
+          }
+        },
+        "name": "beta"
+      }
+    },
+    "mark_restored": {
+      "expected": {
+        "created_with": {},
+        "epoch": {
+          "inode": 4752698,
+          "observed_at": 1786186697.3380475,
+          "server_pid": 2524946,
+          "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+        },
+        "pending_restore": null,
+        "schema": 2,
+        "sessions": {
+          "alpha": {
+            "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "first_seen_at": 1786186697.3380475,
+            "last_seen_at": 1786186697.3380475
+          }
+        }
+      },
+      "inputs": {
+        "manifest": {
+          "created_with": {},
+          "epoch": {
+            "inode": 4752698,
+            "observed_at": 1786186697.3380475,
+            "server_pid": 2524946,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "pending_restore": {
+            "detected_at": 1786186697.3380475,
+            "lost_epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "sessions": {
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          },
+          "schema": 2,
+          "sessions": {
+            "alpha": {
+              "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+              "first_seen_at": 1786186697.3380475,
+              "last_seen_at": 1786186697.3380475
+            }
+          }
+        },
+        "restored_names": [
+          "beta"
+        ]
+      }
+    }
+  },
+  "tmux_env": {
+    "expected_when_unset": null,
+    "socket_dir": "/tmp/mx-diff-rec-v2jtfarj/tmux"
+  },
+  "ttyd": {
+    "SOCKET_BASENAME_LEN": 20,
+    "SOCKET_SUFFIX": ".sock",
+    "SUN_PATH_BUDGET": 102,
+    "socket_basenames": {
+      "alpha": "mx-8ed3f6ad685b.sock",
+      "beta": "mx-f44e64e75f39.sock",
+      "gamma": "mx-be9d587defa1.sock"
+    }
+  },
+  "update_manifest": {
+    "cases": [
+      {
+        "description": "first-run adoption: empty manifest + live server",
+        "expected": {
+          "changed": true,
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9832957
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9832957
+              }
+            }
+          }
+        },
+        "inputs": {
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "beta": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "epoch_now": {
+            "inode": 4752698,
+            "server_pid": 2523545,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "live_names": [
+            "alpha",
+            "beta"
+          ],
+          "manifest": {
+            "created_with": {},
+            "epoch": null,
+            "pending_restore": null,
+            "rename_in_flight": null,
+            "schema": 2,
+            "sessions": {}
+          },
+          "now": 1786186696.9832957
+        }
+      },
+      {
+        "description": "same-epoch quiet cycle: nothing changed",
+        "expected": {
+          "changed": false,
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9870186
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9870186
+              }
+            }
+          }
+        },
+        "inputs": {
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "beta": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "epoch_now": {
+            "inode": 4752698,
+            "server_pid": 2523545,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "live_names": [
+            "alpha",
+            "beta"
+          ],
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9832957
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9832957
+              }
+            }
+          },
+          "now": 1786186696.9870186
+        }
+      },
+      {
+        "description": "same-epoch: new live session (gamma) recorded",
+        "expected": {
+          "changed": true,
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9985015
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9985015
+              },
+              "gamma": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9985015,
+                "last_seen_at": 1786186696.9985015
+              }
+            }
+          }
+        },
+        "inputs": {
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "beta": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "gamma": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "epoch_now": {
+            "inode": 4752698,
+            "server_pid": 2523545,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "live_names": [
+            "alpha",
+            "beta",
+            "gamma"
+          ],
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9870186
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9870186
+              }
+            }
+          },
+          "now": 1786186696.9985015
+        }
+      },
+      {
+        "description": "same-epoch tombstone: gamma killed against a live, identity-matched server",
+        "expected": {
+          "changed": true,
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          }
+        },
+        "inputs": {
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "beta": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "epoch_now": {
+            "inode": 4752698,
+            "server_pid": 2523545,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "live_names": [
+            "alpha",
+            "beta"
+          ],
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9985015
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186696.9985015
+              },
+              "gamma": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9985015,
+                "last_seen_at": 1786186696.9985015
+              }
+            }
+          },
+          "now": 1786186697.0060124
+        }
+      },
+      {
+        "description": "PRE-S4 BASELINE: unknown top-level keys (rename_in_flight, app_extra) dropped on a changed same-epoch cycle",
+        "expected": {
+          "changed": true,
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060678
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060678
+              },
+              "gamma": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186697.0060678,
+                "last_seen_at": 1786186697.0060678
+              }
+            }
+          }
+        },
+        "inputs": {
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "beta": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+            "gamma": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "epoch_now": {
+            "inode": 4752698,
+            "server_pid": 2523545,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "live_names": [
+            "alpha",
+            "beta",
+            "gamma"
+          ],
+          "manifest": {
+            "app_extra": {
+              "kept": false,
+              "origin": "recorded-baseline"
+            },
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "rename_in_flight": {
+              "at": 1786186697.0060124,
+              "from": "alpha",
+              "to": "alpha2"
+            },
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          },
+          "now": 1786186697.0060678
+        },
+        "note": "S4 (plan \u00a713.3) will change this contract to round-trip unknown top-level keys verbatim. When S4 lands, THIS case's expectation is deliberately re-recorded; every other case must stay byte-identical."
+      },
+      {
+        "description": "epoch_now is None: knowledge unavailable, manifest returned unchanged",
+        "expected": {
+          "changed": false,
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          }
+        },
+        "inputs": {
+          "cwds": {},
+          "epoch_now": null,
+          "live_names": [],
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          },
+          "now": 1786186697.3156362
+        }
+      },
+      {
+        "description": "cold start: different epoch; beta frozen into pending_restore verbatim; live entries rebuilt fresh",
+        "expected": {
+          "changed": true,
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186697.3380475,
+              "server_pid": 2524946,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": {
+              "detected_at": 1786186697.3380475,
+              "lost_epoch": {
+                "inode": 4752698,
+                "observed_at": 1786186696.9832957,
+                "server_pid": 2523545,
+                "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+              },
+              "sessions": {
+                "beta": {
+                  "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                  "first_seen_at": 1786186696.9832957,
+                  "last_seen_at": 1786186697.0060124
+                }
+              }
+            },
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186697.3380475,
+                "last_seen_at": 1786186697.3380475
+              }
+            }
+          }
+        },
+        "inputs": {
+          "cwds": {
+            "alpha": "/home/bkrabach/dev/muxplex-qol-updates/muxplex"
+          },
+          "epoch_now": {
+            "inode": 4752698,
+            "server_pid": 2524946,
+            "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+          },
+          "live_names": [
+            "alpha"
+          ],
+          "manifest": {
+            "created_with": {},
+            "epoch": {
+              "inode": 4752698,
+              "observed_at": 1786186696.9832957,
+              "server_pid": 2523545,
+              "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
+            },
+            "pending_restore": null,
+            "schema": 2,
+            "sessions": {
+              "alpha": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              },
+              "beta": {
+                "cwd": "/home/bkrabach/dev/muxplex-qol-updates/muxplex",
+                "first_seen_at": 1786186696.9832957,
+                "last_seen_at": 1786186697.0060124
+              }
+            }
+          },
+          "now": 1786186697.3380475
+        }
+      }
+    ]
+  }
+}
