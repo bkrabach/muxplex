@@ -867,3 +867,87 @@ un-hijackable), which is the property that actually matters in the gap.
 8. **After S6: run the GC validation (§2.6's four commands) on a real
    managed device** — the one green in this plan only the owner can
    produce.
+
+---
+
+## 18. POST-MORTEM — this plan contained a self-defeating instruction
+
+**Added 2026-08-08 after the execution run deadlocked. Read this before
+re-running anything in this document.**
+
+### 18.1 The contradiction
+
+This plan instructs, in order:
+
+1. **S1/T0** — publish `tmuxkit` as a tombstone to claim the orphaned name.
+2. **S4/T3** — publish the library as `tmux-kit`.
+
+**These are mutually exclusive on PyPI.** Executing the first makes the second
+permanently impossible without an owner-only project deletion.
+
+### 18.2 The mechanism, verified empirically
+
+PyPI's registration guard is a database function, `ultranormalize_name`, which
+**removes every `.`, `-`, and `_`** and lowercases before comparing against all
+existing projects:
+
+```
+tmux-kit  →  tmuxkit
+tmux_kit  →  tmuxkit
+tmux.kit  →  tmuxkit
+tmuxkit   →  tmuxkit      ← identical: ONE name to the registration check
+```
+
+Observed on both publish paths after the tombstone existed:
+
+```
+Trusted Publishing:  invalid-payload: The name 'tmux-kit' is too similar
+                     to an existing project.
+Token upload (same
+account owner):      400 The name 'tmux-kit' is too similar to an existing
+                     project.
+```
+
+**Same-account ownership does NOT bypass the check.** Verified that our own
+tombstone is the sole occupant of the namespace — no third-party project is
+involved:
+
+```
+tmuxkit    EXISTS v0.0.0 (ours)
+tmux-kit   404      tmux_kit  404      tmux.kit  404
+```
+
+### 18.3 Where the plan went wrong
+
+Earlier sections of this document assert that `tmuxkit` and `tmux-kit` are
+"DISTINCT names" and that claiming one "does nothing for the other."
+
+**That is true for RESOLUTION and false for REGISTRATION.** Two different rules:
+
+| Rule | Normalization | Consequence |
+|---|---|---|
+| PEP 503 resolution | `-` `_` `.` collapse to `-` | `pip install tmux-kit` will NOT find `tmuxkit`. **They are different packages.** |
+| PyPI registration (`ultranormalize_name`) | `-` `_` `.` **removed entirely** | `tmux-kit` cannot be created while `tmuxkit` exists. **They are the same name.** |
+
+The plan reasoned about the first and drew a conclusion that only holds for it.
+Every downstream decision — sequencing T0 first "because it needs nothing and
+blocks nothing" — inherited that error.
+
+### 18.4 The rule to carry forward
+
+> **Before claiming a defensive/tombstone name, check it against
+> `ultranormalize_name` of the name you actually intend to ship.**
+> If they collapse to the same string, you get exactly one of them, forever.
+> A tombstone is not free — it consumes the entire separator-equivalence class.
+
+### 18.5 What this cost, and what it did not
+
+Nothing was lost or degraded. Public `uv tool install muxplex` resolves to
+0.43.0 (which predates the extraction and carries no library dependency), the
+fleet is healthy on v0.44.0, and no host was touched. The blocked work is an
+improvement, not a repair.
+
+Resolution requires one owner decision — delete the `tmuxkit` project (freeing
+`tmux-kit`), or ship the library under `tmuxkit`, the name already owned. Both
+are one-way doors on PyPI; neither is agent-performable, because PyPI exposes
+no deletion API and its tokens are upload-scoped.
