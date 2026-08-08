@@ -111,12 +111,10 @@ def seeded_session(monkeypatch):
     monkeypatch.setattr(main_mod, "get_snapshots", lambda: {name: snapshot_text})
     monkeypatch.setattr(main_mod, "get_session_activity", lambda: {name: 1700000000.0})
 
-    async def _fake_capture_pane(
-        session_name: str, lines: int = SERVER_DEFAULT_CAPTURE_LINES
-    ):
-        return snapshot_text
+    async def _fake_capture_pane_window(session_name: str, s: int, e: int | None):
+        return (100, 24, 50000, snapshot_text)
 
-    monkeypatch.setattr(main_mod, "capture_pane", _fake_capture_pane)
+    monkeypatch.setattr(main_mod, "capture_pane_window", _fake_capture_pane_window)
     return name
 
 
@@ -257,6 +255,18 @@ def test_session_snapshot_fields_present(sync_client, raw_http, seeded_session):
     assert snap.lines == raw["lines"]
     assert snap.last_activity_at == raw["last_activity_at"]
     assert snap.bell.unseen_count == raw["bell"]["unseen_count"]
+    # Scrollback-paging additions (docs/plans/2026-08-07-scrollback-paging-plan.md
+    # §3.3/§5) -- must round-trip through the vendored client parser too.
+    assert "start" in raw
+    assert "row_count" in raw
+    assert "total" in raw
+    assert "has_more" in raw
+    assert "saturated" in raw
+    assert snap.start == raw["start"]
+    assert snap.row_count == raw["row_count"]
+    assert snap.total == raw["total"]
+    assert snap.has_more == raw["has_more"]
+    assert snap.saturated == raw["saturated"]
 
 
 def test_view_fields_present(sync_client, raw_http, seeded_session):

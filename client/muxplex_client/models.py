@@ -127,6 +127,16 @@ class SessionSnapshot:
     followups: Followups = Followups()
     views: tuple[str, ...] = ()
     cwd: str | None = None
+    # Scrollback-paging additions (docs/plans/2026-08-07-scrollback-paging-plan.md
+    # §3.3/§5) -- all default so a pre-paging server still parses cleanly.
+    # `start` is the absolute row index of the first returned row; the next
+    # (older) page is always a `session(name, before=start)` call. See
+    # docs/AGENT_GUIDE.md §6.3.1 for the has_more/saturated truth table.
+    start: int | None = None
+    row_count: int | None = None
+    total: int | None = None
+    has_more: bool = False
+    saturated: bool = False
 
 
 @dataclass(frozen=True)

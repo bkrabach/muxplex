@@ -13,6 +13,8 @@ from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
     capture_pane,
+    capture_pane_metadata,
+    capture_pane_window,
     enumerate_sessions,
     get_session_activity,
     get_session_created_times,
@@ -458,6 +460,90 @@ async def test_capture_pane_accepts_deep_line_request(mock_subprocess):
 
     call_args = mock_create.call_args[0]
     assert call_args[7] == f"-{MAX_CAPTURE_LINES}"
+
+
+# ---------------------------------------------------------------------------
+# capture_pane_metadata / capture_pane_window
+# (docs/plans/2026-08-07-scrollback-paging-plan.md §2.6/§2.7/§3.4)
+# ---------------------------------------------------------------------------
+
+
+async def test_capture_pane_metadata_parses_h_p_l(mock_subprocess):
+    """capture_pane_metadata() parses the tab-separated
+    history_size/pane_height/history_limit line and issues exactly ONE
+    capture-free display-message call."""
+    with mock_subprocess("195\t24\t50000\n") as mock_create:
+        h, p, limit = await capture_pane_metadata("target-session")
+
+    assert (h, p, limit) == (195, 24, 50000)
+    call_args = mock_create.call_args[0]
+    assert call_args == (
+        "tmux",
+        "display-message",
+        "-p",
+        "-t",
+        "target-session",
+        "#{history_size}\t#{pane_height}\t#{history_limit}",
+    )
+
+
+async def test_capture_pane_window_no_before_omits_dash_e(mock_subprocess):
+    """The unchanged (`before=None`) path must build `-S -{lines}` with NO
+    `-E` at all -- byte-identical to capture_pane()'s pre-paging argv, just
+    paired with a leading display-message for the new response fields."""
+    with mock_subprocess("100\t24\t50000\nline1\nline2\n") as mock_create:
+        h, p, limit, text = await capture_pane_window("target-session", -30, None)
+
+    assert (h, p, limit) == (100, 24, 50000)
+    assert text == "line1\nline2\n"
+    call_args = mock_create.call_args[0]
+    assert call_args == (
+        "tmux",
+        "display-message",
+        "-p",
+        "-t",
+        "target-session",
+        "#{history_size}\t#{pane_height}\t#{history_limit}",
+        ";",
+        "capture-pane",
+        "-e",
+        "-p",
+        "-t",
+        "target-session",
+        "-S",
+        "-30",
+    )
+
+
+async def test_capture_pane_window_before_includes_dash_e(mock_subprocess):
+    """A paged request must build BOTH -S and -E, chained atomically (';'
+    is its own argv element) with the metadata read -- the argv shape
+    guard against a future refactor splitting the two calls apart
+    (plan §3.4's footnote; same style as test_input.py's argv assertion)."""
+    with mock_subprocess("500\t24\t50000\nrow-a\nrow-b\n") as mock_create:
+        h, p, limit, text = await capture_pane_window("target-session", -105, -100)
+
+    assert (h, p, limit) == (500, 24, 50000)
+    assert text == "row-a\nrow-b\n"
+    call_args = mock_create.call_args[0]
+    assert call_args == (
+        "tmux",
+        "display-message",
+        "-p",
+        "-t",
+        "target-session",
+        "#{history_size}\t#{pane_height}\t#{history_limit}",
+        ";",
+        "capture-pane",
+        "-e",
+        "-p",
+        "-t",
+        "target-session",
+        "-S",
+        "-105",
+        "-E",
+        "-100",
+    )
 
 
 # ---------------------------------------------------------------------------

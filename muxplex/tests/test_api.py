@@ -770,16 +770,16 @@ def test_patch_settings_malformed_view_rule_returns_400(client, monkeypatch):
 
 
 def test_get_session_snapshot_returns_live_capture(client, monkeypatch):
-    """GET /api/sessions/{name} does a live capture_pane(), not the cache."""
+    """GET /api/sessions/{name} does a live capture_pane_window(), not the cache."""
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
 
     captured_args = []
 
-    async def fake_capture_pane(name: str, lines: int) -> str:
-        captured_args.append((name, lines))
-        return "line1\nline2\n...\nline500\n"
+    async def fake_capture_pane_window(name: str, s: int, e: int | None):
+        captured_args.append((name, -s, e))
+        return (500, 24, 50000, "line1\nline2\n...\nline500\n")
 
-    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_capture_pane_window)
 
     response = client.get("/api/sessions/alpha?lines=500")
     assert response.status_code == 200
@@ -787,7 +787,14 @@ def test_get_session_snapshot_returns_live_capture(client, monkeypatch):
     assert body["name"] == "alpha"
     assert body["lines"] == 500
     assert body["snapshot"] == "line1\nline2\n...\nline500\n"
-    assert captured_args == [("alpha", 500)]
+    assert captured_args == [("alpha", 500, None)]
+    # New scrollback-paging fields (docs/plans/2026-08-07-scrollback-paging-plan.md §3.3):
+    # h=500 >= lines=500, so start=0 (the top of all available history).
+    assert body["start"] == 0
+    assert body["row_count"] == 524  # total (500+24) - start
+    assert body["total"] == 524
+    assert body["has_more"] is False
+    assert body["saturated"] is False
 
 
 def test_get_session_snapshot_defaults_to_default_capture_lines(client, monkeypatch):
@@ -798,16 +805,16 @@ def test_get_session_snapshot_defaults_to_default_capture_lines(client, monkeypa
 
     captured_args = []
 
-    async def fake_capture_pane(name: str, lines: int) -> str:
-        captured_args.append((name, lines))
-        return ""
+    async def fake_capture_pane_window(name: str, s: int, e: int | None):
+        captured_args.append((name, -s, e))
+        return (100, 24, 50000, "")
 
-    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_capture_pane_window)
 
     response = client.get("/api/sessions/alpha")
     assert response.status_code == 200
     assert response.json()["lines"] == DEFAULT_CAPTURE_LINES
-    assert captured_args == [("alpha", DEFAULT_CAPTURE_LINES)]
+    assert captured_args == [("alpha", DEFAULT_CAPTURE_LINES, None)]
 
 
 def test_get_session_snapshot_rejects_lines_over_max(client, monkeypatch):
@@ -835,10 +842,10 @@ def test_get_session_snapshot_accepts_max_capture_lines_exactly(client, monkeypa
 
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
 
-    async def fake_capture_pane(name: str, lines: int) -> str:
-        return "x" * 10
+    async def fake_capture_pane_window(name: str, s: int, e: int | None):
+        return (MAX_CAPTURE_LINES, 24, 50000, "x" * 10)
 
-    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_capture_pane_window)
 
     response = client.get(f"/api/sessions/alpha?lines={MAX_CAPTURE_LINES}")
     assert response.status_code == 200
@@ -896,10 +903,10 @@ def test_get_session_snapshot_includes_bell_and_activity(client, monkeypatch):
         "muxplex.main.get_session_activity", lambda: {"alpha": 1700000000.0}
     )
 
-    async def fake_capture_pane(name: str, lines: int) -> str:
-        return "pane text"
+    async def fake_capture_pane_window(name: str, s: int, e: int | None):
+        return (100, 24, 50000, "pane text")
 
-    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_capture_pane_window)
     save_state(
         {
             "active_session": None,
@@ -1052,12 +1059,12 @@ def _seed_parity_fixtures(
     so both endpoints resolve the SAME session with identical field values,
     for the key-set-parity and cwd-parity assertions below."""
 
-    async def fake_capture_pane(session_name: str, lines: int) -> str:
-        return "pane text"
+    async def fake_capture_pane_window(session_name: str, s: int, e: int | None):
+        return (100, 24, 50000, "pane text")
 
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: [name])
     monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {name: "pane text"})
-    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_capture_pane_window)
     monkeypatch.setattr(
         "muxplex.main.get_session_activity", lambda: {name: 1700000000.0}
     )
@@ -1071,11 +1078,20 @@ def _seed_parity_fixtures(
 
 def test_session_snapshot_reaches_parity_with_bulk(client, monkeypatch):
     """The single-session and bulk-read entries for the SAME session must
-    have identical key sets, differing only by the depth-request field
-    (`lines`, single-session only) and the wire-key `snapshot`/`sessionKey`
-    dance -- asserting the key SETS (not a hardcoded list) is what keeps
-    the two endpoints from drifting apart again the next time a field is
-    added to one."""
+    have identical key sets, differing only by fields that are legitimately
+    single-session-only -- asserting the key SETS (not a hardcoded list) is
+    what keeps the two endpoints from drifting apart again the next time a
+    field is added to one.
+
+    `lines` is single-session-only: the depth REQUESTED, unrelated to
+    parity. The five scrollback-paging fields (`start`, `row_count`,
+    `total`, `has_more`, `saturated` --
+    docs/plans/2026-08-07-scrollback-paging-plan.md §3.3/§3.5) are
+    DELIBERATELY single-session-only too: `GET /api/sessions` serves one
+    shared ~2s-cycle poll cache at a fixed depth, consumed simultaneously
+    by the PWA/muxplex-deck/every agent, and per-request paging metadata
+    has no meaning against a value nobody requested a specific window of.
+    """
     _seed_parity_fixtures(monkeypatch, "parity-session")
 
     bulk_response = client.get("/api/sessions")
@@ -1089,8 +1105,15 @@ def test_session_snapshot_reaches_parity_with_bulk(client, monkeypatch):
     bulk_keys = set(bulk_entry.keys())
     single_keys = set(single_entry.keys())
 
-    # `lines` is single-session-only: the depth REQUESTED, unrelated to parity.
-    assert single_keys - bulk_keys == {"lines"}
+    single_only_fields = {
+        "lines",
+        "start",
+        "row_count",
+        "total",
+        "has_more",
+        "saturated",
+    }
+    assert single_keys - bulk_keys == single_only_fields
     assert bulk_keys - single_keys == set()
 
     for key in bulk_keys:
@@ -1144,6 +1167,166 @@ def test_session_snapshot_includes_cwd(client, monkeypatch):
     response = client.get("/api/sessions/cwd-session")
     assert response.status_code == 200
     assert response.json()["cwd"] == "/home/you/dev/muxplex"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sessions/{name}?before= -- scrollback paging
+# (docs/plans/2026-08-07-scrollback-paging-plan.md §3, §6)
+# ---------------------------------------------------------------------------
+
+
+def test_before_omitted_never_probes_metadata(client, monkeypatch):
+    """Omitting `before` must not call capture_pane_metadata() at all -- the
+    unchanged path needs no probe, only the atomic capture_pane_window()
+    call (plan §3.2: 'the existing capture_pane(name, lines) call is used
+    unchanged on that path')."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_metadata(name: str):
+        raise AssertionError("capture_pane_metadata must not be called")
+
+    async def fake_window(name: str, s: int, e: int | None):
+        return (100, 24, 50000, "text")
+
+    monkeypatch.setattr("muxplex.main.capture_pane_metadata", fake_metadata)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_window)
+
+    response = client.get("/api/sessions/alpha?lines=30")
+    assert response.status_code == 200
+
+
+def test_before_zero_returns_empty_page_not_400(client, monkeypatch):
+    """before=0 means 'already at the beginning' -- 200 with an empty
+    page, never a 4xx (plan §3.2's truth table)."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_metadata(name: str):
+        return (500, 24, 50000)
+
+    async def fake_window(name: str, s: int, e: int | None):
+        raise AssertionError("capture-pane must not be called for before=0")
+
+    monkeypatch.setattr("muxplex.main.capture_pane_metadata", fake_metadata)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_window)
+
+    response = client.get("/api/sessions/alpha?lines=30&before=0")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["snapshot"] == ""
+    assert body["row_count"] == 0
+    assert body["start"] == 0
+    assert body["has_more"] is False
+    assert body["total"] == 524
+
+
+def test_before_negative_returns_400(client, monkeypatch):
+    """before < 0 -> 400, matching the endpoint's no-silent-clamp discipline."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_metadata(name: str):
+        return (500, 24, 50000)
+
+    monkeypatch.setattr("muxplex.main.capture_pane_metadata", fake_metadata)
+
+    response = client.get("/api/sessions/alpha?lines=30&before=-1")
+    assert response.status_code == 400
+    assert "before" in response.json()["detail"]
+
+
+def test_before_over_total_returns_400(client, monkeypatch):
+    """before > total -> 400 -- a client bug or a saturation-era shift,
+    never silently clamped to whatever IS available."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_metadata(name: str):
+        return (500, 24, 50000)  # total = 524
+
+    monkeypatch.setattr("muxplex.main.capture_pane_metadata", fake_metadata)
+
+    response = client.get("/api/sessions/alpha?lines=30&before=525")
+    assert response.status_code == 400
+    assert "525" in response.json()["detail"]
+    assert "524" in response.json()["detail"]
+
+
+def test_before_computes_correct_relative_coordinates(client, monkeypatch):
+    """A mid-history `before` must convert to the exact `-S`/`-E` tmux
+    coordinates the plan's §3.4 pseudocode derives, and report `start`
+    truthfully from the FRESH h returned by the atomic capture (not the
+    probe's h0), self-consistent even when they differ."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_metadata(name: str):
+        return (1000, 24, 50000)  # h0=1000, total0=1024
+
+    captured = {}
+
+    async def fake_window(name: str, s: int, e: int | None):
+        captured["s"] = s
+        captured["e"] = e
+        # Simulate a FRESH h (1000, unchanged from the probe) paired with
+        # the capture -- the common case where no drift occurred.
+        return (1000, 24, 50000, "x" * 200)
+
+    monkeypatch.setattr("muxplex.main.capture_pane_metadata", fake_metadata)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_window)
+
+    # before=900, lines=100 -> row_count=100, start_guess=800
+    # rel_s = 800-1000=-200, rel_e = 800+100-1-1000=-101
+    response = client.get("/api/sessions/alpha?lines=100&before=900")
+    assert response.status_code == 200
+    assert captured == {"s": -200, "e": -101}
+    body = response.json()
+    assert body["start"] == 800
+    assert body["row_count"] == 100
+    assert body["has_more"] is True
+    assert body["saturated"] is False
+
+
+def test_before_reports_truthfully_when_h_drifted(client, monkeypatch):
+    """If the fresh h paired with the actual capture differs from the
+    probe's h0 (growth-only drift between the two calls), `start` must be
+    computed from the FRESH h, not the probe -- the response always
+    describes what was ACTUALLY captured (plan §3.4: 'report start
+    truthfully instead of approximately')."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_metadata(name: str):
+        return (1000, 24, 50000)  # h0=1000
+
+    async def fake_window(name: str, s: int, e: int | None):
+        # h grew by 5 between the probe and this atomic call.
+        return (1005, 24, 50000, "x" * 100)
+
+    monkeypatch.setattr("muxplex.main.capture_pane_metadata", fake_metadata)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_window)
+
+    # before=900, lines=100 -> rel_s computed from h0=1000: -200
+    response = client.get("/api/sessions/alpha?lines=100&before=900")
+    assert response.status_code == 200
+    body = response.json()
+    # start = h(fresh)=1005 + rel_s(-200) = 805, NOT before-row_count=800.
+    assert body["start"] == 805
+    assert body["total"] == 1005 + 24
+
+
+def test_before_saturated_true_when_history_size_at_limit(client, monkeypatch):
+    """saturated = history_size >= history_limit, computed fresh from the
+    atomic capture's own h -- independent of has_more."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    async def fake_metadata(name: str):
+        return (200, 24, 200)  # h0 == history_limit -> saturated
+
+    async def fake_window(name: str, s: int, e: int | None):
+        return (200, 24, 200, "x" * 50)
+
+    monkeypatch.setattr("muxplex.main.capture_pane_metadata", fake_metadata)
+    monkeypatch.setattr("muxplex.main.capture_pane_window", fake_window)
+
+    response = client.get("/api/sessions/alpha?lines=50&before=100")
+    assert response.status_code == 200
+    assert response.json()["saturated"] is True
 
 
 # ---------------------------------------------------------------------------

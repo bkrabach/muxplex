@@ -173,6 +173,73 @@ is the durable summary a client author needs.
   full -- see that project's `AGENTS.md` for the Windows regression this
   accepts.
 
+## Scrollback paging: `?before=<abs>` on `GET /api/sessions/{name}`
+
+See `docs/plans/2026-08-07-scrollback-paging-plan.md` for the full design and
+its runtime-measured evidence. Summary of the parts a client re-implements:
+
+- **The absolute coordinate contract.** `history_size` (H) and `pane_height`
+  (P) are read atomically with every capture. `total = H + P` is the
+  addressable range right now; `abs` is the server's own coordinate space,
+  `0` = the oldest row currently retained, growing upward. `rel = abs - H`
+  is tmux's own `capture-pane -S`/`-E` coordinate. Raw `-S`/`-E` passthrough
+  is deliberately NOT offered: tmux's relative coordinates drift under a
+  live, growing pane (identical coordinates minutes apart name different
+  text -- measured, plan §2.2) and tmux clamps an out-of-range request
+  **silently**, exit 0, with no diagnostic (plan §2.4) -- below the layer
+  muxplex can observe or report on. Converting `abs` server-side, fresh on
+  every request, is what avoids both: `abs` is stable for a given physical
+  row across requests as long as it hasn't been evicted (plan §2.3).
+- **`before` is exclusive and additive.** `GET .../{name}?lines=N&before=X`
+  returns the `N` rows immediately older than absolute row `X`. Omitting
+  `before` is byte-identical to the pre-paging endpoint. The next (older)
+  page is always `?before={start}` from the previous response -- that is
+  the entire client-side paging rule; no cursor, no token, no server-side
+  session is involved.
+- **The `has_more` / `saturated` truth table** is what "no silent
+  truncation" requires -- the two ways a page can be the last one are
+  genuinely different and must not be conflated:
+
+  | `has_more` | `saturated` | Meaning |
+  |---|---|---|
+  | `false` | `false` | Reached the session's TRUE beginning. |
+  | `false` | `true`  | Reached the RETENTION WALL -- older output existed and is gone. |
+  | `true`  | `true`  | More is available, and absolute indices may have shifted since the last request (below). |
+
+  `row_count < lines` is never truncation by itself -- it means "there was
+  no more", disambiguated by `has_more`. A request the server refuses to
+  serve is always a **400** (see the bounds table below), never a short
+  200.
+- **The saturation limitation (accepted, not engineered around).** Once
+  `history_size >= history_limit`, tmux evicts the oldest rows permanently
+  and `history_size` pins at the limit while content keeps scrolling -- so
+  the origin of the absolute index space slides forward. An absolute index
+  held across requests on a `saturated: true` pane can shift by however many
+  rows were evicted in between, and the server cannot detect this: tmux
+  exposes no monotonic eviction counter, and it is not derivable from
+  `history_size` (pinned) or the poll cycle (which cannot know how many rows
+  scrolled between two samples). The mitigation is a larger `history-limit`
+  (`muxplex tmux install`, or your own `~/.tmux.conf`, set before sessions
+  are created -- `history-limit` binds a pane at creation time and cannot be
+  raised afterward); `saturated: true` is how a caller learns the guarantee
+  is off, not something this feature can restore.
+- **Bounds, matching the endpoint's existing no-silent-clamp discipline:**
+
+  | Condition | Result |
+  |---|---|
+  | `lines` outside `[1, MAX_CAPTURE_LINES]` | **400** -- unchanged message |
+  | `before < 0` | **400** -- `"before must be between 0 and {total} (got …)"` |
+  | `before > total` | **400** -- same message; `total` only grows while unsaturated, so this means a client bug or a saturation-era shift |
+  | `before == 0` | **200** with an empty page, `row_count: 0`, `has_more: false` -- reaching the beginning is not an error |
+
+- **`before` is never added to the shared bulk `GET /api/sessions` cache.**
+  That endpoint serves one ~2s-cycle poll shared by the PWA, muxplex-deck,
+  and every agent at once; a per-request depth there would mean either
+  forking that shared contract or a live tmux call per session on every
+  poll cycle -- the exact cost this feature's bounds exist to prevent. This
+  single-session endpoint exists precisely to sidestep that (same rationale
+  already documented for `lines` -- `get_session_snapshot()`'s docstring).
+
 ## Semantics external clients re-implement today (change with care)
 
 These rules are currently ported into clients; silently changing them breaks

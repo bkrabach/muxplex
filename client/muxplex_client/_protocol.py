@@ -121,6 +121,16 @@ def parse_session_snapshot(raw: Mapping[str, Any]) -> SessionSnapshot:
         followups=parse_followups(raw.get("followups")),
         views=tuple(raw.get("views") or ()),
         cwd=raw.get("cwd"),
+        # Scrollback-paging additions (docs/plans/2026-08-07-scrollback-paging-plan.md
+        # §3.3/§5) -- default `None`/`False` so a pre-paging server parses
+        # cleanly. `start`/`row_count`/`total` are left `None` (rather than
+        # `0`) when absent, so a caller can distinguish "no data" from a
+        # real empty page (`before=0` reports `row_count=0` explicitly).
+        start=raw.get("start"),
+        row_count=raw.get("row_count"),
+        total=raw.get("total"),
+        has_more=bool(raw.get("has_more", False)),
+        saturated=bool(raw.get("saturated", False)),
     )
 
 

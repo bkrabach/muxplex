@@ -68,6 +68,8 @@ from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
     capture_pane,
+    capture_pane_metadata,
+    capture_pane_window,
     enumerate_sessions,
     get_session_activity,
     get_session_created_times,
@@ -1413,7 +1415,9 @@ async def get_sessions() -> list[dict]:
 
 
 @app.get("/api/sessions/{name}")
-async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) -> dict:
+async def get_session_snapshot(
+    name: str, lines: int = DEFAULT_CAPTURE_LINES, before: int | None = None
+) -> dict:
     """Return a single session's pane content at a caller-chosen depth.
 
     Unlike GET /api/sessions -- a shared, ~2s-cycle poll cache fixed at
@@ -1427,15 +1431,20 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
     `lines` must be within [1, MAX_CAPTURE_LINES] (400 otherwise) -- an
     unbounded value here would let a single request pull arbitrarily large
     scrollback, a real cost on a server that's also polling every other
-    session on its own cycle. Retention is whatever the host's tmux config
-    provides -- `history-limit 50000` under `muxplex tmux install`
-    (tmux_templates/base.conf:28), tmux's compiled-in **2000** otherwise. On
-    an unmanaged host that equals MAX_CAPTURE_LINES exactly, so the deepest
-    legal request sits on the retention boundary and tmux clamps
-    **silently**. muxplex does not set `history-limit` and cannot: the
-    option binds a pane at creation time, not afterward (see
-    docs/plans/2026-08-07-agent-surface-additive-plan.md §8 for the
-    runtime-measured proof that a post-creation `set-option` does not take).
+    session on its own cycle. `MAX_CAPTURE_LINES` bounds the WINDOW size,
+    not the reachable DEPTH -- see `before` below, which pages arbitrarily
+    deep at the same per-request cost (measured: `capture-pane` cost is
+    O(window requested), not O(depth) -- docs/plans/2026-08-07-scrollback-paging-plan.md §2.5).
+
+    Retention (how much scrollback actually exists behind a request) is
+    whatever the host's tmux config provides -- `history-limit 50000` under
+    `muxplex tmux install` (tmux_templates/base.conf:28), tmux's
+    compiled-in **2000** otherwise. muxplex does not set `history-limit`
+    and cannot: the option binds a pane at creation time, not afterward
+    (see docs/plans/2026-08-07-scrollback-paging-plan.md §1 for the
+    runtime-measured proof that a post-creation `set-option` does not
+    take). `saturated` (below) is how a caller learns whether it has hit
+    that retention wall rather than the session's true beginning.
 
     Raises 404 if *name* is not an exact member of the known session set
     (same fail-closed pattern as connect/delete/input).
@@ -1449,6 +1458,36 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
     here so polling ONE session and polling the bulk list never disagree
     about what the session's state is. `lines` keeps its exact existing
     meaning (the depth REQUESTED, not a parity field) and is unaffected.
+
+    ## Scrollback paging: `before`
+
+    `before` is an optional absolute row index (server-defined coordinate
+    space: 0 = the oldest row currently retained, growing upward -- see
+    docs/plans/2026-08-07-scrollback-paging-plan.md §2.3/§3.1). Omitting it is
+    byte-identical to the pre-paging behavior. When given, the response
+    contains the `lines` rows immediately OLDER than (exclusive of) `before`
+    -- raw `-S`/`-E` passthrough is not offered because tmux's own
+    coordinates drift under a live, growing pane and tmux clamps
+    out-of-range requests silently (measured: plan §2.2/§2.4); the absolute
+    `before` coordinate, converted to tmux's relative coordinates
+    server-side on every request, is what avoids both.
+
+    New response fields (always present, `before` or not):
+
+    * `start` -- absolute index of the first row returned. The next
+      (older) page is always `?before={start}`.
+    * `row_count` -- rows actually returned (may be 0 for `before=0`).
+    * `total` -- `history_size + pane_height`, the addressable range right
+      now.
+    * `has_more` -- whether anything older than `start` remains.
+    * `saturated` -- `history_size >= history_limit`; True means this
+      pane has evicted its oldest rows, so `has_more: false` here means
+      "hit the retention wall", not "this is the true beginning".
+
+    `before` must be in `[0, total]` (400 otherwise, with `total` in the
+    message) -- an out-of-range request is always a 400, never a silently
+    short/clamped 200, per this endpoint's existing `lines`-bounds
+    discipline (docs/AGENT_GUIDE.md §6.3).
     """
     _require_valid_session_name(name)
     if not (1 <= lines <= MAX_CAPTURE_LINES):
@@ -1460,7 +1499,47 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
     if name not in known:
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
-    snapshot = await capture_pane(name, lines)
+    if before is None:
+        # Unchanged path: the exact `-S -{lines}` shape capture_pane() has
+        # always used, with no `-E` (defaults to the bottom of the visible
+        # screen) -- byte-identical to pre-paging behavior. Paired with the
+        # SAME atomic history_size/pane_height/history_limit read so the
+        # new response fields below can still be reported truthfully.
+        h, p, hist_limit, snapshot = await capture_pane_window(name, -lines, None)
+        total = h + p
+        start = max(0, h - lines)
+        row_count = total - start
+    else:
+        h0, p0, hist_limit0 = await capture_pane_metadata(name)
+        total0 = h0 + p0
+        if not (0 <= before <= total0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"before must be between 0 and {total0} (got {before})",
+            )
+        row_count = min(lines, before)
+        start_guess = before - row_count
+        if row_count == 0:
+            # before=0: caller has already reached the beginning. A 4xx
+            # here would be a lie -- 200 with an empty page is the honest
+            # answer (plan §3.2).
+            snapshot = ""
+            h, p, hist_limit = h0, p0, hist_limit0
+            start = start_guess
+            total = total0
+        else:
+            rel_s = start_guess - h0
+            rel_e = start_guess + row_count - 1 - h0
+            h, p, hist_limit, snapshot = await capture_pane_window(name, rel_s, rel_e)
+            # Report using the FRESH h paired with THIS capture, not h0 --
+            # truthful regardless of any (growth-only) drift between the
+            # probe and this call (plan §3.4).
+            start = h + rel_s
+            total = h + p
+
+    has_more = start > 0
+    saturated = h >= hist_limit
+
     activity = get_session_activity()
     state = await read_state()
     session_state = state.get("sessions", {}).get(name, {})
@@ -1480,6 +1559,11 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
         "created_at": get_session_created_times().get(name),
         "followups": followups.summary(state, name),
         "cwd": get_session_cwds().get(name),
+        "start": start,
+        "row_count": row_count,
+        "total": total,
+        "has_more": has_more,
+        "saturated": saturated,
     }
     annotated = annotate_view_membership([entry], settings)[0]
     annotated.pop("sessionKey", None)

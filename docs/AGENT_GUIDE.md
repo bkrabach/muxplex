@@ -1012,14 +1012,82 @@ than an explicit rejection. Traced proof of the recovery itself: a
 line **48** — lines 1–47 genuinely gone — while `?lines=200` recovered the
 full range, containing lines `1`, `47`, and `100`.
 
-How much scrollback actually exists behind a max-depth request is set by the
-host's tmux configuration, not by muxplex. `muxplex tmux install` provides
-50000; without it you get tmux's compiled-in default of 2000 — the same number
-as the `lines` ceiling, so a `?lines=2000` request against an unmanaged host can
-legitimately return everything there is. `history-limit` binds a pane when it is
-created and cannot be raised afterward, so if you need deeper scrollback the fix
-is `muxplex tmux install`, or raising `history-limit` in your own `~/.tmux.conf`
-before sessions start — never a request parameter.
+How much scrollback actually exists behind a request is set by the host's
+tmux configuration, not by muxplex. `muxplex tmux install` provides 50000;
+without it you get tmux's compiled-in default of 2000. `history-limit` binds
+a pane when it is created and cannot be raised afterward, so if you need
+deeper retention the fix is `muxplex tmux install`, or raising
+`history-limit` in your own `~/.tmux.conf` before sessions start — never a
+request parameter. `saturated` (below) is how you find out you've hit that
+wall rather than the session's true beginning.
+
+### 6.3.1 Recovering scrollback DEEPER than `MAX_CAPTURE_LINES`: `before`
+
+`lines` alone tops out at `MAX_CAPTURE_LINES` (2000) per request — that
+ceiling stays in place, because it bounds the WINDOW size, the only thing
+that actually costs anything (a bounded window is cheap at any depth; a
+10-row window 40,000 lines back costs the same as 10 rows at the live end).
+What was missing was a way to ask for the NEXT 2000 lines further back.
+`?before=<abs>` is that: it names an absolute row, server-computed and
+returned to you, that is stable across requests as long as nothing has been
+evicted.
+
+```
+GET /api/sessions/{name}?lines=2000                    # the live end, as always
+GET /api/sessions/{name}?lines=2000&before=<start>      # the 2000 rows immediately OLDER
+```
+
+Response fields, always present:
+
+```json
+{
+  "name": "agent-build",
+  "snapshot": "…",
+  "lines": 2000,
+  "start": 49024,
+  "row_count": 2000,
+  "total": 51024,
+  "has_more": true,
+  "saturated": false
+}
+```
+
+The loop to page backward until you've seen enough (or to recover
+everything, reversed for oldest-first):
+
+```bash
+before=""
+while :; do
+  q="/api/sessions/agent-build?lines=2000${before:+&before=$before}"
+  resp=$(curl -s "$q")
+  # ... consume $(echo "$resp" | jq -r .snapshot) ...
+  has_more=$(echo "$resp" | jq -r .has_more)
+  [ "$has_more" = "true" ] || break
+  before=$(echo "$resp" | jq -r .start)
+done
+```
+
+**Do NOT build your own `-S`/`-E` passthrough or decrement an offset
+yourself.** tmux's own coordinates are relative to the CURRENT top of the
+visible screen and drift as the pane keeps producing output — identical
+raw coordinates requested moments apart can silently return different
+text. `before` is the server's own absolute coordinate, recomputed fresh on
+every request, specifically to avoid this.
+
+`has_more` and `saturated` disambiguate the two different ways a page can be
+the last one — do not treat them as the same signal:
+
+| `has_more` | `saturated` | Meaning |
+|---|---|---|
+| `false` | `false` | You reached the session's true beginning. |
+| `false` | `true`  | You reached the retention wall — older output existed and is gone. Raise `history-limit` (above) if you need more next time. |
+| `true`  | `true`  | More is available, but this pane has evicted history, so held absolute indices may have shifted since your last request. |
+
+`before` is validated the same way `lines` is — always a 400 on an
+out-of-range value, never a silently short page: `before` outside
+`[0, total]` is **400**; `before=0` is a normal **200** with an empty page
+(`row_count: 0`, `has_more: false`) — you've already reached the
+beginning, which is not an error.
 
 ### 6.4 Bell-on-completion: an attention convention
 

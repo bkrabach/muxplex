@@ -471,6 +471,110 @@ async def capture_pane(session_name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
         return ""
 
 
+# ---------------------------------------------------------------------------
+# Scrollback paging (docs/plans/2026-08-07-scrollback-paging-plan.md)
+#
+# tmux's `capture-pane -S/-E` coordinates are RELATIVE to the current top of
+# the visible screen (0 = first visible row, negative = history) -- see the
+# module's own `man tmux` entry, confirmed empirically in the plan (\u00a72.1).
+# There is no absolute-addressing mode. Converting an absolute row index
+# (`before`, defined as `history_size + rel` -- \u00a72.3) into the `-S`/`-E`
+# tmux expects therefore REQUIRES knowing the CURRENT `history_size` before
+# the `capture-pane` argv can even be built -- and a single tmux invocation
+# cannot feed one chained command's output into another's arguments. So
+# converting a caller-supplied `before` is necessarily two tmux round trips:
+#
+#   1. capture_pane_metadata() -- a cheap, capture-free probe for the
+#      CURRENT history_size/pane_height/history_limit, used ONLY to convert
+#      `before` into a relative `-S`/`-E` pair.
+#   2. capture_pane_window(), using the coordinates from (1) -- one atomic
+#      invocation that reads history_size/pane_height/history_limit AGAIN,
+#      paired in the SAME tmux command loop tick as the actual capture
+#      (\u00a72.7). This second, paired reading is what the response's
+#      `start`/`total`/`saturated` fields are computed from, so they are
+#      always truthful for whatever was actually captured -- never the
+#      (marginally staler) value used only to pick the coordinates. history
+#      only grows (or pins at saturation), never shrinks, so any drift
+#      between (1) and (2) can only shift the returned window towards MORE
+#      recent content (\u00a72.4) -- overlap with adjacent pages, never a gap.
+#
+# The `before=None` (unchanged, legacy) path needs no probe at all: its `-S`
+# is the literal `-{lines}` used since before this feature existed, entirely
+# independent of history_size.
+# ---------------------------------------------------------------------------
+
+
+async def capture_pane_metadata(session_name: str) -> tuple[int, int, int]:
+    """Read *session_name*'s current ``(history_size, pane_height,
+    history_limit)`` via one capture-free `display-message` call.
+
+    Used as the probe half of the two-step conversion described in the
+    module-level comment above: to turn a caller-supplied absolute `before`
+    into tmux's own relative `-S`/`-E` coordinates, the current
+    `history_size` must be known BEFORE the `capture-pane` argv can be
+    built. Costs nothing beyond a single cheap subprocess spawn -- no
+    capture window is requested here at all.
+
+    Raises RuntimeError if tmux/the session is unreachable (same as
+    `run_tmux`) -- callers are expected to have already confirmed the
+    session exists via `get_session_list()`.
+    """
+    output = await run_tmux(
+        "display-message",
+        "-p",
+        "-t",
+        session_name,
+        "#{history_size}\t#{pane_height}\t#{history_limit}",
+    )
+    h_str, _, rest = output.partition("\t")
+    p_str, _, l_str = rest.partition("\t")
+    return int(h_str.strip()), int(p_str.strip()), int(l_str.strip())
+
+
+async def capture_pane_window(
+    session_name: str, s: int, e: int | None
+) -> tuple[int, int, int, str]:
+    """Atomically read ``(history_size, pane_height, history_limit)``
+    together with a `capture-pane` window at tmux-relative coordinates
+    *s* (`-S`) and *e* (`-E`, omitted entirely when ``None`` -- the
+    pre-existing "capture down to the bottom of the visible screen"
+    behavior every caller of `capture_pane()` already relies on).
+
+    The two tmux commands are chained with a literal ``;`` argv element
+    into ONE subprocess invocation, so they are processed in the same tmux
+    server command-loop tick and observe the same grid state (plan \u00a72.7)
+    -- there is no race between reading history_size and capturing. This
+    is what lets a caller report `start`/`total`/`saturated` truthfully:
+    they are computed from the H returned HERE, paired with the capture
+    that H actually produced, never a value read moments earlier.
+
+    Returns ``(history_size, pane_height, history_limit, text)``. Raises
+    RuntimeError if tmux/the session is unreachable (same as `run_tmux`).
+    """
+    args = [
+        "display-message",
+        "-p",
+        "-t",
+        session_name,
+        "#{history_size}\t#{pane_height}\t#{history_limit}",
+        ";",
+        "capture-pane",
+        "-e",  # preserve ANSI escape sequences for color rendering
+        "-p",
+        "-t",
+        session_name,
+        "-S",
+        str(s),
+    ]
+    if e is not None:
+        args += ["-E", str(e)]
+    output = await run_tmux(*args)
+    header, _, text = output.partition("\n")
+    h_str, _, rest = header.partition("\t")
+    p_str, _, l_str = rest.partition("\t")
+    return int(h_str.strip()), int(p_str.strip()), int(l_str.strip()), text
+
+
 async def spawn_session_command(
     name: str, command_id: str | None = None
 ) -> tuple[bool, str | None]:
