@@ -133,6 +133,7 @@ from muxplex.terminal_input import (
     redact_preview,
 )
 from muxplex.tls import get_local_ca_cert_bytes
+from muxplex.tmux.bell import build_alert_bell_hook
 from muxplex.ttyd import (
     TTYD_PORT,
     TtydCapacityError,
@@ -442,7 +443,11 @@ async def _arm_bell_hook() -> bool:
             "set-hook",
             "-g",
             "alert-bell",
-            f"run-shell '{_bell_hook_curl('#{session_name}')}'",
+            # The run-shell construction itself lives in the library
+            # (muxplex.tmux.bell -- the ONE legal site, enforced by
+            # test_safety_rails.py's recursive AST rail); this app supplies
+            # only the always-silent command content.
+            build_alert_bell_hook(_bell_hook_curl("#{session_name}")),
         )
     except Exception as exc:
         _bell_hook_last_error = str(exc)

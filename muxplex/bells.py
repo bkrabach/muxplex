@@ -14,56 +14,33 @@ Public API:
     should_clear_bell(session_name, state)   → bool
     apply_bell_clear_rule(state)             → list[str]
     needs_attention(bell)                    → bool
+
+Tmux-lib extraction stage S1 (plan §7.1, §3.2): ``poll_bell_flag`` -- bell
+*detection*, a pure tmux fact including the multi-window incident finding
+-- moved to ``muxplex.tmux.bell`` and is re-exported here. The attention
+model (unseen_count / seen_at / the clear rule gated on a device viewing in
+fullscreen) is muxplex's UX and stays in this module.
 """
 
 import time
 from collections.abc import Callable
 
-from muxplex.sessions import run_tmux
 from muxplex.state import empty_bell
+from muxplex.tmux.bell import poll_bell_flag
+
+__all__ = [
+    "apply_bell_clear_rule",
+    "needs_attention",
+    "poll_bell_flag",
+    "process_bell_flags",
+    "should_clear_bell",
+]
 
 # ---------------------------------------------------------------------------
 # In-memory tracking: session_name → bool (was flag set on last poll?)
 # ---------------------------------------------------------------------------
 
 _bell_seen: dict[str, bool] = {}
-
-
-# ---------------------------------------------------------------------------
-# poll_bell_flag
-# ---------------------------------------------------------------------------
-
-
-async def poll_bell_flag(session_name: str) -> bool:
-    """Poll ALL windows of session_name's tmux window_bell_flag.
-
-    Calls: tmux list-windows -t <name> -F #{window_bell_flag}
-
-    Returns True if ANY window in the session reports '1', False otherwise
-    (including on errors, or zero windows).
-
-    Incident (verified against real tmux): this used to call
-    ``display-message -t <name> -p '#{window_bell_flag}'``, whose session-only
-    target resolves to the session's CURRENT (active) window -- not
-    necessarily the window a bell fired in. Confirmed live: firing a bell in
-    an inactive window set THAT window's flag to '1' while the active
-    window's flag stayed '0', and ``display-message -t <session>`` (no window
-    qualifier) reported the active window's ('0') flag -- the bell was
-    invisible to this fallback despite the tmux-native flag being correctly
-    set. A multi-window session (e.g. an amplifier-workspace-style layout)
-    whose bell fires in a background window went undetected by this path.
-    ``list-windows -t <session>`` enumerates every window in the session, so
-    a bell in ANY of them is now seen regardless of which window is active.
-
-    Note: reading does NOT clear the tmux bell flag.
-    """
-    try:
-        output = await run_tmux(
-            "list-windows", "-t", session_name, "-F", "#{window_bell_flag}"
-        )
-        return "1" in output.split()
-    except RuntimeError:
-        return False
 
 
 # ---------------------------------------------------------------------------

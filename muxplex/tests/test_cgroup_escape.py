@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from muxplex import cgroup_escape
+# The module moved to muxplex.tmux.cgroup at extraction stage S1 (plan §7.1);
+# these tests are the 44-session incident's guards and move WITH their code
+# (plan §8.4) -- they patch module INTERNALS (sys, shutil, environment_mode),
+# which only work against the defining module, not the re-export shim.
+from muxplex.tmux import cgroup as cgroup_escape
 
 
 @pytest.fixture(autouse=True)

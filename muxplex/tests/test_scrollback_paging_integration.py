@@ -152,7 +152,7 @@ async def test_drift_regression_same_before_is_byte_identical(
     request re-using the same raw tmux `-S`/`-E` coordinates across that
     gap must NOT (that's the bug this feature exists to fix)."""
     monkeypatch.setattr(
-        "muxplex.sessions.run_tmux", make_run_tmux_for_socket(paging_socket)
+        "muxplex.tmux.observe.run_tmux", make_run_tmux_for_socket(paging_socket)
     )
     name = "paging"
     await _emit(paging_socket, name, "for i in $(seq 1 400); do echo LINE-$i; done")
@@ -203,7 +203,7 @@ async def test_round_trip_paging_is_complete_no_gaps_no_duplicates(
     concatenating, must reproduce every one of 5000 uniquely-numbered
     emitted lines exactly once -- no gaps, no duplicates."""
     monkeypatch.setattr(
-        "muxplex.sessions.run_tmux", make_run_tmux_for_socket(paging_socket)
+        "muxplex.tmux.observe.run_tmux", make_run_tmux_for_socket(paging_socket)
     )
     name = "paging"
     _tmux(paging_socket, "set-option", "-t", name, "history-limit", "20000")
@@ -277,7 +277,7 @@ async def test_saturated_pane_reports_retention_wall(paging_socket, monkeypatch)
     same has_more:false, saturated:false an unsaturated pane's true
     beginning reports."""
     monkeypatch.setattr(
-        "muxplex.sessions.run_tmux", make_run_tmux_for_socket(paging_socket)
+        "muxplex.tmux.observe.run_tmux", make_run_tmux_for_socket(paging_socket)
     )
     target = await _set_history_limit_before_window(paging_socket, "paging", 200)
     await _emit(
@@ -354,7 +354,7 @@ async def test_unsaturated_pane_reports_true_beginning(paging_socket, monkeypatc
     beginning -- proving the two states are genuinely distinguished, not
     just always True."""
     monkeypatch.setattr(
-        "muxplex.sessions.run_tmux", make_run_tmux_for_socket(paging_socket)
+        "muxplex.tmux.observe.run_tmux", make_run_tmux_for_socket(paging_socket)
     )
     target = await _set_history_limit_before_window(paging_socket, "paging", 50000)
     await _emit(paging_socket, target, "for i in $(seq 1 100); do echo SMALL-$i; done")
@@ -383,7 +383,7 @@ async def test_deep_narrow_page_is_small(paging_socket, monkeypatch):
     fact that makes unbounded-depth paging safe at the existing
     MAX_CAPTURE_LINES window cap."""
     monkeypatch.setattr(
-        "muxplex.sessions.run_tmux", make_run_tmux_for_socket(paging_socket)
+        "muxplex.tmux.observe.run_tmux", make_run_tmux_for_socket(paging_socket)
     )
     target = "paging"
     _tmux(paging_socket, "set-option", "-t", target, "history-limit", "60000")

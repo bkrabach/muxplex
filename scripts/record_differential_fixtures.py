@@ -107,9 +107,15 @@ async def main() -> None:
     import muxplex.manifest as manifest_mod
     import muxplex.sessions as sessions_mod
     import muxplex.terminal_input as ti_mod
+    import muxplex.tmux.bell as bell_mod
+    import muxplex.tmux.observe as observe_mod
     import muxplex.ttyd as ttyd_mod
 
-    real_run_tmux = sessions_mod.run_tmux
+    # S1: the recorded functions live in muxplex/tmux/ now; the recording
+    # seam must rebind run_tmux in the modules where those functions resolve
+    # it (observe/bell), mirroring test_differential_harness.py's replay
+    # seams. Calls stay on the old paths, which the S1 re-exports keep live.
+    real_run_tmux = observe_mod.run_tmux
     tape = Tape()
 
     async def recording_run_tmux(*args: str) -> str:
@@ -123,8 +129,8 @@ async def main() -> None:
             tape.entries.append({"args": list(args), "stdout": out})
         return out
 
-    sessions_mod.run_tmux = recording_run_tmux  # type: ignore[assignment]
-    bells_mod.run_tmux = recording_run_tmux  # type: ignore[assignment]
+    observe_mod.run_tmux = recording_run_tmux  # type: ignore[assignment]
+    bell_mod.run_tmux = recording_run_tmux  # type: ignore[assignment]
 
     fixture: dict[str, Any] = {
         "_meta": {
@@ -218,7 +224,7 @@ async def main() -> None:
             async def canned(*args: str, _v=stdout_value) -> str:
                 return _v
 
-            sessions_mod.run_tmux = canned  # type: ignore[assignment]
+            observe_mod.run_tmux = canned  # type: ignore[assignment]
             names = await sessions_mod.enumerate_sessions()
             derived_with_baselines.append(
                 {
@@ -231,7 +237,7 @@ async def main() -> None:
                     },
                 }
             )
-        sessions_mod.run_tmux = recording_run_tmux  # type: ignore[assignment]
+        observe_mod.run_tmux = recording_run_tmux  # type: ignore[assignment]
         # Re-prime caches from the real server (canned replay clobbered them).
         await observe(taped=False)
 
@@ -614,8 +620,8 @@ async def main() -> None:
             await real_run_tmux("kill-server")
         except (RuntimeError, FileNotFoundError):
             pass
-        sessions_mod.run_tmux = real_run_tmux  # type: ignore[assignment]
-        bells_mod.run_tmux = real_run_tmux  # type: ignore[assignment]
+        observe_mod.run_tmux = real_run_tmux  # type: ignore[assignment]
+        bell_mod.run_tmux = real_run_tmux  # type: ignore[assignment]
         shutil.rmtree(scratch, ignore_errors=True)
 
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)

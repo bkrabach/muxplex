@@ -162,19 +162,28 @@ def test_no_test_calls_serve_without_a_guard():
 # ---------------------------------------------------------------------------
 
 
-def test_no_diagnostic_tmux_run_shell_construction_exists():
-    """Structural scan of production source: exactly ONE place may ever
-    build a `run-shell` command string, and it must be the persistent bell
-    hook's own registration call inside `_arm_bell_hook()` -- never a
-    diagnostic, probe, or health-check call.
+def _run_shell_construction_sites() -> list[str]:
+    """RECURSIVE structural scan of production source for `run-shell`
+    construction sites, returned as package-relative paths.
 
-    This scans the actual muxplex/*.py source tree (not just main.py) so a
-    future diagnostic added to any module is caught, not just a regression
-    in the one file this incident happened in twice.
+    Recursion is load-bearing, not cosmetic (plan §7.3 rail 1): the
+    pre-S1 version of this scan used ``package_dir.glob("*.py")`` --
+    non-recursive -- so the moment the bell code moved into
+    ``muxplex/tmux/``, the moved construction site would have silently
+    left the rail's coverage while the rail kept passing. ``rglob`` closes
+    that; the assertions below then FAIL (expected-one-found-zero) if the
+    scan ever stops recursing, because the sole legal site now lives in
+    the ``tmux/`` subpackage.
+
+    ``muxplex/tests/`` is excluded: this rail is about PRODUCTION source
+    (test files legitimately quote hook strings in assertions).
     """
     package_dir = Path(__file__).parent.parent
     offenders: list[str] = []
-    for path in sorted(package_dir.glob("*.py")):
+    for path in sorted(package_dir.rglob("*.py")):
+        rel = path.relative_to(package_dir).as_posix()
+        if rel.startswith("tests/"):
+            continue
         src = path.read_text(encoding="utf-8")
         tree = ast.parse(src, filename=str(path))
         for node in ast.walk(tree):
@@ -192,16 +201,32 @@ def test_no_diagnostic_tmux_run_shell_construction_exists():
                 and isinstance(node.value, str)
                 and node.value.strip().startswith("run-shell")
             ):
-                offenders.append(f"{path.name}:{node.lineno}: {node.value!r}")
+                offenders.append(f"{rel}:{node.lineno}: {node.value!r}")
+    return offenders
 
-    # Exactly one production call site is allowed: main.py's registration
-    # string inside _arm_bell_hook(), built as
-    # f"run-shell '{_bell_hook_curl(...)}'". Anything else -- a second
-    # occurrence anywhere, in any module -- is a new diagnostic/probe call
-    # site and must be rejected outright, not silenced.
+
+def test_no_diagnostic_tmux_run_shell_construction_exists():
+    """Structural scan of production source: exactly ONE place may ever
+    build a `run-shell` command string, and it must be the library's
+    `build_alert_bell_hook()` (muxplex/tmux/bell.py) -- never a
+    diagnostic, probe, or health-check call.
+
+    This scans the WHOLE muxplex package tree recursively (rglob, see
+    `_run_shell_construction_sites`) so a future diagnostic added to any
+    module -- including the `muxplex/tmux/` library subpackage the S1
+    extraction created -- is caught, not just a regression in the one file
+    this incident happened in twice.
+    """
+    offenders = _run_shell_construction_sites()
+
+    # Exactly one production call site is allowed: the library's
+    # build_alert_bell_hook() in muxplex/tmux/bell.py, built as
+    # f"run-shell '{command}'". Anything else -- a second occurrence
+    # anywhere, in any module -- is a new diagnostic/probe call site and
+    # must be rejected outright, not silenced.
     assert len(offenders) == 1, (
         f"Expected exactly ONE `run-shell` construction site in production "
-        f"source (the persistent bell hook's registration string), found "
+        f"source (the library's build_alert_bell_hook), found "
         f"{len(offenders)}: {offenders}. A second `run-shell` call site is "
         f"almost certainly a new diagnostic/probe -- see AGENTS.md's "
         f"'never render to a pane' rule. tmux's `run-shell` paints a "
@@ -210,8 +235,58 @@ def test_no_diagnostic_tmux_run_shell_construction_exists():
         f"diagnostics belong in the log, `GET /api/instance-info`, and "
         f"`muxplex doctor` -- never behind a new `run-shell` call."
     )
-    assert "main.py" in offenders[0], (
-        f"the sole run-shell construction site moved out of main.py: "
-        f"{offenders[0]!r} -- verify this is still the persistent hook's "
-        f"registration string, not a relocated diagnostic."
+    assert offenders[0].startswith("tmux/bell.py"), (
+        f"the sole run-shell construction site moved out of "
+        f"muxplex/tmux/bell.py: {offenders[0]!r} -- verify this is still "
+        f"the library's build_alert_bell_hook() (the one API that wraps a "
+        f"caller-supplied, always-silent command), not a relocated "
+        f"diagnostic."
+    )
+
+
+def test_app_code_builds_zero_run_shell_strings():
+    """The §3.2 two-rail tightening (plan §7.3): with the construction
+    site moved behind the library's `build_alert_bell_hook()`, APP-level
+    code (everything in the muxplex package OUTSIDE `muxplex/tmux/`) is
+    allowed ZERO `run-shell` construction sites -- main.py included.
+
+    Pre-S1, muxplex was allowed one (main.py's inline f-string). Post-S1
+    it is allowed none: the one legal construction lives behind a library
+    API that has no loudness parameter. This pair of assertions is a
+    strictly STRONGER invariant than the old single-site rule.
+    """
+    offenders = _run_shell_construction_sites()
+    app_offenders = [o for o in offenders if not o.startswith("tmux/")]
+    assert not app_offenders, (
+        f"App-level code must never build a `run-shell` string itself -- "
+        f"found {app_offenders}. Call "
+        f"muxplex.tmux.bell.build_alert_bell_hook(<always-silent command>) "
+        f"instead, and read AGENTS.md's 'never render to a pane' rule "
+        f"before doing even that."
+    )
+
+
+def test_library_tests_live_under_the_railed_tests_dir():
+    """Plan §7.3 rail 2: `test_settings_path_is_isolated` and
+    `_isolate_tmux_socket_dir` (conftest.py's autouse rails) must keep
+    applying to library code that still shells out to real tmux. They do
+    so because ALL tests -- the library's included -- live under
+    ``muxplex/tests/``, where that conftest governs. A test module placed
+    inside ``muxplex/tmux/`` would silently escape every autouse rail
+    (settings isolation, TMUX_TMPDIR isolation, the port-killer
+    neutralizer), which is exactly the "moved code leaves its guard's
+    coverage" failure shape rail 1 above just closed for the AST scan.
+    """
+    tmux_pkg = Path(__file__).parent.parent / "tmux"
+    assert tmux_pkg.is_dir(), "muxplex/tmux/ library subpackage is missing"
+    strays = sorted(
+        p.relative_to(tmux_pkg).as_posix()
+        for p in tmux_pkg.rglob("*.py")
+        if p.name.startswith("test_") or p.name == "conftest.py"
+    )
+    assert not strays, (
+        f"Test files found inside muxplex/tmux/: {strays}. Library tests "
+        f"must live in muxplex/tests/ so conftest.py's autouse safety "
+        f"rails (isolated SETTINGS_PATH, isolated TMUX_TMPDIR, neutralized "
+        f"port killer) apply to them -- see plan §7.3 rail 2."
     )

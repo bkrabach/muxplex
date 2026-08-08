@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import muxplex.sessions as sessions_mod
+import muxplex.sessions as sessions_mod  # noqa: F401  (import path kept working by S1 re-exports)
+import muxplex.tmux.observe as observe_mod
 from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
@@ -66,7 +67,7 @@ def mock_subprocess():
 def test_tmux_env_returns_none_when_socket_dir_unset():
     """tmux_env() returns None (inherit ambient env unchanged) when
     tmux_socket_dir is not configured -- fully backward compatible default."""
-    with patch("muxplex.sessions.load_settings", return_value={"tmux_socket_dir": ""}):
+    with patch("muxplex.tmux.proc.load_settings", return_value={"tmux_socket_dir": ""}):
         assert tmux_env() is None
 
 
@@ -81,7 +82,7 @@ def test_tmux_env_overrides_tmux_tmpdir_when_configured():
     """
     with (
         patch(
-            "muxplex.sessions.load_settings",
+            "muxplex.tmux.proc.load_settings",
             return_value={"tmux_socket_dir": "/home/user/.tmux"},
         ),
         patch.dict(
@@ -110,7 +111,7 @@ def test_tmux_env_strips_tmux_var_when_configured():
     """
     with (
         patch(
-            "muxplex.sessions.load_settings",
+            "muxplex.tmux.proc.load_settings",
             return_value={"tmux_socket_dir": "/home/user/.tmux"},
         ),
         patch.dict(
@@ -129,7 +130,7 @@ async def test_run_tmux_passes_tmux_env_to_subprocess(mock_subprocess):
     """run_tmux() must pass tmux_env()'s result as the subprocess `env` kwarg."""
     with (
         patch(
-            "muxplex.sessions.load_settings",
+            "muxplex.tmux.proc.load_settings",
             return_value={"tmux_socket_dir": "/custom/socket/dir"},
         ),
         mock_subprocess("session1\n") as mock_create,
@@ -290,7 +291,7 @@ async def test_enumerate_sessions_malformed_activity_value_is_skipped_and_logged
 def test_get_session_activity_returns_copy():
     """get_session_activity() must return a copy -- mutating the result must
     not corrupt the module's internal cache."""
-    sessions_mod._activity = {"alpha": 1700000000.0}
+    observe_mod._activity = {"alpha": 1700000000.0}
 
     result = get_session_activity()
     result["alpha"] = 0.0
@@ -386,7 +387,7 @@ async def test_enumerate_sessions_malformed_created_value_is_skipped_and_logged(
 def test_get_session_created_times_returns_copy():
     """get_session_created_times() must return a copy -- mutating the result
     must not corrupt the module's internal cache."""
-    sessions_mod._created = {"alpha": 1699999000.0}
+    observe_mod._created = {"alpha": 1699999000.0}
 
     result = get_session_created_times()
     result["alpha"] = 0.0
@@ -563,9 +564,21 @@ def test_muxplex_never_sets_history_limit():
     Guards against a future "fix" that reintroduces the call, or the rejected
     `set-option -g` variant (see that plan's §8.2 and tmux_config.py's
     install-first-so-we-lose posture).
+
+    Scans sessions.py AND the muxplex/tmux/ library subpackage: the capture
+    code this guard was written against moved to muxplex/tmux/observe.py at
+    extraction stage S1, and an incident guard that stops scanning the code
+    it guards is the exact silent-coverage-loss failure test_safety_rails.py
+    rail 1 closes for run-shell.
     """
-    source = (Path(__file__).parent.parent / "sessions.py").read_text(encoding="utf-8")
-    assert "history-limit" not in source
+    package_dir = Path(__file__).parent.parent
+    scanned = [
+        package_dir / "sessions.py",
+        *sorted((package_dir / "tmux").glob("*.py")),
+    ]
+    for path in scanned:
+        source = path.read_text(encoding="utf-8")
+        assert "history-limit" not in source, path.name
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +592,7 @@ async def test_snapshot_all_returns_dict_keyed_by_name():
     async def mock_capture(name, lines=30):
         return f"output-for-{name}"
 
-    with patch("muxplex.sessions.capture_pane", side_effect=mock_capture):
+    with patch("muxplex.tmux.observe.capture_pane", side_effect=mock_capture):
         result = await snapshot_all(["alpha", "beta", "gamma"])
 
     assert result == {
@@ -591,7 +604,7 @@ async def test_snapshot_all_returns_dict_keyed_by_name():
 
 async def test_snapshot_all_returns_empty_dict_for_empty_input():
     """snapshot_all([]) returns an empty dict without calling capture_pane."""
-    with patch("muxplex.sessions.capture_pane", new=AsyncMock()) as mock_capture:
+    with patch("muxplex.tmux.observe.capture_pane", new=AsyncMock()) as mock_capture:
         result = await snapshot_all([])
 
     assert result == {}
@@ -606,7 +619,7 @@ async def test_snapshot_all_returns_empty_string_on_individual_failure():
             raise RuntimeError("pane not found")
         return f"output-for-{name}"
 
-    with patch("muxplex.sessions.capture_pane", side_effect=mock_capture):
+    with patch("muxplex.tmux.observe.capture_pane", side_effect=mock_capture):
         result = await snapshot_all(["session-a", "bad-session", "session-b"])
 
     assert result == {
@@ -639,8 +652,8 @@ def test_update_session_cache_populates_snapshots():
     stayed empty forever.
     """
     # Reset module state to simulate a fresh start
-    sessions_mod._snapshots = {}
-    sessions_mod._session_list = []
+    observe_mod._snapshots = {}
+    observe_mod._session_list = []
 
     update_session_cache(
         ["sess1", "sess2"], {"sess1": "line1\nline2", "sess2": "hello"}
@@ -652,8 +665,8 @@ def test_update_session_cache_populates_snapshots():
 
 def test_update_session_cache_updates_session_list():
     """update_session_cache() must also replace _session_list with the given names."""
-    sessions_mod._snapshots = {}
-    sessions_mod._session_list = ["old-session"]
+    observe_mod._snapshots = {}
+    observe_mod._session_list = ["old-session"]
 
     update_session_cache(["alpha", "beta"], {"alpha": "a", "beta": "b"})
 
@@ -662,8 +675,8 @@ def test_update_session_cache_updates_session_list():
 
 def test_update_session_cache_empty_names_clears_caches():
     """update_session_cache([], {}) clears both caches."""
-    sessions_mod._snapshots = {"stale": "text"}
-    sessions_mod._session_list = ["stale"]
+    observe_mod._snapshots = {"stale": "text"}
+    observe_mod._session_list = ["stale"]
 
     update_session_cache([], {})
 
@@ -680,7 +693,7 @@ async def test_probe_tmux_epoch_returns_none_when_no_server_running():
     'no server running' exit status) -- exit status alone is the signal, no
     parsing of tmux's error text."""
     with patch(
-        "muxplex.sessions.run_tmux",
+        "muxplex.tmux.observe.run_tmux",
         new=AsyncMock(
             side_effect=RuntimeError("no server running on /tmp/tmux-1000/default")
         ),
@@ -693,7 +706,7 @@ async def test_probe_tmux_epoch_returns_none_when_no_server_running():
 async def test_probe_tmux_epoch_returns_none_when_tmux_binary_missing():
     """probe_tmux_epoch() returns None if tmux itself is not installed (FileNotFoundError)."""
     with patch(
-        "muxplex.sessions.run_tmux",
+        "muxplex.tmux.observe.run_tmux",
         new=AsyncMock(side_effect=FileNotFoundError()),
     ):
         result = await probe_tmux_epoch()
@@ -709,7 +722,7 @@ async def test_probe_tmux_epoch_parses_pid_and_socket_path(tmp_path):
     socket_path.write_text("")  # any file is enough to have an inode
 
     with patch(
-        "muxplex.sessions.run_tmux",
+        "muxplex.tmux.observe.run_tmux",
         new=AsyncMock(return_value=f"1527873\t{socket_path}\n"),
     ):
         result = await probe_tmux_epoch()
@@ -727,7 +740,7 @@ async def test_probe_tmux_epoch_returns_none_when_socket_file_missing(tmp_path):
     missing_socket = tmp_path / "does-not-exist" / "default"
 
     with patch(
-        "muxplex.sessions.run_tmux",
+        "muxplex.tmux.observe.run_tmux",
         new=AsyncMock(return_value=f"12345\t{missing_socket}\n"),
     ):
         result = await probe_tmux_epoch()
@@ -739,14 +752,14 @@ async def test_probe_tmux_epoch_returns_none_on_malformed_output():
     """Malformed tmux output (no tab, non-numeric pid) returns None rather
     than raising."""
     with patch(
-        "muxplex.sessions.run_tmux",
+        "muxplex.tmux.observe.run_tmux",
         new=AsyncMock(return_value="garbage-with-no-tab\n"),
     ):
         result = await probe_tmux_epoch()
     assert result is None
 
     with patch(
-        "muxplex.sessions.run_tmux",
+        "muxplex.tmux.observe.run_tmux",
         new=AsyncMock(return_value="not-a-pid\t/some/socket\n"),
     ):
         result = await probe_tmux_epoch()

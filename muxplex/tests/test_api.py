@@ -6527,7 +6527,12 @@ def test_create_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_p
     # and really does exec `tmux`. Unmocked, this test depends on a tmux binary
     # being present and on whatever a live tmux server happens to answer --
     # neither of which it is trying to assert. Stub it so the test measures only
-    # what its name claims: the env= passed to the shell call.
+    # what its name claims: the env= passed to the shell call. (run_tmux lives
+    # in muxplex.tmux.proc since the S1 extraction, so the stub targets THAT
+    # module's asyncio binding; sessions.asyncio only covers spawn's own exec.)
+    monkeypatch.setattr(
+        "muxplex.tmux.proc.asyncio.create_subprocess_exec", mock_create_subprocess_exec
+    )
     monkeypatch.setattr(
         "muxplex.sessions.asyncio.create_subprocess_exec", mock_create_subprocess_exec
     )

@@ -50,7 +50,20 @@ import muxplex.bells as bells_mod
 import muxplex.manifest as manifest_mod
 import muxplex.sessions as sessions_mod
 import muxplex.terminal_input as ti_mod
+import muxplex.tmux.bell as bell_mod
+import muxplex.tmux.observe as observe_mod
+import muxplex.tmux.proc as proc_mod
 import muxplex.ttyd as ttyd_mod
+
+# S1 (pure moves): the code under test moved into muxplex/tmux/, so the
+# monkeypatch SEAMS below target the modules where each function now
+# resolves its collaborators (observe/bell resolve run_tmux in their own
+# globals; proc resolves load_settings in its own). The CALLS deliberately
+# stay on the OLD module paths (sessions_mod / bells_mod / manifest_mod /
+# ti_mod) -- that simultaneously proves the S1 re-exports are the very same
+# objects. The recorded fixture (the tape and every expected value) is
+# untouched: byte-identity against the pre-move baseline is the proof the
+# move was pure.
 
 pytestmark = pytest.mark.differential
 
@@ -103,11 +116,11 @@ def make_player(tape: list[dict]):
 @pytest.fixture(autouse=True)
 def _reset_session_caches(monkeypatch):
     """Each replay starts from empty parser caches, like a fresh process."""
-    monkeypatch.setattr(sessions_mod, "_session_list", [])
-    monkeypatch.setattr(sessions_mod, "_snapshots", {})
-    monkeypatch.setattr(sessions_mod, "_activity", {})
-    monkeypatch.setattr(sessions_mod, "_created", {})
-    monkeypatch.setattr(sessions_mod, "_cwds", {})
+    monkeypatch.setattr(observe_mod, "_session_list", [])
+    monkeypatch.setattr(observe_mod, "_snapshots", {})
+    monkeypatch.setattr(observe_mod, "_activity", {})
+    monkeypatch.setattr(observe_mod, "_created", {})
+    monkeypatch.setattr(observe_mod, "_cwds", {})
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +130,7 @@ def _reset_session_caches(monkeypatch):
 
 async def test_enumerate_sessions_replays_real_stdout(recorded, monkeypatch):
     case = recorded["enumerate_sessions"]["real"]
-    monkeypatch.setattr(sessions_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(observe_mod, "run_tmux", make_player(case["tape"]))
     names = await sessions_mod.enumerate_sessions()
     got = {
         "names": names,
@@ -130,7 +143,7 @@ async def test_enumerate_sessions_replays_real_stdout(recorded, monkeypatch):
 
 async def test_enumerate_sessions_no_server_returns_empty(recorded, monkeypatch):
     case = recorded["enumerate_sessions"]["no_server"]
-    monkeypatch.setattr(sessions_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(observe_mod, "run_tmux", make_player(case["tape"]))
     names = await sessions_mod.enumerate_sessions()
     got = {
         "names": names,
@@ -154,7 +167,7 @@ async def test_enumerate_sessions_malformed_line_tolerances(recorded, monkeypatc
         async def canned(*args: str, _v=stdout_value) -> str:
             return _v
 
-        monkeypatch.setattr(sessions_mod, "run_tmux", canned)
+        monkeypatch.setattr(observe_mod, "run_tmux", canned)
         names = await sessions_mod.enumerate_sessions()
         got = {
             "names": names,
@@ -172,7 +185,7 @@ async def test_enumerate_sessions_malformed_line_tolerances(recorded, monkeypatc
 
 async def test_probe_tmux_epoch_replays_live_server(recorded, monkeypatch):
     case = recorded["probe_tmux_epoch"]["live"]
-    monkeypatch.setattr(sessions_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(observe_mod, "run_tmux", make_player(case["tape"]))
 
     real_stat = os.stat
     socket_path = case["expected"]["socket_path"]
@@ -192,7 +205,7 @@ async def test_probe_tmux_epoch_replays_live_server(recorded, monkeypatch):
 
 async def test_probe_tmux_epoch_no_server_returns_none(recorded, monkeypatch):
     case = recorded["probe_tmux_epoch"]["no_server"]
-    monkeypatch.setattr(sessions_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(observe_mod, "run_tmux", make_player(case["tape"]))
     assert await sessions_mod.probe_tmux_epoch() is None
 
 
@@ -203,20 +216,20 @@ async def test_probe_tmux_epoch_no_server_returns_none(recorded, monkeypatch):
 
 async def test_capture_pane_replays(recorded, monkeypatch):
     case = recorded["capture"]["capture_pane"]
-    monkeypatch.setattr(sessions_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(observe_mod, "run_tmux", make_player(case["tape"]))
     assert await sessions_mod.capture_pane("alpha") == case["expected"]
 
 
 async def test_capture_pane_metadata_replays(recorded, monkeypatch):
     case = recorded["capture"]["capture_pane_metadata"]
-    monkeypatch.setattr(sessions_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(observe_mod, "run_tmux", make_player(case["tape"]))
     result = await sessions_mod.capture_pane_metadata("alpha")
     assert list(result) == case["expected"]
 
 
 async def test_capture_pane_window_replays(recorded, monkeypatch):
     case = recorded["capture"]["capture_pane_window"]
-    monkeypatch.setattr(sessions_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(observe_mod, "run_tmux", make_player(case["tape"]))
     result = await sessions_mod.capture_pane_window(
         "alpha", case["args"]["s"], case["args"]["e"]
     )
@@ -230,7 +243,7 @@ async def test_capture_pane_window_replays(recorded, monkeypatch):
 
 async def test_poll_bell_flag_pre_bell_is_false(recorded, monkeypatch):
     case = recorded["poll_bell_flag"]["pre_bell"]
-    monkeypatch.setattr(bells_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(bell_mod, "run_tmux", make_player(case["tape"]))
     assert await bells_mod.poll_bell_flag("beta") is case["expected"] is False
 
 
@@ -242,7 +255,7 @@ async def test_poll_bell_flag_sees_background_window_bell(recorded, monkeypatch)
     case = recorded["poll_bell_flag"]["background_window_bell"]
     flags = case["tape"][0]["stdout"].split()
     assert "1" in flags and "0" in flags, "fixture must show the incident shape"
-    monkeypatch.setattr(bells_mod, "run_tmux", make_player(case["tape"]))
+    monkeypatch.setattr(bell_mod, "run_tmux", make_player(case["tape"]))
     assert await bells_mod.poll_bell_flag("beta") is case["expected"] is True
 
 
@@ -397,7 +410,7 @@ def test_restore_helpers_replay(recorded):
 def test_tmux_env_with_socket_dir_overrides_and_pops_tmux(recorded, monkeypatch):
     socket_dir = recorded["tmux_env"]["socket_dir"]
     monkeypatch.setattr(
-        sessions_mod, "load_settings", lambda: {"tmux_socket_dir": socket_dir}
+        proc_mod, "load_settings", lambda: {"tmux_socket_dir": socket_dir}
     )
     monkeypatch.setenv("TMUX", "/tmp/fake-ambient-tmux-socket,123,0")
     env = sessions_mod.tmux_env()
@@ -412,7 +425,7 @@ def test_tmux_env_with_socket_dir_overrides_and_pops_tmux(recorded, monkeypatch)
 
 
 def test_tmux_env_unset_returns_none(recorded, monkeypatch):
-    monkeypatch.setattr(sessions_mod, "load_settings", lambda: {"tmux_socket_dir": ""})
+    monkeypatch.setattr(proc_mod, "load_settings", lambda: {"tmux_socket_dir": ""})
     assert sessions_mod.tmux_env() is recorded["tmux_env"]["expected_when_unset"]
 
 
