@@ -339,7 +339,7 @@ wheels = [
 
 [[package]]
 name = "muxplex"
-version = "0.43.0"
+version = "0.44.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -395,7 +395,7 @@ dev = [
 
 [[package]]
 name = "muxplex-client"
-version = "0.43.0"
+version = "0.44.0"
 source = { editable = "client" }
 dependencies = [
     { name = "httpx" },
@@ -719,7 +719,7 @@ wheels = [
 
 [[package]]
 name = "tmuxkit"
-version = "0.43.0"
+version = "0.44.0"
 source = { editable = "lib" }
 
 [package.optional-dependencies]

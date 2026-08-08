@@ -1,3 +1,210 @@
+## v0.44.0 (2026-08-08)
+
+Internal refactor: the tmux session-management core moves into `tmuxkit`, a
+new, separately-versioned uv workspace library beside `client/`. `/api/*` is
+byte-identical throughout -- `test_client_contract.py` stays green across
+every stage -- but this release changes muxplex's **own install contract**,
+which is why it is documented here rather than treated as invisible
+housekeeping.
+
+### Changed
+
+- **The tmux session-management core (`proc`, `spawn`, `names`, `observe`
+  [capture/enumeration/epoch], `presence`, `bell` detection, `keys`, `cgroup`)
+  is now `tmuxkit`, a stdlib-only workspace-member library at `lib/`, beside
+  `client/`.** `docs/plans/2026-08-08-tmux-lib-extraction-plan.md` SS7,
+  SS13.2 stages 0-3.5. muxplex runs entirely on it: `muxplex/sessions.py`,
+  `bells.py`, `manifest.py`, `cgroup_escape.py`, and `terminal_input.py` are
+  now thin **re-export shims** at the old import paths (`from tmuxkit.proc
+  import ...` etc.) -- no app code outside those five shim modules changed,
+  and no caller anywhere had to change an import. The move was staged behind
+  a **differential harness** recording real tmux argv/stdout and real
+  `update_manifest()` inputs from a live poll cycle, replayed at every stage
+  to prove the moved code byte-identical to the code it replaced before it
+  shipped -- not asserted after the fact.
+  - `spawn_session()` (new, `tmuxkit/spawn.py`) is the general half of
+    session creation -- cgroup escape, the TTY-attach
+    exists-despite-nonzero-exit tolerance, the 30s wait -- with the session
+    **template caller-resolved**: the library never reads which command a
+    session should run. `sessions.py`'s `spawn_session_command()` resolves
+    the template (`session_commands` / `new_session_template`, muxplex
+    settings) and calls the library with it.
+  - **The settings dependency is inverted, not merely re-exported.**
+    Pre-move, `sessions.py:294`'s `tmux_env()` called `load_settings()`
+    directly -- the one wrong-way import arrow into what is now library
+    code. `tmuxkit.proc.tmux_env(socket_dir)` is now a pure function of an
+    injected parameter; `run_tmux()` takes an injected env, defaulting to a
+    process-wide factory the app installs once via `set_env_factory()`.
+    Nothing under `lib/tmuxkit/` reads muxplex's settings file, its state
+    directory, or any other muxplex module -- enforced structurally, not by
+    review: `test_tmux_library_never_imports_the_app_layer`
+    (`test_safety_rails.py`) AST-scans every file under `lib/tmuxkit/` and
+    fails on any `muxplex.*` import, any `import muxplex`, or any relative
+    import that climbs out of the package.
+  - **`lib/tmuxkit`'s own dependency list is empty, on purpose, and a test
+    pins it**: `test_lib_distribution_declares_zero_dependencies`
+    (`test_lib_import_smoke.py`). A second application can depend on it
+    without dragging in fastapi, uvicorn, python-pam, or httpx --
+    `test_public_surface_imports_without_the_muxplex_server` proves the
+    published surface imports cleanly from a fresh interpreter, from a
+    neutral cwd, with none of `muxplex`/`fastapi`/`pam` in `sys.modules`
+    afterward -- the same "importable by someone else" proof
+    `client/`'s no-server-dependency note already established for the HTTP
+    client, now proven for the tmux core too.
+  - **`ttyd.py` (the per-session AF_UNIX terminal-server lifecycle,
+    including the `SOCKET_SUFFIX` fence) and the `Sender`/`SendPolicy` typed
+    send API stay muxplex-private in this release.** The extraction plan's
+    original SS7.1 sketch named both as in-scope for the pure-move stage;
+    the plan's own addendum (SS13.2's revised stage table, SS15.3, SS16)
+    supersedes that sketch and this release follows the addendum: `ttyd.py`
+    still imports app-side `STATE_DIR` and is judged "second tranche,"
+    shaped by a second app's own embedded-terminal design rather than
+    muxplex's; `Sender`/`SendPolicy` are listed in the plan's SS15.1 public
+    surface as the *target* shape but "it does not exist yet; building it is
+    not a pure move" (`lib/tmuxkit/__init__.py`'s own docstring) -- both are
+    deliberately deferred until a second consumer's real requirements settle
+    the interface (SS15.3), not built speculatively from one consumer's
+    guess.
+
+- **muxplex's own PyPI distribution is no longer installable from PyPI
+  directly -- only through this repo (git or a local path).** muxplex's
+  wheel now declares a hard runtime dependency on `tmuxkit==0.44.0`
+  (`pyproject.toml`'s `[project.dependencies]`), resolved via
+  `[tool.uv.sources]` as a uv **workspace** source
+  (`[tool.uv.workspace] members = ["client", "lib"]`) -- and `tmuxkit` is
+  deliberately never uploaded to PyPI (see below), so PyPI has no way to
+  satisfy that pin. `uv tool install git+https://github.com/bkrabach/muxplex@v0.44.0`
+  (or an editable/path install from this repo) resolves `tmuxkit` from the
+  same checkout via the workspace and succeeds; a bare `pip install muxplex`
+  against PyPI fails at dependency resolution with "no matching distribution
+  found for tmuxkit" -- loud, not a broken install that silently omits tmux
+  support. This is intended, not a regression: the library rides muxplex's
+  existing git-based rollout rather than getting a rollout of its own, and
+  the fleet already installs from git, never from PyPI (`AGENTS.md`).
+  `.github/workflows/publish.yml`'s build step is explicit `--package
+  muxplex` + `--package muxplex-client` (not `--all-packages`) specifically
+  so `tmuxkit`'s files are never produced in `dist/` for the publish step to
+  upload -- a PyPI release cannot be unpublished, so this is enforced at
+  build time, not left to the publish step's discretion.
+
+- **Two safety rails that scan the whole codebase for exactly one
+  construction site now cover `lib/tmuxkit/` as well as `muxplex/`, in the
+  same commit the code moved (`docs/plans/...` SS7.3).**
+  `test_no_diagnostic_tmux_run_shell_construction_exists` previously globbed
+  `muxplex/*.py` non-recursively; it now scans both `muxplex/` and
+  `lib/tmuxkit/` from the repo root (asserting each root exists first) and
+  still asserts exactly **one** `run-shell` string-construction site exists
+  anywhere in production code (`lib/tmuxkit/bell.py`'s
+  `build_alert_bell_hook`) -- app-level code is held to **zero**. Without
+  this fix, code moved into the library would have silently left the rail's
+  coverage, and a future diagnostic `run-shell` call added inside
+  `lib/tmuxkit/` could reach a live pane undetected. A third rail,
+  `test_library_tests_live_under_the_railed_tests_dir`, pins that the
+  library's own tests stay inside `muxplex/tests/`, under that suite's
+  autouse isolation fixtures (isolated `SETTINGS_PATH`, isolated
+  `TMUX_TMPDIR`, neutralized port killer) -- a library test suite living
+  anywhere else would run unrailed against whatever tmux server and config
+  path happen to be ambient.
+
+- **The differential harness is retained, not a one-time migration tool.**
+  `pytest -m differential` (`muxplex/tests/test_differential_harness.py`)
+  stays in the suite as `tmuxkit`'s permanent regression bed for the
+  presence rule, `enumerate_sessions()`'s parsing tolerances, bell
+  detection, and the tmux-env/argv-injection seam S2 inverted -- replayed
+  against recorded real tmux argv/stdout and real `update_manifest()` inputs
+  captured from a live host, not synthetic fixtures.
+
+### Added
+
+- **`update_manifest()` now round-trips unknown top-level manifest keys
+  verbatim -- the one behavior change in this release, and it is additive.**
+  `docs/plans/...` SS13.3. Previously false: all three of the function's
+  rebuild branches (first-run adoption, same-epoch, cold-start) rebuilt the
+  top-level manifest dict from a **closed** key set, so any app-owned
+  top-level key not in that set was silently dropped on any cycle that
+  changed anything. In muxplex today this was unreachable for
+  `rename_in_flight` only by a call-order accident (the poll cycle reads and
+  clears the rename journal *before* calling `update_manifest()`) -- not a
+  contract. Each of the three rebuild sites in `lib/tmuxkit/presence.py` now
+  spreads the incoming manifest first (`{**manifest, ...}`) and overwrites
+  exactly the keys the function owns, computed exactly as before --
+  known-key behavior (discrimination, tombstoning, `pending_restore`
+  freezing) is byte-identical, proven by the differential harness re-run
+  against the new contract. This is what makes it safe for a second,
+  future application to write its own top-level keys beside the library's
+  core keys in the same per-app manifest file **without splitting it**
+  (the original plan's riskiest stage is dissolved by this contract instead
+  of attempted). Covered by ten `test_s4_*` tests in `test_manifest.py`
+  (every writer and rebuild branch, with an app-owned key no muxplex code
+  knows about) and by
+  `test_differential_harness.py::test_s4_unknown_toplevel_keys_round_trip_verbatim`
+  against real recorded manifest cycles.
+
+### Deferred (recorded, not dropped)
+
+- **`ttyd.py`'s AF_UNIX lifecycle (including the `SOCKET_SUFFIX` fence) and
+  the `Sender`/`SendPolicy` typed send API** -- both named in the
+  extraction plan's public-surface sketch (SS15.1) as the eventual shape,
+  neither built in this release. See the Changed entry above for why.
+- **Publishing `tmuxkit` to PyPI, or promising it semver stability.** The
+  library holds at 0.x with no semver promise -- its public surface is
+  deliberately smaller than SS15.1's eventual sketch until a second,
+  independent application actually depends on it and its interface
+  decisions (error model, bell-hook coexistence, observation scoping) get a
+  second vote instead of being settled unilaterally from muxplex's own
+  usage. Nothing in this plan builds that second application; it builds
+  only the library it will import.
+
+### Verification
+
+- **Both suites were run AFTER the four-way version bump to `0.44.0`
+  (`pyproject.toml`, `client/pyproject.toml`, `lib/pyproject.toml`, and the
+  `tmuxkit==0.44.0` pin inside `pyproject.toml`'s own dependency list), per
+  the v0.31.1 incident.** `uv lock` was re-run against the bumped tree
+  (`Updated muxplex v0.43.0 -> v0.44.0`, `Updated muxplex-client v0.43.0 ->
+  v0.44.0`, `Updated tmuxkit v0.43.0 -> v0.44.0`), and `uv lock --check` /
+  `uv sync` were both re-run afterward to prove the **workspace itself**
+  resolves post-bump now that a third member is in the mix -- new this
+  release, since a workspace source is a new failure mode the client-only
+  precedent never had.
+- `make test` (DTU `muxplex-test`, never the host -- run against `git
+  archive HEAD` of the bumped, committed tree, so the artifact tested is the
+  artifact that ships): **2399 passed, 4 skipped, 52 deselected in 99.95s
+  (0:01:39)**.
+- The parity test, re-run **by name** inside the same container after
+  grepping all four version locations:
+  `muxplex/tests/test_client_contract.py::test_client_version_matches_server_version PASSED [100%]`
+  / **1 passed in 0.16s**, with `pyproject.toml`, `client/pyproject.toml`,
+  and `lib/pyproject.toml` grepped in the same container, all three reading
+  `version = "0.44.0"`, and `pyproject.toml`'s own dependency pin reading
+  `tmuxkit==0.44.0`.
+- `pytest -m integration` (real tmux 3.4 + real ttyd, inside the DTU): **50
+  passed, 2403 deselected, 2 xpassed, 2 warnings in 35.30s**. This suite now
+  runs at all because of this range's three CI/test-repair commits (see the
+  release commit message) -- it was rotted and never executed before them.
+- `pytest -m differential` (the tmux-lib extraction's own permanent
+  regression bed, `test_differential_harness.py`): **27 passed, 2428
+  deselected in 0.47s**, including
+  `test_s4_unknown_toplevel_keys_round_trip_verbatim` (the one behavior
+  change in this release) and every recorded-real-input replay for
+  `update_manifest`, `enumerate_sessions`, `probe_tmux_epoch`,
+  `capture_pane*`, `poll_bell_flag`, `tmux_env`, and the `keys`/ttyd-naming
+  fixtures.
+- `node --test tests/*.mjs` in `muxplex/frontend`: **920 tests, 920 pass, 0
+  fail, 0 skipped, duration 3143.7ms**. Byte-identical count to v0.43.0's
+  920 -- expected: `git diff --stat v0.43.0..HEAD -- muxplex/frontend/` is
+  empty, this range touches no frontend file. Run and quoted as a
+  regression gate, not because this release changed `app.js`.
+- **Workspace resolution, proved post-bump before the suites above ran**
+  (new this release -- a workspace member is a failure mode the
+  client/-only precedent never had): `uv lock --check` -> `Resolved 43
+  packages in 1ms` (no drift from the committed `uv.lock`); `uv sync
+  --extra dev` -> uninstalled `muxplex==0.43.0` / `muxplex-client==0.43.0`
+  / `tmuxkit==0.43.0` and installed `muxplex==0.44.0` /
+  `muxplex-client==0.44.0` / `tmuxkit==0.44.0` in their place, confirming
+  `tmuxkit` resolves as a workspace source at the bumped version rather
+  than failing to resolve or silently pinning stale.
+
 ## v0.43.0 (2026-08-08)
 
 ### Added

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muxplex"
-version = "0.43.0"
+version = "0.44.0"
 description = "Web-based tmux session dashboard — access all your tmux sessions from any browser"
 readme = "README.md"
 license = { text = "MIT" }
@@ -45,7 +45,7 @@ dependencies = [
     # it together with this file's `version` and lib/pyproject.toml's.
     # NOT on PyPI (deliberately, plan scope) -- installs of muxplex must go
     # through this repo (git or path), where the workspace resolves it.
-    "tmuxkit==0.43.0",
+    "tmuxkit==0.44.0",
 ]
 
 [project.optional-dependencies]

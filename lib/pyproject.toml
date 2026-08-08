@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tmuxkit"
-version = "0.43.0"
+version = "0.44.0"
 description = "Async, argv-exec tmux session-management primitives (spawn, observe, presence, bells, cgroup escape)"
 readme = "README.md"
 license = { text = "MIT" }
