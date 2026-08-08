@@ -1411,11 +1411,15 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
     `lines` must be within [1, MAX_CAPTURE_LINES] (400 otherwise) -- an
     unbounded value here would let a single request pull arbitrarily large
     scrollback, a real cost on a server that's also polling every other
-    session on its own cycle. Sessions are created with their tmux
-    `history-limit` raised well above MAX_CAPTURE_LINES (see
-    sessions.ensure_history_retention) specifically so a max-depth request
-    has real backing data instead of tmux's own, possibly much lower,
-    default silently truncating it.
+    session on its own cycle. Retention is whatever the host's tmux config
+    provides -- `history-limit 50000` under `muxplex tmux install`
+    (tmux_templates/base.conf:28), tmux's compiled-in **2000** otherwise. On
+    an unmanaged host that equals MAX_CAPTURE_LINES exactly, so the deepest
+    legal request sits on the retention boundary and tmux clamps
+    **silently**. muxplex does not set `history-limit` and cannot: the
+    option binds a pane at creation time, not afterward (see
+    docs/plans/2026-08-07-agent-surface-additive-plan.md §8 for the
+    runtime-measured proof that a post-creation `set-option` does not take).
 
     Raises 404 if *name* is not an exact member of the known session set
     (same fail-closed pattern as connect/delete/input).

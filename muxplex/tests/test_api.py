@@ -6208,7 +6208,19 @@ def test_delete_session_logs_command_at_info(client, monkeypatch, tmp_path, capl
 
 
 def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
-    """POST /api/sessions must log the command being launched at INFO level."""
+    """POST /api/sessions must log the command being launched at INFO level.
+
+    The actual log call lives in `sessions.spawn_session_command()`
+    (logger "muxplex.sessions"), not in main.py's create_session() handler
+    itself -- create_session() delegates session creation to it (see that
+    function's docstring: shared with `muxplex restore`). Filtering on
+    "muxplex.main" here previously passed only by accident: the
+    now-deleted `ensure_history_retention()` logged a WARNING containing
+    the session name on its (always-triggered, in this mocked test) tmux
+    failure path, which is captured regardless of the `at_level` logger
+    argument (see caplog's handler-level semantics). That coincidence
+    masked this test never actually observing the claimed INFO-level log.
+    """
     import logging
     from unittest.mock import AsyncMock, MagicMock
 
@@ -6225,7 +6237,7 @@ def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
         AsyncMock(return_value=mock_proc),
     )
 
-    with caplog.at_level(logging.INFO, logger="muxplex.main"):
+    with caplog.at_level(logging.INFO, logger="muxplex.sessions"):
         client.post("/api/sessions", json={"name": "new-session"})
 
     log_messages = "\n".join(caplog.messages)

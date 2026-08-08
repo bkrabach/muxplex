@@ -224,6 +224,97 @@ async def test_state_file_written_atomically_by_poll_cycle(tmux_server):
 
 
 # ---------------------------------------------------------------------------
+# history-limit: spawn_session_command() must NOT raise it (deletion proof
+# for docs/plans/2026-08-07-agent-surface-additive-plan.md §8). Uses its OWN
+# isolated `-L` socket + `-f /dev/null` bootstrap rather than the shared
+# `tmux_server` fixture above, so the compiled-in default is guaranteed, not
+# merely assumed from an unconfigured environment.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_spawn_session_command_leaves_compiled_default_history_limit():
+    """A session created via spawn_session_command() must report tmux's
+    compiled-in history_limit (2000), never a raised value -- the assertion
+    that would have caught the original ensure_history_retention() bug: it
+    called `set-option -t <session> history-limit 5000` AFTER the session
+    (and its pane) already existed, which does not change the existing
+    pane's retained scrollback. See that plan's §1.3 for the runtime proof
+    and §8.5 for this test's origin.
+
+    Plain `def`, not `async def` -- spawn_session_command() is driven via
+    `asyncio.run()`, same pattern as `test_two_simultaneous_independent_terminals`
+    below, so the tmux subprocess calls in this test body stay synchronous
+    (ruff's ASYNC221 flags blocking subprocess calls inside an async test).
+    """
+    socket = f"pr2-history-{uuid.uuid4().hex[:8]}"
+    name = "pr2-history-session"
+    # Bootstrap the isolated server with -f /dev/null so no host tmux.conf
+    # (which could set history-limit itself) is in play -- `-f` is read only
+    # at server START, so later `new-session` calls on this same socket
+    # inherit the server-wide default this establishes.
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            socket,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "bootstrap",
+        ],
+        check=True,
+    )
+    try:
+        with (
+            patch(
+                "muxplex.sessions.load_settings",
+                return_value={
+                    "new_session_template": f"tmux -L {socket} new-session -d -s {{name}}",
+                    "delete_session_template": f"tmux -L {socket} kill-session -t {{name}}",
+                    "session_commands": [],
+                    "tmux_socket_dir": "",
+                },
+            ),
+            patch("shutil.which", return_value="/usr/bin/tmux"),
+        ):
+            from muxplex.sessions import spawn_session_command
+
+            ok, error = asyncio.run(spawn_session_command(name))
+        assert ok is True
+        assert error is None
+
+        result = subprocess.run(
+            [
+                "tmux",
+                "-L",
+                socket,
+                "display-message",
+                "-p",
+                "-t",
+                name,
+                "#{history_limit}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "2000", (
+            "spawn_session_command() must leave history_limit at tmux's "
+            f"compiled-in default (2000); got {result.stdout.strip()!r} -- "
+            "a raised value means a set-option-after-creation call has been "
+            "reintroduced (see plan §8.2: delete, do not repair)."
+        )
+    finally:
+        # Socket-scoped teardown only -- never a bare kill-server.
+        subprocess.run(
+            ["tmux", "-L", socket, "kill-server"], capture_output=True, check=False
+        )
+
+
+# ---------------------------------------------------------------------------
 # §12.5 -- real tmux, real ttyd, real sockets, through the real ASGI app.
 #
 # This is the acceptance test for the whole per-session-ttyd architecture

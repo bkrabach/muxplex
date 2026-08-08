@@ -3,6 +3,7 @@ Tests for coordinator/sessions.py — tmux session enumeration and helpers.
 All 6 acceptance-criteria tests are defined here.
 """
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,9 +12,7 @@ import muxplex.sessions as sessions_mod
 from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
-    SESSION_HISTORY_LIMIT,
     capture_pane,
-    ensure_history_retention,
     enumerate_sessions,
     get_session_activity,
     get_session_created_times,
@@ -462,41 +461,25 @@ async def test_capture_pane_accepts_deep_line_request(mock_subprocess):
 
 
 # ---------------------------------------------------------------------------
-# ensure_history_retention tests
+# history-limit: muxplex must not pretend it can raise it post-creation
+# (see docs/plans/2026-08-07-agent-surface-additive-plan.md §8)
 # ---------------------------------------------------------------------------
 
 
-async def test_ensure_history_retention_calls_tmux_set_option(mock_subprocess):
-    """ensure_history_retention() must run `tmux set-option -t <name> history-limit <N>`."""
-    with mock_subprocess("") as mock_create:
-        await ensure_history_retention("target-session")
+def test_muxplex_never_sets_history_limit():
+    """history-limit binds a pane at creation; muxplex must not pretend otherwise.
 
-    call_args = mock_create.call_args[0]
-    assert call_args[0] == "tmux"
-    assert call_args[1] == "set-option"
-    assert call_args[2] == "-t"
-    assert call_args[3] == "target-session"
-    assert call_args[4] == "history-limit"
-    assert call_args[5] == str(SESSION_HISTORY_LIMIT)
+    Runtime-measured on tmux 3.4: `set-option -t <s> history-limit 5000` on a
+    live session left the pane at 2000 and evicted at ~2000 after 4000 lines
+    of output -- the exact failure the removed code claimed to prevent. See
+    docs/plans/2026-08-07-agent-surface-additive-plan.md §1.3.
 
-
-async def test_ensure_history_retention_swallows_tmux_failure(mock_subprocess):
-    """A tmux failure (e.g. session vanished) must be logged and swallowed,
-    never raised -- this is a best-effort scrollback improvement, not a
-    correctness requirement, and must never fail session creation."""
-    with mock_subprocess(
-        stdout="", stderr="can't find session target-session", returncode=1
-    ):
-        # Must not raise.
-        await ensure_history_retention("target-session")
-
-
-def test_session_history_limit_exceeds_max_capture_lines():
-    """SESSION_HISTORY_LIMIT must stay comfortably above MAX_CAPTURE_LINES --
-    otherwise a caller's max-depth request could be silently truncated by
-    tmux's own retained scrollback, which would be a worse lie than the
-    original fixed 30-line ceiling this whole fix replaces."""
-    assert SESSION_HISTORY_LIMIT > MAX_CAPTURE_LINES
+    Guards against a future "fix" that reintroduces the call, or the rejected
+    `set-option -g` variant (see that plan's §8.2 and tmux_config.py's
+    install-first-so-we-lose posture).
+    """
+    source = (Path(__file__).parent.parent / "sessions.py").read_text(encoding="utf-8")
+    assert "history-limit" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -699,14 +682,7 @@ async def test_probe_tmux_epoch_returns_none_on_malformed_output():
 
 async def test_spawn_session_command_uses_plain_shell_when_escape_not_needed():
     """When should_escape() is False (the conftest default), behavior is
-    UNCHANGED from before this fix: a plain create_subprocess_shell call.
-
-    ensure_history_retention() is mocked away here because it makes its OWN,
-    unrelated create_subprocess_exec call (a `set-option history-limit`, via
-    run_tmux) -- deliberately never escaped (see cgroup_escape.py: run_tmux()
-    is not a tmux-server-parenting site). Isolating it keeps this test
-    focused on the one thing it verifies: how the CREATION command is spawned.
-    """
+    UNCHANGED from before this fix: a plain create_subprocess_shell call."""
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
         patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
@@ -727,7 +703,6 @@ async def test_spawn_session_command_uses_plain_shell_when_escape_not_needed():
             },
         ),
         patch("shutil.which", return_value="/usr/bin/tmux"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         ok, error = await spawn_session_command("my-session")
 
@@ -742,9 +717,6 @@ async def test_spawn_session_command_wraps_in_systemd_scope_when_escape_needed()
     """When should_escape() is True, the session-creation command must run
     via `systemd-run --user --scope ... -- sh -c <command>` through
     create_subprocess_exec, NOT the plain create_subprocess_shell.
-
-    ensure_history_retention() is mocked away -- see the sibling test's
-    docstring for why.
     """
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
@@ -766,7 +738,6 @@ async def test_spawn_session_command_wraps_in_systemd_scope_when_escape_needed()
             },
         ),
         patch("shutil.which", return_value="/usr/bin/tmux"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         ok, error = await spawn_session_command("my-session")
 
@@ -816,7 +787,6 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
             },
         ),
         patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         ok, error = await spawn_session_command("my-session")
 
@@ -849,7 +819,6 @@ async def test_spawn_default_when_command_id_none():
             },
         ),
         patch("shutil.which", return_value="/usr/bin/tmux"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         ok, error = await spawn_session_command("my-session")
 
@@ -882,7 +851,6 @@ async def test_spawn_uses_named_pair():
             },
         ),
         patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         ok, error = await spawn_session_command("my-session", command_id="amplifier")
 
@@ -950,7 +918,6 @@ async def test_spawn_named_pair_still_honors_tty_attach_recovery():
             },
         ),
         patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         ok, error = await spawn_session_command("my-session", command_id="amplifier")
 
@@ -981,7 +948,6 @@ async def test_spawn_named_pair_still_shlex_quotes_name():
             },
         ),
         patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         await spawn_session_command("my-session", command_id="amplifier")
 
@@ -1016,7 +982,6 @@ async def test_spawn_named_pair_respects_cgroup_escape():
             },
         ),
         patch("shutil.which", return_value="/usr/bin/amplifier-workspace"),
-        patch("muxplex.sessions.ensure_history_retention", new=AsyncMock()),
     ):
         ok, _error = await spawn_session_command("my-session", command_id="amplifier")
 
