@@ -954,7 +954,7 @@ def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -1861,7 +1861,7 @@ def test_upgrade_force_skips_version_check(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -1908,7 +1908,7 @@ def test_upgrade_already_up_to_date_skips_install(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -3231,7 +3231,7 @@ def test_upgrade_uses_service_module_install(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4123,7 +4123,12 @@ def test_upgrade_pypi_install_uses_package_name(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {"source": "pypi", "version": "0.1.0", "commit": None, "url": None},
+        lambda dist_name="muxplex": {
+            "source": "pypi",
+            "version": "0.1.0",
+            "commit": None,
+            "url": None,
+        },
     )
     monkeypatch.setattr(
         cli_mod,
@@ -4231,7 +4236,7 @@ def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "git",
             "version": "0.1.0",
             "commit": "abc12345",
@@ -4314,7 +4319,7 @@ def test_upgrade_no_systemctl_runs_to_completion(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4372,7 +4377,7 @@ def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4431,7 +4436,7 @@ def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4482,7 +4487,7 @@ def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4630,7 +4635,7 @@ def test_upgrade_propagates_install_failure_as_exit1(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4685,7 +4690,7 @@ def test_upgrade_restarts_systemctl_after_failed_install(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4772,7 +4777,7 @@ def test_upgrade_restarts_launchctl_after_failed_install(monkeypatch, capsys, tm
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4862,7 +4867,7 @@ def test_upgrade_no_launchctl_on_linux_uses_systemctl(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -4944,7 +4949,7 @@ def test_upgrade_prefers_uv_tool_when_uv_managed(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -5018,7 +5023,7 @@ def test_upgrade_falls_back_to_pip_when_uv_absent(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -5242,7 +5247,7 @@ def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -5318,7 +5323,7 @@ def test_upgrade_exits_1_after_finally_recovers_stopped_service(monkeypatch, cap
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -5420,7 +5425,7 @@ def test_upgrade_exits_1_if_service_fails_to_restart(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -5479,7 +5484,7 @@ def test_upgrade_calls_daemon_reload_before_start(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -5661,7 +5666,7 @@ def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
@@ -5744,7 +5749,7 @@ def test_upgrade_reports_honest_timeout_and_still_runs_doctor(
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda: {
+        lambda dist_name="muxplex": {
             "source": "pypi",
             "version": "0.1.0",
             "commit": None,
