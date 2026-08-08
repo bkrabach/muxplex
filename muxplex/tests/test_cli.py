@@ -4236,12 +4236,23 @@ def test_upgrade_git_install_uses_git_url(monkeypatch, capsys):
     monkeypatch.setattr(
         cli_mod,
         "_get_install_info",
-        lambda dist_name="muxplex": {
-            "source": "git",
-            "version": "0.1.0",
-            "commit": "abc12345",
-            "url": "https://github.com/bkrabach/muxplex",
-        },
+        lambda dist_name="muxplex": (
+            {
+                "source": "git",
+                "version": "0.1.0",
+                "commit": "abc12345",
+                "url": "https://github.com/bkrabach/muxplex",
+                "ref": None,
+            }
+            if dist_name == "muxplex"
+            else {
+                "source": "pypi",
+                "version": "0.1.0",
+                "commit": None,
+                "url": None,
+                "ref": None,
+            }
+        ),
     )
     monkeypatch.setattr(
         cli_mod,
