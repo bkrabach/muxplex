@@ -278,7 +278,7 @@ class AsyncMuxplexClient:
         )
 
     async def append_followup(
-        self, name: str, text: str, *, enter: bool = False
+        self, name: str, text: str, *, enter: bool = True
     ) -> FollowupItem:
         """POST /api/sessions/{name}/followups -- see
         `sync_client.MuxplexClient.append_followup` for the fence

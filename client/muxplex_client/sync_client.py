@@ -318,7 +318,7 @@ class MuxplexClient:
         )
 
     def append_followup(
-        self, name: str, text: str, *, enter: bool = False
+        self, name: str, text: str, *, enter: bool = True
     ) -> FollowupItem:
         """POST /api/sessions/{name}/followups -- append one item.
 
