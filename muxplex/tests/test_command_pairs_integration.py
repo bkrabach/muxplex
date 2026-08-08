@@ -232,9 +232,7 @@ def test_default_pair_byte_identical_real_tmux(client, pairs_env):
     markers = _markers(marker_dir)
     assert "created-default-e2e-plain" in markers
     assert "deleted-default-e2e-plain" in markers
-    assert not any(
-        m.startswith(("created-alpha-", "created-beta-")) for m in markers
-    )
+    assert not any(m.startswith(("created-alpha-", "created-beta-")) for m in markers)
     assert not any(
         m.startswith("deleted-alpha-") or m.startswith("deleted-beta-") for m in markers
     )

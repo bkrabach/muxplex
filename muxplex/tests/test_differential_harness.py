@@ -58,12 +58,17 @@ import muxplex.ttyd as ttyd_mod
 # S1 (pure moves): the code under test moved into muxplex/tmux/, so the
 # monkeypatch SEAMS below target the modules where each function now
 # resolves its collaborators (observe/bell resolve run_tmux in their own
-# globals; proc resolves load_settings in its own). The CALLS deliberately
-# stay on the OLD module paths (sessions_mod / bells_mod / manifest_mod /
-# ti_mod) -- that simultaneously proves the S1 re-exports are the very same
-# objects. The recorded fixture (the tape and every expected value) is
-# untouched: byte-identity against the pre-move baseline is the proof the
-# move was pure.
+# globals). The CALLS deliberately stay on the OLD module paths
+# (sessions_mod / bells_mod / manifest_mod / ti_mod) -- that simultaneously
+# proves the S1 re-exports are the very same objects.
+#
+# S2 (settings inversion, plan §13.2 stage 3 / §4.3): the library no longer
+# reads muxplex's settings -- config is INJECTED. The ONLY call sites that
+# changed here are the tmux_env ones (the inverted seam): the library form
+# takes socket_dir as a parameter, and the app form (sessions.tmux_env())
+# resolves settings app-side and injects. The recorded fixture (the tape
+# and every expected value) is untouched: byte-identity against the
+# pre-move baseline is the proof the inversion preserved behavior.
 
 pytestmark = pytest.mark.differential
 
@@ -403,17 +408,22 @@ def test_restore_helpers_replay(recorded):
 
 
 # ---------------------------------------------------------------------------
-# proc: tmux_env construction (the seam S2 inverts — sessions.py:294)
+# proc: tmux_env construction (the seam S2 INVERTED — sessions.py:294
+# pre-move). The systemd-environment semantics (the TMUX pop, the
+# socket-dir override, the unset→None case) must be byte-identical to the
+# recorded baseline through BOTH forms: the library's pure
+# tmux_env(socket_dir) with the value injected as a parameter, and
+# muxplex's app facade sessions.tmux_env(), which resolves the SAME value
+# from its settings and injects it. Same recorded inputs, same expected
+# outputs — only the call shape changed.
 # ---------------------------------------------------------------------------
 
 
 def test_tmux_env_with_socket_dir_overrides_and_pops_tmux(recorded, monkeypatch):
     socket_dir = recorded["tmux_env"]["socket_dir"]
-    monkeypatch.setattr(
-        proc_mod, "load_settings", lambda: {"tmux_socket_dir": socket_dir}
-    )
     monkeypatch.setenv("TMUX", "/tmp/fake-ambient-tmux-socket,123,0")
-    env = sessions_mod.tmux_env()
+    # S2 library form: socket_dir is an injected parameter.
+    env = proc_mod.tmux_env(socket_dir)
     assert env is not None
     assert env["TMUX_TMPDIR"] == socket_dir
     assert "TMUX" not in env
@@ -422,11 +432,22 @@ def test_tmux_env_with_socket_dir_overrides_and_pops_tmux(recorded, monkeypatch)
     expected["TMUX_TMPDIR"] = socket_dir
     expected.pop("TMUX", None)
     assert env == expected
+    # S2 app form: when muxplex injects the same socket dir its settings
+    # would have yielded, the produced env is byte-identical.
+    monkeypatch.setattr(
+        sessions_mod, "load_settings", lambda: {"tmux_socket_dir": socket_dir}
+    )
+    assert sessions_mod.tmux_env() == expected
 
 
 def test_tmux_env_unset_returns_none(recorded, monkeypatch):
-    monkeypatch.setattr(proc_mod, "load_settings", lambda: {"tmux_socket_dir": ""})
-    assert sessions_mod.tmux_env() is recorded["tmux_env"]["expected_when_unset"]
+    expected = recorded["tmux_env"]["expected_when_unset"]
+    # Library form: empty/None socket_dir means "no override" -> None.
+    assert proc_mod.tmux_env("") is expected
+    assert proc_mod.tmux_env(None) is expected
+    # App form: an unset setting resolves to "" and injects the same None.
+    monkeypatch.setattr(sessions_mod, "load_settings", lambda: {"tmux_socket_dir": ""})
+    assert sessions_mod.tmux_env() is expected
 
 
 # ---------------------------------------------------------------------------

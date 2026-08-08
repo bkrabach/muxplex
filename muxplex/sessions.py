@@ -19,21 +19,30 @@ re-exported below, so every existing import path keeps working untouched:
                              get_session_created_times / get_session_cwds /
                              update_session_cache)
 
-What stays HERE (app-side): ``spawn_session_command()`` -- it resolves a
-muxplex settings template (``session_commands`` /
-``new_session_template``), which is exactly the coupling stage S2 inverts
-before the spawn's general half (cgroup-escaped spawn, the
-exists-despite-exit-code TTY-attach tolerance) can move (plan §15.1).
+Stage S2 (plan §13.2 stage 3, §4.3) inverted the settings dependency:
+configuration is INJECTED into the library, never read by it. This module
+is where muxplex does the injecting -- it is the app-side facade:
+
+- ``tmux_env()`` (no args, the pre-S2 signature every app caller keeps
+  using) resolves ``tmux_socket_dir`` from muxplex's settings FRESH on
+  every call and passes it into the library's pure
+  ``muxplex.tmux.proc.tmux_env(socket_dir)``.
+- The same resolver is installed as the library's process-wide env
+  factory (``set_env_factory``, at import time below), so every
+  ``run_tmux()`` call made from INSIDE the library -- enumeration,
+  capture, bells, rename -- honors the setting exactly as before the
+  inversion.
+- ``spawn_session_command()`` resolves WHICH template to run
+  (``session_commands`` / ``new_session_template`` -- muxplex config) and
+  delegates the general half (cgroup-escaped spawn, the
+  exists-despite-exit-code TTY-attach tolerance) to the library's
+  ``muxplex.tmux.spawn.spawn_session(name, template, env=...)`` with the
+  template caller-resolved (plan §15.1).
 """
 
-import asyncio
 import logging
-import os
-import shlex
-import shutil
 
 from muxplex.settings import find_session_command, load_settings
-from muxplex.tmux.cgroup import should_escape, wrap_shell_argv
 from muxplex.tmux.names import (
     SESSION_NAME_RE,
     is_tmux_stable_name,
@@ -56,7 +65,9 @@ from muxplex.tmux.observe import (
     snapshot_all,
     update_session_cache,
 )
-from muxplex.tmux.proc import run_tmux, tmux_env
+from muxplex.tmux.proc import run_tmux, set_env_factory
+from muxplex.tmux.proc import tmux_env as _lib_tmux_env
+from muxplex.tmux.spawn import spawn_session
 
 __all__ = [
     "DEFAULT_CAPTURE_LINES",
@@ -131,6 +142,14 @@ async def spawn_session_command(
     non-default pair (`amplifier-workspace`) is the very command whose
     behavior this branch exists for.
 
+    Stage S2 (plan §13.2 stage 3): this function is now the APP HALF only --
+    it resolves WHICH template to run (muxplex settings) and injects the
+    resolved template plus the settings-resolved subprocess environment into
+    the library's ``muxplex.tmux.spawn.spawn_session()``, which owns the
+    general half (PATH pre-flight, ``shlex.quote()`` substitution, cgroup
+    escape, the TTY-attach and 30s tolerances). Behavior is byte-identical
+    for every caller.
+
     Returns:
         (True, None) on success.
         (False, <error message>) on failure -- the caller decides how to
@@ -143,84 +162,39 @@ async def spawn_session_command(
         return False, (
             f"Unknown command_id {command_id!r}: no such configured session command."
         )
-    template = command["new_session_template"]
+    return await spawn_session(name, command["new_session_template"], env=tmux_env())
 
-    # Pre-flight: check that the base command is on PATH.
-    base_cmd = template.split()[0] if template.strip() else ""
-    if base_cmd and not shutil.which(base_cmd):
-        _log.error(
-            "Session command binary not found on PATH: %r (PATH=%s)",
-            base_cmd,
-            os.environ.get("PATH", ""),
-        )
-        return False, (
-            f"Command not found: {base_cmd}. "
-            "Ensure it is installed and in the server's PATH."
-        )
 
-    command = template.replace("{name}", shlex.quote(name))
-    _log.info("Creating session '%s' with command: %s", name, command)
-    try:
-        # This command may start a brand-new tmux SERVER (e.g. the default
-        # template `tmux new-session -d -s {name}`, or a user's own
-        # `amplifier-workspace {name}`, both start one if none is running
-        # yet). If we are running under a systemd --user unit, that server
-        # must NOT be spawned as a plain child of this process -- see
-        # muxplex/tmux/cgroup.py's module docstring and AGENTS.md's "Two
-        # ways to destroy every live tmux session on this host" (mechanism #1).
-        if await should_escape():
-            proc = await asyncio.create_subprocess_exec(
-                *wrap_shell_argv(command),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=tmux_env(),
-            )
-        else:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=tmux_env(),
-            )
-        _stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=30
-        )
-        if proc.returncode != 0:
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-            # Some commands (amplifier-workspace) create the session then
-            # try to attach (which fails without a TTY). If the session
-            # exists despite the non-zero exit, treat it as success.
-            sessions = await enumerate_sessions()
-            if name in sessions:
-                _log.info(
-                    "Session command exited %d but session '%s' exists -- "
-                    "treating as success (likely a TTY-attach failure)",
-                    proc.returncode,
-                    name,
-                )
-            else:
-                _log.warning(
-                    "Session command exited %d: %s (stderr: %s)",
-                    proc.returncode,
-                    command,
-                    stderr_text,
-                )
-                return False, (
-                    f"Session command failed (exit {proc.returncode}): {stderr_text}"
-                    if stderr_text
-                    else f"Session command failed with exit code {proc.returncode}"
-                )
-    except asyncio.TimeoutError:
-        _log.info(
-            "Session command still running after 30s (may be long-lived): %s",
-            command,
-        )
-        # Long-running session commands (e.g. amplifier-workspace that
-        # spawns background processes) may outlive the 30s window. This is
-        # not necessarily an error -- return success and let the caller
-        # poll for the session to appear.
-    except Exception as exc:
-        _log.warning("Failed to launch session command %r: %s", command, exc)
-        return False, f"Failed to launch command: {exc}"
+def _tmux_socket_dir_from_settings() -> str:
+    """Resolve muxplex's `tmux_socket_dir` setting, FRESH on every call.
 
-    return True, None
+    Same cadence as the pre-S2 read that lived inside the library: a
+    settings edit takes effect on the next tmux call, no restart required.
+    Resolved via this module's `load_settings` binding so existing test
+    seams (`patch("muxplex.sessions.load_settings", ...)`) keep working.
+    """
+    return load_settings().get("tmux_socket_dir", "")
+
+
+def tmux_env() -> dict[str, str] | None:
+    """App-side facade keeping the pre-S2 zero-arg signature.
+
+    Stage S2 (plan §4.3) made the library's `tmux_env(socket_dir)` a pure
+    function of an INJECTED socket dir. muxplex's injection lives here:
+    resolve `tmux_socket_dir` from settings and pass it in. Every app
+    caller (`main.py`'s delete path, `ttyd.spawn_ttyd`, and this module's
+    spawn) keeps calling plain `tmux_env()` exactly as before, with
+    byte-identical results -- see the library docstring
+    (`muxplex.tmux.proc.tmux_env`) for the systemd-environment semantics.
+    """
+    return _lib_tmux_env(_tmux_socket_dir_from_settings())
+
+
+# Install muxplex's env factory into the library (plan §4.3: configuration
+# is injected, never read). This is the one-time, construction-time wiring
+# that lets every run_tmux() call made from INSIDE the library
+# (enumeration, capture, bells, rename) keep honoring `tmux_socket_dir`
+# without the library ever knowing muxplex's settings file exists. Every
+# app entry point (main.py, restore.py, ttyd.py, cli.py) imports this
+# module, so the factory is always installed before any tmux call.
+set_env_factory(tmux_env)

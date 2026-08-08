@@ -6,7 +6,7 @@ session on this host" (mechanism #1) before touching this file.
 
 When muxplex runs as a systemd --user unit (``muxplex.service``) and one of
 its subprocesses forks a brand-new tmux *server* (this happens inside
-``sessions.spawn_session_command()``: its ``new_session_template`` command
+``tmux/spawn.py``'s ``spawn_session()``: its caller-resolved template command
 -- e.g. ``tmux new-session -d -s {name}`` or a user's own
 ``amplifier-workspace {name}`` -- starts a tmux server if none is running
 yet), that server inherits ``muxplex.service``'s cgroup. systemd's default
@@ -238,8 +238,8 @@ def wrap_shell_argv(command: str) -> list[str]:
     string) inside the systemd scope wrapper.
 
     Used by callers that would otherwise use ``create_subprocess_shell``
-    (i.e. ``sessions.spawn_session_command``, whose ``new_session_template``
-    is arbitrary user shell text) -- ``sh -c`` preserves normal shell
+    (i.e. ``tmux/spawn.py``'s ``spawn_session``, whose caller-resolved
+    template is arbitrary user shell text) -- ``sh -c`` preserves normal shell
     semantics for *command* while the outer call stays exec-style, which is
     what ``systemd-run --user --scope --``'s own argv requires.
     """

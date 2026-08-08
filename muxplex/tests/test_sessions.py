@@ -10,6 +10,7 @@ import pytest
 
 import muxplex.sessions as sessions_mod  # noqa: F401  (import path kept working by S1 re-exports)
 import muxplex.tmux.observe as observe_mod
+import muxplex.tmux.proc as proc_mod
 from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
@@ -64,10 +65,19 @@ def mock_subprocess():
 # ---------------------------------------------------------------------------
 
 
+def test_lib_tmux_env_returns_none_when_socket_dir_empty():
+    """The LIBRARY form (S2, plan §4.3): tmux_env(socket_dir) is a pure
+    function of its injected parameter -- empty/None means "no override",
+    returning None so subprocesses inherit the ambient env unchanged."""
+    assert proc_mod.tmux_env("") is None
+    assert proc_mod.tmux_env(None) is None
+
+
 def test_tmux_env_returns_none_when_socket_dir_unset():
-    """tmux_env() returns None (inherit ambient env unchanged) when
+    """tmux_env() (the APP facade -- S2 resolves the setting app-side and
+    injects it, plan §4.3) returns None (inherit ambient env unchanged) when
     tmux_socket_dir is not configured -- fully backward compatible default."""
-    with patch("muxplex.tmux.proc.load_settings", return_value={"tmux_socket_dir": ""}):
+    with patch("muxplex.sessions.load_settings", return_value={"tmux_socket_dir": ""}):
         assert tmux_env() is None
 
 
@@ -82,7 +92,7 @@ def test_tmux_env_overrides_tmux_tmpdir_when_configured():
     """
     with (
         patch(
-            "muxplex.tmux.proc.load_settings",
+            "muxplex.sessions.load_settings",
             return_value={"tmux_socket_dir": "/home/user/.tmux"},
         ),
         patch.dict(
@@ -97,6 +107,12 @@ def test_tmux_env_overrides_tmux_tmpdir_when_configured():
     # it doesn't replace the whole environment.
     assert env["PATH"] == "/usr/bin"
     assert env["HOME"] == "/home/user"
+    # And the LIBRARY form produces the byte-identical env from the same
+    # injected value -- the app facade adds nothing but the settings read.
+    with patch.dict(
+        "os.environ", {"PATH": "/usr/bin", "HOME": "/home/user"}, clear=True
+    ):
+        assert proc_mod.tmux_env("/home/user/.tmux") == env
 
 
 def test_tmux_env_strips_tmux_var_when_configured():
@@ -111,7 +127,7 @@ def test_tmux_env_strips_tmux_var_when_configured():
     """
     with (
         patch(
-            "muxplex.tmux.proc.load_settings",
+            "muxplex.sessions.load_settings",
             return_value={"tmux_socket_dir": "/home/user/.tmux"},
         ),
         patch.dict(
@@ -126,11 +142,24 @@ def test_tmux_env_strips_tmux_var_when_configured():
     assert "TMUX" not in env
 
 
-async def test_run_tmux_passes_tmux_env_to_subprocess(mock_subprocess):
-    """run_tmux() must pass tmux_env()'s result as the subprocess `env` kwarg."""
+async def test_run_tmux_resolves_env_from_the_app_installed_factory(mock_subprocess):
+    """run_tmux() must resolve the subprocess `env` kwarg from the factory
+    the APP installed (S2, plan §4.3: sessions.py registers its
+    settings-resolving tmux_env() via set_env_factory at import time).
+
+    This exercises the REAL production wiring end to end: run_tmux ->
+    default_env() -> sessions.tmux_env -> load_settings -- proving a
+    configured tmux_socket_dir still reaches every library-internal tmux
+    call after the inversion.
+    """
+    assert proc_mod._env_factory is sessions_mod.tmux_env, (
+        "muxplex.sessions must install its tmux_env() as the library's env "
+        "factory at import time -- without it, a configured tmux_socket_dir "
+        "is silently ignored by every tmux call and all sessions vanish."
+    )
     with (
         patch(
-            "muxplex.tmux.proc.load_settings",
+            "muxplex.sessions.load_settings",
             return_value={"tmux_socket_dir": "/custom/socket/dir"},
         ),
         mock_subprocess("session1\n") as mock_create,
@@ -138,6 +167,15 @@ async def test_run_tmux_passes_tmux_env_to_subprocess(mock_subprocess):
         await run_tmux("list-sessions", "-F", "#{session_name}")
 
     assert mock_create.call_args.kwargs["env"]["TMUX_TMPDIR"] == "/custom/socket/dir"
+
+
+async def test_run_tmux_explicit_env_parameter_wins(mock_subprocess):
+    """run_tmux(..., env=...) passes the caller-injected env verbatim,
+    bypassing the installed factory -- the per-call injection seam."""
+    sentinel = {"TMUX_TMPDIR": "/explicit/dir", "SENTINEL": "1"}
+    with mock_subprocess("ok\n") as mock_create:
+        await run_tmux("list-sessions", env=sentinel)
+    assert mock_create.call_args.kwargs["env"] is sentinel
 
 
 # ---------------------------------------------------------------------------
@@ -784,13 +822,13 @@ async def test_spawn_session_command_uses_plain_shell_when_escape_not_needed():
     UNCHANGED from before this fix: a plain create_subprocess_shell call."""
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_shell",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=proc),
         ) as mock_shell,
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_exec",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(),
         ) as mock_exec,
         patch(
@@ -819,13 +857,13 @@ async def test_spawn_session_command_wraps_in_systemd_scope_when_escape_needed()
     """
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=True)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=True)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_exec",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ) as mock_exec,
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_shell",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(),
         ) as mock_shell,
         patch(
@@ -868,13 +906,13 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
         stdout="", stderr="attach failed: not a terminal", returncode=1
     )
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=True)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=True)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_exec",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ),
         patch(
-            "muxplex.sessions.enumerate_sessions",
+            "muxplex.tmux.spawn.enumerate_sessions",
             new=AsyncMock(return_value=["my-session"]),
         ),
         patch(
@@ -904,9 +942,9 @@ async def test_spawn_default_when_command_id_none():
     """command_id=None resolves to settings.new_session_template -- the
     byte-identity guard for every existing caller."""
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_shell",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=_make_mock_process("", "", 0)),
         ) as mock_shell,
         patch(
@@ -929,9 +967,9 @@ async def test_spawn_default_when_command_id_none():
 async def test_spawn_uses_named_pair():
     """command_id selects the named pair's new_session_template."""
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_shell",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=_make_mock_process("", "", 0)),
         ) as mock_shell,
         patch(
@@ -961,10 +999,10 @@ async def test_spawn_uses_named_pair():
 async def test_spawn_unknown_command_id_returns_error_without_spawning():
     with (
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_shell", new=AsyncMock()
+            "muxplex.tmux.spawn.asyncio.create_subprocess_shell", new=AsyncMock()
         ) as mock_shell,
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_exec", new=AsyncMock()
+            "muxplex.tmux.spawn.asyncio.create_subprocess_exec", new=AsyncMock()
         ) as mock_exec,
         patch(
             "muxplex.sessions.load_settings",
@@ -992,13 +1030,13 @@ async def test_spawn_named_pair_still_honors_tty_attach_recovery():
         stdout="", stderr="attach failed: not a terminal", returncode=1
     )
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_shell",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=proc),
         ),
         patch(
-            "muxplex.sessions.enumerate_sessions",
+            "muxplex.tmux.spawn.enumerate_sessions",
             new=AsyncMock(return_value=["my-session"]),
         ),
         patch(
@@ -1026,9 +1064,9 @@ async def test_spawn_named_pair_still_honors_tty_attach_recovery():
 
 async def test_spawn_named_pair_still_shlex_quotes_name():
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=False)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_shell",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=_make_mock_process("", "", 0)),
         ) as mock_shell,
         patch(
@@ -1060,9 +1098,9 @@ async def test_spawn_named_pair_respects_cgroup_escape():
     command, not the default (guards the 44-session-incident machinery)."""
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
-        patch("muxplex.sessions.should_escape", new=AsyncMock(return_value=True)),
+        patch("muxplex.tmux.spawn.should_escape", new=AsyncMock(return_value=True)),
         patch(
-            "muxplex.sessions.asyncio.create_subprocess_exec",
+            "muxplex.tmux.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ) as mock_exec,
         patch(

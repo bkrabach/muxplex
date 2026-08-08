@@ -266,6 +266,80 @@ def test_app_code_builds_zero_run_shell_strings():
     )
 
 
+def _tmux_library_app_imports() -> list[str]:
+    """AST scan of every ``.py`` under ``muxplex/tmux/`` for imports that
+    reach the app layer, returned as package-relative offender strings.
+
+    Three shapes are offenses, because each is a way the boundary could
+    erode back into ``load_settings()``-style coupling without this rail
+    firing:
+
+    - ``from muxplex.<app module> import ...`` (absolute ImportFrom)
+    - ``import muxplex`` / ``import muxplex.<app module>`` (plain Import)
+    - a RELATIVE import whose level climbs OUT of the ``muxplex/tmux/``
+      package (e.g. ``from .. import settings`` from ``tmux/proc.py``)
+
+    ``muxplex.tmux[.*]`` itself is allowed -- library-internal imports are
+    the point of the package.
+    """
+    tmux_dir = Path(__file__).parent.parent / "tmux"
+    offenders: list[str] = []
+    for path in sorted(tmux_dir.rglob("*.py")):
+        rel_parts = path.relative_to(tmux_dir).parts
+        rel = "tmux/" + "/".join(rel_parts)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level == 0:
+                    mod = node.module or ""
+                    if (mod == "muxplex" or mod.startswith("muxplex.")) and not (
+                        mod == "muxplex.tmux" or mod.startswith("muxplex.tmux.")
+                    ):
+                        offenders.append(f"{rel}:{node.lineno}: from {mod} import ...")
+                elif node.level >= len(rel_parts) + 1:
+                    # For a module at tmux/<f>.py (depth 1), level 1 is the
+                    # tmux package itself (allowed); level 2 climbs to the
+                    # muxplex app package (offense). Generalized for any
+                    # future sub-package depth.
+                    offenders.append(
+                        f"{rel}:{node.lineno}: relative import escapes "
+                        f"muxplex/tmux/ (level={node.level})"
+                    )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.name
+                    if (name == "muxplex" or name.startswith("muxplex.")) and not (
+                        name == "muxplex.tmux" or name.startswith("muxplex.tmux.")
+                    ):
+                        offenders.append(f"{rel}:{node.lineno}: import {name}")
+    return offenders
+
+
+def test_tmux_library_never_imports_the_app_layer():
+    """The plan §7.2 import-purity rail, landed with the S2 inversion
+    (which removed the last wrong-way arrow, proc.py's ``load_settings``
+    read -- the rail could not exist before S2 without being born red).
+
+    Nothing under ``muxplex/tmux/`` may import from the muxplex app layer
+    (``muxplex.settings``, ``muxplex.state``, ``muxplex.main``, ...). This
+    is the entire value of the internal boundary: it converts "we intend a
+    library" into "a library that cannot silently grow an app dependency,"
+    which is what makes stage S3's ``git mv`` to ``lib/`` mechanical
+    instead of archaeological. Configuration reaches the library by
+    INJECTION only (plan §4.3): ``tmux_env(socket_dir)``,
+    ``spawn_session(..., env=...)``, ``set_env_factory()``.
+    """
+    offenders = _tmux_library_app_imports()
+    assert not offenders, (
+        f"muxplex/tmux/ (the extractable tmux library) imports the app "
+        f"layer: {offenders}. The library must never read muxplex's "
+        f"settings, state, or server code -- config is injected by the "
+        f"caller (plan §4.3, §7.2). Resolve the value app-side (see "
+        f"muxplex/sessions.py, the app facade) and pass it in as a "
+        f"parameter or via muxplex.tmux.proc.set_env_factory()."
+    )
+
+
 def test_library_tests_live_under_the_railed_tests_dir():
     """Plan §7.3 rail 2: `test_settings_path_is_isolated` and
     `_isolate_tmux_socket_dir` (conftest.py's autouse rails) must keep

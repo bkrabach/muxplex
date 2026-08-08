@@ -92,7 +92,14 @@ async def test_dot_is_genuinely_mangled_by_this_hosts_tmux(socket_dir, monkeypat
     fails for the reason (tmux's behavior changed), not the policy test
     (is_tmux_stable_name rejecting '.') silently passing for a new one.
     """
-    monkeypatch.setattr("muxplex.tmux.proc.tmux_env", lambda: _tmux_env(socket_dir))
+    # S2 (plan §4.3): run_tmux() resolves its env from the APP-INSTALLED
+    # factory (sessions.tmux_env -> load_settings), not from a library
+    # settings read -- so isolate via the production mechanism: make the
+    # settings resolve to this test's scratch socket dir.
+    monkeypatch.setattr(
+        "muxplex.sessions.load_settings",
+        lambda: {"tmux_socket_dir": str(socket_dir)},
+    )
     _tmux(socket_dir, "new-session", "-d", "-s", "build.js")
     try:
         live = _live_names(socket_dir)
@@ -110,7 +117,14 @@ async def test_rename_tmux_session_exact_match_targeting(socket_dir, monkeypatch
     """`-t =<old> -- <new>` targets exactly the named session, not a
     prefix match against a similarly-named neighbour (\u00a71's `app`/`app2`
     finding)."""
-    monkeypatch.setattr("muxplex.tmux.proc.tmux_env", lambda: _tmux_env(socket_dir))
+    # S2 (plan §4.3): run_tmux() resolves its env from the APP-INSTALLED
+    # factory (sessions.tmux_env -> load_settings), not from a library
+    # settings read -- so isolate via the production mechanism: make the
+    # settings resolve to this test's scratch socket dir.
+    monkeypatch.setattr(
+        "muxplex.sessions.load_settings",
+        lambda: {"tmux_socket_dir": str(socket_dir)},
+    )
     _tmux(socket_dir, "new-session", "-d", "-s", "app")
     _tmux(socket_dir, "new-session", "-d", "-s", "app2")
 
@@ -122,7 +136,14 @@ async def test_rename_tmux_session_exact_match_targeting(socket_dir, monkeypatch
 
 @pytest.mark.asyncio
 async def test_rename_tmux_session_raises_on_duplicate(socket_dir, monkeypatch):
-    monkeypatch.setattr("muxplex.tmux.proc.tmux_env", lambda: _tmux_env(socket_dir))
+    # S2 (plan §4.3): run_tmux() resolves its env from the APP-INSTALLED
+    # factory (sessions.tmux_env -> load_settings), not from a library
+    # settings read -- so isolate via the production mechanism: make the
+    # settings resolve to this test's scratch socket dir.
+    monkeypatch.setattr(
+        "muxplex.sessions.load_settings",
+        lambda: {"tmux_socket_dir": str(socket_dir)},
+    )
     _tmux(socket_dir, "new-session", "-d", "-s", "one")
     _tmux(socket_dir, "new-session", "-d", "-s", "two")
 

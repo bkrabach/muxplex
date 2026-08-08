@@ -4340,7 +4340,7 @@ def test_create_session_returns_200_with_name(client, monkeypatch):
     mock_proc.returncode = 0
 
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_shell",
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
         AsyncMock(return_value=mock_proc),
     )
 
@@ -4372,7 +4372,7 @@ def test_create_session_substitutes_name_in_template(client, tmp_path, monkeypat
         return mock_proc
 
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_shell", mock_create_subprocess
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell", mock_create_subprocess
     )
 
     response = client.post("/api/sessions", json={"name": "my-project"})
@@ -4514,7 +4514,7 @@ def test_create_session_rejects_shell_injection(client, monkeypatch):
     from unittest.mock import AsyncMock
 
     spawned = AsyncMock()
-    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", spawned)
+    monkeypatch.setattr("muxplex.tmux.spawn.asyncio.create_subprocess_shell", spawned)
 
     response = client.post(
         "/api/sessions", json={"name": "x; touch /tmp/deckdev-should-not-exist; true"}
@@ -4550,7 +4550,7 @@ def test_create_session_rejects_invalid_charset(client, monkeypatch):
     from unittest.mock import AsyncMock
 
     spawned = AsyncMock()
-    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", spawned)
+    monkeypatch.setattr("muxplex.tmux.spawn.asyncio.create_subprocess_shell", spawned)
 
     for bad in ["has space", "back`tick`", "pipe|it", "dollar$ign", "a" * 65, "co:lon"]:
         response = client.post("/api/sessions", json={"name": bad})
@@ -4573,7 +4573,8 @@ def test_create_and_delete_accept_ordinary_names(client, monkeypatch, tmp_path):
     proc.communicate = AsyncMock(return_value=(b"", b""))
     proc.returncode = 0
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_shell", AsyncMock(return_value=proc)
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=proc),
     )
 
     # Representative of real live session names (dots, underscores, hyphens).
@@ -4709,7 +4710,9 @@ def test_create_session_shlex_quote_defense_in_depth(client, monkeypatch, tmp_pa
         captured.append(cmd)
         return proc
 
-    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", mock_shell)
+    monkeypatch.setattr(
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell", mock_shell
+    )
 
     payload = "x; touch /tmp/deckdev-quote; true"
     resp = client.post("/api/sessions", json={"name": payload})
@@ -4806,7 +4809,9 @@ def test_create_without_command_id_unchanged(client, monkeypatch, tmp_path):
         captured.append(cmd)
         return mock_proc
 
-    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", mock_shell)
+    monkeypatch.setattr(
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell", mock_shell
+    )
 
     resp = client.post("/api/sessions", json={"name": "plain"})
     assert resp.status_code == 200
@@ -4824,7 +4829,7 @@ def test_create_response_includes_command_id(client, monkeypatch, tmp_path):
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
     mock_proc.returncode = 0
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_shell",
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
         AsyncMock(return_value=mock_proc),
     )
 
@@ -4845,7 +4850,9 @@ def test_create_with_command_id_uses_that_pair(client, monkeypatch, tmp_path):
         captured.append(cmd)
         return mock_proc
 
-    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", mock_shell)
+    monkeypatch.setattr(
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell", mock_shell
+    )
 
     resp = client.post(
         "/api/sessions", json={"name": "amp-sess", "command_id": "amplifier"}
@@ -4861,7 +4868,7 @@ def test_create_unknown_command_id_400_nothing_spawned(client, monkeypatch, tmp_
 
     _write_pairs_settings(monkeypatch, tmp_path)
     spawned = AsyncMock()
-    monkeypatch.setattr("muxplex.sessions.asyncio.create_subprocess_shell", spawned)
+    monkeypatch.setattr("muxplex.tmux.spawn.asyncio.create_subprocess_shell", spawned)
 
     resp = client.post("/api/sessions", json={"name": "x", "command_id": "typo"})
     assert resp.status_code == 400
@@ -4885,7 +4892,7 @@ def test_create_records_command_id_in_manifest(client, monkeypatch, tmp_path):
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
     mock_proc.returncode = 0
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_shell",
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
         AsyncMock(return_value=mock_proc),
     )
 
@@ -6521,20 +6528,21 @@ def test_create_session_passes_tmux_env_to_subprocess(client, monkeypatch, tmp_p
         return mock_proc
 
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_shell", mock_create_subprocess
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell", mock_create_subprocess
     )
     # The request path also reaches run_tmux(), which uses create_subprocess_exec
     # and really does exec `tmux`. Unmocked, this test depends on a tmux binary
     # being present and on whatever a live tmux server happens to answer --
     # neither of which it is trying to assert. Stub it so the test measures only
     # what its name claims: the env= passed to the shell call. (run_tmux lives
-    # in muxplex.tmux.proc since the S1 extraction, so the stub targets THAT
-    # module's asyncio binding; sessions.asyncio only covers spawn's own exec.)
+    # in muxplex.tmux.proc since the S1 extraction, and the spawn body lives
+    # in muxplex.tmux.spawn since S2, so each stub targets THAT module's
+    # asyncio binding: proc for run_tmux's exec, spawn for the spawn exec.)
     monkeypatch.setattr(
         "muxplex.tmux.proc.asyncio.create_subprocess_exec", mock_create_subprocess_exec
     )
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_exec", mock_create_subprocess_exec
+        "muxplex.tmux.spawn.asyncio.create_subprocess_exec", mock_create_subprocess_exec
     )
 
     response = client.post("/api/sessions", json={"name": "env-check"})
@@ -6625,11 +6633,13 @@ def test_delete_session_logs_command_at_info(client, monkeypatch, tmp_path, capl
 def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
     """POST /api/sessions must log the command being launched at INFO level.
 
-    The actual log call lives in `sessions.spawn_session_command()`
-    (logger "muxplex.sessions"), not in main.py's create_session() handler
-    itself -- create_session() delegates session creation to it (see that
-    function's docstring: shared with `muxplex restore`). Filtering on
-    "muxplex.main" here previously passed only by accident: the
+    The actual log call lives in the library's spawn body -- since the S2
+    extraction that is `muxplex.tmux.spawn.spawn_session()` (logger
+    "muxplex.tmux.spawn"), reached via `sessions.spawn_session_command()`
+    -- not in main.py's create_session() handler itself, which delegates
+    session creation (see that function's docstring: shared with `muxplex
+    restore`). Filtering on "muxplex.main" here previously passed only by
+    accident: the
     now-deleted `ensure_history_retention()` logged a WARNING containing
     the session name on its (always-triggered, in this mocked test) tmux
     failure path, which is captured regardless of the `at_level` logger
@@ -6648,11 +6658,11 @@ def test_create_session_logs_command(client, monkeypatch, tmp_path, caplog):
     mock_proc.returncode = 0
 
     monkeypatch.setattr(
-        "muxplex.sessions.asyncio.create_subprocess_shell",
+        "muxplex.tmux.spawn.asyncio.create_subprocess_shell",
         AsyncMock(return_value=mock_proc),
     )
 
-    with caplog.at_level(logging.INFO, logger="muxplex.sessions"):
+    with caplog.at_level(logging.INFO, logger="muxplex.tmux.spawn"):
         client.post("/api/sessions", json={"name": "new-session"})
 
     log_messages = "\n".join(caplog.messages)
