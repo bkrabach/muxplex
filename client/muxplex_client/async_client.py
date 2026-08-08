@@ -14,21 +14,24 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any, Self, Sequence
+from typing import Any, Callable, Self, Sequence
 
 import httpx
 
 from . import _protocol as protocol
 from .constants import MIN_SERVER_VERSION
-from .errors import CommandTimeout, MuxplexError, UnreachableError
+from .errors import ApiError, CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
     FocusResult,
+    FollowupItem,
+    FollowupQueue,
     InputResult,
     InstanceInfo,
     ServerState,
     Session,
+    SessionCommands,
     SessionSnapshot,
     Settings,
     ViewResult,
@@ -141,13 +144,17 @@ class AsyncMuxplexClient:
         self,
         name: str,
         *,
+        command_id: str | None = None,
         wait: bool = True,
         timeout: float = 6.0,
         interval: float = 0.3,
     ) -> None:
-        await self._request(
-            "POST", "/api/sessions", json={"name": name}, session_name=name
-        )
+        """See `sync_client.MuxplexClient.create_session` for the full
+        `command_id` rationale -- identical here, `await`-shaped."""
+        body: dict[str, Any] = {"name": name}
+        if command_id is not None:
+            body["command_id"] = command_id
+        await self._request("POST", "/api/sessions", json=body, session_name=name)
         if wait and not await self.wait_for_session(
             name, timeout=timeout, interval=interval
         ):
@@ -155,8 +162,20 @@ class AsyncMuxplexClient:
                 f"session {name!r} did not appear in the read cache within {timeout}s"
             )
 
-    async def delete_session(self, name: str) -> None:
-        await self._request("DELETE", f"/api/sessions/{name}", session_name=name)
+    async def delete_session(self, name: str, *, force: bool = False) -> None:
+        """See `sync_client.MuxplexClient.delete_session` for the full
+        `force` rationale -- identical here, `await`-shaped."""
+        params = {"force": "true"} if force else None
+        await self._request(
+            "DELETE", f"/api/sessions/{name}", params=params, session_name=name
+        )
+
+    async def list_session_commands(self) -> SessionCommands:
+        """GET /api/session-commands -- see
+        `sync_client.MuxplexClient.list_session_commands`."""
+        return protocol.parse_session_commands(
+            await self._request("GET", "/api/session-commands")
+        )
 
     async def wait_for_session(
         self, name: str, *, timeout: float = 6.0, interval: float = 0.3
@@ -247,6 +266,94 @@ class AsyncMuxplexClient:
                     snapshot=snap.snapshot,
                 )
             await asyncio.sleep(poll_interval)
+
+    # ---- follow-ups ----
+
+    async def followups(self, name: str) -> FollowupQueue:
+        """GET /api/sessions/{name}/followups."""
+        return protocol.parse_followup_queue(
+            await self._request(
+                "GET", f"/api/sessions/{name}/followups", session_name=name
+            )
+        )
+
+    async def append_followup(
+        self, name: str, text: str, *, enter: bool = False
+    ) -> FollowupItem:
+        """POST /api/sessions/{name}/followups -- see
+        `sync_client.MuxplexClient.append_followup` for the fence
+        re-evaluation rationale."""
+        body = {"text": text, "enter": enter}
+        raw = await self._request(
+            "POST", f"/api/sessions/{name}/followups", json=body, session_name=name
+        )
+        return protocol.parse_followup_item(raw["item"])
+
+    async def replace_followups(
+        self,
+        name: str,
+        items: Sequence[FollowupItem],
+        *,
+        expected_revision: int,
+    ) -> FollowupQueue:
+        """PUT /api/sessions/{name}/followups -- see
+        `sync_client.MuxplexClient.replace_followups` for why
+        `expected_revision` is required, never defaulted."""
+        body: dict[str, Any] = {
+            "expected_revision": expected_revision,
+            "items": protocol.build_followup_items_body(items),
+        }
+        return protocol.parse_followup_queue(
+            await self._request(
+                "PUT", f"/api/sessions/{name}/followups", json=body, session_name=name
+            )
+        )
+
+    async def clear_followups(self, name: str) -> None:
+        """DELETE /api/sessions/{name}/followups -- clear items AND any halt."""
+        await self._request(
+            "DELETE", f"/api/sessions/{name}/followups", session_name=name
+        )
+
+    async def resume_followups(self, name: str) -> FollowupQueue:
+        """POST /api/sessions/{name}/followups/resume -- clear the halt
+        only, keeping every pending item and the current revision."""
+        return protocol.parse_followup_queue(
+            await self._request(
+                "POST",
+                f"/api/sessions/{name}/followups/resume",
+                session_name=name,
+            )
+        )
+
+    async def edit_followups(
+        self,
+        name: str,
+        mutate: Callable[[tuple[FollowupItem, ...]], Sequence[FollowupItem]],
+        *,
+        attempts: int = 3,
+    ) -> FollowupQueue:
+        """GET -> mutate(items) -> PUT with the observed revision; retry on 409.
+
+        See `sync_client.MuxplexClient.edit_followups` for the full
+        rationale -- identical here, `await`-shaped. `mutate` itself
+        stays a plain (non-async) callable in both clients: it is pure
+        list transformation, no I/O.
+        """
+        last_error: ApiError | None = None
+        for _ in range(attempts):
+            current = await self.followups(name)
+            new_items = mutate(current.items)
+            try:
+                return await self.replace_followups(
+                    name, new_items, expected_revision=current.revision
+                )
+            except ApiError as exc:
+                if exc.status != 409:
+                    raise
+                last_error = exc
+        assert last_error is not None
+        raise last_error
 
     # ---- focus ----
 

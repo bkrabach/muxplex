@@ -21,11 +21,11 @@ never a runtime dependency of the `muxplex` server package itself.
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import httpx
 import pytest
+import tomllib
 from starlette.testclient import TestClient as ASGITestClient
 
 from muxplex.bells import needs_attention as server_needs_attention
@@ -63,9 +63,11 @@ except ImportError:
     )
 
 from muxplex_client import (
+    ApiError,
     AsyncMuxplexClient,
     AuthError,
     Bell,
+    FollowupItem,
     InputForbidden,
     MuxplexClient,
     SessionNotFound,
@@ -123,9 +125,9 @@ def no_sessions(monkeypatch):
     """Explicitly empty the session cache (fail-closed 404 path)."""
     import muxplex.main as main_mod
 
-    monkeypatch.setattr(main_mod, "get_session_list", lambda: [])
-    monkeypatch.setattr(main_mod, "get_snapshots", lambda: {})
-    monkeypatch.setattr(main_mod, "get_session_activity", lambda: {})
+    monkeypatch.setattr(main_mod, "get_session_list", list)
+    monkeypatch.setattr(main_mod, "get_snapshots", dict)
+    monkeypatch.setattr(main_mod, "get_session_activity", dict)
 
 
 def _sync_asgi_client(
@@ -313,6 +315,219 @@ def test_max_capture_lines_matches_server():
 
 def test_default_capture_lines_matches_server():
     assert DEFAULT_CAPTURE_LINES == SERVER_DEFAULT_CAPTURE_LINES
+
+
+# ---------------------------------------------------------------------------
+# Item D -- create_session(command_id=), delete_session(force=),
+# list_session_commands(), and the follow-up queue methods, all driven
+# against the real ASGI app.
+# ---------------------------------------------------------------------------
+
+
+def _mock_subprocess_shell(monkeypatch, module_path: str = "muxplex.sessions"):
+    """Mock `asyncio.create_subprocess_shell` so create_session's spawn
+    path never touches a real shell/tmux."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    monkeypatch.setattr(
+        f"{module_path}.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=mock_proc),
+    )
+
+
+def test_create_session_command_id_reaches_server(raw_http, monkeypatch):
+    """command_id="default" round-trips and the response echoes it."""
+    monkeypatch.setattr("muxplex.main.get_session_list", list)
+    _mock_subprocess_shell(monkeypatch)
+
+    raw = raw_http.post(
+        "/api/sessions", json={"name": "contract-test-cmd", "command_id": "default"}
+    )
+    assert raw.status_code == 200
+    assert raw.json()["command_id"] == "default"
+
+
+def test_create_session_without_command_id_sends_no_key(sync_client, monkeypatch):
+    """The byte-identity claim: create_session(command_id=None) must never
+    send a `command_id` key at all, not even `null`."""
+    monkeypatch.setattr("muxplex.main.get_session_list", list)
+    _mock_subprocess_shell(monkeypatch)
+
+    captured: dict = {}
+    orig_request = sync_client._client.request
+
+    def spy(method, path, **kwargs):
+        if path == "/api/sessions":
+            captured.update(kwargs)
+        return orig_request(method, path, **kwargs)
+
+    monkeypatch.setattr(sync_client._client, "request", spy)
+
+    sync_client.create_session("contract-test-nokey", wait=False)
+    assert "json" in captured
+    assert "command_id" not in captured["json"]
+    assert captured["json"] == {"name": "contract-test-nokey"}
+
+
+def test_delete_session_force_reaches_server(sync_client, raw_http, monkeypatch):
+    """?force=true reaches the server and substitutes the default pair
+    when the recorded command_id no longer resolves."""
+    from unittest.mock import MagicMock
+
+    name = "contract-test-force"
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [name])
+    monkeypatch.setattr(
+        "muxplex.main.get_created_with", lambda manifest, n: "vanished-pair"
+    )
+    monkeypatch.setattr("muxplex.main.load_manifest", dict)
+
+    captured_cmds: list[str] = []
+
+    def mock_run(cmd, **kwargs):
+        captured_cmds.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr("muxplex.main.subprocess.run", mock_run)
+
+    # Without force: the typed client surfaces the 409 as ApiError.
+    with pytest.raises(ApiError) as exc_info:
+        sync_client.delete_session(name)
+    assert exc_info.value.status == 409
+    assert captured_cmds == []  # nothing ran
+
+    # With force=True: reaches the server, substitutes the default pair.
+    sync_client.delete_session(name, force=True)
+    assert len(captured_cmds) == 1
+
+    # And the raw query param itself, independent of the typed client.
+    raw = raw_http.delete(f"/api/sessions/{name}", params={"force": "true"})
+    assert raw.status_code == 200
+    assert raw.json().get("forced") is True
+
+
+def test_session_commands_fields_present(sync_client, raw_http):
+    """Same shape as test_sessions_fields_present: client model vs raw
+    JSON, so a server rename turns this red in the same PR."""
+    commands = sync_client.list_session_commands()
+    raw = raw_http.get("/api/session-commands").json()
+
+    assert len(commands.commands) == len(raw["commands"])
+    parsed, raw_item = commands.commands[0], raw["commands"][0]
+    assert parsed.id == raw_item["id"]
+    assert parsed.label == raw_item["label"]
+    assert parsed.new_session_template == raw_item["new_session_template"]
+    assert parsed.delete_session_template == raw_item["delete_session_template"]
+    assert commands.default_id == raw["default_id"]
+    assert list(commands.errors) == raw["errors"]
+
+
+@pytest.fixture
+def followups_ready(monkeypatch, seeded_session):
+    """Arm the bell hook and enable input for *seeded_session* -- the
+    fences append_followup()/edit_followups() must pass to do anything
+    real (same pattern as test_followups.py's `_enable`/`client` fixtures).
+    """
+    import copy
+
+    from muxplex.settings import DEFAULT_SETTINGS
+
+    monkeypatch.setattr("muxplex.main._bell_hook_armed", True)
+
+    def _settings() -> dict:
+        s = copy.deepcopy(DEFAULT_SETTINGS)
+        s["input_enabled"] = True
+        s["input_allowed_sessions"] = [seeded_session]
+        return s
+
+    monkeypatch.setattr("muxplex.main.load_settings", _settings)
+    return seeded_session
+
+
+def test_followups_round_trip(sync_client, followups_ready):
+    """append -> read -> replace with the observed revision -> resume ->
+    clear, against the real app."""
+    name = followups_ready
+
+    empty = sync_client.followups(name)
+    assert empty.items == ()
+    assert empty.revision == 0
+
+    item = sync_client.append_followup(name, "run the tests", enter=True)
+    assert item.text == "run the tests"
+    assert item.enter is True
+
+    queue = sync_client.followups(name)
+    assert queue.revision == 1
+    assert len(queue.items) == 1
+    assert queue.items[0].id == item.id
+
+    replaced = sync_client.replace_followups(
+        name,
+        [FollowupItem(id=item.id, text="run the tests --verbose", enter=True)],
+        expected_revision=queue.revision,
+    )
+    assert replaced.revision == 2
+    assert replaced.items[0].text == "run the tests --verbose"
+
+    resumed = sync_client.resume_followups(name)
+    assert resumed.halted is None
+
+    cleared = sync_client.clear_followups(name)
+    assert cleared is None
+    final = sync_client.followups(name)
+    assert final.items == ()
+
+
+def test_followups_badge_parses_from_sessions(sync_client, followups_ready):
+    """A queued item is visible via client.sessions()[0].followups.pending
+    without a second round trip."""
+    name = followups_ready
+    sync_client.append_followup(name, "queued item")
+
+    sessions = sync_client.sessions()
+    assert len(sessions) == 1
+    assert sessions[0].followups.pending == 1
+    assert sessions[0].followups.halted is False
+
+
+def test_edit_followups_retries_on_revision_conflict(sync_client, followups_ready):
+    """The helper re-reads rather than retrying the same body -- assert
+    the SECOND PUT carries the SECOND revision."""
+    name = followups_ready
+    sync_client.append_followup(name, "first item")
+
+    put_revisions: list[int] = []
+    orig_replace = sync_client.replace_followups
+
+    call_count = 0
+
+    def flaky_replace(session_name, items, *, expected_revision):
+        nonlocal call_count
+        call_count += 1
+        put_revisions.append(expected_revision)
+        if call_count == 1:
+            # Simulate a concurrent mutation landing first: bump the
+            # revision out from under this call so the real server 409s.
+            sync_client.append_followup(session_name, "concurrent item")
+        return orig_replace(session_name, items, expected_revision=expected_revision)
+
+    sync_client.replace_followups = flaky_replace  # type: ignore[method-assign]
+    try:
+        result = sync_client.edit_followups(
+            name, lambda items: list(items) + [], attempts=3
+        )
+    finally:
+        del sync_client.replace_followups
+
+    assert len(put_revisions) == 2
+    assert put_revisions[1] == put_revisions[0] + 1
+    assert result.revision >= 2
 
 
 # ---------------------------------------------------------------------------

@@ -9,21 +9,24 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Self, Sequence
+from typing import Any, Callable, Self, Sequence
 
 import httpx
 
 from . import _protocol as protocol
 from .constants import MIN_SERVER_VERSION
-from .errors import CommandTimeout, MuxplexError, UnreachableError
+from .errors import ApiError, CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
     FocusResult,
+    FollowupItem,
+    FollowupQueue,
     InputResult,
     InstanceInfo,
     ServerState,
     Session,
+    SessionCommands,
     SessionSnapshot,
     Settings,
     ViewResult,
@@ -145,6 +148,7 @@ class MuxplexClient:
         self,
         name: str,
         *,
+        command_id: str | None = None,
         wait: bool = True,
         timeout: float = 6.0,
         interval: float = 0.3,
@@ -153,16 +157,51 @@ class MuxplexClient:
         visible in the ~2s read cache -- 0.3s interval, 6s ceiling, the
         measured schedule from AGENT_GUIDE.md §4. Raises TimeoutError if
         it never appears.
+
+        `command_id` selects a configured session command pair (see
+        `list_session_commands()` / GET /api/session-commands;
+        AGENT_GUIDE.md's `command_id` section) -- `None` (the default)
+        omits the key entirely, byte-identical to a pre-feature request,
+        and resolves server-side to the reserved "default" pair. An
+        unresolvable id is a 400 (`ApiError` with `status == 400`); the
+        `available` list in the detail is best discovered up front via
+        `list_session_commands()` rather than parsed out of the error.
         """
-        self._request("POST", "/api/sessions", json={"name": name}, session_name=name)
+        body: dict[str, Any] = {"name": name}
+        if command_id is not None:
+            body["command_id"] = command_id
+        self._request("POST", "/api/sessions", json=body, session_name=name)
         if wait and not self.wait_for_session(name, timeout=timeout, interval=interval):
             raise TimeoutError(
                 f"session {name!r} did not appear in the read cache within {timeout}s"
             )
 
-    def delete_session(self, name: str) -> None:
-        """DELETE /api/sessions/{name}."""
-        self._request("DELETE", f"/api/sessions/{name}", session_name=name)
+    def delete_session(self, name: str, *, force: bool = False) -> None:
+        """DELETE /api/sessions/{name}.
+
+        When the session's recorded command pair no longer resolves (its
+        `session_commands` entry was removed/edited), the server 409s and
+        runs nothing. `force=True` sends `?force=true`, which substitutes
+        the **default** kill command instead -- this may not perform the
+        teardown the original pair would have (e.g. a custom `--destroy`
+        cleanup step is skipped). Prefer restoring the pair in
+        `settings.json` over forcing. `force=False` (the default) omits
+        the query param entirely, byte-identical to a pre-feature request.
+        """
+        params = {"force": "true"} if force else None
+        self._request(
+            "DELETE", f"/api/sessions/{name}", params=params, session_name=name
+        )
+
+    def list_session_commands(self) -> SessionCommands:
+        """GET /api/session-commands -- the canonical, server-resolved
+        list of configured session command pairs. Clients must not
+        re-derive this list from raw GET /api/settings
+        (AGENT_GUIDE.md §"command_id").
+        """
+        return protocol.parse_session_commands(
+            self._request("GET", "/api/session-commands")
+        )
 
     def wait_for_session(
         self, name: str, *, timeout: float = 6.0, interval: float = 0.3
@@ -269,6 +308,104 @@ class MuxplexClient:
                     snapshot=snap.snapshot,
                 )
             time.sleep(poll_interval)
+
+    # ---- follow-ups ----
+
+    def followups(self, name: str) -> FollowupQueue:
+        """GET /api/sessions/{name}/followups."""
+        return protocol.parse_followup_queue(
+            self._request("GET", f"/api/sessions/{name}/followups", session_name=name)
+        )
+
+    def append_followup(
+        self, name: str, text: str, *, enter: bool = False
+    ) -> FollowupItem:
+        """POST /api/sessions/{name}/followups -- append one item.
+
+        Enqueue-time fences (input_enabled / input_allowed_sessions / bell
+        hook armed) are re-evaluated at fire time against fresh settings
+        regardless of what was true here -- this call is a convenience
+        check, not the safety boundary (AGENTS.md's "Follow-up queue"
+        section).
+        """
+        body = {"text": text, "enter": enter}
+        raw = self._request(
+            "POST", f"/api/sessions/{name}/followups", json=body, session_name=name
+        )
+        return protocol.parse_followup_item(raw["item"])
+
+    def replace_followups(
+        self,
+        name: str,
+        items: Sequence[FollowupItem],
+        *,
+        expected_revision: int,
+    ) -> FollowupQueue:
+        """PUT /api/sessions/{name}/followups -- whole-list replace
+        (edit + reorder + remove in one call).
+
+        `expected_revision` is a REQUIRED precondition, never defaulted:
+        the server 409s on mismatch rather than silently overwriting, and
+        a default here would be the client silently choosing when
+        re-executing already-typed text is acceptable. Prefer
+        `edit_followups()` unless you already hold a fresh revision.
+        """
+        body: dict[str, Any] = {
+            "expected_revision": expected_revision,
+            "items": protocol.build_followup_items_body(items),
+        }
+        return protocol.parse_followup_queue(
+            self._request(
+                "PUT", f"/api/sessions/{name}/followups", json=body, session_name=name
+            )
+        )
+
+    def clear_followups(self, name: str) -> None:
+        """DELETE /api/sessions/{name}/followups -- clear items AND any halt."""
+        self._request("DELETE", f"/api/sessions/{name}/followups", session_name=name)
+
+    def resume_followups(self, name: str) -> FollowupQueue:
+        """POST /api/sessions/{name}/followups/resume -- clear the halt
+        only, keeping every pending item and the current revision.
+        """
+        return protocol.parse_followup_queue(
+            self._request(
+                "POST",
+                f"/api/sessions/{name}/followups/resume",
+                session_name=name,
+            )
+        )
+
+    def edit_followups(
+        self,
+        name: str,
+        mutate: Callable[[tuple[FollowupItem, ...]], Sequence[FollowupItem]],
+        *,
+        attempts: int = 3,
+    ) -> FollowupQueue:
+        """GET -> mutate(items) -> PUT with the observed revision; retry on 409.
+
+        The revision-mismatch loop written once, correctly. `mutate`
+        receives the current items and returns the new list. On a 409
+        the queue is re-read and `mutate` re-applied to the FRESH items
+        -- never the same body retried. Rebuild it yourself from
+        `followups()`/`replace_followups()` if this shape does not fit
+        (same judgment as `run_shell_command()`'s docstring).
+        """
+        last_error: ApiError | None = None
+        for _ in range(attempts):
+            current = self.followups(name)
+            new_items = mutate(current.items)
+            try:
+                return self.replace_followups(
+                    name, new_items, expected_revision=current.revision
+                )
+            except ApiError as exc:
+                if exc.status != 409:
+                    raise
+                last_error = exc
+        assert last_error is not None
+        raise last_error
 
     # ---- focus ----
 

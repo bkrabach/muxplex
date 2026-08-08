@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from muxplex_client import _protocol as protocol
 from muxplex_client.errors import ApiError, AuthError, InputForbidden, SessionNotFound
-from muxplex_client.models import Bell
-
+from muxplex_client.models import Bell, FollowupItem, Followups
 
 # ---------------------------------------------------------------------------
 # Bell / needs_attention
@@ -301,3 +300,208 @@ def test_version_tuple_ordering() -> None:
 
 def test_version_tuple_non_numeric_suffix() -> None:
     assert protocol.version_tuple("1.2.3rc1") == (1, 2, 3)
+
+
+# ---------------------------------------------------------------------------
+# Followups badge (Session.followups / SessionSnapshot.followups)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_followups_full() -> None:
+    badge = protocol.parse_followups({"pending": 3, "halted": True})
+    assert badge == Followups(pending=3, halted=True)
+
+
+def test_parse_followups_absent_defaults() -> None:
+    """A pre-feature server that omits `followups` entirely parses to the
+    zero-value badge, never a KeyError."""
+    assert protocol.parse_followups(None) == Followups()
+    assert protocol.parse_followups({}) == Followups()
+
+
+def test_parse_session_carries_followups_badge() -> None:
+    session = protocol.parse_session(
+        {
+            "name": "a",
+            "snapshot": "",
+            "bell": {},
+            "followups": {"pending": 2, "halted": True},
+        }
+    )
+    assert session.followups == Followups(pending=2, halted=True)
+
+
+def test_parse_session_missing_followups_defaults() -> None:
+    session = protocol.parse_session({"name": "a", "snapshot": "", "bell": {}})
+    assert session.followups == Followups()
+
+
+def test_parse_session_carries_cwd() -> None:
+    session = protocol.parse_session(
+        {"name": "a", "snapshot": "", "bell": {}, "cwd": "/home/user/project"}
+    )
+    assert session.cwd == "/home/user/project"
+
+
+def test_parse_session_missing_cwd_defaults_none() -> None:
+    session = protocol.parse_session({"name": "a", "snapshot": "", "bell": {}})
+    assert session.cwd is None
+
+
+def test_parse_session_snapshot_pre_c_server_all_four_new_fields_default() -> None:
+    """A server predating item C (cwd/followups/views/created_at parity on
+    GET /api/sessions/{name}) omits all four -- every one must default,
+    never raise."""
+    snap = protocol.parse_session_snapshot({"name": "a", "snapshot": "x", "bell": {}})
+    assert snap.created_at is None
+    assert snap.followups == Followups()
+    assert snap.views == ()
+    assert snap.cwd is None
+
+
+def test_parse_session_snapshot_full_parity_fields() -> None:
+    snap = protocol.parse_session_snapshot(
+        {
+            "name": "a",
+            "snapshot": "x",
+            "bell": {},
+            "created_at": 100.0,
+            "followups": {"pending": 1, "halted": False},
+            "views": ["work"],
+            "cwd": "/home/user",
+        }
+    )
+    assert snap.created_at == 100.0
+    assert snap.followups == Followups(pending=1, halted=False)
+    assert snap.views == ("work",)
+    assert snap.cwd == "/home/user"
+
+
+# ---------------------------------------------------------------------------
+# FollowupItem / FollowupQueue
+# ---------------------------------------------------------------------------
+
+
+def test_parse_followup_item_full() -> None:
+    item = protocol.parse_followup_item(
+        {"id": "abc", "text": "run tests", "enter": True, "created_at": 5.0}
+    )
+    assert item == FollowupItem(id="abc", text="run tests", enter=True, created_at=5.0)
+
+
+def test_parse_followup_item_missing_created_at_defaults_none() -> None:
+    item = protocol.parse_followup_item({"id": "abc", "text": "x", "enter": True})
+    assert item.created_at is None
+
+
+def test_parse_followup_queue_full() -> None:
+    raw = {
+        "session": "a",
+        "revision": 3,
+        "items": [{"id": "1", "text": "x", "enter": True, "created_at": 1.0}],
+        "halted": None,
+        "target_window": "0:main",
+    }
+    queue = protocol.parse_followup_queue(raw)
+    assert queue.session == "a"
+    assert queue.revision == 3
+    assert queue.items == (FollowupItem(id="1", text="x", enter=True, created_at=1.0),)
+    assert queue.halted is None
+    assert queue.target_window == "0:main"
+
+
+def test_parse_followup_queue_halted_null_parses_to_none() -> None:
+    """`halted: null` on the wire must parse to `halted is None`, not a
+    truthy empty mapping."""
+    queue = protocol.parse_followup_queue(
+        {"session": "a", "revision": 0, "items": [], "halted": None}
+    )
+    assert queue.halted is None
+
+
+def test_parse_followup_queue_halted_present_is_mapping() -> None:
+    halted = {"reason": "input_disabled", "detail": "x", "at": 1.0, "item_id": "1"}
+    queue = protocol.parse_followup_queue(
+        {"session": "a", "revision": 1, "items": [], "halted": halted}
+    )
+    assert queue.halted == halted
+
+
+def test_parse_followup_queue_missing_target_window_defaults_none() -> None:
+    queue = protocol.parse_followup_queue(
+        {"session": "a", "revision": 0, "items": [], "halted": None}
+    )
+    assert queue.target_window is None
+
+
+def test_build_followup_items_body_preserves_id() -> None:
+    items = [FollowupItem(id="1", text="x", enter=True)]
+    body = protocol.build_followup_items_body(items)
+    assert body == [{"id": "1", "text": "x", "enter": True}]
+
+
+def test_build_followup_items_body_empty_id_becomes_none() -> None:
+    """An item constructed with `id=""` (a new, not-yet-persisted item) is
+    sent as `id: None` on the wire -- the server treats a falsy id
+    identically to an absent one (new item), and `None` is the honest
+    shape for "no id yet"."""
+    items = [FollowupItem(id="", text="new item", enter=True)]
+    body = protocol.build_followup_items_body(items)
+    assert body == [{"id": None, "text": "new item", "enter": True}]
+
+
+# ---------------------------------------------------------------------------
+# SessionCommand / SessionCommands
+# ---------------------------------------------------------------------------
+
+
+def test_parse_session_command() -> None:
+    cmd = protocol.parse_session_command(
+        {
+            "id": "default",
+            "label": "Default",
+            "new_session_template": "tmux new -d -s {name}",
+            "delete_session_template": "tmux kill-session -t {name}",
+        }
+    )
+    assert cmd.id == "default"
+    assert cmd.label == "Default"
+    assert cmd.new_session_template == "tmux new -d -s {name}"
+    assert cmd.delete_session_template == "tmux kill-session -t {name}"
+
+
+def test_parse_session_commands_full() -> None:
+    raw = {
+        "commands": [
+            {
+                "id": "default",
+                "label": "Default",
+                "new_session_template": "a",
+                "delete_session_template": "b",
+            }
+        ],
+        "default_id": "default",
+        "errors": [],
+    }
+    result = protocol.parse_session_commands(raw)
+    assert len(result.commands) == 1
+    assert result.commands[0].id == "default"
+    assert result.default_id == "default"
+    assert result.errors == ()
+
+
+def test_parse_session_commands_with_errors() -> None:
+    raw = {
+        "commands": [
+            {
+                "id": "default",
+                "label": "Default",
+                "new_session_template": "a",
+                "delete_session_template": "b",
+            }
+        ],
+        "default_id": "default",
+        "errors": ["session_commands[0]: bad entry"],
+    }
+    result = protocol.parse_session_commands(raw)
+    assert result.errors == ("session_commands[0]: bad entry",)

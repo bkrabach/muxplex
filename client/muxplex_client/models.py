@@ -50,6 +50,20 @@ class Bell:
 
 
 @dataclass(frozen=True)
+class Followups:
+    """The queue badge on GET /api/sessions and GET /api/view entries.
+
+    Deliberately not the full queue (that's `FollowupQueue`, from
+    GET .../followups) -- this is the lightweight badge carried alongside
+    every session on the shared poll cache, so a halted queue is visible
+    without a second round trip per session.
+    """
+
+    pending: int = 0
+    halted: bool = False
+
+
+@dataclass(frozen=True)
 class Session:
     """One tmux session, as returned by GET /api/sessions.
 
@@ -68,6 +82,13 @@ class Session:
     server_started_at` -- see ../../docs/API_SEMANTICS.md for why both
     halves are shipped as raw values rather than a single precomputed
     boolean.
+
+    `followups`: the queue badge (see `Followups`). Defaults to
+    `Followups()` so a pre-feature server (no key) parses cleanly.
+
+    `cwd`: the session's working directory (tmux's own
+    `#{session_path}`), or `None` on a pre-this-field server or when tmux
+    reported nothing parseable.
     """
 
     name: str
@@ -76,6 +97,8 @@ class Session:
     last_activity_at: float | None = None
     views: tuple[str, ...] = ()
     created_at: float | None = None
+    followups: Followups = Followups()
+    cwd: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +108,14 @@ class SessionSnapshot:
     Returned by GET /api/sessions/{name}. Unlike `Session` (the shared,
     ~2s-cycle poll cache), this is one fresh `capture-pane` call scoped to
     a single session.
+
+    `created_at`, `followups`, `views`, and `cwd` are field-parity
+    additions with `Session` (the server added them to this endpoint so
+    polling one session and polling the bulk list never disagree about
+    what the session's state is -- see main.py's `get_session_snapshot`
+    docstring). All four default so a pre-parity server parses cleanly;
+    `lines` keeps its exact existing meaning (the depth REQUESTED) and is
+    unaffected.
     """
 
     name: str
@@ -92,6 +123,10 @@ class SessionSnapshot:
     lines: int
     bell: Bell
     last_activity_at: float | None
+    created_at: float | None = None
+    followups: Followups = Followups()
+    views: tuple[str, ...] = ()
+    cwd: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +221,68 @@ class FocusResult:
 
     platform: str
     app: str
+
+
+@dataclass(frozen=True)
+class FollowupItem:
+    """One item in a session's follow-up queue.
+
+    Returned by every follow-up endpoint (GET/POST/PUT/.../resume) as
+    either the sole `item` (append) or within `items` (the rest).
+    """
+
+    id: str
+    text: str
+    enter: bool
+    created_at: float | None = None
+
+
+@dataclass(frozen=True)
+class FollowupQueue:
+    """The full follow-up queue for one session.
+
+    Returned by GET/PUT/DELETE/.../resume on
+    /api/sessions/{name}/followups.
+
+    `halted` stays a raw mapping rather than a typed dataclass: it is a
+    diagnostic payload whose shape is the server's to evolve, and the
+    only question a caller asks of it is `is not None`. Typing it would
+    create a second place to keep in sync for no benefit.
+    """
+
+    session: str
+    revision: int
+    items: tuple[FollowupItem, ...]
+    halted: Mapping[str, Any] | None  # None = not halted
+    target_window: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionCommand:
+    """One configured session command pair, as returned by
+    GET /api/session-commands.
+
+    The templates are arbitrary shell commands the server runs -- see
+    that endpoint's docstring for why it deliberately sits outside the
+    auth-exempt path.
+    """
+
+    id: str
+    label: str
+    new_session_template: str
+    delete_session_template: str
+
+
+@dataclass(frozen=True)
+class SessionCommands:
+    """GET /api/session-commands -- the canonical, server-resolved list
+    of configured session command pairs. `commands` is never empty;
+    `commands[0].id == default_id`.
+    """
+
+    commands: tuple[SessionCommand, ...]
+    default_id: str
+    errors: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

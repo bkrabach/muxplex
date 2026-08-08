@@ -21,10 +21,15 @@ from .models import (
     Bell,
     ConnectResult,
     FocusResult,
+    FollowupItem,
+    FollowupQueue,
+    Followups,
     InputResult,
     InstanceInfo,
     ServerState,
     Session,
+    SessionCommand,
+    SessionCommands,
     SessionSnapshot,
     Settings,
     View,
@@ -35,6 +40,7 @@ from .models import (
 __all__ = [
     "map_status_error",
     "parse_bell",
+    "parse_followups",
     "parse_session",
     "parse_sessions",
     "parse_session_snapshot",
@@ -47,6 +53,11 @@ __all__ = [
     "parse_connect_result",
     "parse_input_result",
     "parse_focus_result",
+    "parse_followup_item",
+    "parse_followup_queue",
+    "build_followup_items_body",
+    "parse_session_command",
+    "parse_session_commands",
     "version_tuple",
 ]
 
@@ -64,6 +75,19 @@ def parse_bell(raw: Mapping[str, Any]) -> Bell:
     )
 
 
+def parse_followups(raw: Mapping[str, Any] | None) -> Followups:
+    """Parse the `followups` badge sub-object on GET /api/sessions and
+    GET /api/sessions/{name} entries. `None`/absent (a pre-feature server)
+    parses to `Followups()` -- same tolerance pattern as `parse_bell`.
+    """
+    if not raw:
+        return Followups()
+    return Followups(
+        pending=int(raw.get("pending", 0)),
+        halted=bool(raw.get("halted", False)),
+    )
+
+
 def parse_session(raw: Mapping[str, Any]) -> Session:
     return Session(
         name=raw["name"],
@@ -75,6 +99,8 @@ def parse_session(raw: Mapping[str, Any]) -> Session:
         # never a KeyError.
         views=tuple(raw.get("views") or ()),
         created_at=raw.get("created_at"),
+        followups=parse_followups(raw.get("followups")),
+        cwd=raw.get("cwd"),
     )
 
 
@@ -89,6 +115,12 @@ def parse_session_snapshot(raw: Mapping[str, Any]) -> SessionSnapshot:
         lines=int(raw.get("lines", DEFAULT_CAPTURE_LINES)),
         bell=parse_bell(raw.get("bell") or {}),
         last_activity_at=raw.get("last_activity_at"),
+        # Field-parity additions (docs/plans/2026-08-07-agent-surface-additive-plan.md
+        # §6.4/§7.4) -- all four default so a pre-parity server parses cleanly.
+        created_at=raw.get("created_at"),
+        followups=parse_followups(raw.get("followups")),
+        views=tuple(raw.get("views") or ()),
+        cwd=raw.get("cwd"),
     )
 
 
@@ -167,6 +199,54 @@ def parse_focus_result(raw: Mapping[str, Any]) -> FocusResult:
     return FocusResult(
         platform=raw.get("platform", ""),
         app=raw.get("app", ""),
+    )
+
+
+def parse_followup_item(raw: Mapping[str, Any]) -> FollowupItem:
+    return FollowupItem(
+        id=raw["id"],
+        text=raw.get("text", ""),
+        enter=bool(raw.get("enter", True)),
+        created_at=raw.get("created_at"),
+    )
+
+
+def parse_followup_queue(raw: Mapping[str, Any]) -> FollowupQueue:
+    return FollowupQueue(
+        session=raw["session"],
+        revision=int(raw.get("revision", 0)),
+        items=tuple(parse_followup_item(it) for it in (raw.get("items") or ())),
+        halted=raw.get("halted"),
+        target_window=raw.get("target_window"),
+    )
+
+
+def build_followup_items_body(items: Sequence[FollowupItem]) -> list[dict[str, Any]]:
+    """Build the wire body for PUT .../followups' `items` list.
+
+    An item's `id` is sent as `None` when falsy (e.g. the caller
+    constructed a brand-new `FollowupItem` with `id=""`) rather than an
+    empty string -- the server's `FollowupItemInput.id: str | None`
+    treats absent/unknown id as "new" identically either way, but `None`
+    is the honest wire shape for "no id yet".
+    """
+    return [{"id": it.id or None, "text": it.text, "enter": it.enter} for it in items]
+
+
+def parse_session_command(raw: Mapping[str, Any]) -> SessionCommand:
+    return SessionCommand(
+        id=raw["id"],
+        label=raw.get("label", ""),
+        new_session_template=raw.get("new_session_template", ""),
+        delete_session_template=raw.get("delete_session_template", ""),
+    )
+
+
+def parse_session_commands(raw: Mapping[str, Any]) -> SessionCommands:
+    return SessionCommands(
+        commands=tuple(parse_session_command(c) for c in (raw.get("commands") or ())),
+        default_id=raw.get("default_id", "default"),
+        errors=tuple(raw.get("errors") or ()),
     )
 
 
