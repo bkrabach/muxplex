@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muxplex"
-version = "0.44.0"
+version = "0.45.0"
 description = "Web-based tmux session dashboard — access all your tmux sessions from any browser"
 readme = "README.md"
 license = { text = "MIT" }
@@ -38,14 +38,27 @@ dependencies = [
     "python-multipart>=0.0.9",
     "httpx>=0.27.0",
     "cryptography",
-    # The tmux library (lib/) -- a RUNTIME dependency, resolved as a uv
-    # workspace source from this same repo (see [tool.uv.sources] below;
-    # extraction plan SS13.2 stage 3.5, SS14.1). Pinned == to the repo
-    # version: lockstep versioning, the client/ precedent (SS14.5) -- bump
-    # it together with this file's `version` and lib/pyproject.toml's.
-    # NOT on PyPI (deliberately, plan scope) -- installs of muxplex must go
-    # through this repo (git or path), where the workspace resolves it.
-    "tmux-kit==0.44.0",
+    # The tmux session-management core now lives in its OWN repo/PyPI
+    # project, bkrabach/tmux-kit (docs/plans/2026-08-09-tmuxkit-own-repo-
+    # and-pypi-plan.md SS3-SS5). This is a PLAIN version pin -- no
+    # [tool.uv.sources] entry -- which is exactly what makes it resolvable
+    # from PyPI for both a public `uv tool install muxplex` and a
+    # `uv tool install git+.../muxplex` (SS0.3, SS2.1-SS2.3): PyPI rejects
+    # direct-URL deps in Requires-Dist, so a project-level git/path source
+    # would either be silently dropped from the published wheel or block
+    # publishing outright. The managed-device (CISO) path that needs a
+    # git-sourced tmux-kit uses an install-TIME `--with 'tmux-kit @
+    # git+https://github.com/bkrabach/tmux-kit@vX.Y.Z'` override instead
+    # (SS2.3) -- never a project source.
+    #
+    # Pin discipline: exact `==`, bumped deliberately at release time after
+    # the corresponding tmux-kit version is verified compatible (SS4, SS9
+    # prices the two-repo release dance this now costs). `muxplex doctor`
+    # reports tmux-kit's installed version/source and warns on drift from
+    # this pin; `muxplex upgrade` reconstructs a git-sourced `--with`
+    # override from this pin at upgrade time (cli.py's
+    # _read_remote_tmux_kit_pin/_resolve_upgrade_kit_ref).
+    "tmux-kit==0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -74,7 +87,12 @@ markers = [
     "integration: marks tests as integration tests requiring real tmux (deselect with '-m not integration')",
     "allow_real_port_killer: test intentionally exercises the real _kill_stale_port_holder (see tests/conftest.py)",
     "allow_real_service_ready_wait: test intentionally exercises the real _wait_for_service_ready (see tests/conftest.py)",
-    "differential: the tmux-lib extraction differential harness -- replays recorded real inputs, re-run per extraction stage with 'pytest -m differential' (see docs/plans/2026-08-08-tmux-lib-extraction-plan.md \\u00a78.2)",
+    # NOTE: the 'differential' marker/harness retired from this repo at the
+    # tmux-kit cutover (docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md
+    # SS3.2/SS5): the harness tests tmux-kit's own internals and now lives,
+    # byte-identical, in bkrabach/tmux-kit's own suite (run there via
+    # 'pytest -m differential'). test_tmux_kit_contract.py is this repo's
+    # replacement tripwire for cross-repo drift.
 ]
 
 [dependency-groups]
@@ -89,8 +107,17 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["client", "lib"]
+members = ["client"]
 
 [tool.uv.sources]
 muxplex-client = { workspace = true }
-tmux-kit = { workspace = true }
+# NO entry for tmux-kit -- deliberately. The plan's SS0.3/SS2.3 finding: a
+# project-level [tool.uv.sources] git/path entry never enters wheel metadata
+# (Requires-Dist derives only from [project.dependencies]), so it would
+# either silently vanish from the published wheel or (worse) resolve
+# differently between `uv sync` here and a real `uv tool install`. Both
+# public and managed-device install paths resolve the plain `tmux-kit==`
+# pin above from an index; the managed-device override is an install-TIME
+# `--with` flag, never a committed source. CI (ci.yml's
+# guard-no-tmux-kit-source-override job) fails the build if this entry
+# reappears.

@@ -24,16 +24,21 @@ jobs:
         # Build EXACTLY the two published distributions, by name. This used
         # to be `uv build --all-packages` (build every workspace member --
         # without it, a bare `uv build` only produces the `muxplex` sdist +
-        # wheel and silently drops `muxplex-client`). That stopped being safe
-        # at extraction stage S3: `lib/` (tmux_kit) is now a third workspace
-        # member that is deliberately NOT published to PyPI (it rides
-        # muxplex's git-based install; see lib/pyproject.toml and the plan's
-        # scope) -- and a PyPI release cannot be unpublished. --all-packages
-        # would put tmux_kit-* files in dist/ where the publish step uploads
-        # everything it finds (and, per the note below, fail the whole job
-        # with a 403 because tmux_kit has no trusted publisher). Explicit
-        # --package flags keep any FUTURE workspace member unpublished by
-        # default too, instead of published by accident.
+        # wheel and silently drops `muxplex-client`).
+        #
+        # HISTORICAL NOTE (why this comment used to warn about a THIRD
+        # workspace member): through extraction stage S3, `lib/` (tmux_kit)
+        # was a workspace member deliberately NOT published from here.
+        # docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md's cutover
+        # (§5) REMOVED `lib/` from this repo entirely -- the tmux session-
+        # management core now lives in, and publishes from,
+        # `bkrabach/tmux-kit`'s own `publish.yml`. This repo's workspace has
+        # gone back to exactly two members (muxplex, client), so
+        # `--all-packages` would be safe again today -- but explicit
+        # `--package` flags stay anyway: they keep any FUTURE workspace
+        # member unpublished by default, instead of published by accident,
+        # which is the property that would have prevented needing this fix
+        # to begin with.
         run: |
           uv build --package muxplex
           uv build --package muxplex-client

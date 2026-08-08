@@ -259,6 +259,64 @@ jobs:
         working-directory: muxplex/frontend
         run: node --test tests/*.mjs
 
+  guard-no-tmux-kit-source-override:
+    # docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md §5 item 6: the
+    # cross-repo dev loop for coupled tmux-kit + muxplex changes works by
+    # TEMPORARILY adding a `[tool.uv.sources] tmux-kit = { path = ... }` (or
+    # `{ git = ... }`) entry to pyproject.toml (`uv add --editable
+    # ../tmux-kit`), then reverting it before committing. The predictable
+    # failure mode is committing that revert-me-first entry by accident --
+    # which would silently turn every future `uv tool install` (and `uv
+    # build`) into a moving-target resolve, breaking wheel reproducibility
+    # and re-opening exactly the "[tool.uv.sources] never enters wheel
+    # metadata, so don't rely on it" hazard the plan's §0.3/§2.1 findings
+    # exist to avoid. This job fails the build loud, at PR time, if the
+    # committed pyproject.toml ever carries one.
+    name: guard (no committed tmux-kit path/git source override)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert no [tool.uv.sources] override for tmux-kit
+        run: |
+          python3 - <<'EOF'
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+
+          sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+          if "tmux-kit" in sources:
+              print(
+                  "pyproject.toml commits a [tool.uv.sources] override for "
+                  f"tmux-kit: {sources['tmux-kit']!r}. This is almost always "
+                  "a leftover from the cross-repo dev loop (`uv add "
+                  "--editable ../tmux-kit`) that should have been reverted "
+                  "before committing -- see docs/plans/2026-08-09-tmuxkit-"
+                  "own-repo-and-pypi-plan.md §5 item 6.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          deps = data.get("project", {}).get("dependencies", [])
+          kit_dep = next((d for d in deps if d.startswith("tmux-kit")), None)
+          if kit_dep is None:
+              print("no tmux-kit entry found in [project.dependencies] at all", file=sys.stderr)
+              sys.exit(1)
+          if "@" in kit_dep or "git+" in kit_dep or "/" in kit_dep:
+              print(
+                  f"[project.dependencies] tmux-kit entry is not a plain "
+                  f"version pin: {kit_dep!r}. PyPI rejects direct-URL deps "
+                  f"in Requires-Dist -- this must stay a plain `tmux-kit==X.Y.Z`.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          print(f"OK: tmux-kit is a plain pin ({kit_dep!r}), no source override.")
+          EOF
+
   test-integration:
     # Everything above deselects `-m integration` (pyproject.toml's
     # addopts = "-m 'not integration'"), so this ~52-test suite -- real

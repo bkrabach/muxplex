@@ -1,3 +1,131 @@
+## v0.45.0 (2026-08-08)
+
+The tmux session-management core moved OUT of this repo entirely: it is now
+`tmux-kit` (import `tmux_kit`), published independently on PyPI at its own
+`bkrabach/tmux-kit` repo. This release cuts muxplex over to depend on the
+PyPI-published package instead of the in-repo `lib/` workspace member v0.44.0
+introduced, which **restores public `uv tool install muxplex`** -- broken
+since v0.44.0's wheel pinned a dependency (`tmuxkit`) that could never
+resolve from PyPI (see v0.44.0's own entry below, and
+`docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md` for the full design
+and its honest cost accounting).
+
+### Changed
+
+- **`lib/` is deleted from this repo.** The tmux session-management core
+  (`proc`, `spawn`, `names`, `observe`, `presence`, `bell`, `keys`, `cgroup`)
+  now lives at `bkrabach/tmux-kit`, published to PyPI as `tmux-kit`
+  (`import tmux_kit`). The code itself is unchanged in behavior -- it was
+  renamed (`tmuxkit` -> `tmux-kit`/`tmux_kit`, a prior commit on this branch)
+  and moved via `git subtree split`, verified tree-identical modulo three
+  enumerated deltas (flattened layout, version, repo URLs) -- not
+  reimplemented. `lib/`'s history is not lost: it remains in this repo's git
+  history through the tag `v0.44.0` and every commit before this one.
+- **`pyproject.toml`: `tmux-kit` is now a plain PyPI version pin, not a
+  workspace source.** `[tool.uv.workspace] members` drops `"lib"` (down to
+  `["client"]`); `[tool.uv.sources]` no longer has a `tmux-kit` entry at
+  all -- deliberately no replacement `{ git = ... }` or `{ path = ... }`
+  entry either. `[project.dependencies]`'s `tmux-kit==0.44.0` (a workspace
+  pin that could never resolve from PyPI) becomes `tmux-kit==0.1.0` (tmux-kit's
+  own first PyPI release; see that project's own version rationale --
+  0.44.0 continuity was never earned by a name with no prior PyPI history).
+  This is the plain-`==`-pin shape the design's SS0.3/SS2.1 findings settled
+  on: `[tool.uv.sources]` never enters wheel metadata regardless of what it
+  says, so a project-level git/path source would be a lie the published
+  wheel can't tell; the managed-device (CISO, no-pypi.org) path that needs a
+  git-sourced tmux-kit instead uses an install-TIME `--with 'tmux-kit @
+  git+https://github.com/bkrabach/tmux-kit@vX.Y.Z'` override, never a
+  committed source. `uv lock` re-resolved tmux-kit as a PyPI registry
+  dependency (`source = { registry = "https://pypi.org/simple" }` in
+  `uv.lock`, confirmed by inspection -- not a workspace/path source).
+- **CI gains a guard against ever re-committing a source override.** The
+  cross-repo dev loop for coupled tmux-kit + muxplex changes (`uv add
+  --editable ../tmux-kit`, develop, then revert before committing) has an
+  obvious failure mode -- forgetting the revert. A new CI job asserts the
+  committed `pyproject.toml` carries a plain `tmux-kit==X.Y.Z` pin and no
+  `[tool.uv.sources]` entry for it, failing loud at PR time instead of
+  silently shipping a moving-target wheel.
+- **`publish.yml`'s existing preflight now actually exercises the fix.**
+  The wheel-resolution preflight this workflow already carries (added in
+  response to the v0.44.0 incident it documents inline) previously failed
+  correctly, every time, because `tmux-kit` did not exist on PyPI yet. With
+  tmux-kit 0.1.0 published, this same preflight now PASSES against the real
+  index -- the fail-to-pass flip is the proof this cutover actually
+  resolved the incident, not merely moved it (see this release's PR
+  description for the before/after preflight output).
+- **Two safety rails retire, one tightens, because their scan target no
+  longer exists in this repo.** `test_tmux_library_never_imports_the_app_layer`
+  (the import-purity rail) and its AST scan of `lib/tmux_kit/` retire --
+  the identical rail travelled with the code and lives on, unweakened, in
+  `bkrabach/tmux-kit`'s own suite
+  (`tests/test_rails.py::test_library_is_import_pure_stdlib_and_self_only`).
+  `test_library_tests_live_under_the_railed_tests_dir` retires the same way
+  (by replacement, not silent deletion -- it now asserts `lib/` stays gone
+  and that `test_tmux_kit_contract.py` exists as this repo's replacement
+  tripwire). The never-render rail **tightens**: with the library's own
+  `build_alert_bell_hook()` call site no longer in this repo at all, `muxplex/`
+  is now held to **zero** `run-shell` construction sites, full stop (it was
+  already zero for app code; the change is that the scan no longer carves
+  out an exception for a `lib/tmux_kit/bell.py` that isn't here anymore).
+- **The differential harness (`test_differential_harness.py`) and its
+  recorded fixtures leave this repo.** It tested `tmux-kit`'s own internals
+  (`enumerate_sessions` parsing tolerances, `update_manifest` rebuild
+  branches, bell detection, tmux-env injection, argv construction) via this
+  repo's re-export shims -- coverage that is now a byte-identical duplicate
+  of `bkrabach/tmux-kit`'s own differential harness, which tests the same
+  functions directly against the real library source it moved with. The
+  three ttyd-specific cases the old harness also carried (socket naming,
+  liveness, `validate_socket_dir`) test muxplex's OWN code (`ttyd.py`,
+  which stays muxplex-private) but are not stranded: `test_ttyd.py` already
+  covers each of those properties directly, without the now-foreign
+  recorded fixture. Two purely-duplicate test files
+  (`test_cgroup_escape.py`, `test_lib_import_smoke.py` -- byte-identical,
+  diffed, to their `bkrabach/tmux-kit` counterparts) are removed for the
+  same reason.
+
+### Added
+
+- **`test_tmux_kit_contract.py` -- the cross-repo drift tripwire.** Modeled
+  directly on `test_client_contract.py`'s rationale: with tmux-kit released
+  independently now (a real, priced cost -- see the design's §9), nothing
+  else catches a pin bump that silently drifts muxplex's assumptions away
+  from what the installed package provides. Runs against the INSTALLED
+  `tmux-kit` at the pinned version and asserts: mirrored constants
+  (`DEFAULT_CAPTURE_LINES`, `MAX_CAPTURE_LINES`, `ALLOWED_KEYS`, `MAX_KEYS`)
+  match between muxplex's re-export shims and the library directly;
+  `build_alert_bell_hook()`'s signature carries no loudness-shaped
+  parameter (the never-render rail's structural guarantee, checkable from
+  outside the library); importing `tmux_kit` in a fresh interpreter drags
+  in no fastapi/uvicorn/starlette/httpx/pam/muxplex; and an unknown
+  top-level manifest key still round-trips verbatim through
+  `tmux_kit.presence.update_manifest()` (the v0.44.0 S4 contract, now
+  pinned against the installed package rather than local source).
+- **`muxplex doctor`/`muxplex upgrade` tmux-kit source-awareness** (landed
+  in this branch's rename commits, ahead of this release): `doctor` reports
+  tmux-kit's own installed version and install source (PyPI vs git)
+  alongside muxplex's, and warns if the installed version drifts from
+  muxplex's own pin; `upgrade` reconstructs a git-sourced `--with
+  'tmux-kit @ git+...'` override at upgrade time from the target muxplex's
+  own pin, rather than silently dropping it to a bare-name reinstall --
+  the exact managed-device (CISO) failure mode this release's design
+  document prices and proves against.
+
+### Verification
+
+- `make test` (DTU `muxplex-test`, against `git archive HEAD` of the
+  committed, bumped tree) -- see this release's PR/commit for the exact
+  pass count.
+- The client-parity test, re-run by name after the bump:
+  `test_client_contract.py::test_client_version_matches_server_version`.
+- `pytest -m integration` (real tmux + real ttyd, inside the DTU).
+- `node --test tests/*.mjs` in `muxplex/frontend`, inside the DTU.
+- `publish.yml`'s preflight (`uv pip install --dry-run dist/muxplex-*.whl`
+  against the real PyPI index), run locally against the freshly built
+  wheel: FAILS on the pre-cutover tree (tmux-kit==0.44.0 unresolvable),
+  PASSES on this release's tree (tmux-kit==0.1.0 resolves from PyPI) -- the
+  fail-to-pass flip is the structural proof this cutover works, not an
+  assertion.
+
 ## v0.44.0 (2026-08-08)
 
 Internal refactor: the tmux session-management core moves into `tmuxkit`, a
