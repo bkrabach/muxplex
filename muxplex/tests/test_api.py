@@ -2,6 +2,8 @@
 Tests for muxplex/main.py — FastAPI skeleton, lifespan, /health endpoint.
 """
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -1544,6 +1546,26 @@ def test_connect_accepts_and_ignores_takeover(client, monkeypatch):
 
     response = client.post("/api/sessions/alpha/connect?takeover=true")
     assert response.status_code == 200
+
+
+def test_agent_guide_does_not_prescribe_retired_terminal_conflict():
+    """AGENT_GUIDE.md must not tell agents to handle a response /connect cannot emit.
+
+    Pairs with test_connect_no_longer_returns_terminal_conflict above, which
+    pins the server side. That test kept the server honest while the guide
+    rotted for a full release, telling agent authors to write handling for a
+    409 the server has no path to and to recover with a query parameter it
+    explicitly ignores; this one closes the other half.
+
+    Deliberately two narrow string assertions, not a doc-lint suite -- see
+    AGENTS.md on test_frontend_js.py for why source-text assertions earn their
+    place only when they guard a claim that has already rotted.
+    """
+    guide = (Path(__file__).parent.parent.parent / "docs" / "AGENT_GUIDE.md").read_text(
+        encoding="utf-8"
+    )
+    assert "terminal_conflict" not in guide
+    assert "takeover=true" not in guide
 
 
 def test_connect_500_on_spawn_failure(client, monkeypatch):

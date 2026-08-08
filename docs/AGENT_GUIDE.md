@@ -272,10 +272,26 @@ curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
     "snapshot": "…captured pane text…",
     "bell": {"last_fired_at": 1753500000.0, "seen_at": null, "unseen_count": 1},
     "last_activity_at": 1753500123.0,
-    "created_at": 1753499900.0
+    "created_at": 1753499900.0,
+    "followups": {"pending": 2, "halted": false},
+    "views": ["work", "agents"]
   }
 ]
 ```
+
+Those seven keys are the whole entry — verified by diffing this example's key
+set against a live instance's response (`['bell', 'created_at', 'followups',
+'last_activity_at', 'name', 'snapshot', 'views']`).
+
+`views` is **server-resolved membership** — hand-pinned sessions ∪ `match_names`
+glob-rule matches, resolved fresh on every read. This is what lets a rule-based
+view reach a polling client without the client re-deriving membership from raw
+`settings.views`. A session in no view gets `[]`, never `null`.
+
+`followups` is the follow-up-queue badge: how many items are waiting on this
+session's next bell, and whether that queue has **halted**. See
+[§6.5](#65-follow-up-queues--leaving-a-note-for-the-next-bell) — `halted: true`
+is a stalled queue and nothing clears it for you.
 
 `created_at` is tmux's own session-creation timestamp; `null` when tmux
 reported nothing parseable. Compare it against `GET /api/instance-info`'s
@@ -346,7 +362,7 @@ edits made from another device — without adding a second poll.
 ### `GET /api/settings` — configuration
 
 Returns the full settings dict with `federation_key` and per-remote keys blanked
-out. Read-only for most purposes; see [§6](#6-what-an-agent-may-not-do) before
+out. Read-only for most purposes; see [§7](#7-what-an-agent-may-not-do) before
 reaching for `PATCH`.
 
 ---
@@ -537,20 +553,25 @@ something that happens implicitly; there's normally no reason for an agent
 to do it unless it specifically wants its own view/session selection kept
 separate from the human's.
 
-**`POST /connect` can now return `409` with a
-`{"terminal_conflict": true, ...}` body** instead of succeeding. There is
-exactly one underlying terminal process shared by the whole server, no
-matter how many separate selections exist — so if some *other* device has
-already claimed it for a different session, a caller asking for a session on
-top of that gets refused rather than silently yanking it away. **An agent
-that never sends `device_id` will essentially never see this** — refusal
-only happens *between* different selections, and an agent staying in the
-shared, default selection is always "the same one" as itself. If your agent
-does adopt its own `device_id` and hits a 409, treat it like any other
-error unless deliberately reclaiming the terminal is the intended action —
-in which case retry the same request with `&takeover=true`. Do that only
-when it's genuinely what you mean: it moves the terminal away from whichever
-device/session held it.
+**`POST /connect` no longer arbitrates a shared terminal, and `?takeover=` is
+inert.** There used to be exactly one terminal process for the whole server, so
+one device claiming it for a different session had to refuse another's claim.
+There is now **one terminal process per session** (`../AGENTS.md`, "ttyd is
+loopback-only by design — now per-session"), so there is nothing left to
+contend for and nothing to seize:
+
+* The `takeover` query parameter is **accepted and ignored** — kept in the
+  signature only so pre-existing clients don't get a 422. Don't send it in new
+  code, and don't build recovery on it.
+* The failure modes that *are* real here are the ones
+  [§4, "Connect"](#connect-point-the-web-terminal-at-a-session) already
+  describes: **500** if the session's terminal process fails to start, **503**
+  at the server's terminal-count ceiling.
+
+If you are reading an older client (or an older copy of this guide) that
+handles a `409` here with a conflict discriminator in the body, leave it —
+it simply never fires against a current server, which is the version tolerance
+this project asks of clients in both directions.
 
 ### Foreground focus: `POST /api/focus`
 
@@ -687,8 +708,9 @@ For the same reason, **the two 403s differ only by detail string**. Both mean
 Interpreting the rest:
 
 * **404 after a create is almost always the poll cache** (see
-  [§4, "The read model is eventually consistent"](#the-read-model-is-eventually-consistent--wait-3s-after-writes)).
-  Retry after ~3s before concluding the session doesn't exist.
+  [§4, "The read model is eventually consistent"](#the-read-model-is-eventually-consistent--poll-on-a-short-interval-not-a-long-sleep)).
+  Poll on a short interval (typical resolution is under 1s) before concluding
+  the session doesn't exist — don't sleep a flat multi-second delay.
 * **400 on the name** means your name is malformed, not that it's disallowed.
 * **500** means tmux itself failed — e.g. the session vanished mid-flight.
 
@@ -1030,6 +1052,229 @@ during this investigation: the hook was silently unregistered in a fresh
 instance, and one call to this endpoint fixed it for the rest of the
 session.
 
+### 6.5 Follow-up queues — leaving a note for the next bell
+
+§6.4 taught you how to *ring* the bell. This is what can *fire on* one.
+
+A follow-up queue is a **per-session, server-side, persisted list of text
+items**. Exactly one item fires per bell — typed into that session through the
+same fenced path `/input` uses — until the queue drains. It survives a muxplex
+restart (it lives in `state.json`, not in a client). It is the durable
+agent-to-agent note primitive: *"when this session next asks for attention, run
+this."* It is **local-only** — see the federation note at the end.
+
+Every trace below is a real response from a live instance, not an illustration.
+
+#### The badge is the part a read-only agent needs
+
+`GET /api/sessions` and `GET /api/view` already carry a per-session summary, so
+a polling client sees a queue's state without a second request per session:
+
+```json
+"followups": {"pending": 2, "halted": false}
+```
+
+**`halted: true` is a stalled queue that nothing will clear implicitly.** A
+fire-time send failed, the item was *retained rather than skipped*, and the
+queue will ignore every subsequent bell until something explicitly resumes it.
+No timeout clears it, no later bell clears it, no edit to the list clears it.
+If you queue follow-ups, poll this field.
+
+#### The five endpoints
+
+All five take the plain session name, all five 404 on a session this server
+can't see (including the poll-cache window right after a create — [§4](#the-read-model-is-eventually-consistent--poll-on-a-short-interval-not-a-long-sleep)).
+
+**`GET`** — read the queue.
+
+```bash
+curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
+     "$MUXPLEX_URL/api/sessions/agent-build/followups"
+```
+
+```json
+{
+  "session": "agent-build",
+  "revision": 0,
+  "items": [],
+  "halted": null,
+  "target_window": "0:bash"
+}
+```
+
+An **absent** queue and an **empty** queue are indistinguishable, on purpose:
+both are `revision: 0, items: [], halted: null`. Don't build logic that tries
+to tell them apart.
+
+**`POST`** — append one item. No precondition (appending is commutative and
+cannot clobber a concurrent writer).
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" \
+     -H "Content-Type: application/json" -H "Accept: application/json" \
+     -d '{"text":"make test","enter":true}' \
+     "$MUXPLEX_URL/api/sessions/agent-build/followups"
+```
+
+```json
+{
+  "session": "agent-build",
+  "revision": 1,
+  "item": {
+    "id": "d63c9d9016a545f3b2b660240d6f0b53",
+    "text": "make test",
+    "enter": true,
+    "created_at": 1786163849.5979865
+  }
+}
+```
+
+`text`/`enter` mean exactly what they mean on `/input` ([§5.5](#55-the-request-contract)),
+and the same 8192-byte UTF-8 ceiling applies (413 over it).
+
+**`PUT`** — replace the whole list: edit, reorder, and remove in one call.
+`expected_revision` is **REQUIRED** (see below). An item echoed back with a
+known `id` keeps that id and its original `created_at`; an item with no id is
+treated as new — which is what makes reorder-and-edit expressible without the
+client inventing ids.
+
+```bash
+curl -sS -X PUT -H "Authorization: Bearer $MUXPLEX_KEY" \
+     -H "Content-Type: application/json" -H "Accept: application/json" \
+     -d '{"expected_revision":2,"items":[{"text":"git status","enter":true}]}' \
+     "$MUXPLEX_URL/api/sessions/agent-build/followups"
+```
+
+```json
+{
+  "session": "agent-build",
+  "revision": 3,
+  "items": [
+    {"id": "2823140a045849338261e3cffb16fdf9", "text": "git status",
+     "enter": true, "created_at": 1786163849.7696276}
+  ],
+  "halted": null
+}
+```
+
+**`DELETE`** — clear items **and** any halt.
+
+```bash
+curl -sS -X DELETE -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
+     "$MUXPLEX_URL/api/sessions/agent-build/followups"
+```
+
+```json
+{"session": "agent-build", "revision": 0, "items": [], "halted": null}
+```
+
+**`POST .../followups/resume`** — clear the halt **only**, keeping every item
+and the current revision. This is the deliberate counterpart to `DELETE`:
+resuming is how you say "I looked at why it stalled, go again," without
+throwing the queued work away.
+
+```bash
+curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
+     "$MUXPLEX_URL/api/sessions/agent-build/followups/resume"
+```
+
+```json
+{
+  "session": "agent-build",
+  "revision": 3,
+  "items": [
+    {"id": "459c814e51df46ddbeb204f09d543fe6", "text": "echo FIRED_TWO",
+     "enter": true, "created_at": 1786163918.7569284}
+  ],
+  "halted": null
+}
+```
+
+#### `expected_revision`: why `PUT` refuses to guess
+
+The precondition exists because **the queue mutates itself.** A bell can drain
+an item between your `GET` and your `PUT`. Replaying a list built from a
+pre-bell snapshot doesn't lose an update — it **re-adds an item that has
+already been typed into the session**, i.e. runs a command a second time. That
+is why this is required here and merely optional on `PATCH /api/settings`.
+
+The loop is: `GET` → read `revision` → build the new list → `PUT` with that
+revision. A stale revision is refused, and the refusal hands you what you need
+to rebuild:
+
+```
+HTTP 409
+{
+  "detail": {
+    "revision_mismatch": true,
+    "revision": 2,
+    "items": [ …the server's current list… ]
+  }
+}
+```
+
+**On a 409, re-`GET`, rebuild, and re-`PUT`. Never retry the same body.**
+
+#### Failure table
+
+| Status | Discriminator | What you do |
+|---|---|---|
+| 403 | (detail string) | The `/input` fence excludes this session, exactly as on `/input` — [§7](#7-what-an-agent-may-not-do). Stop and tell the human; there is no API route around it. |
+| 404 | — | The server can't see this session. Right after a create, that is the poll cache ([§4](#the-read-model-is-eventually-consistent--poll-on-a-short-interval-not-a-long-sleep)), not a failure. |
+| 409 | `revision_mismatch` | Someone else wrote. Re-`GET`, rebuild, re-`PUT`. |
+| 409 | `queue_full` | At the 16-item ceiling: `{"queue_full": true, "max": 16}`. Drain it, or `PUT` a shorter list. |
+| 409 | `send_in_flight` | A send for this session is mid-flight (`PUT` only). Re-`GET` and retry. |
+| 409 | `bell_hook_unarmed` | The tmux bell hook isn't registered, so nothing would ever fire the queue — new items are refused rather than accepted into a queue that can't drain. Call `POST /api/internal/setup-hooks` ([§6.4](#64-bell-on-completion-an-attention-convention)) and retry. |
+| 413 | — | `text` over 8192 bytes UTF-8. |
+| — | `halted` in the body | Not an HTTP status: a *fire-time* send failed. The item was retained. Only `POST .../followups/resume` (or `DELETE`) clears it. |
+
+On the `bell_hook_unarmed` row, one honest caveat from tracing it against a
+fresh instance: it is **hard to actually observe**, and you should not design
+around hitting it. A brand-new server with no tmux running does report
+`bell_hook_armed: false` from `GET /api/instance-info` — but with no tmux there
+are no sessions either, so an append gets the **404** gate first. Once tmux
+comes up, the hook re-arms on its own within one poll cycle (traced: `false` →
+`true` in ~3s, with no manual call). `POST /api/internal/setup-hooks` returns
+`{"ok": true}` and leaves the hook armed, so it remains the right recovery to
+attempt — just expect the self-heal to usually beat you to it.
+
+#### Two properties that will otherwise surprise you
+
+**The fence is re-evaluated at fire time, against fresh settings.** A
+successful append is *not* a promise the item will ever be allowed to send.
+Appending runs an allowlist check as a courtesy so you learn now rather than at
+the next bell — but the check that decides is the one that runs when the bell
+arrives. Traced directly: an item was queued while the session was allowed, the
+operator then narrowed `input_allowed_sessions` on disk, and the next bell
+halted the queue instead of typing:
+
+```json
+"halted": {
+  "reason": "input_not_allowed",
+  "detail": "Session 'agent-build' does not match any input_allowed_sessions pattern",
+  "at": 1786163925.901484,
+  "item_id": "459c814e51df46ddbeb204f09d543fe6"
+}
+```
+
+The item is still in `items`. Further bells were ignored while halted; `resume`
+brought it back with the item intact.
+
+**`target_window` is display-only.** `GET` reports the session's *current*
+window as `"<index>:<name>"` so a UI can show where an item would land, but the
+send targets the session — whatever window is current when the bell actually
+fires, which is not necessarily the window that belled.
+
+#### Federation: these are local endpoints
+
+There is no `/api/federation/{device_id}/sessions/{name}/followups`, and you
+must not assume one. Bells are local state; a remote session's bell is that
+host's own concern. To queue a follow-up on a peer, talk to that peer directly.
+
+For *why* the queue behaves this way — the precondition's rationale, the
+advance sequence, and the halt-rather-than-skip rule — see the "Follow-up
+queues" section of [`API_SEMANTICS.md`](API_SEMANTICS.md).
+
 ---
 
 ## 7. What an agent may *not* do
@@ -1123,10 +1368,24 @@ curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" \
 `/openapi.json` disagree, the schema is right and this file has a bug — please
 report it.
 
-Endpoints not covered here (federation aggregation, bells, settings sync, the
-terminal WebSocket relay) are all in the schema. `API_SEMANTICS.md` documents the
-invariants behind them; `AGENTS.md` carries the conventions for anyone changing
-the server.
+The endpoints this guide does not walk through are in the schema, and each is
+one line here so you know it exists and where to read further. These are
+pointers, not contracts — `/openapi.json` is authoritative for shapes.
+
+| Endpoint | What it is | Read further |
+|---|---|---|
+| `GET /api/views` | The resolved, validated **view definitions** — the plural sibling of `GET /api/view`, already referenced in [§3](#get-apiview--the-servers-resolved-answer). Returns `{"views": [{"name", "sessions", "match_names", "errors"}], "errors": [...]}`, user-defined views only (no `all`/`hidden`). `match_names` holds only the patterns that will actually be used; an invalid one (e.g. containing `:`) is absent and named in `errors` — so a client never decides rule validity itself. | `main.py:1653` |
+| `POST /api/views/preview` | Dry-run a draft `match_names` list against live sessions before writing it. Never writes settings. | `main.py:1709` |
+| `POST /api/sessions/{name}/bell` | Record a bell for a session — this is what tmux's `alert-bell` hook calls (§6.4), and what advances a follow-up queue (§6.5). | `main.py:2570` |
+| `POST /api/sessions/{name}/bell/clear` | Mark a session's bell seen. | `main.py:2610` |
+| `POST /api/heartbeat` | Register a `device_id` — the opt-in step [§4](#active_view--active_session-are-server-global-last-writer-wins) describes. An agent that doesn't want its own selection never needs this. | `main.py:2516` |
+| `GET` / `PATCH /api/tmux-config` | Inspect and manage the server-managed tmux config. See `docs/TERMINAL_CONFIG_OWNERSHIP.md`. | `main.py:2786`, `:2801` |
+| `GET` / `PUT /api/settings/sync` | Federation settings sync. Read `API_SEMANTICS.md`'s write-discipline section before touching the `PUT`. | `main.py:2875`, `:2903` |
+| `GET /api/federation/sessions` and the `/api/federation/{device_id}/*` proxies | Aggregated multi-host reads, plus connect / create / delete / bell-clear against a peer. Note there is deliberately **no** follow-ups proxy (§6.5). | `main.py:4091`, `:4331`, `:4375`, `:4421`, `:4482` |
+| `WS /terminal/ws?session={name}` | The terminal relay the browser uses. An agent reads panes with `GET /api/sessions` and types with `/input` — it does not need this. | `../AGENTS.md` |
+
+`API_SEMANTICS.md` documents the invariants behind these; `AGENTS.md` carries
+the conventions for anyone changing the server.
 
 ---
 
@@ -1156,3 +1415,5 @@ the server.
 - [ ] **If a background job needs a human's attention, ring the bell
       yourself on nonzero exit** (§6.4) — nothing an agent naturally runs
       trips it, and routine success shouldn't spend that channel.
+- [ ] **If you queue follow-ups, poll `followups.halted`** (§6.5) — a halt is
+      a silent stall, and nothing clears it for you.
