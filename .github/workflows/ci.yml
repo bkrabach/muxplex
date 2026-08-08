@@ -327,4 +327,3 @@ jobs:
 
       - name: Run integration tests
         run: uv run pytest -m integration -v
-        run: node --test tests/*.mjs
