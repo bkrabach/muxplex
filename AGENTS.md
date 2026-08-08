@@ -797,6 +797,65 @@ Instead:
 - After any scratch run, VERIFY the live server is still up
   (`GET :8088/api/instance-info` → 200) as the last step.
 
+## tmux-kit pin/tag agreement — a release-time rule, checked twice
+
+`pyproject.toml` carries the `tmux-kit` dependency in TWO places that must
+always agree:
+
+```toml
+[project.dependencies]
+"tmux-kit==0.1.0",                                              # X.Y.Z
+
+[tool.uv.sources]
+tmux-kit = { git = "https://github.com/bkrabach/tmux-kit", tag = "v0.1.0" }  # vX.Y.Z
+```
+
+**When you bump the `tmux-kit==` pin, bump the `tag` in the SAME commit —
+never one without the other.** Both name a version; they must name the
+*same* version.
+
+**Why this matters (v0.44.0 rhymes with this, and this is the same failure
+mode arriving a second way):** a public `uv tool install muxplex` only ever
+sees the plain `==` pin — `[tool.uv.sources]` never enters `Requires-Dist`
+in a published wheel, verified by inspecting a real built wheel's `METADATA`.
+A managed-device `uv tool install git+https://github.com/bkrabach/muxplex@vX`
+*does* resolve tmux-kit from the git source instead — verified via
+`tmux_kit-*.dist-info/direct_url.json` showing `vcs_info` with the resolved
+commit. If the pin and the tag ever name different versions, **a PyPI
+install and a git install of the identical muxplex release silently run
+different tmux-kit code.** Both installs succeed; nothing errors; the drift
+is invisible until behavior differs between a PyPI user and a git user.
+That is the same class of incident as v0.44.0 (PyPI users and git users
+silently diverging) — this variant is quieter because neither install
+fails.
+
+**The load-bearing caveat that makes "bump both" insufficient by itself:**
+a git tool install resolves tmux-kit from whatever `uv.lock` already
+records — not a fresh re-resolve of `pyproject.toml`. Editing the
+`[tool.uv.sources]` entry (or the pin) without immediately running
+`uv lock` and committing the regenerated lock file leaves `uv.lock`
+pointing at the OLD source, and the git installer silently keeps resolving
+from the stale one as if the edit never happened. **Always run `uv lock`
+in the same commit as any change to either the pin or the source tag**, and
+check that `uv.lock`'s `tmux-kit` package entry shows
+`source = { git = "...?tag=vX.Y.Z#<new-commit>" }` with the expected tag —
+not a leftover `source = { registry = ... }` or an old commit hash.
+
+**Checked twice, both ways:**
+- `.github/workflows/ci.yml`'s `guard-tmux-kit-pin-source-agreement` job
+  parses `pyproject.toml` and fails the build if the pin and tag disagree,
+  or if the source is a `path` (a reverted-too-late cross-repo dev-loop
+  override — see below) instead of `git`.
+- `muxplex/tests/test_tmux_kit_pin_source_agreement.py` asserts the
+  identical invariant, so it fails `make test`/`pytest` too, not only CI.
+
+**The cross-repo dev loop still exists and still needs a revert.** Working
+on tmux-kit and muxplex together, `uv add --editable ../tmux-kit` (or a
+manual `{ path = ... }` edit) is the normal way to iterate with a local
+tmux-kit checkout. Revert that `path` override back to the committed `git`
+source before committing — both guards above reject a committed `path`
+entry on sight.
+
 ## Testing & workflow
 
 ### ⚠️ NEVER run the test suite on a host running a live muxplex

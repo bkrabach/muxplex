@@ -1,3 +1,51 @@
+## v0.45.1 (2026-08-08)
+
+Managed-device (CISO) installs of muxplex no longer require a hand-typed
+`--with 'tmux-kit @ git+...'` override to get tmux-kit from git. Behavior
+for PyPI users is unchanged -- this release only changes how a
+`git+https://...muxplex@vX` install resolves its `tmux-kit` dependency.
+
+### Changed
+
+- **`pyproject.toml` gains a committed `[tool.uv.sources]` git entry for
+  tmux-kit, pinned to the tag matching the `==` dependency pin.** v0.45.0's
+  design reasoned that a project-level source was both pointless (never
+  enters wheel metadata) and possibly unsafe (unproven whether a git tool
+  install honors it) -- reasoning that was half right. Building a real
+  wheel from this release confirms `Requires-Dist: tmux-kit==0.1.0` stays a
+  plain pin with no git URL leak; running a real
+  `uv tool install git+file://...` confirms uv DOES resolve tmux-kit from
+  the git source (verified via `tmux_kit-*.dist-info/direct_url.json`
+  showing `vcs_info` with the resolved commit) -- **once `uv.lock` has been
+  regenerated to record it.** That caveat is the empirical surprise: a git
+  tool install resolves from whatever `uv.lock` already says, not a fresh
+  ad-hoc re-resolve, so the fix is only real because `uv lock` is re-run in
+  this same release.
+- **CI's `guard-no-tmux-kit-source-override` job is converted, not
+  deleted, to `guard-tmux-kit-pin-source-agreement`.** The old guard
+  forbade any committed source entry outright, encoding the now-disproven
+  assumption above. The underlying concern -- PyPI installs and git
+  installs of the same muxplex release silently resolving DIFFERENT
+  tmux-kit versions -- is still completely real and becomes the new
+  invariant: the `tmux-kit==X.Y.Z` pin and the source `tag = "vX.Y.Z"` must
+  name the same version. The job still rejects a `path` source (the
+  cross-repo dev loop's temporary override) as a local-dev leak.
+- **New test, same invariant, checked in `make test` too.**
+  `muxplex/tests/test_tmux_kit_pin_source_agreement.py` asserts the
+  identical pin/tag agreement the CI guard checks, so drift fails the
+  local suite as well as CI.
+- **`AGENTS.md` (both repos) documents the release-time rule.** muxplex's
+  `AGENTS.md` gets a new "tmux-kit pin/tag agreement" section covering why
+  the pin and tag must be bumped together, and the `uv lock`
+  re-generation requirement. `bkrabach/tmux-kit` (previously README-only,
+  no `AGENTS.md`) gets one covering its stdlib-only contract
+  (`dependencies = []`), its two safety rails (never-render, import-
+  purity), the positive-presence-record rule, incident-test handling, and
+  the coordinated two-repo release shape.
+- Version bump: `pyproject.toml` + `client/pyproject.toml`, 0.45.0 ->
+  0.45.1 (patch: no user-visible behavior change for PyPI installs; only
+  how a git install resolves a dependency).
+
 ## v0.45.0 (2026-08-08)
 
 The tmux session-management core moved OUT of this repo entirely: it is now

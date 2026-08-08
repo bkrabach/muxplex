@@ -338,7 +338,7 @@ wheels = [
 
 [[package]]
 name = "muxplex"
-version = "0.45.0"
+version = "0.45.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -380,7 +380,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "python-pam", specifier = ">=1.8.4" },
     { name = "six", specifier = ">=1.16.0" },
-    { name = "tmux-kit", specifier = "==0.1.0" },
+    { name = "tmux-kit", git = "https://github.com/bkrabach/tmux-kit?tag=v0.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=14.0" },
 ]
@@ -394,7 +394,7 @@ dev = [
 
 [[package]]
 name = "muxplex-client"
-version = "0.45.0"
+version = "0.45.1"
 source = { editable = "client" }
 dependencies = [
     { name = "httpx" },
@@ -719,11 +719,7 @@ wheels = [
 [[package]]
 name = "tmux-kit"
 version = "0.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0d/17/28f70cfbaa712f3c9697277213e402ddb4b52dda32191d123d8e1b203cb2/tmux_kit-0.1.0.tar.gz", hash = "sha256:d5815cf98cc403de9f258c52233bb96c9b0a0838a457805df0b092b9b04fa96d", size = 58049, upload-time = "2026-08-08T19:04:59.288Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/4b/309bb2d12d1a76676b935c90df5362d4cf81e34c42062cbeb451d7c3cdca/tmux_kit-0.1.0-py3-none-any.whl", hash = "sha256:ac58e071ec7b29e7b6e7034223f89fe561f3e8cbf1c257e7103a20b6debe4fcd", size = 39941, upload-time = "2026-08-08T19:04:58.091Z" },
-]
+source = { git = "https://github.com/bkrabach/tmux-kit?tag=v0.1.0#6b3fa379458395e86069e6de6c5365be0b122775" }
 
 [[package]]
 name = "typing-extensions"

@@ -259,26 +259,39 @@ jobs:
         working-directory: muxplex/frontend
         run: node --test tests/*.mjs
 
-  guard-no-tmux-kit-source-override:
-    # docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md §5 item 6: the
-    # cross-repo dev loop for coupled tmux-kit + muxplex changes works by
-    # TEMPORARILY adding a `[tool.uv.sources] tmux-kit = { path = ... }` (or
-    # `{ git = ... }`) entry to pyproject.toml (`uv add --editable
-    # ../tmux-kit`), then reverting it before committing. The predictable
-    # failure mode is committing that revert-me-first entry by accident --
-    # which would silently turn every future `uv tool install` (and `uv
-    # build`) into a moving-target resolve, breaking wheel reproducibility
-    # and re-opening exactly the "[tool.uv.sources] never enters wheel
-    # metadata, so don't rely on it" hazard the plan's §0.3/§2.1 findings
-    # exist to avoid. This job fails the build loud, at PR time, if the
-    # committed pyproject.toml ever carries one.
-    name: guard (no committed tmux-kit path/git source override)
+  guard-tmux-kit-pin-source-agreement:
+    # HISTORY: this job used to be guard-no-tmux-kit-source-override, and
+    # forbade ANY [tool.uv.sources] entry for tmux-kit outright. That guard
+    # encoded an assumption (a committed git source is unprovable / not
+    # honored by a git tool install) that v0.45.1 empirically DISPROVED --
+    # see AGENTS.md's "tmux-kit pin/tag agreement" section and this
+    # release's PR description for the wheel-metadata and
+    # direct_url.json evidence. The underlying concern the old guard
+    # protected is still completely real and becomes the new invariant
+    # this job enforces instead:
+    #
+    #   the `tmux-kit==X.Y.Z` pin in [project.dependencies] and the
+    #   `tag = "vX.Y.Z"` in [tool.uv.sources] MUST name the same version.
+    #
+    # If they drift, a public `uv tool install muxplex` (which only ever
+    # sees the plain `==` pin -- [tool.uv.sources] never enters Requires-
+    # Dist) and a managed-device `uv tool install git+.../muxplex` (which
+    # DOES resolve tmux-kit from the git source, once uv.lock reflects it)
+    # would silently install two DIFFERENT tmux-kit versions from the same
+    # muxplex release. That is precisely the class of bug that broke
+    # muxplex 0.44.0 (a wheel whose pinned dependency could never resolve
+    # at all) -- this time the failure mode would be quieter: both installs
+    # succeed, but PyPI users and git users run different library code.
+    # This job also still rejects a `path` source (the cross-repo dev
+    # loop's temporary `uv add --editable ../tmux-kit`, meant to be
+    # reverted before committing) -- a local-dev leak, not a drift case.
+    name: guard (tmux-kit pin and [tool.uv.sources] tag must agree)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assert no [tool.uv.sources] override for tmux-kit
+      - name: Assert tmux-kit pin and source tag agree
         run: |
           python3 - <<'EOF'
           import sys
@@ -286,19 +299,6 @@ jobs:
 
           with open("pyproject.toml", "rb") as f:
               data = tomllib.load(f)
-
-          sources = data.get("tool", {}).get("uv", {}).get("sources", {})
-          if "tmux-kit" in sources:
-              print(
-                  "pyproject.toml commits a [tool.uv.sources] override for "
-                  f"tmux-kit: {sources['tmux-kit']!r}. This is almost always "
-                  "a leftover from the cross-repo dev loop (`uv add "
-                  "--editable ../tmux-kit`) that should have been reverted "
-                  "before committing -- see docs/plans/2026-08-09-tmuxkit-"
-                  "own-repo-and-pypi-plan.md §5 item 6.",
-                  file=sys.stderr,
-              )
-              sys.exit(1)
 
           deps = data.get("project", {}).get("dependencies", [])
           kit_dep = next((d for d in deps if d.startswith("tmux-kit")), None)
@@ -313,8 +313,64 @@ jobs:
                   file=sys.stderr,
               )
               sys.exit(1)
+          if "==" not in kit_dep:
+              print(
+                  f"[project.dependencies] tmux-kit entry must be an exact "
+                  f"'==' pin: {kit_dep!r}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          pinned_version = kit_dep.split("==", 1)[1].strip()
 
-          print(f"OK: tmux-kit is a plain pin ({kit_dep!r}), no source override.")
+          sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+          kit_source = sources.get("tmux-kit")
+          if kit_source is None:
+              print(
+                  "no [tool.uv.sources] entry for tmux-kit. The managed-"
+                  "device (CISO) install path needs this to resolve "
+                  "tmux-kit from git automatically on a git-sourced "
+                  "muxplex install -- see AGENTS.md's 'tmux-kit pin/tag "
+                  "agreement' section.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if "path" in kit_source:
+              print(
+                  f"[tool.uv.sources] tmux-kit is a `path` source: "
+                  f"{kit_source!r}. This is almost always a leftover from "
+                  "the cross-repo dev loop (`uv add --editable "
+                  "../tmux-kit`) that should have been reverted before "
+                  "committing -- a local-dev leak, not a supported shape.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          if "git" not in kit_source:
+              print(
+                  f"[tool.uv.sources] tmux-kit entry must be a git source, "
+                  f"got: {kit_source!r}.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          tag = kit_source.get("tag")
+          expected_tag = f"v{pinned_version}"
+          if tag != expected_tag:
+              print(
+                  f"DRIFT: [project.dependencies] pins tmux-kit=="
+                  f"{pinned_version} but [tool.uv.sources] tmux-kit tag is "
+                  f"{tag!r} (expected {expected_tag!r}). These must agree "
+                  "-- a PyPI install and a git install of the same muxplex "
+                  "release would otherwise silently resolve DIFFERENT "
+                  "tmux-kit versions. See AGENTS.md's 'tmux-kit pin/tag "
+                  "agreement' section.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+
+          print(
+              f"OK: tmux-kit pin ({kit_dep!r}) and [tool.uv.sources] tag "
+              f"({tag!r}) agree."
+          )
           EOF
 
   test-integration:
