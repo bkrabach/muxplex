@@ -292,30 +292,57 @@ def short_socket_dir():
         shutil.rmtree(base, ignore_errors=True)
 
 
+# The modules whose namespaces BIND ``should_escape`` for a live production
+# call site (a ``from ... import should_escape`` followed by a call). This
+# list must track code moves: monkeypatching resolves per-module bindings,
+# so patching a module that no longer calls it protects nothing, and the
+# live caller keeps hitting the real function. ``test_safety_rails.py``'s
+# ``test_cgroup_escape_default_covers_every_live_call_site`` derives the
+# true set from an AST scan of both production trees and fails if this
+# constant drifts from reality -- see the 2026-08-08 incident in the
+# fixture docstring below.
+SHOULD_ESCAPE_BINDING_MODULES = ("tmuxkit.spawn", "muxplex.ttyd")
+
+
 @pytest.fixture(autouse=True)
 def _default_cgroup_escape_disabled(monkeypatch):
     """Default ``should_escape()`` to False for every test.
 
-    Without this, ``sessions.spawn_session_command()`` / ``ttyd.spawn_ttyd()``
-    would call the REAL ``cgroup_escape.should_escape()`` -- which, on any
+    Without this, ``tmuxkit.spawn.spawn_session()`` / ``ttyd.spawn_ttyd()``
+    would call the REAL ``cgroup.should_escape()`` -- which, on any
     dev/CI host that happens to have a usable systemd --user session, spawns
     a REAL ``systemd-run --user --scope`` probe process as a test side
-    effect. That is exactly the kind of host-touching behavior this suite's
-    other autouse fixtures exist to prevent (see this file's module
-    docstring). Tests that specifically exercise the escape-ENABLED path
-    override this within the test body -- see test_cgroup_escape.py and the
-    relevant cases in test_sessions.py / test_ttyd.py.
-    """
-    import muxplex.cgroup_escape as cgroup_escape_mod
+    effect, and then routes the spawn through ``create_subprocess_exec``
+    (the scope-wrapped branch) instead of ``create_subprocess_shell``. That
+    is exactly the kind of host-touching behavior this suite's other
+    autouse fixtures exist to prevent (see this file's module docstring).
+    Tests that specifically exercise the escape-ENABLED path override this
+    within the test body -- see test_cgroup_escape.py and the relevant
+    cases in test_sessions.py / test_ttyd.py.
 
-    cgroup_escape_mod.reset_probe_cache_for_tests()
-    for module_name in ("muxplex.sessions", "muxplex.ttyd"):
-        try:
-            monkeypatch.setattr(
-                module_name + ".should_escape",
-                AsyncMock(return_value=False),
-            )
-        except (ImportError, AttributeError):  # pragma: no cover
-            pass
+    INCIDENT (2026-08-08, the reason this fixture fails LOUD now): the
+    tmux-lib extraction (S1-S3) moved the spawn body out of
+    ``muxplex.sessions`` into ``tmuxkit.spawn``, which binds its own
+    ``should_escape`` (``from tmuxkit.cgroup import should_escape``). This
+    fixture's patch list still named ``muxplex.sessions`` -- which no
+    longer had the attribute -- and a ``try/except AttributeError: pass``
+    swallowed the miss silently. Result: on CI's Linux runners (working
+    ``systemd --user`` session, unlike macOS and the DTU container) every
+    ``POST /api/sessions`` test really executed its session template via
+    ``systemd-run --user --scope -- sh -c ...``, returned 200, and never
+    touched the test's ``create_subprocess_shell`` mock -- five test_api
+    tests red on CI while ``make test`` stayed green. A module listed here
+    that stops binding ``should_escape`` must therefore FAIL the suite
+    (monkeypatch.setattr raises), never be skipped: the swallow was the
+    bug's camouflage.
+    """
+    from tmuxkit import cgroup as cgroup_mod
+
+    cgroup_mod.reset_probe_cache_for_tests()
+    for module_name in SHOULD_ESCAPE_BINDING_MODULES:
+        monkeypatch.setattr(
+            module_name + ".should_escape",
+            AsyncMock(return_value=False),
+        )
     yield
-    cgroup_escape_mod.reset_probe_cache_for_tests()
+    cgroup_mod.reset_probe_cache_for_tests()

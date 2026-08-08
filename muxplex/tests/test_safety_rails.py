@@ -359,6 +359,83 @@ def test_tmux_library_never_imports_the_app_layer():
     )
 
 
+def _should_escape_call_site_modules() -> set[str]:
+    """AST scan of BOTH production trees for modules that CALL
+    ``should_escape()`` -- the muxplex app package (tests excluded) and
+    the ``lib/tmuxkit/`` workspace member -- returned as importable
+    module names (``muxplex.ttyd``, ``tmuxkit.spawn``, ...).
+
+    A *call site* is what matters, not an import: conftest's
+    ``_default_cgroup_escape_disabled`` neutralizes the escape by patching
+    the attribute in each CALLING module's namespace (from-import binding),
+    so the set of callers is exactly the set of modules that fixture must
+    patch to be effective.
+    """
+    app_pkg = Path(__file__).parent.parent
+    lib_pkg = Path(__file__).parent.parent.parent / "lib" / "tmuxkit"
+    assert lib_pkg.is_dir(), (
+        f"should_escape rail scan root missing: {lib_pkg} -- if the "
+        f"library moved, retarget this rail in the SAME commit."
+    )
+
+    roots = [("muxplex", app_pkg), ("tmuxkit", lib_pkg)]
+    callers: set[str] = set()
+    for pkg_name, root in roots:
+        for path in sorted(root.rglob("*.py")):
+            rel_parts = path.relative_to(root).parts
+            if pkg_name == "muxplex" and rel_parts[0] == "tests":
+                continue  # tests are not production call sites
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else func.attr
+                    if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name == "should_escape":
+                    mod_parts = [pkg_name, *rel_parts[:-1]]
+                    if path.name != "__init__.py":
+                        mod_parts.append(path.stem)
+                    callers.add(".".join(mod_parts))
+    return callers
+
+
+def test_cgroup_escape_default_covers_every_live_call_site():
+    """conftest's ``_default_cgroup_escape_disabled`` autouse fixture must
+    patch ``should_escape`` in EXACTLY the modules that actually call it.
+
+    INCIDENT (2026-08-08): the S1-S3 extraction moved the spawn body from
+    ``muxplex.sessions`` into ``tmuxkit.spawn``, the fixture's hardcoded
+    patch list went stale, and its ``except AttributeError: pass`` swallowed
+    the miss. On CI's Linux runners (a usable systemd --user session --
+    unlike macOS or the DTU container) every session-create test then ran
+    its template FOR REAL through ``systemd-run --user --scope`` and never
+    hit the test's ``create_subprocess_shell`` mock: five test_api tests
+    red on CI, green everywhere the extraction had been verified. This rail
+    makes the next code move fail here, loudly, naming the drift --
+    instead of failing four environment-dependent CI jobs later.
+    """
+    from . import conftest as ct
+
+    actual = _should_escape_call_site_modules()
+    declared = set(ct.SHOULD_ESCAPE_BINDING_MODULES)
+    assert actual == declared, (
+        f"conftest.SHOULD_ESCAPE_BINDING_MODULES is out of sync with the "
+        f"production call sites of should_escape(). Declared but no longer "
+        f"calling: {sorted(declared - actual)}; calling but NOT patched by "
+        f"the autouse default (these hit the REAL systemd-run probe on any "
+        f"host with a usable systemd --user session): "
+        f"{sorted(actual - declared)}. Update the constant in conftest.py "
+        f"in the SAME commit as the code move -- and never re-add the "
+        f"try/except swallow that hid this in 2026-08-08's CI failure."
+    )
+
+
 def test_library_tests_live_under_the_railed_tests_dir():
     """Plan §7.3 rail 2: `test_settings_path_is_isolated` and
     `_isolate_tmux_socket_dir` (conftest.py's autouse rails) must keep
