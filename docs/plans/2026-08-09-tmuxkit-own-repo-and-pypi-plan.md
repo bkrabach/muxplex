@@ -11,6 +11,14 @@ headline property — publishing 0.44.0 no longer repairs the broken muxplex
 naming facts and the disposition of the orphaned old name; §3.0 sequences
 the rename; §4 re-decides the version. Everything the rename does not touch
 is unchanged from the first writing.
+**Revised again 2026-08-08 (CISO answer):** the owner confirmed the
+managed-device constraint — no pypi.org at all, internal quarantined feed
+for third-party, first-party via `git+https` as a first-class shape.
+§§2.3–2.6 are rewritten for it (install shapes, doctor source-awareness for
+tmux-kit, update-shape preservation, and the honest proof limit). Status
+fact recorded: the owner has **already yanked muxplex 0.44.0 AND
+muxplex-client 0.44.0** on PyPI — S1's yank halves are done; the `tmuxkit`
+tombstone upload remains.
 **Sequel to:** `2026-08-08-tmux-lib-extraction-plan.md` — this is the §14.5
 "independent semver / own repo" step that plan named possible but did not
 recommend. The owner has now decided it. This plan designs it honestly,
@@ -156,9 +164,10 @@ The hinge question was whether one wheel can serve both worlds. Findings
   index — the git path was never a no-index path. After S3, tmux-kit is
   just one more index-resolved dependency, reaching CISO devices through
   whatever index/mirror already serves fastapi. The dual-declaration
-  mechanism is therefore **not the design; it is an optional hardening**
-  for one specific org posture (§2.3), with a uv-version-independent
-  fallback (`--with 'tmux-kit @ git+…'`) if (b) is false when tested.
+  mechanism is therefore **not the design**; the `--with` install-time
+  override is the standard managed-device shape when the internal feed
+  does not yet carry the needed version (§2.3–§2.5), uv-version-independent
+  either way.
 
 So the recommended muxplex `pyproject.toml` after the split is the boring
 one: `tmux-kit==<version>` in `[project.dependencies]`, **no
@@ -187,6 +196,9 @@ Every load-bearing claim, checked — with what was verified vs assumed.
 | 8 | Trusted Publishing precedent exists in-house | Verified | muxplex's `publish.yml` already uses OIDC (`id-token: write`, `environment: pypi`, `pypa/gh-action-pypi-publish`), with a comment documenting the 403-on-missing-publisher failure mode |
 | 9 | Old fleet tags keep working during the transition | True by construction | git tags are immutable; `uv tool install git+…/muxplex@v0.44.0` still sees `lib/` (old name and all) in that tag's tree after the rename and deletion land on `main` |
 | 10 | ~~Publishing 0.44.0 retroactively repairs the published muxplex 0.44.0 wheel~~ | **VOID — killed by the rename** | The wheel pins the OLD name `tmuxkit`; no `tmux-kit` release can satisfy it (ledger 5c). The public-install fix now lands only with muxplex **0.45.0** (which pins `tmux-kit`) — see §8's revised G1 timing. muxplex 0.44.0 on PyPI is yanked as a permanent dead release (§0.1) |
+| 11 | `uv tool upgrade` preserves the receipt's git source AND `--with` requirements | **UNPROVEN — the §2.5 load-bearing unknown.** uv docs say upgrade "respects the version constraints and sources provided when installing", which *suggests* yes — asserted by no one, uv-version-dependent, and exactly the "tool behaves as I assumed" class that already burned this effort once | Gate **GU** (E1–E4, §2.5) must answer it empirically before S5 merges; the post-install shape verification (§2.5 step 4) is the guard that holds regardless of the answer |
+| 12 | `upgrade()`'s uv-managed branch runs `uv tool install --reinstall --refresh --force muxplex` — a **bare name** | **Verified by code read** (`cli.py:~1548`) | In tension with its own "must never decide WHAT to install" comment (`cli.py:~1502`) for git-sourced uv-managed installs, and carries no `--with`. E3 tests what it actually does to a receipt; §2.5 step 3 forbids the bare-name form whenever any component's recorded source is git |
+| 13 | doctor's install-source machinery hardcodes `distribution("muxplex")` | **Verified** (`cli.py:245`); everything else in `_get_install_info()` is dist-agnostic | The §2.4 generalization is a one-line parameterization, not new machinery |
 
 ## 2. The mechanics, resolved
 
@@ -207,46 +219,198 @@ required, so none is added.** This removes the uv-version dependency from
 the critical path entirely: both install paths run on standards
 metadata.
 
-### 2.3 The stricter CISO posture, and the fallback ladder
+### 2.3 The CISO constraint, CONFIRMED — and the three supported install shapes
 
-If (and only if — confirm with the actual policy, §11) the managed-device
-requirement is *"first-party packages must come from vetted git, not from
-an index"*, three mechanisms, in order of preference:
+*(Revised 2026-08-08: the owner answered the §2.4 pre-work question. The
+"confirm which reading" hedge is retired.)* The actual constraint:
+**managed devices cannot reach public pypi.org at all; they resolve from an
+internal feed that serves only versions past a quarantine period.** So:
 
-1. **Install-time override (recommended; uv-version-independent):**
-   ```
-   uv tool install git+https://github.com/bkrabach/muxplex@v0.45.0 \
-     --with 'tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.1.0'
-   ```
-   A direct-URL requirement at the *operation* level pins tmux-kit's source
-   regardless of how uv treats project sources. Verify post-install via
-   the tool venv's `tmux_kit-*.dist-info/direct_url.json` (dist-info
-   directories use the underscore form). This is one
-   documented line in the CISO install runbook — no repo mechanism at all.
-2. **Project-level git source (`[tool.uv.sources] tmux-kit = { git = …,
-   tag = … }`)** — only if gate **G2b** (§8) proves the fleet's uv version
-   honors it on a git install of muxplex. If proven, it makes the override
-   unnecessary; if not, it is dead weight and is not merged.
-3. **Offline wheelhouse** (`uv export` + `--find-links`) — the only true
-   *no-index* mechanism, needed only if a device genuinely cannot reach
-   any index. Out of scope here (such a device cannot install fastapi
-   today either); named so nobody mistakes the git path for it.
+- **Third-party deps** (fastapi, uvicorn, cryptography, …) resolve from the
+  internal feed via the device's own index configuration
+  (`UV_INDEX_URL`/pip config) — that leg is the device's, not ours, and it
+  is where quarantine applies.
+- **First-party packages** (`muxplex`, `muxplex-client`, `tmux-kit`) must
+  each be installable **via `git+https` as a first-class supported shape**
+  — which is precisely what lets first-party releases skip the feed's
+  quarantine while third-party waits. tmux-kit's `dependencies = []`
+  (verified, test-enforced) means a git-sourced tmux-kit adds **zero**
+  index fetches.
+- **PyPI stays PRIMARY for the public.** Nothing in any published wheel
+  changes for CISO support: wheels pin plain versions (`tmux-kit==0.1.0`),
+  and the git shape is an **install-time** construct, never wheel metadata.
 
-### 2.4 The CISO story, stated honestly
+The three shapes, verbatim for the runbook:
 
-The earlier "PyPI is blocked on managed devices" finding cannot mean "no
-index at all": the git path those devices use today already pulls fastapi,
-uvicorn, cryptography, and friends from an index or mirror. The honest
-reading is *"muxplex-the-package must be installed from vetted git"* (with
-ordinary deps flowing through PyPI or an org mirror). Under that reading,
-tmux-kit-on-PyPI (or on the same mirror, once vetted like fastapi was)
-needs nothing special. Under the stricter first-party-from-git reading,
-§2.3's ladder applies. **Pre-work item for the owner: confirm which
-reading is the actual policy** — one sentence from the device policy
-decides whether mechanism 1 goes in the runbook or nothing is needed.
+```
+# 1. muxplex (the app; uv tool):
+uv tool install 'git+https://github.com/bkrabach/muxplex@v0.45.0' \
+  --with 'tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.1.0'
 
-And the transitive question: tmux-kit's `dependencies = []` (verified,
-enforced by test) — a git-sourced tmux-kit adds **zero** index fetches.
+# 2. tmux-kit (library dep of another project):
+tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.1.0
+
+# 3. muxplex-client (lockstep with muxplex — same repo, same tag):
+muxplex-client @ git+https://github.com/bkrabach/muxplex@v0.45.0#subdirectory=client
+```
+
+The `--with` in shape 1 is a direct-URL requirement at the *operation*
+level — uv-version-independent, effective regardless of how uv treats
+project sources. Verify post-install via the tool venv's
+`tmux_kit-*.dist-info/direct_url.json` (dist-info uses the underscore
+form). The invariant tying the two refs together: muxplex pins
+`tmux-kit==X.Y.Z` exactly, tmux-kit tags `vX.Y.Z`, so **the correct
+tmux-kit ref is fully determined by the muxplex version being installed**;
+a wrong pairing fails uv resolution with a version conflict — loud, at
+install time, before anything changes on disk.
+
+Rejected alternatives, unchanged: a project-level
+`[tool.uv.sources] tmux-kit = { git = … }` entry stays out (unproven —
+ledger #4 — and now unnecessary: the `--with` shape is confirmed as the
+supported mechanism; former gate G2b is retired unless someone reopens
+this). An offline wheelhouse stays out of scope — the managed devices DO
+have an index (the internal feed); they are not air-gapped.
+
+### 2.4 `muxplex doctor` reports tmux-kit's install source — extend the existing machinery
+
+muxplex already has exactly one install-source mechanism, and this design
+extends it rather than inventing a sibling. Read first, specified from the
+code:
+
+- `_get_install_info()` (`cli.py:199`) reads PEP 610 `direct_url.json`
+  from `distribution("muxplex")` (`cli.py:245`), classifies five shapes
+  (absent→`pypi`, `vcs_info`→`git`, `dir_info`+editable→`editable`,
+  `dir_info`→`local-dir`, `archive_info`→`archive`), and returns
+  `{source, version, commit, url, ref}`. Its docstring names it "the
+  single source of truth `upgrade`/`doctor` use."
+- `_provenance_label()` (`cli.py:383`) renders it for doctor:
+  `git+<url> @ <ref> (<commit8>)`, `PyPI`, etc.
+
+**The change:** generalize `_get_install_info()` to take the distribution
+name (`_get_install_info(dist_name: str = "muxplex")`) — the `distribution("muxplex")`
+literal at `cli.py:245` is the only line that changes; the five-shape
+classification, the `ref` semantics, and the never-guess discipline are
+untouched. `importlib.metadata` normalizes names, so
+`distribution("tmux-kit")` finds `tmux_kit-*.dist-info` in the same tool
+venv doctor already runs inside. Doctor then prints, directly under its
+existing muxplex provenance line, one line per first-party dependency via
+`_provenance_label()` **verbatim**:
+
+```
+  Installed: v0.45.0 via git+https://github.com/bkrabach/muxplex @ v0.45.0 (d5a6bbe1)
+  tmux-kit : v0.1.0  via git+https://github.com/bkrabach/tmux-kit @ v0.1.0 (ab12cd34)
+```
+
+Plus one new doctor warning: if installed tmux-kit's version differs from
+muxplex's own `tmux-kit==` pin (read from `dist.requires` metadata), warn
+loudly — the venv was modified outside `muxplex upgrade`. Tests extend the
+existing `_fake_distribution` fixture family (`test_cli.py:1045-1063`),
+whose direct_url.json samples are, per its own comment, "captured from
+actual pip/uv installs of each kind" — capture the tmux-kit git and PyPI
+shapes the same way, from real installs, never hand-written. Any
+glob-based version read mirrors `_installed_version_on_disk()`
+(`cli.py:421`) with the `tmux_kit-*` underscore pattern.
+
+### 2.5 `muxplex upgrade` must preserve the install shape — the load-bearing unknown
+
+**The shape to preserve is a PAIR:** (muxplex's source, tmux-kit's
+source). Design rule: **no new state file.** The full install line is
+*reconstructed at upgrade time from the two `direct_url.json` records* —
+exactly how `_upgrade_target()` (`cli.py:584`) reconstructs muxplex's
+target today. A recorded command line can go stale after a manual
+reinstall and then lie; `direct_url.json` is written by the installer
+itself and describes the last install by construction. Same
+source-of-truth, one more distribution.
+
+**What the code does today, read precisely — and the suspect branch:**
+`upgrade()` computes `install_target` strictly from the recorded source
+and shape-checks it (`_target_matches_source`, `cli.py:646`), but its
+uv-tool-managed dispatch (`cli.py:~1548`) then runs
+`uv tool install --reinstall --refresh --force muxplex` — a **bare name**
+that (a) is in tension with its own comment ("must never decide WHAT to
+install") for a git-sourced uv-managed install, and (b) carries no
+`--with`, so any receipt extras are at the mercy of uv's replace-vs-
+preserve semantics. This is exactly where a CISO install would silently
+re-point tmux-kit at an index the device cannot reach — a **bricked
+update** — or, on an exempt host, silently convert git→PyPI.
+
+**The empirical questions the build MUST answer** (my expectations stated,
+explicitly not relied upon — this is the "tool behaves as I assumed" class
+that has already burned this effort once). On a PyPI-reachable host, with
+the fleet's pinned uv version recorded:
+
+| Exp | Command | Question | My expectation (to be DISPROVEN or confirmed) |
+|---|---|---|---|
+| E1 | shape-1 install (§2.3) | Do receipt (`uv-receipt.toml`) + both `direct_url.json` record the git sources and the `--with`? | yes |
+| E2 | `uv tool upgrade muxplex` | Are the git source AND the `--with` requirement preserved? | yes (uv docs: upgrade "respects the version constraints and sources provided when installing") — **but unproven, and uv-version-dependent** |
+| E3 | `uv tool install --reinstall --refresh --force muxplex` (today's upgrade branch) | Does the bare name replace the receipt — dropping git source and `--with`? | yes, it drops both — which condemns the current branch for any non-PyPI pair |
+| E4 | shape-1 target *without* the `--with` | Does tmux-kit fall through to the index? | yes — proving the override must be re-issued, never assumed sticky |
+
+**The mechanism, designed to not depend on E2's answer staying true:**
+
+1. `upgrade()` computes `info_mux` and `info_kit` (both via the
+   generalized `_get_install_info`).
+2. If `info_kit.source == "pypi"`: today's shapes, unchanged — the wheel's
+   `==` pin governs; no `--with`.
+3. If `info_kit.source == "git"`: the bare-name shortcut is **forbidden**;
+   the command is constructed in full:
+   `uv tool install --force --refresh <mux_target> --with 'tmux-kit @ git+<kit_url>@<kit_ref>'`
+   — `<mux_target>` from `_upgrade_target()` unchanged; `<kit_ref>`
+   derived from the **target** muxplex's own `tmux-kit==` pin (the §2.3
+   invariant), read via a shallow
+   `git clone --depth 1 --branch <mux_ref>` of the muxplex repo — the
+   same git+https transport the device has already proven, no new network
+   assumption. (Attempt-and-retry-on-conflict is an acceptable builder
+   substitute; the invariant — *the `--with` ref comes from the target
+   muxplex's pin, over git+https only* — is fixed.) If the pin cannot be
+   read, keep the currently recorded kit ref and let uv's resolver
+   conflict **loudly**; never proceed by silently dropping the override.
+4. **Post-install shape verification — the permanent guard, and the LOUD
+   requirement:** after install, re-read both `direct_url.json` records
+   and compare *source shapes* against the pre-upgrade pair. Any change
+   (git→pypi in either slot) is an install **failure** — same treatment
+   as `_verify_version_moved()` returning False: print both shapes,
+   exit non-zero. Because uv's receipt semantics can change across uv
+   versions, E1–E4 inform the *implementation* but this verification is
+   what enforces the property *forever*, on every future uv. Doctor
+   (§2.4) prints both lines every run, so a shape drifted by a hand-run
+   install around muxplex's own command is also visible.
+5. `_target_matches_source()` gains the pair check (defense-in-depth,
+   mirroring its existing role): a constructed command containing no
+   `--with` while `info_kit.source == "git"` refuses before running.
+
+`_check_for_update()`'s discipline extends unchanged: if tmux-kit's ref
+state can't be evaluated, the message is "not checkable" — never an
+upgrade nudge.
+
+### 2.6 The honest proof limit — what this plan cannot turn green
+
+**None of the seven fleet hosts is a CISO-managed, no-pypi.org device**;
+every exempt host reaches PyPI. Therefore:
+
+- **Provable by the build** (PyPI-reachable host): E1–E4; the constructed
+  upgrade command preserving the pair; the post-install shape
+  verification firing on a deliberately-broken shape; doctor's two-line
+  provenance output for every source combination.
+- **NOT provable by the build:** the end-to-end path where pypi.org is
+  actually unreachable and third-party deps resolve from the quarantined
+  internal feed. That resolution leg lives in the device's index
+  configuration, not in anything this repo ships. A new muxplex that
+  bumps a third-party floor can be uninstallable on a managed device
+  until the feed's quarantine clears that version — that is the feed
+  working as designed, and it fails as a uv resolution error naming the
+  package (loud), not a hang.
+
+**The owner's validation, on a real managed device** (the exact commands;
+this plan's tables must not imply a green it cannot produce):
+
+```
+uv tool install 'git+https://github.com/bkrabach/muxplex@v0.45.0' \
+  --with 'tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.1.0'
+muxplex doctor          # expect: BOTH provenance lines show git+https @ tag
+muxplex upgrade --force # exercise the preservation path
+muxplex doctor          # expect: both lines unchanged in shape; versions may move
+```
 
 ## 3. Repo creation and history
 
@@ -440,8 +604,9 @@ PR. Ordered within one PR, after tmux-kit 0.1.0 is live on PyPI:
 1. `pyproject.toml`: remove `"lib"` from `[tool.uv.workspace] members`;
    delete `tmux-kit = { workspace = true }` from `[tool.uv.sources]`; set
    the dependency to `tmux-kit==0.1.0` with the comment rewritten to name
-   the new repo and the pin-bump discipline. **No git source entry**
-   (§2.3 — only if G2b proves it and the CISO posture demands it).
+   the new repo and the pin-bump discipline. **No git source entry** —
+   the confirmed CISO mechanism is the install-time `--with` shape
+   (§2.3); the project-level source stays rejected (G2b retired).
 2. Delete `lib/` (the split already carried it out). Tombstone in
    `CHANGELOG.md`, not a stub directory.
 3. `uv lock` — tmux-kit now resolves from PyPI into the lockfile with a
@@ -463,6 +628,17 @@ PR. Ordered within one PR, after tmux-kit 0.1.0 is live on PyPI:
    works by *temporarily* adding one, and the predictable failure is
    committing it — which would silently turn every git install into a
    moving-target resolve and break `uv build` reproducibility.
+7. **Doctor source awareness (§2.4):** generalize `_get_install_info()`
+   to a dist-name parameter; add the tmux-kit provenance line via
+   `_provenance_label()`; add the pin-vs-installed drift warning; extend
+   the `_fake_distribution` fixtures with real-install-captured tmux-kit
+   direct_url.json samples.
+8. **Upgrade shape preservation (§2.5, implementation shaped by S4/GU's
+   results):** pair-aware command construction (bare-name form forbidden
+   when either source is git; `--with` re-issued from tmux-kit's recorded
+   source with the ref derived from the target muxplex's pin);
+   `_target_matches_source()` pair check; post-install shape verification
+   that fails the upgrade loudly on any source-shape change.
 
 **The cross-repo dev loop, documented (it gets worse; say so):** working
 on both at once is no longer "edit two directories in one repo." The
@@ -570,7 +746,9 @@ build — the failure arrives at release time, not PR time.
 | **G0** | Tree identity: the split head (muxplex `lib/` at R2+) == tmux-kit `v0.1.0` content, modulo the three enumerated identity-commit deltas (§3.1); then first upload lands | The published 0.1.0 is byte-what the fleet tested (modulo rename); the `tmux-kit` name (ledger 5b) is claimed by us | Before S3's publish |
 | **G1** | Fresh container, **no git credentials**: `uv tool install muxplex && muxplex --version && muxplex doctor` | Public PyPI path resolves muxplex 0.45.0 + tmux-kit 0.1.0 from PyPI alone. **Timing changed by the rename:** this can only pass after muxplex 0.45.0 is published (ledger #10 void) — the public-install fix now lands at S5, not S1 | After S5 publishes v0.45.0 |
 | **G2** | Fleet-representative host: `uv tool install git+https://github.com/bkrabach/muxplex@v0.45.0` → doctor | Git path resolves with tmux-kit from the index; the workspace removal broke nothing | After S5 tags v0.45.0, before fleet roll |
-| **G2b** *(only if §2.3 posture 2 pursued)* | Same install with the git source present; inspect `tmux_kit-*.dist-info/direct_url.json` in the tool venv | Whether the fleet's uv honors a project git source on git installs — the unproven claim (b) | Decides posture 2 vs posture 1; run on the fleet's pinned uv version |
+| **G2b** *(RETIRED)* | — | The §2.3 revision confirms the install-time `--with` shape as the supported CISO mechanism; the project-level git source stays rejected (ledger #4) and needs no gate | Reopen only if someone proposes the project source again |
+| **GU** | The E1–E4 experiment matrix (§2.5), on the fleet's pinned uv version (recorded in the results): shape-1 install → inspect receipt + both `direct_url.json`; `uv tool upgrade`; today's bare-name reinstall branch; shape-1 minus `--with` | uv's actual preserve-vs-replace semantics — ledger #11/#12, the load-bearing unknown. Results decide the §2.5 implementation; the post-install shape verification holds regardless | Before the S5 PR implementing the new `upgrade()` may merge |
+| **GC** *(owner-run — the build CANNOT produce this green, §2.6)* | On a real managed device: the §2.6 four-command validation (install shape 1 → doctor → `upgrade --force` → doctor) | The true no-pypi.org path end to end, including third-party resolution from the quarantined internal feed | After S6's fleet roll; the plan's tables never claim it |
 | **G3** | Scratch project: `uv init && uv add tmux-kit && uv run python -c "import tmux_kit, sys; assert not any(m.startswith(('fastapi','httpx','pam')) for m in sys.modules); print(tmux_kit.__version__)"` | Standalone library install from PyPI, and the §0.0 name arrangement (`tmux-kit` dist → `tmux_kit` import) works as documented. **Not** `uv tool install tmux-kit` — no entry points, refusal is correct behavior (ledger #7) | After S3 |
 | **G4** | Fleet roll, host-by-host: record session count + `muxplex doctor` before; **verify `KillMode=process` / cgroup-escape before the service restart**; re-install per that host's path; restart; verify count identical + doctor green | Zero session loss across the transition | Last |
 
@@ -636,12 +814,12 @@ Strictly ordered; each step gated before the next.
 
 | Step | Action | Gate |
 |---|---|---|
-| **S0** | Owner pre-work: confirm the CISO policy reading (§2.4); create `bkrabach/tmux-kit` + `pypi` environment; add the PyPI pending publisher for `tmux-kit` (§6.3 table); mint-and-plan-to-revoke the tombstone token (§6.3) | Publisher visible on PyPI |
+| **S0** | Owner pre-work: ~~confirm the CISO policy reading~~ **done** (§2.3 — no pypi.org on managed devices; internal quarantined feed; first-party via git+https); create `bkrabach/tmux-kit` + `pypi` environment; add the PyPI pending publisher for `tmux-kit` (§6.3 table); mint-and-plan-to-revoke the tombstone token (§6.3) | Publisher visible on PyPI |
 | **S1** | **Name hygiene, same-day, no code:** upload the `tmuxkit` 0.0.0 tombstone, yank the tombstone release, yank muxplex 0.44.0 (§0.1). Independent of all rename/split work — do not let it wait on any of it | **GT** — the confusion window is closed before any other work begins |
 | **S2** | **Rename in the monorepo** (§3.0): R1 pure `git mv`, R2 mechanical rename (imports, shims, rails, conftest, harness, pyproject, lock) | **GR** — full suite + differential + both rails green; interim git install works |
 | **S3** | Split + publish: `git subtree split --prefix=lib`, identity commit (flatten, `0.1.0`, URLs), port `test.yml`+`publish.yml`, tmux-kit CI green (ubuntu+macos, integration+differential), tag `v0.1.0` **after** G0's tree identity check; publish | **G0**, then **G3**. The `tmux-kit` name is claimed with real content |
-| **S4** | If CISO posture 2 is wanted: run **G2b** on the fleet's uv version against a scratch branch | Decides §2.3 mechanism 1 vs 2; recorded in the runbook |
-| **S5** | muxplex v0.45.0 PR (§5: workspace removal, lib deletion, pin `tmux-kit==0.1.0`, lock, contract test, rails, CI guard, publish preflight); tag + publish | muxplex CI green (requires S3); **G2** passes; **G1** passes — *this* is the step that restores public `uv tool install muxplex`, a consequence of the rename (ledger #10) |
+| **S4** | Run the **GU** experiment matrix (§2.5, E1–E4) on the fleet's pinned uv version; record results in the S5 PR | **GU** — decides the `upgrade()` implementation shape before it is written |
+| **S5** | muxplex v0.45.0 PR (§5: workspace removal, lib deletion, pin `tmux-kit==0.1.0`, lock, contract test, rails, CI guard, publish preflight, **doctor + upgrade source-awareness per §2.4/§2.5**); tag + publish | muxplex CI green (requires S3 + S4); **G2** passes; **G1** passes — *this* is the step that restores public `uv tool install muxplex`, a consequence of the rename (ledger #10) |
 | **S6** | Fleet roll, host-by-host | **G4** — zero session delta, doctor green per host |
 | **S7** | Docs closure: CONSUMERS.md flip (§7), extraction plan gets a two-line addendum pointing here, second app's pin guidance updated to `tmux-kit>=0.1.0` from PyPI (or the git form per its posture) | — |
 
@@ -659,10 +837,10 @@ un-hijackable), which is the property that actually matters in the gap.
 | The PyPI name `tmux-kit` (≡ `tmux_kit`, ledger 5c) | First upload binds it forever; filenames are immutable even after deletion (a deleted `tmux_kit-0.1.0.tar.gz` can never be re-uploaded — a botched 0.1.0 means 0.1.1 + a muxplex pin bump, never a re-release) | Claim it at S3 with real content; gated by G0's tree identity |
 | The PyPI name `tmuxkit` (old, distinct — ledger 5c) | While unclaimed it is a live dependency-confusion target against the published muxplex 0.44.0 wheel; **project deletion frees a PyPI name**, so the claim must be held forever | Tombstone at S1 (0.0.0, then yank the release); **never delete the project**; never publish real content or a 0.44.0 under it (§0.1) |
 | First `tmux-kit` release = 0.1.0 | Whatever ships first is permanent | §4 — re-decided after the rename voided the 0.44.0 rationale |
-| muxplex 0.44.0's published wheel | Cannot be changed; can only be yanked | **Yanked at S1** — it pins a name we will never publish real content under; it is a permanent dead release, made fail-loud and un-hijackable rather than repaired (§0.1, ledger #10) |
+| muxplex 0.44.0's published wheel | Cannot be changed; can only be yanked | **Yank EXECUTED by the owner** (muxplex-client 0.44.0 also yanked — beyond this plan's ask, harmless, recorded). It pins a name we will never publish real content under; a permanent dead release, fail-loud and — once the tombstone lands — un-hijackable (§0.1, ledger #10) |
 | The import name `tmux_kit` | Baked into every consumer's source the moment anyone imports it | Fixed by the language rule (§0.0); renamed once, at R1/R2, before any external consumer exists |
 | **Do not** run the split before GR is green | A rename half-landed across two repos has no commit anywhere that the full suite validated | §3.0 — the split consumes only already-renamed history |
-| **Do not** add `[tool.uv.sources]` git entry for tmux-kit "for safety" | It is unproven (ledger #4), version-dependent, and unnecessary for both install paths once tmux-kit is on PyPI | Only via S4/G2b evidence AND a confirmed CISO requirement |
+| **Do not** add `[tool.uv.sources]` git entry for tmux-kit "for safety" | It is unproven (ledger #4), version-dependent, and unnecessary: the CONFIRMED CISO mechanism is the install-time `--with` shape (§2.3), and PyPI covers everything else | Stays out; G2b retired. Reopen only with fresh evidence AND a requirement the `--with` shape cannot meet |
 | **Do not** loosen the pin to a range to "reduce the release dance" | Recreates silent drift — a fleet host running lib code no muxplex suite ever saw | §4; the dance is the honest cost, the canary is the mitigation |
 | **Do not** copy any tmux-kit file into muxplex (or the second app) during the transition | The byte-similar-copy incident rule (extraction plan §14.3) applies doubly during a split | Move-only; the contract test + import smoke would catch a shadow copy |
 | **Do not** publish tmux-kit from *both* repos "temporarily" | Two build provenances for one PyPI name is the confusion the trusted-publisher triple exists to prevent | muxplex's publish.yml never gains a tmux-kit build (the one-off tombstone for the *old* name is a different project and a single yanked upload); the §0.2 alternative is a *retreat*, not a parallel path |
@@ -670,16 +848,22 @@ un-hijackable), which is the property that actually matters in the gap.
 
 ## 12. Owner pre-work checklist (nothing here is agent-doable)
 
-1. Confirm the managed-device policy reading — §2.4's one sentence.
+1. ~~Confirm the managed-device policy reading~~ — **DONE**: no pypi.org
+   on managed devices; internal quarantined feed for third-party;
+   first-party via `git+https` first-class; PyPI primary for the public
+   (§2.3).
 2. Create `bkrabach/tmux-kit` (public, empty).
 3. GitHub: `pypi` environment on the new repo.
 4. PyPI: pending publisher — `tmux-kit` / `bkrabach` / `tmux-kit` /
    `publish.yml` / `pypi` (§6.3, exact strings).
 5. PyPI: mint an account-scoped token for the one-time `tmuxkit`
    tombstone upload; revoke it the same day (§6.3). Then yank the
-   tombstone release and yank muxplex 0.44.0 (§0.1) — the yank buttons
-   are owner-only web-UI actions.
-6. Decide whether the CISO runbook wants §2.3 mechanism 1 documented
-   (one install line) — this is a doc decision, not a code one.
+   tombstone release (§0.1). ~~Yank muxplex 0.44.0~~ — **DONE** (owner
+   also yanked muxplex-client 0.44.0; recorded in §11).
+6. Publish the §2.3 three-shape install runbook to wherever managed-device
+   operators actually look — doc action, not code.
 7. Schedule the fleet roll window; re-read AGENTS.md mechanism 1 before
    the first `systemctl restart` of the roll.
+8. **After S6: run the GC validation (§2.6's four commands) on a real
+   managed device** — the one green in this plan only the owner can
+   produce.
