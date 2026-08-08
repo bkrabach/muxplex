@@ -24,9 +24,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import muxplex.pruning as pruning_mod
+import muxplex.settings as settings_mod
 from muxplex.identity import load_device_id
 from muxplex.main import _run_poll_cycle, app
-from muxplex.settings import SETTINGS_PATH, load_settings, save_settings
+from muxplex.settings import load_settings, save_settings
 
 _SOCKET = "auto-views-test"
 
@@ -250,7 +251,7 @@ def test_auto_view_self_heals_across_create_and_kill_with_contrast_and_union_arm
     )
 
     views_updated_at_before = load_settings()["views_updated_at"]
-    on_disk_views_before = SETTINGS_PATH.read_text()
+    on_disk_views_before = settings_mod.SETTINGS_PATH.read_text()
 
     # --- Step 3: run one poll cycle. GET /api/view -> ["av-alpha"].
     #     GET /api/sessions -> av-alpha.views == ["Auto"],
@@ -271,7 +272,7 @@ def test_auto_view_self_heals_across_create_and_kill_with_contrast_and_union_arm
 
     assert _view_names(api_client, "Auto") == ["av-alpha", "av-beta"]
     assert load_settings()["views_updated_at"] == views_updated_at_before
-    assert SETTINGS_PATH.read_text() == on_disk_views_before
+    assert settings_mod.SETTINGS_PATH.read_text() == on_disk_views_before
 
     # --- Step 5: kill av-alpha (rule-matched) AND pinned-only (pinned);
     #     poll TWICE (clear the ~2s session-list cache). GET /api/view ->
@@ -286,7 +287,7 @@ def test_auto_view_self_heals_across_create_and_kill_with_contrast_and_union_arm
 
     assert _view_names(api_client, "Auto") == ["av-beta"]
     assert load_settings()["views_updated_at"] == views_updated_at_before
-    assert SETTINGS_PATH.read_text() == on_disk_views_before
+    assert settings_mod.SETTINGS_PATH.read_text() == on_disk_views_before
 
     pruning_state = json.loads(redirect_pruning_state_path.read_text())
     first_missed = pruning_state.get("first_missed_at", {})

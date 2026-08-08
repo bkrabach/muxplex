@@ -13,9 +13,14 @@ Default test run (unit tests only):
 
 import asyncio
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 import time
 import uuid
+from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import patch
 
 import pytest
@@ -32,12 +37,21 @@ from muxplex.sessions import enumerate_sessions, get_snapshots
 # ---------------------------------------------------------------------------
 
 
-def tmux(socket: str, *args: str) -> str:
-    """Run a tmux command against the specified socket and return stdout."""
+def tmux(socket: str, *args: str, env: dict[str, str] | None = None) -> str:
+    """Run a tmux command against the specified socket and return stdout.
+
+    ``env=None`` (the default) inherits the ambient environment unchanged,
+    preserving this helper's original behavior for callers that create and
+    consume their own socket entirely within one test function (where the
+    ambient env is stable for the test's duration). Callers built on the
+    module-scoped ``tmux_server`` fixture MUST pass its pinned ``.env``
+    explicitly -- see ``TmuxServer``'s docstring for why.
+    """
     result = subprocess.run(
         ["tmux", "-L", socket, *args],
         capture_output=True,
         text=True,
+        env=env,
     )
     return result.stdout
 
@@ -47,14 +61,47 @@ def tmux(socket: str, *args: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+class TmuxServer(NamedTuple):
+    """A module-scoped isolated tmux server plus the exact env it lives
+    under.
+
+    Deliberately NOT relying on the ambient ``TMUX_TMPDIR`` environment
+    variable for anything beyond initial fixture setup: conftest.py's
+    autouse ``_isolate_tmux_socket_dir`` fixture rewrites ``TMUX_TMPDIR`` to
+    a brand-new per-test scratch directory (and deletes the OLD one) at the
+    start/end of EVERY test, including every test in THIS module. Because
+    this fixture is module-scoped but that isolation fixture is
+    function-scoped, the ambient environment a second (or third...) test in
+    this module sees is never the one this server was started under -- any
+    subprocess call relying on inherited ``TMUX_TMPDIR`` would silently
+    connect to (or start) a different, empty tmux server sharing only the
+    socket NAME, not the actual server this fixture created. Every helper
+    below takes this handle explicitly and passes ``env=`` on every
+    subprocess call so the module's tmux traffic is pinned to one real,
+    consistent server regardless of what the per-test fixture does around
+    it.
+    """
+
+    socket: str
+    env: dict[str, str]
+
+
 @pytest.fixture(scope="module")
 def tmux_server():
     """Start an isolated tmux server on socket 'test-server', create session 'test' (220x50).
 
     Sets monitor-bell on so that bell characters sent to the session are detected.
     Tears down the server after all module tests complete.
+
+    Owns its OWN ``TMUX_TMPDIR`` directory, independent of (and never
+    touched by) the per-test isolation fixture in conftest.py -- see
+    ``TmuxServer``'s docstring for why that independence is required.
     """
     socket = "test-server"
+    tmux_tmpdir = Path(tempfile.mkdtemp(prefix="tmux-server-fixture-", dir="/tmp"))
+    env = {**os.environ, "TMUX_TMPDIR": str(tmux_tmpdir)}
+    env.pop("TMUX", None)
+
     # Start a new tmux server with an isolated socket and create the test session
     subprocess.run(
         [
@@ -71,18 +118,22 @@ def tmux_server():
             "50",
         ],
         check=True,
+        env=env,
     )
     # Enable bell monitoring so window_bell_flag is set when a bell is received
     subprocess.run(
         ["tmux", "-L", socket, "set-window-option", "-t", "test", "monitor-bell", "on"],
         check=True,
+        env=env,
     )
-    yield socket
+    yield TmuxServer(socket=socket, env=env)
     # Teardown: kill the isolated server (suppress errors if already dead)
     subprocess.run(
         ["tmux", "-L", socket, "kill-server"],
         capture_output=True,
+        env=env,
     )
+    shutil.rmtree(tmux_tmpdir, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
@@ -111,11 +162,15 @@ def use_tmp_state(tmp_path, short_socket_dir, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def make_run_tmux_for_socket(socket: str):
+def make_run_tmux_for_socket(socket: str, env: dict[str, str] | None = None):
     """Return an async run_tmux substitute that routes all tmux calls through *socket*.
 
     Prepends ``-L <socket>`` to every tmux invocation so the test server
-    is used instead of the default server.
+    is used instead of the default server. ``env=None`` (the default)
+    inherits the ambient environment unchanged, matching this helper's
+    original behavior. Callers built on the module-scoped ``tmux_server``
+    fixture MUST pass its pinned ``.env`` explicitly -- see
+    ``TmuxServer``'s docstring for why.
     """
 
     async def patched_run_tmux(*args: str) -> str:
@@ -126,6 +181,7 @@ def make_run_tmux_for_socket(socket: str):
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout_bytes, stderr_bytes = await proc.communicate()
         if proc.returncode != 0:
@@ -143,7 +199,7 @@ def make_run_tmux_for_socket(socket: str):
 @pytest.mark.integration
 async def test_enumerate_sessions_finds_test_session(tmux_server):
     """enumerate_sessions discovers the 'test' session on the isolated tmux server."""
-    patched_run_tmux = make_run_tmux_for_socket(tmux_server)
+    patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
     with patch("muxplex.sessions.run_tmux", side_effect=patched_run_tmux):
         sessions = await enumerate_sessions()
     assert "test" in sessions
@@ -152,22 +208,40 @@ async def test_enumerate_sessions_finds_test_session(tmux_server):
 @pytest.mark.integration
 async def test_capture_pane_returns_content(tmux_server):
     """tmux capture-pane returns output that includes what was echoed to the session."""
-    tmux(tmux_server, "send-keys", "-t", "test", "echo hello-world", "Enter")
+    tmux(
+        tmux_server.socket,
+        "send-keys",
+        "-t",
+        "test",
+        "echo hello-world",
+        "Enter",
+        env=tmux_server.env,
+    )
     await asyncio.sleep(0.5)
 
     # Use the tmux helper directly: capture-pane -p captures the pane content to stdout
-    content = tmux(tmux_server, "capture-pane", "-p", "-t", "test")
+    content = tmux(
+        tmux_server.socket, "capture-pane", "-p", "-t", "test", env=tmux_server.env
+    )
     assert "hello-world" in content
 
 
 @pytest.mark.integration
 async def test_bell_flag_detected_after_printf_bell(tmux_server):
     """poll_bell_flag returns True after a bell character is sent to the test session."""
-    tmux(tmux_server, "send-keys", "-t", "test", r"printf '\a'", "Enter")
+    tmux(
+        tmux_server.socket,
+        "send-keys",
+        "-t",
+        "test",
+        r"printf '\a'",
+        "Enter",
+        env=tmux_server.env,
+    )
     # Allow tmux time to propagate the bell and set window_bell_flag
     await asyncio.sleep(1.0)
 
-    patched_run_tmux = make_run_tmux_for_socket(tmux_server)
+    patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
     with patch("muxplex.bells.run_tmux", side_effect=patched_run_tmux):
         result = await poll_bell_flag("test")
     assert result is True
@@ -177,7 +251,7 @@ async def test_bell_flag_detected_after_printf_bell(tmux_server):
 async def test_full_poll_cycle_via_api(tmux_server):
     """_run_poll_cycle with patched run_tmux adds 'test' to session_order in state
     and populates the in-memory snapshot cache with non-empty content."""
-    patched_run_tmux = make_run_tmux_for_socket(tmux_server)
+    patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
     with (
         patch("muxplex.sessions.run_tmux", side_effect=patched_run_tmux),
         patch("muxplex.bells.run_tmux", side_effect=patched_run_tmux),
@@ -199,7 +273,7 @@ async def test_full_poll_cycle_via_api(tmux_server):
 @pytest.mark.integration
 async def test_state_file_written_atomically_by_poll_cycle(tmux_server):
     """After _run_poll_cycle, state.json exists, no .tmp file remains, content is valid JSON."""
-    patched_run_tmux = make_run_tmux_for_socket(tmux_server)
+    patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
     with (
         patch("muxplex.sessions.run_tmux", side_effect=patched_run_tmux),
         patch("muxplex.bells.run_tmux", side_effect=patched_run_tmux),

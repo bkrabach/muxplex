@@ -134,10 +134,10 @@ def client(monkeypatch):
     the test controls exactly when the session cache is refreshed."""
     monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
 
-    async def _mock_kill_orphan():
-        return False
+    async def _mock_reap_orphan():
+        return 0
 
-    monkeypatch.setattr("muxplex.main.kill_orphan_ttyd", _mock_kill_orphan)
+    monkeypatch.setattr("muxplex.main.reap_orphan_ttyds", _mock_reap_orphan)
 
     async def noop_poll_loop() -> None:
         pass

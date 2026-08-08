@@ -155,7 +155,18 @@ def test_is_tmux_stable_name_matches_real_tmux_behavior(socket_dir):
 def patch_startup_and_state(tmp_path, short_socket_dir, monkeypatch):
     monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_path / "state")
     monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_path / "state" / "state.json")
-    monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", short_socket_dir / "ttyd")
+    # validate_socket_dir() -- mocked to a no-op below -- is normally what
+    # creates this directory at real startup. With it neutralized, a real
+    # ttyd spawn's `-i <dir>/mx-<hash>.sock` bind fails silently (missing
+    # parent directory), and ttyd falls back to an unauthenticated TCP
+    # listener instead of raising -- spawn_ttyd()'s readiness poll then
+    # times out never having seen the socket file, surfacing as a bare 500
+    # from `/connect` with no indication the real cause was a missing
+    # directory. Create it explicitly here, the same way
+    # test_integration.py's `real_ttyd_app` fixture already does.
+    ttyd_socket_dir = short_socket_dir / "ttyd"
+    ttyd_socket_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", ttyd_socket_dir)
     monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr("muxplex.identity.IDENTITY_PATH", tmp_path / "identity.json")
     monkeypatch.setattr("muxplex.pruning.PRUNING_STATE_PATH", tmp_path / "pruning.json")
