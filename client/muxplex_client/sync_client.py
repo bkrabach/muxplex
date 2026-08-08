@@ -24,6 +24,7 @@ from .models import (
     FollowupQueue,
     InputResult,
     InstanceInfo,
+    RenameResult,
     ServerState,
     Session,
     SessionCommands,
@@ -191,6 +192,25 @@ class MuxplexClient:
         params = {"force": "true"} if force else None
         self._request(
             "DELETE", f"/api/sessions/{name}", params=params, session_name=name
+        )
+
+    def rename_session(self, name: str, new_name: str) -> RenameResult:
+        """POST /api/sessions/{name}/rename.
+
+        Migrates every keyspace tracking *name* by name (bell, follow-up
+        queue, view pins, hidden state, manifest bookkeeping, session
+        order) and kills/re-spawns the terminal transparently. `new_name`
+        is rejected server-side with `ApiError(status=400)` if it would be
+        silently mangled by tmux (contains '.') -- see
+        docs/plans/2026-08-07-session-rename-plan.md. `RenameResult.name`
+        is the name tmux ACTUALLY has afterward, never the requested name
+        echoed back.
+        """
+        body = {"new_name": new_name}
+        return protocol.parse_rename_result(
+            self._request(
+                "POST", f"/api/sessions/{name}/rename", json=body, session_name=name
+            )
         )
 
     def list_session_commands(self) -> SessionCommands:

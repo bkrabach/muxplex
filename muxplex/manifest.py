@@ -141,6 +141,7 @@ def _empty_manifest() -> dict[str, Any]:
         "sessions": {},
         "pending_restore": None,
         "created_with": {},
+        "rename_in_flight": None,
     }
 
 
@@ -177,6 +178,7 @@ def load_manifest() -> dict[str, Any]:
     data.setdefault("pending_restore", None)
     if not isinstance(data.get("created_with"), dict):
         data["created_with"] = {}
+    data.setdefault("rename_in_flight", None)
     # Forward-only version normalization, mirroring settings.save_settings()'s
     # stance on `_schema_version` ("clients do not get to write older
     # versions"). A v1 manifest read by this code IS a v2 manifest -- the
@@ -547,3 +549,80 @@ def set_created_with(
     created_with = dict(manifest.get("created_with", {}))
     created_with[name] = command_id
     return {**manifest, "created_with": created_with}
+
+
+# ---------------------------------------------------------------------------
+# Rename journal -- write-ahead intent for POST /api/sessions/{name}/rename
+# (docs/plans/2026-08-07-session-rename-plan.md \u00a76)
+# ---------------------------------------------------------------------------
+#
+# The rename endpoint touches one irreversible subprocess (`tmux
+# rename-session`) plus four independently-atomic file writes, with no
+# cross-file transaction. Recording intent here BEFORE anything changes --
+# fsync'd, via the same save_manifest() every other manifest write already
+# uses -- is what lets a crash mid-rename (process death, or the poll cycle
+# observing a half-done rename) converge to a correct end state instead of
+# either reverting a rename the caller was told succeeded, or destroying the
+# keyspaces of a session that already has its new name. See the plan's \u00a76.1
+# for why neither "tmux first" nor "tmux last" ordering is safe without this.
+
+
+def start_rename_journal(
+    manifest: dict[str, Any], old_name: str, new_name: str, *, now: float | None = None
+) -> dict[str, Any]:
+    """Return a NEW manifest with ``rename_in_flight`` recording an intent to
+    rename *old_name* to *new_name*.
+
+    Pure -- never mutates *manifest* in place (matching every other helper
+    in this module). Callers must ``save_manifest()`` the result BEFORE
+    calling ``tmux rename-session`` or touching any other keyspace -- the
+    fsync inside ``save_manifest()`` is what makes this durable across an
+    unclean shutdown.
+    """
+    now = time.time() if now is None else now
+    return {
+        **manifest,
+        "rename_in_flight": {"from": old_name, "to": new_name, "at": now},
+    }
+
+
+def clear_rename_journal(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return a NEW manifest with ``rename_in_flight`` cleared (set to None).
+
+    Pure -- never mutates *manifest* in place. Idempotent: clearing an
+    already-clear journal produces the same value.
+    """
+    return {**manifest, "rename_in_flight": None}
+
+
+def get_rename_in_flight(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the in-flight rename journal entry (``{"from", "to", "at"}``),
+    or None if no rename is in flight. Read by the poll cycle at step 1b,
+    BEFORE ``update_manifest()`` (see the plan's \u00a76.2 completion table).
+    """
+    journal = manifest.get("rename_in_flight")
+    return journal if isinstance(journal, dict) else None
+
+
+def get_renamed_from(manifest: dict[str, Any], name: str) -> str | None:
+    """Return the name *name* was most recently renamed from, or None.
+
+    None means *name* has no manifest entry, or was never renamed. Read
+    from ``manifest["sessions"][name]["renamed_from"]`` -- a field set by
+    the rename migration (main.py's ``_migrate_session_name``) and carried
+    forward untouched by every subsequent poll cycle's ``update_manifest()``
+    call (which only ever updates ``last_seen_at``/``cwd`` in place on an
+    existing entry, never replaces it wholesale) and, critically, frozen
+    into ``pending_restore`` verbatim if the session is later lost.
+
+    This is what lets ``restore.py``'s fidelity check refuse recreating a
+    renamed session via a name-derived default command: renaming a tmux
+    session moves nothing on disk, so the OLD name -- not the current one --
+    is what actually describes where the session used to run (see the
+    rename plan \u00a79.2/\u00a79.3).
+    """
+    entry = manifest.get("sessions", {}).get(name)
+    if not entry:
+        return None
+    value = entry.get("renamed_from")
+    return value if isinstance(value, str) and value else None

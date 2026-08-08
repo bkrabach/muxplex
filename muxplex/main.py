@@ -39,6 +39,7 @@ from starlette.types import Scope
 from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
+from muxplex import bells as bells_mod
 from muxplex import focus, followups, tmux_config
 from muxplex import ttyd as ttyd_mod
 from muxplex.auth import (
@@ -57,10 +58,12 @@ from muxplex.bells import apply_bell_clear_rule, needs_attention, process_bell_f
 from muxplex.breaker import CircuitBreaker
 from muxplex.identity import load_device_id
 from muxplex.manifest import (
+    clear_rename_journal,
     get_created_with,
     load_manifest,
     save_manifest,
     set_created_with,
+    start_rename_journal,
     update_manifest,
 )
 from muxplex.pruning import load_pruning_state, save_pruning_state
@@ -76,8 +79,10 @@ from muxplex.sessions import (
     get_session_cwds,
     get_session_list,
     get_snapshots,
+    is_tmux_stable_name,
     is_valid_session_name,
     probe_tmux_epoch,
+    rename_tmux_session,
     run_tmux,
     snapshot_all,
     spawn_session_command,
@@ -498,9 +503,73 @@ async def _run_poll_cycle() -> None:
         #     everything below all still need to run).
         _manifest: dict = {}
         _epoch_now: dict | None = None
+        _rename_kill_old: str | None = None
         try:
             _epoch_now = await probe_tmux_epoch()
             _manifest = load_manifest()
+
+            # 1c. Honor an in-flight session-rename journal, BEFORE
+            # update_manifest() touches this same manifest below (see
+            # docs/plans/2026-08-07-session-rename-plan.md \u00a76.2). `tmux
+            # rename-session` runs outside state_lock (like every other
+            # subprocess in this codebase), and THIS cycle's own
+            # settings/pruning writes (steps 13b/14 below) also run outside
+            # it -- a rename racing a ~2s poll cycle WILL interleave, and
+            # the journal is what makes that safe rather than destructive
+            # (see the plan's \u00a76.1 for why pure ordering can't work here).
+            # The migration function is the SAME one the endpoint calls --
+            # idempotent, so calling it here even if the endpoint already
+            # completed it is always safe.
+            _rj = _manifest.get("rename_in_flight")
+            if _rj:
+                _rj_from = _rj.get("from")
+                _rj_to = _rj.get("to")
+                if _rj_to in name_set and _rj_from not in name_set:
+                    # tmux confirms the rename happened; complete it.
+                    _rj_state = load_state()
+                    _rj_settings = load_settings()
+                    _rj_pruning = load_pruning_state()
+                    _rj_device_id = load_device_id()
+                    _manifest, _rj_migrated = _migrate_session_name(
+                        _rj_state,
+                        _rj_settings,
+                        _manifest,
+                        _rj_pruning,
+                        _rj_from,
+                        _rj_to,
+                        _rj_device_id,
+                    )
+                    _manifest = clear_rename_journal(_manifest)
+                    save_state(_rj_state)
+                    save_settings(_rj_settings)
+                    save_pruning_state(_rj_pruning)
+                    save_manifest(_manifest)
+                    _rename_kill_old = _rj_from
+                    _log.info(
+                        "rename: poll cycle completed in-flight migration "
+                        "%r -> %r (migrated=%s)",
+                        _rj_from,
+                        _rj_to,
+                        _rj_migrated,
+                    )
+                else:
+                    # Either the rename never actually happened (from still
+                    # live, to absent) or the session died mid-rename
+                    # (neither live) -- both cases: clear the journal and do
+                    # nothing else. The cold-start/tombstone paths below
+                    # already handle a dead session; a never-happened
+                    # rename has nothing to migrate.
+                    _manifest = clear_rename_journal(_manifest)
+                    save_manifest(_manifest)
+                    _log.warning(
+                        "rename: clearing stale in-flight journal %r -> %r "
+                        "(to_live=%s, from_live=%s)",
+                        _rj_from,
+                        _rj_to,
+                        _rj_to in name_set,
+                        _rj_from in name_set,
+                    )
+
             # get_session_cwds() reads the cache enumerate_sessions() just
             # populated above (same tmux call, no extra subprocess) -- see
             # manifest.py's "Restore fidelity" section for why this is
@@ -733,6 +802,19 @@ async def _run_poll_cycle() -> None:
         await reap_idle_ttyds()
     except Exception:
         _log.exception("ttyd idle-reap cycle error")
+
+    # 12c. Kill the old ttyd for a rename the poll cycle just completed at
+    # step 1c above (docs/plans/2026-08-07-session-rename-plan.md \u00a72.4) --
+    # outside state_lock, like every other subprocess call. Never touches
+    # the tmux session; the browser's WS drops and reconnects, and the next
+    # /connect spawns a correctly-hashed ttyd for the new name.
+    if _rename_kill_old is not None:
+        try:
+            await kill_ttyd(_rename_kill_old)
+        except Exception:
+            _log.exception(
+                "rename: poll-cycle ttyd kill error for %r", _rename_kill_old
+            )
 
     # 13. Periodically sync settings with remote instances (every SETTINGS_SYNC_INTERVAL
     #     poll cycles, ~30 seconds). Runs outside the state_lock to avoid blocking the
@@ -1208,6 +1290,17 @@ class FollowupReplacePayload(BaseModel):
 
     expected_revision: int
     items: list[FollowupItemInput]
+
+
+class RenameSessionPayload(BaseModel):
+    """Body for POST /api/sessions/{name}/rename.
+
+    new_name -- the requested new session name. Rejected with 400 if it
+        fails the shared charset allowlist OR would be silently mangled by
+        tmux (contains '.') -- see sessions.is_tmux_stable_name().
+    """
+
+    new_name: str
 
 
 class ViewRulePreviewPayload(BaseModel):
@@ -2673,6 +2766,470 @@ async def delete_session(name: str, force: bool = False) -> dict:
     if forced:
         result_body["forced"] = True
     return result_body
+
+
+# ---------------------------------------------------------------------------
+# Session rename -- see docs/plans/2026-08-07-session-rename-plan.md
+# ---------------------------------------------------------------------------
+
+
+def _bearer_only_caller(request: Request) -> bool:
+    """Classify an already-authorized HTTP request as ``bearer_only`` or not.
+
+    Mirrors ``_ws_auth_check``'s ``WSAuth`` classification for the terminal
+    WebSocket (see that function's docstring for the full rationale) --
+    localhost and a verified ``muxplex_session`` cookie are never
+    ``bearer_only``; only a request authorized SOLELY by the federation
+    Bearer key is. By the time this runs, ``AuthMiddleware`` has already
+    confirmed the request is authorized by ONE of localhost / cookie /
+    Bearer / Basic credentials (see auth.py) -- this only determines WHICH,
+    for the one caller (POST .../rename) that behaves differently for
+    ``bearer_only`` callers than for every other authorized caller.
+
+    A request authorized via HTTP Basic (a script holding real PAM/password
+    login credentials, never issued a session cookie) is deliberately
+    classified as NOT ``bearer_only`` here, same as a cookie -- it required
+    knowing the operator's actual login credentials, strictly MORE trust
+    than the shared federation Bearer key this fence exists to constrain.
+    """
+    client_host = request.client.host if request.client else ""
+    if client_host in ("127.0.0.1", "::1"):
+        return False
+    cookie = request.cookies.get("muxplex_session")
+    if cookie and verify_session_cookie(_auth_secret, cookie, _auth_ttl):
+        return False
+    bearer_ok = False
+    if _federation_key:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            bearer_ok = hmac.compare_digest(auth_header[7:], _federation_key)
+    return bearer_ok
+
+
+def _migrate_session_name(
+    state: dict,
+    settings: dict,
+    manifest: dict,
+    pruning_state: dict,
+    old_name: str,
+    new_name: str,
+    local_device_id: str,
+) -> tuple[dict, dict[str, object]]:
+    """Idempotent migration of every keyspace tracking *old_name* to
+    *new_name* (docs/plans/2026-08-07-session-rename-plan.md \u00a72/\u00a76.2).
+
+    Called from BOTH the rename endpoint (after tmux confirms the rename)
+    AND the poll cycle's journal-completion branch -- every step below is
+    "move key X to key Y if X exists; leave Y alone if it's already right",
+    so calling this twice for the same (old_name, new_name) pair is always
+    safe, which is exactly what makes the write-ahead journal recoverable.
+
+    Mutates `state`, `settings`, and `pruning_state` IN PLACE -- matching
+    this codebase's established mutate-then-save convention for those three
+    files (followups.py/views.py's helpers do the same). `manifest` is
+    threaded through and RETURNED as a new dict instead, matching
+    manifest.py's own pure-function convention (every helper there returns
+    a new dict rather than mutating in place) -- callers must reassign
+    their local `manifest` variable to the returned value.
+
+    Returns ``(new_manifest, migrated)`` where `migrated` is the
+    per-keyspace evidence dict returned to the API caller (\u00a74's response
+    shape): ``{bell, followups, view_pins, hidden, created_with, order,
+    manifest, pruning}``.
+
+    Tier 3 (deliberately NOT migrated, per \u00a72.3): `input_allowed_sessions`
+    globs (migrating would be a privilege escalation) and `views[*]
+    .match_names` globs (would violate AGENTS.md's standing prohibition on
+    materializing a rule match back into `sessions`). Neither is touched
+    anywhere in this function -- there is nothing to call, which is the
+    point.
+    """
+    migrated: dict[str, object] = {
+        "bell": False,
+        "followups": 0,
+        "view_pins": 0,
+        "hidden": False,
+        "created_with": False,
+        "order": False,
+        "manifest": False,
+        "pruning": 0,
+    }
+
+    # ---- state.json: bell (\u00a72.1 item 6) ----
+    sessions_state = state.setdefault("sessions", {})
+    old_session_entry = sessions_state.pop(old_name, None)
+    if old_session_entry is not None:
+        sessions_state[new_name] = old_session_entry
+        migrated["bell"] = True
+
+    # ---- state.json: session_order (\u00a72.2 item 7) -- .index() replace
+    # preserves the user's manual position, unlike main.py's poll cycle,
+    # which appends a newly-seen name to the end.
+    order = state.setdefault("session_order", [])
+    if old_name in order:
+        order[order.index(old_name)] = new_name
+        migrated["order"] = True
+
+    # ---- state.json: followups (\u00a72.1 item 2) ----
+    followups_map = state.setdefault("followups", {})
+    old_queue = followups_map.pop(old_name, None)
+    if old_queue is not None:
+        followups_map[new_name] = old_queue
+        migrated["followups"] = len(old_queue.get("items", []))
+
+    # ---- in-memory: bells._bell_seen / followups._followup_last_send_at
+    # (\u00a72.2 item 9) -- two-line dict moves in the modules that own them.
+    # `_followup_sending` is never touched: the rename endpoint's send-in-
+    # flight check (\u00a77.4) guarantees old_name is never a member at this
+    # point.
+    if old_name in bells_mod._bell_seen:
+        bells_mod._bell_seen[new_name] = bells_mod._bell_seen.pop(old_name)
+    if old_name in followups._followup_last_send_at:
+        followups._followup_last_send_at[new_name] = (
+            followups._followup_last_send_at.pop(old_name)
+        )
+
+    # ---- settings.json: views[*].sessions / hidden_sessions (\u00a72.1 items
+    # 3/4) -- device_id:name pins. Deduped (set-union add, never append) so
+    # an orphaned pin already sitting under new_name (\u00a77.2's "Inherit" row)
+    # is never duplicated by this replace.
+    old_key = f"{local_device_id}:{old_name}"
+    new_key = f"{local_device_id}:{new_name}"
+
+    pins_moved = 0
+    for view in settings.get("views") or []:
+        view_sessions = view.get("sessions")
+        if not isinstance(view_sessions, list) or old_key not in view_sessions:
+            continue
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for key in view_sessions:
+            replaced = new_key if key == old_key else key
+            if replaced not in seen:
+                seen.add(replaced)
+                deduped.append(replaced)
+        view["sessions"] = deduped
+        pins_moved += 1
+    migrated["view_pins"] = pins_moved
+
+    hidden = settings.get("hidden_sessions")
+    if isinstance(hidden, list) and old_key in hidden:
+        seen = set()
+        deduped = []
+        for key in hidden:
+            replaced = new_key if key == old_key else key
+            if replaced not in seen:
+                seen.add(replaced)
+                deduped.append(replaced)
+        settings["hidden_sessions"] = deduped
+        migrated["hidden"] = True
+
+    # ---- manifest (sessions.json): created_with (\u00a72.1 item 1) ----
+    created_with_map = dict(manifest.get("created_with", {}))
+    command_id = created_with_map.pop(old_name, None)
+    if command_id is not None:
+        created_with_map[new_name] = command_id
+        manifest = {**manifest, "created_with": created_with_map}
+        migrated["created_with"] = True
+
+    # ---- manifest (sessions.json): sessions[name] + renamed_from (\u00a72.1
+    # item 5, \u00a79.3) -- \u00a77.2: a stale sessions[new_name] entry is guaranteed
+    # garbage (the poll cycle's tombstone loop would have popped it the
+    # instant new_name went live); overwrite outright.
+    manifest_sessions = dict(manifest.get("sessions", {}))
+    old_entry = manifest_sessions.pop(old_name, None)
+    if old_entry is not None:
+        new_entry = dict(old_entry)
+        new_entry["renamed_from"] = old_name
+        manifest_sessions[new_name] = new_entry
+        manifest = {**manifest, "sessions": manifest_sessions}
+        migrated["manifest"] = True
+
+    # ---- pruning.json: first_missed_at (\u00a72.2 item 8, \u00a77.2 last row) ----
+    first_missed = pruning_state.setdefault("first_missed_at", {})
+    pruning_moved = 0
+    old_prune_key = f"{local_device_id}:{old_name}"
+    if old_prune_key in first_missed:
+        del first_missed[old_prune_key]
+        pruning_moved += 1
+    new_prune_key = f"{local_device_id}:{new_name}"
+    if new_prune_key in first_missed:
+        # The name is live again -- exactly the condition that clears a
+        # grace clock, not a collision (\u00a77.2).
+        del first_missed[new_prune_key]
+        pruning_moved += 1
+    migrated["pruning"] = pruning_moved
+
+    return manifest, migrated
+
+
+@app.post("/api/sessions/{name}/rename")
+async def rename_session(
+    name: str, payload: RenameSessionPayload, request: Request
+) -> dict:
+    """Rename a live tmux session, migrating every keyspace that tracks it
+    by name (docs/plans/2026-08-07-session-rename-plan.md).
+
+    This is a keyspace migration with a write-ahead journal, not a one-line
+    wrapper around `tmux rename-session` -- see the plan's \u00a76 for why a
+    journal is the only way the operation can be correct at all under this
+    codebase's established no-subprocess-under-`state_lock` discipline.
+
+    Execution order (\u00a711) -- steps 1-5 cost nothing to fail; nothing has
+    changed until step 6:
+        1. Validate new_name (charset + is_tmux_stable_name)      -> 400
+        2. Fence (bearer_only callers only)                       -> 403
+        3. Exact membership of {name}                             -> 404
+        3b. new_name == name -> no-op (\u00a77.3), nothing migrates    -> 200
+        4. Collision pre-flight (\u00a77)                              -> 409
+        5. Send-in-flight check (followups.is_sending)             -> 409
+        6. Write journal (fsync'd, via save_manifest())
+        7. tmux rename-session -t =<old> -- <new> (argv, no shell) -> 409
+        8. Re-enumerate and verify the observed name               -> 500
+        9. _migrate_session_name(old, observed) -- idempotent
+        10. kill_ttyd(old) (\u00a72.4 -- closes the stale-typing-path hole)
+        11. Clear the journal
+        12. 200 with per-keyspace migration evidence
+
+    Deliberately no `command_id` -- rename runs no template at all, so
+    there is nothing to select (same reasoning DELETE's docstring uses).
+    """
+    new_name = payload.new_name
+
+    # 0/1. Security boundary + charset/mangling validation, BEFORE any
+    # subprocess or state read. `name` (the path param) is validated the
+    # same way every session-lifecycle endpoint validates a client-supplied
+    # name that will reach a subprocess.
+    _require_valid_session_name(name)
+    if not is_tmux_stable_name(new_name):
+        suggested = new_name.replace(".", "_")
+        detail: dict[str, object] = {
+            "detail": (
+                f"{new_name!r} is not a stable tmux session name. "
+                "tmux 3.4 silently converts '.' to '_' in session names, or "
+                "the name fails the shared charset allowlist entirely; "
+                "request a name that survives unchanged."
+            ),
+            "invalid_session_name": True,
+        }
+        if is_valid_session_name(suggested):
+            detail["suggested"] = suggested
+        raise HTTPException(status_code=400, detail=detail)
+
+    # 2. Fence -- rename is the fourth caller of
+    # terminal_input.input_allowed_for_session(), evaluated against BOTH
+    # names, and ONLY for bearer_only callers (\u00a710.2). input_enabled is
+    # already checked inside input_allowed_for_session(), so there is
+    # nothing further to re-derive here.
+    if _bearer_only_caller(request):
+        fence_settings = load_settings()
+        if not (
+            input_allowed_for_session(name, fence_settings)
+            and input_allowed_for_session(new_name, fence_settings)
+        ):
+            _log.warning(
+                "rename: rejected bearer-only caller for %r -> %r -- fence "
+                "denies old or new name",
+                name,
+                new_name,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "detail": (
+                        f"Renaming {name!r} to {new_name!r} is not permitted "
+                        "for this caller."
+                    ),
+                    "rename_not_allowed": True,
+                },
+            )
+
+    # 3. Fail closed: exact membership in the known set.
+    known = get_session_list()
+    if name not in known:
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    # 3b. \u00a77.3: after the charset/mangling rejection above, new_name == name
+    # can only mean a literal no-op. Nothing to rename, nothing migrates.
+    if new_name == name:
+        return {"ok": True, "from": name, "name": name, "renamed": False}
+
+    # 4. Collision pre-flight (\u00a77) -- pre-check against the known list AND
+    # (below) tmux's own rc=1, since a session can appear between this
+    # check and the actual rename call.
+    if new_name in known:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "detail": f"Session {new_name!r} already exists.",
+                "rename_target_exists": True,
+            },
+        )
+
+    async with state_lock:
+        state = load_state()
+        manifest = load_manifest()
+
+        # \u00a77.2: a stale follow-up queue under new_name is user-authored text
+        # queued for a DIFFERENT session -- the one keyspace where reusing
+        # the name is genuinely dangerous.
+        if new_name in state.get("followups", {}):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": (
+                        f"Session {new_name!r} has a queued follow-up queue "
+                        "belonging to a different session; refusing to "
+                        "reuse the name."
+                    ),
+                    "queue_target_conflict": True,
+                },
+            )
+
+        # \u00a77.2: new_name is queued for restore -- taking the name now would
+        # make a later `muxplex restore` fail confusingly.
+        pending = manifest.get("pending_restore") or {}
+        if new_name in (pending.get("sessions") or {}):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": f"Session {new_name!r} is pending restore.",
+                    "pending_restore_conflict": True,
+                },
+            )
+
+        # 5. Send-in-flight check -- reusing the existing precondition
+        # rather than inventing a second one (\u00a77.4). This is also what
+        # guarantees `_followup_sending` never contains `name` at migration
+        # time, so the in-memory move above only ever has
+        # `_followup_last_send_at` to carry.
+        if followups.is_sending(name):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": (
+                        f"A follow-up send is currently in flight for {name!r}."
+                    ),
+                    "rename_send_in_flight": True,
+                },
+            )
+
+        # ---- 6. Write journal, fsync'd, BEFORE anything else changes ----
+        manifest = start_rename_journal(manifest, name, new_name)
+        save_manifest(manifest)
+
+    # ---- 7. tmux rename-session -t =<old> -- <new> (argv, no shell) ----
+    try:
+        await rename_tmux_session(name, new_name)
+    except RuntimeError as exc:
+        # tmux rc=1 ("duplicate session") -- a session appeared between the
+        # pre-flight check and this call. Nothing on tmux's side changed;
+        # clear the journal, migrate nothing.
+        async with state_lock:
+            manifest = load_manifest()
+            manifest = clear_rename_journal(manifest)
+            save_manifest(manifest)
+        _log.warning("rename: tmux refused %r -> %r: %s", name, new_name, exc)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "detail": f"tmux refused to rename {name!r} to {new_name!r}: {exc}",
+                "rename_target_exists": True,
+            },
+        )
+
+    # ---- 8. Verify the observed name (\u00a75.2) -- tmux reports rc=0 even when
+    # it silently mangled the result. is_tmux_stable_name() closes the only
+    # KNOWN mangling case ('.'); this is belt-and-braces against an unknown
+    # future one.
+    known_before = set(known)
+    observed_names = await enumerate_sessions()
+    verification_failed = False
+    observed: str | None
+    if new_name in observed_names:
+        observed = new_name
+    else:
+        verification_failed = True
+        candidates = sorted(set(observed_names) - known_before - {new_name})
+        observed = candidates[0] if len(candidates) == 1 else None
+        _log.error(
+            "rename: verification failed for %r -> %r; tmux reported success "
+            "but observed=%r (candidates=%r)",
+            name,
+            new_name,
+            observed,
+            candidates,
+        )
+
+    if observed is None:
+        async with state_lock:
+            manifest = load_manifest()
+            manifest = clear_rename_journal(manifest)
+            save_manifest(manifest)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "detail": (
+                    f"tmux reported success renaming {name!r} to {new_name!r}, "
+                    "but no observed session name could be determined."
+                ),
+                "rename_verification_failed": True,
+                "observed": None,
+            },
+        )
+
+    # ---- 9. migrate_session_name(old, observed) -- idempotent, all
+    # keyspaces. Completes against the OBSERVED name even in the
+    # verification-failed branch (\u00a75.2: "the tmux session is what it is") --
+    # the response tells the truth, the keyspaces stay consistent with
+    # reality.
+    async with state_lock:
+        state = load_state()
+        settings = load_settings()
+        manifest = load_manifest()
+        pruning_state = load_pruning_state()
+        local_device_id = load_device_id()
+
+        manifest, migrated = _migrate_session_name(
+            state, settings, manifest, pruning_state, name, observed, local_device_id
+        )
+        manifest = clear_rename_journal(manifest)
+
+        save_state(state)
+        save_settings(settings)
+        save_manifest(manifest)
+        save_pruning_state(pruning_state)
+
+    # ---- 10. kill_ttyd(old) (\u00a72.4) -- outside state_lock, like every other
+    # subprocess call. Never touches the tmux session; the browser's WS
+    # drops and reconnects, and the next /connect spawns a correctly-hashed
+    # ttyd for the new name.
+    await kill_ttyd(name)
+
+    _log.info(
+        "rename: %r -> %r (bearer_only=%s) migrated=%s",
+        name,
+        observed,
+        _bearer_only_caller(request),
+        migrated,
+    )
+
+    if verification_failed:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "detail": (
+                    f"tmux reported success renaming {name!r} to {new_name!r}, "
+                    f"but the observed session name was {observed!r}, not the "
+                    "requested name. The migration completed against the "
+                    "observed name."
+                ),
+                "rename_verification_failed": True,
+                "observed": observed,
+            },
+        )
+
+    return {"ok": True, "from": name, "name": observed, "migrated": migrated}
 
 
 @app.post("/api/heartbeat")

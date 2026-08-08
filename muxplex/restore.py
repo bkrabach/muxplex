@@ -101,6 +101,7 @@ from muxplex.manifest import (
     RESTORE_MAX_AGE_SECONDS,
     compute_restore_plan,
     get_created_with,
+    get_renamed_from,
     get_restore_cwd,
     load_manifest,
     mark_restored,
@@ -174,6 +175,54 @@ def _check_unrecorded_restore_fidelity(
         )
 
     return None
+
+
+def _check_renamed_restore_fidelity(name: str, manifest: dict[str, Any]) -> str | None:
+    """Return an actionable refusal reason if *name* carries a recorded
+    ``renamed_from`` -- or ``None`` if there is nothing to refuse.
+
+    **Why this exists (2026-08-07):** renaming a tmux session moves nothing
+    on disk -- the session's real working directory is unchanged. Once
+    ``created_with``/the manifest entry follow the rename (see the rename
+    plan's keyspace migration, \u00a72.1 items 1/5), a `tmux kill-server` freezes
+    the renamed session into ``pending_restore`` under its NEW name,
+    carrying whatever ``session_commands`` pair created it. If that pair's
+    template substitutes ``{name}`` into a directory path (the common
+    convention, e.g. ``amplifier-workspace {name}`` -> ``~/dev/{name}``),
+    restoring it recreates the session rooted at ``~/dev/<new_name>`` -- a
+    directory that never held this session -- while the dashboard shows
+    green. This is the 2026-08-05 incident (see this module's docstring)
+    reintroduced by the very migration meant to prevent data loss.
+
+    Unlike ``_check_unrecorded_restore_fidelity`` (which only runs when
+    ``get_created_with()`` returns ``None``), this check runs for EVERY
+    pending session regardless of whether it has a resolvable
+    ``session_commands`` pair -- a rename is positive, dated evidence the
+    name no longer describes the directory, which makes a renamed session
+    strictly more likely to be in that state than the unrecorded sessions
+    the existing check already refuses (rename plan \u00a79.3). Refuse, don't
+    warn -- consistent with the precedent the existing check already set.
+
+    Callers bypass this via ``execute_restore(..., force=True)`` (CLI:
+    ``muxplex restore --force``) -- the escape hatch for an operator who has
+    confirmed the recorded pair is safe to run under the new name anyway.
+    """
+    renamed_from = get_renamed_from(manifest, name)
+    if renamed_from is None:
+        return None
+
+    observed_cwd = get_restore_cwd(manifest, name)
+    expected_dir = _default_workspace_root() / name
+    observed_clause = f" It last ran from {observed_cwd!r}." if observed_cwd else ""
+    return (
+        f"{name!r} was renamed from {renamed_from!r}.{observed_clause} "
+        "Renaming a tmux session does not move anything on disk, so "
+        "restoring it may substitute the NEW name into its session "
+        f"command's template (e.g. creating {str(expected_dir)!r}) rather "
+        "than reproduce wherever it actually ran. Restart it manually from "
+        "its real location, or re-run with --force to restore it anyway "
+        "using the recorded (or default) session command."
+    )
 
 
 @dataclass
@@ -307,7 +356,7 @@ async def forget() -> int:
     return len(names)
 
 
-async def execute_restore(names: list[str]) -> RestoreReport:
+async def execute_restore(names: list[str], *, force: bool = False) -> RestoreReport:
     """Actually create each session in *names*, sequentially, verifying each
     one as it goes. This is the only function in this module that creates
     or kills anything.
@@ -323,6 +372,15 @@ async def execute_restore(names: list[str]) -> RestoreReport:
     to reflect exactly what succeeded (failed names remain in
     `pending_restore` for a future retry; this is deliberate, not an
     oversight -- see mark_restored()'s docstring).
+
+    *force* (mirrors `muxplex restore --force`) bypasses BOTH per-session
+    fidelity refusals below -- the unrecorded-command check AND the
+    renamed-session check (`_check_renamed_restore_fidelity`, rename plan
+    \u00a79.3) -- letting an operator who has confirmed the recorded/default
+    command is safe to run anyway proceed. `cli.py`'s `--force` already
+    existed for the plan-level staleness gate; this widens its meaning to
+    cover these two per-session gates too, rather than inventing a second
+    flag for the identical "I know what I'm doing" intent.
     """
     report = RestoreReport()
     restored: set[str] = set()
@@ -333,9 +391,23 @@ async def execute_restore(names: list[str]) -> RestoreReport:
         # per-iteration read is consistent with _persist_restored()'s
         # read-right-before-write discipline.
         current_manifest = load_manifest()
+
+        if not force:
+            # A rename is positive, dated evidence the name no longer
+            # describes the directory -- checked BEFORE the unrecorded-pair
+            # branch below and regardless of whether `recorded` resolves,
+            # because the hazard applies to ANY pair whose template
+            # substitutes {name} into a path, not only the default one.
+            renamed_error = _check_renamed_restore_fidelity(name, current_manifest)
+            if renamed_error is not None:
+                report.results.append(
+                    SessionResult(name=name, status="fail", detail=renamed_error)
+                )
+                continue
+
         recorded = get_created_with(current_manifest, name)
 
-        if recorded is None:
+        if recorded is None and not force:
             # No configured session command pair -- this session would
             # fall through to the RESERVED DEFAULT. Verify restoring it
             # that way would be faithful before spawning anything; see this

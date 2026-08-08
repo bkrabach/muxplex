@@ -26,6 +26,7 @@ from .models import (
     Followups,
     InputResult,
     InstanceInfo,
+    RenameResult,
     ServerState,
     Session,
     SessionCommand,
@@ -38,26 +39,27 @@ from .models import (
 )
 
 __all__ = [
+    "build_followup_items_body",
     "map_status_error",
     "parse_bell",
-    "parse_followups",
-    "parse_session",
-    "parse_sessions",
-    "parse_session_snapshot",
-    "parse_view_session",
-    "parse_view_result",
-    "parse_server_state",
-    "parse_view",
-    "parse_settings",
-    "parse_instance_info",
     "parse_connect_result",
-    "parse_input_result",
     "parse_focus_result",
     "parse_followup_item",
     "parse_followup_queue",
-    "build_followup_items_body",
+    "parse_followups",
+    "parse_input_result",
+    "parse_instance_info",
+    "parse_rename_result",
+    "parse_server_state",
+    "parse_session",
     "parse_session_command",
     "parse_session_commands",
+    "parse_session_snapshot",
+    "parse_sessions",
+    "parse_settings",
+    "parse_view",
+    "parse_view_result",
+    "parse_view_session",
     "version_tuple",
 ]
 
@@ -198,6 +200,15 @@ def parse_connect_result(raw: Mapping[str, Any]) -> ConnectResult:
     return ConnectResult(
         active_session=raw["active_session"],
         ttyd_port=int(raw["ttyd_port"]),
+    )
+
+
+def parse_rename_result(raw: Mapping[str, Any]) -> RenameResult:
+    return RenameResult(
+        from_name=raw.get("from", ""),
+        name=raw["name"],
+        renamed=bool(raw.get("renamed", True)),
+        migrated=raw.get("migrated") or {},
     )
 
 

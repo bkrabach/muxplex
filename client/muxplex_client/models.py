@@ -235,6 +235,23 @@ class ConnectResult:
 
 
 @dataclass(frozen=True)
+class RenameResult:
+    """POST /api/sessions/{name}/rename.
+
+    `name` is the name tmux ACTUALLY has after the call -- never the
+    requested name echoed back (see docs/plans/2026-08-07-session-rename-plan.md
+    \u00a75.2: tmux can report success while silently mangling the result).
+    `renamed` is False only for the \u00a77.3 no-op case (new_name == old name);
+    `migrated` is the per-keyspace evidence dict (empty in the no-op case).
+    """
+
+    from_name: str
+    name: str
+    renamed: bool = True
+    migrated: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
 class InputResult:
     """POST /api/sessions/{name}/input."""
 

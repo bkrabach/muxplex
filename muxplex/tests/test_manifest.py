@@ -76,6 +76,7 @@ def test_load_manifest_returns_empty_when_file_absent():
         "sessions": {},
         "pending_restore": None,
         "created_with": {},
+        "rename_in_flight": None,
     }
 
 
@@ -124,6 +125,7 @@ def test_save_then_load_round_trip():
         "sessions": {"a2a": {"first_seen_at": 100.0, "last_seen_at": 200.0}},
         "pending_restore": None,
         "created_with": {},
+        "rename_in_flight": None,
     }
 
     save_manifest(manifest)

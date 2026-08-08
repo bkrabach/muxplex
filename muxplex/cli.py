@@ -1804,7 +1804,12 @@ def cmd_restore(
         --force: proceed even if the pending-restore record is older than
             manifest.RESTORE_MAX_AGE_SECONDS (7 days) -- a stale record is
             more likely to reflect sessions the user has long since
-            recreated some other way.
+            recreated some other way. Also bypasses the two per-session
+            fidelity refusals in restore.execute_restore() (the unrecorded-
+            command-pair check and the renamed-session check added by
+            docs/plans/2026-08-07-session-rename-plan.md \u00a79.3) for an
+            operator who has confirmed the recorded/default command is
+            safe to run anyway.
         --forget: clear pending_restore without creating anything -- for
             when the user has decided NOT to restore (e.g. they already
             recreated the sessions manually, or don't want them back).
@@ -1888,7 +1893,7 @@ def cmd_restore(
 
     print()
     total = len(plan.names)
-    report = asyncio.run(restore_mod.execute_restore(plan.names))
+    report = asyncio.run(restore_mod.execute_restore(plan.names, force=force))
     for i, result in enumerate(report.results, start=1):
         label = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}[result.status]
         suffix = f"  {result.detail}" if result.detail else ""

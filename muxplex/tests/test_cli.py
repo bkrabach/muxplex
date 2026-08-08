@@ -610,7 +610,7 @@ def test_cmd_restore_all_already_live_is_a_full_noop(tmp_path, monkeypatch, caps
 
     called = {"execute": False}
 
-    async def fake_execute_restore(names):
+    async def fake_execute_restore(names, force=False):
         called["execute"] = True
         raise AssertionError(
             "execute_restore must not be called when the plan is empty"
@@ -671,7 +671,7 @@ def test_cmd_restore_declined_confirmation_creates_nothing(
 
     called = {"execute": False}
 
-    async def fake_execute_restore(names):
+    async def fake_execute_restore(names, force=False):
         called["execute"] = True
         raise AssertionError("must not be called when the user declines")
 
@@ -706,7 +706,7 @@ def test_cmd_restore_yes_skips_prompt_and_executes(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr("builtins.input", fail_input)
 
-    async def fake_execute_restore(names):
+    async def fake_execute_restore(names, force=False):
         assert names == ["a2a"]
         return RestoreReport(
             results=[SessionResult(name="a2a", status="ok", windows=4)]
@@ -741,7 +741,7 @@ def test_cmd_restore_partial_failure_is_loud_and_exits_nonzero(
 
     monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
 
-    async def fake_execute_restore(names):
+    async def fake_execute_restore(names, force=False):
         return RestoreReport(
             results=[
                 SessionResult(name="good-one", status="ok", windows=4),
@@ -785,7 +785,7 @@ def test_cmd_restore_warn_divergence_does_not_fail_the_run(
 
     monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
 
-    async def fake_execute_restore(names):
+    async def fake_execute_restore(names, force=False):
         return RestoreReport(
             results=[
                 SessionResult(
@@ -816,7 +816,7 @@ def test_cmd_restore_forget_clears_pending_without_creating_anything(
 
     called = {"execute": False}
 
-    async def fake_execute_restore(names):
+    async def fake_execute_restore(names, force=False):
         called["execute"] = True
         raise AssertionError("--forget must never call execute_restore")
 
@@ -4284,7 +4284,6 @@ def test_upgrade_no_systemctl_runs_to_completion(monkeypatch, capsys):
     Regression test for FileNotFoundError on Unraid / BSD / macOS-container hosts.
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4347,7 +4346,6 @@ def test_upgrade_no_systemctl_runs_to_completion(monkeypatch, capsys):
 def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
     """upgrade() must print a helpful note when systemctl is missing."""
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4407,7 +4405,6 @@ def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
 def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
     """upgrade() must tell the user to restart muxplex manually when systemd is absent."""
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4461,7 +4458,6 @@ def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
 def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
     """upgrade() must call systemctl when it IS available (full Linux systemd path)."""
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4607,7 +4603,6 @@ def test_upgrade_propagates_install_failure_as_exit1(monkeypatch, capsys):
     exit 0 even when pip/uv failed mid-flight.
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4669,7 +4664,6 @@ def test_upgrade_restarts_systemctl_after_failed_install(monkeypatch, capsys):
     run in the finally block regardless of install outcome.
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4839,7 +4833,6 @@ def test_upgrade_no_launchctl_on_linux_uses_systemctl(monkeypatch, capsys):
     complete normally (no SystemExit) using the systemctl path.
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4909,7 +4902,6 @@ def test_upgrade_prefers_uv_tool_when_uv_managed(monkeypatch, capsys):
     tool reinstall path (not pip).
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -4995,7 +4987,6 @@ def test_upgrade_falls_back_to_pip_when_uv_absent(monkeypatch, capsys):
     Regression test for Bug 3 (v0.6.2): uv absent \u2192 pip must be the installer.
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -5222,7 +5213,6 @@ def test_upgrade_uses_find_uv_not_shutil_which(monkeypatch, capsys):
     uv branch must still be taken — pip must NOT be used.
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -5292,7 +5282,6 @@ def test_upgrade_exits_1_after_finally_recovers_stopped_service(monkeypatch, cap
       3. Process exits with code 1 so callers / automation can detect the failure.
     """
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 
@@ -5646,7 +5635,6 @@ def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
     delay, the real doctor() must show clean, not the false warning.
     """
     import subprocess
-    import sys
     from importlib.metadata import version as pkg_version
 
     import muxplex.cli as cli_mod
@@ -5731,7 +5719,6 @@ def test_upgrade_reports_honest_timeout_and_still_runs_doctor(
     or downgrade the real warning, never skip verification, never assume
     success."""
     import subprocess
-    import sys
 
     import muxplex.cli as cli_mod
 

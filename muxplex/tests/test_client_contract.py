@@ -679,6 +679,44 @@ def test_connect_not_found_maps_to_session_not_found_error(sync_client, no_sessi
         sync_client.connect("ghost")
 
 
+def test_rename_not_found_maps_to_session_not_found_error(sync_client, no_sessions):
+    with pytest.raises(SessionNotFound):
+        sync_client.rename_session("ghost", "ghost2")
+
+
+def test_rename_fields_present(sync_client, raw_http, monkeypatch):
+    """POST /api/sessions/{name}/rename -- field parity between the
+    vendored client's RenameResult and the server's real response, driven
+    through the real app (no tmux/rename mocking of the endpoint itself,
+    only the tmux-touching helpers underneath it -- same pattern
+    test_api.py uses for create/delete without a real tmux binary)."""
+    import muxplex.main as main_mod
+
+    monkeypatch.setattr(main_mod, "get_session_list", lambda: ["old-name"])
+
+    async def _fake_rename(old, new):
+        return None
+
+    async def _fake_enumerate():
+        return ["new-name"]
+
+    monkeypatch.setattr(main_mod, "rename_tmux_session", _fake_rename)
+    monkeypatch.setattr(main_mod, "enumerate_sessions", _fake_enumerate)
+
+    result = sync_client.rename_session("old-name", "new-name")
+    raw = raw_http.post(
+        "/api/sessions/old-name/rename", json={"new_name": "new-name"}
+    ).json()
+
+    # First call already consumed the rename; re-seed for the raw comparison
+    # call above to observe the SAME shape independently (idempotent
+    # migrate_session_name makes this safe to call twice).
+    assert result.from_name == "old-name"
+    assert result.name == raw["name"] == "new-name"
+    assert result.renamed is True
+    assert result.migrated == raw["migrated"]
+
+
 def test_send_input_disabled_maps_to_input_forbidden_not_auth_error(sync_client):
     """settings.input_enabled defaults to False -- the fence fires before any
     subprocess call or existence check, so this is a real, deterministic 403

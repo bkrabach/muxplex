@@ -29,6 +29,7 @@ from .models import (
     FollowupQueue,
     InputResult,
     InstanceInfo,
+    RenameResult,
     ServerState,
     Session,
     SessionCommands,
@@ -168,6 +169,16 @@ class AsyncMuxplexClient:
         params = {"force": "true"} if force else None
         await self._request(
             "DELETE", f"/api/sessions/{name}", params=params, session_name=name
+        )
+
+    async def rename_session(self, name: str, new_name: str) -> RenameResult:
+        """See `sync_client.MuxplexClient.rename_session` for the full
+        rationale -- identical here, `await`-shaped."""
+        body = {"new_name": new_name}
+        return protocol.parse_rename_result(
+            await self._request(
+                "POST", f"/api/sessions/{name}/rename", json=body, session_name=name
+            )
         )
 
     async def list_session_commands(self) -> SessionCommands:
