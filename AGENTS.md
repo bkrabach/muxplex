@@ -805,6 +805,20 @@ costs you nothing:
 Skipping step 1 means the DTU tests something that exists only in your working
 tree — and a green run there proves nothing about what lands.
 
+**`make test` is not safe to run concurrently against the same DTU name.**
+The default target (`DTU ?= muxplex-test`) pushes a fresh `git archive HEAD`
+tarball and extracts it over `/opt/muxplex` inside that one named container on
+every invocation. Two builders (or two agent sessions) running `make test` at
+the same time against the default DTU name race each other's extraction and
+corrupt the shared tree mid-run. The observed symptom was **not** an obvious
+"file changed under me" error: `inspect.getsource`-based tests
+(`test_ws_proxy.py`, `test_shutdown.py`) returned the WRONG function's source
+text, producing 14 failures that vanished on a clean, non-concurrent re-run.
+If source-text assertions fail in a way that looks impossible given the code
+you're looking at, suspect a concurrent `make test` run before suspecting your
+change. Run concurrent builders against distinct DTU names
+(`make test DTU=muxplex-test-<yourname>`) or serialize `make test` invocations.
+
 `MUXPLEX_TEST_ALLOW_LIVE_HOST=1` overrides the guard. Legitimate on a CI runner
 or a fresh container with no muxplex. Not legitimate on your dev box because the
 guard is inconvenient.

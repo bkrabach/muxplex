@@ -274,14 +274,31 @@ curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
     "last_activity_at": 1753500123.0,
     "created_at": 1753499900.0,
     "followups": {"pending": 2, "halted": false},
-    "views": ["work", "agents"]
+    "views": ["work", "agents"],
+    "cwd": "/home/you/dev/muxplex"
   }
 ]
 ```
 
-Those seven keys are the whole entry — verified by diffing this example's key
-set against a live instance's response (`['bell', 'created_at', 'followups',
-'last_activity_at', 'name', 'snapshot', 'views']`).
+Those eight keys are the whole entry — verified by diffing this example's key
+set against a live instance's response (`['bell', 'created_at', 'cwd',
+'followups', 'last_activity_at', 'name', 'snapshot', 'views']`).
+
+`cwd` is where that session's active pane currently is — how you tell which
+repo a sibling agent is working in. It is an **observation, not a stable
+identity**: it moves when someone `cd`s, and for a multi-window session it
+tracks whichever window is current. A session whose active pane is running a
+TUI (this includes amplifier's own TUI) reports the directory the TUI process
+was launched from, not necessarily wherever its own internal navigation
+currently is; a session created by `amplifier-workspace` reports the
+workspace directory across all four of its windows. `null` when tmux reported
+nothing parseable. See `docs/API_SEMANTICS.md` for the full rationale,
+including why `GET /api/view` deliberately does not carry this field.
+
+`GET /api/sessions/{name}` (§6.3) carries the identical four extra keys
+(`created_at`, `followups`, `views`, `cwd`) — a caller that has narrowed to
+one session sees exactly what the bulk read shows for it, including a halted
+follow-up queue.
 
 `views` is **server-resolved membership** — hand-pinned sessions ∪ `match_names`
 glob-rule matches, resolved fresh on every read. This is what lets a rule-based
@@ -964,9 +981,11 @@ more:
   completion-sentinel loop above: `/input`'s read-back settles for only
   ~400ms, long before a real build finishes, so the *polling* has to happen
   against a separate live read, not the one-shot `/input` response.
-  Response shape: `{"name", "snapshot", "lines", "bell", "last_activity_at"}`
-  — same `bell`/`last_activity_at` fields as `GET /api/sessions`, plus
-  `lines` echoing back the depth actually used.
+  Response shape: `{"name", "snapshot", "lines", "bell", "last_activity_at",
+  "created_at", "followups", "views", "cwd"}` — full field parity with a
+  `GET /api/sessions` entry, plus `lines` echoing back the depth actually
+  used. Narrowing to one session never means losing sight of that session's
+  `followups.halted` badge or its `cwd`.
 
   Deliberately **not** added to the existing bulk `GET /api/sessions` — that
   endpoint serves one shared ~2s-cycle cache consumed simultaneously by the

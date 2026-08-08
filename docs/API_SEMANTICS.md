@@ -516,6 +516,39 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   `settings.resolve_tmux_socket_dir()`). Lets remote tools/agents discover
   where sessions need to land to be visible to this instance without
   tribal knowledge; see the "tmux socket" section below and README.md.
+- **`cwd` on `GET /api/sessions`, `GET /api/sessions/{name}`, and
+  `GET /api/federation/sessions`'s local branch** — tmux's own
+  `#{pane_current_path}` for the session's active window's active pane
+  (`sessions.get_session_cwds()`), refreshed every ~2s poll cycle at zero
+  additional subprocess cost (the SAME tmux call already parses
+  `#{session_created}`/`#{window_activity}`). This is how an agent tells
+  which repo a sibling session is working in — the concrete thing that
+  makes a fleet of agent sessions legible to each other. It is an
+  **observation, not a stable identity**: it moves whenever the user (or a
+  process in the pane) `cd`s, and for a multi-window session it tracks
+  whichever window is current. Two cases were runtime-measured rather than
+  assumed (docs/plans/2026-08-07-agent-surface-additive-plan.md §1.4): a
+  session whose active pane is running the `amplifier` TUI reports the
+  directory the TUI process was **launched from** (stable for the life of
+  that process, since it never itself `cd`s away — not necessarily
+  wherever the TUI's own internal navigation currently is); a session
+  created by `amplifier-workspace` reports the **workspace directory**
+  across all four of its windows (`amplifier`, `shell`, `git`, `files`),
+  confirming the "which repo" framing holds for that reference workflow.
+  Type is `string | null`, key **always present** — same
+  always-present/`null`-when-absent convention as `last_activity_at` and
+  `created_at`. **Not a secret**: the precedent is `tmux_socket_dir` above,
+  shipped on the *unauthenticated* `/api/instance-info`; these three
+  surfaces are authenticated, a strictly weaker exposure. **Deliberately
+  excluded from `GET /api/view`**: that endpoint is a cheap, frequently-
+  polled display resolution (view membership, attention, sort order) with
+  no pane snapshots by design — a working directory is not a display
+  concern, and `test_view_does_not_carry_cwd` pins the exclusion so a
+  future "consistency" PR cannot quietly add it. `GET /api/sessions/{name}`
+  also reached full field parity with the bulk read in this same change
+  (gaining `created_at`, `followups`, and `views` alongside `cwd`) — before
+  this, a caller polling one session by name could not see a halted
+  follow-up queue at all.
 - **`GET /api/ca`** serves the local CA's PUBLIC certificate PEM (200,
   `Content-Type: application/x-pem-file`, `Content-Disposition: attachment`)
   when `muxplex setup-tls --method ca` is in use; 404 otherwise (no local CA

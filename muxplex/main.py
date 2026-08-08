@@ -1361,11 +1361,26 @@ async def get_sessions() -> list[dict]:
     shipping the raw pair instead of a precomputed boolean. Absent exactly
     like `last_activity_at`: the key is always present, `null` when tmux
     reported no parseable `#{session_created}` for that session.
+
+    `cwd` is tmux's own `#{pane_current_path}` for the session's active
+    window's active pane (see `sessions.get_session_cwds()`), refreshed
+    every poll cycle at zero additional subprocess cost. It is an
+    OBSERVATION, not a stable identity: it moves whenever the user (or a
+    process in the pane) `cd`s, and for a multi-window session it tracks
+    whichever window is currently active. This is how one agent tells
+    which repo a sibling session is working in -- see
+    docs/API_SEMANTICS.md and
+    docs/plans/2026-08-07-agent-surface-additive-plan.md section 6 for the
+    full rationale, including the two runtime-measured cases (a TUI-held
+    pane; an `amplifier-workspace`-created session) that motivated this
+    wording. Same always-present/`null`-when-absent convention as
+    `last_activity_at` and `created_at`.
     """
     names = get_session_list()
     snapshots = get_snapshots()
     activity = get_session_activity()
     created_times = get_session_created_times()
+    cwds = get_session_cwds()
     state = await read_state()
     settings = load_settings()
     local_device_id = load_device_id()
@@ -1388,6 +1403,7 @@ async def get_sessions() -> list[dict]:
                 "last_activity_at": activity.get(name),
                 "created_at": created_times.get(name),
                 "followups": followups.summary(state, name),
+                "cwd": cwds.get(name),
             }
         )
     annotated = annotate_view_membership(result, settings)
@@ -1423,6 +1439,16 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
 
     Raises 404 if *name* is not an exact member of the known session set
     (same fail-closed pattern as connect/delete/input).
+
+    Field parity with GET /api/sessions: this single-session read used to
+    return only {name, snapshot, lines, bell, last_activity_at}, while the
+    bulk read also carried created_at, followups, views, and (now) cwd. A
+    caller that has narrowed to one session -- exactly the shape of an
+    agent polling its own session -- could not see a halted follow-up
+    queue at all. `created_at`, `followups`, `views`, and `cwd` are added
+    here so polling ONE session and polling the bulk list never disagree
+    about what the session's state is. `lines` keeps its exact existing
+    meaning (the depth REQUESTED, not a parity field) and is unaffected.
     """
     _require_valid_session_name(name)
     if not (1 <= lines <= MAX_CAPTURE_LINES):
@@ -1439,13 +1465,25 @@ async def get_session_snapshot(name: str, lines: int = DEFAULT_CAPTURE_LINES) ->
     state = await read_state()
     session_state = state.get("sessions", {}).get(name, {})
     bell = session_state.get("bell", empty_bell())
-    return {
+    settings = load_settings()
+    local_device_id = load_device_id()
+    entry = {
         "name": name,
+        # Synthetic key, used ONLY to resolve `views` below -- same dance
+        # as get_sessions(); NOT part of this endpoint's wire response,
+        # popped after annotate_view_membership() below.
+        "sessionKey": f"{local_device_id}:{name}",
         "snapshot": snapshot,
         "lines": lines,
         "bell": bell,
         "last_activity_at": activity.get(name),
+        "created_at": get_session_created_times().get(name),
+        "followups": followups.summary(state, name),
+        "cwd": get_session_cwds().get(name),
     }
+    annotated = annotate_view_membership([entry], settings)[0]
+    annotated.pop("sessionKey", None)
+    return annotated
 
 
 @app.get("/api/session-commands")
@@ -4106,6 +4144,7 @@ async def federation_sessions(request: Request) -> list[dict]:
     names = get_session_list()
     snapshots = get_snapshots()
     activity = get_session_activity()
+    cwds = get_session_cwds()
     state = await read_state()
     local_sessions: list[dict] = []
     for name in names:
@@ -4118,6 +4157,11 @@ async def federation_sessions(request: Request) -> list[dict]:
                 "bell": bell,
                 "last_activity_at": activity.get(name),
                 "followups": followups.summary(state, name),
+                # Same cwd observation GET /api/sessions carries (see that
+                # route's docstring) -- included so a peer's remote entries
+                # (spread with **s below) are never the richer half of a
+                # merged fleet view; local entries carry the identical field.
+                "cwd": cwds.get(name),
                 "deviceId": local_device_id,
                 "deviceName": local_device_name,
                 # This process's own version -- same value /api/instance-info

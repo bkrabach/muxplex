@@ -993,6 +993,225 @@ def test_get_sessions_created_at_null_when_unknown(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/sessions -- cwd (docs/plans/2026-08-07-agent-surface-additive-plan.md item C)
+#
+# `cwd` is tmux's #{pane_current_path} for the session's active window's
+# active pane, published from the SAME cache get_session_cwds() already
+# refreshes every poll cycle (main.py:74/507) -- zero new subprocesses.
+# This is how an agent tells which repo a sibling session is working in.
+# ---------------------------------------------------------------------------
+
+
+def test_get_sessions_includes_cwd(client, monkeypatch):
+    """GET /api/sessions must include cwd with the cached
+    #{pane_current_path} value for the session."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["iota"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"iota": "pane"})
+    monkeypatch.setattr(
+        "muxplex.main.get_session_cwds", lambda: {"iota": "/home/you/dev/muxplex"}
+    )
+
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert items[0]["cwd"] == "/home/you/dev/muxplex"
+
+
+def test_get_sessions_cwd_is_null_when_tmux_reports_none(client, monkeypatch):
+    """GET /api/sessions must return cwd: null for a session tmux didn't
+    report a parseable #{pane_current_path} for -- key always present,
+    same version-tolerant convention as last_activity_at/created_at."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["kappa"])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {"kappa": "pane"})
+    monkeypatch.setattr("muxplex.main.get_session_cwds", dict)
+
+    response = client.get("/api/sessions")
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    assert "cwd" in items[0]
+    assert items[0]["cwd"] is None
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sessions/{name} -- field parity with the bulk read (item C, §6.4)
+#
+# The single-session read used to return only {name, snapshot, lines, bell,
+# last_activity_at} while the bulk read also carried created_at, followups,
+# and views. A polling agent narrowed to one session could not see a
+# halted follow-up queue at all -- the exact silent stall item A teaches
+# it to watch for.
+# ---------------------------------------------------------------------------
+
+
+def _seed_parity_fixtures(
+    monkeypatch, name: str, *, cwd: str | None = "/home/you/dev/muxplex"
+):
+    """Wire up get_sessions()/get_session_snapshot()'s shared dependencies
+    so both endpoints resolve the SAME session with identical field values,
+    for the key-set-parity and cwd-parity assertions below."""
+
+    async def fake_capture_pane(session_name: str, lines: int) -> str:
+        return "pane text"
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [name])
+    monkeypatch.setattr("muxplex.main.get_snapshots", lambda: {name: "pane text"})
+    monkeypatch.setattr("muxplex.main.capture_pane", fake_capture_pane)
+    monkeypatch.setattr(
+        "muxplex.main.get_session_activity", lambda: {name: 1700000000.0}
+    )
+    monkeypatch.setattr(
+        "muxplex.main.get_session_created_times", lambda: {name: 1690000000.0}
+    )
+    monkeypatch.setattr(
+        "muxplex.main.get_session_cwds", lambda: {name: cwd} if cwd is not None else {}
+    )
+
+
+def test_session_snapshot_reaches_parity_with_bulk(client, monkeypatch):
+    """The single-session and bulk-read entries for the SAME session must
+    have identical key sets, differing only by the depth-request field
+    (`lines`, single-session only) and the wire-key `snapshot`/`sessionKey`
+    dance -- asserting the key SETS (not a hardcoded list) is what keeps
+    the two endpoints from drifting apart again the next time a field is
+    added to one."""
+    _seed_parity_fixtures(monkeypatch, "parity-session")
+
+    bulk_response = client.get("/api/sessions")
+    assert bulk_response.status_code == 200
+    bulk_entry = bulk_response.json()[0]
+
+    single_response = client.get("/api/sessions/parity-session")
+    assert single_response.status_code == 200
+    single_entry = single_response.json()
+
+    bulk_keys = set(bulk_entry.keys())
+    single_keys = set(single_entry.keys())
+
+    # `lines` is single-session-only: the depth REQUESTED, unrelated to parity.
+    assert single_keys - bulk_keys == {"lines"}
+    assert bulk_keys - single_keys == set()
+
+    for key in bulk_keys:
+        assert single_entry[key] == bulk_entry[key], (
+            f"{key!r} differs between GET /api/sessions ({bulk_entry[key]!r}) and "
+            f"GET /api/sessions/{{name}} ({single_entry[key]!r})"
+        )
+
+
+def test_session_snapshot_surfaces_halted_followups(client, monkeypatch):
+    """The motivating case: a halted follow-up queue must be visible from
+    the single-session read, not just the bulk read."""
+    from muxplex.state import save_state
+
+    _seed_parity_fixtures(monkeypatch, "halted-session")
+    save_state(
+        {
+            "active_session": None,
+            "session_order": ["halted-session"],
+            "sessions": {"halted-session": {"bell": {}}},
+            "devices": {},
+            "followups": {
+                "halted-session": {
+                    "revision": 3,
+                    "items": [
+                        {"id": "x", "text": "hi", "enter": True, "created_at": 0.0}
+                    ],
+                    "halted": {
+                        "reason": "input_not_allowed",
+                        "detail": "fenced",
+                        "at": 1700000000.0,
+                        "item_id": "x",
+                    },
+                }
+            },
+        }
+    )
+
+    response = client.get("/api/sessions/halted-session")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["followups"]["pending"] == 1
+    assert body["followups"]["halted"] is True
+
+
+def test_session_snapshot_includes_cwd(client, monkeypatch):
+    """GET /api/sessions/{name} must carry cwd, the same observation the
+    bulk read carries for this session."""
+    _seed_parity_fixtures(monkeypatch, "cwd-session", cwd="/home/you/dev/muxplex")
+
+    response = client.get("/api/sessions/cwd-session")
+    assert response.status_code == 200
+    assert response.json()["cwd"] == "/home/you/dev/muxplex"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/view -- cwd is deliberately EXCLUDED (item C, §6.2)
+#
+# GET /api/view is a cheap, frequently-polled display resolution (view
+# membership, attention, sort order) with deliberately no pane snapshots.
+# A working directory is not a display concern; pinning this exclusion
+# stops a future "consistency" PR from quietly adding it.
+# ---------------------------------------------------------------------------
+
+
+def test_view_does_not_carry_cwd(client, monkeypatch):
+    """GET /api/view's session entries must never carry a cwd key."""
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+    monkeypatch.setattr("muxplex.main.get_session_activity", dict)
+    monkeypatch.setattr(
+        "muxplex.main.get_session_cwds", lambda: {"alpha": "/home/you/dev/muxplex"}
+    )
+
+    response = client.get("/api/view")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["sessions"]) == 1
+    assert "cwd" not in data["sessions"][0]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/federation/sessions -- local branch carries cwd (item C, §6.2)
+#
+# Remote entries are spread `**s`, so a peer's cwd rides along automatically
+# once that peer's own GET /api/sessions carries it. Omitting it on the
+# LOCAL branch (a separate literal dict, not spread from get_sessions())
+# would make local entries the poorer half of a merged fleet view.
+# ---------------------------------------------------------------------------
+
+
+def test_federation_local_entries_carry_cwd(client, monkeypatch, tmp_path):
+    """GET /api/federation/sessions' local-session branch must carry the
+    same cwd observation GET /api/sessions carries."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps({"device_name": "my-workstation", "remote_instances": []})
+    )
+
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["fed-session"])
+    monkeypatch.setattr(
+        "muxplex.main.get_snapshots", lambda: {"fed-session": "pane text"}
+    )
+    monkeypatch.setattr(
+        "muxplex.main.get_session_cwds",
+        lambda: {"fed-session": "/home/you/dev/muxplex"},
+    )
+
+    response = client.get("/api/federation/sessions")
+    assert response.status_code == 200
+    data = response.json()
+    local = [s for s in data if s.get("remoteId") is None]
+    assert len(local) == 1
+    assert local[0]["cwd"] == "/home/you/dev/muxplex"
+
+
+# ---------------------------------------------------------------------------
 # GET /api/view
 # ---------------------------------------------------------------------------
 

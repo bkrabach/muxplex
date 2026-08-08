@@ -315,6 +315,58 @@ def test_spawn_session_command_leaves_compiled_default_history_limit():
 
 
 # ---------------------------------------------------------------------------
+# cwd on the wire (docs/plans/2026-08-07-agent-surface-additive-plan.md item
+# C). Its own isolated `-L` socket + `-f /dev/null` bootstrap, same pattern
+# as the history-limit proof above, so a session created in a KNOWN
+# directory proves `get_session_cwds()` is wired to real tmux -- not a mock.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_enumerate_sessions_reports_session_created_in_known_directory(
+    tmp_path,
+):
+    """A session created with `-c <dir>` must have that exact directory in
+    get_session_cwds() after enumerate_sessions() runs -- the only
+    assertion that proves `cwd` is wired to a real tmux pane rather than a
+    mock, per plan §6.6/§10 evidence item 8."""
+    socket = f"cwd-proof-{uuid.uuid4().hex[:8]}"
+    known_dir = tmp_path / "known-repo"
+    known_dir.mkdir()
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            socket,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "cwd-session",
+            "-c",
+            str(known_dir),
+        ],
+        check=True,
+    )
+    try:
+        patched_run_tmux = make_run_tmux_for_socket(socket)
+        with patch("muxplex.sessions.run_tmux", side_effect=patched_run_tmux):
+            await enumerate_sessions()
+
+        from muxplex.sessions import get_session_cwds
+
+        cwds = get_session_cwds()
+        assert cwds.get("cwd-session") == str(known_dir), (
+            f"expected cwd-session's cwd to be {known_dir!r}, got {cwds.get('cwd-session')!r}"
+        )
+    finally:
+        subprocess.run(
+            ["tmux", "-L", socket, "kill-server"], capture_output=True, check=False
+        )
+
+
+# ---------------------------------------------------------------------------
 # §12.5 -- real tmux, real ttyd, real sockets, through the real ASGI app.
 #
 # This is the acceptance test for the whole per-session-ttyd architecture
