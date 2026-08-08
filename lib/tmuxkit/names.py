@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from muxplex.tmux.proc import run_tmux
+from tmuxkit.proc import run_tmux
 
 # ---------------------------------------------------------------------------
 # Session-name validation (security boundary)

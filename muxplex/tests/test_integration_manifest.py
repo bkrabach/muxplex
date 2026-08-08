@@ -54,11 +54,11 @@ def unique_socket(prefix: str) -> str:
 async def probe_on_socket(socket: str):
     """probe_tmux_epoch(), routed through *socket* instead of the default.
 
-    The seam targets muxplex.tmux.observe -- the module where
+    The seam targets tmuxkit.observe -- the module where
     probe_tmux_epoch() has resolved run_tmux since the S1 extraction moved
     it there (patching the old sessions re-export would be invisible to it).
     """
-    import muxplex.tmux.observe as observe_mod
+    import tmuxkit.observe as observe_mod
 
     async def patched_run_tmux(*args: str) -> str:
         proc = await asyncio.create_subprocess_exec(

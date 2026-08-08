@@ -19,7 +19,7 @@ command, scheme, port -- ``main.py``'s ``_bell_hook_curl()``), the
 
 from __future__ import annotations
 
-from muxplex.tmux.proc import run_tmux
+from tmuxkit.proc import run_tmux
 
 
 async def poll_bell_flag(session_name: str) -> bool:

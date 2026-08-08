@@ -168,21 +168,34 @@ def _run_shell_construction_sites() -> list[str]:
 
     Recursion is load-bearing, not cosmetic (plan §7.3 rail 1): the
     pre-S1 version of this scan used ``package_dir.glob("*.py")`` --
-    non-recursive -- so the moment the bell code moved into
-    ``muxplex/tmux/``, the moved construction site would have silently
-    left the rail's coverage while the rail kept passing. ``rglob`` closes
-    that; the assertions below then FAIL (expected-one-found-zero) if the
-    scan ever stops recursing, because the sole legal site now lives in
-    the ``tmux/`` subpackage.
+    non-recursive -- so the moment the bell code moved into the library
+    subpackage, the moved construction site would have silently left the
+    rail's coverage while the rail kept passing. S3 (the ``git mv`` to
+    ``lib/tmuxkit/``) repeats that hazard one level up: the library is no
+    longer under the ``muxplex`` package at all, so the scan now covers
+    BOTH trees explicitly -- the ``muxplex`` app package AND
+    ``lib/tmuxkit/`` -- and the assertions below FAIL
+    (expected-one-found-zero) if either tree ever drops out, because the
+    sole legal site lives in ``lib/tmuxkit/bell.py``.
 
     ``muxplex/tests/`` is excluded: this rail is about PRODUCTION source
     (test files legitimately quote hook strings in assertions).
+
+    Returned paths are REPO-relative (``muxplex/...``,
+    ``lib/tmuxkit/...``) so the app/library split is visible to the
+    assertions.
     """
-    package_dir = Path(__file__).parent.parent
+    repo_root = Path(__file__).parent.parent.parent
+    scan_roots = [repo_root / "muxplex", repo_root / "lib" / "tmuxkit"]
+    for root in scan_roots:
+        assert root.is_dir(), (
+            f"run-shell rail scan root missing: {root} -- if a package "
+            f"moved, retarget this rail in the SAME commit (plan §7.3)."
+        )
     offenders: list[str] = []
-    for path in sorted(package_dir.rglob("*.py")):
-        rel = path.relative_to(package_dir).as_posix()
-        if rel.startswith("tests/"):
+    for path in sorted(p for root in scan_roots for p in root.rglob("*.py")):
+        rel = path.relative_to(repo_root).as_posix()
+        if rel.startswith("muxplex/tests/"):
             continue
         src = path.read_text(encoding="utf-8")
         tree = ast.parse(src, filename=str(path))
@@ -208,19 +221,19 @@ def _run_shell_construction_sites() -> list[str]:
 def test_no_diagnostic_tmux_run_shell_construction_exists():
     """Structural scan of production source: exactly ONE place may ever
     build a `run-shell` command string, and it must be the library's
-    `build_alert_bell_hook()` (muxplex/tmux/bell.py) -- never a
+    `build_alert_bell_hook()` (lib/tmuxkit/bell.py) -- never a
     diagnostic, probe, or health-check call.
 
-    This scans the WHOLE muxplex package tree recursively (rglob, see
-    `_run_shell_construction_sites`) so a future diagnostic added to any
-    module -- including the `muxplex/tmux/` library subpackage the S1
-    extraction created -- is caught, not just a regression in the one file
-    this incident happened in twice.
+    This scans BOTH production trees recursively (rglob, see
+    `_run_shell_construction_sites`) -- the muxplex app package AND the
+    `lib/tmuxkit/` workspace member the S3 extraction created -- so a
+    future diagnostic added to any module in either tree is caught, not
+    just a regression in the one file this incident happened in twice.
     """
     offenders = _run_shell_construction_sites()
 
     # Exactly one production call site is allowed: the library's
-    # build_alert_bell_hook() in muxplex/tmux/bell.py, built as
+    # build_alert_bell_hook() in lib/tmuxkit/bell.py, built as
     # f"run-shell '{command}'". Anything else -- a second occurrence
     # anywhere, in any module -- is a new diagnostic/probe call site and
     # must be rejected outright, not silenced.
@@ -235,9 +248,9 @@ def test_no_diagnostic_tmux_run_shell_construction_exists():
         f"diagnostics belong in the log, `GET /api/instance-info`, and "
         f"`muxplex doctor` -- never behind a new `run-shell` call."
     )
-    assert offenders[0].startswith("tmux/bell.py"), (
+    assert offenders[0].startswith("lib/tmuxkit/bell.py"), (
         f"the sole run-shell construction site moved out of "
-        f"muxplex/tmux/bell.py: {offenders[0]!r} -- verify this is still "
+        f"lib/tmuxkit/bell.py: {offenders[0]!r} -- verify this is still "
         f"the library's build_alert_bell_hook() (the one API that wraps a "
         f"caller-supplied, always-silent command), not a relocated "
         f"diagnostic."
@@ -247,7 +260,7 @@ def test_no_diagnostic_tmux_run_shell_construction_exists():
 def test_app_code_builds_zero_run_shell_strings():
     """The §3.2 two-rail tightening (plan §7.3): with the construction
     site moved behind the library's `build_alert_bell_hook()`, APP-level
-    code (everything in the muxplex package OUTSIDE `muxplex/tmux/`) is
+    code (everything in the muxplex package OUTSIDE `lib/tmuxkit/`) is
     allowed ZERO `run-shell` construction sites -- main.py included.
 
     Pre-S1, muxplex was allowed one (main.py's inline f-string). Post-S1
@@ -256,61 +269,67 @@ def test_app_code_builds_zero_run_shell_strings():
     strictly STRONGER invariant than the old single-site rule.
     """
     offenders = _run_shell_construction_sites()
-    app_offenders = [o for o in offenders if not o.startswith("tmux/")]
+    app_offenders = [o for o in offenders if not o.startswith("lib/tmuxkit/")]
     assert not app_offenders, (
         f"App-level code must never build a `run-shell` string itself -- "
         f"found {app_offenders}. Call "
-        f"muxplex.tmux.bell.build_alert_bell_hook(<always-silent command>) "
+        f"tmuxkit.bell.build_alert_bell_hook(<always-silent command>) "
         f"instead, and read AGENTS.md's 'never render to a pane' rule "
         f"before doing even that."
     )
 
 
 def _tmux_library_app_imports() -> list[str]:
-    """AST scan of every ``.py`` under ``muxplex/tmux/`` for imports that
+    """AST scan of every ``.py`` under ``lib/tmuxkit/`` for imports that
     reach the app layer, returned as package-relative offender strings.
 
     Three shapes are offenses, because each is a way the boundary could
     erode back into ``load_settings()``-style coupling without this rail
     firing:
 
-    - ``from muxplex.<app module> import ...`` (absolute ImportFrom)
-    - ``import muxplex`` / ``import muxplex.<app module>`` (plain Import)
-    - a RELATIVE import whose level climbs OUT of the ``muxplex/tmux/``
-      package (e.g. ``from .. import settings`` from ``tmux/proc.py``)
+    - ``from muxplex.<any module> import ...`` (absolute ImportFrom)
+    - ``import muxplex`` / ``import muxplex.<any module>`` (plain Import)
+    - a RELATIVE import whose level climbs OUT of the ``lib/tmuxkit/``
+      package (e.g. ``from .. import anything`` from ``tmuxkit/proc.py`` --
+      post-S3 the parent directory is ``lib/``, not even a package, but the
+      shape is still the boundary-erosion shape and stays an offense)
 
-    ``muxplex.tmux[.*]`` itself is allowed -- library-internal imports are
-    the point of the package.
+    ``tmuxkit[.*]`` itself is allowed -- library-internal imports are the
+    point of the package. Pre-S3 this rail had to carve a ``muxplex.tmux``
+    self-import exception; post-S3 (the ``git mv`` to ``lib/``) ANY
+    ``muxplex`` import is an offense, full stop -- the library is a
+    separate distribution and a ``muxplex`` import would be a literal
+    circular dependency, not just a boundary leak.
     """
-    tmux_dir = Path(__file__).parent.parent / "tmux"
+    lib_dir = Path(__file__).parent.parent.parent / "lib" / "tmuxkit"
+    assert lib_dir.is_dir(), (
+        f"import-purity rail scan root missing: {lib_dir} -- if the "
+        f"library moved, retarget this rail in the SAME commit (plan §7.3)."
+    )
     offenders: list[str] = []
-    for path in sorted(tmux_dir.rglob("*.py")):
-        rel_parts = path.relative_to(tmux_dir).parts
-        rel = "tmux/" + "/".join(rel_parts)
+    for path in sorted(lib_dir.rglob("*.py")):
+        rel_parts = path.relative_to(lib_dir).parts
+        rel = "lib/tmuxkit/" + "/".join(rel_parts)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 if node.level == 0:
                     mod = node.module or ""
-                    if (mod == "muxplex" or mod.startswith("muxplex.")) and not (
-                        mod == "muxplex.tmux" or mod.startswith("muxplex.tmux.")
-                    ):
+                    if mod == "muxplex" or mod.startswith("muxplex."):
                         offenders.append(f"{rel}:{node.lineno}: from {mod} import ...")
                 elif node.level >= len(rel_parts) + 1:
-                    # For a module at tmux/<f>.py (depth 1), level 1 is the
-                    # tmux package itself (allowed); level 2 climbs to the
-                    # muxplex app package (offense). Generalized for any
+                    # For a module at tmuxkit/<f>.py (depth 1), level 1 is
+                    # the tmuxkit package itself (allowed); level 2 climbs
+                    # out of the package (offense). Generalized for any
                     # future sub-package depth.
                     offenders.append(
                         f"{rel}:{node.lineno}: relative import escapes "
-                        f"muxplex/tmux/ (level={node.level})"
+                        f"lib/tmuxkit/ (level={node.level})"
                     )
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     name = alias.name
-                    if (name == "muxplex" or name.startswith("muxplex.")) and not (
-                        name == "muxplex.tmux" or name.startswith("muxplex.tmux.")
-                    ):
+                    if name == "muxplex" or name.startswith("muxplex."):
                         offenders.append(f"{rel}:{node.lineno}: import {name}")
     return offenders
 
@@ -320,7 +339,7 @@ def test_tmux_library_never_imports_the_app_layer():
     (which removed the last wrong-way arrow, proc.py's ``load_settings``
     read -- the rail could not exist before S2 without being born red).
 
-    Nothing under ``muxplex/tmux/`` may import from the muxplex app layer
+    Nothing under ``lib/tmuxkit/`` may import from the muxplex app layer
     (``muxplex.settings``, ``muxplex.state``, ``muxplex.main``, ...). This
     is the entire value of the internal boundary: it converts "we intend a
     library" into "a library that cannot silently grow an app dependency,"
@@ -331,12 +350,12 @@ def test_tmux_library_never_imports_the_app_layer():
     """
     offenders = _tmux_library_app_imports()
     assert not offenders, (
-        f"muxplex/tmux/ (the extractable tmux library) imports the app "
+        f"lib/tmuxkit/ (the extractable tmux library) imports the app "
         f"layer: {offenders}. The library must never read muxplex's "
         f"settings, state, or server code -- config is injected by the "
         f"caller (plan §4.3, §7.2). Resolve the value app-side (see "
         f"muxplex/sessions.py, the app facade) and pass it in as a "
-        f"parameter or via muxplex.tmux.proc.set_env_factory()."
+        f"parameter or via tmuxkit.proc.set_env_factory()."
     )
 
 
@@ -346,20 +365,20 @@ def test_library_tests_live_under_the_railed_tests_dir():
     applying to library code that still shells out to real tmux. They do
     so because ALL tests -- the library's included -- live under
     ``muxplex/tests/``, where that conftest governs. A test module placed
-    inside ``muxplex/tmux/`` would silently escape every autouse rail
+    inside ``lib/tmuxkit/`` would silently escape every autouse rail
     (settings isolation, TMUX_TMPDIR isolation, the port-killer
     neutralizer), which is exactly the "moved code leaves its guard's
     coverage" failure shape rail 1 above just closed for the AST scan.
     """
-    tmux_pkg = Path(__file__).parent.parent / "tmux"
-    assert tmux_pkg.is_dir(), "muxplex/tmux/ library subpackage is missing"
+    tmux_pkg = Path(__file__).parent.parent.parent / "lib" / "tmuxkit"
+    assert tmux_pkg.is_dir(), "lib/tmuxkit/ library package is missing"
     strays = sorted(
         p.relative_to(tmux_pkg).as_posix()
         for p in tmux_pkg.rglob("*.py")
         if p.name.startswith("test_") or p.name == "conftest.py"
     )
     assert not strays, (
-        f"Test files found inside muxplex/tmux/: {strays}. Library tests "
+        f"Test files found inside lib/tmuxkit/: {strays}. Library tests "
         f"must live in muxplex/tests/ so conftest.py's autouse safety "
         f"rails (isolated SETTINGS_PATH, isolated TMUX_TMPDIR, neutralized "
         f"port killer) apply to them -- see plan §7.3 rail 2."

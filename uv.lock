@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 members = [
     "muxplex",
     "muxplex-client",
+    "tmuxkit",
 ]
 
 [[package]]
@@ -349,6 +350,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "python-pam" },
     { name = "six" },
+    { name = "tmuxkit" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -379,6 +381,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "python-pam", specifier = ">=1.8.4" },
     { name = "six", specifier = ">=1.16.0" },
+    { name = "tmuxkit", editable = "lib" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=14.0" },
 ]
@@ -713,6 +716,24 @@ sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cde
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651, upload-time = "2026-03-22T18:29:45.111Z" },
 ]
+
+[[package]]
+name = "tmuxkit"
+version = "0.43.0"
+source = { editable = "lib" }
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "typing-extensions"

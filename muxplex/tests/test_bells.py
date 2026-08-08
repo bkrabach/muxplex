@@ -39,14 +39,14 @@ def reset_bell_seen():
 async def test_poll_bell_flag_returns_true_when_flag_is_1():
     """poll_bell_flag returns True when tmux reports window_bell_flag=1
     for a single-window session."""
-    with patch("muxplex.tmux.bell.run_tmux", new=AsyncMock(return_value="1\n")):
+    with patch("tmuxkit.bell.run_tmux", new=AsyncMock(return_value="1\n")):
         result = await poll_bell_flag("my-session")
     assert result is True
 
 
 async def test_poll_bell_flag_returns_false_when_flag_is_0():
     """poll_bell_flag returns False when tmux reports window_bell_flag=0."""
-    with patch("muxplex.tmux.bell.run_tmux", new=AsyncMock(return_value="0\n")):
+    with patch("tmuxkit.bell.run_tmux", new=AsyncMock(return_value="0\n")):
         result = await poll_bell_flag("my-session")
     assert result is False
 
@@ -54,7 +54,7 @@ async def test_poll_bell_flag_returns_false_when_flag_is_0():
 async def test_poll_bell_flag_returns_false_on_error():
     """poll_bell_flag returns False when run_tmux raises RuntimeError."""
     with patch(
-        "muxplex.tmux.bell.run_tmux",
+        "tmuxkit.bell.run_tmux",
         new=AsyncMock(side_effect=RuntimeError("session not found")),
     ):
         result = await poll_bell_flag("my-session")
@@ -69,7 +69,7 @@ async def test_poll_bell_flag_uses_list_windows_not_display_message():
     any other window).
     """
     mock_run_tmux = AsyncMock(return_value="0\n0\n")
-    with patch("muxplex.tmux.bell.run_tmux", mock_run_tmux):
+    with patch("tmuxkit.bell.run_tmux", mock_run_tmux):
         await poll_bell_flag("my-session")
 
     mock_run_tmux.assert_awaited_once_with(
@@ -88,14 +88,14 @@ async def test_poll_bell_flag_true_when_any_background_window_flag_set():
     among them must count.
     """
     # window 1 (active) = '0', window 2 (background, where the bell fired) = '1'
-    with patch("muxplex.tmux.bell.run_tmux", new=AsyncMock(return_value="0\n1\n")):
+    with patch("tmuxkit.bell.run_tmux", new=AsyncMock(return_value="0\n1\n")):
         result = await poll_bell_flag("my-session")
     assert result is True
 
 
 async def test_poll_bell_flag_false_when_all_windows_clear():
     """No window in the session has its bell flag set -> False."""
-    with patch("muxplex.tmux.bell.run_tmux", new=AsyncMock(return_value="0\n0\n0\n")):
+    with patch("tmuxkit.bell.run_tmux", new=AsyncMock(return_value="0\n0\n0\n")):
         result = await poll_bell_flag("my-session")
     assert result is False
 

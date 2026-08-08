@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tmuxkit"
+version = "0.43.0"
+description = "Async, argv-exec tmux session-management primitives (spawn, observe, presence, bells, cgroup escape)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{name = "Brian Krabach", email = "brian@krabach.com"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Developers",
+    "Topic :: Terminals",
+    "Typing :: Typed",
+]
+keywords = ["tmux", "sessions", "terminal", "subprocess"]
+requires-python = ">=3.11"
+dependencies = []
+
+# NOTE: dependencies is EMPTY and must stay that way -- this library is
+# stdlib-only by contract (docs/plans/2026-08-08-tmux-lib-extraction-plan.md
+# SS4.4, SS14.1). A second application imports it precisely because it does
+# NOT drag in fastapi/uvicorn/python-pam/httpx or the muxplex server package
+# (the failure client/pyproject.toml's no-server-dep note exists to prevent,
+# applied in the other direction). muxplex/tests/test_lib_import_smoke.py
+# enforces this at import time; the workspace pyproject's import-purity rail
+# (muxplex/tests/test_safety_rails.py) enforces it at the AST level.
+#
+# NOTE: version is LOCKSTEP with the repo tag (SS14.5, the client/ precedent:
+# 0.43.0 = 0.43.0). Bump it together with pyproject.toml and
+# client/pyproject.toml on every release. 0.x semantics -- no semver promise
+# until the plan's stage 6 freeze, which has not happened.
+#
+# NOTE: NOT published to PyPI (plan scope: the lib rides muxplex's git-based
+# install; .github/workflows/publish.yml deliberately builds only muxplex and
+# muxplex-client). The name is therefore rename-safe.
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.urls]
+Repository = "https://github.com/bkrabach/muxplex"
+Issues = "https://github.com/bkrabach/muxplex/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tmuxkit"]
+
+# No [tool.pytest.ini_options] / testpaths on purpose: the library's tests
+# (incident tests included) live in muxplex/tests/, where conftest.py's
+# autouse safety rails (isolated SETTINGS_PATH, isolated TMUX_TMPDIR,
+# neutralized port killer) govern them -- plan SS7.3 rail 2, enforced by
+# test_safety_rails.py::test_library_tests_live_under_the_railed_tests_dir.

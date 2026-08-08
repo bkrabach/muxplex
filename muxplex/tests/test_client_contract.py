@@ -334,11 +334,11 @@ def test_default_capture_lines_matches_server():
 # ---------------------------------------------------------------------------
 
 
-def _mock_subprocess_shell(monkeypatch, module_path: str = "muxplex.tmux.spawn"):
+def _mock_subprocess_shell(monkeypatch, module_path: str = "tmuxkit.spawn"):
     """Mock `asyncio.create_subprocess_shell` so create_session's spawn
     path never touches a real shell/tmux.
 
-    The spawn body lives in `muxplex.tmux.spawn` since the S2 extraction
+    The spawn body lives in `tmuxkit.spawn` since the S2 extraction
     (`sessions.spawn_session_command()` resolves the template and
     delegates), so that module's asyncio binding is the seam."""
     from unittest.mock import AsyncMock, MagicMock

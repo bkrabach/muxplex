@@ -38,6 +38,14 @@ dependencies = [
     "python-multipart>=0.0.9",
     "httpx>=0.27.0",
     "cryptography",
+    # The tmux library (lib/) -- a RUNTIME dependency, resolved as a uv
+    # workspace source from this same repo (see [tool.uv.sources] below;
+    # extraction plan SS13.2 stage 3.5, SS14.1). Pinned == to the repo
+    # version: lockstep versioning, the client/ precedent (SS14.5) -- bump
+    # it together with this file's `version` and lib/pyproject.toml's.
+    # NOT on PyPI (deliberately, plan scope) -- installs of muxplex must go
+    # through this repo (git or path), where the workspace resolves it.
+    "tmuxkit==0.43.0",
 ]
 
 [project.optional-dependencies]
@@ -81,7 +89,8 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["client"]
+members = ["client", "lib"]
 
 [tool.uv.sources]
 muxplex-client = { workspace = true }
+tmuxkit = { workspace = true }

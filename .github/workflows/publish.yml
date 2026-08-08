@@ -21,13 +21,22 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Build package
-        # --all-packages builds every uv workspace member, not just the root
-        # project. Without it, `uv build` only produces the `muxplex` sdist +
-        # wheel and silently drops `muxplex-client` (client/) -- verified
-        # locally: a bare `uv build` produces 2 files in dist/, this produces
-        # 4. See client/pyproject.toml + muxplex-client-design.md for why the
-        # client is a separate workspace member/distribution.
-        run: uv build --all-packages
+        # Build EXACTLY the two published distributions, by name. This used
+        # to be `uv build --all-packages` (build every workspace member --
+        # without it, a bare `uv build` only produces the `muxplex` sdist +
+        # wheel and silently drops `muxplex-client`). That stopped being safe
+        # at extraction stage S3: `lib/` (tmuxkit) is now a third workspace
+        # member that is deliberately NOT published to PyPI (it rides
+        # muxplex's git-based install; see lib/pyproject.toml and the plan's
+        # scope) -- and a PyPI release cannot be unpublished. --all-packages
+        # would put tmuxkit-* files in dist/ where the publish step uploads
+        # everything it finds (and, per the note below, fail the whole job
+        # with a 403 because tmuxkit has no trusted publisher). Explicit
+        # --package flags keep any FUTURE workspace member unpublished by
+        # default too, instead of published by accident.
+        run: |
+          uv build --package muxplex
+          uv build --package muxplex-client
 
       - name: Publish to PyPI
         # Uploads every file under dist/ (both muxplex-* and muxplex_client-*

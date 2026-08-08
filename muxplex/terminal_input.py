@@ -1,4 +1,4 @@
-"""Re-export shim: this module moved to ``muxplex.tmux.keys``.
+"""Re-export shim: this module moved to ``tmuxkit.keys``.
 
 Pure move at tmux-lib extraction stage S1 (plan §7.1, §3.4 --
 docs/plans/2026-08-08-tmux-lib-extraction-plan.md): the argv builders,
@@ -9,10 +9,10 @@ and exec facts, not muxplex policy. The policy *values*
 stay app-side in ``settings.py``, exactly as before.
 
 All existing import paths keep working through this shim; new code should
-import from ``muxplex.tmux.keys``.
+import from ``tmuxkit.keys``.
 """
 
-from muxplex.tmux.keys import (
+from tmuxkit.keys import (
     ALLOWED_KEYS,
     MAX_KEYS,
     MAX_TEXT_BYTES,

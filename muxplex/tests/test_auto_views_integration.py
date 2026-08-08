@@ -181,8 +181,8 @@ async def _poll(socket: str) -> None:
 
     patched_run_tmux = make_run_tmux_for_socket(socket)
     with (
-        patch("muxplex.tmux.observe.run_tmux", side_effect=patched_run_tmux),
-        patch("muxplex.tmux.bell.run_tmux", side_effect=patched_run_tmux),
+        patch("tmuxkit.observe.run_tmux", side_effect=patched_run_tmux),
+        patch("tmuxkit.bell.run_tmux", side_effect=patched_run_tmux),
     ):
         await _run_poll_cycle()
 
