@@ -991,10 +991,16 @@ thinks it got 2000 lines but actually got fewer would be a worse surprise
 than an explicit rejection. Traced proof of the recovery itself: a
 `seq 1 100` command, then the default (omitted `lines`) read-back started at
 line **48** — lines 1–47 genuinely gone — while `?lines=200` recovered the
-full range, containing lines `1`, `47`, and `100`. Sessions also get their
-tmux `history-limit` raised to 5000 on creation specifically so a max-depth
-request has real scrollback behind it, rather than tmux's own (possibly much
-lower) default silently truncating what you asked for.
+full range, containing lines `1`, `47`, and `100`.
+
+How much scrollback actually exists behind a max-depth request is set by the
+host's tmux configuration, not by muxplex. `muxplex tmux install` provides
+50000; without it you get tmux's compiled-in default of 2000 — the same number
+as the `lines` ceiling, so a `?lines=2000` request against an unmanaged host can
+legitimately return everything there is. `history-limit` binds a pane when it is
+created and cannot be raised afterward, so if you need deeper scrollback the fix
+is `muxplex tmux install`, or raising `history-limit` in your own `~/.tmux.conf`
+before sessions start — never a request parameter.
 
 ### 6.4 Bell-on-completion: an attention convention
 
