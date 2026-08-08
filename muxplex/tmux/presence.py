@@ -11,6 +11,19 @@ Manifest I/O (``load_manifest``/``save_manifest``) deliberately does NOT
 move at S1: it defaults its path to muxplex's ``STATE_DIR`` (an app-side
 import). §13.3's injected-path shape lands with the packaging stages.
 
+The unknown-key round-trip contract (extraction stage S4, plan §13.3): the
+library owns the CORE top-level keys -- ``schema``, ``epoch``, ``sessions``,
+``pending_restore`` (plus, for now, ``created_with``, whose reap rules still
+live inside ``update_manifest()`` below) -- and an app writes its own
+top-level keys BESIDE them in its own single-writer file. For that to be
+safe, every function in this module that returns a rebuilt manifest carries
+unknown top-level keys through **verbatim**. Before S4 this was false:
+``update_manifest()`` rebuilt the top-level dict from a closed key set, so
+an app-owned key survived only by the call-order accident that muxplex's
+poll cycle reads and clears ``rename_in_flight`` before calling it. That
+accident is now a contract, pinned by the re-recorded differential-harness
+case and by test_manifest.py's S4 contract tests.
+
 The presence rule, in one sentence (see manifest.py's module docstring for
 the full incident history): a positive record, removed by exactly one thing
 -- observed individual death against a live, identity-matched server --
@@ -147,6 +160,11 @@ def update_manifest(
                 entry["cwd"] = cwds[name]
             sessions[name] = entry
         new_manifest = {
+            # S4 (plan §13.3): unknown top-level keys round-trip verbatim.
+            # The spread carries every app-owned key; the explicit entries
+            # below overwrite exactly the keys this function owns, with
+            # values computed exactly as before the contract change.
+            **manifest,
             "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
             "epoch": {**epoch_now, "observed_at": now},
             "sessions": sessions,
@@ -183,6 +201,8 @@ def update_manifest(
                 created_with.pop(name, None)
                 changed = True
         new_manifest = {
+            # S4 (plan §13.3): unknown top-level keys round-trip verbatim.
+            **manifest,
             "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
             "epoch": epoch_rec,
             "sessions": sessions,
@@ -231,6 +251,10 @@ def update_manifest(
         name: cmd_id for name, cmd_id in created_with.items() if name in retained_names
     }
     new_manifest = {
+        # S4 (plan §13.3): unknown top-level keys round-trip verbatim --
+        # a cold start rebuilds THIS function's keys fresh (new epoch, new
+        # observation) but must not eat an app's keys riding beside them.
+        **manifest,
         "schema": manifest.get("schema", MANIFEST_SCHEMA_VERSION),
         "epoch": {**epoch_now, "observed_at": now},
         "sessions": new_sessions,

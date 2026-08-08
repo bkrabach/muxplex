@@ -836,3 +836,161 @@ def test_get_restore_cwd_legacy_entry_with_no_cwd_key_returns_none():
     'never observed', by design (see get_restore_cwd()'s docstring)."""
     manifest = _manifest_with_pending(["a2a"])  # no "cwd" key in the fixture
     assert get_restore_cwd(manifest, "a2a") is None
+
+
+# ---------------------------------------------------------------------------
+# S4: the unknown-key round-trip contract (extraction stage S4, plan
+# docs/plans/2026-08-08-tmux-lib-extraction-plan.md \u00a713.3)
+#
+# The library owns the CORE top-level keys (schema, epoch, sessions,
+# pending_restore -- plus, for now, created_with, whose reap rules still
+# live inside update_manifest()); an app writes its own top-level keys
+# BESIDE them in its own single-writer file. For that to be safe, an
+# app-owned key the library has never heard of must survive EVERY function
+# that rebuilds or rewrites the manifest -- verbatim, on every branch.
+# Before S4, update_manifest() rebuilt the top level from a closed key set
+# and dropped them on any changed cycle; rename_in_flight survived only by
+# the call-order accident that the poll cycle reads-and-clears the journal
+# BEFORE calling update_manifest() (main.py step 1c before step 1b's call).
+# These tests promote that accident to a contract.
+# ---------------------------------------------------------------------------
+
+# A name no muxplex code knows -- if any code path special-cases this
+# string, that code path is cheating the contract.
+APP_KEY = "app_custom_marker"
+APP_VALUE = {"owner": "some-second-app", "nested": {"n": 1}, "flag": None}
+
+
+def _adopted_manifest_with_app_key() -> dict:
+    """A same-epoch manifest carrying an app-owned top-level key."""
+    return {
+        "schema": 2,
+        "epoch": {**EPOCH_A, "observed_at": 100.0},
+        "sessions": {
+            "alpha": {"first_seen_at": 100.0, "last_seen_at": 100.0},
+            "beta": {"first_seen_at": 100.0, "last_seen_at": 100.0},
+        },
+        "pending_restore": None,
+        "created_with": {},
+        APP_KEY: json.loads(json.dumps(APP_VALUE)),
+    }
+
+
+def _assert_app_key_verbatim(result: dict):
+    assert APP_KEY in result, "app-owned top-level key was dropped"
+    assert json.dumps(result[APP_KEY], sort_keys=True) == json.dumps(
+        APP_VALUE, sort_keys=True
+    ), "app-owned key survived but not verbatim"
+
+
+def test_s4_update_manifest_changed_same_epoch_cycle_round_trips_app_key():
+    """The exact hazard \u00a713.3 names: before S4, a CHANGED same-epoch cycle
+    (here: one session added, one tombstoned) rebuilt the top level from a
+    closed key set and dropped the app's key."""
+    manifest = _adopted_manifest_with_app_key()
+    new_manifest, changed = update_manifest(
+        manifest, EPOCH_A, ["alpha", "gamma"], now=200.0
+    )
+    assert changed is True  # gamma added AND beta tombstoned
+    assert "gamma" in new_manifest["sessions"]
+    assert "beta" not in new_manifest["sessions"]
+    _assert_app_key_verbatim(new_manifest)
+
+
+def test_s4_update_manifest_quiet_same_epoch_cycle_round_trips_app_key():
+    manifest = _adopted_manifest_with_app_key()
+    new_manifest, changed = update_manifest(
+        manifest, EPOCH_A, ["alpha", "beta"], now=200.0
+    )
+    assert changed is False
+    _assert_app_key_verbatim(new_manifest)
+
+
+def test_s4_update_manifest_first_run_adoption_round_trips_app_key():
+    """First run after an upgrade: the manifest may already carry app keys
+    (the app wrote them beside an epoch-less manifest); adoption must not
+    eat them."""
+    manifest = {
+        "schema": 2,
+        "epoch": None,
+        "sessions": {},
+        "pending_restore": None,
+        "created_with": {},
+        APP_KEY: json.loads(json.dumps(APP_VALUE)),
+    }
+    new_manifest, changed = update_manifest(manifest, EPOCH_A, ["alpha"], now=200.0)
+    assert changed is True
+    assert new_manifest["sessions"]["alpha"]["first_seen_at"] == 200.0
+    _assert_app_key_verbatim(new_manifest)
+
+
+def test_s4_update_manifest_cold_start_round_trips_app_key():
+    """The cold-start branch rebuilds ITS keys fresh (new epoch, new
+    observation) but must carry the app's key beside them."""
+    manifest = _adopted_manifest_with_app_key()
+    new_manifest, changed = update_manifest(manifest, EPOCH_B, ["alpha"], now=200.0)
+    assert changed is True
+    assert "beta" in new_manifest["pending_restore"]["sessions"]  # frozen
+    _assert_app_key_verbatim(new_manifest)
+
+
+def test_s4_update_manifest_epoch_none_round_trips_app_key():
+    manifest = _adopted_manifest_with_app_key()
+    new_manifest, changed = update_manifest(manifest, None, [], now=200.0)
+    assert changed is False
+    _assert_app_key_verbatim(new_manifest)
+
+
+def test_s4_mark_restored_round_trips_app_key():
+    manifest = _manifest_with_pending(["a2a"])
+    manifest[APP_KEY] = json.loads(json.dumps(APP_VALUE))
+    _assert_app_key_verbatim(mark_restored(manifest, {"a2a"}))
+    # The no-pending early return path too.
+    no_pending = _adopted_manifest_with_app_key()
+    _assert_app_key_verbatim(mark_restored(no_pending, {"anything"}))
+
+
+def test_s4_app_side_manifest_writers_round_trip_app_key():
+    """The app-side pure rewriters (set_created_with, the rename journal)
+    already used a {**manifest, ...} spread -- pinned here so a future
+    'tidy' rewrite to a closed key set goes red."""
+    manifest = _adopted_manifest_with_app_key()
+    _assert_app_key_verbatim(set_created_with(manifest, "alpha", "pair-1"))
+    journaled = manifest_mod.start_rename_journal(manifest, "alpha", "alpha2", now=1.0)
+    _assert_app_key_verbatim(journaled)
+    _assert_app_key_verbatim(manifest_mod.clear_rename_journal(journaled))
+
+
+def test_s4_app_key_survives_save_load_file_round_trip():
+    """End to end through the file: save_manifest() persists the app key,
+    load_manifest()'s defensive defaults leave it untouched."""
+    manifest = _adopted_manifest_with_app_key()
+    save_manifest(manifest)
+    _assert_app_key_verbatim(load_manifest())
+
+
+def test_s4_rename_in_flight_no_longer_depends_on_call_order():
+    """Reorder-proof, not order-lucky: before S4, rename_in_flight survived
+    the poll cycle ONLY because step 1c reads-and-clears the journal before
+    step 1b's update_manifest() call. Simulate the reordering (a changed
+    cycle running while a journal is still in flight): the journal must
+    come through verbatim, ready to be honored on a later cycle."""
+    manifest = _adopted_manifest_with_app_key()
+    journaled = manifest_mod.start_rename_journal(
+        manifest, "alpha", "alpha2", now=150.0
+    )
+    new_manifest, changed = update_manifest(
+        journaled, EPOCH_A, ["alpha", "gamma"], now=200.0
+    )
+    assert changed is True
+    assert new_manifest["rename_in_flight"] == {
+        "from": "alpha",
+        "to": "alpha2",
+        "at": 150.0,
+    }
+    # And the discrimination rule around it is untouched: a cold start with
+    # the journal still present freezes lost sessions AND keeps the journal.
+    cold, cold_changed = update_manifest(journaled, EPOCH_B, [], now=300.0)
+    assert cold_changed is True
+    assert set(cold["pending_restore"]["sessions"]) == {"alpha", "beta"}
+    assert cold["rename_in_flight"] == {"from": "alpha", "to": "alpha2", "at": 150.0}

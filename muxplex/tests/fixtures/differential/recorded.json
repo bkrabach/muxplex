@@ -1002,6 +1002,7 @@
               "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
             },
             "pending_restore": null,
+            "rename_in_flight": null,
             "schema": 2,
             "sessions": {
               "alpha": {
@@ -1040,7 +1041,8 @@
             "sessions": {}
           },
           "now": 1786186696.9832957
-        }
+        },
+        "note": "Expected re-recorded at S4 (plan \u00a713.3), same recorded real inputs: this case's INPUT manifest was recorded through load_manifest(), which materializes rename_in_flight: null, so the pre-S4 expected had ALSO (accidentally) pinned the closed-key-set drop. Under the S4 round-trip contract the null journal key is carried verbatim; the diff vs the pre-S4 expected is EXACTLY that one added key, everything else byte-identical."
       },
       {
         "description": "same-epoch quiet cycle: nothing changed",
@@ -1259,10 +1261,14 @@
         }
       },
       {
-        "description": "PRE-S4 BASELINE: unknown top-level keys (rename_in_flight, app_extra) dropped on a changed same-epoch cycle",
+        "description": "S4 CONTRACT (re-recorded at S4): unknown top-level keys (rename_in_flight, app_extra) ROUND-TRIP VERBATIM through a changed same-epoch cycle",
         "expected": {
           "changed": true,
           "manifest": {
+            "app_extra": {
+              "kept": false,
+              "origin": "recorded-baseline"
+            },
             "created_with": {},
             "epoch": {
               "inode": 4752698,
@@ -1271,6 +1277,11 @@
               "socket_path": "/tmp/mx-diff-rec-v2jtfarj/tmux/tmux-1000/default"
             },
             "pending_restore": null,
+            "rename_in_flight": {
+              "at": 1786186697.0060124,
+              "from": "alpha",
+              "to": "alpha2"
+            },
             "schema": 2,
             "sessions": {
               "alpha": {
@@ -1341,7 +1352,7 @@
           },
           "now": 1786186697.0060678
         },
-        "note": "S4 (plan \u00a713.3) will change this contract to round-trip unknown top-level keys verbatim. When S4 lands, THIS case's expectation is deliberately re-recorded; every other case must stay byte-identical."
+        "note": "Re-recorded at extraction stage S4 (plan \u00a713.3): the PRE-S4 BASELINE pinned today's closed-key-set drop of unknown top-level keys; S4 promotes the round-trip to a contract, so this ONE case was deliberately re-recorded against the new behavior (expected computed by replaying the SAME recorded real inputs through the S4 code). Every other case stays byte-identical."
       },
       {
         "description": "epoch_now is None: knowledge unavailable, manifest returned unchanged",

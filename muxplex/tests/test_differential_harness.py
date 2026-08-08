@@ -21,12 +21,17 @@ proves the moved code is behaviour-identical to the pre-move code:
 - Every parsed/computed result is compared to the recorded baseline via
   canonical JSON (sort_keys) — byte-identity, not shape-identity.
 
-The ONE deliberate exception is the case named ``PRE-S4 BASELINE`` in the
-fixture: §13.3 schedules a contract change (unknown top-level manifest keys
-must round-trip verbatim; today the closed-key-set rebuild drops them). That
-single case pins today's behavior so S4's change is visible and deliberate —
-when S4 lands, that case's expectation is re-recorded and every other case
-must stay byte-identical.
+S4 (plan §13.3, landed): the ``PRE-S4 BASELINE`` case pinned the old
+closed-key-set drop of unknown top-level manifest keys; S4 promoted the
+round-trip to a contract, and that case's expectation was deliberately
+re-recorded against the new behavior (same recorded real inputs, replayed
+through the S4 code). ONE collateral re-record rode along, with a mechanical
+cause the S0 annotation had missed: the ``first-run adoption`` case's INPUT
+manifest was recorded through ``load_manifest()``, which materializes
+``rename_in_flight: null`` — so its pre-S4 expected had *also* (accidentally)
+pinned the drop. Its re-recorded expected differs by exactly that one key,
+carried verbatim; see the ``note`` on each re-recorded case. Every other
+fixture case is byte-identical to the S0 recording.
 
 These tests never touch a real tmux server: the subprocess boundary is
 replayed from the tape. The ttyd AF_UNIX liveness/validation tests are the
@@ -275,7 +280,7 @@ def test_update_manifest_replays_every_recorded_cycle(recorded):
 
     Covers §8.2's four named cases (first-run adoption, same-epoch tombstone,
     cold-start freeze, epoch-None no-op) plus the same-epoch add/quiet cycles
-    and the §13.3 PRE-S4 unknown-key baseline.
+    and the §13.3 S4 unknown-key round-trip contract case.
     """
     for case in recorded["update_manifest"]["cases"]:
         inputs = copy.deepcopy(case["inputs"])
@@ -306,20 +311,22 @@ def test_update_manifest_epoch_none_is_a_true_noop(recorded):
     assert canon(result) == canon(case["inputs"]["manifest"])
 
 
-def test_pre_s4_baseline_unknown_toplevel_keys_are_dropped(recorded):
-    """Pins TODAY's closed-key-set rebuild (manifest.py:335-341, :371-377,
-    :419-425): app-owned top-level keys (rename_in_flight, app_extra) are
-    dropped on a changed cycle.
+def test_s4_unknown_toplevel_keys_round_trip_verbatim(recorded):
+    """The S4 contract (plan §13.3), replayed on the same recorded real
+    inputs that pinned the PRE-S4 BASELINE: app-owned top-level keys
+    (rename_in_flight, app_extra) ROUND-TRIP VERBATIM through a changed
+    same-epoch cycle instead of being dropped by the closed-key-set rebuild.
 
-    S4 (plan §13.3) deliberately CHANGES this contract to round-trip unknown
-    keys verbatim. When S4 lands, this test and its fixture case are
-    re-recorded together; if this test goes red for any other reason, a move
-    has changed manifest behavior it must not change.
+    This is the ONE deliberately re-recorded case of the S4 stage (its
+    fixture expectation was recomputed by replaying the recorded inputs
+    through the S4 code); if this test goes red, the round-trip contract —
+    what makes §13.3's "app writes its keys beside the library's core keys"
+    design safe — has regressed.
     """
     case = next(
         c
         for c in recorded["update_manifest"]["cases"]
-        if c["description"].startswith("PRE-S4 BASELINE")
+        if c["description"].startswith("S4 CONTRACT")
     )
     inputs = copy.deepcopy(case["inputs"])
     assert "app_extra" in inputs["manifest"], "fixture must carry the unknown key"
@@ -332,8 +339,11 @@ def test_pre_s4_baseline_unknown_toplevel_keys_are_dropped(recorded):
         cwds=inputs["cwds"],
     )
     assert changed is True
-    assert "app_extra" not in result
-    assert "rename_in_flight" not in result
+    # Verbatim, not merely present: byte-identical values.
+    assert canon(result["app_extra"]) == canon(case["inputs"]["manifest"]["app_extra"])
+    assert canon(result["rename_in_flight"]) == canon(
+        case["inputs"]["manifest"]["rename_in_flight"]
+    )
     assert canon(result) == canon(case["expected"]["manifest"])
 
 
