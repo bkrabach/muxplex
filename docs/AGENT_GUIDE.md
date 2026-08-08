@@ -1145,6 +1145,25 @@ during this investigation: the hook was silently unregistered in a fresh
 instance, and one call to this endpoint fixed it for the rest of the
 session.
 
+**Triage which bells are real: `bell.source`.** Four things write a bell and
+they look identical on the wire unless you check this field
+(`docs/plans/2026-08-07-bell-causality-plan.md` — a `reason` field explaining
+*why* a session belled was considered and rejected: the path that produces
+most bells is a one-byte `\a` with zero payload bits, so any such field would
+be `null` in the common case, and confidently wrong in the rest):
+
+| `bell.source` | Means | What to do |
+|---|---|---|
+| `"seeded"` | muxplex manufactured this bell for a just-created session — **nothing happened in the pane.** | **Skip.** This is the single largest source of false-positive attention today. |
+| `"poll"` | muxplex observed a `window_bell_flag` transition itself (no tmux client attached). | Real, but `unseen_count` is a **floor, not a count** — the underlying tmux flag is boolean and can stick. |
+| `"halt"` | **Your own follow-up queue halted on this session.** A real, already-enumerated cause. | Fetch `GET /api/sessions/{name}/followups` and read `halted.reason` (`input_disabled` / `input_not_allowed` / `session_missing` / `send_failed`) plus free-text `detail` — see §6.5 below. |
+| `"hook"` | A real BEL byte reached a real pane, via `POST /bell`. | This is genuine causality, but muxplex knows no more than you do about *why* — the hook cannot carry a payload (verified against real tmux: pane-scoped context resolves the wrong pane in any split layout, and the one working side-channel, an OSC-2 pane-title marker, is sticky and outlives the bell it described). Read the snapshot if you care. |
+| `None` | No bell has fired, or this server predates the field. | Nothing to triage. |
+
+`bell.source` is agent-facing only — it appears nowhere in the PWA grid, and
+it is never read by `needs_attention`/`?sort=attention`. It labels a bell for
+a *poller*; it does not change whether the session needs attention.
+
 ### 6.5 Follow-up queues — leaving a note for the next bell
 
 §6.4 taught you how to *ring* the bell. This is what can *fire on* one.

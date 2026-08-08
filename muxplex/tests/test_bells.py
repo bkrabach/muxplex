@@ -118,6 +118,39 @@ async def test_process_bell_flags_increments_unseen_count_on_new_bell():
     assert state["sessions"]["session-a"]["bell"]["last_fired_at"] is not None
 
 
+async def test_process_bell_flags_stamps_source_poll_on_new_bell():
+    """A 0→1 transition detected by the poll fallback stamps
+    bell.source == "poll" -- docs/plans/2026-08-07-bell-causality-plan.md §4.1."""
+    state = empty_state()
+    state["sessions"]["session-a"] = {"bell": empty_bell()}
+
+    with patch("muxplex.bells.poll_bell_flag", new=AsyncMock(return_value=True)):
+        await process_bell_flags(["session-a"], state)
+
+    assert state["sessions"]["session-a"]["bell"]["source"] == "poll"
+
+
+async def test_process_bell_flags_persistent_flag_does_not_change_source():
+    """A 1→1 (persistent, no new transition) poll must not re-stamp source --
+    it isn't a new bell event at all, so nothing about it should change."""
+    state = empty_state()
+    state["sessions"]["session-a"] = {"bell": empty_bell()}
+
+    with patch("muxplex.bells.poll_bell_flag", new=AsyncMock(return_value=True)):
+        await process_bell_flags(["session-a"], state)  # 0->1, stamps "poll"
+        state["sessions"]["session-a"]["bell"]["source"] = "hook"  # simulate a
+        # later hook bell having since overwritten it
+        await process_bell_flags(["session-a"], state)  # 1->1, no transition
+
+    assert state["sessions"]["session-a"]["bell"]["source"] == "hook"
+
+
+def test_empty_bell_source_defaults_to_none():
+    """empty_bell()'s source key defaults to None -- honest 'unknown
+    provenance' for a fresh bell or a pre-feature state.json entry."""
+    assert empty_bell()["source"] is None
+
+
 async def test_process_bell_flags_does_not_double_count_persistent_flag():
     """process_bell_flags does not increment unseen_count if flag stays at 1."""
     state = empty_state()

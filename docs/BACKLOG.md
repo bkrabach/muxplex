@@ -265,81 +265,48 @@ thing and followed the tool's own pointer.
 
 ---
 
-## 7. Put `session_created` on the wire
+## 7. `PUT /api/sessions/{name}/status` -- agent-owned session status
 
-**What we want.** A session's creation time on `GET /api/sessions` entries. The
-value already exists inside the server; it just stops before the response.
+**Status: shipped elsewhere, and superseded.** This item as originally framed
+("put `session_created` on the wire") has shipped: `created_at` is on every
+`GET /api/sessions` entry and on `muxplex_client.Session`
+(`docs/API_SEMANTICS.md`'s "Semantics external clients re-implement" section).
+The slot is repurposed here for the item that actually remains open, per
+`docs/plans/2026-08-07-bell-causality-plan.md` §7 (Phase 2, deliberately not
+scheduled with Phase 1).
 
-**Why it matters.** v0.36.1 fixed a real inversion -- the session you just created
-sorted dead last in the attention view -- by seeding a genuinely-new session's bell
-as though it had just fired. The discriminator is tmux's own `#{session_created}`
-compared against `_server_start_time` (`main.py:173`, `main.py:422`): created
-during this process's lifetime means genuinely new, anything earlier means merely
-first observed. That value is parsed out of the same `tmux list-sessions` call
-that already produced `#{window_activity}` (no second round trip), cached in
-`sessions.py`, and handed to the server as `get_session_created_times()`.
+**What we want.** `PUT /api/sessions/{name}/status` /
+`DELETE /api/sessions/{name}/status` -- an agent-owned, closed-enum
+(`working` / `blocked` / `failed` / `done`) plus bounded free-text `detail`,
+server-stamped `set_at`, surfaced on `GET /api/sessions`,
+`GET /api/sessions/{name}`, and `GET /api/view`. Full shape, constraints, and
+rejected alternatives are in the plan's §7.1/§7.2 -- this entry exists so the
+trigger condition is visible without re-deriving the design.
 
-It stops there deliberately. `GET /api/sessions` entries remain `name`,
-`snapshot`, `bell`, `last_activity_at`, `views`. That release's own "Known
-limitation" states the consequence and names the remedy: an external client "still
-cannot see when a session was created, and cannot reproduce this ordering decision
-locally... Adding it would be a purely additive field and is the obvious future
-change; it is not made here because nothing yet asks for it."
+**Why this is Phase 2 and not Phase 1.** Phase 1 (`bell.source` + a bell on
+follow-up-queue halt, shipped in v0.43.0) already covers the two bell-causality
+cases muxplex can answer honestly and cheaply. What Phase 2 would add is a
+*different* concept -- session status, not bell causality -- with its own
+unanswered lifecycle question: **who clears it.** The plan's §7.3 recommends
+agent-owned/no-TTL (the writer clears it via `DELETE`, `set_at` lets each
+consumer age it), but that is a recommendation, not a proven answer.
 
-Something asks for it now. `muxplex-deck` orders sessions itself, and the projects
-integrating against `muxplex-client` this month will each hit the same wall.
-`AGENTS.md`'s standing answer for a rule clients would otherwise re-implement is
-to resolve it server-side -- but that answer presumes the client has the inputs,
-and here the input isn't on the wire at all.
+**Trigger condition (from the plan's §7.5): build this when a SECOND,
+independent consumer needs it.** One agent integration wanting it is a
+preference; two converging on the same need is a contract. Until then this
+would ship a mutable, agent-owned state surface with zero writers --
+`AGENTS.md`'s standing rule (resolve server-side what clients would otherwise
+re-implement) does not yet apply, because no client is re-implementing
+anything here.
 
-**Urgency -- the reason this one isn't "someday."** It is wanted *before* those
-integrations land, not after. A field that exists before its clients do costs
-nothing. The same field added afterward means every client ships a local
-workaround first and then carries it forever, which is exactly the
-drift-across-clients problem `docs/API_SEMANTICS.md` exists to prevent.
-
-**What it has to fit alongside.**
-
-- Purely additive, which is the change class `AGENTS.md` explicitly prefers: new
-  field, no rename, no semantic change. Clients tolerate unknown fields; the
-  server tolerates their absence.
-- `get_session_created_times()` is already defensive -- returns a copy, keyed by
-  session name, unix epoch seconds, drops malformed values and sessions that have
-  since closed (`test_sessions.py:302`+). The value needs no new hardening to be
-  exposed.
-- `docs/API_SEMANTICS.md` is where the semantics external clients re-derive live,
-  and the needs-attention predicate documented there is the exact rule this field
-  supports. Adding the field without updating that document would reproduce the
-  gap the change exists to close.
-- `muxplex_client`'s models are hand-rolled dataclasses rather than pydantic
-  (`client/muxplex_client/models.py:4`), and client and server versions are locked
-  in step (`test_client_contract.py:416`). The field lands in both at one version
-  or in neither.
-
-**Open questions.**
-
-- **Is the timestamp enough?** The server's decision is `created_at >=
-  _server_start_time`. A client holding only `created_at` cannot make that
-  comparison -- it also needs to know when that server came up.
-  `GET /api/instance-info` is the natural home for the other half, but putting it
-  there means publishing a process-lifetime watermark as part of the contract.
-- **The raw value, or the conclusion?** `AGENTS.md`'s standing answer is to
-  resolve client-facing rules server-side rather than shipping logic to each
-  client, and the purest form of that here is a derived boolean, not a timestamp.
-  The raw value is more honest and more reusable; the boolean is less for each
-  client to get wrong. This deserves an explicit decision rather than defaulting
-  to whichever is easier to add.
-- **Name and shape.** `created`, `created_at`, or `session_created`.
-  `last_activity_at` is the field to match rather than invent against -- both are
-  tmux-derived timestamps on the same entry, and an inconsistent pair is worse
-  than either choice.
-- **Absent value: `null`, or omit the key?** `get_session_created_times()` can
-  legitimately have no entry when tmux reported nothing parseable. Both are
-  tolerable under the two-way version-tolerance rule; picking deliberately beats
-  picking by accident.
-- **Federation and clocks.** A remote session's entry comes from that host's poll
-  cycle and that host's clock. `last_activity_at` already carries that property,
-  so there may be nothing new here -- but "may be" is not "checked."
+**What it has to fit alongside** (see plan §7.2 for the full, non-negotiable
+list): separate endpoint, never a body on `POST /bell` (two independent
+arguments in the plan's §1.2/§1.3 each require this); never advances the
+follow-up queue; `needs_attention()` stays unchanged; same
+`_require_valid_session_name` + fail-closed session-membership fence every
+sibling endpoint uses; purely additive and version-tolerant in both
+directions, landing in `muxplex_client` at the same version as the server
+(the lockstep discipline `bell.source` just established).
 
 ---
 

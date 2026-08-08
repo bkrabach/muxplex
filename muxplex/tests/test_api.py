@@ -881,7 +881,7 @@ def test_get_session_snapshot_requires_auth_for_asset_like_name(monkeypatch):
     a valid session cookie); it builds its own unauthenticated client to
     exercise the real security boundary.
     """
-    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_session_list", list)
 
     with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
         for name in ("probe.js", "data.json", "site.map", "style.css"):
@@ -2937,9 +2937,12 @@ async def test_preexisting_session_not_flagged_on_state_reset(monkeypatch):
     state = state_mod.load_state()
     for name in names:
         bell = state["sessions"][name]["bell"]
-        assert bell == {"last_fired_at": None, "seen_at": None, "unseen_count": 0}, (
-            f"{name} was incorrectly seeded as attention-worthy -- mass false positive"
-        )
+        assert bell == {
+            "last_fired_at": None,
+            "seen_at": None,
+            "unseen_count": 0,
+            "source": None,
+        }, f"{name} was incorrectly seeded as attention-worthy -- mass false positive"
         assert needs_attention(bell) is False
 
 
@@ -2966,7 +2969,12 @@ async def test_session_with_no_created_time_falls_back_to_empty_bell(monkeypatch
 
     state = state_mod.load_state()
     bell = state["sessions"]["mystery-session"]["bell"]
-    assert bell == {"last_fired_at": None, "seen_at": None, "unseen_count": 0}
+    assert bell == {
+        "last_fired_at": None,
+        "seen_at": None,
+        "unseen_count": 0,
+        "source": None,
+    }
     assert needs_attention(bell) is False
 
 
@@ -4461,7 +4469,7 @@ def test_delete_session_requires_auth_for_asset_like_name(monkeypatch):
     401. Uses its own unauthenticated client rather than the `client`
     fixture (which pre-injects a valid session cookie).
     """
-    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+    monkeypatch.setattr("muxplex.main.get_session_list", list)
 
     with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
         for name in ("probe.js", "data.json", "site.map", "style.css"):

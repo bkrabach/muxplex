@@ -137,6 +137,11 @@ async def process_bell_flags(
             # 0→1 transition: new bell event
             bell["unseen_count"] += 1
             bell["last_fired_at"] = time.time()
+            # bell.source == "poll": muxplex observed this itself via
+            # window_bell_flag, not via the tmux hook. unseen_count is a
+            # FLOOR here, not a count (the tmux flag is boolean and can
+            # stick -- see this module's docstring and AGENTS.md:544-548).
+            bell["source"] = "poll"
             _bell_seen[name] = True
             changed = True
             if on_transition is not None:

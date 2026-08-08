@@ -581,6 +581,89 @@ def test_needs_attention_agrees_with_server(unseen_count, seen_at, last_fired_at
 
 
 # ---------------------------------------------------------------------------
+# bell.source -- must never be read by needs_attention (contract invariant,
+# docs/plans/2026-08-07-bell-causality-plan.md §3/§9 test 3). Re-run the
+# ENTIRE truth table above with every closed-enum source value injected;
+# every result must be identical to the source-less baseline.
+# ---------------------------------------------------------------------------
+
+_BELL_SOURCE_VALUES = [None, "hook", "poll", "seeded", "halt", "some-future-value"]
+
+
+@pytest.mark.parametrize(
+    "unseen_count,seen_at,last_fired_at", _NEEDS_ATTENTION_TRUTH_TABLE
+)
+@pytest.mark.parametrize("source", _BELL_SOURCE_VALUES)
+def test_needs_attention_ignores_source_for_every_enum_value(
+    source, unseen_count, seen_at, last_fired_at
+):
+    server_bell = {
+        "unseen_count": unseen_count,
+        "seen_at": seen_at,
+        "last_fired_at": last_fired_at,
+        "source": source,
+    }
+    client_bell = Bell(
+        unseen_count=unseen_count,
+        seen_at=seen_at,
+        last_fired_at=last_fired_at,
+        source=source,
+    )
+
+    server_result = server_needs_attention(server_bell)
+    client_result = client_bell.needs_attention
+    baseline = server_needs_attention(
+        {
+            "unseen_count": unseen_count,
+            "seen_at": seen_at,
+            "last_fired_at": last_fired_at,
+        }
+    )
+
+    assert server_result == baseline, (
+        f"server needs_attention() changed when source={source!r} was present "
+        f"-- it must NEVER read bell.source"
+    )
+    assert client_result == baseline, (
+        f"Bell.needs_attention changed when source={source!r} was present "
+        f"-- it must NEVER read bell.source"
+    )
+
+
+def test_bell_source_defaults_to_none_for_pre_feature_construction():
+    """Every pre-existing Bell(...) construction site (this file's own
+    truth-table test above, and any external caller) must keep compiling
+    without passing source -- defaulted and last, per §4.5."""
+    bell = Bell(unseen_count=0, seen_at=None, last_fired_at=None)
+    assert bell.source is None
+
+
+@pytest.mark.parametrize("raw_source", [None, "hook", "poll", "seeded", "halt"])
+def test_parse_bell_round_trips_source(raw_source):
+    """muxplex_client._protocol.parse_bell must parse every closed-enum
+    value, and a bell dict that omits the key entirely (pre-feature
+    server) must parse to source=None rather than raising."""
+    from muxplex_client._protocol import parse_bell
+
+    raw = {"last_fired_at": None, "seen_at": None, "unseen_count": 0}
+    if raw_source is not None:
+        raw["source"] = raw_source
+    bell = parse_bell(raw)
+    assert bell.source == raw_source
+
+
+def test_parse_bell_tolerates_missing_source_key():
+    """A bell dict from a pre-feature server has no "source" key at all --
+    parse_bell must not raise, and must default to None."""
+    from muxplex_client._protocol import parse_bell
+
+    raw = {"last_fired_at": None, "seen_at": None, "unseen_count": 0}
+    assert "source" not in raw
+    bell = parse_bell(raw)
+    assert bell.source is None
+
+
+# ---------------------------------------------------------------------------
 # Error mapping, exercised end-to-end against the real app.
 # ---------------------------------------------------------------------------
 

@@ -588,6 +588,11 @@ async def _run_poll_cycle() -> None:
                         "last_fired_at": time.time(),
                         "seen_at": None,
                         "unseen_count": 1,
+                        # bell.source == "seeded": muxplex manufactured this
+                        # bell -- nothing happened in the pane. An agent
+                        # triaging bells should skip this class entirely
+                        # (docs/plans/2026-08-07-bell-causality-plan.md §4.3).
+                        "source": "seeded",
                     }
                 else:
                     state["sessions"][name]["bell"] = empty_bell()
@@ -2378,6 +2383,40 @@ async def resume_followups(name: str) -> dict:
     }
 
 
+def _bell_for_halt(state: dict, name: str) -> None:
+    """Ring session *name*'s bell because its follow-up queue just halted.
+
+    Writes state["sessions"][name]["bell"] DIRECTLY, never via receive_bell()
+    or process_bell_flags() -- the queue's advance hangs off exactly those two
+    functions, so routing this through either would make the queue trigger
+    itself. The exclusion is structural (a property of where this code
+    lives), identical in kind and rationale to the seeded-bell exclusion
+    documented in AGENTS.md's "Follow-up queue" section. Do not route it
+    through either "for consistency."
+
+    Cannot loop, for two independent reasons (see
+    docs/plans/2026-08-07-bell-causality-plan.md §5.3, both covered by
+    test_followups.py):
+      1. Structural -- this is a plain state write; nothing here calls
+         _advance_followup_queue().
+      2. Behavioral -- even if a later real bell arrives,
+         followups.acceptance_ok() returns False while the queue's
+         ``halted`` is not None, so a halted queue cannot advance at all
+         until someone explicitly resumes it.
+
+    Fires at most once per halt transition: set_halted() has exactly one
+    production call site (the halt branch below), reached only from this
+    advance path, which itself only runs on a bell. Once halted,
+    acceptance_ok() is False, so no further advance, so no further halt, so
+    no further call to this function for the same halt.
+    """
+    session = state.setdefault("sessions", {}).setdefault(name, {})
+    bell = session.setdefault("bell", empty_bell())
+    bell["unseen_count"] = bell.get("unseen_count", 0) + 1
+    bell["last_fired_at"] = time.time()
+    bell["source"] = "halt"
+
+
 async def _advance_followup_queue(name: str) -> None:
     """Advance session *name*'s follow-up queue by exactly one item, if a
     bell was just accepted for it (spec §5.2: peek-send-remove, never
@@ -2471,6 +2510,7 @@ async def _advance_followup_queue(name: str) -> None:
             _log.warning(
                 "followups: halted for %r -- %s: %s", name, halt_reason, halt_detail
             )
+            _bell_for_halt(state, name)
             save_state(state)
     followups._followup_sending.discard(name)
 
@@ -2720,6 +2760,12 @@ async def receive_bell(name: str) -> dict:
         bell = state["sessions"][name]["bell"]
         bell["unseen_count"] = bell.get("unseen_count", 0) + 1
         bell["last_fired_at"] = time.time()
+        # bell.source == "hook": this endpoint was called. Honest, not
+        # necessarily "tmux's alert-bell hook fired" -- muxplex cannot
+        # distinguish the hook from a direct Bearer POST to this same route,
+        # and does not claim to (docs/plans/2026-08-07-bell-causality-plan.md
+        # \u00a74.1). Never read by needs_attention().
+        bell["source"] = "hook"
         save_state(state)
 
     # The follow-up queue's advance hangs off THIS bell-fired transition --

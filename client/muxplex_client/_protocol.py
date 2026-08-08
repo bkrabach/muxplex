@@ -72,6 +72,9 @@ def parse_bell(raw: Mapping[str, Any]) -> Bell:
         last_fired_at=raw.get("last_fired_at"),
         seen_at=raw.get("seen_at"),
         unseen_count=int(raw.get("unseen_count", 0)),
+        # .get(), never raw["source"] -- a pre-feature server's bell dict
+        # has no key at all, and that must parse cleanly to None, not raise.
+        source=raw.get("source"),
     )
 
 

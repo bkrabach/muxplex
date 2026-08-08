@@ -247,6 +247,36 @@ consumers in ways this repo's tests won't catch:
 
 - **Needs-attention (bell) predicate**:
   `unseen_count > 0 and (seen_at is None or last_fired_at > seen_at)`
+- **`bell.source`** (`docs/plans/2026-08-07-bell-causality-plan.md` Phase 1a) is
+  a closed enum, `str | None`: `"hook"` | `"poll"` | `"seeded"` | `"halt"` |
+  `None`, recording WHICH detection path recorded the last bell.
+  `empty_bell()` (`state.py`) defaults it to `None`; a pre-feature
+  `state.json` entry simply lacks the key, and readers must use
+  `bell.get("source")`, never direct indexing -- there is no migration.
+  Written in the SAME update that sets `last_fired_at`, so it is exactly as
+  fresh: `receive_bell()` -> `"hook"` (honest that this means "the endpoint
+  was called," not "tmux's hook specifically fired it" -- muxplex cannot
+  tell the two apart and does not claim to), `bells.process_bell_flags()`'s
+  0->1 transition -> `"poll"` (a floor, not a count -- the underlying tmux
+  flag is boolean and can stick), `_run_poll_cycle()`'s new-session seed
+  branch -> `"seeded"` (muxplex manufactured this bell; nothing happened in
+  the pane), and a halted follow-up queue (below) -> `"halt"`.
+  **`needs_attention()` NEVER reads this key** -- it is a labeling/triage
+  field for a poller, not part of the attention predicate, and contract-tested
+  in `test_client_contract.py` with every enum value injected against the
+  full truth table. `clear_bell()`/`apply_bell_clear_rule()` leave it intact,
+  exactly like they already leave `last_fired_at` intact.
+- **A halted follow-up queue now rings a bell** (`main.py`'s
+  `_bell_for_halt()`, called from `_advance_followup_queue()`'s failure
+  branch): writes `bell.unseen_count`/`last_fired_at`/`source: "halt"`
+  DIRECTLY, never through `receive_bell()`/`process_bell_flags()` -- the
+  same structural exclusion this file already documents for the seeded
+  bell, so the write cannot re-trigger a queue advance. Fires at most once
+  per halt transition (`followups.acceptance_ok()` is `False` while a queue
+  is halted, so no further advance -> no further halt -> no further bell).
+  Acknowledging the session (`apply_bell_clear_rule()`) clears the bell
+  while `followups.halted` stays set -- intentional: the bell means "come
+  look," the halt means "still broken."
 - **View membership entries** are normalized to `"device_id:name"` form by the
   background normalization pass; clients match by the `":<name>"` suffix
   (tmux forbids `:` in session names).

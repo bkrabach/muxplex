@@ -536,6 +536,146 @@ async def test_halted_queue_ignores_bells_until_resume(client, monkeypatch, tmux
 
 
 # ---------------------------------------------------------------------------
+# Bell causality Phase 1b -- halting the queue rings a bell.
+# docs/plans/2026-08-07-bell-causality-plan.md §5, §9 (tests 6-10).
+# ---------------------------------------------------------------------------
+
+
+async def test_halt_rings_a_bell(client, monkeypatch, tmux_calls):
+    """Test 6: a halt increments unseen_count, sets last_fired_at, and
+    stamps bell.source == "halt" -- the one real, already-enumerated cause
+    a poller can act on today."""
+    _enable(monkeypatch, ["sess"], ["sess"])
+    client.post("/api/sessions/sess/followups", json={"text": "one"})
+
+    async def boom(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("muxplex.main.run_tmux", boom)
+
+    before = time.time()
+    resp = client.post("/api/sessions/sess/bell")  # advances, fails, halts
+    after = time.time()
+    assert resp.status_code == 200
+
+    bell = client.get("/api/sessions").json()[0]["bell"]
+    assert bell["unseen_count"] >= 1
+    assert bell["source"] == "halt"
+    assert bell["last_fired_at"] is not None
+    assert before <= bell["last_fired_at"] <= after
+
+
+async def test_halt_bell_does_not_reenter_advance_queue(client, monkeypatch):
+    """Test 7 (loop guard): _bell_for_halt() is a plain state write with no
+    path back into _advance_followup_queue(). Prove it structurally by
+    calling _bell_for_halt() directly against a fresh state and asserting
+    the queue's acceptance gate is now closed, with no queue-advance
+    machinery (run_tmux, _followup_sending) ever touched."""
+    from muxplex import followups as followups_mod
+    from muxplex.main import _bell_for_halt
+    from muxplex.state import empty_state
+
+    state = empty_state()
+    followups_mod.append_item(state, "sess", "one", True)
+    followups_mod.set_halted(state, "sess", "send_failed", "boom", "irrelevant-id")
+
+    calls: list = []
+
+    async def touched_tmux(*args):
+        calls.append(args)
+        raise AssertionError(
+            "touched tmux -- _bell_for_halt must be a pure state write"
+        )
+
+    monkeypatch.setattr("muxplex.main.run_tmux", touched_tmux)
+
+    _bell_for_halt(state, "sess")
+
+    assert calls == []
+    assert followups_mod.acceptance_ok(state, "sess") is False
+    bell = state["sessions"]["sess"]["bell"]
+    assert bell["source"] == "halt"
+    assert bell["unseen_count"] == 1
+
+
+async def test_second_bell_on_halted_session_fires_no_further_halt_bell(
+    client, monkeypatch
+):
+    """Test 8 (idempotence): once halted, acceptance_ok() is False, so a
+    second bell arriving at the same session must not advance the queue
+    again and must not fire a second halt bell -- unseen_count stays at
+    whatever the first halt left it at, not incremented again by a
+    non-existent second halt."""
+    _enable(monkeypatch, ["sess"], ["sess"])
+    client.post("/api/sessions/sess/followups", json={"text": "one"})
+
+    async def boom(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("muxplex.main.run_tmux", boom)
+    client.post("/api/sessions/sess/bell")  # halts, rings once
+
+    bell_after_first_halt = client.get("/api/sessions").json()[0]["bell"]
+    unseen_after_first_halt = bell_after_first_halt["unseen_count"]
+
+    calls: list = []
+
+    async def fake_run_tmux(*args):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr("muxplex.main.run_tmux", fake_run_tmux)
+    client.post("/api/sessions/sess/bell")  # already halted -- must no-op
+
+    assert calls == []  # queue never re-attempted a send
+    bell_after_second_bell = client.get("/api/sessions").json()[0]["bell"]
+    # The second POST /bell still runs through receive_bell()'s own
+    # unseen_count increment and stamps source "hook" (that endpoint's
+    # normal behavior is untouched) -- what must NOT happen is a SECOND
+    # halt: the queue stays halted with its original reason, unchanged.
+    state = client.get("/api/sessions/sess/followups").json()
+    assert state["halted"]["reason"] == "send_failed"
+    assert bell_after_second_bell["unseen_count"] > unseen_after_first_halt
+    assert bell_after_second_bell["source"] == "hook"
+
+
+async def test_seeded_bell_isolation_preserved_after_halt_bell_feature(
+    client, monkeypatch, tmux_calls
+):
+    """Test 9: the pre-existing seeded-bell isolation test's guarantee must
+    still hold unmodified after adding a second direct bell writer
+    (_bell_for_halt) -- both bypass receive_bell()/process_bell_flags() for
+    the same structural reason, and neither must interfere with the other's
+    isolation. This mirrors test_seeded_bell_does_not_advance_queue exactly."""
+    _enable(monkeypatch, ["seeded-*"], ["seeded-session"])
+    monkeypatch.setattr(
+        "muxplex.main.enumerate_sessions", AsyncMock(return_value=["seeded-session"])
+    )
+    monkeypatch.setattr(
+        "muxplex.main.probe_tmux_epoch", AsyncMock(return_value={"epoch": 1})
+    )
+    monkeypatch.setattr("muxplex.main.snapshot_all", AsyncMock(return_value={}))
+    monkeypatch.setattr("muxplex.main.update_session_cache", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "muxplex.main.get_session_created_times",
+        lambda: {"seeded-session": time.time()},
+    )
+    monkeypatch.setattr("muxplex.main._server_start_time", time.time() - 10)
+
+    resp = client.post("/api/sessions/seeded-session/followups", json={"text": "do X"})
+    assert resp.status_code == 200
+
+    await main_mod._run_poll_cycle()
+
+    bell = client.get("/api/sessions").json()[0]["bell"]
+    assert bell["source"] == "seeded"
+    get_resp = client.get("/api/sessions/seeded-session/followups")
+    assert get_resp.json()["items"] == [resp.json()["item"]]
+    send_calls = [c for c in tmux_calls if c[0] == "send-keys"]
+    assert send_calls == []
+
+
+# ---------------------------------------------------------------------------
 # API surface: caps, preconditions, 404/400
 # ---------------------------------------------------------------------------
 

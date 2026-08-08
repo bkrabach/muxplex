@@ -151,11 +151,25 @@ def empty_state() -> dict:
 
 
 def empty_bell() -> dict:
-    """Return a fresh bell sub-dict with all fields reset."""
+    """Return a fresh bell sub-dict with all fields reset.
+
+    ``source`` (added in the bell-causality feature, see
+    docs/plans/2026-08-07-bell-causality-plan.md \u00a74) is a closed enum,
+    ``str | None``, recording WHICH detection path recorded the last bell:
+    ``"hook"`` (POST /bell), ``"poll"`` (window_bell_flag transition),
+    ``"seeded"`` (muxplex manufactured it for a new session), ``"halt"``
+    (the follow-up queue itself halted), or ``None`` (no bell has fired, or
+    this state predates the field -- readers must use ``bell.get("source")``,
+    never direct indexing, since ``load_state()`` does not migrate old
+    entries). ``needs_attention()`` (muxplex/bells.py) must NEVER read this
+    key -- it is a labeling/triage field only, not part of the attention
+    predicate's contract.
+    """
     return {
         "last_fired_at": None,
         "seen_at": None,
         "unseen_count": 0,
+        "source": None,
     }
 
 

@@ -249,6 +249,18 @@ contributor must not break silently:
   functions, so the exclusion is structural (a property of where the code
   lives), not a runtime check. Do not route the seed through either function
   "for consistency" — that would silently give the queue a spurious advance.
+- **The halt bell (v0.43.0, bell-causality Phase 1b) is a THIRD direct writer
+  with the identical exclusion, for the identical reason.** When
+  `_advance_followup_queue()`'s failure branch calls
+  `followups.set_halted()`, it also calls `_bell_for_halt()` (`main.py`)
+  which writes `state["sessions"][name]["bell"]` directly — never through
+  `receive_bell()`/`process_bell_flags()`, since the queue's own advance
+  hangs off exactly those two, and routing the halt bell through either
+  would make the queue trigger itself. Cannot loop for two independent
+  reasons, both test-covered: structurally, `_bell_for_halt()` never calls
+  `_advance_followup_queue()`; behaviorally, `followups.acceptance_ok()` is
+  `False` while a queue is halted, so no bell can advance it again until an
+  explicit resume. See `docs/plans/2026-08-07-bell-causality-plan.md` §5.
 - **Two live bell-detection paths, one advance rule.** `receive_bell()` (the
   tmux hook) always triggers an advance attempt. `process_bell_flags()` (the
   poll fallback) triggers one ONLY while `_bell_hook_armed` is False —
@@ -596,6 +608,38 @@ which fails if it is ever removed or weakened. A test that wants a REAL,
 working isolated tmux server on top of this still layers its own explicit
 `-L <unique-name>` socket, same as `test_integration.py`'s `tmux_server`
 fixture already does.
+
+**The hook payload cannot be enriched -- verified live, not reasoned, so
+don't rediscover this on a real host.** `docs/plans/2026-08-07-bell-causality-plan.md`
+§1.1/§8 measured four things against a fresh isolated tmux 3.4 server before
+concluding a `reason` field on the bell is unbuildable on this path:
+
+- **F1** -- the hook resolves the BELLING window correctly (`#{window_index}`
+  etc. are trustworthy), confirmed by firing a bell in an inactive window.
+- **F2** -- pane-scoped format variables (`#{pane_current_command}`,
+  `#{pane_current_path}`, `#{pane_id}`) are **confidently wrong** in any
+  split-window layout: they resolve the window's *active* pane, not the
+  belling one. Firing a bell in a non-active pane after `cd /etc` still
+  logged the active pane's original path. Any field built from these would
+  be silently, plausibly, incorrectly attributed.
+- **F3** -- a pane CAN smuggle a payload the hook can read, via OSC 2
+  (`printf '\033]2;marker\007'` then `printf '\a'` makes the marker
+  readable as `#{pane_title}`). tmux's own `\ek..\e\\` window-rename escape
+  does NOT work (`allow-rename` is off by default).
+- **F4** -- that channel is **sticky and must never be used**: two
+  subsequent, unrelated bare `printf '\a'` calls in the same pane both
+  logged the SAME stale marker. A pane title is durable state; a bell is an
+  event; the mismatch means the "cause" of bell #3 would silently read as
+  the cause of bell #1.
+
+Net effect, and why `bell.source` (the shipped feature) stops at "which
+detection path fired," never "why": intent is information-theoretically
+unrecoverable from a one-byte `\a` (finding (a) in the plan), the pane
+context the hook *could* carry is exactly the part F2 proves is wrong in the
+common case, and the one working side-channel is disqualified by F4. If you
+are about to propose enriching `_bell_hook_curl()`'s payload, read
+`docs/plans/2026-08-07-bell-causality-plan.md` §1.1 first -- the evidence
+already exists.
 
 ## Clean shutdown ordering
 

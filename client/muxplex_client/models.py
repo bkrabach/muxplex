@@ -28,6 +28,18 @@ class Bell:
     last_fired_at: float | None
     seen_at: float | None
     unseen_count: int
+    source: str | None = None
+    """Closed enum recording which detection path recorded the last bell:
+    "hook" (POST /bell), "poll" (window_bell_flag transition), "seeded"
+    (muxplex manufactured it for a new session), "halt" (the follow-up
+    queue itself halted), or None (no bell has fired, or a pre-feature
+    server omitted the key -- see docs/plans/2026-08-07-bell-causality-plan.md
+    §4). Defaulted and LAST so every existing construction site keeps
+    compiling and a pre-feature server's response parses cleanly (the same
+    treatment `views`/`created_at` already got). Agent-facing only --
+    rendered nowhere in the PWA, and deliberately NOT read by
+    `needs_attention` below (see that property's docstring and §3 of the
+    plan)."""
 
     @property
     def needs_attention(self) -> bool:
@@ -39,6 +51,11 @@ class Bell:
         `last_fired_at is None` combined with a non-None `seen_at` (should
         not occur in practice, but treated as "not newer than seen_at"
         rather than raising, matching the server).
+
+        `source` is NEVER read here, by design -- it labels/triages a bell
+        for a poller, it does not change whether the bell needs attention
+        (docs/plans/2026-08-07-bell-causality-plan.md §3). Contract-tested
+        with every enum value injected in test_client_contract.py.
         """
         if self.unseen_count <= 0:
             return False
