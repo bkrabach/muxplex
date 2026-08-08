@@ -1,4 +1,4 @@
-"""tmuxkit -- async, argv-exec tmux session-management primitives.
+"""tmux_kit -- async, argv-exec tmux session-management primitives.
 
 Extracted from muxplex (extraction stages S1-S3,
 docs/plans/2026-08-08-tmux-lib-extraction-plan.md in the muxplex repo).

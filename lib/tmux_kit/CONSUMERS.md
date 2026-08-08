@@ -1,50 +1,55 @@
-# Building on `tmuxkit`
+# Building on `tmux-kit`
 
-`tmuxkit` is a reusable tmux session-management library extracted from muxplex so
+`tmux-kit` is a reusable tmux session-management library extracted from muxplex so
 other apps can manage tmux sessions the way muxplex does — **without forking that
-code**. Fixes flow both ways: a change to `tmuxkit` reaches every consumer.
+code**. Fixes flow both ways: a change to `tmux-kit` reaches every consumer.
 
-> **Status (2026-08-08):** `tmuxkit` currently lives inside the muxplex repo as a
+> **Status (2026-08-08):** `tmux-kit` currently lives inside the muxplex repo as a
 > uv workspace member at `lib/`, version **0.44.0**, held at **0.x with no semver
 > promise**. It is moving to its own public repo (`bkrabach/tmux-kit`) and PyPI;
 > until then, depend on it via the git subdirectory form below. This file travels
 > with the package to its new home.
+>
+> **Naming:** the PyPI distribution and repo are `tmux-kit` (hyphen); the Python
+> import package is `tmux_kit` (underscore) — hyphens are illegal in Python
+> identifiers, so `pip install tmux-kit` → `import tmux_kit` is the standard
+> arrangement (cf. `python-dateutil` → `dateutil`).
 
 ## How to depend on it
 
 **Today (from the muxplex repo subdirectory):**
 ```toml
 dependencies = [
-  "tmuxkit @ git+https://github.com/bkrabach/muxplex.git@v0.44.0#subdirectory=lib",
+  "tmux-kit @ git+https://github.com/bkrabach/muxplex.git@v0.44.0#subdirectory=lib",
 ]
 ```
 
 **After the repo split (PyPI + git+https):**
 ```toml
-dependencies = ["tmuxkit>=0.44.0"]      # public installs resolve from PyPI
+dependencies = ["tmux-kit>=0.1.0"]      # public installs resolve from PyPI
 # For a pinned git install (e.g. locked/managed environments):
-#   tmuxkit @ git+https://github.com/bkrabach/tmux-kit.git@v0.44.0
+#   tmux-kit @ git+https://github.com/bkrabach/tmux-kit.git@v0.1.0
 ```
 
-**Never copy `tmuxkit` source into your app.** A byte-similar copy IS the drift
+**Never copy `tmux_kit` source into your app.** A byte-similar copy IS the drift
 incident the extraction exists to prevent. Need a change? Open a PR against the
-`tmuxkit` repo — never a fork.
+`tmux-kit` repo — never a fork.
 
 ## The public surface (as shipped in 0.44.0)
 
-Stdlib-only. Importing `tmuxkit` pulls in NO web server, no fastapi, no pam
+Stdlib-only. Importing `tmux_kit` pulls in NO web server, no fastapi, no pam
 (enforced by a smoke test).
 
 | Module | What it gives you |
 |--------|-------------------|
-| `tmuxkit.proc` | `run_tmux()`, `tmux_env()`, `set_env_factory()`. **Config is injected, never read** — you install an env factory at startup; the lib never reads your settings file. |
-| `tmuxkit.observe` | `enumerate_sessions()`, `probe_tmux_epoch()`, `capture_pane()` / `_metadata` / `_window`, session caches + getters (`get_session_cwds()`, ...). Scrollback paging via absolute-line params. |
-| `tmuxkit.names` | `is_valid_session_name()`, `is_tmux_stable_name()`, `rename_tmux_session()`, `SESSION_NAME_RE`. |
-| `tmuxkit.presence` | `update_manifest()`, `compute_restore_plan()`, `mark_restored()`. Owns the core presence keys; **your app writes its own keys beside them, in its own state dir** — unknown top-level keys round-trip verbatim (contract-tested). |
-| `tmuxkit.bell` | `poll_bell_flag()`, `build_alert_bell_hook()`. |
-| `tmuxkit.keys` | send-input argv builders + the permission fence (`input_allowed_for_session()`, `session_matches_allowlist()`, `redact_preview()`). |
-| `tmuxkit.spawn` | `spawn_session(name, template, *, env)` — caller resolves the template. |
-| `tmuxkit.cgroup` | `should_escape()`, `wrap_exec_argv()`, `environment_mode()` — the systemd `--scope` escape that keeps sessions alive past the launching unit. |
+| `tmux_kit.proc` | `run_tmux()`, `tmux_env()`, `set_env_factory()`. **Config is injected, never read** — you install an env factory at startup; the lib never reads your settings file. |
+| `tmux_kit.observe` | `enumerate_sessions()`, `probe_tmux_epoch()`, `capture_pane()` / `_metadata` / `_window`, session caches + getters (`get_session_cwds()`, ...). Scrollback paging via absolute-line params. |
+| `tmux_kit.names` | `is_valid_session_name()`, `is_tmux_stable_name()`, `rename_tmux_session()`, `SESSION_NAME_RE`. |
+| `tmux_kit.presence` | `update_manifest()`, `compute_restore_plan()`, `mark_restored()`. Owns the core presence keys; **your app writes its own keys beside them, in its own state dir** — unknown top-level keys round-trip verbatim (contract-tested). |
+| `tmux_kit.bell` | `poll_bell_flag()`, `build_alert_bell_hook()`. |
+| `tmux_kit.keys` | send-input argv builders + the permission fence (`input_allowed_for_session()`, `session_matches_allowlist()`, `redact_preview()`). |
+| `tmux_kit.spawn` | `spawn_session(name, template, *, env)` — caller resolves the template. |
+| `tmux_kit.cgroup` | `should_escape()`, `wrap_exec_argv()`, `environment_mode()` — the systemd `--scope` escape that keeps sessions alive past the launching unit. |
 
 ## NOT in the library yet — deferred until a consumer needs them
 
@@ -52,7 +57,7 @@ These are open **on purpose**. The library holds at 0.x precisely so the second
 real consumer shapes them. If you need one, that's the signal to move it — say so.
 
 - **`Sender` / `SendPolicy`** typed send-API. The argv builders + fence exist in
-  `tmuxkit.keys`; the deny-by-default policy object is unbuilt.
+  `tmux_kit.keys`; the deny-by-default policy object is unbuilt.
 - **ttyd / embedded-terminal lifecycle.** muxplex still owns it; the seam is
   defined (`§16` of the extraction plan) but not cut. It is gated on YOUR embedded
   human-UX design — how you want people to reach a session is the forcing function.
@@ -78,7 +83,7 @@ real consumer shapes them. If you need one, that's the signal to move it — say
 
 ## An environment gotcha that will bite you
 
-`tmuxkit.cgroup.should_escape()` returns True only where there is a usable systemd
+`tmux_kit.cgroup.should_escape()` returns True only where there is a usable systemd
 `--user` session (`XDG_RUNTIME_DIR` + working `systemd-run --user`). A container
 without one silently takes a different spawn path, so a test env without systemd
 `--user` will NOT exercise the scope-escape branch. If you test in a container,
@@ -90,6 +95,7 @@ know that branch is dead there and prove it separately.
   factory, sets its state dir, and drives restore.
 - **Design + rationale + the deferred-surface decisions:**
   `muxplex/docs/plans/2026-08-08-tmux-lib-extraction-plan.md` (§13–17 cover the
-  second-consumer case).
+  second-consumer case); the rename to `tmux-kit` is
+  `muxplex/docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md`.
 - **Presence-rule regression bed:** `pytest -m differential` — reuse it if you
-  ever touch `tmuxkit`.
+  ever touch `tmux_kit`.

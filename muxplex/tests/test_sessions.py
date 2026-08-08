@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import muxplex.sessions as sessions_mod  # noqa: F401  (import path kept working by S1 re-exports)
-import tmuxkit.observe as observe_mod
-import tmuxkit.proc as proc_mod
+import tmux_kit.observe as observe_mod
+import tmux_kit.proc as proc_mod
 from muxplex.sessions import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
@@ -603,8 +603,8 @@ def test_muxplex_never_sets_history_limit():
     `set-option -g` variant (see that plan's §8.2 and tmux_config.py's
     install-first-so-we-lose posture).
 
-    Scans sessions.py AND the lib/tmuxkit/ library subpackage: the capture
-    code this guard was written against moved to lib/tmuxkit/observe.py at
+    Scans sessions.py AND the lib/tmux_kit/ library subpackage: the capture
+    code this guard was written against moved to lib/tmux_kit/observe.py at
     extraction stage S1, and an incident guard that stops scanning the code
     it guards is the exact silent-coverage-loss failure test_safety_rails.py
     rail 1 closes for run-shell.
@@ -630,7 +630,7 @@ async def test_snapshot_all_returns_dict_keyed_by_name():
     async def mock_capture(name, lines=30):
         return f"output-for-{name}"
 
-    with patch("tmuxkit.observe.capture_pane", side_effect=mock_capture):
+    with patch("tmux_kit.observe.capture_pane", side_effect=mock_capture):
         result = await snapshot_all(["alpha", "beta", "gamma"])
 
     assert result == {
@@ -642,7 +642,7 @@ async def test_snapshot_all_returns_dict_keyed_by_name():
 
 async def test_snapshot_all_returns_empty_dict_for_empty_input():
     """snapshot_all([]) returns an empty dict without calling capture_pane."""
-    with patch("tmuxkit.observe.capture_pane", new=AsyncMock()) as mock_capture:
+    with patch("tmux_kit.observe.capture_pane", new=AsyncMock()) as mock_capture:
         result = await snapshot_all([])
 
     assert result == {}
@@ -657,7 +657,7 @@ async def test_snapshot_all_returns_empty_string_on_individual_failure():
             raise RuntimeError("pane not found")
         return f"output-for-{name}"
 
-    with patch("tmuxkit.observe.capture_pane", side_effect=mock_capture):
+    with patch("tmux_kit.observe.capture_pane", side_effect=mock_capture):
         result = await snapshot_all(["session-a", "bad-session", "session-b"])
 
     assert result == {
@@ -731,7 +731,7 @@ async def test_probe_tmux_epoch_returns_none_when_no_server_running():
     'no server running' exit status) -- exit status alone is the signal, no
     parsing of tmux's error text."""
     with patch(
-        "tmuxkit.observe.run_tmux",
+        "tmux_kit.observe.run_tmux",
         new=AsyncMock(
             side_effect=RuntimeError("no server running on /tmp/tmux-1000/default")
         ),
@@ -744,7 +744,7 @@ async def test_probe_tmux_epoch_returns_none_when_no_server_running():
 async def test_probe_tmux_epoch_returns_none_when_tmux_binary_missing():
     """probe_tmux_epoch() returns None if tmux itself is not installed (FileNotFoundError)."""
     with patch(
-        "tmuxkit.observe.run_tmux",
+        "tmux_kit.observe.run_tmux",
         new=AsyncMock(side_effect=FileNotFoundError()),
     ):
         result = await probe_tmux_epoch()
@@ -760,7 +760,7 @@ async def test_probe_tmux_epoch_parses_pid_and_socket_path(tmp_path):
     socket_path.write_text("")  # any file is enough to have an inode
 
     with patch(
-        "tmuxkit.observe.run_tmux",
+        "tmux_kit.observe.run_tmux",
         new=AsyncMock(return_value=f"1527873\t{socket_path}\n"),
     ):
         result = await probe_tmux_epoch()
@@ -778,7 +778,7 @@ async def test_probe_tmux_epoch_returns_none_when_socket_file_missing(tmp_path):
     missing_socket = tmp_path / "does-not-exist" / "default"
 
     with patch(
-        "tmuxkit.observe.run_tmux",
+        "tmux_kit.observe.run_tmux",
         new=AsyncMock(return_value=f"12345\t{missing_socket}\n"),
     ):
         result = await probe_tmux_epoch()
@@ -790,14 +790,14 @@ async def test_probe_tmux_epoch_returns_none_on_malformed_output():
     """Malformed tmux output (no tab, non-numeric pid) returns None rather
     than raising."""
     with patch(
-        "tmuxkit.observe.run_tmux",
+        "tmux_kit.observe.run_tmux",
         new=AsyncMock(return_value="garbage-with-no-tab\n"),
     ):
         result = await probe_tmux_epoch()
     assert result is None
 
     with patch(
-        "tmuxkit.observe.run_tmux",
+        "tmux_kit.observe.run_tmux",
         new=AsyncMock(return_value="not-a-pid\t/some/socket\n"),
     ):
         result = await probe_tmux_epoch()
@@ -822,13 +822,13 @@ async def test_spawn_session_command_uses_plain_shell_when_escape_not_needed():
     UNCHANGED from before this fix: a plain create_subprocess_shell call."""
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=False)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_shell",
+            "tmux_kit.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=proc),
         ) as mock_shell,
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_exec",
+            "tmux_kit.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(),
         ) as mock_exec,
         patch(
@@ -857,13 +857,13 @@ async def test_spawn_session_command_wraps_in_systemd_scope_when_escape_needed()
     """
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=True)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=True)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_exec",
+            "tmux_kit.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ) as mock_exec,
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_shell",
+            "tmux_kit.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(),
         ) as mock_shell,
         patch(
@@ -906,13 +906,13 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
         stdout="", stderr="attach failed: not a terminal", returncode=1
     )
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=True)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=True)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_exec",
+            "tmux_kit.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ),
         patch(
-            "tmuxkit.spawn.enumerate_sessions",
+            "tmux_kit.spawn.enumerate_sessions",
             new=AsyncMock(return_value=["my-session"]),
         ),
         patch(
@@ -942,9 +942,9 @@ async def test_spawn_default_when_command_id_none():
     """command_id=None resolves to settings.new_session_template -- the
     byte-identity guard for every existing caller."""
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=False)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_shell",
+            "tmux_kit.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=_make_mock_process("", "", 0)),
         ) as mock_shell,
         patch(
@@ -967,9 +967,9 @@ async def test_spawn_default_when_command_id_none():
 async def test_spawn_uses_named_pair():
     """command_id selects the named pair's new_session_template."""
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=False)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_shell",
+            "tmux_kit.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=_make_mock_process("", "", 0)),
         ) as mock_shell,
         patch(
@@ -999,10 +999,10 @@ async def test_spawn_uses_named_pair():
 async def test_spawn_unknown_command_id_returns_error_without_spawning():
     with (
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_shell", new=AsyncMock()
+            "tmux_kit.spawn.asyncio.create_subprocess_shell", new=AsyncMock()
         ) as mock_shell,
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_exec", new=AsyncMock()
+            "tmux_kit.spawn.asyncio.create_subprocess_exec", new=AsyncMock()
         ) as mock_exec,
         patch(
             "muxplex.sessions.load_settings",
@@ -1030,13 +1030,13 @@ async def test_spawn_named_pair_still_honors_tty_attach_recovery():
         stdout="", stderr="attach failed: not a terminal", returncode=1
     )
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=False)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_shell",
+            "tmux_kit.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=proc),
         ),
         patch(
-            "tmuxkit.spawn.enumerate_sessions",
+            "tmux_kit.spawn.enumerate_sessions",
             new=AsyncMock(return_value=["my-session"]),
         ),
         patch(
@@ -1064,9 +1064,9 @@ async def test_spawn_named_pair_still_honors_tty_attach_recovery():
 
 async def test_spawn_named_pair_still_shlex_quotes_name():
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=False)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=False)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_shell",
+            "tmux_kit.spawn.asyncio.create_subprocess_shell",
             new=AsyncMock(return_value=_make_mock_process("", "", 0)),
         ) as mock_shell,
         patch(
@@ -1098,9 +1098,9 @@ async def test_spawn_named_pair_respects_cgroup_escape():
     command, not the default (guards the 44-session-incident machinery)."""
     proc = _make_mock_process(stdout="", stderr="", returncode=0)
     with (
-        patch("tmuxkit.spawn.should_escape", new=AsyncMock(return_value=True)),
+        patch("tmux_kit.spawn.should_escape", new=AsyncMock(return_value=True)),
         patch(
-            "tmuxkit.spawn.asyncio.create_subprocess_exec",
+            "tmux_kit.spawn.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ) as mock_exec,
         patch(

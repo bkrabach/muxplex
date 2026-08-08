@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tmuxkit"
+name = "tmux-kit"
 version = "0.44.0"
 description = "Async, argv-exec tmux session-management primitives (spawn, observe, presence, bells, cgroup escape)"
 readme = "README.md"
@@ -53,7 +53,7 @@ Repository = "https://github.com/bkrabach/muxplex"
 Issues = "https://github.com/bkrabach/muxplex/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["tmuxkit"]
+packages = ["tmux_kit"]
 
 # No [tool.pytest.ini_options] / testpaths on purpose: the library's tests
 # (incident tests included) live in muxplex/tests/, where conftest.py's

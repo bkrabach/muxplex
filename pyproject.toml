@@ -45,7 +45,7 @@ dependencies = [
     # it together with this file's `version` and lib/pyproject.toml's.
     # NOT on PyPI (deliberately, plan scope) -- installs of muxplex must go
     # through this repo (git or path), where the workspace resolves it.
-    "tmuxkit==0.44.0",
+    "tmux-kit==0.44.0",
 ]
 
 [project.optional-dependencies]
@@ -93,4 +93,4 @@ members = ["client", "lib"]
 
 [tool.uv.sources]
 muxplex-client = { workspace = true }
-tmuxkit = { workspace = true }
+tmux-kit = { workspace = true }

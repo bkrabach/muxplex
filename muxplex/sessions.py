@@ -3,13 +3,13 @@ tmux session helpers for the tmux-web muxplex.
 
 Tmux-lib extraction stage S1 (plan §7.1 --
 docs/plans/2026-08-08-tmux-lib-extraction-plan.md): the pure tmux code that
-used to live here moved into the ``lib/tmuxkit/`` library boundary and is
+used to live here moved into the ``lib/tmux_kit/`` library boundary and is
 re-exported below, so every existing import path keeps working untouched:
 
-    tmuxkit.proc     -- run_tmux(), tmux_env()
-    tmuxkit.names    -- SESSION_NAME_RE, is_valid_session_name,
+    tmux_kit.proc     -- run_tmux(), tmux_env()
+    tmux_kit.names    -- SESSION_NAME_RE, is_valid_session_name,
                              is_tmux_stable_name, rename_tmux_session
-    tmuxkit.observe  -- probe_tmux_epoch, enumerate_sessions,
+    tmux_kit.observe  -- probe_tmux_epoch, enumerate_sessions,
                              capture_pane / capture_pane_metadata /
                              capture_pane_window / snapshot_all, the
                              DEFAULT_CAPTURE_LINES / MAX_CAPTURE_LINES caps,
@@ -26,7 +26,7 @@ is where muxplex does the injecting -- it is the app-side facade:
 - ``tmux_env()`` (no args, the pre-S2 signature every app caller keeps
   using) resolves ``tmux_socket_dir`` from muxplex's settings FRESH on
   every call and passes it into the library's pure
-  ``tmuxkit.proc.tmux_env(socket_dir)``.
+  ``tmux_kit.proc.tmux_env(socket_dir)``.
 - The same resolver is installed as the library's process-wide env
   factory (``set_env_factory``, at import time below), so every
   ``run_tmux()`` call made from INSIDE the library -- enumeration,
@@ -36,20 +36,20 @@ is where muxplex does the injecting -- it is the app-side facade:
   (``session_commands`` / ``new_session_template`` -- muxplex config) and
   delegates the general half (cgroup-escaped spawn, the
   exists-despite-exit-code TTY-attach tolerance) to the library's
-  ``tmuxkit.spawn.spawn_session(name, template, env=...)`` with the
+  ``tmux_kit.spawn.spawn_session(name, template, env=...)`` with the
   template caller-resolved (plan §15.1).
 """
 
 import logging
 
 from muxplex.settings import find_session_command, load_settings
-from tmuxkit.names import (
+from tmux_kit.names import (
     SESSION_NAME_RE,
     is_tmux_stable_name,
     is_valid_session_name,
     rename_tmux_session,
 )
-from tmuxkit.observe import (
+from tmux_kit.observe import (
     DEFAULT_CAPTURE_LINES,
     MAX_CAPTURE_LINES,
     capture_pane,
@@ -65,9 +65,9 @@ from tmuxkit.observe import (
     snapshot_all,
     update_session_cache,
 )
-from tmuxkit.proc import run_tmux, set_env_factory
-from tmuxkit.proc import tmux_env as _lib_tmux_env
-from tmuxkit.spawn import spawn_session
+from tmux_kit.proc import run_tmux, set_env_factory
+from tmux_kit.proc import tmux_env as _lib_tmux_env
+from tmux_kit.spawn import spawn_session
 
 __all__ = [
     "DEFAULT_CAPTURE_LINES",
@@ -145,7 +145,7 @@ async def spawn_session_command(
     Stage S2 (plan §13.2 stage 3): this function is now the APP HALF only --
     it resolves WHICH template to run (muxplex settings) and injects the
     resolved template plus the settings-resolved subprocess environment into
-    the library's ``tmuxkit.spawn.spawn_session()``, which owns the
+    the library's ``tmux_kit.spawn.spawn_session()``, which owns the
     general half (PATH pre-flight, ``shlex.quote()`` substitution, cgroup
     escape, the TTY-attach and 30s tolerances). Behavior is byte-identical
     for every caller.
@@ -185,7 +185,7 @@ def tmux_env() -> dict[str, str] | None:
     caller (`main.py`'s delete path, `ttyd.spawn_ttyd`, and this module's
     spawn) keeps calling plain `tmux_env()` exactly as before, with
     byte-identical results -- see the library docstring
-    (`tmuxkit.proc.tmux_env`) for the systemd-environment semantics.
+    (`tmux_kit.proc.tmux_env`) for the systemd-environment semantics.
     """
     return _lib_tmux_env(_tmux_socket_dir_from_settings())
 

@@ -58,7 +58,7 @@ import asyncio
 import logging
 import os
 
-from tmuxkit.proc import run_tmux
+from tmux_kit.proc import run_tmux
 
 _log = logging.getLogger(__name__)
 

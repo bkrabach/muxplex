@@ -107,11 +107,11 @@ async def main() -> None:
     import muxplex.manifest as manifest_mod
     import muxplex.sessions as sessions_mod
     import muxplex.terminal_input as ti_mod
-    import tmuxkit.bell as bell_mod
-    import tmuxkit.observe as observe_mod
+    import tmux_kit.bell as bell_mod
+    import tmux_kit.observe as observe_mod
     import muxplex.ttyd as ttyd_mod
 
-    # S1: the recorded functions live in lib/tmuxkit/ now; the recording
+    # S1: the recorded functions live in lib/tmux_kit/ now; the recording
     # seam must rebind run_tmux in the modules where those functions resolve
     # it (observe/bell), mirroring test_differential_harness.py's replay
     # seams. Calls stay on the old paths, which the S1 re-exports keep live.

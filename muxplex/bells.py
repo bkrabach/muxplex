@@ -17,7 +17,7 @@ Public API:
 
 Tmux-lib extraction stage S1 (plan §7.1, §3.2): ``poll_bell_flag`` -- bell
 *detection*, a pure tmux fact including the multi-window incident finding
--- moved to ``tmuxkit.bell`` and is re-exported here. The attention
+-- moved to ``tmux_kit.bell`` and is re-exported here. The attention
 model (unseen_count / seen_at / the clear rule gated on a device viewing in
 fullscreen) is muxplex's UX and stays in this module.
 """
@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable
 
 from muxplex.state import empty_bell
-from tmuxkit.bell import poll_bell_flag
+from tmux_kit.bell import poll_bell_flag
 
 __all__ = [
     "apply_bell_clear_rule",

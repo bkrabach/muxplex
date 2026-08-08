@@ -200,7 +200,7 @@ def make_run_tmux_for_socket(socket: str, env: dict[str, str] | None = None):
 async def test_enumerate_sessions_finds_test_session(tmux_server):
     """enumerate_sessions discovers the 'test' session on the isolated tmux server."""
     patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
-    with patch("tmuxkit.observe.run_tmux", side_effect=patched_run_tmux):
+    with patch("tmux_kit.observe.run_tmux", side_effect=patched_run_tmux):
         sessions = await enumerate_sessions()
     assert "test" in sessions
 
@@ -242,7 +242,7 @@ async def test_bell_flag_detected_after_printf_bell(tmux_server):
     await asyncio.sleep(1.0)
 
     patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
-    with patch("tmuxkit.bell.run_tmux", side_effect=patched_run_tmux):
+    with patch("tmux_kit.bell.run_tmux", side_effect=patched_run_tmux):
         result = await poll_bell_flag("test")
     assert result is True
 
@@ -253,8 +253,8 @@ async def test_full_poll_cycle_via_api(tmux_server):
     and populates the in-memory snapshot cache with non-empty content."""
     patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
     with (
-        patch("tmuxkit.observe.run_tmux", side_effect=patched_run_tmux),
-        patch("tmuxkit.bell.run_tmux", side_effect=patched_run_tmux),
+        patch("tmux_kit.observe.run_tmux", side_effect=patched_run_tmux),
+        patch("tmux_kit.bell.run_tmux", side_effect=patched_run_tmux),
     ):
         await _run_poll_cycle()
 
@@ -275,8 +275,8 @@ async def test_state_file_written_atomically_by_poll_cycle(tmux_server):
     """After _run_poll_cycle, state.json exists, no .tmp file remains, content is valid JSON."""
     patched_run_tmux = make_run_tmux_for_socket(tmux_server.socket, tmux_server.env)
     with (
-        patch("tmuxkit.observe.run_tmux", side_effect=patched_run_tmux),
-        patch("tmuxkit.bell.run_tmux", side_effect=patched_run_tmux),
+        patch("tmux_kit.observe.run_tmux", side_effect=patched_run_tmux),
+        patch("tmux_kit.bell.run_tmux", side_effect=patched_run_tmux),
     ):
         await _run_poll_cycle()
 
@@ -425,7 +425,7 @@ async def test_enumerate_sessions_reports_session_created_in_known_directory(
     )
     try:
         patched_run_tmux = make_run_tmux_for_socket(socket)
-        with patch("tmuxkit.observe.run_tmux", side_effect=patched_run_tmux):
+        with patch("tmux_kit.observe.run_tmux", side_effect=patched_run_tmux):
             await enumerate_sessions()
 
         from muxplex.sessions import get_session_cwds

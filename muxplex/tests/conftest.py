@@ -301,14 +301,14 @@ def short_socket_dir():
 # true set from an AST scan of both production trees and fails if this
 # constant drifts from reality -- see the 2026-08-08 incident in the
 # fixture docstring below.
-SHOULD_ESCAPE_BINDING_MODULES = ("tmuxkit.spawn", "muxplex.ttyd")
+SHOULD_ESCAPE_BINDING_MODULES = ("tmux_kit.spawn", "muxplex.ttyd")
 
 
 @pytest.fixture(autouse=True)
 def _default_cgroup_escape_disabled(monkeypatch):
     """Default ``should_escape()`` to False for every test.
 
-    Without this, ``tmuxkit.spawn.spawn_session()`` / ``ttyd.spawn_ttyd()``
+    Without this, ``tmux_kit.spawn.spawn_session()`` / ``ttyd.spawn_ttyd()``
     would call the REAL ``cgroup.should_escape()`` -- which, on any
     dev/CI host that happens to have a usable systemd --user session, spawns
     a REAL ``systemd-run --user --scope`` probe process as a test side
@@ -322,8 +322,8 @@ def _default_cgroup_escape_disabled(monkeypatch):
 
     INCIDENT (2026-08-08, the reason this fixture fails LOUD now): the
     tmux-lib extraction (S1-S3) moved the spawn body out of
-    ``muxplex.sessions`` into ``tmuxkit.spawn``, which binds its own
-    ``should_escape`` (``from tmuxkit.cgroup import should_escape``). This
+    ``muxplex.sessions`` into ``tmux_kit.spawn``, which binds its own
+    ``should_escape`` (``from tmux_kit.cgroup import should_escape``). This
     fixture's patch list still named ``muxplex.sessions`` -- which no
     longer had the attribute -- and a ``try/except AttributeError: pass``
     swallowed the miss silently. Result: on CI's Linux runners (working
@@ -336,7 +336,7 @@ def _default_cgroup_escape_disabled(monkeypatch):
     (monkeypatch.setattr raises), never be skipped: the swallow was the
     bug's camouflage.
     """
-    from tmuxkit import cgroup as cgroup_mod
+    from tmux_kit import cgroup as cgroup_mod
 
     cgroup_mod.reset_probe_cache_for_tests()
     for module_name in SHOULD_ESCAPE_BINDING_MODULES:

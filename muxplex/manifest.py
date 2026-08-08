@@ -114,12 +114,12 @@ from muxplex.state import STATE_DIR
 
 # Tmux-lib extraction stage S1 (plan §7.1): the PURE presence rule --
 # _same_epoch / update_manifest / compute_restore_plan / mark_restored and
-# the schema constant they share -- moved to tmuxkit.presence and is
+# the schema constant they share -- moved to tmux_kit.presence and is
 # re-exported here so every existing import path keeps working. Manifest
 # I/O (load_manifest/save_manifest) stays HERE: it defaults its path to
 # muxplex's STATE_DIR, an app-side fact §13.3's injected-path shape removes
 # in a later stage, not in a pure move.
-from tmuxkit.presence import (  # noqa: F401  (re-exported)
+from tmux_kit.presence import (  # noqa: F401  (re-exported)
     MANIFEST_SCHEMA_VERSION,
     _same_epoch,
     compute_restore_plan,

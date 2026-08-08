@@ -1,8 +1,9 @@
-# tmuxkit
+# tmux-kit
 
 Async, argv-exec tmux session-management primitives, extracted from
 [muxplex](https://github.com/bkrabach/muxplex) (design:
-`docs/plans/2026-08-08-tmux-lib-extraction-plan.md`).
+`docs/plans/2026-08-08-tmux-lib-extraction-plan.md`; rename:
+`docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md`).
 
 Named for tmux, not for muxplex (plan §4.4): this is a library about a tmux
 server, usable by any application that manages tmux sessions. muxplex is its
@@ -17,14 +18,14 @@ settings file exists.
 
 | Module | Provides |
 |---|---|
-| `tmuxkit.proc` | `run_tmux()`, `tmux_env(socket_dir)` — argv+env plumbing, `TmuxError` carrying tmux's stderr |
-| `tmuxkit.spawn` | `spawn_session(name, resolved_template, env=...)` — cgroup-escaped, with the exists-after-nonzero-exit (TTY-attach) tolerance |
-| `tmuxkit.names` | `SESSION_NAME_RE`, `is_valid_session_name`, `is_tmux_stable_name`, `rename_session` — security-load-bearing name validation |
-| `tmuxkit.observe` | `probe_tmux_epoch`, `enumerate_sessions`, pane capture, snapshot caches |
-| `tmuxkit.presence` | the manifest presence rule — pure functions, no I/O; unknown top-level keys round-trip verbatim (§13.3) |
-| `tmuxkit.bell` | bell *detection* (`poll_bell_flag`) + `build_alert_bell_hook()` — the sole legal `run-shell` construction site, always silent |
-| `tmuxkit.keys` | typed-input argv builders and the allowlist fence mechanism |
-| `tmuxkit.cgroup` | `should_escape`, `wrap_exec_argv`, `wrap_shell_argv` — the 44-session systemd cgroup incident, packaged |
+| `tmux_kit.proc` | `run_tmux()`, `tmux_env(socket_dir)` — argv+env plumbing, `TmuxError` carrying tmux's stderr |
+| `tmux_kit.spawn` | `spawn_session(name, resolved_template, env=...)` — cgroup-escaped, with the exists-after-nonzero-exit (TTY-attach) tolerance |
+| `tmux_kit.names` | `SESSION_NAME_RE`, `is_valid_session_name`, `is_tmux_stable_name`, `rename_session` — security-load-bearing name validation |
+| `tmux_kit.observe` | `probe_tmux_epoch`, `enumerate_sessions`, pane capture, snapshot caches |
+| `tmux_kit.presence` | the manifest presence rule — pure functions, no I/O; unknown top-level keys round-trip verbatim (§13.3) |
+| `tmux_kit.bell` | bell *detection* (`poll_bell_flag`) + `build_alert_bell_hook()` — the sole legal `run-shell` construction site, always silent |
+| `tmux_kit.keys` | typed-input argv builders and the allowlist fence mechanism |
+| `tmux_kit.cgroup` | `should_escape`, `wrap_exec_argv`, `wrap_shell_argv` — the 44-session systemd cgroup incident, packaged |
 
 ## Sharing one tmux server between two apps
 
@@ -37,13 +38,20 @@ and session-name collisions.
 
 ## Versioning
 
-Lockstep with the repo tag, 0.x semantics (§14.5). Not published to PyPI —
-consume it as a git dependency pinned to a tag:
+Lockstep with the repo tag, 0.x semantics (§14.5), until the move to its own
+repo and PyPI distribution (`tmux-kit`) lands. Consume it today as a git
+dependency pinned to a tag — note the PyPI distribution name uses a hyphen
+(`tmux-kit`) while the Python import package uses an underscore
+(`tmux_kit`), because hyphens are illegal in Python identifiers:
 
 ```toml
 dependencies = [
-    "tmuxkit @ git+https://github.com/bkrabach/muxplex.git@v0.43.0#subdirectory=lib",
+    "tmux-kit @ git+https://github.com/bkrabach/muxplex.git@v0.44.0#subdirectory=lib",
 ]
+```
+
+```python
+import tmux_kit
 ```
 
 Improvements flow both ways as PRs against this repo's `lib/` — never a

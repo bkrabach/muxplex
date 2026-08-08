@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 members = [
     "muxplex",
     "muxplex-client",
-    "tmuxkit",
+    "tmux-kit",
 ]
 
 [[package]]
@@ -350,7 +350,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "python-pam" },
     { name = "six" },
-    { name = "tmuxkit" },
+    { name = "tmux-kit" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -381,7 +381,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "python-pam", specifier = ">=1.8.4" },
     { name = "six", specifier = ">=1.16.0" },
-    { name = "tmuxkit", editable = "lib" },
+    { name = "tmux-kit", editable = "lib" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=14.0" },
 ]
@@ -718,7 +718,7 @@ wheels = [
 ]
 
 [[package]]
-name = "tmuxkit"
+name = "tmux-kit"
 version = "0.44.0"
 source = { editable = "lib" }
 

@@ -55,12 +55,12 @@ import muxplex.bells as bells_mod
 import muxplex.manifest as manifest_mod
 import muxplex.sessions as sessions_mod
 import muxplex.terminal_input as ti_mod
-import tmuxkit.bell as bell_mod
-import tmuxkit.observe as observe_mod
-import tmuxkit.proc as proc_mod
+import tmux_kit.bell as bell_mod
+import tmux_kit.observe as observe_mod
+import tmux_kit.proc as proc_mod
 import muxplex.ttyd as ttyd_mod
 
-# S1 (pure moves): the code under test moved into lib/tmuxkit/, so the
+# S1 (pure moves): the code under test moved into lib/tmux_kit/, so the
 # monkeypatch SEAMS below target the modules where each function now
 # resolves its collaborators (observe/bell resolve run_tmux in their own
 # globals). The CALLS deliberately stay on the OLD module paths

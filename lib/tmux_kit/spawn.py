@@ -28,8 +28,8 @@ import os
 import shlex
 import shutil
 
-from tmuxkit.cgroup import should_escape, wrap_shell_argv
-from tmuxkit.observe import enumerate_sessions
+from tmux_kit.cgroup import should_escape, wrap_shell_argv
+from tmux_kit.observe import enumerate_sessions
 
 _log = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ async def spawn_session(
     The command may start a brand-new tmux SERVER (both the default template
     and e.g. ``amplifier-workspace`` start one if none is running yet). If we
     are running under a systemd --user unit, that server must NOT be spawned
-    as a plain child of this process -- see ``lib/tmuxkit/cgroup.py``'s
+    as a plain child of this process -- see ``lib/tmux_kit/cgroup.py``'s
     module docstring and AGENTS.md's "Two ways to destroy every live tmux
     session on this host" (mechanism #1).
 
