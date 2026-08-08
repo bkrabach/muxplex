@@ -258,3 +258,73 @@ jobs:
       - name: Run frontend tests
         working-directory: muxplex/frontend
         run: node --test tests/*.mjs
+
+  test-integration:
+    # Everything above deselects `-m integration` (pyproject.toml's
+    # addopts = "-m 'not integration'"), so this ~52-test suite -- real
+    # tmux servers, real ttyd processes, real AF_UNIX sockets, a real
+    # in-process ASGI server -- had NEVER run in CI. That is not a
+    # hypothetical gap: one of these tests was found this session building
+    # a "fake" pid via `hash(name) % 50000 + N` and feeding it to a REAL,
+    # unmocked `os.kill()` -- CPython's per-process hash randomization
+    # means that expression is a different real integer every run, so an
+    # unlucky one could (and, per test_ttyd.py's own incident notes, did)
+    # sometimes resolve to a live, unrelated process. A suite nothing runs
+    # is a suite that rots into a hazard silently -- fixed in the same
+    # change that adds this job (see test_ttyd.py's `_FAKE_PID_*` constants
+    # and their docstring for the fix), but the fact that CI never ran any
+    # of this to catch it is the actual root cause, and is what this job
+    # closes.
+    #
+    # A dedicated job, not a matrix axis on `test` above: these tests need
+    # a REAL tmux/ttyd on PATH (the `test` job's ubuntu-latest image does
+    # not guarantee either), take meaningfully longer (real subprocess
+    # spawns, real socket readiness polls, ~1s `asyncio.sleep`s for bell
+    # propagation) than the mocked unit suite, and a failure here is a
+    # different signal (real-process/OS-integration regression) than a
+    # failure in `test` (logic regression) -- worth its own red/green in
+    # the Actions UI rather than blended into the matrix.
+    #
+    # Linux-only, deliberately not added to `test-macos` above. This is a
+    # stated gap, not a silent omission: most of this suite's fixtures
+    # build their tmux `TMUX_TMPDIR` directory from pytest's own `tmp_path`
+    # rather than this repo's `short_socket_dir` pattern (conftest.py) --
+    # e.g. test_command_pairs_integration.py's `pairs_env` fixture. That is
+    # exactly the class of failure conftest.py's own `short_socket_dir`
+    # docstring documents already breaking a DIFFERENT suite
+    # (test_tmux_config.py, 12 failures) on macOS CI, because `tmp_path`
+    # resolves to a long, deeply-nested path there
+    # (/private/var/folders/.../pytest-.../<test>0/...) that blows past the
+    # ~104-byte AF_UNIX `sun_path` budget once a socket filename is
+    # appended. test_integration.py's own `use_tmp_state` fixture already
+    # flags this directly: "Currently only reachable via `pytest -m
+    # integration`, which the macOS CI job does not run -- but the
+    # fragility is real the moment it does." No macOS runner was available
+    # to verify empirically in this change, so rather than claim untested
+    # macOS coverage, this job stays Linux-only until the fixtures that
+    # build sockets from `tmp_path` are migrated to `short_socket_dir` (or
+    # an equivalent short-path pattern) and someone can actually prove it
+    # green on macOS.
+    name: test (integration, real tmux/ttyd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmux, lsof, ttyd -- real binaries these tests exercise directly
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux lsof ttyd
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run integration tests
+        run: uv run pytest -m integration -v
+        run: node --test tests/*.mjs
