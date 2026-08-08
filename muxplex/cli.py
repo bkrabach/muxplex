@@ -196,8 +196,8 @@ def _find_pip() -> str | None:
     return None
 
 
-def _get_install_info() -> dict:
-    """Detect how muxplex was installed using PEP 610 direct_url.json.
+def _get_install_info(dist_name: str = "muxplex") -> dict:
+    """Detect how `dist_name` was installed using PEP 610 direct_url.json.
 
     This is the single source of truth `upgrade`/`doctor` use to decide what
     to reinstall -- never guess or substitute a different origin than what's
@@ -216,13 +216,23 @@ def _get_install_info() -> dict:
     Anything else is 'unknown' -- should not happen in practice, and is
     treated conservatively (never auto-upgraded) everywhere it's checked.
 
+    `dist_name` generalizes this beyond muxplex itself (originally
+    hardcoded) so the identical machinery reports on any first-party
+    dependency's own install provenance -- see
+    docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md §2.4.
+    `importlib.metadata` normalizes names per PEP 503, so
+    `_get_install_info("tmux-kit")` correctly finds a `tmux_kit-*.dist-info`
+    directory. The default keeps every existing caller (which all ask about
+    muxplex itself) unchanged.
+
     Returns dict with keys:
-      source: 'pypi' | 'git' | 'editable' | 'local-dir' | 'archive' | 'unknown'
+      source: 'pypi' | 'git' | 'editable' | 'local-dir' | 'archive'
+              | 'not-installed' | 'unknown'
       version: installed version string
       commit: installed commit sha (git only, may be '')
       url: origin verbatim from direct_url.json -- a git remote URL for
            'git', a file:// URL for 'editable'/'local-dir'/'archive'; None
-           for 'pypi'/'unknown'
+           for 'pypi'/'not-installed'/'unknown'
       ref: the exact ref requested at install time, i.e. PEP 610's
            vcs_info.requested_revision (git only) -- None if no ref was
            given (installed off the default branch), or for any non-git
@@ -242,7 +252,7 @@ def _get_install_info() -> dict:
     }
 
     try:
-        dist = distribution("muxplex")
+        dist = distribution(dist_name)
         info["version"] = dist.metadata["Version"]
 
         du_text = dist.read_text("direct_url.json")
@@ -269,7 +279,9 @@ def _get_install_info() -> dict:
             # No direct_url.json → PyPI
             info["source"] = "pypi"
     except PackageNotFoundError:
-        pass
+        # Distinct from "unknown" (an installed-but-unrecognized direct_url.json
+        # shape): this dist isn't installed in this environment at all.
+        info["source"] = "not-installed"
 
     return info
 
@@ -410,12 +422,56 @@ def _provenance_label(info: dict) -> str:
         path = _file_url_to_path(info.get("url") or "")
         return f"local directory at {path}" if path else "local directory"
 
+    if source == "not-installed":
+        return "not installed"
+
     if source == "archive":
         url = info.get("url") or "?"
         path = _file_url_to_path(url)
         return f"local archive at {path}" if path else f"archive at {url}"
 
     return "unrecognized install record"
+
+
+def _declared_dependency_pin(dep_name: str, dist_name: str = "muxplex") -> str | None:
+    """Read the exact `==` version pin for `dep_name` from `dist_name`'s own
+    published metadata (`Requires-Dist`, exposed by importlib.metadata as
+    `Distribution.requires`).
+
+    Used by `doctor` to detect a tmux-kit install that has drifted from what
+    muxplex itself declares it needs (docs/plans/2026-08-09-tmuxkit-own-repo-
+    and-pypi-plan.md §2.4's pin-vs-installed warning) -- e.g. the venv was
+    modified by hand outside `muxplex upgrade`.
+
+    Returns the pinned version string (e.g. "0.1.0") if `dep_name` is
+    declared with an exact `==` pin, else None -- `dist_name` not installed,
+    `dep_name` not among its requirements, or declared with something other
+    than an exact pin (a range, no version at all, etc.). None means "can't
+    compare", never "matches".
+    """
+    import re
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        dist = distribution(dist_name)
+    except PackageNotFoundError:
+        return None
+
+    requires = dist.requires or []
+    target = dep_name.strip().lower().replace("_", "-")
+
+    for requirement in requires:
+        # Requirement strings look like "tmux-kit==0.1.0" or
+        # "fastapi>=0.115.0" or "beautifulsoup4>=4.12 ; extra == 'dev'".
+        # The name is everything before the first version/marker/extras
+        # delimiter.
+        name_part = re.split(r"[<>=!~ ;\[]", requirement, maxsplit=1)[0].strip()
+        if name_part.lower().replace("_", "-") != target:
+            continue
+        match = re.search(r"==\s*([0-9][A-Za-z0-9.\-]*)", requirement)
+        return match.group(1) if match else None
+
+    return None
 
 
 def _installed_version_on_disk() -> str | None:
@@ -1111,6 +1167,31 @@ def doctor() -> None:
     print(f"  {ok_mark} muxplex {muxplex_version}")
     print(f"    \u21b3 from {_provenance_label(info)}")
 
+    # tmux-kit's own install source -- the identical machinery above,
+    # generalized (docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md
+    # §2.4). Reports the version and provenance of whatever tmux-kit is
+    # ACTUALLY installed in this environment, which may be a workspace/
+    # editable checkout (monorepo dev), a plain PyPI pin, or a git+https
+    # ref installed via a `--with` override on a managed device.
+    kit_info = _get_install_info("tmux-kit")
+    if kit_info["source"] == "not-installed":
+        print(f"  {fail_mark} tmux-kit \u2014 not installed (muxplex requires it)")
+    else:
+        print(f"  {ok_mark} tmux-kit {kit_info['version']}")
+        print(f"    \u21b3 from {_provenance_label(kit_info)}")
+
+        # Drift warning: muxplex's own published pin vs what's actually
+        # installed. A mismatch means the venv was modified by hand outside
+        # `muxplex upgrade` (e.g. a manual `uv pip install tmux-kit==...`),
+        # never something `doctor` should stay silent about.
+        declared_pin = _declared_dependency_pin("tmux-kit")
+        if declared_pin and kit_info["version"] != declared_pin:
+            print(
+                f"  {warn_mark} tmux-kit version mismatch: installed"
+                f" v{kit_info['version']} but muxplex declares tmux-kit=={declared_pin}"
+                " \u2014 the environment was modified outside 'muxplex upgrade'"
+            )
+
     # Provenance above is purely informational (green): running from git, a
     # local checkout, or an archive is a legitimate, deliberate choice, not
     # something to warn about. The warning below is reserved for a genuinely
@@ -1424,6 +1505,156 @@ def _verify_version_moved(before: str, update_was_available: bool) -> bool:
     return True
 
 
+def _read_remote_tmux_kit_pin(repo_url: str, ref: str) -> tuple[str | None, str | None]:
+    """Shallow-clone `repo_url` at `ref` and read its pyproject.toml's own
+    `tmux-kit==X.Y.Z` dependency pin.
+
+    Used to derive the tmux-kit git ref to preserve across a muxplex upgrade
+    (docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md §2.5 step 3): the
+    ref must come from the TARGET muxplex's own pin, not the currently
+    installed one, or a muxplex version bump would silently leave tmux-kit
+    pinned to a stale ref forever. Uses the same git+https transport the
+    device has already proven working (no new network assumption) -- a
+    shallow, single-branch clone rather than `git archive --remote`, which
+    GitHub's own https transport does not support.
+
+    Returns (version, error) -- exactly one is None.
+    """
+    import re
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", ref, repo_url, tmp],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                return (
+                    None,
+                    f"could not clone {repo_url}@{ref}: {result.stderr.strip()}",
+                )
+
+            pyproject_path = Path(tmp) / "pyproject.toml"
+            if not pyproject_path.exists():
+                return None, f"no pyproject.toml found at {repo_url}@{ref}"
+
+            text = pyproject_path.read_text(encoding="utf-8")
+            match = re.search(r'"tmux-kit==([0-9][\w.\-]*)"', text)
+            if not match:
+                return (
+                    None,
+                    f"no tmux-kit==X.Y.Z pin found in {repo_url}@{ref}'s pyproject.toml",
+                )
+            return match.group(1), None
+    except Exception as exc:
+        return None, f"could not read {repo_url}@{ref}'s tmux-kit pin: {exc}"
+
+
+def _resolve_upgrade_kit_ref(
+    info_mux: dict, mux_target: str, info_kit: dict
+) -> tuple[str | None, str | None]:
+    """Decide which git ref to pin tmux-kit's `--with` override to across an
+    upgrade, when tmux-kit is git-sourced (docs/plans/2026-08-09-tmuxkit-own-
+    repo-and-pypi-plan.md §2.5 step 3).
+
+    The ref MUST come from the TARGET muxplex's own `tmux-kit==` pin, read
+    from that target's pyproject.toml over git+https -- never guessed, never
+    left as the stale currently-installed ref (a stale ref would silently
+    keep the OLD tmux-kit paired with the NEW muxplex forever, the exact
+    drift the `==` pin exists to make visible).
+
+    Returns (kit_ref, warning): `warning` is None on success. When the pin
+    cannot be read (muxplex isn't git-sourced itself, the clone fails, or no
+    pin is found), `kit_ref` falls back to the CURRENTLY recorded ref --
+    never silently dropped -- and `warning` explains why, for the caller to
+    print loudly and let uv's resolver conflict rather than proceed unseen.
+    """
+    current_ref = info_kit.get("ref")
+
+    mux_repo_url = info_mux.get("url") if info_mux.get("source") == "git" else None
+    target_ref = None
+    if mux_target.startswith("git+") and "@" in mux_target:
+        target_ref = mux_target.rsplit("@", 1)[-1]
+
+    if not mux_repo_url or not target_ref:
+        return current_ref, (
+            "could not determine the target muxplex's own tmux-kit pin (the"
+            " muxplex install target has no resolvable git ref) -- keeping the"
+            f" currently recorded tmux-kit ref ({current_ref or 'none'})"
+        )
+
+    version, err = _read_remote_tmux_kit_pin(mux_repo_url, target_ref)
+    if version is None:
+        return current_ref, (
+            f"could not read the target muxplex's tmux-kit pin ({err}) --"
+            f" keeping the currently recorded tmux-kit ref ({current_ref or 'none'})"
+        )
+
+    return f"v{version}", None
+
+
+def _install_cmd_preserves_kit_override(install_cmd: list[str], info_kit: dict) -> bool:
+    """Defense-in-depth (mirrors `_target_matches_source`'s role, but for the
+    PAIR rather than muxplex alone): an install command must carry a `--with
+    tmux-kit @ git+...` override whenever tmux-kit's recorded source is git.
+
+    Catches a future regression that reconstructs `install_cmd` without the
+    override -- exactly how the bare-name uv-managed shortcut silently
+    dropped it before this fix (docs/plans/2026-08-09-tmuxkit-own-repo-and-
+    pypi-plan.md §2.5 step 5).
+    """
+    if info_kit["source"] != "git":
+        return True
+    return "--with" in install_cmd and any(
+        isinstance(arg, str) and arg.startswith("tmux-kit @ git+")
+        for arg in install_cmd
+    )
+
+
+def _verify_install_shape_preserved(
+    before_mux_source: str, before_kit_source: str
+) -> tuple[bool, str]:
+    """Confirm neither muxplex's nor tmux-kit's install SOURCE SHAPE changed
+    across this upgrade (e.g. git -> pypi in either slot).
+
+    This is the permanent guard from docs/plans/2026-08-09-tmuxkit-own-repo-
+    and-pypi-plan.md §2.5 step 4: uv's own preserve-vs-replace semantics for
+    `--with` overrides are unproven and version-dependent (the plan's ledger
+    #11), so this re-reads BOTH direct_url.json records fresh after the
+    install and refuses to call the upgrade successful if either shape
+    silently changed -- this is what enforces the property forever,
+    independent of whatever a given uv version actually does.
+
+    `importlib.metadata` caches distribution lookups within a running
+    process (see `_installed_version_on_disk`'s docstring for the same
+    caveat) -- `invalidate_caches()` first so this reads what is actually on
+    disk right now, not what was true when this process started.
+
+    Returns (ok, message) -- message is empty on success, else names exactly
+    which slot changed shape and how.
+    """
+    import importlib
+
+    importlib.invalidate_caches()
+    after_mux = _get_install_info()
+    after_kit = _get_install_info("tmux-kit")
+
+    if after_mux["source"] != before_mux_source:
+        return False, (
+            f"muxplex's install source changed shape: {before_mux_source}"
+            f" -> {after_mux['source']}"
+        )
+    if after_kit["source"] != before_kit_source:
+        return False, (
+            f"tmux-kit's install source changed shape: {before_kit_source}"
+            f" -> {after_kit['source']}"
+        )
+    return True, ""
+
+
 def upgrade(*, force: bool = False) -> None:
     """Upgrade muxplex to the latest version and restart the service."""
     print("\nmuxplex upgrade\n")
@@ -1434,6 +1665,20 @@ def upgrade(*, force: bool = False) -> None:
     ref_suffix = f" @ {info['ref']}" if info.get("ref") else ""
     print(
         f"  Installed: v{info['version']}{commit_suffix} via {info['source']}{ref_suffix}"
+    )
+
+    # tmux-kit's own install source -- the shape that must survive this
+    # upgrade unchanged when it's git-sourced (§2.5). Shown here for the
+    # same reason muxplex's own line is: so a human watching the upgrade can
+    # see what was recorded BEFORE anything runs.
+    info_kit = _get_install_info("tmux-kit")
+    kit_commit_suffix = (
+        f" (commit {info_kit['commit'][:8]})" if info_kit["commit"] else ""
+    )
+    kit_ref_suffix = f" @ {info_kit['ref']}" if info_kit.get("ref") else ""
+    print(
+        f"  tmux-kit : v{info_kit['version']}{kit_commit_suffix} via"
+        f" {info_kit['source']}{kit_ref_suffix}"
     )
 
     # Editable installs are always user-managed -- muxplex must never
@@ -1545,26 +1790,78 @@ def upgrade(*, force: bool = False) -> None:
     _service_restart_failed = False
     print("  Installing latest version...")
     try:
+        # tmux-kit override construction (§2.5 step 3): whenever tmux-kit is
+        # git-sourced, the --with override that pins it must be RE-DERIVED
+        # and RE-ISSUED on every upgrade -- uv's own preserve-vs-replace
+        # semantics for --with are unproven and version-dependent (the
+        # plan's ledger #11), so this never assumes the override survives on
+        # its own. If no ref can be determined at all, refuse rather than
+        # silently drop the override and let tmux-kit fall through to an
+        # index a managed device may not be able to reach.
+        kit_with_args: list[str] = []
+        if info_kit["source"] == "git":
+            kit_url = info_kit.get("url") or ""
+            if not kit_url:
+                print(
+                    "  ERROR: tmux-kit is recorded as a git install but has no"
+                    " recorded remote URL -- refusing to upgrade rather than"
+                    " silently drop the override."
+                )
+                _install_failed = True
+            else:
+                kit_ref, kit_ref_warning = _resolve_upgrade_kit_ref(
+                    info, install_target, info_kit
+                )
+                if kit_ref_warning:
+                    print(f"  ! {kit_ref_warning}")
+                if not kit_ref:
+                    print(
+                        "  ERROR: tmux-kit is git-sourced but no ref could be"
+                        " determined (neither derived from the target nor"
+                        " previously recorded) -- refusing to upgrade rather"
+                        " than silently fall through to an index."
+                    )
+                    _install_failed = True
+                else:
+                    kit_with_args = ["--with", f"tmux-kit @ git+{kit_url}@{kit_ref}"]
+
         # Bug 3: dispatch — uv-tool-managed gets --reinstall; plain uv/pip otherwise
-        if uv_path:
+        if not _install_failed and uv_path:
             if _is_uv_managed:
-                # uv-tool install: always reinstall the package by name
-                # --refresh is load-bearing, not belt-and-braces. The target is
-                # unpinned ("muxplex" = latest), so uv answers it from its cached
-                # PyPI index. A cache that predates the release resolves "latest"
-                # to the version already installed, reinstalls it, and exits 0 --
-                # a perfectly successful no-op upgrade. Observed on a real Mac:
-                # three consecutive upgrades reported success while the venv
-                # never left 0.31.2.
-                install_cmd = [
-                    uv_path,
-                    "tool",
-                    "install",
-                    "--reinstall",
-                    "--refresh",
-                    "--force",
-                    "muxplex",
-                ]
+                if info_kit["source"] == "git":
+                    # §2.5 step 3: the bare-name shortcut is FORBIDDEN whenever
+                    # tmux-kit is git-sourced -- "muxplex" (unpinned, latest)
+                    # drops the --with override, silently re-pointing tmux-kit
+                    # at an index a managed device may not be able to reach.
+                    # Use the full target (unchanged from _upgrade_target)
+                    # plus the override instead of the bare package name.
+                    install_cmd = [
+                        uv_path,
+                        "tool",
+                        "install",
+                        "--force",
+                        "--refresh",
+                        install_target,
+                        *kit_with_args,
+                    ]
+                else:
+                    # uv-tool install: always reinstall the package by name
+                    # --refresh is load-bearing, not belt-and-braces. The target is
+                    # unpinned ("muxplex" = latest), so uv answers it from its cached
+                    # PyPI index. A cache that predates the release resolves "latest"
+                    # to the version already installed, reinstalls it, and exits 0 --
+                    # a perfectly successful no-op upgrade. Observed on a real Mac:
+                    # three consecutive upgrades reported success while the venv
+                    # never left 0.31.2.
+                    install_cmd = [
+                        uv_path,
+                        "tool",
+                        "install",
+                        "--reinstall",
+                        "--refresh",
+                        "--force",
+                        "muxplex",
+                    ]
             else:
                 install_cmd = [
                     uv_path,
@@ -1573,34 +1870,75 @@ def upgrade(*, force: bool = False) -> None:
                     install_target,
                     "--refresh",
                     "--force",
+                    *kit_with_args,
                 ]
-            result = subprocess.run(install_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"  ERROR: uv tool install failed:\n{result.stderr}")
-                _install_failed = True
-            elif not _verify_version_moved(info["version"], update_available):
+
+            # §2.5 step 5: defense-in-depth pair check, mirroring
+            # _target_matches_source's role for muxplex alone -- catches a
+            # future regression that reconstructs install_cmd without the
+            # override.
+            if not _install_cmd_preserves_kit_override(install_cmd, info_kit):
+                print(
+                    "\n  REFUSING: the constructed install command has no"
+                    " --with tmux-kit override, but tmux-kit is recorded as a"
+                    " git install.\n"
+                    f"    Recorded tmux-kit source: git ({info_kit.get('url') or 'n/a'})\n"
+                    f"    Computed command        : {install_cmd}\n"
+                )
                 _install_failed = True
             else:
-                print("  Installed successfully")
-        else:
-            # uv absent → fall back to pip (probe known locations off PATH)
-            pip_path = _find_pip()
-            if pip_path:
-                result = subprocess.run(
-                    [pip_path, "install", "--upgrade", install_target],
-                    capture_output=True,
-                    text=True,
-                )
+                result = subprocess.run(install_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    print(f"  ERROR: pip install failed:\n{result.stderr}")
+                    print(f"  ERROR: uv tool install failed:\n{result.stderr}")
                     _install_failed = True
                 elif not _verify_version_moved(info["version"], update_available):
                     _install_failed = True
                 else:
-                    print("  Installed successfully")
-            else:
-                print("  ERROR: neither uv nor pip found — cannot upgrade")
+                    shape_ok, shape_msg = _verify_install_shape_preserved(
+                        info["source"], info_kit["source"]
+                    )
+                    if not shape_ok:
+                        print(f"  ERROR: {shape_msg}")
+                        _install_failed = True
+                    else:
+                        print("  Installed successfully")
+        elif not _install_failed:
+            # uv absent → fall back to pip (probe known locations off PATH).
+            # pip has no equivalent of uv's --with, so a git-sourced tmux-kit
+            # override cannot be expressed here at all -- refuse loudly
+            # rather than silently drop it (same rule as above).
+            if info_kit["source"] == "git":
+                print(
+                    "  ERROR: tmux-kit is git-sourced but uv is not available"
+                    " -- pip cannot express a --with override. Refusing to"
+                    " upgrade rather than silently drop the override."
+                )
                 _install_failed = True
+            else:
+                pip_path = _find_pip()
+                if pip_path:
+                    result = subprocess.run(
+                        [pip_path, "install", "--upgrade", install_target],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        print(f"  ERROR: pip install failed:\n{result.stderr}")
+                        _install_failed = True
+                    elif not _verify_version_moved(info["version"], update_available):
+                        _install_failed = True
+                    else:
+                        shape_ok, shape_msg = _verify_install_shape_preserved(
+                            info["source"], info_kit["source"]
+                        )
+                        if not shape_ok:
+                            print(f"  ERROR: {shape_msg}")
+                            _install_failed = True
+                        else:
+                            print("  Installed successfully")
+                else:
+                    print("  ERROR: neither uv nor pip found — cannot upgrade")
+                    _install_failed = True
 
         if not _install_failed:
             # 3. Regenerate service file (picks up any plist/unit changes)

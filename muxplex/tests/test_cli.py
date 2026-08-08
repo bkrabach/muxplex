@@ -6403,3 +6403,837 @@ def test_installed_version_is_none_when_nothing_is_on_disk(tmp_path, monkeypatch
     )
 
     assert cli_mod._installed_version_on_disk() is None
+
+
+# ---------------------------------------------------------------------------
+# T4 (decision-independent half): doctor reports tmux-kit's install source,
+# and upgrade preserves a git-sourced tmux-kit override across an upgrade.
+# See docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md §2.4/§2.5.
+# ---------------------------------------------------------------------------
+
+
+def test_get_install_info_generalizes_to_other_dist_names(monkeypatch):
+    """_get_install_info(dist_name=...) must query the NAMED distribution,
+    not always "muxplex" -- the §2.4 generalization."""
+    import importlib.metadata as im
+
+    du = json.dumps(
+        {
+            "url": "https://github.com/bkrabach/tmux-kit",
+            "vcs_info": {
+                "vcs": "git",
+                "commit_id": "6b3fa379458395e86069e6de6c5365be0b1227750",
+                "requested_revision": "v0.1.0",
+            },
+        }
+    )
+
+    seen_names = []
+
+    def fake_distribution(name):
+        seen_names.append(name)
+        return _fake_distribution("0.1.0", du)
+
+    monkeypatch.setattr(im, "distribution", fake_distribution)
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info("tmux-kit")
+    assert info["source"] == "git"
+    assert info["url"] == "https://github.com/bkrabach/tmux-kit"
+    assert info["ref"] == "v0.1.0"
+    assert seen_names == ["tmux-kit"]
+
+
+def test_get_install_info_default_dist_name_is_muxplex_unchanged(monkeypatch):
+    """The default argument must keep every existing (muxplex-only) caller working."""
+    import importlib.metadata as im
+
+    seen_names = []
+
+    def fake_distribution(name):
+        seen_names.append(name)
+        return _fake_distribution("1.2.3", None)
+
+    monkeypatch.setattr(im, "distribution", fake_distribution)
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info()
+    assert info["source"] == "pypi"
+    assert seen_names == ["muxplex"]
+
+
+def test_get_install_info_not_installed_when_dist_missing(monkeypatch):
+    """A distribution absent from this environment reports 'not-installed',
+    distinct from 'unknown' (an installed-but-unrecognized shape)."""
+    import importlib.metadata as im
+
+    def raise_not_found(name):
+        raise im.PackageNotFoundError(name)
+
+    monkeypatch.setattr(im, "distribution", raise_not_found)
+
+    from muxplex.cli import _get_install_info
+
+    info = _get_install_info("tmux-kit")
+    assert info["source"] == "not-installed"
+    assert info["url"] is None
+
+
+def test_provenance_label_not_installed():
+    from muxplex.cli import _provenance_label
+
+    info = {
+        "source": "not-installed",
+        "version": "0.0.0",
+        "url": None,
+        "ref": None,
+        "commit": None,
+    }
+    assert _provenance_label(info) == "not installed"
+
+
+def test_declared_dependency_pin_finds_exact_pin(monkeypatch):
+    """_declared_dependency_pin must read an exact ==X.Y.Z pin off the
+    dependent distribution's own Requires-Dist metadata."""
+    import importlib.metadata as im
+
+    class _FakeDist:
+        requires = ["fastapi>=0.115.0", "tmux-kit==0.1.0", "six>=1.16.0"]
+
+    monkeypatch.setattr(im, "distribution", lambda name: _FakeDist())
+
+    from muxplex.cli import _declared_dependency_pin
+
+    assert _declared_dependency_pin("tmux-kit") == "0.1.0"
+    # Name matching is case/underscore-insensitive (PEP 503-ish normalization)
+    assert _declared_dependency_pin("Tmux_Kit") == "0.1.0"
+
+
+def test_declared_dependency_pin_none_when_not_exact_pinned(monkeypatch):
+    import importlib.metadata as im
+
+    class _FakeDist:
+        requires = ["fastapi>=0.115.0"]
+
+    monkeypatch.setattr(im, "distribution", lambda name: _FakeDist())
+
+    from muxplex.cli import _declared_dependency_pin
+
+    assert _declared_dependency_pin("fastapi") is None
+    assert _declared_dependency_pin("tmux-kit") is None
+
+
+def test_declared_dependency_pin_none_when_dist_not_found(monkeypatch):
+    import importlib.metadata as im
+
+    def raise_not_found(name):
+        raise im.PackageNotFoundError(name)
+
+    monkeypatch.setattr(im, "distribution", raise_not_found)
+
+    from muxplex.cli import _declared_dependency_pin
+
+    assert _declared_dependency_pin("tmux-kit") is None
+
+
+def test_doctor_reports_tmux_kit_provenance_line(monkeypatch, tmp_path, capsys):
+    """doctor() must print tmux-kit's own install provenance, directly under
+    muxplex's own line, via the same _provenance_label machinery."""
+    import json as _json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(_json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "git",
+                "version": "0.1.0",
+                "commit": "ab12cd34ef",
+                "url": "https://github.com/bkrabach/tmux-kit",
+                "ref": "v0.1.0",
+            }
+        return {
+            "source": "pypi",
+            "version": "0.45.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod, "_declared_dependency_pin", lambda dep, dist="muxplex": "0.1.0"
+    )
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "tmux-kit 0.1.0" in out
+    assert "git+https://github.com/bkrabach/tmux-kit @ v0.1.0" in out
+    assert "ab12cd34" in out
+
+
+def test_doctor_warns_on_tmux_kit_version_drift(monkeypatch, tmp_path, capsys):
+    """doctor() must warn loudly when the installed tmux-kit version differs
+    from what muxplex itself declares (the venv was modified by hand)."""
+    import json as _json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(_json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "pypi",
+                "version": "0.2.0",
+                "commit": None,
+                "url": None,
+                "ref": None,
+            }
+        return {
+            "source": "pypi",
+            "version": "0.45.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod, "_declared_dependency_pin", lambda dep, dist="muxplex": "0.1.0"
+    )
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "version mismatch" in out
+    assert "0.2.0" in out
+    assert "tmux-kit==0.1.0" in out
+
+
+def test_doctor_reports_tmux_kit_not_installed(monkeypatch, tmp_path, capsys):
+    """doctor() must call out a missing tmux-kit distinctly (it's a required dep)."""
+    import json as _json
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(_json.dumps({"host": "127.0.0.1", "port": 8088}))
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "not-installed",
+                "version": "0.0.0",
+                "commit": None,
+                "url": None,
+                "ref": None,
+            }
+        return {
+            "source": "pypi",
+            "version": "0.45.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+
+    cli_mod.doctor()
+
+    out = capsys.readouterr().out
+    assert "tmux-kit" in out
+    assert "not installed" in out
+
+
+# ---------------------------------------------------------------------------
+# _read_remote_tmux_kit_pin / _resolve_upgrade_kit_ref
+# ---------------------------------------------------------------------------
+
+
+def test_read_remote_tmux_kit_pin_success(monkeypatch):
+    """A successful shallow clone + parse must return the pinned version."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:3] == ["git", "clone", "--depth"]
+        dest = Path(cmd[-1])
+        (dest / "pyproject.toml").write_text(
+            'dependencies = [\n    "fastapi>=1.0",\n    "tmux-kit==0.2.0",\n]\n'
+        )
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    version, err = cli_mod._read_remote_tmux_kit_pin(
+        "https://github.com/bkrabach/muxplex", "v0.45.0"
+    )
+    assert version == "0.2.0"
+    assert err is None
+
+
+def test_read_remote_tmux_kit_pin_clone_failure(monkeypatch):
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    def fake_run(cmd, **kwargs):
+        return type(
+            "R", (), {"returncode": 128, "stdout": "", "stderr": "fatal: not found"}
+        )()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    version, err = cli_mod._read_remote_tmux_kit_pin(
+        "https://github.com/bkrabach/nope", "v9.9.9"
+    )
+    assert version is None
+    assert "could not clone" in err
+
+
+def test_read_remote_tmux_kit_pin_no_pin_found(monkeypatch):
+    """Clone succeeds but the target pyproject.toml has no tmux-kit pin."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    def fake_run(cmd, **kwargs):
+        dest = Path(cmd[-1])
+        (dest / "pyproject.toml").write_text('dependencies = ["fastapi>=1.0"]\n')
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    version, err = cli_mod._read_remote_tmux_kit_pin(
+        "https://github.com/bkrabach/muxplex", "v0.45.0"
+    )
+    assert version is None
+    assert "no tmux-kit" in err
+
+
+def test_resolve_upgrade_kit_ref_derives_from_target_pin(monkeypatch):
+    """Success path: kit_ref is derived from the TARGET muxplex's own pin,
+    not the currently-recorded kit ref."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod, "_read_remote_tmux_kit_pin", lambda url, ref: ("0.2.0", None)
+    )
+
+    info_mux = {"source": "git", "url": "https://github.com/bkrabach/muxplex"}
+    mux_target = "git+https://github.com/bkrabach/muxplex@v0.45.0"
+    info_kit = {"ref": "v0.1.0"}  # stale -- must NOT be returned
+
+    kit_ref, warning = cli_mod._resolve_upgrade_kit_ref(info_mux, mux_target, info_kit)
+    assert kit_ref == "v0.2.0"
+    assert warning is None
+
+
+def test_resolve_upgrade_kit_ref_falls_back_when_mux_target_has_no_ref(monkeypatch):
+    """When the muxplex target has no resolvable git ref (e.g. bare 'muxplex'
+    for a PyPI target), fall back to the currently recorded kit ref -- never
+    silently drop the override."""
+    import muxplex.cli as cli_mod
+
+    info_mux = {"source": "pypi", "url": None}
+    mux_target = "muxplex"
+    info_kit = {"ref": "v0.1.0"}
+
+    kit_ref, warning = cli_mod._resolve_upgrade_kit_ref(info_mux, mux_target, info_kit)
+    assert kit_ref == "v0.1.0"
+    assert warning is not None
+    assert "v0.1.0" in warning
+
+
+def test_resolve_upgrade_kit_ref_falls_back_when_pin_read_fails(monkeypatch):
+    """When the target's pin cannot be read (network failure etc.), fall
+    back to the currently recorded ref and surface why."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_read_remote_tmux_kit_pin",
+        lambda url, ref: (None, "could not clone: timed out"),
+    )
+
+    info_mux = {"source": "git", "url": "https://github.com/bkrabach/muxplex"}
+    mux_target = "git+https://github.com/bkrabach/muxplex@v0.45.0"
+    info_kit = {"ref": "v0.1.0"}
+
+    kit_ref, warning = cli_mod._resolve_upgrade_kit_ref(info_mux, mux_target, info_kit)
+    assert kit_ref == "v0.1.0"
+    assert "could not clone" in warning
+
+
+def test_resolve_upgrade_kit_ref_falls_back_to_none_when_nothing_recorded(monkeypatch):
+    """If there's no derivable ref AND no previously recorded ref, the
+    fallback is honestly None -- the caller must refuse rather than guess."""
+    import muxplex.cli as cli_mod
+
+    info_mux = {"source": "pypi", "url": None}
+    mux_target = "muxplex"
+    info_kit = {"ref": None}
+
+    kit_ref, warning = cli_mod._resolve_upgrade_kit_ref(info_mux, mux_target, info_kit)
+    assert kit_ref is None
+    assert warning is not None
+
+
+# ---------------------------------------------------------------------------
+# _install_cmd_preserves_kit_override / _verify_install_shape_preserved
+# ---------------------------------------------------------------------------
+
+
+def test_install_cmd_preserves_kit_override_true_when_kit_not_git():
+    from muxplex.cli import _install_cmd_preserves_kit_override
+
+    assert _install_cmd_preserves_kit_override(
+        ["uv", "tool", "install", "muxplex"], {"source": "pypi"}
+    )
+
+
+def test_install_cmd_preserves_kit_override_true_when_with_present():
+    from muxplex.cli import _install_cmd_preserves_kit_override
+
+    cmd = [
+        "uv",
+        "tool",
+        "install",
+        "--force",
+        "git+https://github.com/bkrabach/muxplex@v0.45.0",
+        "--with",
+        "tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.1.0",
+    ]
+    assert _install_cmd_preserves_kit_override(cmd, {"source": "git"})
+
+
+def test_install_cmd_preserves_kit_override_false_when_with_missing():
+    """Regression guard: this is exactly how the bare-name uv-managed
+    shortcut silently dropped the override before this fix."""
+    from muxplex.cli import _install_cmd_preserves_kit_override
+
+    cmd = ["uv", "tool", "install", "--reinstall", "--refresh", "--force", "muxplex"]
+    assert not _install_cmd_preserves_kit_override(cmd, {"source": "git"})
+
+
+def test_verify_install_shape_preserved_ok_when_unchanged(monkeypatch):
+    import muxplex.cli as cli_mod
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {"source": "git"}
+        return {"source": "git"}
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+
+    ok, msg = cli_mod._verify_install_shape_preserved("git", "git")
+    assert ok is True
+    assert msg == ""
+
+
+def test_verify_install_shape_preserved_fails_when_kit_shape_changes(monkeypatch):
+    """The permanent guard: a silent git->pypi flip in the tmux-kit slot must
+    fail the upgrade, regardless of what uv's own semantics did."""
+    import muxplex.cli as cli_mod
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {"source": "pypi"}  # was git before the upgrade
+        return {"source": "git"}
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+
+    ok, msg = cli_mod._verify_install_shape_preserved("git", "git")
+    assert ok is False
+    assert "tmux-kit" in msg
+    assert "git" in msg and "pypi" in msg
+
+
+def test_verify_install_shape_preserved_fails_when_mux_shape_changes(monkeypatch):
+    import muxplex.cli as cli_mod
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {"source": "git"}
+        return {"source": "pypi"}  # muxplex itself flipped shape
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+
+    ok, msg = cli_mod._verify_install_shape_preserved("git", "git")
+    assert ok is False
+    assert "muxplex" in msg
+
+
+# ---------------------------------------------------------------------------
+# upgrade(): end-to-end preservation of a git-sourced tmux-kit --with override
+# ---------------------------------------------------------------------------
+
+
+def test_upgrade_preserves_git_kit_override_forbids_bare_name(monkeypatch, capsys):
+    """The core regression guard: a uv-tool-managed upgrade with a
+    git-sourced tmux-kit must NOT use the bare 'muxplex' shortcut, and MUST
+    carry a --with tmux-kit override derived from the target's own pin."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+    monkeypatch.setattr(
+        cli_mod,
+        "_verify_install_shape_preserved",
+        lambda before_mux, before_kit: (True, ""),
+    )
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    uv_tools_fake = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    fake_muxplex_resolved = f"{uv_tools_fake}/muxplex/bin/muxplex"
+    fake_uv_path = str(Path.home() / ".local" / "bin" / "uv")
+
+    def fake_which(name):
+        if name == "uv":
+            return fake_uv_path
+        if name == "muxplex":
+            return fake_muxplex_resolved
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "git",
+                "version": "0.1.0",
+                "commit": "aaaa1111",
+                "url": "https://github.com/bkrabach/tmux-kit",
+                "ref": "v0.1.0",
+            }
+        return {
+            "source": "git",
+            "version": "0.44.0",
+            "commit": "bbbb2222",
+            "url": "https://github.com/bkrabach/muxplex",
+            "ref": "v0.44.0",
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.44.0 \u2192 v0.45.0)"),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_upgrade_target",
+        lambda info: ("git+https://github.com/bkrabach/muxplex@v0.45.0", None),
+    )
+    monkeypatch.setattr(cli_mod, "_target_matches_source", lambda info, target: True)
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_upgrade_kit_ref",
+        lambda info_mux, mux_target, info_kit: ("v0.2.0", None),
+    )
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    uv_install_calls = [
+        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+    ]
+    assert len(uv_install_calls) == 1
+    install_cmd = uv_install_calls[0]
+
+    # The bare-name shortcut is forbidden -- the exact defect this fix closes.
+    assert "--reinstall" not in install_cmd
+    assert install_cmd == [
+        install_cmd[0],
+        "tool",
+        "install",
+        "--force",
+        "--refresh",
+        "git+https://github.com/bkrabach/muxplex@v0.45.0",
+        "--with",
+        "tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.2.0",
+    ]
+
+
+def test_upgrade_pypi_kit_unaffected_still_uses_bare_name_shortcut(monkeypatch, capsys):
+    """When tmux-kit is PyPI-sourced, today's uv-managed bare-name shortcut
+    is unchanged -- this fix only forbids the shortcut for git-sourced kit."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+    monkeypatch.setattr(
+        cli_mod,
+        "_verify_install_shape_preserved",
+        lambda before_mux, before_kit: (True, ""),
+    )
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    uv_tools_fake = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    fake_muxplex_resolved = f"{uv_tools_fake}/muxplex/bin/muxplex"
+    fake_uv_path = str(Path.home() / ".local" / "bin" / "uv")
+
+    def fake_which(name):
+        if name == "uv":
+            return fake_uv_path
+        if name == "muxplex":
+            return fake_muxplex_resolved
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "pypi",
+                "version": "0.1.0",
+                "commit": None,
+                "url": None,
+                "ref": None,
+            }
+        return {
+            "source": "pypi",
+            "version": "0.44.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.44.0 \u2192 v0.45.0)"),
+    )
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    uv_install_calls = [
+        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+    ]
+    assert len(uv_install_calls) == 1
+    install_cmd = uv_install_calls[0]
+    assert "--reinstall" in install_cmd
+    assert "muxplex" in install_cmd
+    assert "--with" not in install_cmd
+
+
+def test_upgrade_refuses_when_kit_git_but_uv_absent(monkeypatch, capsys):
+    """pip has no equivalent of --with -- refusing loudly beats silently
+    dropping a git-sourced tmux-kit override."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    def fake_which(name):
+        if name in ("pip", "pip3"):
+            return f"/usr/local/bin/{name}"
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: None)
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "git",
+                "version": "0.1.0",
+                "commit": "aaaa1111",
+                "url": "https://github.com/bkrabach/tmux-kit",
+                "ref": "v0.1.0",
+            }
+        return {
+            "source": "pypi",
+            "version": "0.44.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.44.0 \u2192 v0.45.0)"),
+    )
+
+    with patch("muxplex.service.service_install", lambda: None):
+        with pytest.raises(SystemExit):
+            cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    assert "pip cannot express a --with override" in out
+    pip_install_calls = [
+        c for c in calls if isinstance(c, list) and c and "pip" in str(c[0])
+    ]
+    assert len(pip_install_calls) == 0
+
+
+def test_upgrade_refuses_when_kit_git_ref_unresolvable(monkeypatch, capsys):
+    """If tmux-kit is git-sourced but no ref can be derived AND none was
+    previously recorded, upgrade must refuse rather than guess."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    uv_tools_fake = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    fake_muxplex_resolved = f"{uv_tools_fake}/muxplex/bin/muxplex"
+    fake_uv_path = str(Path.home() / ".local" / "bin" / "uv")
+
+    def fake_which(name):
+        if name == "uv":
+            return fake_uv_path
+        if name == "muxplex":
+            return fake_muxplex_resolved
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "git",
+                "version": "0.1.0",
+                "commit": "aaaa1111",
+                "url": "https://github.com/bkrabach/tmux-kit",
+                "ref": None,  # nothing recorded
+            }
+        return {
+            "source": "pypi",
+            "version": "0.44.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.44.0 \u2192 v0.45.0)"),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_upgrade_kit_ref",
+        lambda info_mux, mux_target, info_kit: (
+            None,
+            "no ref derivable, none recorded",
+        ),
+    )
+
+    with patch("muxplex.service.service_install", lambda: None):
+        with pytest.raises(SystemExit):
+            cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    assert "no ref could be determined" in out
+    uv_install_calls = [
+        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+    ]
+    assert len(uv_install_calls) == 0
+
+
+def test_upgrade_fails_when_shape_verification_detects_drift(monkeypatch, capsys):
+    """Even if the installer exits 0 and the version moved, a detected
+    source-shape flip (e.g. git -> pypi) must fail the upgrade."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "0.45.0")
+
+    def mock_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    monkeypatch.setattr(
+        cli_mod,
+        "_get_install_info",
+        lambda dist_name="muxplex": {
+            "source": "pypi",
+            "version": "0.44.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        },
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.44.0 \u2192 v0.45.0)"),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_verify_install_shape_preserved",
+        lambda before_mux, before_kit: (
+            False,
+            "tmux-kit's install source changed shape: git -> pypi",
+        ),
+    )
+
+    with patch("muxplex.service.service_install", lambda: None):
+        with pytest.raises(SystemExit):
+            cli_mod.upgrade()
+
+    out = capsys.readouterr().out
+    assert "tmux-kit's install source changed shape" in out

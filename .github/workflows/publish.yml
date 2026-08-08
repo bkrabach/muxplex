@@ -38,6 +38,26 @@ jobs:
           uv build --package muxplex
           uv build --package muxplex-client
 
+      - name: Preflight -- verify the built wheel resolves against the real index
+        # THE GUARD FOR THE INCIDENT THIS WORKFLOW ALREADY CAUSED ONCE:
+        # muxplex 0.44.0 published with `Requires-Dist: tmuxkit==0.44.0`,
+        # a name/version that has never existed on PyPI -- every public
+        # `pip install muxplex==0.44.0` has failed at resolve for the
+        # release's entire life (yanked in response; see
+        # docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md §0.1).
+        # A PyPI release can never be unpublished, so this checks the
+        # ACTUAL BUILT WHEEL's dependencies resolve against the REAL index
+        # (the same one a real `pip install` would use) in a disposable
+        # scratch venv, BEFORE the irreversible upload. `--dry-run` performs
+        # full resolution without installing anything. If any pinned
+        # dependency (tmux-kit, in the incident's case) cannot be resolved,
+        # this step -- and therefore the whole job -- fails here, not
+        # silently downstream on every user's machine.
+        run: |
+          uv venv /tmp/preflight-venv
+          uv pip install --python /tmp/preflight-venv --dry-run dist/muxplex-*.whl
+          uv pip install --python /tmp/preflight-venv --dry-run dist/muxplex_client-*.whl
+
       - name: Publish to PyPI
         # Uploads every file under dist/ (both muxplex-* and muxplex_client-*
         # artifacts) in one call. This works with OIDC Trusted Publishing only
