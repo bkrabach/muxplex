@@ -468,6 +468,112 @@ def test_middleware_instance_info_path_excluded():
 
 
 # ---------------------------------------------------------------------------
+# Static-asset exemption -- scoped to real files, not to a bare suffix match
+#
+# Incident: the exemption used to be `any(path.endswith(ext) for ext in
+# _STATIC_EXTENSIONS)` with no other guard, so it applied to EVERY route in
+# the app -- not just the static mount (which is itself registered at "/",
+# so there was no path prefix to scope it to either). A session literally
+# named "build.js" (SESSION_NAME_RE permits ".") made
+# GET/DELETE /api/sessions/{name} reachable with NO credential at all.
+# Confirmed live in a DTU: an unauthenticated, non-localhost
+# `GET /api/sessions/probe.js` reached the real endpoint (404 "not found")
+# instead of being blocked (401), while the identical request without
+# ".js" was correctly 401'd. The fix (`_is_real_static_asset`) requires the
+# path to resolve to an actual file under the frontend's static directory.
+# ---------------------------------------------------------------------------
+
+
+def test_is_real_static_asset_true_for_existing_file(monkeypatch, tmp_path):
+    """A real file under `_FRONTEND_DIR` is recognized as a static asset."""
+    monkeypatch.setattr("muxplex.auth._FRONTEND_DIR", tmp_path)
+    (tmp_path / "style.css").write_text("body {}")
+
+    from muxplex.auth import _is_real_static_asset
+
+    assert _is_real_static_asset("/style.css") is True
+
+
+def test_is_real_static_asset_false_for_nonexistent_file(monkeypatch, tmp_path):
+    """A path that merely *looks* like an asset, but names no real file,
+    is NOT a static asset -- this is the exact shape of the incident
+    (a session named 'build.js' with no corresponding file on disk)."""
+    monkeypatch.setattr("muxplex.auth._FRONTEND_DIR", tmp_path)
+
+    from muxplex.auth import _is_real_static_asset
+
+    assert _is_real_static_asset("/build.js") is False
+
+
+def test_is_real_static_asset_false_for_directory(monkeypatch, tmp_path):
+    """A directory (not a regular file) is never treated as a static asset."""
+    monkeypatch.setattr("muxplex.auth._FRONTEND_DIR", tmp_path)
+    (tmp_path / "sub.js").mkdir()
+
+    from muxplex.auth import _is_real_static_asset
+
+    assert _is_real_static_asset("/sub.js") is False
+
+
+def test_is_real_static_asset_rejects_path_traversal(monkeypatch, tmp_path):
+    """A path that resolves OUTSIDE `_FRONTEND_DIR` via traversal is
+    rejected even when it names a real file elsewhere on disk."""
+    frontend_dir = tmp_path / "frontend"
+    frontend_dir.mkdir()
+    monkeypatch.setattr("muxplex.auth._FRONTEND_DIR", frontend_dir.resolve())
+    secret = tmp_path / "secret.json"
+    secret.write_text("{}")
+
+    from muxplex.auth import _is_real_static_asset
+
+    assert _is_real_static_asset("/../secret.json") is False
+
+
+def test_middleware_asset_looking_api_path_requires_auth(monkeypatch, tmp_path):
+    """A dynamic route whose trailing path segment merely looks like a
+    static asset (e.g. GET /api/sessions/build.js) must still require
+    authentication -- regression test for the incident above. Proves the
+    fix at the middleware level: an unauthenticated, non-localhost request
+    is blocked (401/redirected) rather than reaching the route handler."""
+    monkeypatch.setattr("muxplex.auth._FRONTEND_DIR", tmp_path)
+    app = _make_test_app()
+
+    @app.get("/api/sessions/{name}")
+    async def get_session(name: str):
+        return PlainTextResponse(f"session data for {name}")
+
+    client = TestClient(app, base_url="http://192.168.1.1", follow_redirects=False)
+    for name in ("build.js", "data.json", "site.map", "style.css", "app.js"):
+        response = client.get(
+            f"/api/sessions/{name}", headers={"Accept": "application/json"}
+        )
+        assert response.status_code == 401, (
+            f"/api/sessions/{name} should require auth, got {response.status_code}: "
+            f"{response.text}"
+        )
+
+
+def test_middleware_real_static_asset_served_without_auth(monkeypatch, tmp_path):
+    """A real file under the frontend's static directory is still served
+    to an unauthenticated, non-localhost client -- the login page must be
+    able to load its own CSS/JS/images before a session cookie exists.
+    Guards against a fix that closes the bypass by breaking legitimate
+    static asset access (which would lock every user out of the web UI)."""
+    from fastapi.staticfiles import StaticFiles
+
+    monkeypatch.setattr("muxplex.auth._FRONTEND_DIR", tmp_path)
+    (tmp_path / "app.js").write_text("console.log('hello');")
+
+    app = _make_test_app()
+    app.mount("/", StaticFiles(directory=str(tmp_path)), name="frontend")
+
+    client = TestClient(app, base_url="http://192.168.1.1")
+    response = client.get("/app.js")
+    assert response.status_code == 200
+    assert "console.log" in response.text
+
+
+# ---------------------------------------------------------------------------
 # Bearer token auth (server-to-server federation)
 # ---------------------------------------------------------------------------
 

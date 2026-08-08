@@ -859,6 +859,32 @@ def test_get_session_snapshot_400_for_invalid_name(client, monkeypatch):
     assert response.status_code == 400
 
 
+def test_get_session_snapshot_requires_auth_for_asset_like_name(monkeypatch):
+    """Regression: an unauthenticated, non-localhost GET for a session name
+    that looks like a static asset (e.g. "probe.js") must be blocked by
+    AuthMiddleware (401), not reach this endpoint's own 404.
+
+    Before the fix, AuthMiddleware's static-extension exemption was a bare
+    `path.endswith(ext)` with no guard scoping it to the static mount --
+    so this exact request reached `get_session_snapshot` and returned its
+    OWN 404 ("Session not found") instead of AuthMiddleware's 401. This
+    test intentionally does NOT use the `client` fixture (which pre-injects
+    a valid session cookie); it builds its own unauthenticated client to
+    exercise the real security boundary.
+    """
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+
+    with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
+        for name in ("probe.js", "data.json", "site.map", "style.css"):
+            response = c.get(
+                f"/api/sessions/{name}", headers={"Accept": "application/json"}
+            )
+            assert response.status_code == 401, (
+                f"/api/sessions/{name} should require auth, got "
+                f"{response.status_code}: {response.text}"
+            )
+
+
 def test_get_session_snapshot_includes_bell_and_activity(client, monkeypatch):
     """Response shape must match GET /api/sessions's per-item fields (bell, last_activity_at)."""
     from muxplex.state import save_state
@@ -3998,6 +4024,44 @@ def test_delete_session_not_found(client, monkeypatch):
 
     response = client.delete("/api/sessions/nonexistent")
     assert response.status_code == 404
+
+
+def test_delete_session_requires_auth_for_asset_like_name(monkeypatch):
+    """Regression: an unauthenticated, non-localhost DELETE for a session
+    name that looks like a static asset (e.g. "probe.js") must be blocked
+    by AuthMiddleware (401), not reach this endpoint's own 404.
+
+    Same incident as the GET regression above, destructive-endpoint side:
+    before the fix, this exact unauthenticated request reached
+    `delete_session` and returned its OWN 404 instead of AuthMiddleware's
+    401. Uses its own unauthenticated client rather than the `client`
+    fixture (which pre-injects a valid session cookie).
+    """
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: [])
+
+    with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
+        for name in ("probe.js", "data.json", "site.map", "style.css"):
+            response = c.delete(
+                f"/api/sessions/{name}", headers={"Accept": "application/json"}
+            )
+            assert response.status_code == 401, (
+                f"DELETE /api/sessions/{name} should require auth, got "
+                f"{response.status_code}: {response.text}"
+            )
+
+
+def test_real_static_assets_still_unauthenticated_after_fix(monkeypatch):
+    """The OTHER direction of the incident fix: real static assets (the
+    login page's own CSS/JS) must remain servable to an unauthenticated,
+    non-localhost client -- scoping the exemption to real files must not
+    lock every user out of the web UI. Exercises the actual frontend
+    directory (no monkeypatching of `_FRONTEND_DIR`), unlike the unit-level
+    tests in test_auth.py."""
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-pw")
+    with TestClient(app, base_url="http://192.168.1.1", follow_redirects=False) as c:
+        for path in ("/app.js", "/style.css", "/terminal.js"):
+            response = c.get(path)
+            assert response.status_code == 200, f"GET {path} -> {response.status_code}"
 
 
 # ---------------------------------------------------------------------------

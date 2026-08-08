@@ -2570,7 +2570,21 @@ async def receive_bell(name: str) -> dict:
     This is more reliable than polling window_bell_flag because tmux only
     sets that flag when no client is attached -- with an SSH/WezTerm session
     attached, the flag never gets set even though the bell fires.
+
+    400 if *name* fails the session-name allowlist -- same guard every other
+    session-name endpoint applies (create/connect/delete/input/followups).
+    This endpoint had been missing it: an arbitrary string reached
+    `state["sessions"][name] = {}` (a garbage-state write for any caller
+    holding the Bearer federation key, unbounded by the safe-charset
+    allowlist) and `_advance_followup_queue(name)`, the one autonomous
+    writer in the system. The queue advance itself stays safe regardless
+    (it independently re-checks `input_allowed_for_session()` and exact
+    membership in `get_session_list()` against FRESH settings before
+    sending anything -- see that function's docstring), so this was not a
+    typing/RCE path -- but an unvalidated name has no business reaching
+    persisted state at all, and every sibling endpoint already agrees.
     """
+    _require_valid_session_name(name)
     async with state_lock:
         state = load_state()
         if name not in state["sessions"]:

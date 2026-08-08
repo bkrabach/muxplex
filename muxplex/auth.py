@@ -255,8 +255,55 @@ _STATIC_EXTENSIONS = {
     ".map",
 }
 
+# The frontend's static asset tree — the ONLY thing exemption 3 below is meant
+# to expose unauthenticated. Computed independently from main.py's identical
+# `_FRONTEND_DIR` (same `Path(__file__).parent / "frontend"`, since this module
+# lives beside it) rather than imported, to avoid a circular import (main.py
+# imports AuthMiddleware from this module).
+_FRONTEND_DIR = (Path(__file__).parent / "frontend").resolve()
+
 # Socket-level localhost addresses — cannot be forged via HTTP headers
 _LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
+
+
+def _is_real_static_asset(path: str) -> bool:
+    """Return True only if *path* resolves to an actual file inside
+    ``_FRONTEND_DIR`` — i.e. something the static-file mount would genuinely
+    serve.
+
+    This is the fix for a real incident: the exemption below used to be a
+    bare ``path.endswith(ext)`` with no other guard, so it applied to EVERY
+    route in the app, not just the static mount -- and the static mount
+    happens to be registered at "/" (`app.mount("/", _NoCacheStaticFiles(...))`
+    in main.py), so there is no path *prefix* to scope the exemption to
+    either. A session literally named e.g. "build.js" (`SESSION_NAME_RE`
+    permits ".") made `GET/DELETE /api/sessions/{name}` -- full live
+    scrollback capture and session destruction, respectively -- reachable
+    with NO credential at all, purely because the URL happened to end in a
+    recognized suffix. Confirmed live in a DTU: an unauthenticated,
+    non-localhost `GET /api/sessions/probe.js` reached the real endpoint
+    (404 "Session not found") instead of being blocked (401), while the
+    identical request without ".js" was correctly 401'd.
+
+    Tying the exemption to "does a real file exist here" instead of "does
+    the path merely look like an asset" closes that hole structurally: an
+    API route's trailing path segment can never coincide with a real file
+    on disk under the frontend directory, no matter what a client (or a
+    session name) is called. A future route family living outside `/api/`
+    inherits the same protection for free -- there is no prefix list to
+    keep in sync as the route table grows.
+
+    Resolves *path* against `_FRONTEND_DIR` and requires the result to
+    stay inside it (defends the same traversal StaticFiles itself already
+    guards against -- this check runs BEFORE that layer, so it must not be
+    laxer than it) and to name an existing regular file, not a directory.
+    """
+    candidate = (_FRONTEND_DIR / path.lstrip("/")).resolve()
+    try:
+        candidate.relative_to(_FRONTEND_DIR)
+    except ValueError:
+        return False
+    return candidate.is_file()
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -289,9 +336,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
-        # 3. Static assets — login page needs its CSS/JS/images before auth
+        # 3. Static assets — login page needs its CSS/JS/images before auth.
+        # The extension check is a cheap pre-filter; `_is_real_static_asset`
+        # is the actual security boundary -- see its docstring for the
+        # incident this closes. Both must pass: a request must both look
+        # like an asset AND resolve to a real file under the frontend's
+        # static tree.
         path = request.url.path
-        if any(path.endswith(ext) for ext in _STATIC_EXTENSIONS):
+        if any(
+            path.endswith(ext) for ext in _STATIC_EXTENSIONS
+        ) and _is_real_static_asset(path):
             return await call_next(request)
 
         # 4. Valid session cookie
