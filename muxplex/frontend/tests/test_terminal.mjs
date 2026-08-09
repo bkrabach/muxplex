@@ -1572,6 +1572,8 @@ test('escalation POST returning 409 terminal_conflict shows the overlay and neve
 // `timeoutCalls.length > 0` below would have failed.
 test('fetch rejection during /connect escalation schedules a reconnect instead of dead-ending (regression: the original silent dead-end bug)', async () => {
   const t = loadTerminal();
+  const origFetch = globalThis.fetch;
+  const origSetTimeout = globalThis.setTimeout;
 
   let fetchCallCount = 0;
   globalThis.fetch = async () => {
@@ -1581,43 +1583,40 @@ test('fetch rejection during /connect escalation schedules a reconnect instead o
     throw new TypeError('Failed to fetch');
   };
 
-  const timeoutCalls = [];
-  const origSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms) => { timeoutCalls.push({ fn, ms }); return 0; };
+  // Single-slot capture (same pattern the 409-escalation tests above use),
+  // not an array -- only ever holds the MOST RECENTLY scheduled callback.
+  let capturedTimeoutFn = null;
+  globalThis.setTimeout = (fn, _ms) => { capturedTimeoutFn = fn; return 0; };
 
   t.openTerminal('my-session', '', 14, 'd-abc123');
-  timeoutCalls.length = 0; // ignore any scheduling during openTerminal itself
+  capturedTimeoutFn = null; // ignore any scheduling during openTerminal itself
 
   // Drive _reconnectAttempts up to 2 so the NEXT connect() call takes the
   // /connect-escalation branch (same technique as the 409 tests above).
   t.fireClose({ code: 1006 }); // _reconnectAttempts -> 1, schedules a retry
-  const first = timeoutCalls.pop();
-  first.fn(); // re-enter connect(): still < 2, reconnects directly (no escalation)
+  if (capturedTimeoutFn) { const fn = capturedTimeoutFn; capturedTimeoutFn = null; fn(); } // still < 2, reconnects directly
 
   t.fireClose({ code: 1006 }); // _reconnectAttempts -> 2, schedules a retry
-  const second = timeoutCalls.pop();
-  timeoutCalls.length = 0; // clear so only post-escalation scheduling remains below
-  second.fn(); // re-enter connect(): >= 2 -> escalation POST fires (fetch rejects)
+  if (capturedTimeoutFn) { const fn = capturedTimeoutFn; capturedTimeoutFn = null; fn(); } // >= 2 -> escalation POST fires (fetch rejects)
 
-  // Restore the real setTimeout BEFORE draining microtasks (matching the
-  // pattern the existing 409-escalation tests above already use) -- leaving
-  // the mock installed across an awaited drain loop caused this suite to
-  // hang when run alongside the rest of the frontend test files in CI
-  // (isolated single-file runs were unaffected, which is what made this
-  // easy to miss locally). The rejected fetch's trailing .catch() calls
-  // _scheduleReconnectRetry() during this drain; with the mock restored
-  // first, that goes through the harmless real setTimeout, and the retry
-  // itself is captured next via patchTimeout() below instead.
-  globalThis.setTimeout = origSetTimeout;
-
-  // Drain the microtask queue so the rejected fetch's trailing .catch() runs.
-  for (let i = 0; i < 50; i++) {
+  // Keep the setTimeout mock installed THROUGH the drain: the rejected
+  // fetch's trailing .catch() calls _scheduleReconnectRetry() during this
+  // drain, and that call must land in the mock (captured here), not a real
+  // timer -- restoring the real setTimeout before the drain would let that
+  // retry arm an ACTUAL delayed timer instead, which later fires for real,
+  // calls connect() again, rejects again, arms another real timer with the
+  // next backoff delay, and so on -- an unbounded chain of real timers that
+  // keeps this test's event loop alive well past any normal test duration.
+  for (let i = 0; i < 200; i++) {
     await Promise.resolve();
   }
 
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.fetch = origFetch;
+
   assert.strictEqual(fetchCallCount, 1, 'escalation fetch must have been attempted exactly once');
   assert.ok(
-    timeoutCalls.length > 0,
+    capturedTimeoutFn !== null,
     'a rejected /connect escalation fetch must schedule a reconnect retry -- before the fix ' +
     'this dead-ended silently (the "Reconnecting…" overlay stuck forever) with no scheduled retry at all',
   );
