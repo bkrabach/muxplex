@@ -339,13 +339,12 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `tls_cert` † | `""` | Path to TLS certificate file (empty = HTTP) |
 | `tls_key` † | `""` | Path to TLS private key file (empty = HTTP) |
 | `fontSize` | `14` | Terminal and tile preview font size (px) |
-| `hoverPreviewDelay` | `1500` | Hover preview popup delay (ms) |
+| `hoverPreviewDelay` | `1500` | Hover preview popup delay (ms). `0` = Off. The sole control for the popover (as of v0.47.0; folds in the retired `showHoverPreview` checkbox -- see below) |
 | `gridColumns` | `"auto"` | Number of grid columns (`"auto"` or integer) |
 | `bellSound` | `false` | Play audio sound on terminal bell |
 | `viewMode` | `"auto"` | Grid tile sizing: `auto` or `fit` |
 | `deviceLabelPlacement` | `"titlebar"` | Where a session's device label is drawn: `titlebar` (in the tile/sidebar header, the default), `corner` (inside the preview, anchored lower right), or `off` (not drawn). Presentation only — views store device-qualified keys, so session identity is unaffected. Honored by the PWA only; the soft deck and the `muxplex-deck` sidecar draw no device label at all. |
 | `showDeviceBadges` | `true` | **Derived — do not edit.** Maintained by the server as `deviceLabelPlacement != "off"`. Retained so pre-v0.36 clients keep working; set `deviceLabelPlacement` instead. |
-| `showHoverPreview` | `true` | Show hover preview popover on tile hover |
 | `activityIndicator` | `"both"` | Activity style: `none`, `glow`, `dot`, `both` |
 | `gridViewMode` | `"flat"` | Multi-device grid layout: `flat`, `grouped`, `filtered` |
 | `sidebarOpen` | `null` | Sidebar state: `true`, `false`, or `null` (auto-detect from screen width) |

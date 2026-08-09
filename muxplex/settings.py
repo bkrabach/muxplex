@@ -99,6 +99,15 @@ DEFAULT_SETTINGS: dict = {
     "tls_cert": "",
     "tls_key": "",
     "fontSize": 14,
+    # Delay (ms) before the hover-preview popover appears on a session tile.
+    # 0 = Off. This is now the SOLE control for the popover -- prior to
+    # v0.47.0 there were TWO independent off-switches (this delay's "Off"
+    # option, and a separate showHoverPreview boolean checkbox), each of
+    # which alone suppressed the popover. showHoverPreview is retired;
+    # see _translate_legacy_hover_preview_key() and load_settings()'s
+    # one-time migration below for how a settings.json (or a PATCH/sync
+    # payload) carrying the old key is handled without silently reverting
+    # a user's explicit "disabled" choice.
     "hoverPreviewDelay": 1500,
     "gridColumns": "auto",
     "bellSound": False,
@@ -118,7 +127,6 @@ DEFAULT_SETTINGS: dict = {
     # for pre-v0.36 clients that read it and must never be removed from
     # DEFAULT_SETTINGS or SYNCABLE_KEYS. Do not write showDeviceBadges directly.
     "deviceLabelPlacement": "titlebar",
-    "showHoverPreview": True,
     "activityIndicator": "both",
     "gridViewMode": "flat",
     "sidebarOpen": None,
@@ -283,7 +291,6 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
         "viewMode",
         "showDeviceBadges",
         "deviceLabelPlacement",
-        "showHoverPreview",
         "activityIndicator",
         "gridViewMode",
         "sidebarOpen",
@@ -383,6 +390,43 @@ def reconcile_device_label(current: dict, incoming: dict | None = None) -> None:
         current["showDeviceBadges"] = derived
 
 
+def _translate_legacy_hover_preview_key(payload: dict) -> dict:
+    """Translate a retired ``showHoverPreview`` key into ``hoverPreviewDelay``.
+
+    Prior to v0.47.0 the hover-preview popover had TWO independent
+    off-switches: ``hoverPreviewDelay == 0`` (this key's own "Off" option)
+    and a separate ``showHoverPreview`` boolean checkbox -- either one alone
+    suppressed the popover. The two were merged into ``hoverPreviewDelay``
+    alone; ``showHoverPreview`` is retired and no longer in DEFAULT_SETTINGS
+    or SYNCABLE_KEYS.
+
+    A caller that predates the merge -- a stale cached PWA tab, muxplex-deck,
+    an older federation peer -- may still PATCH or sync
+    ``showHoverPreview: false``. Because that key is no longer in
+    DEFAULT_SETTINGS, the generic per-key copy loops in ``patch_settings()``
+    and ``apply_synced_settings()`` would otherwise silently ignore it --
+    dropping an explicit "disable the preview" choice on the floor. This
+    function is called at the top of both instead, so the intent is
+    translated rather than lost: ``showHoverPreview: false`` becomes
+    ``hoverPreviewDelay: 0``, UNLESS the same payload also specifies
+    ``hoverPreviewDelay`` explicitly -- the newer, authoritative key always
+    wins over the translated legacy one. ``showHoverPreview: true`` requests
+    no specific delay (the popover is already on by default) and is simply
+    dropped as a no-op; any non-bool value is likewise dropped rather than
+    guessed into a delay.
+
+    Returns a new dict (``showHoverPreview`` removed either way); never
+    mutates *payload*.
+    """
+    if "showHoverPreview" not in payload:
+        return payload
+    translated = dict(payload)
+    legacy_value = translated.pop("showHoverPreview")
+    if legacy_value is False and "hoverPreviewDelay" not in payload:
+        translated["hoverPreviewDelay"] = 0
+    return translated
+
+
 def load_settings() -> dict:
     """Load settings from disk, merging saved values over defaults.
 
@@ -410,6 +454,29 @@ def load_settings() -> dict:
             "titlebar" if data["showDeviceBadges"] is True else "off"
         )
     reconcile_device_label(result)
+
+    # One-time migration: showHoverPreview (retired v0.47.0, see
+    # _translate_legacy_hover_preview_key()) was a second, independent
+    # off-switch for the hover preview popover, alongside hoverPreviewDelay.
+    # A settings.json written before the retirement can carry
+    # showHoverPreview: false with hoverPreviewDelay still at its old
+    # nonzero value -- an explicit user choice to disable the popover that
+    # must not silently revert just because the checkbox disappeared from
+    # the UI. showHoverPreview is no longer in DEFAULT_SETTINGS, so the
+    # per-key copy loop above never carries it into `result`; this is where
+    # its intent gets applied instead. Unlike the deviceLabelPlacement
+    # migration above (which only ever fixes up `result` in memory and
+    # relies on some later write to persist it), this migration persists
+    # immediately: showHoverPreview has no forward-looking derived-mirror
+    # role, so there's no reason to keep re-deriving it in memory on every
+    # load. save_settings() only ever emits DEFAULT_SETTINGS keys, so
+    # writing here also drops the now-meaningless showHoverPreview key from
+    # the file -- after this runs once, `data` on the next load no longer
+    # has it, and the branch stops firing on its own.
+    if data.get("showHoverPreview") is False:
+        result["hoverPreviewDelay"] = 0
+        save_settings(result)
+
     return result
 
 
@@ -781,6 +848,7 @@ def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
     always treated as "not changing views."
     """
     current = load_settings()
+    patch = _translate_legacy_hover_preview_key(patch)
 
     if "views" in patch:
         # Lazy import: avoids potential circular import between settings and views.
@@ -940,6 +1008,7 @@ def apply_synced_settings(
     # Lazy import: avoids potential circular import between settings and views
     from muxplex.views import assess_views_destruction, enforce_mutual_exclusion
 
+    incoming_settings = _translate_legacy_hover_preview_key(incoming_settings)
     current = load_settings()
 
     views_keys_present = (

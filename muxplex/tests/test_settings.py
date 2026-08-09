@@ -983,11 +983,9 @@ def test_defaults_include_display_settings():
         f"showDeviceBadges default must be True, got: {DEFAULT_SETTINGS['showDeviceBadges']!r}"
     )
 
-    assert "showHoverPreview" in DEFAULT_SETTINGS, (
-        "DEFAULT_SETTINGS must include 'showHoverPreview'"
-    )
-    assert DEFAULT_SETTINGS["showHoverPreview"] is True, (
-        f"showHoverPreview default must be True, got: {DEFAULT_SETTINGS['showHoverPreview']!r}"
+    assert "showHoverPreview" not in DEFAULT_SETTINGS, (
+        "showHoverPreview was retired in v0.47.0 -- merged into hoverPreviewDelay's "
+        "'Off' option. It must not reappear in DEFAULT_SETTINGS."
     )
 
     assert "activityIndicator" in DEFAULT_SETTINGS, (
@@ -1021,7 +1019,6 @@ def test_display_settings_round_trip_via_patch():
         "bellSound": True,
         "viewMode": "grid",
         "showDeviceBadges": False,
-        "showHoverPreview": False,
         "activityIndicator": "icon",
         "gridViewMode": "grouped",
         "sidebarOpen": True,
@@ -1044,6 +1041,129 @@ def test_display_settings_round_trip_via_patch():
 
 
 # ============================================================
+# showHoverPreview retirement (v0.47.0): merged into hoverPreviewDelay's
+# "Off" option. These guard the regression the merge could otherwise cause:
+# a device that disabled the preview via the old checkbox must not have it
+# silently re-enabled once the checkbox is gone.
+# ============================================================
+
+
+def test_load_settings_migrates_legacy_show_hover_preview_false_to_delay_zero(
+    redirect_settings_path,
+):
+    """A settings.json predating the merge, with showHoverPreview: false and
+    hoverPreviewDelay still at its old nonzero value, must resolve to
+    hoverPreviewDelay == 0 on load -- the regression this change could
+    otherwise cause: silently re-enabling a preview the user explicitly
+    turned off via the retired checkbox."""
+    legacy_data = dict(DEFAULT_SETTINGS)
+    legacy_data["hoverPreviewDelay"] = 1500
+    legacy_data["showHoverPreview"] = False
+    redirect_settings_path.write_text(json.dumps(legacy_data))
+
+    loaded = load_settings()
+
+    assert loaded["hoverPreviewDelay"] == 0, (
+        "showHoverPreview: false must translate to hoverPreviewDelay: 0 on load, "
+        f"got hoverPreviewDelay={loaded['hoverPreviewDelay']!r}"
+    )
+    assert "showHoverPreview" not in loaded, (
+        "the retired showHoverPreview key must not appear in the loaded result"
+    )
+
+
+def test_load_settings_migration_persists_once(redirect_settings_path):
+    """The showHoverPreview migration must persist hoverPreviewDelay: 0 to disk
+    immediately (not just resolve it in memory), and the legacy key must be
+    gone from the FILE after one load -- so the migration runs exactly once."""
+    legacy_data = dict(DEFAULT_SETTINGS)
+    legacy_data["hoverPreviewDelay"] = 3000
+    legacy_data["showHoverPreview"] = False
+    redirect_settings_path.write_text(json.dumps(legacy_data))
+
+    load_settings()  # first load: migration fires and persists
+
+    on_disk = json.loads(redirect_settings_path.read_text())
+    assert on_disk["hoverPreviewDelay"] == 0, (
+        "the migration must persist hoverPreviewDelay: 0 to disk, not just "
+        f"resolve it in memory, got on-disk hoverPreviewDelay={on_disk.get('hoverPreviewDelay')!r}"
+    )
+    assert "showHoverPreview" not in on_disk, (
+        "the legacy showHoverPreview key must be gone from the FILE after the "
+        "migration persists -- it must not linger forever as an orphaned key"
+    )
+
+    # Second load must be a no-op: nothing left to migrate.
+    loaded_again = load_settings()
+    assert loaded_again["hoverPreviewDelay"] == 0
+
+
+def test_load_settings_legacy_show_hover_preview_true_is_not_disruptive(
+    redirect_settings_path,
+):
+    """showHoverPreview: true (the enabled state) needs no migration --
+    hoverPreviewDelay is left exactly as configured."""
+    legacy_data = dict(DEFAULT_SETTINGS)
+    legacy_data["hoverPreviewDelay"] = 2000
+    legacy_data["showHoverPreview"] = True
+    redirect_settings_path.write_text(json.dumps(legacy_data))
+
+    loaded = load_settings()
+
+    assert loaded["hoverPreviewDelay"] == 2000, (
+        "showHoverPreview: true must not alter an explicitly configured "
+        f"hoverPreviewDelay, got {loaded['hoverPreviewDelay']!r}"
+    )
+
+
+def test_patch_settings_translates_legacy_show_hover_preview_false():
+    """An old client PATCHing only showHoverPreview: false (no hoverPreviewDelay)
+    must be translated to hoverPreviewDelay: 0, not silently ignored."""
+    result = patch_settings({"showHoverPreview": False})
+
+    assert result["hoverPreviewDelay"] == 0, (
+        "PATCH {'showHoverPreview': False} must translate to hoverPreviewDelay: 0, "
+        f"got hoverPreviewDelay={result['hoverPreviewDelay']!r}"
+    )
+    assert "showHoverPreview" not in result, (
+        "the retired showHoverPreview key must not appear in patch_settings()'s result"
+    )
+    # Persisted, not just returned in memory.
+    assert load_settings()["hoverPreviewDelay"] == 0
+
+
+def test_patch_settings_legacy_show_hover_preview_true_is_a_noop():
+    """PATCH {'showHoverPreview': True} requests no specific delay and must not
+    alter hoverPreviewDelay away from its current/default value."""
+    result = patch_settings({"showHoverPreview": True})
+    assert result["hoverPreviewDelay"] == DEFAULT_SETTINGS["hoverPreviewDelay"]
+    assert "showHoverPreview" not in result
+
+
+def test_patch_settings_explicit_hover_delay_wins_over_legacy_key_in_same_payload():
+    """If a single payload carries BOTH the legacy key and the new key (should
+    not happen from any real client, but must resolve deterministically),
+    the explicit hoverPreviewDelay wins over the translated legacy value."""
+    result = patch_settings({"showHoverPreview": False, "hoverPreviewDelay": 2000})
+    assert result["hoverPreviewDelay"] == 2000, (
+        "an explicit hoverPreviewDelay in the same payload must win over the "
+        f"translated legacy showHoverPreview value, got {result['hoverPreviewDelay']!r}"
+    )
+
+
+def test_apply_synced_settings_translates_legacy_show_hover_preview_false():
+    """A federation peer still running pre-retirement code may sync
+    showHoverPreview: false without hoverPreviewDelay -- must translate to
+    hoverPreviewDelay: 0, not be silently dropped by the SYNCABLE_KEYS loop."""
+    result = apply_synced_settings({"showHoverPreview": False}, 1712600000.0)
+    assert result["hoverPreviewDelay"] == 0, (
+        "federation sync of showHoverPreview: false must translate to "
+        f"hoverPreviewDelay: 0, got {result['hoverPreviewDelay']!r}"
+    )
+    assert "showHoverPreview" not in result
+
+
+# ============================================================
 # SYNCABLE_KEYS allowlist and settings_updated_at (task-5)
 # ============================================================
 
@@ -1063,12 +1183,14 @@ def test_syncable_keys_contains_display_settings():
         "viewMode",
         "showDeviceBadges",
         "deviceLabelPlacement",
-        "showHoverPreview",
         "activityIndicator",
         "gridViewMode",
         "sidebarOpen",
     }
     assert display_keys.issubset(SYNCABLE_KEYS)
+    assert "showHoverPreview" not in SYNCABLE_KEYS, (
+        "showHoverPreview was retired in v0.47.0 and must not be syncable"
+    )
 
 
 def test_syncable_keys_contains_session_behavior():

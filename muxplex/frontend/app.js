@@ -367,7 +367,6 @@ const DISPLAY_DEFAULTS = {
   viewMode: 'auto',
   showDeviceBadges: true,        // DERIVED mirror of deviceLabelPlacement; not read by the renderer
   deviceLabelPlacement: 'titlebar', // 'titlebar' | 'corner' | 'off' -- authoritative
-  showHoverPreview: true,        // show hover preview popover on tile hover
   activityIndicator: 'both',     // 'none' | 'glow' | 'dot' | 'both'
   gridViewMode: 'flat',          // 'flat' | 'grouped'
 };
@@ -2311,8 +2310,12 @@ function _previewClickHandler(e) {
 
 function showPreview(name) {
   if (!name || !_currentSessions) return;
-  var _previewDs = getDisplaySettings();
-  if (_previewDs.showHoverPreview === false) return;
+  // Off is expressed entirely by hoverPreviewDelay === 0 (see DISPLAY_DEFAULTS
+  // and the mouseenter handlers in bindStaticEventListeners, which only ever
+  // arm the timer that calls showPreview() when delay > 0). The second,
+  // independent popover-disable checkbox this function used to also check
+  // here was retired in v0.47.0 in favor of folding "off" into this one
+  // control -- there is nothing else to gate on.
   var session = _currentSessions.find(function (s) { return s.name === name; });
   if (!session || !session.snapshot) return;
 
@@ -5941,9 +5944,6 @@ function onDisplaySettingChange() {
   var deviceLabelPlacementEl = document.getElementById('setting-device-label-placement');
   if (deviceLabelPlacementEl) ds.deviceLabelPlacement = deviceLabelPlacementEl.value;
 
-  var showHoverPreviewEl = document.getElementById('setting-show-hover-preview');
-  if (showHoverPreviewEl) ds.showHoverPreview = showHoverPreviewEl.checked;
-
   var activityIndicatorEl = document.getElementById('setting-activity-indicator');
   if (activityIndicatorEl) ds.activityIndicator = activityIndicatorEl.value;
 
@@ -5952,7 +5952,6 @@ function onDisplaySettingChange() {
     hoverPreviewDelay: ds.hoverPreviewDelay,
     gridColumns: ds.gridColumns,
     deviceLabelPlacement: ds.deviceLabelPlacement,
-    showHoverPreview: ds.showHoverPreview,
     activityIndicator: ds.activityIndicator,
   };
   Object.assign(_serverSettings, patch);
@@ -6031,8 +6030,6 @@ function openSettings() {
   const deviceLabelPlacementEl = $('setting-device-label-placement');
   if (deviceLabelPlacementEl) deviceLabelPlacementEl.value = deviceLabelPlacement(settings);
   _updateDeviceLabelAmbiguityNote(settings);
-  const showHoverPreviewEl = $('setting-show-hover-preview');
-  if (showHoverPreviewEl) showHoverPreviewEl.checked = settings.showHoverPreview !== false;
   const activityIndicatorEl = $('setting-activity-indicator');
   if (activityIndicatorEl) activityIndicatorEl.value = settings.activityIndicator || 'both';
 
@@ -7425,7 +7422,6 @@ function bindStaticEventListeners() {
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
   on($('setting-grid-columns'), 'change', onDisplaySettingChange);
   on($('setting-device-label-placement'), 'change', onDisplaySettingChange);
-  on($('setting-show-hover-preview'), 'change', onDisplaySettingChange);
   on($('setting-activity-indicator'), 'change', onDisplaySettingChange);
   on($('setting-view-mode'), 'change', function() {
     var el = $('setting-view-mode');

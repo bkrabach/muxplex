@@ -4145,12 +4145,12 @@ test('DISPLAY_DEFAULTS does not include showActivityGlow (replaced by activityIn
   assert.ok(!defaultsBody.includes('showActivityGlow'), 'DISPLAY_DEFAULTS must NOT include showActivityGlow — replaced by activityIndicator');
 });
 
-test('DISPLAY_DEFAULTS includes showHoverPreview key', () => {
+test('DISPLAY_DEFAULTS does not include showHoverPreview (retired, merged into hoverPreviewDelay)', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('DISPLAY_DEFAULTS');
   const defaultsEnd = source.indexOf('};', defaultsStart);
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
-  assert.ok(defaultsBody.includes('showHoverPreview'), 'DISPLAY_DEFAULTS must include showHoverPreview');
+  assert.ok(!defaultsBody.includes('showHoverPreview'), 'DISPLAY_DEFAULTS must NOT include showHoverPreview \u2014 merged into hoverPreviewDelay\u2019s Off option');
 });
 
 test('DISPLAY_DEFAULTS does not include showActivityDot (replaced by activityIndicator)', () => {
@@ -4172,9 +4172,9 @@ test('HTML index.html does not have setting-show-activity-glow checkbox (replace
   assert.ok(!source.includes('setting-show-activity-glow'), 'Display panel must NOT have setting-show-activity-glow — replaced by setting-activity-indicator');
 });
 
-test('HTML index.html has setting-show-hover-preview checkbox', () => {
+test('HTML index.html does not have setting-show-hover-preview checkbox (merged into setting-hover-delay)', () => {
   const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  assert.ok(source.includes('setting-show-hover-preview'), 'Display panel must have setting-show-hover-preview checkbox');
+  assert.ok(!source.includes('setting-show-hover-preview'), 'the retired checkbox must be gone \u2014 merged into setting-hover-delay\u2019s Off option');
 });
 
 test('HTML index.html does not have setting-show-activity-dot checkbox (replaced by activity-indicator)', () => {
@@ -4197,13 +4197,13 @@ test('CSS style.css has .sidebar-bell-dot rule', () => {
   assert.ok(source.includes('.sidebar-bell-dot'), 'style.css must have .sidebar-bell-dot rule');
 });
 
-test('showPreview checks showHoverPreview setting before showing popover', () => {
+test('showPreview does not reference the retired showHoverPreview key', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('function showPreview(');
   assert.ok(fnStart !== -1, 'showPreview must exist');
   const fnEnd = source.indexOf('\n}', fnStart);
   const fnBody = source.substring(fnStart, fnEnd + 2);
-  assert.ok(fnBody.includes('showHoverPreview'), 'showPreview must check showHoverPreview setting before showing popover');
+  assert.ok(!fnBody.includes('showHoverPreview'), 'showPreview must NOT check the retired showHoverPreview key \u2014 Off is expressed by hoverPreviewDelay === 0 alone');
 });
 
 test('bindStaticEventListeners binds change events for display toggle controls', () => {
@@ -4214,7 +4214,7 @@ test('bindStaticEventListeners binds change events for display toggle controls',
   const fnBody = source.substring(fnStart, fnEnd > fnStart ? fnEnd : fnStart + 10000);
   assert.ok(fnBody.includes('setting-device-label-placement'), 'must bind setting-device-label-placement');
   assert.ok(!fnBody.includes('setting-show-device-badges'), 'must NOT bind the retired setting-show-device-badges checkbox');
-  assert.ok(fnBody.includes('setting-show-hover-preview'), 'must bind setting-show-hover-preview');
+  assert.ok(!fnBody.includes('setting-show-hover-preview'), 'must NOT bind the retired setting-show-hover-preview checkbox');
   assert.ok(fnBody.includes('setting-activity-indicator'), 'must bind setting-activity-indicator');
 });
 
@@ -5433,7 +5433,7 @@ test('DISPLAY_DEFAULTS has exactly 10 keys', () => {
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
   const keyMatches = defaultsBody.match(/^\s+\w+:/gm);
   assert.ok(keyMatches, 'DISPLAY_DEFAULTS must have keys');
-  assert.strictEqual(keyMatches.length, 10, `DISPLAY_DEFAULTS must have exactly 10 keys, got ${keyMatches.length}`);
+  assert.strictEqual(keyMatches.length, 9, `DISPLAY_DEFAULTS must have exactly 9 keys (showHoverPreview retired in v0.47.0), got ${keyMatches.length}`);
 });
 
 test('getDisplaySettings is exported from app.js', () => {
@@ -5458,7 +5458,7 @@ test('getDisplaySettings returns DISPLAY_DEFAULTS when _serverSettings is null',
   assert.strictEqual(ds.bellSound, false, 'getDisplaySettings must return default bellSound');
   assert.strictEqual(ds.viewMode, 'auto', 'getDisplaySettings must return default viewMode');
   assert.strictEqual(ds.showDeviceBadges, true, 'getDisplaySettings must return default showDeviceBadges');
-  assert.strictEqual(ds.showHoverPreview, true, 'getDisplaySettings must return default showHoverPreview');
+  assert.ok(!('showHoverPreview' in ds), 'getDisplaySettings must NOT include the retired showHoverPreview key');
   assert.strictEqual(ds.activityIndicator, 'both', 'getDisplaySettings must return default activityIndicator');
   assert.strictEqual(ds.gridViewMode, 'flat', 'getDisplaySettings must return default gridViewMode');
 });
