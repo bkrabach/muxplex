@@ -1,3 +1,59 @@
+## v0.46.1 (2026-08-08)
+
+Fixes the terminal reconnect loop dying silently after a Mac wakes from
+sleep, which forced a manual Cmd-R every time (hit daily). Two related
+failures in `frontend/terminal.js`'s reconnect path, both introduced by
+the per-session-ttyd rework:
+
+### Fixed
+
+- **A rejected `/connect`-escalation fetch dead-ended the retry loop
+  forever.** `connect()`'s escalation path (fired after 2 failed WS
+  attempts) mapped a genuine network rejection -- `fetch()` rejects only
+  on `ERR_NETWORK_CHANGED`/DNS/TLS, never on an HTTP error status -- to a
+  resolved `null` via a `.catch()` sitting *between* the chain's two
+  `.then()`s. No WebSocket was ever created after that, so no `close`
+  event could fire, and every other retry in the file is scheduled
+  exclusively from a WebSocket's own `close` handler. The chain died
+  permanently and silently, right in the wake-from-sleep window where
+  Wi-Fi re-association / DHCP renewal is still in flight when the fetch
+  fires. Fixed by moving the `.catch()` to the end of the chain (so it
+  never intercepts the 409 branch's intentional "stop, don't retry" path)
+  and having it schedule the next retry the same way a closed WebSocket
+  does.
+- **A `4404` WebSocket close retried forever with the same stale
+  `device_id`, never healing.** `terminal_ws_proxy` (`main.py`) closes
+  with `4404` for an unknown `device_id` or unknown target session --
+  `prune_devices(ttl_seconds=300.0)` forgets a device after a routine
+  multi-minute sleep. The close handler only special-cased `4409`
+  (session-desync conflict), so a `4404` fell through to the generic
+  retry path and kept reconnecting with the now-unknown `device_id`
+  forever. Fixed by recognizing `4404` and re-registering via
+  `sendHeartbeat()` -- the same self-heal `app.js` already applies to its
+  own `/api/state` 404s (see `pollActiveState()`/`restoreState()`) --
+  before falling through to the normal backoff retry, instead of
+  inventing a parallel recovery mechanism.
+- Factored the overlay-then-backoff-then-`setTimeout(connect, delay)`
+  sequence into a single `_scheduleReconnectRetry()` helper, called by
+  both the WebSocket `close` handler and the escalation fetch's
+  `.catch()` -- a duplicated copy is exactly what let the two paths
+  silently diverge in the first place.
+
+### Testing
+
+`frontend/tests/test_terminal.mjs` gained 4 tests covering both paths
+(a test that would have caught the original dead-end: it asserts a
+reconnect retry is scheduled after a rejected escalation fetch). Verified
+live in a real Chromium browser (Playwright) against a scratch muxplex
+instance: forced the escalation fetch to fail via a network-level abort
+(`reconnectAttempts` kept climbing 1->5 across repeated `/connect`
+attempts, never stuck) and forced a real `WebSocket.close(4404, ...)`
+from the page (`reconnectAttempts` kept climbing, a new
+`POST /api/heartbeat` fired immediately, no terminal-conflict overlay
+shown).
+
+- Version bump: `pyproject.toml` + `client/pyproject.toml`, 0.46.0 -> 0.46.1.
+
 ## v0.46.0 (2026-08-08)
 
 Dependency-only release: bumps the `tmux-kit` pin from `0.1.0` to `0.3.2`
