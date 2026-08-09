@@ -1,3 +1,29 @@
+## v0.47.0 (2026-08-09)
+
+Merges the hover-preview popover's two independent off-switches into one
+control. `hoverPreviewDelay`'s "Off" option and a separate
+`showHoverPreview` checkbox each alone suppressed the popover -- both
+worked, but the duplication made the disable option hard to find.
+
+### Changed
+
+- **Settings > Display: "Hover preview" replaces "Hover Delay" + "Show
+  hover preview".** One `<select>` now controls both timing and on/off:
+  `Off` / `After 1s` / `After 1.5s` / `After 2s` / `After 3s`. Default
+  stays 1.5s, unchanged for everyone. `showHoverPreview` is retired from
+  `DEFAULT_SETTINGS` and `SYNCABLE_KEYS`.
+
+### Fixed
+
+- **Migration prevents a silent regression for anyone who had disabled
+  the preview via the retired checkbox.** A `settings.json` (or an old
+  client's PATCH/federation-sync payload) carrying `showHoverPreview:
+  false` is translated to `hoverPreviewDelay: 0` and persisted -- not
+  dropped on the floor now that the key is gone from the schema. An old
+  client sending `showHoverPreview: true` is treated as a no-op (it
+  requests no specific delay); an explicit `hoverPreviewDelay` in the
+  same payload always wins over a translated legacy value.
+
 ## v0.46.1 (2026-08-08)
 
 Fixes the terminal reconnect loop dying silently after a Mac wakes from
