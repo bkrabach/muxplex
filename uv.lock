@@ -338,7 +338,7 @@ wheels = [
 
 [[package]]
 name = "muxplex"
-version = "0.45.1"
+version = "0.46.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -380,7 +380,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "python-pam", specifier = ">=1.8.4" },
     { name = "six", specifier = ">=1.16.0" },
-    { name = "tmux-kit", git = "https://github.com/bkrabach/tmux-kit?tag=v0.1.0" },
+    { name = "tmux-kit", git = "https://github.com/bkrabach/tmux-kit?tag=v0.3.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=14.0" },
 ]
@@ -394,7 +394,7 @@ dev = [
 
 [[package]]
 name = "muxplex-client"
-version = "0.45.1"
+version = "0.46.0"
 source = { editable = "client" }
 dependencies = [
     { name = "httpx" },
@@ -718,8 +718,8 @@ wheels = [
 
 [[package]]
 name = "tmux-kit"
-version = "0.1.0"
-source = { git = "https://github.com/bkrabach/tmux-kit?tag=v0.1.0#6b3fa379458395e86069e6de6c5365be0b122775" }
+version = "0.3.2"
+source = { git = "https://github.com/bkrabach/tmux-kit?tag=v0.3.2#6af0b0fc6c8150bcef2bb95b7201b499c7a6d69f" }
 
 [[package]]
 name = "typing-extensions"

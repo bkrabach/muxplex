@@ -1,3 +1,34 @@
+## v0.46.0 (2026-08-08)
+
+Dependency-only release: bumps the `tmux-kit` pin from `0.1.0` to `0.3.2`
+(now published on PyPI, verified: wheel + sdist present, clean install
+imports, both `tmux-kit` and `tmux-kit-mcp` console scripts register).
+Nothing in muxplex's own behavior changes -- this release exists so
+muxplex picks up what tmux-kit gained since its first PyPI release.
+
+### Changed
+
+- **`tmux-kit==0.1.0` -> `tmux-kit==0.3.2`** in `[project.dependencies]`,
+  and the matching `[tool.uv.sources]` git entry's `tag` moves
+  `v0.1.0` -> `v0.3.2` in the same commit (AGENTS.md's "tmux-kit pin/tag
+  agreement" rule). `uv.lock` is regenerated in this same commit so a
+  git-sourced install resolves the new tag rather than the stale one.
+- Version bump: `pyproject.toml` + `client/pyproject.toml`, 0.45.1 ->
+  0.46.0 (minor: the dependency it wraps grew real new surface area, even
+  though muxplex's own code is untouched).
+
+### What tmux-kit 0.3.2 brings (upstream, not consumed by muxplex yet)
+
+Since 0.1.0, tmux-kit gained: a high-level facade
+(`tmux_kit.start/read/list_sessions/...`), a Click CLI, an MCP server
+exposing the identical verb vocabulary, `isolated_tmux_server()` (an
+isolation primitive for tests/tools), a deny-by-default authorization
+fence in front of the MCP server's destructive verbs, an `exit_code`
+field, and a CI rail that fails the build if any test/example/script
+spawns tmux without an explicit `-L`/`-S`. muxplex continues to use only
+the same core verbs it already depended on at 0.1.0; none of this new
+surface is wired into muxplex's own code by this release.
+
 ## v0.45.1 (2026-08-08)
 
 Managed-device (CISO) installs of muxplex no longer require a hand-typed
