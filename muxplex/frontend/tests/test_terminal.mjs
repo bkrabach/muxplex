@@ -1554,4 +1554,153 @@ test('escalation POST returning 409 terminal_conflict shows the overlay and neve
   );
 });
 
+// ─── Reconnect-after-sleep regression: rejected escalation fetch must retry ───
+//
+// Bug: a rejected /connect escalation fetch used to map to a resolved `null`
+// via `.catch(function() { return null; })` sitting BETWEEN the two `.then()`s,
+// so the next `.then()` saw `proceed = null` and just returned -- no WebSocket
+// was ever created, so no 'close' event could ever fire, and every other retry
+// in this file is scheduled exclusively from a WebSocket's own 'close' handler.
+// The retry chain died permanently and silently right there. This is exactly
+// the wake-from-sleep window the owner hit daily: Wi-Fi re-association / DHCP
+// renewal is still in flight when the escalation fetch fires, fetch() rejects
+// (a genuine network failure, not an HTTP error status), and the reconnect
+// loop never recovered on its own.
+//
+// This test would have caught the original bug: before the fix, no setTimeout
+// call happens anywhere in this flow once the fetch rejects, so
+// `timeoutCalls.length > 0` below would have failed.
+test('fetch rejection during /connect escalation schedules a reconnect instead of dead-ending (regression: the original silent dead-end bug)', async () => {
+  const t = loadTerminal();
+
+  let fetchCallCount = 0;
+  globalThis.fetch = async () => {
+    fetchCallCount++;
+    // fetch() rejects ONLY for a genuine network failure (ERR_NETWORK_CHANGED,
+    // DNS, TLS) -- never for an HTTP error status. Simulate exactly that.
+    throw new TypeError('Failed to fetch');
+  };
+
+  const timeoutCalls = [];
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms) => { timeoutCalls.push({ fn, ms }); return 0; };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  timeoutCalls.length = 0; // ignore any scheduling during openTerminal itself
+
+  // Drive _reconnectAttempts up to 2 so the NEXT connect() call takes the
+  // /connect-escalation branch (same technique as the 409 tests above).
+  t.fireClose({ code: 1006 }); // _reconnectAttempts -> 1, schedules a retry
+  const first = timeoutCalls.pop();
+  first.fn(); // re-enter connect(): still < 2, reconnects directly (no escalation)
+
+  t.fireClose({ code: 1006 }); // _reconnectAttempts -> 2, schedules a retry
+  const second = timeoutCalls.pop();
+  timeoutCalls.length = 0; // clear so only post-escalation scheduling remains below
+  second.fn(); // re-enter connect(): >= 2 -> escalation POST fires (fetch rejects)
+
+  // Drain the microtask queue so the rejected fetch's trailing .catch() runs.
+  for (let i = 0; i < 50; i++) {
+    await Promise.resolve();
+  }
+
+  globalThis.setTimeout = origSetTimeout;
+
+  assert.strictEqual(fetchCallCount, 1, 'escalation fetch must have been attempted exactly once');
+  assert.ok(
+    timeoutCalls.length > 0,
+    'a rejected /connect escalation fetch must schedule a reconnect retry -- before the fix ' +
+    'this dead-ended silently (the "Reconnecting…" overlay stuck forever) with no scheduled retry at all',
+  );
+});
+
+// ─── Stale device_id after a long sleep: WS close(4404) must self-heal ───
+//
+// prune_devices(ttl_seconds=300.0) (main.py, run every poll cycle) forgets a
+// device after 5 minutes with no heartbeat -- a routine multi-minute sleep
+// does exactly this. terminal_ws_proxy then closes with 4404 for an unknown
+// device_id (or an unknown/missing target session). Before this fix, the
+// close handler only special-cased 4409, so a 4404 fell through to the
+// generic retry path and retried forever with the SAME now-unknown
+// device_id, never healing. app.js already self-heals the identical
+// situation for its own /api/state 404 (see pollActiveState()/restoreState():
+// "Device aged out of the registry ... Re-register") by calling
+// sendHeartbeat() and letting the next tick retry -- these tests assert
+// terminal.js now follows that exact pattern rather than inventing a
+// parallel one.
+test('close handler with event.code === 4404 re-registers the device via sendHeartbeat (self-heal, follows app.js\'s /api/state 404 pattern) and still schedules a reconnect', () => {
+  const t = loadTerminal();
+
+  let heartbeatCallCount = 0;
+  globalThis.sendHeartbeat = () => {
+    heartbeatCallCount++;
+    return Promise.resolve();
+  };
+
+  const orig = globalThis.setTimeout;
+  let reconnectScheduled = false;
+  globalThis.setTimeout = (fn, _ms) => { reconnectScheduled = true; return 0; };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  reconnectScheduled = false; // ignore any scheduling during openTerminal itself
+
+  t.fireClose({ code: 4404 });
+
+  globalThis.setTimeout = orig;
+  delete globalThis.sendHeartbeat;
+
+  assert.strictEqual(
+    heartbeatCallCount, 1,
+    '4404 close must re-register the device via sendHeartbeat, the same self-heal app.js already applies to its own 404s',
+  );
+  assert.strictEqual(
+    reconnectScheduled, true,
+    '4404 must still schedule a reconnect -- unlike 4409 (a permanent desync), a 4404 is recoverable once the device re-registers',
+  );
+});
+
+test('close handler with event.code === 4404 does not throw when sendHeartbeat is unavailable (unit-test env has no app.js loaded) and still retries', () => {
+  const t = loadTerminal();
+  assert.strictEqual(
+    typeof globalThis.sendHeartbeat, 'undefined',
+    'precondition: sendHeartbeat must not be globally defined in this test env',
+  );
+
+  const orig = globalThis.setTimeout;
+  let reconnectScheduled = false;
+  globalThis.setTimeout = (fn, _ms) => { reconnectScheduled = true; return 0; };
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  reconnectScheduled = false;
+
+  assert.doesNotThrow(
+    () => t.fireClose({ code: 4404 }),
+    'a 4404 close must not throw even when sendHeartbeat is unavailable (classic-script shared-scope hazard)',
+  );
+
+  globalThis.setTimeout = orig;
+  assert.strictEqual(reconnectScheduled, true, '4404 must still retry even without a heartbeat re-register available');
+});
+
+test('close handler with event.code === 4404 does not show the terminal-conflict overlay (distinct from 4409 -- recoverable via re-register, not a permanent desync)', () => {
+  const t = loadTerminal();
+  globalThis.sendHeartbeat = () => Promise.resolve();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => 0;
+
+  t.openTerminal('my-session', '', 14, 'd-abc123');
+  t.fireClose({ code: 4404 });
+
+  globalThis.setTimeout = orig;
+  delete globalThis.sendHeartbeat;
+
+  assert.strictEqual(
+    t.overlayVisible() && /reconnecting/i.test(t.overlayText()) ? 'reconnecting' : 'other',
+    'reconnecting',
+    '4404 must show the normal "Reconnecting…" overlay, not the honest-stop conflict overlay 4409 shows',
+  );
+  assert.strictEqual(t.takeoverBtnVisible(), false, 'Take-over button must stay hidden during a plain reconnect');
+});
+
 

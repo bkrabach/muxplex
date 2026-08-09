@@ -130,6 +130,34 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
     });
   }
 
+  // _scheduleReconnectRetry — the ONE place that arms the next reconnect
+  // attempt: shows the overlay, advances the backoff counter, and arms
+  // _reconnectTimer. Both retry-triggering paths in this file call this
+  // exact function rather than duplicating its logic:
+  //   1. the WebSocket 'close' handler below (the original, always-worked
+  //      path — a closed WS always retries this way), and
+  //   2. connect()'s /connect-escalation fetch chain, on a genuine network
+  //      rejection (see that function's trailing .catch() for why this
+  //      matters — a rejected fetch used to dead-end with no scheduled
+  //      retry at all, because it is the one reconnect trigger in this file
+  //      that does NOT originate from a WebSocket close event).
+  // Factored out (rather than duplicated) because both callers need the
+  // identical overlay-then-backoff-then-setTimeout(connect, delay) sequence,
+  // and a duplicated copy is exactly the kind of drift hazard that let path
+  // 2 silently diverge from path 1 in the first place.
+  function _scheduleReconnectRetry() {
+    if (reconnectOverlay) {
+      reconnectOverlay.classList.remove('hidden');
+      if (reconnectOverlayText) reconnectOverlayText.textContent = 'Reconnecting…';
+      if (takeoverBtn) takeoverBtn.classList.add('hidden');
+    }
+    _reconnectAttempts++;
+    // Exponential backoff: 1s, 2s, 4s, 8s, cap at 15s. Add jitter to avoid thundering herd.
+    var delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 15000);
+    delay += Math.random() * 500; // jitter
+    _reconnectTimer = setTimeout(connect, delay);
+  }
+
   // _connectWebSocket — creates the WebSocket instance and registers all event handlers.
   // Called directly for normal reconnects (ttyd still alive), or after a brief delay
   // following the /connect POST (ttyd was dead and needed respawning).
@@ -222,16 +250,32 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
         _showTerminalConflictOverlay(reconnectOverlay, reconnectOverlayText, takeoverBtn, name, remoteId, ownDeviceId);
         return;
       }
-      if (reconnectOverlay) {
-        reconnectOverlay.classList.remove('hidden');
-        if (reconnectOverlayText) reconnectOverlayText.textContent = 'Reconnecting…';
-        if (takeoverBtn) takeoverBtn.classList.add('hidden');
+      if (event && event.code === 4404) {
+        // Unknown device_id, or the target session itself is gone
+        // (main.py's terminal_ws_proxy: unknown device_id -> 4404; missing/
+        // invalid/unknown target session -> 4404 too). The common real-world
+        // cause is a multi-minute sleep: prune_devices(ttl_seconds=300.0)
+        // (main.py, run every poll cycle) forgets this device after 5 minutes
+        // with no heartbeat, so the device_id this WS was opened with is now
+        // unknown to the server -- and every retry up to now has kept
+        // reconnecting with that SAME stale id, so without this branch it
+        // would retry forever and never heal.
+        //
+        // app.js already self-heals the identical situation for its own
+        // /api/state 404 (see pollActiveState()/restoreState(): "Device aged
+        // out of the registry ... Re-register"). Follow that exact pattern
+        // here rather than inventing a parallel one: re-register via the
+        // SAME sendHeartbeat() app.js's poll loop uses (a plain global call --
+        // app.js and terminal.js are classic <script>s sharing one global
+        // scope, see index.html) and then fall through to the normal backoff
+        // retry below, same as any other close code. `typeof` guard: unit
+        // tests load this file without app.js, so sendHeartbeat may not
+        // exist in that context -- must not throw either way.
+        if (typeof sendHeartbeat === 'function') {
+          sendHeartbeat().catch(function() {});
+        }
       }
-      _reconnectAttempts++;
-      // Exponential backoff: 1s, 2s, 4s, 8s, cap at 15s. Add jitter to avoid thundering herd.
-      var delay = Math.min(1000 * Math.pow(2, _reconnectAttempts - 1), 15000);
-      delay += Math.random() * 500; // jitter
-      _reconnectTimer = setTimeout(connect, delay);
+      _scheduleReconnectRetry();
     });
 
     ws.addEventListener('error', function() {
@@ -284,13 +328,33 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
           }
           return true;
         })
-        .catch(function() { return null; })
         .then(function(proceed) {
           if (!proceed) return;
           // Brief delay for ttyd to bind its port after /connect spawns it
           setTimeout(_connectWebSocket, 800);
+        })
+        .catch(function() {
+          // fetch() rejects ONLY on a genuine network failure (e.g.
+          // ERR_NETWORK_CHANGED, DNS, TLS) -- HTTP error statuses resolve
+          // normally, which is why only 409 is branched on above. This used
+          // to be `.catch(function() { return null; })` sitting BETWEEN the
+          // two .then()s: it mapped the rejection to a resolved `null`, the
+          // next .then() saw `proceed = null` and just returned -- no
+          // WebSocket was ever created, so no 'close' event could ever fire,
+          // and _scheduleReconnectRetry() (the only other place that arms
+          // _reconnectTimer) is reached exclusively from a WebSocket's own
+          // 'close' handler. The retry chain died permanently and silently
+          // right here: exactly the wake-from-sleep window, where Wi-Fi
+          // re-association / DHCP renewal / a VPN tunnel re-establishing is
+          // still in flight when this fetch fires. Schedule the next
+          // attempt the same way a closed WebSocket would, instead of
+          // dying quietly. This .catch() is now placed AFTER both .then()s
+          // (not between them) so it never intercepts the 409 branch's
+          // intentional `return null` -- that path must still stop without
+          // retrying (an honest conflict overlay, not a transient failure).
+          _scheduleReconnectRetry();
         });
-      return; // Don't fall through — .then() handles the WebSocket creation
+      return; // Don't fall through — the promise chain handles the WebSocket creation
     }
 
     _connectWebSocket();
