@@ -1599,12 +1599,21 @@ test('fetch rejection during /connect escalation schedules a reconnect instead o
   timeoutCalls.length = 0; // clear so only post-escalation scheduling remains below
   second.fn(); // re-enter connect(): >= 2 -> escalation POST fires (fetch rejects)
 
+  // Restore the real setTimeout BEFORE draining microtasks (matching the
+  // pattern the existing 409-escalation tests above already use) -- leaving
+  // the mock installed across an awaited drain loop caused this suite to
+  // hang when run alongside the rest of the frontend test files in CI
+  // (isolated single-file runs were unaffected, which is what made this
+  // easy to miss locally). The rejected fetch's trailing .catch() calls
+  // _scheduleReconnectRetry() during this drain; with the mock restored
+  // first, that goes through the harmless real setTimeout, and the retry
+  // itself is captured next via patchTimeout() below instead.
+  globalThis.setTimeout = origSetTimeout;
+
   // Drain the microtask queue so the rejected fetch's trailing .catch() runs.
   for (let i = 0; i < 50; i++) {
     await Promise.resolve();
   }
-
-  globalThis.setTimeout = origSetTimeout;
 
   assert.strictEqual(fetchCallCount, 1, 'escalation fetch must have been attempted exactly once');
   assert.ok(
