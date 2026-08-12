@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muxplex"
-version = "0.47.0"
+version = "0.47.1"
 description = "Web-based tmux session dashboard — access all your tmux sessions from any browser"
 readme = "README.md"
 license = { text = "MIT" }
@@ -55,7 +55,7 @@ dependencies = [
     # this pin; `muxplex upgrade` reconstructs a git-sourced `--with`
     # override from this pin at upgrade time (cli.py's
     # _read_remote_tmux_kit_pin/_resolve_upgrade_kit_ref).
-    "tmux-kit==0.3.2",
+    "tmux-kit==0.3.5",
 ]
 
 [project.optional-dependencies]
@@ -143,4 +143,4 @@ muxplex-client = { workspace = true }
 # test_tmux_kit_pin_source_agreement.py both fail the build/suite if they
 # drift. A `path` source here (the cross-repo dev loop's `uv add --editable
 # ../tmux-kit`) must be reverted before committing -- the guard rejects it.
-tmux-kit = { git = "https://github.com/bkrabach/tmux-kit", tag = "v0.3.2" }
+tmux-kit = { git = "https://github.com/bkrabach/tmux-kit", tag = "v0.3.5" }

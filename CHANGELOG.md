@@ -1,3 +1,36 @@
+## v0.47.1 (2026-08-12)
+
+Dependency-only release: bumps the `tmux-kit` pin from `0.3.2` to `0.3.5`
+(now published on PyPI, verified: wheel + sdist present, clean install
+imports). Nothing in muxplex's own behavior changes -- this release exists
+so muxplex picks up a data-loss fix in tmux-kit's presence tracking.
+
+### Fixed
+
+- **Previously-frozen `pending_restore` entries now survive a second cold
+  start.** `tmux_kit.presence.update_manifest()`'s cold-start branch used
+  to replace `pending_restore` wholesale, so a SECOND tmux server death
+  before an operator finished restoring from the first silently discarded
+  any entries the first cold start had recorded but the operator had not
+  yet acted on. This fired twice against a real muxplex host on
+  2026-08-12: 20 entries lost on the first double-death, 4 more on the
+  second. muxplex surfaces `pending_restore` through `muxplex restore`, so
+  muxplex users get the fix -- unrecovered sessions from an earlier crash
+  are no longer silently dropped by a later one -- only via this pin
+  bump; muxplex's own code neither reproduced nor patched the bug
+  directly.
+
+### Changed
+
+- **`tmux-kit==0.3.2` -> `tmux-kit==0.3.5`** in `[project.dependencies]`,
+  and the matching `[tool.uv.sources]` git entry's `tag` moves
+  `v0.3.2` -> `v0.3.5` in the same commit (AGENTS.md's "tmux-kit pin/tag
+  agreement" rule). `uv.lock` is regenerated in this same commit so a
+  git-sourced install resolves the new tag rather than the stale one.
+- Version bump: `pyproject.toml` + `client/pyproject.toml`, 0.47.0 ->
+  0.47.1 (patch: consuming code is unchanged, only the vendored fix
+  moves).
+
 ## v0.47.0 (2026-08-09)
 
 Merges the hover-preview popover's two independent off-switches into one
