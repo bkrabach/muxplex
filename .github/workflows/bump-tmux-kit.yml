@@ -1,0 +1,191 @@
+name: Bump tmux-kit
+
+# Keeps muxplex's tmux-kit dependency current without a human remembering to
+# do it. Discovers the newest tmux-kit release tag, compares it against this
+# repo's current pin, and -- only when it's actually newer -- opens a PR that
+# bumps BOTH coupled locations in the same commit and regenerates uv.lock.
+#
+# Why both locations move together, and why uv.lock must be regenerated in
+# the SAME commit: see AGENTS.md's "tmux-kit pin/tag agreement" section.
+# Short version -- pyproject.toml pins tmux-kit in two places that must name
+# the same version (a plain `==` pin for PyPI installs, plus a
+# [tool.uv.sources] git `tag` for managed-device git-sourced installs that
+# can't reach public PyPI), and a git tool install resolves tmux-kit from
+# whatever uv.lock already records, not a fresh re-resolve of pyproject.toml
+# -- an un-relocked source change silently keeps resolving the OLD ref
+# (this bit muxplex 0.45.1).
+#
+# This workflow NEVER pushes to main directly. It opens a PR so the existing
+# CI -- including the guard-tmux-kit-pin-source-agreement job and the full
+# suite (ci.yml) -- validates the bump exactly like any other change, and
+# the owner merges by hand.
+#
+# Idempotency: at most one bump PR is ever open at a time. If one already
+# exists (any open PR whose branch starts with `bump-tmux-kit-`), this run
+# exits cleanly without touching anything -- re-running (scheduled or via
+# workflow_dispatch) while a PR is pending is a no-op, not a duplicate PR,
+# even if tmux-kit has released again in the meantime. The next release
+# after the pending one merges gets picked up on the following run.
+
+on:
+  schedule:
+    - cron: "17 8 * * *" # daily; arbitrary offset off the hour to avoid the stampede
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # push the bump branch
+  pull-requests: write # list open PRs, open the new one
+
+concurrency:
+  group: bump-tmux-kit
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: bump tmux-kit pin + source tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies (needed to run the guard test later)
+        run: uv sync --extra dev
+
+      - name: Discover newest tmux-kit release tag
+        id: latest
+        # Plain `git ls-remote` against the public repo -- no gh/API auth
+        # needed for this step, and no dependency on tmux-kit publishing a
+        # GitHub "Release" object (it doesn't; it only pushes vX.Y.Z tags,
+        # confirmed via `gh release list --repo bkrabach/tmux-kit` returning
+        # nothing). `sort -V` gives correct version ordering (v0.3.5 above
+        # v0.3.10, etc.), not lexicographic.
+        run: |
+          latest_tag=$(git ls-remote --tags --refs https://github.com/bkrabach/tmux-kit.git \
+            | awk '{print $2}' | sed 's#refs/tags/##' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          if [[ -z "$latest_tag" ]]; then
+            echo "::error::could not discover any vX.Y.Z tag on bkrabach/tmux-kit"
+            exit 1
+          fi
+          echo "Newest tmux-kit tag: $latest_tag"
+          echo "tag=$latest_tag" >> "$GITHUB_OUTPUT"
+          echo "version=${latest_tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Show current pin (informational)
+        run: python3 scripts/bump_tmux_kit.py check
+
+      - name: Skip if a bump PR is already open (idempotency)
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh pr list --state open --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("bump-tmux-kit-"))] | length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [[ "$count" != "0" ]]; then
+            echo "A bump-tmux-kit-* PR is already open ($count) -- skipping."
+          fi
+
+      - name: Bump pin + source tag (no-op if already current)
+        id: bump
+        if: steps.existing_pr.outputs.count == '0'
+        run: |
+          result=$(python3 scripts/bump_tmux_kit.py bump "${{ steps.latest.outputs.version }}")
+          echo "$result"
+          bumped=$(echo "$result" | jq -r .bumped)
+          echo "bumped=$bumped" >> "$GITHUB_OUTPUT"
+          if [[ "$bumped" != "true" ]]; then
+            echo "Already at the newest release -- nothing to do."
+          fi
+
+      - name: uv lock (regenerate so the git install path resolves the new tag)
+        if: steps.bump.outputs.bumped == 'true'
+        run: uv lock
+
+      - name: Show pyproject.toml + uv.lock diff (informational)
+        if: steps.bump.outputs.bumped == 'true'
+        run: git diff -- pyproject.toml uv.lock
+
+      - name: Run the pin/source agreement guard against the bump
+        if: steps.bump.outputs.bumped == 'true'
+        run: uv run pytest muxplex/tests/test_tmux_kit_pin_source_agreement.py -v
+
+      - name: Commit, push, and open the PR
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="bump-tmux-kit-${{ steps.latest.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add pyproject.toml uv.lock
+          git commit -m "chore: bump tmux-kit to ${{ steps.latest.outputs.tag }}
+
+          Automated via .github/workflows/bump-tmux-kit.yml.
+
+          - pyproject.toml: [project.dependencies] tmux-kit pin and
+            [tool.uv.sources] git tag both moved to ${{ steps.latest.outputs.tag }}
+            in this one commit (AGENTS.md's tmux-kit pin/tag agreement rule).
+          - uv.lock: regenerated (uv lock) in the same commit so a git-sourced
+            install resolves the new tag instead of a stale recorded ref.
+
+          CI -- including guard-tmux-kit-pin-source-agreement and the full
+          suite -- validates this on the PR before merge."
+          git push origin "$branch"
+          gh pr create \
+            --title "chore: bump tmux-kit to ${{ steps.latest.outputs.tag }}" \
+            --base main \
+            --head "$branch" \
+            --body "$(python3 - <<'PYEOF'
+          print('''Automated tmux-kit dependency bump (scheduled + on-demand
+          via `workflow_dispatch`). Never pushed to `main` directly.
+
+          ## What changed
+
+          - `pyproject.toml`: the `[project.dependencies]` tmux-kit `==` pin
+            and the `[tool.uv.sources]` git `tag` were bumped together, in
+            this one commit -- they must always name the same version (see
+            AGENTS.md's "tmux-kit pin/tag agreement" section for why: a
+            public PyPI install only ever sees the plain pin, a managed-
+            device git install resolves from the git tag, and if they ever
+            drift those two install paths silently ship different tmux-kit
+            code from the same muxplex release).
+          - `uv.lock`: regenerated via `uv lock` in this same commit, so a
+            git-sourced install (`uv tool install git+.../muxplex`) resolves
+            the *new* tag instead of whatever ref was previously recorded --
+            a git tool install reads the lock file, not a fresh re-resolve
+            of pyproject.toml.
+
+          ## What to check before merging
+
+          - [ ] CI is green -- in particular `guard-tmux-kit-pin-source-agreement`
+            and the `test` / `test-latest-deps` jobs.
+          - [ ] Skim tmux-kit's release notes for this version for anything
+            worth a mention in muxplex's own CHANGELOG.md at release time.
+          - [ ] Merging this means the next fleet roll picks up the new
+            tmux-kit on BOTH install paths -- PyPI (plain pin, unmanaged
+            devices) and git (source tag, IT-managed devices that can't
+            reach PyPI directly).
+          ''')
+          PYEOF
+          )"
+
+      - name: Summary
+        if: always()
+        run: |
+          if [[ "${{ steps.existing_pr.outputs.count }}" != "0" ]]; then
+            echo "::notice::A bump PR is already open -- no action taken."
+          elif [[ "${{ steps.bump.outputs.bumped }}" == "true" ]]; then
+            echo "::notice::Opened a PR bumping tmux-kit to ${{ steps.latest.outputs.tag }}."
+          else
+            echo "::notice::tmux-kit is already at the newest release (${{ steps.latest.outputs.tag }})."
+          fi
