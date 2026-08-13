@@ -38,6 +38,7 @@ function loadTerminal() {
   let onDataCallCount = 0;
   let onResizeCallCount = 0;
   let focusCallCount = 0;
+  let fitCallCount = 0;
 
   const mockTerm = {
     cols: 80,
@@ -132,7 +133,7 @@ function loadTerminal() {
     innerWidth: 1024,
     Terminal: function Terminal() { return mockTerm; },
     FitAddon: {
-      FitAddon: function FitAddon() { return { fit: () => {} }; },
+      FitAddon: function FitAddon() { return { fit: () => { fitCallCount++; } }; },
     },
     _openTerminal: undefined,
     _closeTerminal: undefined,
@@ -180,6 +181,7 @@ function loadTerminal() {
     closeTerminal: globalThis.window._closeTerminal,
     get onDataCallCount() { return onDataCallCount; },
     get onResizeCallCount() { return onResizeCallCount; },
+    get fitCallCount() { return fitCallCount; },
     get sentMessages() { return sentMessages; },
     get capturedWsUrl() { return capturedWsUrl; },
     get capturedWsProtocols() { return capturedWsProtocols; },
@@ -829,6 +831,108 @@ test('initVisualViewport registers resize AND scroll handlers on window.visualVi
     '_vpHandler should be registered as a resize listener on window.visualViewport');
   assert.ok(addedEvents.includes('scroll'),
     '_vpHandler should also be registered as a scroll listener on window.visualViewport');
+});
+
+test('initVisualViewport: a scroll/resize tick with an UNCHANGED height is a true no-op (regression: mobile scroll corruption)', () => {
+  // Root cause: _vpHandler used to run an unconditional CSS write +
+  // _termRefit() (-> FitAddon.fit() -> possible term.resize() -> a PTY
+  // resize dispatched to the server) on EVERY visualViewport 'scroll'
+  // event, even though 'scroll' fires far more often than the viewport
+  // genuinely changes height (e.g. ordinary content panning while a
+  // mobile keyboard is already fully open). On a touch-scrolling mobile
+  // device this could dispatch dozens of redundant PTY resizes per
+  // second, each making tmux redraw its whole pane -- see
+  // connectWebSocket()'s resize-throttle comment for the full mechanism.
+  // The fix: skip entirely when window.visualViewport.height hasn't
+  // actually changed since the last applied value.
+  const t = loadTerminal();
+
+  // _vpHandler no-ops unless document.getElementById('view-expanded')
+  // resolves to a real element (see the `if (!expandedView) return;` guard)
+  // -- the base harness's mock document doesn't stub this id, so give it
+  // one here to actually exercise the height-comparison logic below.
+  const expandedViewEl = { style: { setProperty: () => {} } };
+  const origGetElementById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) =>
+    id === 'view-expanded' ? expandedViewEl : origGetElementById(id);
+
+  const handlers = {};
+  globalThis.window.visualViewport = {
+    height: 400,
+    addEventListener: (event, fn) => { handlers[event] = fn; },
+    removeEventListener: () => {},
+  };
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => 0;
+  t.openTerminal('test-session');
+  globalThis.setTimeout = orig;
+
+  // openTerminal's initVisualViewport() call fires _vpHandler() once
+  // immediately to seed the initial height -- that's the one baseline fit.
+  const baseline = t.fitCallCount;
+  assert.ok(baseline >= 1, 'initial _vpHandler() call should have fit at least once');
+
+  // Same height, fired via 'scroll' (the noisy one) several times in a row --
+  // must NOT trigger any additional fit() calls.
+  handlers.scroll();
+  handlers.scroll();
+  handlers.resize();
+  assert.strictEqual(t.fitCallCount, baseline,
+    'unchanged visualViewport.height must not trigger additional fit() calls');
+
+  // A genuine height change must still refit immediately (no debounce/lag
+  // introduced for the case that matters).
+  globalThis.window.visualViewport.height = 250;
+  handlers.scroll();
+  assert.strictEqual(t.fitCallCount, baseline + 1,
+    'a genuine visualViewport.height change must still refit immediately');
+
+  delete globalThis.window.visualViewport;
+});
+
+test('connectWebSocket: rapid onResize firings are throttled to the server (regression: mobile scroll corruption)', async () => {
+  // Root cause continued: even when every tick corresponds to a genuinely
+  // different height (a real keyboard-open or mobile-toolbar animation,
+  // which fires several distinct heights in quick succession), sending a
+  // PTY resize to the server on EVERY one of those floods tmux with
+  // back-to-back SIGWINCH-triggered full-pane redraws -- confirmed against
+  // a real xterm.js Terminal buffer under a synthetic resize-storm harness
+  // (roughly halved the corrupted-row rate once throttled). The fix:
+  // dispatch the FIRST resize in a burst immediately (no added lag for the
+  // common, isolated case), then coalesce any further resizes within a
+  // short window into a single trailing dispatch once the burst settles.
+  const t = loadTerminal();
+  t.openTerminal('test-session');
+  t.fireOpen();
+
+  const sentBefore = t.sentMessages.length;
+
+  // Simulate a burst: several genuinely-different sizes in quick succession.
+  t.capturedOnResizeFn({ cols: 80, rows: 24 });
+  t.capturedOnResizeFn({ cols: 80, rows: 25 });
+  t.capturedOnResizeFn({ cols: 80, rows: 26 });
+
+  // Leading edge: the FIRST resize of the burst should have been sent
+  // immediately -- exactly one resize frame so far, not three.
+  const resizeFramesSoFar = t.sentMessages.slice(sentBefore).filter(
+    (m) => m instanceof Uint8Array && m[0] === 0x31,
+  );
+  assert.strictEqual(resizeFramesSoFar.length, 1,
+    'only the leading (first) resize of a burst should dispatch immediately');
+
+  // After the throttle window elapses, the LAST size in the burst should
+  // arrive as a single trailing dispatch -- not one per intermediate call.
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  const allResizeFrames = t.sentMessages.slice(sentBefore).filter(
+    (m) => m instanceof Uint8Array && m[0] === 0x31,
+  );
+  assert.strictEqual(allResizeFrames.length, 2,
+    `expected exactly 2 resize dispatches (leading + one coalesced trailing), got ${allResizeFrames.length}`);
+  const lastPayload = JSON.parse(Buffer.from(allResizeFrames[1].slice(1)).toString('utf8'));
+  assert.strictEqual(lastPayload.rows, 26,
+    'the trailing dispatch must reflect the LAST size in the burst, not an intermediate one');
 });
 
 test('terminal is auto-focused when WebSocket opens', () => {

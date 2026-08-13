@@ -1,3 +1,48 @@
+## v0.47.2 (2026-08-13)
+
+Fixes a mobile-only terminal rendering regression from v0.44.0: scrolling
+could duplicate lines (a variable count, sometimes a dozen) or freeze a
+region of the pane while everything else kept scrolling behind it, far
+more often on mobile than desktop and worse on slower devices/networks.
+
+### Fixed
+
+- **Terminal content duplication/freezing while scrolling on mobile.**
+  Root cause: `initVisualViewport()`'s `_vpHandler` (`terminal.js`, added in
+  v0.44.0 / `b7186b0`) ran an unconditional, undebounced `_termRefit()` on
+  *every* `visualViewport` `scroll` **and** `resize` event, deliberately
+  bypassing the existing 50ms-debounced `ResizeObserver` to avoid a
+  one-frame lag while an on-screen keyboard animates. `scroll` fires far
+  more often on mobile than the viewport genuinely changes height (touch
+  scrolling, the browser's own dynamic toolbar hide/show, and ordinary
+  content panning while a keyboard is already open) -- each of those calls
+  could reach `FitAddon.fit()` -> `term.resize()` -> a PTY resize dispatched
+  to the server, and each PTY resize makes tmux redraw its entire pane via
+  a fresh `SIGWINCH`. A burst of these (routine during a single mobile
+  scroll gesture) sends overlapping full-pane redraws addressed for
+  whatever size tmux believed was current at each moment; if the client's
+  actual size has since moved on, a redraw lands against a differently
+  sized buffer, corrupting the visible terminal -- confirmed directly
+  against a real xterm.js `Terminal` buffer (not just a screenshot) under a
+  synthetic resize-storm harness, which is a genuine **data** corruption
+  in the terminal's own scrollback, not a rendering/paint artifact.
+  Fixed with two complementary changes in `terminal.js`:
+  - `_vpHandler` now skips entirely (no CSS write, no refit) when
+    `visualViewport.height` hasn't actually changed since the last
+    applied value -- eliminates the large majority of `scroll` events,
+    which fire for reasons other than a genuine height change.
+  - `connectWebSocket()`'s `_term.onResize` now throttles the
+    server-bound PTY resize dispatch (leading edge instant, ~50ms
+    trailing coalesce during a burst) so a rapid, genuinely-changing
+    sequence of heights -- a real keyboard/toolbar animation -- converges
+    to a bounded resize rate instead of one dispatch per raw browser
+    event. The terminal's own local reflow (`term.resize()` itself)
+    remains fully immediate; only the network-bound dispatch is throttled,
+    so there is no added visible lag for the keyboard-animation case the
+    original bypass was protecting.
+  - New regression coverage in `tests/test_terminal.mjs` exercises both
+    the height-unchanged no-op and the resize-dispatch throttle directly.
+
 ## v0.47.1 (2026-08-12)
 
 Dependency-only release: bumps the `tmux-kit` pin from `0.3.2` to `0.3.5`

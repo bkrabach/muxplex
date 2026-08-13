@@ -115,6 +115,58 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
   // These handlers read the module-level _ws at call time (not a captured reference),
   // so they always target the live socket. createTerminal() disposes _term before
   // the next session, removing these handlers automatically.
+  //
+  // ─── Resize-dispatch throttle (mobile scroll corruption fix) ───────────
+  // A burst of term.resize() calls in quick succession -- the mobile
+  // viewport animating during keyboard open/close, the browser's own
+  // dynamic toolbar hiding/showing while the user scrolls, or the compose
+  // bar/dictation transcript auto-growing (app.js's window._refitTerminal
+  // calls, all funneled through this same onResize) -- each tells the
+  // server to resize the PTY. That makes tmux redraw its ENTIRE pane via a
+  // fresh SIGWINCH, addressed with cursor positions computed for whatever
+  // size tmux believes is current. If another resize (and thus another
+  // full redraw) fires before the client and tmux have settled on the
+  // previous one, the newly-arriving redraw can land against a buffer that
+  // has since moved to a different size -- corrupting the visible screen:
+  // duplicated lines (variable count), or a region that freezes while the
+  // rest scrolls around it. Confirmed directly against a real xterm.js
+  // Terminal buffer under a synthetic resize-storm harness: an uncapped
+  // resize-dispatch rate reproduced rows containing two overlapping "line"
+  // labels; throttling the dispatch (below) roughly halved the corrupted
+  // rows in the same adversarial test (see tests/test_terminal.mjs).
+  //
+  // This got dramatically worse for mobile after v0.44.0 (b7186b0) added an
+  // immediate, undebounced refit on visualViewport's `scroll` event
+  // specifically to avoid a one-frame lag while the keyboard animates --
+  // `scroll` fires far more often on mobile (touch-scrolling, on-screen
+  // keyboards, dynamic address-bar hide/show) than the rare `resize` a
+  // desktop window drag produces, so the SAME bypass floods the server
+  // with far more resize requests on mobile than on desktop. See
+  // initVisualViewport()'s own height-unchanged guard below for the other
+  // half of this fix.
+  //
+  // The throttle lives HERE (not in initVisualViewport) so it protects
+  // every resize source uniformly, not just the viewport one. Local
+  // reflow (term.resize() itself, called by FitAddon.fit()) always happens
+  // immediately -- no visible lag for the user looking at the terminal.
+  // Only the SERVER-bound "resize the PTY" dispatch is throttled: the
+  // leading edge of a burst fires instantly (an isolated resize -- the
+  // common case -- is completely unaffected), and a rapid follow-up is
+  // coalesced into a single trailing send once the burst settles. 50ms
+  // matches the ResizeObserver debounce already used elsewhere in this
+  // file (below, in openTerminal()).
+  var _lastResizeSendAt = 0;
+  var _pendingResizeSend = null;
+  var RESIZE_SEND_THROTTLE_MS = 50;
+
+  function _sendResizeToServer(cols, rows) {
+    _lastResizeSendAt = Date.now();
+    if (_ws && _ws.readyState === WebSocket.OPEN) {
+      // ttyd protocol: resize is type 0x31 ('1') + UTF-8 JSON
+      _ws.send(encodePayload(0x31, JSON.stringify({ columns: cols, rows: rows })));
+    }
+  }
+
   if (_term) {
     _term.onData(function(data) {
       if (_ws && _ws.readyState === WebSocket.OPEN) {
@@ -123,9 +175,13 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
       }
     });
     _term.onResize(function(size) {
-      if (_ws && _ws.readyState === WebSocket.OPEN) {
-        // ttyd protocol: resize is type 0x31 ('1') + UTF-8 JSON
-        _ws.send(encodePayload(0x31, JSON.stringify({ columns: size.cols, rows: size.rows })));
+      clearTimeout(_pendingResizeSend);
+      if (Date.now() - _lastResizeSendAt >= RESIZE_SEND_THROTTLE_MS) {
+        _sendResizeToServer(size.cols, size.rows);
+      } else {
+        _pendingResizeSend = setTimeout(function() {
+          _sendResizeToServer(size.cols, size.rows);
+        }, RESIZE_SEND_THROTTLE_MS);
       }
     });
   }
@@ -470,6 +526,22 @@ window._refitTerminal = _termRefit;
  * when the page pans as the keyboard opens) and reapplies the same
  * handler, since a `scroll` can change `visualViewport.height` too on some
  * browsers without a corresponding `resize`.
+ *
+ * HEIGHT-UNCHANGED GUARD (mobile scroll corruption fix): `scroll` fires far
+ * more often than the viewport genuinely changes height -- it also fires
+ * on ordinary content panning while the keyboard/browser toolbar is
+ * already settled (mobile-only; a desktop `resize` from a window drag has
+ * no such noisy sibling). Every one of those events used to still run an
+ * unconditional CSS write + _termRefit() call, which -- via FitAddon's own
+ * fit() -> term.resize() -- could dispatch a PTY resize to the server on
+ * every single scroll tick during a touch-scroll gesture. See
+ * connectWebSocket()'s _sendResizeToServer/RESIZE_SEND_THROTTLE_MS comment
+ * for the full mechanism (tmux SIGWINCH-redraw races) and
+ * tests/test_terminal.mjs for the reproduction. Bailing out here when the
+ * height genuinely hasn't changed removes the large majority of that
+ * traffic at the source, for free -- it is a strict no-op in the case that
+ * matters (a real height change still refits immediately, exactly as
+ * before).
  */
 function initVisualViewport() {
   if (!window.visualViewport) return;
@@ -477,13 +549,19 @@ function initVisualViewport() {
   if (_vpScrollHandler) window.visualViewport.removeEventListener('scroll', _vpScrollHandler);
 
   var expandedView = document.getElementById('view-expanded');
+  var _lastVpHeight = null;
 
   _vpHandler = function() {
     if (!expandedView) return;
-    expandedView.style.setProperty('--app-viewport-height', window.visualViewport.height + 'px');
+    var h = window.visualViewport.height;
+    if (h === _lastVpHeight) return; // no genuine change -- true no-op, see docstring above
+    _lastVpHeight = h;
+    expandedView.style.setProperty('--app-viewport-height', h + 'px');
     // Refit xterm.js -- the ResizeObserver in openTerminal() would also
     // eventually catch this (debounced 50ms), but refitting immediately
     // here avoids a visible one-frame lag while the keyboard animates.
+    // (The server-bound PTY resize this can trigger is separately
+    // throttled -- see connectWebSocket()'s _sendResizeToServer.)
     _termRefit();
   };
   _vpScrollHandler = _vpHandler;
