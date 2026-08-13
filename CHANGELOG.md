@@ -1,3 +1,38 @@
+## v0.47.3 (2026-08-13)
+
+Fixes wasted vertical space in the sidebar session list: device-group
+headings carried extra, inconsistent spacing that made the list feel
+looser than it needed to be, especially on mobile where every pixel of
+scrollable height matters.
+
+### Fixed
+
+- **Sidebar vertical rhythm standardized to a single gap unit.**
+  `.sidebar-device-header` is rendered as an `<h4>` (`app.js`), so it
+  carried the browser's default `margin: 1.33em 0` on top of
+  `.sidebar-list`'s own flex `gap` -- producing ~27px above a device
+  heading, ~23px below it, and ~29px of dead space above the very first
+  item in the list, none of it intentional. Root cause: the heading was
+  the only child of `.sidebar-list` bringing its own vertical
+  margin/padding into a flex layout that already owns spacing via `gap`.
+  Fixed by making `gap` (now `--sidebar-gap`, defined once on
+  `.sidebar-list`) the single source of vertical rhythm: a device heading
+  counts as an "item" for spacing purposes, so item-to-item and
+  heading-to-first-item both stay at 1x `--sidebar-gap`, while the
+  boundary between one device's group and the next is 2x (the heading's
+  own `margin-top` reuses the identical `--sidebar-gap` value rather than
+  a separate literal). The first heading zeroes that extra margin so the
+  list's own top padding is the only inset above it. Vertical padding
+  removed from the heading entirely; item height, borders, horizontal
+  padding, and typography are unchanged.
+  Measured in a real browser against a 3-device/9-session sidebar:
+  item-to-item stays 6px; heading-to-first-item drops from ~19px to 6px;
+  last-item-to-next-heading drops from ~19px to 12px (exactly double the
+  6px unit, as intended); top-of-list drops from ~13px to 0px -- ~90px
+  reclaimed for that one realistic list, confirmed identical at a mobile
+  (375px-equivalent) width since no responsive breakpoint touches these
+  rules. Regression coverage added in `tests/test_frontend_css.py`.
+
 ## v0.47.2 (2026-08-13)
 
 Fixes a mobile-only terminal rendering regression from v0.44.0: scrolling
