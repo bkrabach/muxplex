@@ -537,26 +537,36 @@ body {
   min-width: 0;
 }
 
+/* Same visual language as .view-dropdown__trigger (header instance): full-
+   contrast text and a hover/focus border+background, not the muted,
+   chrome-less look this had before -- which read as a static label rather
+   than something clickable. Only the truncation properties (max-width/
+   overflow/white-space/text-overflow) are sidebar-specific, needed because
+   the sidebar is much narrower than the header and a long view name must
+   ellipsize rather than push the sort control or collapse button off. */
 .sidebar-view-trigger {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   background: transparent;
-  border: none;
-  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
   font-size: 13px;
   font-family: var(--font-ui);
   cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
+  padding: 2px 8px;
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  transition: border-color 0.15s, background 0.15s;
 }
 
-.sidebar-view-trigger:hover {
-  color: var(--accent);
+.sidebar-view-trigger:hover,
+.sidebar-view-trigger[aria-expanded="true"] {
+  border-color: var(--border);
+  background: var(--bg-surface);
 }
 
 #sidebar-view-dropdown-menu {
@@ -1616,12 +1626,6 @@ body {
   gap: 8px;
 }
 
-/* Quick sort select -- shares .settings-select's look; header/sidebar context
-   just needs a small left margin to separate it from the view dropdown. */
-.header-sort-select {
-  margin-left: 8px;
-}
-
 .header-btn {
   width: 32px;
   height: 32px;
@@ -2409,6 +2413,74 @@ body {
 .view-dropdown__count {
   font-size: 11px;
   color: var(--text-dim);
+}
+
+/* ============================================================
+   Quick sort control -- header + sidebar
+   ============================================================
+   #sort-order-select / #sidebar-sort-order-select stay native <select>s
+   (test_frontend_html.py asserts el.name == "select" for both -- a
+   deliberate, guarded contract, not an oversight to "fix" by swapping in
+   a custom listbox). What was actually wrong was styling: .settings-select
+   gave them a full border + solid background, so they read as a boxed
+   form control, while the view dropdown trigger next to them read as a
+   command. .quick-sort-select instead borrows .view-dropdown__trigger's
+   visual language directly -- full-contrast text, no border/background at
+   rest, a visible caret, a hover/focus affordance -- so both controls read
+   as the same kind of interactive, compact command. `appearance: none`
+   drops the browser's native arrow (and the width it reserves); the caret
+   glyph is redrawn via ::after on the wrapper (a <select> can't reliably
+   host generated content itself) using the exact glyph .view-dropdown__caret
+   uses, so the two read as one visual family. The wrapper also gives the
+   select room to size to its longest option ("Alphabetical") without a
+   fixed control width -- the actual "we can see the names better" ask. */
+.quick-sort-dropdown {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.quick-sort-dropdown::after {
+  content: "\25BE"; /* same glyph as &#9662; used by .view-dropdown__caret */
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.quick-sort-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px 22px 4px 10px; /* right padding reserves room for the caret */
+  max-width: 100%;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.quick-sort-select:hover,
+.quick-sort-select:focus-visible {
+  border-color: var(--border);
+  background: var(--bg-surface);
+  outline: none;
+}
+
+/* Header instance sits after the view dropdown -- same gap .header-sort-select
+   used to provide via margin-left, now on the wrapper. */
+#view-dropdown + .quick-sort-dropdown {
+  margin-left: 8px;
 }
 
 /* ============================================================

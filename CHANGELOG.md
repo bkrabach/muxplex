@@ -1,3 +1,58 @@
+## v0.47.4 (2026-08-13)
+
+Reworks the sidebar header's view/sort controls so both read as obviously
+interactive, compact commands instead of a mix of a muted static-looking
+label and a boxed form control.
+
+### Changed
+
+- **Sidebar view dropdown and quick-sort control now share one visual
+  language.** The view switcher (`#sidebar-view-dropdown-trigger`) was
+  already a fully-functional dropdown (button + caret + menu), but
+  `.sidebar-view-trigger` styled it as transparent, borderless, muted
+  text -- so it read as a static label rather than something clickable,
+  which is what actually prompted the "make the view label a dropdown"
+  request. Meanwhile the quick-sort control (`#sidebar-sort-order-select`
+  / the header's `#sort-order-select`) was a `.settings-select` native
+  `<select>` with a full border and solid background, so *it* read as the
+  interactive one -- backwards from what a glance at the two suggested.
+  Fixed by aligning both to the same treatment: full-contrast text
+  (`var(--text)`, not `--text-muted`), no border/background at rest, and a
+  visible border + surface background on hover/focus (`aria-expanded` for
+  the trigger, `:hover`/`:focus-visible` for the select) -- mirroring
+  `.view-dropdown__trigger`, the header's already-correct instance.
+- **Quick-sort selects restyled as compact commands, not boxed selects.**
+  `#sort-order-select` and `#sidebar-sort-order-select` **stay native
+  `<select>` elements** -- `tests/test_frontend_html.py` asserts
+  `el.name == "select"` for both, a deliberate, guarded contract (a
+  browser-native select keeps full keyboard operability -- arrow keys,
+  type-ahead, the OS picker -- for free; a hand-rolled listbox would have
+  to re-earn every one of those). New `.quick-sort-select` (replacing
+  `.settings-select` for just these two quick instances; the Settings >
+  Sessions dialog select is unaffected) uses `appearance: none` to drop
+  the browser's native arrow and the width it reserves, and a new
+  `.quick-sort-dropdown` wrapper redraws the same `\25BE` caret glyph
+  `.view-dropdown__caret` uses via `::after` (a `<select>` can't reliably
+  host generated content itself) -- so the two controls read as one
+  family, and the option text ("Alphabetical") is no longer squeezed
+  inside a fixed-width boxed control.
+- **Verified in a real browser, not just against source:** both controls
+  now show full-contrast text and a caret at rest (not only on hover);
+  hovering/focusing either shows the same border + surface background;
+  the sort selection still round-trips live across the sidebar quick-sort,
+  the overview header's quick-sort, and Settings > Sessions (all three
+  still write/read the same `sort_order` setting via the unchanged
+  `syncSortOrderControls()`/`onSortOrderChange()`); both controls remain
+  reachable and operable by Tab/Enter/Arrow keys with a visible focus
+  ring. The sidebar header stays a **single row** at both a normal desktop
+  sidebar width (200px) and the mobile overlay width (240px) -- the
+  restyle is narrower than the previous boxed select, not wider, so the
+  v0.47.3 vertical-space win is undisturbed; no second row was needed.
+  Applied identically to the overview header's matching pair
+  (`#view-dropdown-trigger` / `#sort-order-select`), which already used
+  `.view-dropdown__trigger` for its view switcher and needed only the
+  quick-sort half of this fix.
+
 ## v0.47.3 (2026-08-13)
 
 Fixes wasted vertical space in the sidebar session list: device-group
