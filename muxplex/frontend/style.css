@@ -565,13 +565,22 @@ body {
 }
 
 .sidebar-list {
+  /* Single source of truth for sidebar vertical rhythm. Every direct child
+     (session items AND device-group headings) is separated by exactly this
+     much via flex `gap` -- a heading counts as an "item" for spacing
+     purposes. A device heading additionally sets its own margin-top of this
+     same value (see .sidebar-device-header below), so the boundary between
+     one device's group and the next totals 2x this unit, while the space
+     from a heading down to its own first item stays 1x -- matching the
+     item-to-item rhythm everywhere else in the list. */
+  --sidebar-gap: 6px;
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sidebar-gap);
   touch-action: pan-y;          /* tell browser vertical panning is allowed on mobile */
   overscroll-behavior: contain; /* prevent scroll chaining to non-scrollable parent */
 }
@@ -2466,7 +2475,25 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-dim);
-  padding: 8px 12px 4px;
+  /* No vertical padding -- rhythm comes only from .sidebar-list's `gap` and
+     the margin-top below, never from padding inside a child. Horizontal
+     padding (12px) is unrelated to vertical rhythm and stays as-is. */
+  padding: 0 12px;
+  /* This is an <h4> and would otherwise carry the browser's default h4
+     margin (~1.33em) into the flex layout, on top of the list's own `gap`
+     -- the exact cause of the excess space this rule fixes. Reusing
+     --sidebar-gap here (rather than a new value) is what makes the space
+     above a device heading exactly double the space below it: the flex
+     `gap` above already contributes one unit, this margin adds a second. */
+  margin: var(--sidebar-gap) 0 0;
+}
+
+/* The first heading (or first item) in the list needs no extra margin --
+   .sidebar-list's own top padding is already the list's outer inset, so
+   stacking this margin on top of it would recreate the "extra space above
+   the very first item" complaint this fix removes. */
+.sidebar-device-header:first-child {
+  margin-top: 0;
 }
 
 .sidebar-device-header__version {

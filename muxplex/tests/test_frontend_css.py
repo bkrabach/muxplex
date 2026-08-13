@@ -255,7 +255,50 @@ def test_css_sidebar_list_padding():
     assert "padding: 8px" in block
     assert "display: flex" in block
     assert "flex-direction: column" in block
-    assert "gap: 6px" in block
+    # The 6px item-to-item gap is expressed as a single custom property
+    # (--sidebar-gap) rather than a literal, so .sidebar-device-header can
+    # derive its section-boundary spacing from the same value. See
+    # test_css_sidebar_device_header_uses_shared_gap_var below.
+    assert "--sidebar-gap: 6px" in block
+    assert "gap: var(--sidebar-gap)" in block
+
+
+def test_css_sidebar_device_header_no_vertical_padding():
+    """.sidebar-device-header must not add its own vertical padding.
+
+    Regression: vertical rhythm in the sidebar list comes only from
+    .sidebar-list's `gap` plus this rule's own margin-top -- never from
+    padding inside a child -- so every child's spacing stays uniform and
+    derived from one value. Horizontal padding (12px) is unrelated and must
+    remain.
+    """
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-device-header {")
+    assert "padding: 0 12px" in block
+
+
+def test_css_sidebar_device_header_uses_shared_gap_var():
+    """.sidebar-device-header's section-boundary margin must derive from
+    --sidebar-gap (defined on .sidebar-list), not a separate literal.
+
+    Regression: this is what guarantees the space above a device heading is
+    exactly double the space below it -- the flex `gap` above already
+    contributes one --sidebar-gap unit, and this margin adds a second.
+    """
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-device-header {")
+    assert "margin: var(--sidebar-gap) 0 0" in block
+
+
+def test_css_sidebar_device_header_first_child_no_extra_margin():
+    """.sidebar-device-header:first-child must zero out the section-boundary
+    margin so .sidebar-list's own top padding is the only inset above the
+    first heading (no doubled-up space at the very top of the list).
+    """
+    css = read_css()
+    assert ".sidebar-device-header:first-child" in css
+    block = _extract_rule_block(css, ".sidebar-device-header:first-child {")
+    assert "margin-top: 0" in block
 
 
 def test_css_sidebar_collapse_btn():
