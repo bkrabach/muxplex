@@ -1,3 +1,75 @@
+## v0.47.8 (2026-08-14)
+
+Fourth round of "the four quick-link controls still don't look the same" --
+this time the fix is structural, not another value tweak. Root cause: two
+legacy per-element base classes (`.view-dropdown__trigger`,
+`.quick-sort-select`) kept their OWN `:hover`/`:focus-visible` rules with a
+border-color + background swap, left over from before either control read as
+a link. CSS cascades per PROPERTY, not per rule -- a higher-specificity rule
+that never mentions `background` doesn't beat a lower-specificity rule that
+sets it, so the legacy background fill kept winning on hover for the header
+view trigger and both selects, and -- because only the SELECT's legacy rule
+also fired on `:focus-visible`, never the button's -- the sort select alone
+showed a boxed highlight on keyboard focus that the view trigger never did.
+That's exactly what the owner reported this round.
+
+### Changed
+
+- **`.quick-link` is now the ONLY rule anywhere that sets color, border,
+  background, or transition for any of the four view/sort quick controls, in
+  ANY state** (rest, hover, focus-visible, active, expanded). The shared
+  interactive-state rule now EXPLICITLY declares `background: transparent;
+  border: none;` rather than relying on the legacy rules simply not
+  mentioning those properties -- an explicit override wins the cascade
+  regardless of what any other rule declares for the same property.
+- **`focus-visible` now gets the same color change as `hover`, for all four
+  controls** -- previously only the two `<select>`s did this (a native
+  `<select>` doesn't reliably fire `:hover` on keyboard focus, so its own
+  legacy rule listed `:focus-visible` too); the two buttons' focus-visible
+  got the outline ring only. Tab-focusing any of the four now looks
+  identical to hovering any of the four.
+- **Added an explicit `:active` state** and a best-effort `:open` state for
+  the two `<select>`s (progressive enhancement via its own rule, so an
+  engine that doesn't support `:open` on `<select>` simply skips it).
+- **Base padding (`4px 10px`) moved into the shared `.quick-link` rule.** The
+  header's sort select (`#sort-order-select`) keeps ONE narrowly-scoped,
+  honestly-commented `padding-right` override for its caret-clearance
+  reserve -- a genuine structural need of the caret-overlay mechanism (the
+  disclosure arrow is a pseudo-element on the wrapper, not real DOM content
+  like the button's `<span>` caret), not a "look" difference.
+- **`.view-dropdown__trigger` and `.quick-sort-select` now carry ONLY
+  structural resets** a `<button>` vs. a native `<select>` genuinely,
+  differently need (the appearance reset and a max-width for the select;
+  nothing at all for the button) -- zero color/border/background/transition,
+  and zero `:hover`/`:focus-visible`/`:active`/`[aria-expanded]` rules of
+  their own, permanently.
+
+### Known ceiling (not a bug)
+
+Verified in a real browser (Edge/macOS): both `<select>`s show a very faint,
+persistent native background tint behind their text/caret, at rest, that
+neither `<button>` shows -- present identically on both the header and
+sidebar select (so it is not a drift between instances), and not removable
+via `appearance: none` or an explicit `background: transparent`. This is a
+native rendering artifact of the `<select>` element itself on this
+engine/OS, not an authored CSS difference; it may vary across
+macOS/Linux/Windows/Android. Converting the select to a styled `<button>`
+would remove it, but `test_frontend_html.py` deliberately asserts both stay
+native `<select>` elements (keyboard type-ahead, the mobile OS picker), so
+this residual difference is accepted rather than papered over.
+
+### Testing
+
+- Strengthened `test_css_quick_link_header_pair_no_longer_boxed_on_hover`,
+  which previously only asserted the shared rule didn't mention
+  border/background -- true, and irrelevant, since the legacy rules still
+  did. It now requires an EXPLICIT no-box guarantee in the shared rule.
+- Added `test_css_legacy_classes_have_no_visual_state_rules`, which asserts
+  neither legacy class may ever again pair with an interactive
+  pseudo-class/attribute selector, and neither rule body may declare
+  color/border/background/transition -- closing the loophole structurally
+  instead of re-checking a value that can drift back.
+
 ## v0.47.7 (2026-08-14)
 
 Fixes the view-switch flicker bug the owner reported after v0.47.6 (new value
