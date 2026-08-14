@@ -520,6 +520,22 @@ body {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  gap: 8px;
+}
+
+/* Wraps the view-switcher row and the sort-control row so they stack --
+   the two-row layout the owner asked for (a single row was tried in
+   v0.47.4 and explicitly overruled; don't re-litigate it). Cross-axis
+   default is `stretch`, so each row fills the full width without needing
+   its own flex-grow -- see the removed `flex: 1` on .sidebar-view-dropdown
+   below, which was only ever needed for the OLD single-row layout.
+   #sidebar-collapse-btn is a sibling of this wrapper, not a child of it --
+   see the index.html comment for why. */
+.sidebar-header-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .sidebar-title {
@@ -533,40 +549,52 @@ body {
 /* Sidebar view switcher dropdown */
 .sidebar-view-dropdown {
   position: relative;
-  flex: 1;
   min-width: 0;
 }
 
-/* Same visual language as .view-dropdown__trigger (header instance): full-
-   contrast text and a hover/focus border+background, not the muted,
-   chrome-less look this had before -- which read as a static label rather
-   than something clickable. Only the truncation properties (max-width/
-   overflow/white-space/text-overflow) are sidebar-specific, needed because
-   the sidebar is much narrower than the header and a long view name must
-   ellipsize rather than push the sort control or collapse button off. */
+/* Sidebar-only "link" treatment (owner-directed revision of the boxed
+   hover/focus affordance shipped in v0.47.4 -- that pass read as more
+   interactive than the original muted label, but still not link-like
+   enough). Color + underline now carry the "this is clickable" signal;
+   there is never a border or a filled background here, at rest OR on
+   hover/focus. The disclosure caret (.view-dropdown__caret, shared with
+   the header instance) stays muted-gray on purpose -- the label text is
+   what reads as the link, the caret is a secondary hint, same as a
+   trailing chevron next to a hyperlink. Only the truncation properties
+   (max-width/overflow/white-space/text-overflow) are sidebar-specific,
+   needed because the sidebar is much narrower than the header and a long
+   view name must ellipsize rather than push the sort control or collapse
+   button off. focus-visible gets an outline ring rather than a
+   border-color swap, since there's no border left to recolor. */
 .sidebar-view-trigger {
   display: flex;
   align-items: center;
   gap: 6px;
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--text);
+  border: none;
+  border-radius: 4px;
+  color: var(--accent);
   font-size: 13px;
   font-family: var(--font-ui);
   cursor: pointer;
-  padding: 2px 8px;
+  padding: 4px 2px;
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  transition: border-color 0.15s, background 0.15s;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color 0.15s;
 }
 
 .sidebar-view-trigger:hover,
 .sidebar-view-trigger[aria-expanded="true"] {
-  border-color: var(--border);
-  background: var(--bg-surface);
+  color: var(--accent-hover);
+}
+
+.sidebar-view-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 #sidebar-view-dropdown-menu {
@@ -2481,6 +2509,58 @@ body {
    used to provide via margin-left, now on the wrapper. */
 #view-dropdown + .quick-sort-dropdown {
   margin-left: 8px;
+}
+
+/* Sidebar-only link treatment for the quick sort control (owner-directed
+   revision of the v0.47.4 boxed hover/focus affordance above). Applied via
+   an ADDITIONAL modifier class (.quick-sort-select--link) on top of the
+   base .quick-sort-select, not a replacement of it: the overview header's
+   #sort-order-select keeps the bare .quick-sort-select look (a compact
+   command among a row of icon buttons, unaffected by this revision), while
+   the sidebar's narrower, two-row rail gets full link styling -- color +
+   underline, never a border or a filled background, in any state.
+
+   Deliberately scoped as #sidebar-sort-order-select.quick-sort-select--link
+   (ID + class) rather than a bare .quick-sort-select--link class selector.
+   An earlier bare-class version relied on equal-specificity + source-order
+   cascade to beat the base .quick-sort-select rules above -- correct in
+   theory, but verified-in-browser testing showed the override silently
+   losing the color/text-decoration cascade in practice (the select kept
+   rendering in the base's muted color). Native <select> elements are known
+   to be inconsistent about which author rules win for their own displayed-
+   value text across engines; rather than chase that inconsistency, this
+   pins unambiguous higher specificity (ID+class beats a single class,
+   unconditionally, in every engine) so the outcome never depends on
+   cascade timing again. This ID is unique to the sidebar instance by
+   construction (HTML ids are page-unique), so this is not a regression
+   toward one-off ID-soup -- it's the one element this modifier has ever
+   applied to.
+
+   See .sidebar-view-trigger's comment for why the disclosure caret
+   (.quick-sort-dropdown::after, still shared, still muted-gray) is
+   deliberately NOT re-colored to match -- the label carries the link
+   signal, the caret is a secondary hint. */
+#sidebar-sort-order-select.quick-sort-select--link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+#sidebar-sort-order-select.quick-sort-select--link,
+#sidebar-sort-order-select.quick-sort-select--link:hover,
+#sidebar-sort-order-select.quick-sort-select--link:focus-visible {
+  border-color: transparent;
+  background: transparent;
+}
+
+#sidebar-sort-order-select.quick-sort-select--link:hover,
+#sidebar-sort-order-select.quick-sort-select--link:focus-visible {
+  color: var(--accent-hover);
+}
+
+#sidebar-sort-order-select.quick-sort-select--link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ============================================================

@@ -217,6 +217,72 @@ def test_html_session_sidebar_structure() -> None:
     assert sidebar_list is not None, "Missing #sidebar-list inside #session-sidebar"
 
 
+def test_html_sidebar_header_two_row_controls_stack() -> None:
+    """Sidebar view dropdown and sort control must share a .sidebar-header-controls
+    stack (the two-row layout), and #sidebar-collapse-btn must be a DIRECT child of
+    .sidebar-header -- a sibling of the stack, not nested inside it -- so it keeps a
+    fixed position regardless of how many rows the stack grows to."""
+    soup = _SOUP
+    sidebar = soup.find(id="session-sidebar")
+    assert sidebar is not None, "Missing #session-sidebar"
+    sidebar_header = sidebar.find(class_="sidebar-header")
+    assert sidebar_header is not None, "Missing .sidebar-header"
+
+    controls = sidebar_header.find(class_="sidebar-header-controls")
+    assert controls is not None, (
+        "Missing .sidebar-header-controls inside .sidebar-header"
+    )
+
+    # Both quick controls must live inside the stack.
+    assert controls.find(id="sidebar-view-dropdown") is not None, (
+        "#sidebar-view-dropdown must be inside .sidebar-header-controls"
+    )
+    assert controls.find(id="sidebar-sort-order-select") is not None, (
+        "#sidebar-sort-order-select must be inside .sidebar-header-controls"
+    )
+
+    # #sidebar-collapse-btn must NOT be inside the stack.
+    assert controls.find(id="sidebar-collapse-btn") is None, (
+        "#sidebar-collapse-btn must NOT be inside .sidebar-header-controls -- "
+        "it is a sibling so it keeps a fixed position regardless of row count"
+    )
+    # It must instead be a direct child of .sidebar-header itself.
+    direct_child_ids = [
+        el.get("id") for el in sidebar_header.find_all(recursive=False) if el.get("id")
+    ]
+    assert "sidebar-collapse-btn" in direct_child_ids, (
+        f"#sidebar-collapse-btn must be a direct child of .sidebar-header, "
+        f"direct children ids: {direct_child_ids}"
+    )
+
+
+def test_html_sidebar_quick_sort_select_has_link_modifier() -> None:
+    """#sidebar-sort-order-select must carry .quick-sort-select--link (the sidebar-only
+    link treatment) IN ADDITION TO the base .quick-sort-select class -- and the overview
+    header's #sort-order-select must NOT carry it (scope is sidebar-only by design)."""
+    soup = _SOUP
+    sidebar_select = soup.find(id="sidebar-sort-order-select")
+    assert sidebar_select is not None, "Missing #sidebar-sort-order-select"
+    sidebar_classes = sidebar_select.get("class") or []
+    assert "quick-sort-select" in sidebar_classes, (
+        f"#sidebar-sort-order-select must keep base class 'quick-sort-select', has: {sidebar_classes}"
+    )
+    assert "quick-sort-select--link" in sidebar_classes, (
+        f"#sidebar-sort-order-select must have 'quick-sort-select--link', has: {sidebar_classes}"
+    )
+    assert sidebar_select.name == "select", (
+        f"#sidebar-sort-order-select must stay a native <select>, got: {sidebar_select.name}"
+    )
+
+    header_select = soup.find(id="sort-order-select")
+    assert header_select is not None, "Missing #sort-order-select"
+    header_classes = header_select.get("class") or []
+    assert "quick-sort-select--link" not in header_classes, (
+        f"#sort-order-select (overview header) must NOT have the sidebar-only "
+        f"link modifier, has: {header_classes}"
+    )
+
+
 def test_html_element_classes() -> None:
     """Critical and important elements must carry their CSS styling classes."""
     soup = _SOUP

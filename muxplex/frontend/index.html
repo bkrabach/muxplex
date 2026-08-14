@@ -38,7 +38,12 @@
            Stays a native <select> (test_frontend_html.py asserts el.name == "select") --
            .quick-sort-dropdown/.quick-sort-select style it to read as the same compact,
            obviously-interactive command as .view-dropdown__trigger rather than a boxed
-           form control; see style.css for the shared visual language. -->
+           form control; see style.css for the shared visual language. This header instance
+           deliberately does NOT get the sidebar's stronger "link" treatment
+           (.quick-sort-select--link, added only to #sidebar-sort-order-select below) --
+           this is a compact command in a row of icon buttons, not a narrow rail where the
+           owner asked the controls to read as links; see style.css's comment on the
+           modifier for the full scope rationale. -->
       <div class="quick-sort-dropdown">
         <select id="sort-order-select" class="quick-sort-select" aria-label="Sort sessions">
           <option value="manual">Manual</option>
@@ -79,23 +84,38 @@
     <div class="view-body">
       <div id="session-sidebar" class="session-sidebar">
         <div class="sidebar-header">
-          <div class="sidebar-view-dropdown" id="sidebar-view-dropdown">
-            <button id="sidebar-view-dropdown-trigger" class="sidebar-view-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="sidebar-view-dropdown-menu">
-              <span id="sidebar-view-label">All Sessions</span>
-              <span class="view-dropdown__caret" aria-hidden="true">&#9662;</span>
-            </button>
-            <div id="sidebar-view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
-          </div>
-          <!-- Quick sort control -- same sort_order setting as #sort-order-select / #setting-sort-order.
-               Stays a native <select> (test_frontend_html.py asserts el.name == "select");
-               see the header's #sort-order-select comment for the .quick-sort-dropdown rationale. -->
-          <div class="quick-sort-dropdown">
-            <select id="sidebar-sort-order-select" class="quick-sort-select" aria-label="Sort sessions">
-              <option value="manual">Manual</option>
-              <option value="alphabetical">Alphabetical</option>
-              <option value="recent">Recent</option>
-              <option value="attention">Attention</option>
-            </select>
+          <!-- Two-row "quick controls" stack (owner-directed revision of
+               v0.47.4's single row): the view switcher and the sort control
+               each get their own line. Both are styled to read as links --
+               colored, underlined text, no border/background at rest -- via
+               .sidebar-view-trigger and .quick-sort-select--link; see
+               style.css for the shared rationale. #sidebar-collapse-btn
+               stays OUTSIDE this stack, a sibling of it, so it keeps its
+               fixed top-right position regardless of how many rows the
+               controls stack grows to (it toggles the whole panel, not a
+               link in this family, so it doesn't inherit the treatment or
+               move into the stack). -->
+          <div class="sidebar-header-controls">
+            <div class="sidebar-view-dropdown" id="sidebar-view-dropdown">
+              <button id="sidebar-view-dropdown-trigger" class="sidebar-view-trigger" aria-haspopup="true" aria-expanded="false" aria-controls="sidebar-view-dropdown-menu">
+                <span id="sidebar-view-label">All Sessions</span>
+                <span class="view-dropdown__caret" aria-hidden="true">&#9662;</span>
+              </button>
+              <div id="sidebar-view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
+            </div>
+            <!-- Quick sort control -- same sort_order setting as #sort-order-select / #setting-sort-order.
+                 Stays a native <select> (test_frontend_html.py asserts el.name == "select").
+                 .quick-sort-select--link is sidebar-only (see style.css): the overview
+                 header's #sort-order-select keeps the bare .quick-sort-select look
+                 unchanged -- only the narrow sidebar rail got the "more like links" ask. -->
+            <div class="quick-sort-dropdown">
+              <select id="sidebar-sort-order-select" class="quick-sort-select quick-sort-select--link" aria-label="Sort sessions">
+                <option value="manual">Manual</option>
+                <option value="alphabetical">Alphabetical</option>
+                <option value="recent">Recent</option>
+                <option value="attention">Attention</option>
+              </select>
+            </div>
           </div>
           <button id="sidebar-collapse-btn" class="sidebar-collapse-btn" aria-label="Collapse session list">&#8249;</button>
         </div>

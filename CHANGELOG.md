@@ -1,3 +1,71 @@
+## v0.47.5 (2026-08-14)
+
+Revises the sidebar's view/sort quick controls per explicit owner direction on
+v0.47.4: two rows instead of one, and a genuinely link-like at-rest look
+instead of the boxed hover/focus affordance that pass shipped.
+
+### Changed
+
+- **Sidebar quick controls now stack in two rows.** `.sidebar-header-controls`
+  wraps `#sidebar-view-dropdown` and the sort control's `.quick-sort-dropdown`
+  in a flex column, so the view switcher and the sort control each get their
+  own line. A single-row layout was tried in v0.47.4 and explicitly
+  overruled by the owner -- not re-litigated here.
+- **Both controls now read as links, not boxed controls.** `.sidebar-view-trigger`
+  and the new `.quick-sort-select--link` modifier drop the border/background
+  affordance entirely (at rest **and** on hover/focus) in favor of
+  accent-colored, underlined text (`color: var(--accent)`,
+  `text-decoration: underline`) -- the "this is clickable" signal now lives in
+  color and underline, the idiom the owner asked for, rather than a box.
+  `:focus-visible` gets a 2px accent outline ring (there's no border left to
+  recolor for keyboard focus). The disclosure caret
+  (`.view-dropdown__caret` / `.quick-sort-dropdown::after`) stays muted-gray
+  on purpose in both places -- the label text carries the link signal, the
+  caret is a secondary hint, same as a trailing chevron next to a hyperlink.
+- **`#sidebar-collapse-btn` stays a sibling of the two-row stack, not a child
+  of it**, so it keeps its fixed top-right position in `.sidebar-header`
+  regardless of how many rows the controls grow to -- it toggles the whole
+  panel, not a link in this family, so it doesn't inherit the treatment or
+  move into the stack.
+- **`.quick-sort-select--link` is sidebar-only, added as an additional class
+  alongside the base `.quick-sort-select`** (`#sidebar-sort-order-select`
+  carries both). The overview header's `#sort-order-select` keeps the bare
+  `.quick-sort-select` look from v0.47.4 unchanged -- it's a compact command
+  in a row of icon buttons, not a narrow rail, and the owner's two-row /
+  link-like direction was specifically about the sidebar. Both selects stay
+  native `<select>` elements (`tests/test_frontend_html.py` asserts
+  `el.name == "select"` for both, unchanged, deliberate).
+- **Verified in a real browser (with two honestly-documented gaps):** both
+  controls read as interactive at rest -- accent-colored, underlined text --
+  confirmed via CDP screenshot + vision comparison against an isolated
+  control page (both showed the same cyan, distinct from the base's near-
+  white). Sort selection round-trips live: changing the sidebar's own
+  select propagates to the overview header's quick-sort AND Settings >
+  Sessions (`syncSortOrderControls()` / `onSortOrderChange()` untouched --
+  no `app.js` changes were needed). **Gap 1:** the sort select's underline
+  and the `:focus-visible` outline ring could not be confirmed visually in
+  this session -- a Tab dispatched via automation never rendered a visible
+  ring even on an isolated, unrelated test control using the identical CSS
+  technique, pointing at a synthetic-input/`:focus-visible` interaction in
+  the automation pipeline rather than a CSS defect (the source is
+  confirmed correct: `text-decoration: underline` and
+  `:focus-visible { outline: 2px solid var(--accent); }` are both present
+  and unambiguously scoped -- see `#sidebar-sort-order-select.quick-sort-
+  select--link` in style.css). A manual keyboard check is recommended as
+  final confirmation. **Gap 2:** the header-height delta below is computed
+  from the shipped CSS box model (padding, ~16px line-height at 13px font,
+  4px inter-row gap), not measured via a live `getBoundingClientRect()` --
+  this browser-automation session had no script-execution primitive to
+  pull real layout geometry, and screenshot-based pixel-counting proved
+  unreliable for something this precise. Computed: sidebar-header grows
+  from **~43px (one row)** to **~71px (two rows)**, a delta of **~+28px**,
+  at both a normal desktop sidebar width (200px) and the mobile overlay
+  width (240px) -- neither control wraps at either width, so the delta is
+  the same at both. That spends back roughly a third of the ~90px the
+  sidebar list itself reclaimed in v0.47.3 (a different area of the
+  sidebar -- the list body, not this header) -- a real, explicit vertical
+  cost for the two-row layout the owner asked for.
+
 ## v0.47.4 (2026-08-13)
 
 Reworks the sidebar header's view/sort controls so both read as obviously

@@ -226,6 +226,67 @@ def test_css_sidebar_header():
     assert "border-bottom" in block
 
 
+def test_css_sidebar_header_controls_is_a_column_stack():
+    """.sidebar-header-controls must be a flex column (the two-row layout)."""
+    css = read_css()
+    assert ".sidebar-header-controls" in css
+    block = _extract_rule_block(css, ".sidebar-header-controls {")
+    assert "display: flex" in block
+    assert "flex-direction: column" in block
+
+
+def test_css_sidebar_view_trigger_reads_as_a_link():
+    """.sidebar-view-trigger must use link styling at rest -- accent-colored,
+    underlined text, no border, no background -- not a boxed control."""
+    css = read_css()
+    assert ".sidebar-view-trigger" in css
+    block = _extract_rule_block(css, ".sidebar-view-trigger {")
+    assert "color: var(--accent)" in block
+    assert "text-decoration: underline" in block
+    assert "border: none" in block
+    assert "background: transparent" in block
+
+
+def test_css_sidebar_view_trigger_focus_visible_has_outline_ring():
+    """.sidebar-view-trigger must have a keyboard-visible focus-visible outline
+    (there's no border left to recolor for focus, since rest state has none)."""
+    css = read_css()
+    block = _extract_rule_block(css, ".sidebar-view-trigger:focus-visible {")
+    assert "outline:" in block
+    assert "var(--accent)" in block
+
+
+def test_css_quick_sort_select_link_modifier_exists():
+    """#sidebar-sort-order-select.quick-sort-select--link must give the sidebar's
+    sort select link styling (accent color + underline). Scoped with the ID
+    (not a bare .quick-sort-select--link class) for unambiguous specificity
+    over the base .quick-sort-select rules -- see style.css's comment for why
+    equal-specificity + source-order cascade was replaced with this."""
+    css = read_css()
+    assert ".quick-sort-select--link" in css
+    assert "#sidebar-sort-order-select.quick-sort-select--link" in css
+    block = _extract_rule_block(
+        css, "#sidebar-sort-order-select.quick-sort-select--link {"
+    )
+    assert "color: var(--accent)" in block
+    assert "text-decoration: underline" in block
+
+
+def test_css_quick_sort_select_link_modifier_never_shows_a_box():
+    """#sidebar-sort-order-select.quick-sort-select--link must stay
+    borderless/backgroundless in every state (rest, hover, focus-visible) --
+    a real link never gets a box."""
+    css = read_css()
+    block = _extract_rule_block(
+        css,
+        "#sidebar-sort-order-select.quick-sort-select--link,\n"
+        "#sidebar-sort-order-select.quick-sort-select--link:hover,\n"
+        "#sidebar-sort-order-select.quick-sort-select--link:focus-visible {",
+    )
+    assert "border-color: transparent" in block
+    assert "background: transparent" in block
+
+
 def test_css_sidebar_title():
     """.sidebar-title must be styled as a small uppercase label."""
     css = read_css()
