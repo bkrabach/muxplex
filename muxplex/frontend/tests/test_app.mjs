@@ -8231,3 +8231,307 @@ test('a view-membership toggle through _saveViewsAndRerender produces the correc
 
   globalThis.fetch = undefined;
 });
+
+// ============================================================
+// Quick sort dropdown (v0.47.9) -- converted from native <select> to the
+// same button+menu mechanism as the view dropdown. See app.js's "Quick
+// dropdown controller" section.
+// ============================================================
+
+test('quick dropdown mechanism + sort dropdown functions are exported', () => {
+  for (const name of [
+    'createQuickDropdown', 'openQuickDropdown', 'closeQuickDropdown',
+    'toggleQuickDropdown', 'isQuickDropdownOpen', 'handleQuickDropdownKeydown',
+    'renderSortDropdown', 'toggleSortDropdown', 'closeSortDropdown',
+    'renderSidebarSortDropdown', 'toggleSidebarSortDropdown', 'closeSidebarSortDropdown',
+    'selectSortOrder', 'SORT_OPTIONS',
+  ]) {
+    assert.notStrictEqual(typeof app[name], 'undefined', `${name} should be exported`);
+  }
+});
+
+test('SORT_OPTIONS lists the four sort_order values in display order', () => {
+  assert.deepStrictEqual(
+    app.SORT_OPTIONS.map((o) => o.value),
+    ['manual', 'alphabetical', 'recent', 'attention'],
+  );
+});
+
+function _makeQuickDropdownDom({ menuHidden = true } = {}) {
+  const classes = new Set(menuHidden ? ['view-dropdown__menu', 'hidden'] : ['view-dropdown__menu']);
+  const menuEl = {
+    classList: {
+      contains: (c) => classes.has(c),
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+    },
+    innerHTML: '',
+    style: {},
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    contains: () => false,
+  };
+  const triggerAttrs = {};
+  const triggerEl = {
+    getBoundingClientRect: () => ({ bottom: 100, left: 20 }),
+    setAttribute: (k, v) => { triggerAttrs[k] = v; },
+    getAttribute: (k) => (k in triggerAttrs ? triggerAttrs[k] : null),
+  };
+  return { menuEl, triggerEl, triggerAttrs };
+}
+
+test('renderSortDropdown populates #sort-order-menu with four data-sort items and marks the active one', () => {
+  app._setServerSettings({ sort_order: 'alphabetical' });
+  const menuEl = { innerHTML: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'sort-order-menu' ? menuEl : null);
+
+  app.renderSortDropdown();
+
+  assert.match(menuEl.innerHTML, /data-sort="manual"/);
+  assert.match(menuEl.innerHTML, /data-sort="alphabetical"/);
+  assert.match(menuEl.innerHTML, /data-sort="recent"/);
+  assert.match(menuEl.innerHTML, /data-sort="attention"/);
+  assert.match(menuEl.innerHTML, /role="menuitem"/);
+  assert.match(
+    menuEl.innerHTML,
+    /class="view-dropdown__item view-dropdown__item--active" role="menuitem" data-sort="alphabetical"/,
+    'the active sort_order value must carry view-dropdown__item--active (same class the view dropdown uses)',
+  );
+
+  globalThis.document.getElementById = origGetById;
+  app._setServerSettings(null);
+});
+
+test('renderSidebarSortDropdown populates #sidebar-sort-order-menu identically to the header version', () => {
+  app._setServerSettings({ sort_order: 'recent' });
+  const menuEl = { innerHTML: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'sidebar-sort-order-menu' ? menuEl : null);
+
+  app.renderSidebarSortDropdown();
+
+  assert.match(menuEl.innerHTML, /data-sort="recent"/);
+  assert.match(
+    menuEl.innerHTML,
+    /class="view-dropdown__item view-dropdown__item--active" role="menuitem" data-sort="recent"/,
+  );
+
+  globalThis.document.getElementById = origGetById;
+  app._setServerSettings(null);
+});
+
+test('toggleSortDropdown opens the header sort menu and sets aria-expanded=true on the trigger', () => {
+  app._setServerSettings({ sort_order: 'manual' });
+  const dom = _makeQuickDropdownDom({ menuHidden: true });
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sort-order-menu') return dom.menuEl;
+    if (id === 'sort-order-select') return dom.triggerEl;
+    return null;
+  };
+
+  app.toggleSortDropdown();
+
+  assert.strictEqual(dom.menuEl.classList.contains('hidden'), false, 'menu should be visible after toggle-open');
+  assert.strictEqual(dom.triggerAttrs['aria-expanded'], 'true');
+
+  globalThis.document.getElementById = origGetById;
+  app._setServerSettings(null);
+});
+
+test('toggleSortDropdown closes an already-open header sort menu and sets aria-expanded=false', () => {
+  const dom = _makeQuickDropdownDom({ menuHidden: false });
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sort-order-menu') return dom.menuEl;
+    if (id === 'sort-order-select') return dom.triggerEl;
+    return null;
+  };
+
+  app.toggleSortDropdown();
+
+  assert.strictEqual(dom.menuEl.classList.contains('hidden'), true, 'menu should be hidden after toggle-close');
+  assert.strictEqual(dom.triggerAttrs['aria-expanded'], 'false');
+
+  globalThis.document.getElementById = origGetById;
+});
+
+test('toggleSidebarSortDropdown positions the menu via getBoundingClientRect (fixedPosition, escapes sidebar overflow:hidden)', () => {
+  const dom = _makeQuickDropdownDom({ menuHidden: true });
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sidebar-sort-order-menu') return dom.menuEl;
+    if (id === 'sidebar-sort-order-select') return dom.triggerEl;
+    return null;
+  };
+
+  app.toggleSidebarSortDropdown();
+
+  assert.strictEqual(dom.menuEl.style.top, '102px');
+  assert.strictEqual(dom.menuEl.style.left, '20px');
+  assert.strictEqual(dom.triggerAttrs['aria-expanded'], 'true');
+
+  globalThis.document.getElementById = origGetById;
+});
+
+test('opening one quick dropdown closes every other registered one (mutual exclusivity)', () => {
+  const viewDom = _makeQuickDropdownDom({ menuHidden: false });
+  const sortDom = _makeQuickDropdownDom({ menuHidden: true });
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'view-dropdown-menu') return viewDom.menuEl;
+    if (id === 'view-dropdown-trigger') return viewDom.triggerEl;
+    if (id === 'sort-order-menu') return sortDom.menuEl;
+    if (id === 'sort-order-select') return sortDom.triggerEl;
+    return null;
+  };
+
+  app.toggleSortDropdown(); // opens the sort dropdown -- must close the (open) view dropdown
+
+  assert.strictEqual(sortDom.menuEl.classList.contains('hidden'), false, 'sort menu should now be open');
+  assert.strictEqual(viewDom.menuEl.classList.contains('hidden'), true, 'view menu should have been closed');
+  assert.strictEqual(viewDom.triggerAttrs['aria-expanded'], 'false');
+
+  globalThis.document.getElementById = origGetById;
+});
+
+test('selectSortOrder updates _serverSettings.sort_order optimistically and PATCHes /api/settings', async () => {
+  let patchedBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if ((opts && opts.method) === 'PATCH' && url === '/api/settings') {
+      patchedBody = JSON.parse(opts.body);
+      return { ok: true, json: async () => ({ sort_order: patchedBody.sort_order, settings_updated_at: 2 }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  app._setServerSettings({ sort_order: 'manual', settings_updated_at: 1 });
+  app._setCurrentSessions([]);
+
+  app.selectSortOrder('recent');
+
+  assert.strictEqual(app._getServerSettings().sort_order, 'recent', 'sort_order should update immediately (optimistic)');
+  // patchServerSetting's PATCH is fire-and-forget; give the microtask queue a couple ticks.
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.ok(patchedBody, 'PATCH /api/settings should have been sent');
+  assert.strictEqual(patchedBody.sort_order, 'recent');
+
+  globalThis.fetch = origFetch;
+  app._setServerSettings(null);
+});
+
+test('selectSortOrder does nothing for a falsy value', () => {
+  app._setServerSettings({ sort_order: 'manual' });
+  app.selectSortOrder('');
+  assert.strictEqual(app._getServerSettings().sort_order, 'manual', 'sort_order must not change for an empty value');
+  app._setServerSettings(null);
+});
+
+test('syncSortOrderControls updates both quick-dropdown label spans from _serverSettings.sort_order', () => {
+  app._setServerSettings({ sort_order: 'attention' });
+  const headerLabel = { textContent: '' };
+  const sidebarLabel = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sort-order-label') return headerLabel;
+    if (id === 'sidebar-sort-order-label') return sidebarLabel;
+    return null;
+  };
+
+  app.syncSortOrderControls();
+
+  assert.strictEqual(headerLabel.textContent, 'Attention');
+  assert.strictEqual(sidebarLabel.textContent, 'Attention');
+
+  globalThis.document.getElementById = origGetById;
+  app._setServerSettings(null);
+});
+
+test('handleQuickDropdownKeydown ArrowDown focuses the first menuitem when nothing inside the menu is focused yet', () => {
+  const item0 = { focus: () => {} };
+  const item1 = { focus: () => {} };
+  let focused = null;
+  item0.focus = () => { focused = item0; };
+  item1.focus = () => { focused = item1; };
+  const menuEl = {
+    classList: { contains: (c) => c !== 'hidden', add: () => {}, remove: () => {} },
+    querySelectorAll: () => [item0, item1],
+    contains: () => false,
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'sort-order-menu' ? menuEl : null);
+  const origActiveElement = globalThis.document.activeElement;
+  globalThis.document.activeElement = null;
+
+  let prevented = false;
+  const handled = app.handleQuickDropdownKeydown({ key: 'ArrowDown', preventDefault: () => { prevented = true; } });
+
+  assert.strictEqual(handled, true, 'ArrowDown on an open dropdown should be handled');
+  assert.strictEqual(prevented, true);
+  assert.strictEqual(focused, item0, 'ArrowDown should focus the first menuitem when none was focused');
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.activeElement = origActiveElement;
+});
+
+test('handleQuickDropdownKeydown Escape closes whichever quick dropdown is open', () => {
+  const dom = _makeQuickDropdownDom({ menuHidden: false });
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'sort-order-menu') return dom.menuEl;
+    if (id === 'sort-order-select') return dom.triggerEl;
+    return null;
+  };
+
+  const handled = app.handleQuickDropdownKeydown({ key: 'Escape' });
+
+  assert.strictEqual(handled, true);
+  assert.strictEqual(dom.menuEl.classList.contains('hidden'), true, 'Escape should close the open menu');
+
+  globalThis.document.getElementById = origGetById;
+});
+
+test('handleQuickDropdownKeydown returns false when no quick dropdown is open', () => {
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null; // every menu "not found" -> not open
+  const handled = app.handleQuickDropdownKeydown({ key: 'ArrowDown', preventDefault: () => {} });
+  assert.strictEqual(handled, false);
+  globalThis.document.getElementById = origGetById;
+});
+
+test('bindStaticEventListeners binds sort-order-select click (not change) to toggleSortDropdown', () => {
+  const eventsBound = {};
+  const origGetById = globalThis.document.getElementById;
+  const origDocAddListener = globalThis.document.addEventListener;
+  globalThis.document.getElementById = (id) => {
+    const el = { _events: {}, addEventListener: (ev, fn) => { el._events[ev] = fn; } };
+    eventsBound[id] = el;
+    return el;
+  };
+  globalThis.document.addEventListener = () => {};
+
+  app.bindStaticEventListeners();
+
+  assert.ok(
+    eventsBound['sort-order-select'] && 'click' in eventsBound['sort-order-select']._events,
+    '#sort-order-select should have a click listener',
+  );
+  assert.ok(
+    !('change' in eventsBound['sort-order-select']._events),
+    '#sort-order-select must NOT be bound on change -- it is a <button> now, not a <select>',
+  );
+  assert.ok(
+    eventsBound['sidebar-sort-order-select'] && 'click' in eventsBound['sidebar-sort-order-select']._events,
+    '#sidebar-sort-order-select should have a click listener',
+  );
+  assert.ok(
+    eventsBound['setting-sort-order'] && 'change' in eventsBound['setting-sort-order']._events,
+    '#setting-sort-order (Settings > Sessions, still a native <select>) should keep its change listener',
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.addEventListener = origDocAddListener;
+});

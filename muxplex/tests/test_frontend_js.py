@@ -3538,17 +3538,54 @@ def test_render_sidebar_view_dropdown_buttons_have_role_menuitem() -> None:
 
 
 def test_toggle_sidebar_view_dropdown_positions_with_bounding_rect() -> None:
-    """toggleSidebarViewDropdown must use getBoundingClientRect when opening."""
-    match = re.search(
-        r"function toggleSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
+    """toggleSidebarViewDropdown must delegate to the shared quick-dropdown
+    mechanism (toggleQuickDropdown), registered with fixedPosition:true --
+    and that shared mechanism's open path (openQuickDropdown) is what
+    actually calls getBoundingClientRect() when opening.
+
+    v0.47.9: toggleSidebarViewDropdown/toggleSidebarSortDropdown/
+    toggleViewDropdown/toggleSortDropdown all became one-line delegations to
+    toggleQuickDropdown() (see app.js's "Quick dropdown controller" section)
+    so the four quick dropdowns share ONE open/close/position/keyboard
+    implementation instead of four near-duplicates. This asserts BOTH the
+    delegation (toggleSidebarViewDropdown calls toggleQuickDropdown) and the
+    delegate (openQuickDropdown actually does getBoundingClientRect when
+    fixedPosition is set), per the project convention for a source-text test
+    surviving a legitimate refactor (see AGENTS.md's "test_frontend_js.py
+    asserts on JS SOURCE TEXT" section).
+    """
+    toggle_match = re.search(
+        r"function toggleSidebarViewDropdown\s*\(\s*\)\s*\{(.*?)\n\}",
         _JS,
         re.DOTALL,
     )
-    assert match, "toggleSidebarViewDropdown function not found"
-    body = match.group(1)
-    assert "getBoundingClientRect" in body, (
-        "toggleSidebarViewDropdown must use getBoundingClientRect() to position "
-        "the menu when opening — sidebar has overflow:hidden which clips absolute children"
+    assert toggle_match, "toggleSidebarViewDropdown function not found"
+    toggle_body = toggle_match.group(1)
+    assert "toggleQuickDropdown" in toggle_body, (
+        "toggleSidebarViewDropdown must delegate to toggleQuickDropdown() -- "
+        "the shared mechanism all four quick dropdowns now use"
+    )
+
+    registration_match = re.search(
+        r"var _sidebarViewDropdownQD = createQuickDropdown\(\{(.*?)\}\);",
+        _JS,
+        re.DOTALL,
+    )
+    assert registration_match, "_sidebarViewDropdownQD registration not found"
+    assert "fixedPosition: true" in registration_match.group(1), (
+        "_sidebarViewDropdownQD must be registered with fixedPosition: true"
+    )
+
+    open_match = re.search(
+        r"function openQuickDropdown\s*\(entry\)\s*\{(.*?)\n\}",
+        _JS,
+        re.DOTALL,
+    )
+    assert open_match, "openQuickDropdown function not found"
+    assert "getBoundingClientRect" in open_match.group(1), (
+        "openQuickDropdown must use getBoundingClientRect() to position a "
+        "fixedPosition menu when opening — sidebar has overflow:hidden which "
+        "clips absolute children"
     )
 
 

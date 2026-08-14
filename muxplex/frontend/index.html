@@ -32,24 +32,23 @@
         </button>
         <div id="view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
       </div>
-      <!-- Quick sort control -- mirrors Settings > Sessions > Sort Order (#setting-sort-order);
-           all three sort selects (this one, the sidebar's, and the settings one) read/write the
-           same sort_order server setting and are kept in sync by syncSortOrderControls().
-           Stays a native <select> (test_frontend_html.py asserts el.name == "select") --
-           .quick-sort-dropdown wrapper keeps this compact and caret-bearing, and .quick-link
-           gives it the same accent-colored, boxless "read as a link" treatment as the view
-           trigger next to it and both sidebar controls (v0.47.7 -- previously sidebar-only,
-           the owner asked for the header pair to match "for consistency"); see style.css's
-           "Quick link" section for the full shared-rule rationale and what's deliberately
-           NOT shared (the sidebar's two-row-rail sizing, and this control's own caret,
-           which it keeps unlike the sidebar's). -->
+      <!-- Quick sort control -- same sort_order server setting as the sidebar's quick sort
+           control and Settings > Sessions > Sort Order (#setting-sort-order); all three are
+           kept in sync by syncSortOrderControls(). v0.47.9: converted from a native <select>
+           to a button+menu dropdown -- the SAME mechanism the view dropdown above uses (see
+           app.js's "Quick dropdown controller" section) -- because four rounds of CSS-only
+           fixes (see style.css's "Quick link" section history) could never make a <select>'s
+           own browser-rendered popup/focus/hover behavior genuinely match a <button>'s. Keeps
+           the same id (#sort-order-select) and classes (quick-sort-select quick-link) on the
+           trigger button so the existing .quick-link shared rule and this file's own history
+           still apply unchanged -- only the element name and its popup are new.
+           .quick-sort-dropdown wrapper keeps this compact and caret-bearing (::after in
+           style.css, unaffected by the tag change). -->
       <div class="quick-sort-dropdown">
-        <select id="sort-order-select" class="quick-sort-select quick-link" aria-label="Sort sessions">
-          <option value="manual">Manual</option>
-          <option value="alphabetical">Alphabetical</option>
-          <option value="recent">Recent</option>
-          <option value="attention">Attention</option>
-        </select>
+        <button id="sort-order-select" class="quick-sort-select quick-link" aria-haspopup="true" aria-expanded="false" aria-controls="sort-order-menu">
+          <span id="sort-order-label">Manual</span>
+        </button>
+        <div id="sort-order-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Sort sessions"></div>
       </div>
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
@@ -110,19 +109,22 @@
               <div id="sidebar-view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
             </div>
             <!-- Quick sort control -- same sort_order setting as #sort-order-select / #setting-sort-order.
-                 Stays a native <select> (test_frontend_html.py asserts el.name == "select").
+                 v0.47.9: converted from a native <select> to the same button+menu dropdown
+                 mechanism as #sidebar-view-dropdown above (see app.js's "Quick dropdown
+                 controller" section) -- see the overview header's own quick-sort-dropdown
+                 comment for the full rationale. #sidebar-sort-order-menu is positioned via
+                 getBoundingClientRect() (fixedPosition, same as #sidebar-view-dropdown-menu)
+                 to escape this sidebar's own overflow:hidden.
                  The two-row-rail SIZING (flex/min-width/padding) here is sidebar-only (see
                  style.css) -- the overview header's #sort-order-select keeps its own existing
-                 sizing -- but the .quick-link color/no-box treatment itself is now shared with
+                 sizing -- but the .quick-link color/no-box treatment itself is shared with
                  the header pair too. -->
             <div class="quick-sort-dropdown">
               <span class="sidebar-title">Sort</span>
-              <select id="sidebar-sort-order-select" class="quick-sort-select quick-link" aria-label="Sort sessions">
-                <option value="manual">Manual</option>
-                <option value="alphabetical">Alphabetical</option>
-                <option value="recent">Recent</option>
-                <option value="attention">Attention</option>
-              </select>
+              <button id="sidebar-sort-order-select" class="quick-sort-select quick-link" aria-haspopup="true" aria-expanded="false" aria-controls="sidebar-sort-order-menu">
+                <span id="sidebar-sort-order-label">Manual</span>
+              </button>
+              <div id="sidebar-sort-order-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Sort sessions"></div>
             </div>
           </div>
         </div>

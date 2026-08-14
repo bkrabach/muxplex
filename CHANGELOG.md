@@ -1,3 +1,55 @@
+## v0.47.9 (2026-08-14)
+
+Fifth round of "the four quick-link controls still don't behave the same" --
+this time the owner explicitly overruled the previously-deliberate
+"`#sort-order-select` / `#sidebar-sort-order-select` stay native `<select>`s"
+constraint from v0.47.8 (see that entry's "Known ceiling" note). Four rounds
+of CSS-only fixes converged the two sort `<select>`s and the two view
+`<button>` triggers on identical color/border/background/transition
+declarations, but a `<select>`'s own popup, focus ring, and value display are
+rendered by the browser -- outside CSS's (and JS's) reach. No amount of CSS
+could make a `<select>`'s hover/focus/**open** behavior genuinely match a
+`<button>`'s. The fix is no longer structural-CSS; it's changing the element.
+
+### Changed
+
+- **`#sort-order-select` (overview header) and `#sidebar-sort-order-select`
+  (sidebar) are `<button>` triggers now, not `<select>`s** -- same ids, same
+  `quick-sort-select quick-link` classes, but each now opens a sibling
+  `role="menu"` popup (`#sort-order-menu` / `#sidebar-sort-order-menu`) built
+  from the same `.view-dropdown__item` / `.view-dropdown__menu` markup the
+  view dropdown already uses, instead of a browser-native option list.
+- **New shared "quick dropdown controller"** (`createQuickDropdown()` and
+  friends in `app.js`) is the ONE open/close/toggle/keyboard/click-away
+  mechanism now driving all FOUR quick controls -- the header + sidebar view
+  switchers (refactored to use it) and the header + sidebar sort controls
+  (new). Previously there were two near-duplicate view-dropdown
+  implementations; adding two more hand-rolled sort-dropdown copies would
+  have made four. One implementation, four instances.
+- **Arrow-key navigation now works on the sidebar view dropdown too** -- a
+  pre-existing gap (the old keydown handler only ever checked
+  `#view-dropdown-menu`) closed as a side effect of unifying the mechanism.
+- **Opening one quick dropdown now closes any other that's open** (mutual
+  exclusivity) -- new behavior enabled by the shared controller; previously
+  the sort `<select>`'s native popup and the view dropdown's custom popup
+  had no way to know about each other.
+- Settings > Sessions' own sort select (`#setting-sort-order`) is
+  **unchanged** -- still a native `<select>` in a settings form, never part
+  of the "these four should be the same component" ask.
+
+### Lost relative to the native `<select>`
+
+- **Keyboard type-ahead** (typing a letter to jump to a matching option) --
+  a `<select>`'s built-in behavior; the custom menu has no equivalent.
+- **The native mobile OS picker wheel** -- iOS/Android render a `<select>`
+  with their own full-screen picker UI; the custom menu is a regular
+  absolutely/fixed-positioned popup instead, styled and behaving the same on
+  mobile as on desktop.
+
+Both are real, functional regressions the owner has accepted in exchange for
+genuine visual/behavioral consistency across all four quick controls -- kept
+here as an honest record, not smoothed over.
+
 ## v0.47.8 (2026-08-14)
 
 Fourth round of "the four quick-link controls still don't look the same" --

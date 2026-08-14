@@ -1664,6 +1664,147 @@ function renderFilterBar(container, allSessions) {
 }
 
 // ---------------------------------------------------------------------------
+// Quick dropdown controller -- shared open/close/toggle/keyboard/click-away
+// MECHANISM for every "quick control" popup: a <button aria-haspopup="true"
+// aria-expanded="..."> trigger plus a sibling role="menu" popup. Used by all
+// four instances below (header + sidebar view switcher, header + sidebar
+// sort control).
+//
+// v0.47.9: the sort controls used to be native <select> elements -- four
+// rounds of CSS-only fixes (see the "Quick link" section of style.css)
+// could not make a <select>'s hover/focus/open behavior genuinely match a
+// <button>'s, because a <select>'s own popup, focus ring, and value display
+// are rendered by the browser, outside CSS's (and JS's) reach. Converting
+// the sort controls to the same button+menu shape the view dropdown already
+// used made "one implementation, four instances" possible for the first
+// time -- this section IS that one implementation. What's shared is the
+// MECHANISM (open/close/toggle, aria-expanded sync, fixed positioning for
+// the two sidebar instances that must escape the sidebar's own
+// overflow:hidden, arrow/Enter/Escape keyboard navigation, mutual
+// exclusivity so opening one closes any other that's open); each instance's
+// MENU CONTENT stays distinct (renderViewDropdown/renderSidebarViewDropdown
+// vs renderSortDropdown/renderSidebarSortDropdown) because the view menu's
+// counts/separators/manage-actions are genuinely different data from the
+// sort menu's four static options -- content is policy, the popup mechanics
+// are the mechanism (see KERNEL_PHILOSOPHY.md).
+// ---------------------------------------------------------------------------
+
+/** Registry of every quick dropdown created via createQuickDropdown(). */
+var _quickDropdowns = [];
+
+/**
+ * Create a controller for one quick-dropdown instance.
+ * @param {object} cfg
+ * @param {string} cfg.triggerId - id of the <button> trigger
+ * @param {string} cfg.menuId - id of the role="menu" popup
+ * @param {function():void} [cfg.render] - populates menu content; called on open
+ * @param {boolean} [cfg.fixedPosition] - sidebar instances: position via
+ *   getBoundingClientRect() to escape the sidebar's own overflow:hidden
+ *   clipping (mirrors the pre-v0.47.9 toggleSidebarViewDropdown() behavior)
+ * @param {function(Element):void} [cfg.onClose] - cleanup before hiding the
+ *   menu (e.g. the view dropdown removes its transient new-view input)
+ * @returns {object} the registered entry -- pass to openQuickDropdown() /
+ *   closeQuickDropdown() / toggleQuickDropdown() / isQuickDropdownOpen()
+ */
+function createQuickDropdown(cfg) {
+  var entry = {
+    triggerId: cfg.triggerId,
+    menuId: cfg.menuId,
+    render: cfg.render,
+    fixedPosition: !!cfg.fixedPosition,
+    onClose: cfg.onClose,
+  };
+  _quickDropdowns.push(entry);
+  return entry;
+}
+
+function isQuickDropdownOpen(entry) {
+  var menu = $(entry.menuId);
+  return !!menu && !menu.classList.contains('hidden');
+}
+
+/**
+ * Open one quick dropdown, closing every other registered one first (a menu
+ * system shows at most one popup at a time -- e.g. the header's view and
+ * sort dropdowns sit side by side and must not both be open together).
+ */
+function openQuickDropdown(entry) {
+  _quickDropdowns.forEach(function(other) {
+    if (other !== entry) closeQuickDropdown(other);
+  });
+  var menu = $(entry.menuId);
+  var trigger = $(entry.triggerId);
+  if (!menu) return;
+  if (entry.fixedPosition && trigger) {
+    // Fixed (not absolute) positioning escapes the sidebar's own
+    // overflow:hidden, which would otherwise clip an absolutely-positioned
+    // popup to the sidebar's own bounds.
+    var rect = trigger.getBoundingClientRect();
+    menu.style.top = (rect.bottom + 2) + 'px';
+    menu.style.left = rect.left + 'px';
+  }
+  menu.classList.remove('hidden');
+  if (trigger) trigger.setAttribute('aria-expanded', 'true');
+  if (entry.render) entry.render();
+}
+
+function closeQuickDropdown(entry) {
+  var menu = $(entry.menuId);
+  var trigger = $(entry.triggerId);
+  if (menu) {
+    if (entry.onClose) entry.onClose(menu);
+    menu.classList.add('hidden');
+  }
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+function toggleQuickDropdown(entry) {
+  if (isQuickDropdownOpen(entry)) closeQuickDropdown(entry);
+  else openQuickDropdown(entry);
+}
+
+/**
+ * Arrow/Enter/Escape keyboard handling for whichever registered quick
+ * dropdown is currently open (at most one, per openQuickDropdown()'s mutual
+ * exclusivity). Returns true if it handled the key -- callers (e.g.
+ * handleGlobalKeydown) should stop further processing in that case.
+ * @param {KeyboardEvent} e
+ * @returns {boolean}
+ */
+function handleQuickDropdownKeydown(e) {
+  var entry = null;
+  for (var i = 0; i < _quickDropdowns.length; i++) {
+    if (isQuickDropdownOpen(_quickDropdowns[i])) { entry = _quickDropdowns[i]; break; }
+  }
+  if (!entry) return false;
+  var menu = $(entry.menuId);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    var items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+    if (items.length > 0) {
+      var focusedEl = document.activeElement;
+      var itemIdx = items.indexOf(focusedEl);
+      if (e.key === 'ArrowDown') {
+        itemIdx = (itemIdx + 1) % items.length;
+      } else {
+        itemIdx = (itemIdx - 1 + items.length) % items.length;
+      }
+      items[itemIdx].focus();
+    }
+    return true;
+  }
+  if (e.key === 'Enter') {
+    var focused = document.activeElement;
+    if (menu.contains(focused)) { focused.click(); return true; }
+  }
+  if (e.key === 'Escape') {
+    closeQuickDropdown(entry);
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // View dropdown — render, open/close, view switching
 // ---------------------------------------------------------------------------
 
@@ -1726,37 +1867,33 @@ function renderViewDropdown() {
 }
 
 /**
+ * Quick-dropdown instance for the header view switcher -- see the "Quick
+ * dropdown controller" section above for what this mechanism shares across
+ * all four quick controls.
+ */
+var _viewDropdownQD = createQuickDropdown({
+  triggerId: 'view-dropdown-trigger',
+  menuId: 'view-dropdown-menu',
+  render: renderViewDropdown,
+  onClose: function(menu) {
+    var newViewInput = menu.querySelector('.view-dropdown__new-input');
+    if (newViewInput) newViewInput.remove();
+  },
+});
+
+/**
  * Toggle the view dropdown open/closed.
  * Calls renderViewDropdown() when opening to ensure fresh content.
  */
 function toggleViewDropdown() {
-  var menu = $('view-dropdown-menu');
-  var trigger = $('view-dropdown-trigger');
-  if (!menu) return;
-
-  var isOpen = !menu.classList.contains('hidden');
-  if (isOpen) {
-    closeViewDropdown();
-  } else {
-    menu.classList.remove('hidden');
-    if (trigger) trigger.setAttribute('aria-expanded', 'true');
-    renderViewDropdown();
-  }
+  toggleQuickDropdown(_viewDropdownQD);
 }
 
 /**
  * Close the view dropdown. Removes inline new-view input if present.
  */
 function closeViewDropdown() {
-  var menu = $('view-dropdown-menu');
-  var trigger = $('view-dropdown-trigger');
-  if (menu) {
-    menu.classList.add('hidden');
-    // Remove any inline new-view input
-    var newViewInput = menu.querySelector('.view-dropdown__new-input');
-    if (newViewInput) newViewInput.remove();
-  }
-  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  closeQuickDropdown(_viewDropdownQD);
 }
 
 /**
@@ -1806,29 +1943,23 @@ function renderSidebarViewDropdown() {
 }
 
 /**
+ * Quick-dropdown instance for the sidebar view switcher. fixedPosition:true
+ * positions the menu via getBoundingClientRect() (see createQuickDropdown's
+ * docstring) to escape this sidebar's own overflow:hidden clipping.
+ */
+var _sidebarViewDropdownQD = createQuickDropdown({
+  triggerId: 'sidebar-view-dropdown-trigger',
+  menuId: 'sidebar-view-dropdown-menu',
+  render: renderSidebarViewDropdown,
+  fixedPosition: true,
+});
+
+/**
  * Toggle the sidebar view dropdown open/closed.
  * Calls renderSidebarViewDropdown() when opening to ensure fresh content.
  */
 function toggleSidebarViewDropdown() {
-  var menu = $('sidebar-view-dropdown-menu');
-  var trigger = $('sidebar-view-dropdown-trigger');
-  if (!menu) return;
-
-  var isOpen = !menu.classList.contains('hidden');
-  if (isOpen) {
-    menu.classList.add('hidden');
-    if (trigger) trigger.setAttribute('aria-expanded', 'false');
-  } else {
-    // Position with fixed coordinates to escape sidebar overflow:hidden clipping
-    if (trigger) {
-      var rect = trigger.getBoundingClientRect();
-      menu.style.top = (rect.bottom + 2) + 'px';
-      menu.style.left = rect.left + 'px';
-    }
-    menu.classList.remove('hidden');
-    if (trigger) trigger.setAttribute('aria-expanded', 'true');
-    renderSidebarViewDropdown();
-  }
+  toggleQuickDropdown(_sidebarViewDropdownQD);
 }
 
 /**
@@ -1998,6 +2129,114 @@ function showSidebarNewViewInput() {
       }
     }, 150);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Quick sort dropdown — header + sidebar
+// ---------------------------------------------------------------------------
+// v0.47.9: converted from native <select> elements to the same button+menu
+// mechanism as the view dropdown above (see the "Quick dropdown controller"
+// section's comment for why). #sort-order-select and
+// #sidebar-sort-order-select are now <button> triggers (same ids, same
+// quick-sort-select/quick-link classes -- see style.css) rather than
+// <select>s; #sort-order-menu / #sidebar-sort-order-menu are their
+// role="menu" popups. The Settings > Sessions sort select
+// (#setting-sort-order) is UNCHANGED and stays a native <select> -- it lives
+// in a settings form, not a quick control, and was never part of the
+// owner's "these four should be the same component" ask.
+
+/** The four sort_order values, in display order -- shared by both menus. */
+var SORT_OPTIONS = [
+  { value: 'manual', label: 'Manual' },
+  { value: 'alphabetical', label: 'Alphabetical' },
+  { value: 'recent', label: 'Recent' },
+  { value: 'attention', label: 'Attention' },
+];
+
+/** Display label for a sort_order value; falls back to 'Manual' for an unknown/missing value. */
+function _sortOptionLabel(value) {
+  for (var i = 0; i < SORT_OPTIONS.length; i++) {
+    if (SORT_OPTIONS[i].value === value) return SORT_OPTIONS[i].label;
+  }
+  return 'Manual';
+}
+
+/**
+ * Build the shared sort-menu content (identical for header + sidebar).
+ * Reuses .view-dropdown__item / .view-dropdown__item--active -- the sort
+ * menu's four static options need no separators, counts, or actions, so it
+ * stays its own (simpler) render function rather than sharing
+ * renderViewDropdown()'s content-building code, which does need all three.
+ * @param {string} activeValue - current sort_order value
+ * @returns {string}
+ */
+function _buildSortMenuHTML(activeValue) {
+  var html = '';
+  for (var i = 0; i < SORT_OPTIONS.length; i++) {
+    var opt = SORT_OPTIONS[i];
+    var active = activeValue === opt.value ? ' view-dropdown__item--active' : '';
+    html += '<button class="view-dropdown__item' + active + '" role="menuitem" data-sort="' + opt.value + '">' + opt.label + '</button>';
+  }
+  return html;
+}
+
+/** Populate #sort-order-menu with the four sort options. Called on open. */
+function renderSortDropdown() {
+  var menu = $('sort-order-menu');
+  if (!menu) return;
+  var value = (_serverSettings && _serverSettings.sort_order) || 'manual';
+  menu.innerHTML = _buildSortMenuHTML(value);
+}
+
+/** Populate #sidebar-sort-order-menu with the four sort options. Called on open. */
+function renderSidebarSortDropdown() {
+  var menu = $('sidebar-sort-order-menu');
+  if (!menu) return;
+  var value = (_serverSettings && _serverSettings.sort_order) || 'manual';
+  menu.innerHTML = _buildSortMenuHTML(value);
+}
+
+/** Quick-dropdown instance for the header sort control. */
+var _sortDropdownQD = createQuickDropdown({
+  triggerId: 'sort-order-select',
+  menuId: 'sort-order-menu',
+  render: renderSortDropdown,
+});
+
+function toggleSortDropdown() { toggleQuickDropdown(_sortDropdownQD); }
+function closeSortDropdown() { closeQuickDropdown(_sortDropdownQD); }
+
+/**
+ * Quick-dropdown instance for the sidebar sort control. fixedPosition:true,
+ * same as _sidebarViewDropdownQD -- escapes the sidebar's own overflow:hidden.
+ */
+var _sidebarSortDropdownQD = createQuickDropdown({
+  triggerId: 'sidebar-sort-order-select',
+  menuId: 'sidebar-sort-order-menu',
+  render: renderSidebarSortDropdown,
+  fixedPosition: true,
+});
+
+function toggleSidebarSortDropdown() { toggleQuickDropdown(_sidebarSortDropdownQD); }
+function closeSidebarSortDropdown() { closeQuickDropdown(_sidebarSortDropdownQD); }
+
+/**
+ * Apply a new sort_order value (selected from either quick dropdown's menu):
+ * update state, re-sync every sort control (both quick dropdowns + the
+ * Settings select), re-render the grid/sidebar, and persist. This is the
+ * delegate for onSortOrderChange() (the Settings select's own change
+ * handler) as well as the two quick dropdowns' menu-item clicks -- one
+ * place, one behavior, regardless of which of the three sort surfaces the
+ * user acted on.
+ * @param {string} value
+ */
+function selectSortOrder(value) {
+  if (!value) return;
+  if (_serverSettings) _serverSettings.sort_order = value;
+  syncSortOrderControls();
+  renderGrid(_currentSessions || []);
+  renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
+  patchServerSetting('sort_order', value);
 }
 
 /**
@@ -5625,37 +5864,47 @@ function _rerenderViewDependentUI() {
 
 /**
  * Set every sort-order control's displayed value from _serverSettings.sort_order.
- * There are three widgets backed by the SAME server setting (the header quick-sort
- * select, the sidebar quick-sort select, and the Settings > Sessions select) --
+ * There are three surfaces backed by the SAME server setting (the header quick-sort
+ * dropdown, the sidebar quick-sort dropdown, and the Settings > Sessions select) --
  * this is the single place that keeps them in agreement, called after any event
  * that changes or (re)loads _serverSettings (initial load, a remote settings
  * change via followRemoteViewDefinitions -> _rerenderViewDependentUI, opening
- * Settings, or a local change on any one of the three selects).
- * Missing elements (e.g. Settings dialog not yet opened) are skipped silently.
+ * Settings, or a local change on any one of the three).
+ *
+ * v0.47.9: the two quick surfaces are button+menu dropdowns now, not
+ * <select>s (see the "Quick dropdown controller" section), so there's no
+ * single `.value` to set on them -- their trigger's label span gets updated
+ * instead, and their menu content is refreshed in place if currently open
+ * (so the active-item checkmark stays correct without waiting for the next
+ * open). Missing elements (e.g. Settings dialog not yet opened) are skipped
+ * silently, same as before.
  */
 function syncSortOrderControls() {
   var value = (_serverSettings && _serverSettings.sort_order) || 'manual';
-  ['setting-sort-order', 'sort-order-select', 'sidebar-sort-order-select'].forEach(function(id) {
-    var el = $(id);
-    if (el) el.value = value;
-  });
+
+  var settingSelect = $('setting-sort-order');
+  if (settingSelect) settingSelect.value = value;
+
+  var label = $('sort-order-label');
+  if (label) label.textContent = _sortOptionLabel(value);
+  var sidebarLabel = $('sidebar-sort-order-label');
+  if (sidebarLabel) sidebarLabel.textContent = _sortOptionLabel(value);
+
+  if (isQuickDropdownOpen(_sortDropdownQD)) renderSortDropdown();
+  if (isQuickDropdownOpen(_sidebarSortDropdownQD)) renderSidebarSortDropdown();
 }
 
 /**
- * Shared change handler for all three sort-order selects (header quick-sort,
- * sidebar quick-sort, Settings > Sessions). Applies the new value optimistically
- * (immediate re-render, matching the existing sidebarOpen/toggleSidebar pattern)
- * before the fire-and-forget PATCH resolves, then syncs the other two widgets so
- * a change made in any one place is reflected everywhere at once.
+ * Settings > Sessions sort-order select's own change handler -- the ONLY
+ * remaining native <select> among the three sort surfaces (the header and
+ * sidebar quick controls became button+menu dropdowns in v0.47.9; see
+ * createQuickDropdown()'s docstring). Delegates to selectSortOrder(), the
+ * shared apply-and-sync logic every sort surface now funnels through, so a
+ * change made here is reflected on the two quick dropdowns immediately too.
  */
 function onSortOrderChange() {
   var value = this && this.value;
-  if (!value) return;
-  if (_serverSettings) _serverSettings.sort_order = value;
-  syncSortOrderControls();
-  renderGrid(_currentSessions || []);
-  renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
-  patchServerSetting('sort_order', value);
+  selectSortOrder(value);
 }
 
 /**
@@ -6761,33 +7010,14 @@ function handleGlobalKeydown(e) {
       }
     }
   }
-  // Arrow key navigation within open dropdown
-  const menu = $('view-dropdown-menu');
-  if (menu && !menu.classList.contains('hidden')) {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-      if (items.length > 0) {
-        const focusedEl = document.activeElement;
-        let itemIdx = items.indexOf(focusedEl);
-        if (e.key === 'ArrowDown') {
-          itemIdx = (itemIdx + 1) % items.length;
-        } else {
-          itemIdx = (itemIdx - 1 + items.length) % items.length;
-        }
-        items[itemIdx].focus();
-      }
-      return;
-    }
-    if (e.key === 'Enter') {
-      const focusedEl = document.activeElement;
-      if (menu.contains(focusedEl)) { focusedEl.click(); return; }
-    }
-    if (e.key === 'Escape') {
-      closeViewDropdown();
-      return;
-    }
-  }
+  // Arrow/Enter/Escape navigation within whichever quick dropdown (view or
+  // sort, header or sidebar) is currently open -- shared mechanism, see
+  // handleQuickDropdownKeydown()'s own docstring. Previously this block only
+  // ever checked #view-dropdown-menu, so the sidebar view dropdown had no
+  // arrow-key navigation at all; delegating here extends the same
+  // navigation to all four quick dropdowns, closing that gap as a side
+  // effect of unifying the mechanism (v0.47.9).
+  if (handleQuickDropdownKeydown(e)) return;
   // Fullscreen: Escape calls closeSession
   if (_viewMode === 'fullscreen' && e.key === 'Escape') {
     e.preventDefault();
@@ -7445,6 +7675,54 @@ function bindStaticEventListeners() {
     }
   });
 
+  // Sort dropdown (header) — trigger opens/closes, delegated item clicks apply
+  // sort. Same pattern as the view dropdown above (v0.47.9: converted from a
+  // native <select>'s 'change' event to this click-based dropdown mechanism).
+  var sortDropdownTrigger = $('sort-order-select');
+  if (sortDropdownTrigger) on(sortDropdownTrigger, 'click', toggleSortDropdown);
+
+  var sortDropdownMenu = $('sort-order-menu');
+  if (sortDropdownMenu) {
+    sortDropdownMenu.addEventListener('click', function(e) {
+      var item = e.target.closest('[data-sort]');
+      if (!item) return;
+      selectSortOrder(item.dataset.sort);
+      closeSortDropdown();
+    });
+  }
+
+  // Sort dropdown (sidebar) — same pattern, fixed-positioned like the sidebar view dropdown.
+  var sidebarSortDropdownTrigger = $('sidebar-sort-order-select');
+  if (sidebarSortDropdownTrigger) on(sidebarSortDropdownTrigger, 'click', toggleSidebarSortDropdown);
+
+  var sidebarSortDropdownMenu = $('sidebar-sort-order-menu');
+  if (sidebarSortDropdownMenu) {
+    sidebarSortDropdownMenu.addEventListener('click', function(e) {
+      var item = e.target.closest('[data-sort]');
+      if (!item) return;
+      selectSortOrder(item.dataset.sort);
+      closeSidebarSortDropdown();
+    });
+  }
+
+  // Click-outside closes the header sort dropdown
+  document.addEventListener('click', function(e) {
+    var dropdown = $('sort-order-menu');
+    if (!dropdown || dropdown.classList.contains('hidden')) return;
+    var trigger = $('sort-order-select');
+    if (trigger && trigger.contains(e.target)) return;
+    if (!dropdown.contains(e.target)) closeSortDropdown();
+  });
+
+  // Click-outside closes the sidebar sort dropdown
+  document.addEventListener('click', function(e) {
+    var sidebarDropdown = $('sidebar-sort-order-menu');
+    if (!sidebarDropdown || sidebarDropdown.classList.contains('hidden')) return;
+    var sidebarTrigger = $('sidebar-sort-order-select');
+    if (sidebarTrigger && sidebarTrigger.contains(e.target)) return;
+    if (!sidebarDropdown.contains(e.target)) closeSidebarSortDropdown();
+  });
+
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
   var sidebarNewSessionBtn = $('sidebar-new-session-btn');
@@ -7537,8 +7815,6 @@ function bindStaticEventListeners() {
   // quick-sort, this Settings one) write the same sort_order setting and
   // re-sync each other -- see onSortOrderChange()/syncSortOrderControls().
   on($('setting-sort-order'), 'change', onSortOrderChange);
-  on($('sort-order-select'), 'change', onSortOrderChange);
-  on($('sidebar-sort-order-select'), 'change', onSortOrderChange);
   on($('setting-window-size-largest'), 'change', function() {
     var el = $('setting-window-size-largest');
     if (el) patchServerSetting('window_size_largest', el.checked);
@@ -8121,6 +8397,13 @@ if (typeof module !== 'undefined' && module.exports) {
     closeFlyoutMenu,
     // Filter bar
     renderFilterBar,
+    // Quick dropdown controller (shared mechanism -- view + sort, header + sidebar)
+    createQuickDropdown,
+    openQuickDropdown,
+    closeQuickDropdown,
+    toggleQuickDropdown,
+    isQuickDropdownOpen,
+    handleQuickDropdownKeydown,
     // View dropdown
     renderViewDropdown,
     toggleViewDropdown,
@@ -8133,6 +8416,17 @@ if (typeof module !== 'undefined' && module.exports) {
     renderSidebarViewDropdown,
     toggleSidebarViewDropdown,
     showSidebarNewViewInput,
+    // Quick sort dropdown (header + sidebar)
+    SORT_OPTIONS,
+    renderSortDropdown,
+    toggleSortDropdown,
+    closeSortDropdown,
+    renderSidebarSortDropdown,
+    toggleSidebarSortDropdown,
+    closeSidebarSortDropdown,
+    selectSortOrder,
+    syncSortOrderControls,
+    onSortOrderChange,
     // Manage Views settings tab
     renderViewsSettingsTab,
     _saveViewsAndRerender,

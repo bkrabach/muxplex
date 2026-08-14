@@ -314,9 +314,12 @@ def test_html_quick_link_class_on_all_four_controls() -> None:
     """All four view/sort quick controls must carry .quick-link (the shared
     color/no-box link treatment, extended to the overview header pair in
     v0.47.7 -- see style.css's "Quick link" section): the sidebar's view
-    trigger + sort select, AND the overview header's view trigger + sort
-    select. The two selects also keep their base .quick-sort-select class
-    (native-<select> reset)."""
+    trigger + sort trigger, AND the overview header's view trigger + sort
+    trigger. The two sort triggers also keep their base .quick-sort-select
+    class (max-width reset -- see style.css) even though, as of v0.47.9,
+    they're <button>s, not <select>s (see
+    test_html_header_has_quick_sort_select /
+    test_html_sidebar_has_quick_sort_select for the button+menu contract)."""
     soup = _SOUP
 
     sidebar_trigger = soup.find(id="sidebar-view-dropdown-trigger")
@@ -334,8 +337,9 @@ def test_html_quick_link_class_on_all_four_controls() -> None:
     assert "quick-link" in sidebar_classes, (
         f"#sidebar-sort-order-select must have 'quick-link', has: {sidebar_classes}"
     )
-    assert sidebar_select.name == "select", (
-        f"#sidebar-sort-order-select must stay a native <select>, got: {sidebar_select.name}"
+    assert sidebar_select.name == "button", (
+        f"#sidebar-sort-order-select must be a <button> (v0.47.9 dropdown "
+        f"conversion), got: {sidebar_select.name}"
     )
 
     header_trigger = soup.find(id="view-dropdown-trigger")
@@ -354,8 +358,9 @@ def test_html_quick_link_class_on_all_four_controls() -> None:
     assert "quick-link" in header_classes, (
         f"#sort-order-select (overview header) must have 'quick-link', has: {header_classes}"
     )
-    assert header_select.name == "select", (
-        f"#sort-order-select must stay a native <select>, got: {header_select.name}"
+    assert header_select.name == "button", (
+        f"#sort-order-select must be a <button> (v0.47.9 dropdown conversion), "
+        f"got: {header_select.name}"
     )
 
 
@@ -771,34 +776,65 @@ def test_html_sessions_panel_has_sort_order_select() -> None:
 
 
 def test_html_header_has_quick_sort_select() -> None:
-    """Main view header must contain a #sort-order-select with the same four options.
+    """Main view header must contain a #sort-order-select trigger with a
+    #sort-order-menu popup container.
 
-    Feature request: sort the main view without opening Settings. This select
-    writes/reads the same sort_order setting as #setting-sort-order (kept in
-    sync client-side by syncSortOrderControls() in app.js).
+    Feature request: sort the main view without opening Settings. v0.47.9
+    converted this control from a native <select> to a button+menu dropdown
+    -- the SAME mechanism the view dropdown uses (see app.js's "Quick
+    dropdown controller" section) -- because a <select>'s own browser-
+    rendered popup/focus/hover behavior could never be made to genuinely
+    match the view dropdown's <button>, no matter how much CSS chased it
+    (see style.css's "Quick link" section history). The trigger writes/reads
+    the same sort_order setting as #setting-sort-order (kept in sync
+    client-side by syncSortOrderControls() in app.js).
+
+    #sort-order-menu is EMPTY in the static markup -- like #view-dropdown-menu,
+    its four sort-option items are rendered client-side by renderSortDropdown()
+    on open, not present in index.html. That content (data-sort values,
+    role="menuitem", the active-item checkmark) is verified in
+    frontend/tests/test_app.mjs, not here -- this test only verifies the
+    static container/attribute contract BeautifulSoup can see.
     """
     soup = _SOUP
     el = soup.find(id="sort-order-select")
     assert el is not None, "Missing #sort-order-select in the main view header"
-    assert el.name == "select", f"#sort-order-select must be a <select>, got: {el.name}"
-    values = [o.get("value") for o in el.find_all("option")]
-    for v in ("manual", "alphabetical", "recent", "attention"):
-        assert v in values, f"#sort-order-select missing option value='{v}'"
+    assert el.name == "button", (
+        f"#sort-order-select must be a <button> (v0.47.9 dropdown conversion), got: {el.name}"
+    )
+    assert el.get("aria-haspopup") == "true", (
+        "#sort-order-select must have aria-haspopup='true'"
+    )
+    assert el.get("aria-controls") == "sort-order-menu", (
+        "#sort-order-select must have aria-controls='sort-order-menu'"
+    )
+
+    menu = soup.find(id="sort-order-menu")
+    assert menu is not None, "Missing #sort-order-menu popup"
+    assert menu.get("role") == "menu", "#sort-order-menu must have role='menu'"
 
 
 def test_html_sidebar_has_quick_sort_select() -> None:
-    """Sidebar header must contain a #sidebar-sort-order-select with the same four options."""
+    """Sidebar header must contain a #sidebar-sort-order-select trigger with a
+    #sidebar-sort-order-menu popup container (v0.47.9 button+menu conversion
+    -- see test_html_header_has_quick_sort_select for the full rationale and
+    why menu CONTENT isn't asserted here)."""
     soup = _SOUP
     sidebar = soup.find(id="session-sidebar")
     assert sidebar is not None, "Missing #session-sidebar"
     el = sidebar.find(id="sidebar-sort-order-select")
     assert el is not None, "Missing #sidebar-sort-order-select inside #session-sidebar"
-    assert el.name == "select", (
-        f"#sidebar-sort-order-select must be a <select>, got: {el.name}"
+    assert el.name == "button", (
+        f"#sidebar-sort-order-select must be a <button> (v0.47.9 dropdown "
+        f"conversion), got: {el.name}"
     )
-    values = [o.get("value") for o in el.find_all("option")]
-    for v in ("manual", "alphabetical", "recent", "attention"):
-        assert v in values, f"#sidebar-sort-order-select missing option value='{v}'"
+    assert el.get("aria-haspopup") == "true", (
+        "#sidebar-sort-order-select must have aria-haspopup='true'"
+    )
+
+    menu = soup.find(id="sidebar-sort-order-menu")
+    assert menu is not None, "Missing #sidebar-sort-order-menu popup"
+    assert menu.get("role") == "menu", "#sidebar-sort-order-menu must have role='menu'"
 
 
 def test_html_sessions_panel_has_window_size_largest_checkbox() -> None:
