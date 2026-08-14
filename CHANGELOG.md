@@ -1,3 +1,88 @@
+## v0.47.7 (2026-08-14)
+
+Fixes the view-switch flicker bug the owner reported after v0.47.6 (new value
+-> reverts to prior value for ~1-2s -> flips forward again), and extends the
+sidebar's "quick link" treatment (v0.47.4-v0.47.6) to the overview header's
+matching view/sort pair, per explicit owner direction. Also drops the
+underline at rest from all four controls now that the header pair has joined
+-- the owner noticed the sidebar's view trigger showed one and its sort
+select didn't, despite sharing the same rule.
+
+### Fixed
+
+- **View-switch flicker (self-stomp race between an optimistic local switch
+  and the dedicated ~1s state poll).** `switchView()` applied the new view
+  locally and fired a fire-and-forget `PATCH /api/state`; `followRemoteActive
+  View()` runs on every poll tick and reverted to whatever the server
+  currently had if it differed from the local value. A poll landing after
+  the local switch but before the PATCH's write was visible server-side read
+  the OLD value and reverted the UI -- then the next poll, once the write
+  landed, flipped forward again. Reproduced live in a real browser (an
+  artificially delayed mock `PATCH /api/state` held the write open long
+  enough to watch the header's view label revert and then recover) against
+  the unfixed v0.47.6 build, and confirmed absent against the fix.
+  - Root cause traced by comparing against `onSortOrderChange()`, which
+    updates its local snapshot before firing its PATCH and never exhibited
+    the bug -- the missing piece for `active_view` was a race *guard*, not
+    write ordering (`switchView()` already applied locally before its PATCH).
+  - Fix: a new `_pendingViewSwitches` counter, incremented before persisting
+    a local `active_view` change and decremented once that write settles
+    (success or failure) -- the same proven mechanism `openSession()`
+    already uses (`_pendingLocalSwitches`) to guard the identical class of
+    race on `active_session`. `followRemoteActiveView()` now suppresses a
+    remote-apply while a local write is still in flight.
+  - New shared helper `persistActiveView(viewName)` is the ONE place every
+    `active_view` PATCH now goes through -- `switchView()`, the
+    delete-active-view fallback in `renderViewsSettingsTab()`, and the
+    rename-active-view path in `openManageViewPanel()`'s `commitRename()`
+    all previously PATCHed independently (two of the three had also drifted
+    from `withDevice()`, meaning a device in its own private sync group was
+    writing `active_view` to the shared "global" group instead of its own --
+    fixed as part of this consolidation).
+  - PATCH failure is no longer silent: `persistActiveView()` shows a toast,
+    logs a warning, and reconciles with the server's actual current
+    `active_view` (render-only, never re-PATCHed) rather than leaving the
+    UI showing a value the server never accepted.
+  - Cross-device sync (another tab/device/deck genuinely changing the view)
+    is unaffected -- the guard only suppresses the window while THIS tab's
+    own write is unconfirmed; a remote change is followed as soon as it
+    clears.
+
+### Changed
+
+- **The header's view-dropdown trigger (`#view-dropdown-trigger`) and sort
+  select (`#sort-order-select`) now carry the sidebar's link treatment too**
+  -- accent-colored text, no border, no filled background, at rest or on
+  hover/focus (previously a boxed control: border + background swap on
+  hover, matching the header's other icon buttons). The shared rule was
+  renamed `.sidebar-quick-link` -> `.quick-link` and extended to all four
+  controls (single comma-separated selector list, still ID-qualified per
+  control for specificity) rather than duplicated, per
+  `test_css_quick_link_is_one_shared_rule_not_four`. The header pair KEEPS
+  its caret/disclosure-arrow (a compact command in a packed row of icon
+  buttons still benefits from one, unlike the sidebar's spacious two-row
+  rail) and its own existing sizing -- only the sidebar's two-row-rail
+  sizing (`flex: 1`, tight padding, ellipsis truncation) stays scoped to the
+  sidebar instances.
+- **Underline dropped at rest, everywhere.** A native `<select>`'s own
+  displayed value doesn't reliably honor `text-decoration` across engines
+  (the sidebar's sort select never showed the underline the CSS declared,
+  while its sibling button did) -- color + the adjacent label/caret already
+  read as "interactive" without it, so `text-decoration: underline` and
+  `text-underline-offset` are removed from the shared rule entirely.
+
+### Verification
+
+- Frontend suite (`node --test tests/*.mjs`) extended with: a deterministic
+  reproduction of the flicker race (never-resolving mock PATCH pins the
+  pending-switch window open), a genuinely-stale-remote-switch-still-
+  followed case, a guard-clears-itself-after-settling case, device-scoped
+  PATCH URL assertion, two PATCH-failure reconciliation cases (network
+  failure and a genuine concurrent remote change), and delegation checks for
+  the delete/rename call sites.
+- `test_frontend_css.py`/`test_frontend_html.py` updated for the renamed
+  `.quick-link` class and the header pair's new markup/CSS coverage.
+
 ## v0.47.6 (2026-08-14)
 
 Third pass on the sidebar's view/sort quick controls, per explicit owner

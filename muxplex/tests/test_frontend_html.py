@@ -289,9 +289,13 @@ def test_html_sidebar_quick_controls_have_captions() -> None:
 
 def test_html_sidebar_view_trigger_has_no_caret() -> None:
     """#sidebar-view-dropdown-trigger must NOT contain a .view-dropdown__caret span
-    -- the sidebar control reads as a plain link now (no disclosure arrow) -- while
-    the overview header's #view-dropdown-trigger keeps its caret unchanged (out of
-    scope for this pass)."""
+    -- the sidebar control reads as a plain link (no disclosure arrow) -- while
+    the overview header's #view-dropdown-trigger KEEPS its caret: it's a compact
+    command in a packed row of icon buttons, not a spacious two-row rail, so the
+    caret is still the clearer "this opens something" cue there (v0.47.7 gave the
+    header pair the same .quick-link COLOR treatment as the sidebar pair, but the
+    caret distinction is deliberately unchanged -- see style.css's "Quick link"
+    section)."""
     soup = _SOUP
     sidebar_trigger = soup.find(id="sidebar-view-dropdown-trigger")
     assert sidebar_trigger is not None, "Missing #sidebar-view-dropdown-trigger"
@@ -302,35 +306,56 @@ def test_html_sidebar_view_trigger_has_no_caret() -> None:
     header_trigger = soup.find(id="view-dropdown-trigger")
     assert header_trigger is not None, "Missing #view-dropdown-trigger"
     assert header_trigger.find(class_="view-dropdown__caret") is not None, (
-        "#view-dropdown-trigger (overview header) must KEEP .view-dropdown__caret "
-        "-- out of scope for this pass"
+        "#view-dropdown-trigger (overview header) must KEEP .view-dropdown__caret"
     )
 
 
-def test_html_sidebar_quick_sort_select_has_link_modifier() -> None:
-    """#sidebar-sort-order-select must carry .sidebar-quick-link (the shared sidebar-only
-    link treatment) IN ADDITION TO the base .quick-sort-select class -- and the overview
-    header's #sort-order-select must NOT carry it (scope is sidebar-only by design)."""
+def test_html_quick_link_class_on_all_four_controls() -> None:
+    """All four view/sort quick controls must carry .quick-link (the shared
+    color/no-box link treatment, extended to the overview header pair in
+    v0.47.7 -- see style.css's "Quick link" section): the sidebar's view
+    trigger + sort select, AND the overview header's view trigger + sort
+    select. The two selects also keep their base .quick-sort-select class
+    (native-<select> reset)."""
     soup = _SOUP
+
+    sidebar_trigger = soup.find(id="sidebar-view-dropdown-trigger")
+    assert sidebar_trigger is not None, "Missing #sidebar-view-dropdown-trigger"
+    assert "quick-link" in (sidebar_trigger.get("class") or []), (
+        "#sidebar-view-dropdown-trigger must have 'quick-link'"
+    )
+
     sidebar_select = soup.find(id="sidebar-sort-order-select")
     assert sidebar_select is not None, "Missing #sidebar-sort-order-select"
     sidebar_classes = sidebar_select.get("class") or []
     assert "quick-sort-select" in sidebar_classes, (
         f"#sidebar-sort-order-select must keep base class 'quick-sort-select', has: {sidebar_classes}"
     )
-    assert "sidebar-quick-link" in sidebar_classes, (
-        f"#sidebar-sort-order-select must have 'sidebar-quick-link', has: {sidebar_classes}"
+    assert "quick-link" in sidebar_classes, (
+        f"#sidebar-sort-order-select must have 'quick-link', has: {sidebar_classes}"
     )
     assert sidebar_select.name == "select", (
         f"#sidebar-sort-order-select must stay a native <select>, got: {sidebar_select.name}"
     )
 
+    header_trigger = soup.find(id="view-dropdown-trigger")
+    assert header_trigger is not None, "Missing #view-dropdown-trigger"
+    assert "quick-link" in (header_trigger.get("class") or []), (
+        "#view-dropdown-trigger (overview header) must have 'quick-link' -- "
+        "the owner asked for the sidebar's link treatment to extend here too"
+    )
+
     header_select = soup.find(id="sort-order-select")
     assert header_select is not None, "Missing #sort-order-select"
     header_classes = header_select.get("class") or []
-    assert "sidebar-quick-link" not in header_classes, (
-        f"#sort-order-select (overview header) must NOT have the sidebar-only "
-        f"link modifier, has: {header_classes}"
+    assert "quick-sort-select" in header_classes, (
+        f"#sort-order-select must keep base class 'quick-sort-select', has: {header_classes}"
+    )
+    assert "quick-link" in header_classes, (
+        f"#sort-order-select (overview header) must have 'quick-link', has: {header_classes}"
+    )
+    assert header_select.name == "select", (
+        f"#sort-order-select must stay a native <select>, got: {header_select.name}"
     )
 
 

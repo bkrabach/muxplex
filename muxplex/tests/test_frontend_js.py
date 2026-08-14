@@ -3216,16 +3216,36 @@ def test_switch_view_function_exists() -> None:
 
 
 def test_switch_view_patches_state() -> None:
-    """switchView must PATCH /api/state to persist active_view."""
-    match = re.search(
+    """switchView must persist active_view via the shared persistActiveView()
+    helper, which does the actual PATCH /api/state -- asserts BOTH the
+    delegation (switchView calls persistActiveView) and the delegate
+    (persistActiveView actually PATCHes /api/state), per the project
+    convention for a source-text test surviving a legitimate refactor (see
+    AGENTS.md's "test_frontend_js.py asserts on JS SOURCE TEXT" section):
+    switchView used to PATCH directly, then v0.47.7 consolidated it and two
+    other call sites (delete-active-view, rename-active-view) into one
+    race-guarded helper to fix the view-switch flicker bug.
+    """
+    switch_match = re.search(
         r"function switchView\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
         _JS,
         re.DOTALL,
     )
-    assert match, "switchView function not found"
-    body = match.group(1)
-    assert "PATCH" in body, "switchView must use PATCH method"
-    assert "/api/state" in body, "switchView must PATCH /api/state"
+    assert switch_match, "switchView function not found"
+    switch_body = switch_match.group(1)
+    assert "persistActiveView" in switch_body, (
+        "switchView must persist active_view via persistActiveView()"
+    )
+
+    persist_match = re.search(
+        r"function persistActiveView\s*\(\w+\)\s*\{(.*?)(?=\nfunction |\nasync function |\n// )",
+        _JS,
+        re.DOTALL,
+    )
+    assert persist_match, "persistActiveView function not found"
+    persist_body = persist_match.group(1)
+    assert "PATCH" in persist_body, "persistActiveView must use PATCH method"
+    assert "/api/state" in persist_body, "persistActiveView must PATCH /api/state"
 
 
 # ---------------------------------------------------------------------------
@@ -3581,7 +3601,12 @@ def test_manage_views_action_switches_to_views_tab() -> None:
 
 
 def test_delete_active_view_persists_active_view_to_server() -> None:
-    """When deleting the active view in renderViewsSettingsTab, PATCH /api/state with active_view."""
+    """When deleting the active view in renderViewsSettingsTab, persist the
+    'all' fallback via persistActiveView() -- asserts the delegation here,
+    and test_switch_view_patches_state asserts persistActiveView() itself
+    actually PATCHes /api/state (see that test's docstring for why this
+    moved off a direct api() call in v0.47.7: three independent PATCH sites
+    with no shared race guard was the flicker bug's root cause)."""
     match = re.search(
         r"function renderViewsSettingsTab\s*\(\s*\)\s*\{(.*?)(?=\nfunction |\n// )",
         _JS,
@@ -3594,13 +3619,11 @@ def test_delete_active_view_persists_active_view_to_server() -> None:
     assert fallback_idx >= 0, (
         "_activeView = 'all' fallback not found in renderViewsSettingsTab"
     )
-    # Within ~200 chars after the fallback, there must be an api( call for persistence
+    # Within ~200 chars after the fallback, there must be a persistActiveView( call
     nearby = body[fallback_idx : fallback_idx + 200]
-    assert "api(" in nearby, (
-        "renderViewsSettingsTab delete path must call api() immediately after setting _activeView = 'all'"
-    )
-    assert "active_view" in nearby, (
-        "renderViewsSettingsTab delete path must PATCH /api/state with active_view"
+    assert "persistActiveView(" in nearby, (
+        "renderViewsSettingsTab delete path must call persistActiveView() "
+        "immediately after setting _activeView = 'all'"
     )
 
 

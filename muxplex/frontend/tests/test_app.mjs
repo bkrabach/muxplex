@@ -7699,6 +7699,217 @@ test('user-initiated switchView still PATCHes /api/state (local switches must pr
   app._setActiveView('all');
 });
 
+// --- Regression: view-switch flicker (new -> old -> new) ---
+// The owner-reported bug: choosing a view flips to the new value, reverts to
+// the PRIOR value for ~1-2s, then flips forward again. Root cause: switchView
+// applies the new view locally and fires a fire-and-forget PATCH; the
+// dedicated ~1s state poll can land a GET that started (or resolves) before
+// the PATCH's write is visible server-side, read the OLD active_view, and
+// (with no guard) conclude a remote device had switched views -- reverting
+// the UI to the value the user just switched away from. The next poll, once
+// the write lands, flips forward again. persistActiveView()'s
+// _pendingViewSwitches counter closes this the same way openSession()'s
+// _pendingLocalSwitches already closes the identical race for active_session.
+
+test('local view switch pends the guard: a stale poll before the PATCH settles does not revert it', async () => {
+  const idsRequested = [];
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => { idsRequested.push(id); return null; };
+  // The PATCH /api/state never settles during this test (a never-resolving
+  // promise) -- this pins the pending-view-switch window open so the
+  // assertion below is deterministic regardless of real microtask timing.
+  globalThis.fetch = (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'PATCH' && url.indexOf('/api/state') === 0) {
+      return new Promise(function () {}); // never settles
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  };
+
+  app._setActiveView('all');
+
+  // Local switch: user picks 'focus'. This is the real switchView() path --
+  // it increments _pendingViewSwitches synchronously and only decrements it
+  // once the PATCH above settles (which, in this test, it never does).
+  app.switchView('focus');
+  assert.strictEqual(app._getActiveView(), 'focus', 'switchView must apply the new view locally, optimistically');
+
+  // Simulate the exact stale read: a poll landing right now still sees the
+  // server's OLD active_view ('all') because our own PATCH is still in
+  // flight -- without the guard this would revert the UI back to 'all'.
+  idsRequested.length = 0;
+  app.followRemoteActiveView({ active_view: 'all' });
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.strictEqual(
+    app._getActiveView(), 'focus',
+    'a stale poll while our own view switch is still pending must not revert it',
+  );
+  assert.strictEqual(
+    idsRequested.length, 0,
+    'no re-render may occur when the stale poll is correctly suppressed; ids: ' + JSON.stringify(idsRequested),
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+  app._setActiveView('all');
+  app._setPendingViewSwitches(0);
+});
+
+test('no pending view switch: a genuinely stale remote view change is still followed (cross-device sync preserved)', () => {
+  app._setActiveView('all');
+  app._setPendingViewSwitches(0); // no local switch in flight
+
+  app.followRemoteActiveView({ active_view: 'focus' });
+
+  assert.strictEqual(
+    app._getActiveView(), 'focus',
+    'with no pending local view switch, a genuine remote switch (deck/agent/another tab) must still be followed',
+  );
+  app._setActiveView('all');
+});
+
+test('once the pending write settles, the guard clears itself and a subsequent remote switch is followed', async () => {
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'PATCH' && url.indexOf('/api/state') === 0) {
+      return { ok: true, json: async () => ({}) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setActiveView('all');
+  app.switchView('focus'); // increments _pendingViewSwitches
+  await new Promise((r) => setTimeout(r, 25)); // let the PATCH settle -> decrements back to 0
+
+  // Now a genuine remote switch (e.g. another tab picked 'hidden') must be followed.
+  app.followRemoteActiveView({ active_view: 'hidden' });
+  assert.strictEqual(
+    app._getActiveView(), 'hidden',
+    'the guard must not outlive the write it guards -- a later remote switch must still be followed',
+  );
+
+  globalThis.document.getElementById = origGetById;
+  globalThis.fetch = undefined;
+  app._setActiveView('all');
+  app._setPendingViewSwitches(0);
+});
+
+// --- persistActiveView(): device scoping + failure handling ---
+
+test('persistActiveView PATCHes a device-scoped /api/state URL (withDevice), like every other /api/state write', async () => {
+  const calls = [];
+  const origGetById2 = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    return { ok: true, json: async () => ({}) };
+  };
+  app._setDeviceId('probe-device');
+
+  await app.persistActiveView('focus');
+
+  assert.ok(
+    calls.some((c) => c === 'PATCH /api/state?device_id=probe-device'),
+    'persistActiveView must PATCH withDevice(\'/api/state\'), not a bare /api/state; calls: ' + JSON.stringify(calls),
+  );
+
+  globalThis.document.getElementById = origGetById2;
+  globalThis.fetch = undefined;
+  app._setDeviceId('');
+});
+
+test('persistActiveView failure: fails loud (toast) and reconciles with server truth instead of silently diverging', async () => {
+  const mockToast = { textContent: '', classList: { remove: () => {}, add: () => {}, toggle: () => {} } };
+  const origGetById3 = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'toast' ? mockToast : null);
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'PATCH' && url.indexOf('/api/state') === 0) {
+      const err = new Error('network down');
+      err.status = 0;
+      throw err;
+    }
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
+      // Server truth: our write never landed, active_view is still 'all'.
+      return { ok: true, json: async () => ({ active_view: 'all' }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setActiveView('all');
+  app.switchView('focus'); // optimistic local apply, PATCH will fail
+  assert.strictEqual(app._getActiveView(), 'focus', 'must apply optimistically before the PATCH result is known');
+
+  await new Promise((r) => setTimeout(r, 25)); // flush the failed PATCH + reconciliation GET
+
+  assert.ok(mockToast.textContent, 'a failed persist must show a toast, not fail silently');
+  assert.strictEqual(
+    app._getActiveView(), 'all',
+    'on PATCH failure, the UI must reconcile with server truth rather than keep showing the rejected value',
+  );
+
+  globalThis.document.getElementById = origGetById3;
+  globalThis.fetch = undefined;
+  app._setActiveView('all');
+  app._setPendingViewSwitches(0);
+});
+
+test('persistActiveView failure with a genuine concurrent remote change: reconciles to the OTHER device\'s value, not the pre-attempt one', async () => {
+  const origGetById4 = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'PATCH' && url.indexOf('/api/state') === 0) {
+      const err = new Error('conflict');
+      err.status = 409;
+      throw err;
+    }
+    if (method === 'GET' && url.indexOf('/api/state') === 0) {
+      // While our write was failing, another device raced in and set 'hidden'.
+      return { ok: true, json: async () => ({ active_view: 'hidden' }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._setActiveView('all');
+  app.switchView('focus');
+  await new Promise((r) => setTimeout(r, 25));
+
+  assert.strictEqual(
+    app._getActiveView(), 'hidden',
+    'reconciliation must adopt whatever the server actually has now, even if a different device wrote it',
+  );
+
+  globalThis.document.getElementById = origGetById4;
+  globalThis.fetch = undefined;
+  app._setActiveView('all');
+  app._setPendingViewSwitches(0);
+});
+
+// --- The other two active_view PATCH sites (delete/rename) now share the
+// same race guard + device scoping via persistActiveView(), instead of each
+// hand-rolling its own bare api('PATCH', '/api/state', ...) call. ---
+
+test('renderViewsSettingsTab delete-active-view path delegates to persistActiveView', () => {
+  const src = app.renderViewsSettingsTab.toString();
+  assert.ok(
+    src.includes('persistActiveView'),
+    'the delete-active-view fallback must call persistActiveView(), not a direct api() PATCH',
+  );
+});
+
+test('openManageViewPanel rename-active-view path delegates to persistActiveView', () => {
+  const src = app.openManageViewPanel.toString();
+  assert.ok(
+    src.includes('persistActiveView'),
+    'the rename-active-view path must call persistActiveView(), not a direct api() PATCH',
+  );
+});
+
 // --- followRemoteViewDefinitions (PWA follows external view-MEMBERSHIP change) ---
 // Same class of bug as followRemoteActiveView (which follows the active
 // *selection*), one layer deeper: view membership data (_serverSettings.views)

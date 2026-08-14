@@ -246,6 +246,20 @@ let _lastInteractionAt = Date.now() / 1000;
 // actual completion, not a wall-clock guess, so it can't outlive the switch
 // it guards nor leak between unrelated switches.
 let _pendingLocalSwitches = 0;
+// Same guard, same reason, for active_view (the reported "flicker" bug):
+// switchView() (and the two other call sites that set _activeView -- delete-
+// active-view and rename-active-view) update _activeView synchronously, but
+// the server's active_view doesn't catch up until PATCH /api/state settles.
+// followRemoteActiveView() runs on every ~1s state-poll tick and compares
+// the server's active_view against local _activeView by raw equality --
+// unlike active_session (which is only ever adopted while a session is open,
+// see _viewingSession's guard), there is no such secondary gate here, so a
+// poll landing inside this window used to read the OLD value, conclude a
+// remote device had switched views, and revert -- then the NEXT tick, once
+// the write lands, flip forward again (new -> old -> new). Incremented when
+// a local write begins, decremented once that write settles (success or
+// failure) -- see persistActiveView().
+let _pendingViewSwitches = 0;
 let _pollingTimer;
 let _statePollTimer;
 let _heartbeatTimer;
@@ -713,8 +727,20 @@ function followRemoteActiveSession(state) {
  * we just received FROM the server, so re-PATCHing would be redundant (and a
  * feedback-loop hazard). User-initiated switches still PATCH via switchView().
  *
- * Self-initiated switches naturally no-op: switchView() updates _activeView
- * synchronously before its PATCH lands, so the next poll sees no difference.
+ * Self-initiated switches naturally no-op: persistActiveView() updates
+ * _activeView synchronously (via applyViewLocally(), called by every one of
+ * its callers before the PATCH fires) before its write lands, so the next
+ * poll sees no difference once the write is confirmed.
+ *
+ * A local write may still be in flight (see _pendingViewSwitches' comment):
+ * the server hasn't confirmed it yet, so a divergence THIS tick is stale,
+ * not a genuine remote switch -- applying it would revert the UI to the
+ * value the user just switched away from, then flip forward again once the
+ * write lands (the reported flicker). Suppress until every in-flight local
+ * write settles; once the server does catch up, the equality check below
+ * exits early on its own, so this guard never needs to be cleared
+ * explicitly.
+ *
  * An unknown/deleted view renders as honestly empty (filterVisible returns
  * [] for a view it can't resolve) — same behavior as everywhere else.
  *
@@ -723,7 +749,68 @@ function followRemoteActiveSession(state) {
 function followRemoteActiveView(state) {
   if (!state || !state.active_view) return;
   if (state.active_view === _activeView) return;
+  if (_pendingViewSwitches > 0) return;
   applyViewLocally(state.active_view);
+}
+
+/**
+ * Persist active_view to the server -- the ONE place every active_view PATCH
+ * goes through (switchView(), the delete-active-view fallback in
+ * renderViewsSettingsTab(), and the rename-active-view path in
+ * openManageViewPanel()'s commitRename()), so the race guard, device
+ * scoping, and failure handling below can never drift between call sites
+ * the way the styling rules once did.
+ *
+ * Race guard: increments _pendingViewSwitches before the request and
+ * decrements it once the request settles (success OR failure) -- see that
+ * variable's comment and followRemoteActiveView() above for the flicker
+ * this closes. Driven by actual completion, not a wall-clock guess, so it
+ * can't outlive the write it guards nor leak between unrelated switches
+ * (matches openSession()'s _pendingLocalSwitches, the proven mechanism for
+ * the identical class of bug on active_session).
+ *
+ * Uses withDevice() like every other /api/state write in this file -- the
+ * two older call sites this replaces had drifted from that convention, so a
+ * device in its own private sync group was writing active_view to the
+ * shared "global" group instead of its own.
+ *
+ * Failure handling: a rejected/failed write must not leave the UI silently
+ * showing a value the server never accepted. Fails loud (toast +
+ * console.warn) and reconciles with whatever the server's active_view
+ * actually is right now -- render-only via applyViewLocally(), same as
+ * followRemoteActiveView(), never re-PATCHed. That value may be the one
+ * from before this attempt, or a genuine change from another device that
+ * raced in in the meantime; either way the server is authoritative and
+ * this tab adopts it.
+ *
+ * Caller contract: apply the change locally (applyViewLocally()) BEFORE
+ * calling this -- this function only persists; it does not render.
+ *
+ * @param {string} viewName - 'all', 'hidden', or a user view name.
+ * @returns {Promise<void>}
+ */
+function persistActiveView(viewName) {
+  _pendingViewSwitches++;
+  return api('PATCH', withDevice('/api/state'), { active_view: viewName })
+    .then(function() {
+      _pendingViewSwitches--;
+    })
+    .catch(function(err) {
+      _pendingViewSwitches--;
+      console.warn('[persistActiveView] failed to persist active_view:', err);
+      showToast('Failed to save view selection');
+      return api('GET', withDevice('/api/state'))
+        .then(function(res) { return res.json(); })
+        .then(function(state) {
+          if (state && state.active_view) applyViewLocally(state.active_view);
+        })
+        .catch(function() {
+          // Reconciliation fetch also failed -- nothing more we can do here;
+          // the next regular ~1s state poll will still self-correct once
+          // connectivity returns, since _pendingViewSwitches is already
+          // decremented above.
+        });
+    });
 }
 
 /**
@@ -2111,7 +2198,7 @@ function renderViewsSettingsTab() {
       // If deleting the active view, fall back to 'all'
       if (_activeView === views[idx].name) {
         _activeView = 'all';
-        api('PATCH', '/api/state', { active_view: _activeView }).catch(function() {});
+        persistActiveView(_activeView);
       }
       _saveViewsAndRerender(updated);
       return;
@@ -2189,8 +2276,9 @@ function applyViewLocally(viewName) {
 function switchView(viewName) {
   closeViewDropdown();
   applyViewLocally(viewName);
-  // Persist active view — fire and forget
-  api('PATCH', withDevice('/api/state'), { active_view: viewName }).catch(function() {});
+  // Persist active view via the shared, race-guarded helper -- see
+  // persistActiveView()'s docstring.
+  persistActiveView(viewName);
 }
 
 function renderGrid(sessions) {
@@ -3113,7 +3201,7 @@ function openManageViewPanel() {
           .then(function(body) {
             if (_serverSettings) _serverSettings.views = body.views;
             _activeView = newName;
-            api('PATCH', '/api/state', { active_view: newName }).catch(function() {});
+            persistActiveView(newName);
             renderViewDropdown();
             openManageViewPanel();
           })
@@ -3971,6 +4059,15 @@ function _setViewingRemoteId(remoteId) {
  */
 function _setPendingLocalSwitches(n) {
   _pendingLocalSwitches = n;
+}
+
+/**
+ * Test helper: set _pendingViewSwitches directly (bypasses
+ * persistActiveView()'s real increment/decrement so tests can exercise the
+ * guard deterministically).
+ */
+function _setPendingViewSwitches(n) {
+  _pendingViewSwitches = n;
 }
 
 /** Test-only helper: set _syncGroup directly, bypassing localStorage/heartbeat. */
@@ -7965,6 +8062,7 @@ if (typeof module !== 'undefined' && module.exports) {
     _setViewingSession,
     _setViewingRemoteId,
     _setPendingLocalSwitches,
+    _setPendingViewSwitches,
     _setSyncGroupMode,
     _setDeviceId,
     handleGlobalKeydown,
@@ -8030,6 +8128,7 @@ if (typeof module !== 'undefined' && module.exports) {
     showNewViewInput,
     switchView,
     applyViewLocally,
+    persistActiveView,
     // Sidebar view dropdown
     renderSidebarViewDropdown,
     toggleSidebarViewDropdown,

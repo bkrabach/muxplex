@@ -26,7 +26,7 @@
     <header class="app-header">
       <h1 class="app-wordmark"><img src="/wordmark-on-dark.svg" alt="muxplex" height="24" /></h1>
       <div class="view-dropdown" id="view-dropdown">
-        <button id="view-dropdown-trigger" class="view-dropdown__trigger" aria-haspopup="true" aria-expanded="false" aria-controls="view-dropdown-menu">
+        <button id="view-dropdown-trigger" class="view-dropdown__trigger quick-link" aria-haspopup="true" aria-expanded="false" aria-controls="view-dropdown-menu">
           <span id="view-dropdown-label">All Sessions</span>
           <span class="view-dropdown__caret" aria-hidden="true">&#9662;</span>
         </button>
@@ -36,16 +36,15 @@
            all three sort selects (this one, the sidebar's, and the settings one) read/write the
            same sort_order server setting and are kept in sync by syncSortOrderControls().
            Stays a native <select> (test_frontend_html.py asserts el.name == "select") --
-           .quick-sort-dropdown/.quick-sort-select style it to read as the same compact,
-           obviously-interactive command as .view-dropdown__trigger rather than a boxed
-           form control; see style.css for the shared visual language. This header instance
-           deliberately does NOT get the sidebar's stronger "link" treatment
-           (.sidebar-quick-link, added only to #sidebar-sort-order-select below) --
-           this is a compact command in a row of icon buttons, not a narrow rail where the
-           owner asked the controls to read as links; see style.css's comment on that
-           shared class for the full scope rationale. -->
+           .quick-sort-dropdown wrapper keeps this compact and caret-bearing, and .quick-link
+           gives it the same accent-colored, boxless "read as a link" treatment as the view
+           trigger next to it and both sidebar controls (v0.47.7 -- previously sidebar-only,
+           the owner asked for the header pair to match "for consistency"); see style.css's
+           "Quick link" section for the full shared-rule rationale and what's deliberately
+           NOT shared (the sidebar's two-row-rail sizing, and this control's own caret,
+           which it keeps unlike the sidebar's). -->
       <div class="quick-sort-dropdown">
-        <select id="sort-order-select" class="quick-sort-select" aria-label="Sort sessions">
+        <select id="sort-order-select" class="quick-sort-select quick-link" aria-label="Sort sessions">
           <option value="manual">Manual</option>
           <option value="alphabetical">Alphabetical</option>
           <option value="recent">Recent</option>
@@ -87,13 +86,15 @@
           <!-- Two-row "quick controls" stack (owner-directed revision of
                v0.47.4's single row): the view switcher and the sort control
                each get their own line. Both share ONE style rule --
-               .sidebar-quick-link, applied to both the button below and to
-               #sidebar-sort-order-select -- so they read as identical plain
-               links (colored, underlined text, no border/background, no
-               caret/dropdown-arrow, at rest OR on hover/focus) and cannot
-               drift out of sync the way the two independent rules here
-               previously did; see style.css for the shared rule. A small
-               caption (.sidebar-title: "View" / "Sort") precedes each link
+               .quick-link, applied to both the button below and to
+               #sidebar-sort-order-select (and, since v0.47.7, to the
+               overview header's matching pair too -- see style.css's
+               "Quick link" section) -- so all four read as identical plain
+               links (colored text, no border/background, no underline, no
+               caret/dropdown-arrow on the sidebar pair, at rest OR on
+               hover/focus) and cannot drift out of sync the way the two
+               independent rules here previously did. A small caption
+               (.sidebar-title: "View" / "Sort") precedes each sidebar link
                so the control is self-explanatory without a caret to hint
                "this opens something." #sidebar-collapse-btn was removed in
                this pass -- the expanded header's #sidebar-toggle-btn
@@ -103,19 +104,20 @@
           <div class="sidebar-header-controls">
             <div class="sidebar-view-dropdown" id="sidebar-view-dropdown">
               <span class="sidebar-title">View</span>
-              <button id="sidebar-view-dropdown-trigger" class="sidebar-quick-link" aria-haspopup="true" aria-expanded="false" aria-controls="sidebar-view-dropdown-menu">
+              <button id="sidebar-view-dropdown-trigger" class="quick-link" aria-haspopup="true" aria-expanded="false" aria-controls="sidebar-view-dropdown-menu">
                 <span id="sidebar-view-label">All Sessions</span>
               </button>
               <div id="sidebar-view-dropdown-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Switch view"></div>
             </div>
             <!-- Quick sort control -- same sort_order setting as #sort-order-select / #setting-sort-order.
                  Stays a native <select> (test_frontend_html.py asserts el.name == "select").
-                 .sidebar-quick-link is sidebar-only (see style.css): the overview
-                 header's #sort-order-select keeps the bare .quick-sort-select look
-                 unchanged -- only the narrow sidebar rail got the "read as links" ask. -->
+                 The two-row-rail SIZING (flex/min-width/padding) here is sidebar-only (see
+                 style.css) -- the overview header's #sort-order-select keeps its own existing
+                 sizing -- but the .quick-link color/no-box treatment itself is now shared with
+                 the header pair too. -->
             <div class="quick-sort-dropdown">
               <span class="sidebar-title">Sort</span>
-              <select id="sidebar-sort-order-select" class="quick-sort-select sidebar-quick-link" aria-label="Sort sessions">
+              <select id="sidebar-sort-order-select" class="quick-sort-select quick-link" aria-label="Sort sessions">
                 <option value="manual">Manual</option>
                 <option value="alphabetical">Alphabetical</option>
                 <option value="recent">Recent</option>

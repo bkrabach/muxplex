@@ -235,69 +235,132 @@ def test_css_sidebar_header_controls_is_a_column_stack():
     assert "flex-direction: column" in block
 
 
-def test_css_sidebar_quick_link_reads_as_a_link():
-    """.sidebar-quick-link must use link styling at rest -- accent-colored,
-    underlined text, no border, no background -- not a boxed control. This is
-    the ONE rule shared by both sidebar quick controls (view trigger button
-    and sort select) -- see the shared-rule test below for the no-drift
-    guarantee."""
+def test_css_quick_link_reads_as_a_link():
+    """.quick-link must use link styling at rest -- accent-colored text, no
+    underline, no border, no background -- not a boxed control. This is the
+    ONE rule shared by all FOUR quick controls: the overview header's view
+    trigger + sort select, and the sidebar's view trigger + sort select (the
+    header pair joined in v0.47.7 -- see the shared-rule test below for the
+    no-drift guarantee). Underline was dropped in the same pass: a native
+    <select>'s own displayed value doesn't reliably honor text-decoration
+    across engines, so the sidebar's select used to show no underline while
+    its sibling button did -- color + label is the only at-rest affordance
+    now, for all four."""
     css = read_css()
-    assert ".sidebar-quick-link" in css
-    block = _extract_rule_block(css, ".sidebar-quick-link,")
+    assert ".quick-link" in css
+    block = _extract_rule_block(css, ".quick-link,")
     assert "color: var(--accent)" in block
-    assert "text-decoration: underline" in block
+    assert "text-decoration" not in block
     assert "border: none" in block
     assert "background: transparent" in block
 
 
-def test_css_sidebar_quick_link_focus_visible_has_outline_ring():
-    """.sidebar-quick-link must have a keyboard-visible focus-visible outline
+def test_css_quick_link_focus_visible_has_outline_ring():
+    """.quick-link must have a keyboard-visible focus-visible outline
     (there's no border left to recolor for focus, since rest state has none)."""
     css = read_css()
-    block = _extract_rule_block(css, ".sidebar-quick-link:focus-visible,")
+    block = _extract_rule_block(css, ".quick-link:focus-visible,")
     assert "outline:" in block
     assert "var(--accent)" in block
 
 
-def test_css_sidebar_quick_link_is_one_shared_rule_not_two():
-    """Regression guard for the owner-reported drift bug: the view trigger and
-    the sort select must be styled by the SAME declaration block (a single
-    comma-separated selector list), not two independently maintained rules
-    that can silently diverge again. Asserts the button selector
-    (.sidebar-quick-link) and the ID-qualified select selector
-    (#sidebar-sort-order-select.sidebar-quick-link) appear in the SAME rule."""
+def test_css_quick_link_is_one_shared_rule_not_four():
+    """Regression guard for the owner-reported drift bug (and its v0.47.7
+    recurrence when the header pair joined): all four view/sort quick
+    controls must be styled by the SAME declaration block (a single
+    comma-separated selector list), not multiple independently maintained
+    rules that can silently diverge again. Asserts the sidebar button
+    selector (.quick-link) and all three ID-qualified selectors
+    (#view-dropdown-trigger.quick-link, #sort-order-select.quick-link,
+    #sidebar-sort-order-select.quick-link) appear in the SAME rule."""
     css = read_css()
     assert (
-        ".sidebar-quick-link,\n#sidebar-sort-order-select.sidebar-quick-link {" in css
+        ".quick-link,\n"
+        "#view-dropdown-trigger.quick-link,\n"
+        "#sort-order-select.quick-link,\n"
+        "#sidebar-sort-order-select.quick-link {" in css
     ), (
-        "The view trigger's .sidebar-quick-link and the sort select's "
-        "#sidebar-sort-order-select.sidebar-quick-link must be declared in the "
-        "SAME rule (comma-separated selector list) so they cannot drift apart"
+        "The sidebar view trigger's .quick-link and the three ID-qualified "
+        "selectors (#view-dropdown-trigger.quick-link, "
+        "#sort-order-select.quick-link, #sidebar-sort-order-select.quick-link) "
+        "must be declared in the SAME rule (comma-separated selector list) so "
+        "they cannot drift apart"
     )
 
 
-def test_css_sidebar_quick_link_select_override_exists():
-    """#sidebar-sort-order-select.sidebar-quick-link must give the sidebar's
-    sort select the same link styling (accent color + underline) as the view
-    trigger button. Scoped with the ID (not a bare .sidebar-quick-link class)
-    for unambiguous specificity over the base .quick-sort-select rules --
-    see style.css's comment for why equal-specificity + source-order cascade
-    was tried and replaced with this."""
+def test_css_quick_link_select_overrides_exist():
+    """Both #sort-order-select.quick-link and
+    #sidebar-sort-order-select.quick-link must give their selects the same
+    link styling (accent color, no underline) as the trigger buttons.
+    Scoped with the ID (not a bare .quick-link class) for unambiguous
+    specificity over the base .quick-sort-select rules -- see style.css's
+    comment for why equal-specificity + source-order cascade was tried and
+    replaced with this."""
     css = read_css()
-    assert "#sidebar-sort-order-select.sidebar-quick-link" in css
-    block = _extract_rule_block(css, "#sidebar-sort-order-select.sidebar-quick-link {")
-    assert "color: var(--accent)" in block
-    assert "text-decoration: underline" in block
+    for selector in (
+        "#sort-order-select.quick-link",
+        "#sidebar-sort-order-select.quick-link",
+    ):
+        assert selector in css
+        block = _extract_rule_block(css, selector + " {")
+        assert "color: var(--accent)" in block
 
 
-def test_css_sidebar_quick_link_never_shows_a_box():
-    """#sidebar-sort-order-select.sidebar-quick-link must stay
-    borderless/backgroundless at rest (shared block) -- a real link never
-    gets a box."""
+def test_css_quick_link_never_shows_a_box():
+    """The shared .quick-link rule must stay borderless/backgroundless at
+    rest for all four controls -- a real link never gets a box."""
     css = read_css()
-    block = _extract_rule_block(css, ".sidebar-quick-link,")
+    block = _extract_rule_block(css, ".quick-link,")
     assert "border: none" in block
     assert "background: transparent" in block
+
+
+def test_css_quick_link_header_pair_no_longer_boxed_on_hover():
+    """The overview header's view trigger and sort select must NOT keep their
+    OLD boxed hover look (border-color + background swap on hover) now that
+    they carry .quick-link -- an ID-qualified hover rule must exist for both,
+    with higher specificity than -- so it wins over -- the original
+    .view-dropdown__trigger:hover / .quick-sort-select:hover box rules, same
+    as the sidebar pair always had."""
+    css = read_css()
+    assert "#view-dropdown-trigger.quick-link:hover" in css, (
+        "must have an ID-qualified :hover rule for the header view trigger "
+        "so it wins specificity over .view-dropdown__trigger:hover's boxed look"
+    )
+    assert "#sort-order-select.quick-link:hover" in css, (
+        "must have an ID-qualified :hover rule for the header sort select "
+        "so it wins specificity over .quick-sort-select:hover's boxed look"
+    )
+    # And the declarations those selectors participate in must not reintroduce
+    # a border/background -- they only carry the accent-hover color change.
+    hover_block = _extract_rule_block(css, ".quick-link:hover,")
+    assert "border" not in hover_block
+    assert "background" not in hover_block
+
+
+def test_css_sidebar_sizing_scoped_to_sidebar_instances_only():
+    """The two-row-rail sizing (flex: 1, min-width: 0, tight padding,
+    ellipsis truncation) must stay scoped to the sidebar's own ID-qualified
+    selectors -- NOT part of the shared .quick-link rule -- so the header
+    pair's existing sizing (.view-dropdown__trigger / .quick-sort-select) is
+    left alone."""
+    css = read_css()
+    shared_block = _extract_rule_block(css, ".quick-link,")
+    assert "flex: 1" not in shared_block
+    assert "min-width: 0" not in shared_block
+
+    assert (
+        "#sidebar-view-dropdown-trigger.quick-link,\n"
+        "#sidebar-sort-order-select.quick-link {" in css
+    ), (
+        "the sidebar-only sizing block must list both sidebar selectors "
+        "together (single shared block), not split across two rules"
+    )
+    sidebar_sizing_block = _extract_rule_block(
+        css, "#sidebar-view-dropdown-trigger.quick-link,"
+    )
+    assert "flex: 1" in sidebar_sizing_block
+    assert "min-width: 0" in sidebar_sizing_block
 
 
 def test_css_sidebar_quick_link_no_caret():
