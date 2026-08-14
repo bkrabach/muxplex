@@ -195,7 +195,7 @@ def test_html_reconnect_overlay_outside_view_body() -> None:
 
 
 def test_html_session_sidebar_structure() -> None:
-    """#session-sidebar must contain .sidebar-header (with #sidebar-view-dropdown and #sidebar-collapse-btn) and #sidebar-list."""
+    """#session-sidebar must contain .sidebar-header (with #sidebar-view-dropdown) and #sidebar-list."""
     soup = _SOUP
     sidebar = soup.find(id="session-sidebar")
     assert sidebar is not None, "Missing #session-sidebar"
@@ -207,21 +207,26 @@ def test_html_session_sidebar_structure() -> None:
     assert sidebar_dropdown is not None, (
         "Missing #sidebar-view-dropdown inside .sidebar-header"
     )
-    # #sidebar-collapse-btn
-    collapse_btn = sidebar_header.find(id="sidebar-collapse-btn")
-    assert collapse_btn is not None, (
-        "Missing #sidebar-collapse-btn inside .sidebar-header"
-    )
     # #sidebar-list
     sidebar_list = sidebar.find(id="sidebar-list")
     assert sidebar_list is not None, "Missing #sidebar-list inside #session-sidebar"
 
 
+def test_html_sidebar_collapse_btn_removed() -> None:
+    """#sidebar-collapse-btn must NOT exist anywhere in the document -- removed in
+    favor of the expanded header's #sidebar-toggle-btn hamburger, which already runs
+    the identical toggleSidebar() and made a second, sidebar-local toggle redundant."""
+    soup = _SOUP
+    assert soup.find(id="sidebar-collapse-btn") is None, (
+        "#sidebar-collapse-btn must be removed -- #sidebar-toggle-btn (the hamburger) "
+        "is the only sidebar-toggle control now"
+    )
+
+
 def test_html_sidebar_header_two_row_controls_stack() -> None:
     """Sidebar view dropdown and sort control must share a .sidebar-header-controls
-    stack (the two-row layout), and #sidebar-collapse-btn must be a DIRECT child of
-    .sidebar-header -- a sibling of the stack, not nested inside it -- so it keeps a
-    fixed position regardless of how many rows the stack grows to."""
+    stack (the two-row layout), and .sidebar-header must now contain ONLY that stack
+    (no sibling collapse button -- removed in this pass)."""
     soup = _SOUP
     sidebar = soup.find(id="session-sidebar")
     assert sidebar is not None, "Missing #session-sidebar"
@@ -241,23 +246,69 @@ def test_html_sidebar_header_two_row_controls_stack() -> None:
         "#sidebar-sort-order-select must be inside .sidebar-header-controls"
     )
 
-    # #sidebar-collapse-btn must NOT be inside the stack.
-    assert controls.find(id="sidebar-collapse-btn") is None, (
-        "#sidebar-collapse-btn must NOT be inside .sidebar-header-controls -- "
-        "it is a sibling so it keeps a fixed position regardless of row count"
-    )
-    # It must instead be a direct child of .sidebar-header itself.
-    direct_child_ids = [
-        el.get("id") for el in sidebar_header.find_all(recursive=False) if el.get("id")
+    # .sidebar-header-controls must be the ONLY direct child of .sidebar-header now
+    # (previously #sidebar-collapse-btn was a second, sibling direct child).
+    direct_child_classes = [
+        el.get("class") or [] for el in sidebar_header.find_all(recursive=False)
     ]
-    assert "sidebar-collapse-btn" in direct_child_ids, (
-        f"#sidebar-collapse-btn must be a direct child of .sidebar-header, "
-        f"direct children ids: {direct_child_ids}"
+    assert len(direct_child_classes) == 1, (
+        f"#sidebar-header must have exactly one direct child (.sidebar-header-controls) "
+        f"now that #sidebar-collapse-btn is removed, found: {direct_child_classes}"
+    )
+
+
+def test_html_sidebar_quick_controls_have_captions() -> None:
+    """Each sidebar quick control must be preceded by a .sidebar-title caption
+    ("View" / "Sort") inside its own row wrapper, clarifying what each plain-link
+    control does now that neither shows a caret/dropdown-arrow hint."""
+    soup = _SOUP
+    view_wrapper = soup.find(id="sidebar-view-dropdown")
+    assert view_wrapper is not None, "Missing #sidebar-view-dropdown"
+    view_caption = view_wrapper.find("span", class_="sidebar-title")
+    assert view_caption is not None, (
+        "Missing .sidebar-title caption inside #sidebar-view-dropdown"
+    )
+    assert view_caption.get_text(strip=True) == "View", (
+        f"#sidebar-view-dropdown's caption must read 'View', got: {view_caption.get_text(strip=True)!r}"
+    )
+
+    sidebar_select = soup.find(id="sidebar-sort-order-select")
+    assert sidebar_select is not None, "Missing #sidebar-sort-order-select"
+    sort_wrapper = sidebar_select.find_parent(class_="quick-sort-dropdown")
+    assert sort_wrapper is not None, (
+        "Missing .quick-sort-dropdown wrapper around #sidebar-sort-order-select"
+    )
+    sort_caption = sort_wrapper.find("span", class_="sidebar-title")
+    assert sort_caption is not None, (
+        "Missing .sidebar-title caption inside the sidebar's .quick-sort-dropdown"
+    )
+    assert sort_caption.get_text(strip=True) == "Sort", (
+        f"Sidebar sort caption must read 'Sort', got: {sort_caption.get_text(strip=True)!r}"
+    )
+
+
+def test_html_sidebar_view_trigger_has_no_caret() -> None:
+    """#sidebar-view-dropdown-trigger must NOT contain a .view-dropdown__caret span
+    -- the sidebar control reads as a plain link now (no disclosure arrow) -- while
+    the overview header's #view-dropdown-trigger keeps its caret unchanged (out of
+    scope for this pass)."""
+    soup = _SOUP
+    sidebar_trigger = soup.find(id="sidebar-view-dropdown-trigger")
+    assert sidebar_trigger is not None, "Missing #sidebar-view-dropdown-trigger"
+    assert sidebar_trigger.find(class_="view-dropdown__caret") is None, (
+        "#sidebar-view-dropdown-trigger must NOT contain .view-dropdown__caret"
+    )
+
+    header_trigger = soup.find(id="view-dropdown-trigger")
+    assert header_trigger is not None, "Missing #view-dropdown-trigger"
+    assert header_trigger.find(class_="view-dropdown__caret") is not None, (
+        "#view-dropdown-trigger (overview header) must KEEP .view-dropdown__caret "
+        "-- out of scope for this pass"
     )
 
 
 def test_html_sidebar_quick_sort_select_has_link_modifier() -> None:
-    """#sidebar-sort-order-select must carry .quick-sort-select--link (the sidebar-only
+    """#sidebar-sort-order-select must carry .sidebar-quick-link (the shared sidebar-only
     link treatment) IN ADDITION TO the base .quick-sort-select class -- and the overview
     header's #sort-order-select must NOT carry it (scope is sidebar-only by design)."""
     soup = _SOUP
@@ -267,8 +318,8 @@ def test_html_sidebar_quick_sort_select_has_link_modifier() -> None:
     assert "quick-sort-select" in sidebar_classes, (
         f"#sidebar-sort-order-select must keep base class 'quick-sort-select', has: {sidebar_classes}"
     )
-    assert "quick-sort-select--link" in sidebar_classes, (
-        f"#sidebar-sort-order-select must have 'quick-sort-select--link', has: {sidebar_classes}"
+    assert "sidebar-quick-link" in sidebar_classes, (
+        f"#sidebar-sort-order-select must have 'sidebar-quick-link', has: {sidebar_classes}"
     )
     assert sidebar_select.name == "select", (
         f"#sidebar-sort-order-select must stay a native <select>, got: {sidebar_select.name}"
@@ -277,7 +328,7 @@ def test_html_sidebar_quick_sort_select_has_link_modifier() -> None:
     header_select = soup.find(id="sort-order-select")
     assert header_select is not None, "Missing #sort-order-select"
     header_classes = header_select.get("class") or []
-    assert "quick-sort-select--link" not in header_classes, (
+    assert "sidebar-quick-link" not in header_classes, (
         f"#sort-order-select (overview header) must NOT have the sidebar-only "
         f"link modifier, has: {header_classes}"
     )
@@ -310,7 +361,6 @@ def test_html_element_classes() -> None:
             "flex-column layout and collapse transition",
         ),
         ("sidebar-toggle-btn", "sidebar-toggle-btn", "36x36 bordered button styles"),
-        ("sidebar-collapse-btn", "sidebar-collapse-btn", "chevron button hover styles"),
         ("sidebar-list", "sidebar-list", "flex:1 overflow-y:auto scroll container"),
     ]
     for el_id, expected_class, reason in cases:

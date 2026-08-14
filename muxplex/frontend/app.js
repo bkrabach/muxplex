@@ -1478,8 +1478,11 @@ function initSidebar() {
 /**
  * Toggle the sidebar open/closed state.
  * Derives current state from DOM class, inverts it, persists to server,
- * applies sidebar--collapsed class, and updates the collapse button text.
- * Button shows ‹ when open, › when closed.
+ * and applies the sidebar--collapsed class. #sidebar-collapse-btn (the
+ * old in-sidebar chevron this function used to also update) was removed
+ * from the DOM in this pass -- the expanded header's #sidebar-toggle-btn
+ * hamburger is the only trigger for this now, so there is no second
+ * button's text to keep in sync.
  */
 function toggleSidebar() {
   var sidebar = $('session-sidebar');
@@ -1496,9 +1499,6 @@ function toggleSidebar() {
 
   if (_serverSettings) _serverSettings.sidebarOpen = isOpen;
   patchServerSetting('sidebarOpen', isOpen);
-
-  var collapseBtn = $('sidebar-collapse-btn');
-  if (collapseBtn) collapseBtn.textContent = isOpen ? '\u2039' : '\u203a';
 }
 
 /**
@@ -7355,7 +7355,6 @@ function bindStaticEventListeners() {
   var newSessionFab = $('new-session-fab');
   if (newSessionFab) on(newSessionFab, 'click', showFabSessionInput);
   on($('sidebar-toggle-btn'), 'click', toggleSidebar);
-  on($('sidebar-collapse-btn'), 'click', toggleSidebar);
   bindSidebarClickAway();
   document.addEventListener('keydown', handleGlobalKeydown);
   on($('session-pill'), 'click', openBottomSheet);

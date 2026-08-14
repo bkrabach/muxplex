@@ -1,3 +1,65 @@
+## v0.47.6 (2026-08-14)
+
+Third pass on the sidebar's view/sort quick controls, per explicit owner
+direction on v0.47.5: drop the disclosure carets so each control reads as a
+*pure* link, unify the two controls' styling into one shared rule so they
+can never drift out of sync again, label each control, and remove the
+sidebar's own collapse button (redundant with the expanded header's
+hamburger).
+
+### Changed
+
+- **Both sidebar quick controls now share ONE CSS rule.** The view trigger
+  button and `#sidebar-sort-order-select` previously had two independently
+  maintained rules (`.sidebar-view-trigger`, ~19 declarations, vs. a
+  3-declaration `#sidebar-sort-order-select.quick-sort-select--link`
+  override) that had already drifted out of sync -- the owner noticed the
+  select was missing properties the button had. Both elements now carry
+  the identical `.sidebar-quick-link` class, styled by one comma-separated
+  selector list (`.sidebar-quick-link, #sidebar-sort-order-select.sidebar-
+  quick-link { ... }`); changing a value changes both controls at once.
+  The select still needs the ID-qualified selector to reliably win
+  specificity over the base `.quick-sort-select` rules it also carries
+  (equal-specificity + source-order was verified-in-browser unreliable
+  for a native `<select>`'s own text rendering in a prior pass -- not
+  re-litigated).
+- **No disclosure caret/arrow on either sidebar control.** The view
+  trigger's `<span class="view-dropdown__caret">` was removed from the
+  markup outright; the sort select's arrow (drawn via
+  `.quick-sort-dropdown::after`) is suppressed for the sidebar instance
+  only, via `.sidebar-header-controls .quick-sort-dropdown::after {
+  content: none; }`. The overview header keeps its caret/arrow unchanged
+  in both cases -- out of scope for this pass.
+- **Each control now has a text caption ("View" / "Sort").** A small
+  `.sidebar-title` label (revived -- it had been dead CSS, unreferenced by
+  any markup, since a prior refactor) precedes each link so the control is
+  still self-explanatory without a caret to hint "this opens something."
+  Text was chosen over an icon/emoji: this fleet spans macOS, Linux,
+  Windows, and Android, and emoji glyph rendering (colored vs. monochrome
+  vs. missing/tofu) is inconsistent across those platforms -- exactly the
+  kind of visual-inconsistency risk this pass exists to remove, just moved
+  from CSS to font rendering. A single glyph is also inherently ambiguous
+  between "view" and "sort" without a text label alongside it anyway,
+  which would have undercut the simplification an icon was meant to buy.
+- **`#sidebar-collapse-btn` is removed.** The expanded header's
+  `#sidebar-toggle-btn` hamburger already calls the identical
+  `toggleSidebar()`, so the sidebar's own collapse button was a second
+  control for the same action. `toggleSidebar()` no longer reads or
+  writes a `#sidebar-collapse-btn` element (the function used to update
+  its chevron text on every toggle); the click-listener binding for it
+  in `bindStaticEventListeners()` is removed too, along with the
+  now-orphaned `.sidebar-collapse-btn` CSS (including its `<960px`
+  responsive `display: none` override).
+- **Verified in a real browser via `browser-tester` agents:** desktop
+  sidebar width and mobile overlay width screenshots, before/after;
+  both quick controls confirmed visually identical in treatment at rest
+  (same accent color, same underline, no caret on either); collapse
+  button confirmed absent; the hamburger (`#sidebar-toggle-btn`) confirmed
+  to still open/close the sidebar; sort selection confirmed to round-trip
+  live from the sidebar to the overview header's quick-sort and Settings >
+  Sessions; both controls confirmed keyboard-reachable via Tab with a
+  visible focus ring.
+
 ## v0.47.5 (2026-08-14)
 
 Revises the sidebar's view/sort quick controls per explicit owner direction on

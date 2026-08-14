@@ -527,10 +527,10 @@ body {
    the two-row layout the owner asked for (a single row was tried in
    v0.47.4 and explicitly overruled; don't re-litigate it). Cross-axis
    default is `stretch`, so each row fills the full width without needing
-   its own flex-grow -- see the removed `flex: 1` on .sidebar-view-dropdown
-   below, which was only ever needed for the OLD single-row layout.
-   #sidebar-collapse-btn is a sibling of this wrapper, not a child of it --
-   see the index.html comment for why. */
+   its own flex-grow. #sidebar-collapse-btn no longer exists (removed in
+   this pass) -- the expanded header's #sidebar-toggle-btn hamburger
+   already runs the identical toggleSidebar(), so a second, sidebar-local
+   control for the same action was redundant. */
 .sidebar-header-controls {
   display: flex;
   flex-direction: column;
@@ -538,38 +538,74 @@ body {
   min-width: 0;
 }
 
+/* Small caption ("View" / "Sort") placed before each sidebar quick
+   control so the now caret-less, boxless link controls below (see
+   .sidebar-quick-link) are still self-explanatory at a glance. Revives a
+   rule that had been dead CSS since a prior refactor -- nothing in
+   index.html referenced .sidebar-title before this pass -- rather than
+   inventing a near-duplicate label class. flex-shrink: 0 keeps the
+   caption from ever being squeezed; the link next to it is the one that
+   shrinks/ellipsizes (see .sidebar-quick-link's flex: 1; min-width: 0). */
 .sidebar-title {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 
-/* Sidebar view switcher dropdown */
+/* Sidebar view switcher dropdown -- now a flex row (caption + trigger). */
 .sidebar-view-dropdown {
   position: relative;
-  min-width: 0;
-}
-
-/* Sidebar-only "link" treatment (owner-directed revision of the boxed
-   hover/focus affordance shipped in v0.47.4 -- that pass read as more
-   interactive than the original muted label, but still not link-like
-   enough). Color + underline now carry the "this is clickable" signal;
-   there is never a border or a filled background here, at rest OR on
-   hover/focus. The disclosure caret (.view-dropdown__caret, shared with
-   the header instance) stays muted-gray on purpose -- the label text is
-   what reads as the link, the caret is a secondary hint, same as a
-   trailing chevron next to a hyperlink. Only the truncation properties
-   (max-width/overflow/white-space/text-overflow) are sidebar-specific,
-   needed because the sidebar is much narrower than the header and a long
-   view name must ellipsize rather than push the sort control or collapse
-   button off. focus-visible gets an outline ring rather than a
-   border-color swap, since there's no border left to recolor. */
-.sidebar-view-trigger {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+
+/* Sidebar-only "link" treatment -- ONE shared rule for BOTH quick
+   controls (the view-switcher trigger button below AND the sort
+   <select>, #sidebar-sort-order-select). Previously these were two
+   independently hand-maintained rules (.sidebar-view-trigger, ~19
+   declarations, vs. a 3-declaration
+   #sidebar-sort-order-select.quick-sort-select--link override) that had
+   already drifted out of sync -- the owner noticed the select was
+   missing the flex/gap/padding/transition properties the button had.
+   Both controls now carry the identical .sidebar-quick-link class and
+   are styled by this one selector list; changing a value here changes
+   both controls at once, so they cannot diverge again.
+
+   Neither control shows a caret/native dropdown arrow any more -- the
+   view trigger's <span class="view-dropdown__caret"> was removed outright
+   in index.html, and the select's disclosure arrow is suppressed via the
+   ".sidebar-header-controls .quick-sort-dropdown::after" override in the
+   "Quick sort control" section further down (the header instance keeps
+   its arrow, untouched). The caption label (.sidebar-title, above) now
+   carries the "what is this control" signal the caret used to hint at;
+   color + underline still carry the "this is clickable" signal, with no
+   border or filled background at rest OR on hover/focus -- a real link
+   never gets a box.
+
+   #sidebar-sort-order-select needs the ID-qualified selector (not just
+   the bare .sidebar-quick-link class) to reliably win specificity over
+   the base .quick-sort-select rules it also carries (display/appearance/
+   padding/hover -- needed for the native-<select> reset; see that
+   class's own comment). Equal-specificity + source-order was tried for
+   this in the past and verified-in-browser to be unreliable for a native
+   <select>'s own rendering of its selected-option text (some engines
+   silently kept the base rule's color regardless of source order) -- ID+
+   class specificity is unconditional and doesn't depend on stylesheet
+   order, so it's used here again rather than re-litigating that finding.
+   flex: 1 + min-width: 0 let either control shrink/ellipsize inside its
+   row instead of overflowing past the sidebar's fixed width. */
+.sidebar-quick-link,
+#sidebar-sort-order-select.sidebar-quick-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   border-radius: 4px;
@@ -587,12 +623,15 @@ body {
   transition: color 0.15s;
 }
 
-.sidebar-view-trigger:hover,
-.sidebar-view-trigger[aria-expanded="true"] {
+.sidebar-quick-link:hover,
+.sidebar-quick-link[aria-expanded="true"],
+#sidebar-sort-order-select.sidebar-quick-link:hover,
+#sidebar-sort-order-select.sidebar-quick-link:focus-visible {
   color: var(--accent-hover);
 }
 
-.sidebar-view-trigger:focus-visible {
+.sidebar-quick-link:focus-visible,
+#sidebar-sort-order-select.sidebar-quick-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -621,20 +660,6 @@ body {
   gap: var(--sidebar-gap);
   touch-action: pan-y;          /* tell browser vertical panning is allowed on mobile */
   overscroll-behavior: contain; /* prevent scroll chaining to non-scrollable parent */
-}
-
-.sidebar-collapse-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 18px;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.sidebar-collapse-btn:hover {
-  color: var(--text);
 }
 
 .sidebar-toggle-btn {
@@ -2461,7 +2486,17 @@ body {
    host generated content itself) using the exact glyph .view-dropdown__caret
    uses, so the two read as one visual family. The wrapper also gives the
    select room to size to its longest option ("Alphabetical") without a
-   fixed control width -- the actual "we can see the names better" ask. */
+   fixed control width -- the actual "we can see the names better" ask.
+
+   This base class + wrapper is still exactly what the HEADER instance
+   (#sort-order-select) uses, unchanged. The SIDEBAR instance
+   (#sidebar-sort-order-select) also carries this base class (for the
+   shared appearance/cursor/font reset) but its rest-state look is then
+   fully overridden by .sidebar-quick-link -- see the "Sidebar view
+   switcher dropdown" section earlier in this file, where that shared rule
+   and its rationale live. Only the disclosure-arrow suppression for the
+   sidebar instance is handled down here, right after .quick-sort-dropdown
+   ::after, since it targets the wrapper this comment describes. */
 .quick-sort-dropdown {
   position: relative;
   display: flex;
@@ -2511,56 +2546,18 @@ body {
   margin-left: 8px;
 }
 
-/* Sidebar-only link treatment for the quick sort control (owner-directed
-   revision of the v0.47.4 boxed hover/focus affordance above). Applied via
-   an ADDITIONAL modifier class (.quick-sort-select--link) on top of the
-   base .quick-sort-select, not a replacement of it: the overview header's
-   #sort-order-select keeps the bare .quick-sort-select look (a compact
-   command among a row of icon buttons, unaffected by this revision), while
-   the sidebar's narrower, two-row rail gets full link styling -- color +
-   underline, never a border or a filled background, in any state.
-
-   Deliberately scoped as #sidebar-sort-order-select.quick-sort-select--link
-   (ID + class) rather than a bare .quick-sort-select--link class selector.
-   An earlier bare-class version relied on equal-specificity + source-order
-   cascade to beat the base .quick-sort-select rules above -- correct in
-   theory, but verified-in-browser testing showed the override silently
-   losing the color/text-decoration cascade in practice (the select kept
-   rendering in the base's muted color). Native <select> elements are known
-   to be inconsistent about which author rules win for their own displayed-
-   value text across engines; rather than chase that inconsistency, this
-   pins unambiguous higher specificity (ID+class beats a single class,
-   unconditionally, in every engine) so the outcome never depends on
-   cascade timing again. This ID is unique to the sidebar instance by
-   construction (HTML ids are page-unique), so this is not a regression
-   toward one-off ID-soup -- it's the one element this modifier has ever
-   applied to.
-
-   See .sidebar-view-trigger's comment for why the disclosure caret
-   (.quick-sort-dropdown::after, still shared, still muted-gray) is
-   deliberately NOT re-colored to match -- the label carries the link
-   signal, the caret is a secondary hint. */
-#sidebar-sort-order-select.quick-sort-select--link {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-#sidebar-sort-order-select.quick-sort-select--link,
-#sidebar-sort-order-select.quick-sort-select--link:hover,
-#sidebar-sort-order-select.quick-sort-select--link:focus-visible {
-  border-color: transparent;
-  background: transparent;
-}
-
-#sidebar-sort-order-select.quick-sort-select--link:hover,
-#sidebar-sort-order-select.quick-sort-select--link:focus-visible {
-  color: var(--accent-hover);
-}
-
-#sidebar-sort-order-select.quick-sort-select--link:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+/* Sidebar-only: suppress the disclosure-arrow pseudo-element drawn by
+   .quick-sort-dropdown::after above. The header instance (#sort-order-select,
+   NOT inside .sidebar-header-controls) keeps its arrow untouched -- only
+   the sidebar's wrapper is targeted here, via an ancestor selector that is
+   naturally more specific than the shared base rule, so this can never
+   affect the header. The sidebar select's actual "read as a link" styling
+   (color, underline, no border/background in any state) is NOT duplicated
+   here -- it comes entirely from .sidebar-quick-link, the one rule shared
+   with the sidebar view trigger button (see the "Sidebar view switcher
+   dropdown" section earlier in this file). */
+.sidebar-header-controls .quick-sort-dropdown::after {
+  content: none;
 }
 
 /* ============================================================
@@ -2988,10 +2985,6 @@ body {
     width: 240px;
     min-width: 240px;
     transform: translateX(-100%);
-  }
-
-  .sidebar-collapse-btn {
-    display: none;
   }
 
   /* Mobile FAB: show on mobile, hide header + button */

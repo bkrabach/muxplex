@@ -235,56 +235,81 @@ def test_css_sidebar_header_controls_is_a_column_stack():
     assert "flex-direction: column" in block
 
 
-def test_css_sidebar_view_trigger_reads_as_a_link():
-    """.sidebar-view-trigger must use link styling at rest -- accent-colored,
-    underlined text, no border, no background -- not a boxed control."""
+def test_css_sidebar_quick_link_reads_as_a_link():
+    """.sidebar-quick-link must use link styling at rest -- accent-colored,
+    underlined text, no border, no background -- not a boxed control. This is
+    the ONE rule shared by both sidebar quick controls (view trigger button
+    and sort select) -- see the shared-rule test below for the no-drift
+    guarantee."""
     css = read_css()
-    assert ".sidebar-view-trigger" in css
-    block = _extract_rule_block(css, ".sidebar-view-trigger {")
+    assert ".sidebar-quick-link" in css
+    block = _extract_rule_block(css, ".sidebar-quick-link,")
     assert "color: var(--accent)" in block
     assert "text-decoration: underline" in block
     assert "border: none" in block
     assert "background: transparent" in block
 
 
-def test_css_sidebar_view_trigger_focus_visible_has_outline_ring():
-    """.sidebar-view-trigger must have a keyboard-visible focus-visible outline
+def test_css_sidebar_quick_link_focus_visible_has_outline_ring():
+    """.sidebar-quick-link must have a keyboard-visible focus-visible outline
     (there's no border left to recolor for focus, since rest state has none)."""
     css = read_css()
-    block = _extract_rule_block(css, ".sidebar-view-trigger:focus-visible {")
+    block = _extract_rule_block(css, ".sidebar-quick-link:focus-visible,")
     assert "outline:" in block
     assert "var(--accent)" in block
 
 
-def test_css_quick_sort_select_link_modifier_exists():
-    """#sidebar-sort-order-select.quick-sort-select--link must give the sidebar's
-    sort select link styling (accent color + underline). Scoped with the ID
-    (not a bare .quick-sort-select--link class) for unambiguous specificity
-    over the base .quick-sort-select rules -- see style.css's comment for why
-    equal-specificity + source-order cascade was replaced with this."""
+def test_css_sidebar_quick_link_is_one_shared_rule_not_two():
+    """Regression guard for the owner-reported drift bug: the view trigger and
+    the sort select must be styled by the SAME declaration block (a single
+    comma-separated selector list), not two independently maintained rules
+    that can silently diverge again. Asserts the button selector
+    (.sidebar-quick-link) and the ID-qualified select selector
+    (#sidebar-sort-order-select.sidebar-quick-link) appear in the SAME rule."""
     css = read_css()
-    assert ".quick-sort-select--link" in css
-    assert "#sidebar-sort-order-select.quick-sort-select--link" in css
-    block = _extract_rule_block(
-        css, "#sidebar-sort-order-select.quick-sort-select--link {"
+    assert (
+        ".sidebar-quick-link,\n#sidebar-sort-order-select.sidebar-quick-link {" in css
+    ), (
+        "The view trigger's .sidebar-quick-link and the sort select's "
+        "#sidebar-sort-order-select.sidebar-quick-link must be declared in the "
+        "SAME rule (comma-separated selector list) so they cannot drift apart"
     )
+
+
+def test_css_sidebar_quick_link_select_override_exists():
+    """#sidebar-sort-order-select.sidebar-quick-link must give the sidebar's
+    sort select the same link styling (accent color + underline) as the view
+    trigger button. Scoped with the ID (not a bare .sidebar-quick-link class)
+    for unambiguous specificity over the base .quick-sort-select rules --
+    see style.css's comment for why equal-specificity + source-order cascade
+    was tried and replaced with this."""
+    css = read_css()
+    assert "#sidebar-sort-order-select.sidebar-quick-link" in css
+    block = _extract_rule_block(css, "#sidebar-sort-order-select.sidebar-quick-link {")
     assert "color: var(--accent)" in block
     assert "text-decoration: underline" in block
 
 
-def test_css_quick_sort_select_link_modifier_never_shows_a_box():
-    """#sidebar-sort-order-select.quick-sort-select--link must stay
-    borderless/backgroundless in every state (rest, hover, focus-visible) --
-    a real link never gets a box."""
+def test_css_sidebar_quick_link_never_shows_a_box():
+    """#sidebar-sort-order-select.sidebar-quick-link must stay
+    borderless/backgroundless at rest (shared block) -- a real link never
+    gets a box."""
     css = read_css()
-    block = _extract_rule_block(
-        css,
-        "#sidebar-sort-order-select.quick-sort-select--link,\n"
-        "#sidebar-sort-order-select.quick-sort-select--link:hover,\n"
-        "#sidebar-sort-order-select.quick-sort-select--link:focus-visible {",
-    )
-    assert "border-color: transparent" in block
+    block = _extract_rule_block(css, ".sidebar-quick-link,")
+    assert "border: none" in block
     assert "background: transparent" in block
+
+
+def test_css_sidebar_quick_link_no_caret():
+    """The sidebar's disclosure-arrow pseudo-element must be suppressed
+    (content: none) for the sort select, scoped so the overview header's
+    #sort-order-select keeps its arrow untouched."""
+    css = read_css()
+    assert ".sidebar-header-controls .quick-sort-dropdown::after" in css
+    block = _extract_rule_block(
+        css, ".sidebar-header-controls .quick-sort-dropdown::after {"
+    )
+    assert "content: none" in block
 
 
 def test_css_sidebar_title():
@@ -362,26 +387,13 @@ def test_css_sidebar_device_header_first_child_no_extra_margin():
     assert "margin-top: 0" in block
 
 
-def test_css_sidebar_collapse_btn():
-    """.sidebar-collapse-btn must be a minimal button styled for the chevron."""
+def test_css_sidebar_collapse_btn_removed():
+    """.sidebar-collapse-btn must no longer exist anywhere in style.css --
+    the element it styled was removed from index.html in this pass."""
     css = read_css()
-    assert ".sidebar-collapse-btn" in css
-    block = _extract_rule_block(css, ".sidebar-collapse-btn {")
-    assert "background: none" in block
-    assert "border: none" in block
-    assert "color: var(--text-muted)" in block
-    assert "cursor: pointer" in block
-    assert "font-size: 18px" in block
-    assert "padding: 2px 6px" in block
-    assert "border-radius: 4px" in block
-
-
-def test_css_sidebar_collapse_btn_hover():
-    """.sidebar-collapse-btn:hover must show full text color."""
-    css = read_css()
-    assert ".sidebar-collapse-btn:hover" in css
-    block = _extract_rule_block(css, ".sidebar-collapse-btn:hover {")
-    assert "color: var(--text)" in block
+    assert ".sidebar-collapse-btn" not in css, (
+        ".sidebar-collapse-btn CSS must be removed along with the HTML element"
+    )
 
 
 def test_css_sidebar_toggle_btn():
@@ -606,15 +618,6 @@ def test_css_responsive_overlay_sidebar_collapsed():
     assert "width: 240px" in block
     assert "min-width: 240px" in block
     assert "transform: translateX(-100%)" in block
-
-
-def test_css_responsive_overlay_collapse_btn_hidden():
-    """.sidebar-collapse-btn inside <960px must be display: none."""
-    css = read_css()
-    media_block = _extract_media_block(css, "@media (max-width: 959px)")
-    assert ".sidebar-collapse-btn" in media_block
-    block = _extract_rule_block(media_block, ".sidebar-collapse-btn")
-    assert "display: none" in block
 
 
 def test_css_reduced_motion_sidebar_transition_none():

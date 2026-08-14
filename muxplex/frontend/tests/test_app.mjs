@@ -1963,11 +1963,9 @@ test('initSidebar defaults to open (removes sidebar--collapsed) on wide screens 
   const mockSidebar = {
     classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) , toggle: () => {}},
   };
-  const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-sidebar') return mockSidebar;
-    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -1990,11 +1988,9 @@ test('initSidebar defaults to closed (adds sidebar--collapsed) on narrow screens
   const mockSidebar = {
     classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) , toggle: () => {}},
   };
-  const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-sidebar') return mockSidebar;
-    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -2017,11 +2013,9 @@ test('initSidebar respects stored value true regardless of screen width — even
   const mockSidebar = {
     classList: { remove: (c) => removedClasses.push(c), add: (c) => addedClasses.push(c) , toggle: () => {}},
   };
-  const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-sidebar') return mockSidebar;
-    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -2044,11 +2038,9 @@ test('toggleSidebar persists state to _serverSettings — from open toggles to c
   const mockSidebar = {
     classList: { remove: () => {}, add: () => {}, contains: () => false , toggle: () => {}},
   };
-  const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-sidebar') return mockSidebar;
-    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -2068,11 +2060,9 @@ test('toggleSidebar adds sidebar--collapsed class when closing (from open)', () 
   const mockSidebar = {
     classList: { remove: () => {}, add: (c) => addedClasses.push(c), contains: () => false , toggle: () => {}},
   };
-  const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-sidebar') return mockSidebar;
-    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -2092,11 +2082,9 @@ test('toggleSidebar removes sidebar--collapsed class when opening (from closed) 
   const mockSidebar = {
     classList: { remove: (c) => removedClasses.push(c), add: () => {}, contains: (c) => c === 'sidebar--collapsed' , toggle: () => {}},
   };
-  const mockCollapseBtn = { textContent: '' };
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) => {
     if (id === 'session-sidebar') return mockSidebar;
-    if (id === 'sidebar-collapse-btn') return mockCollapseBtn;
     return null;
   };
 
@@ -2121,7 +2109,7 @@ test('renderSidebar is exported and callable', () => {
 
 // --- bindStaticEventListeners sidebar toggle buttons ---
 
-test('bindStaticEventListeners binds sidebar-toggle-btn and sidebar-collapse-btn click to toggleSidebar', () => {
+test('bindStaticEventListeners binds sidebar-toggle-btn click to toggleSidebar', () => {
   const eventsBound = {};
   const origGetById = globalThis.document.getElementById;
   const origDocAddListener = globalThis.document.addEventListener;
@@ -2137,10 +2125,6 @@ test('bindStaticEventListeners binds sidebar-toggle-btn and sidebar-collapse-btn
   assert.ok(
     eventsBound['sidebar-toggle-btn'] && 'click' in eventsBound['sidebar-toggle-btn']._events,
     '#sidebar-toggle-btn should have a click listener',
-  );
-  assert.ok(
-    eventsBound['sidebar-collapse-btn'] && 'click' in eventsBound['sidebar-collapse-btn']._events,
-    '#sidebar-collapse-btn should have a click listener',
   );
   globalThis.document.getElementById = origGetById;
   globalThis.document.addEventListener = origDocAddListener;
