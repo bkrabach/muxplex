@@ -336,24 +336,113 @@ def test_css_quick_link_never_shows_a_box():
 def test_css_quick_link_header_pair_no_longer_boxed_on_hover():
     """The overview header's view trigger and sort select must NOT keep their
     OLD boxed hover look (border-color + background swap on hover) now that
-    they carry .quick-link -- an ID-qualified hover rule must exist for both,
-    with higher specificity than -- so it wins over -- the original
-    .view-dropdown__trigger:hover / .quick-sort-select:hover box rules, same
-    as the sidebar pair always had."""
+    they carry .quick-link -- an ID-qualified hover rule must exist for both.
+
+    v0.47.8 STRENGTHENING: this test used to assert "border"/"background" are
+    ABSENT from the shared hover block and stop there -- and that was exactly
+    the false confidence that let the drift bug survive a fourth round. CSS
+    cascades per PROPERTY: a higher-specificity rule that never MENTIONS
+    `background` does not beat a lower-specificity legacy rule that sets it,
+    so .view-dropdown__trigger:hover / .quick-sort-select:hover kept winning
+    even after this test went green. The fix is an EXPLICIT no-box guarantee
+    in the shared rule (present now, asserted below) PLUS deleting the
+    legacy rules' box declarations entirely (asserted by
+    test_css_legacy_classes_have_no_visual_state_rules) -- absence of a
+    competing declaration is not provable by grepping one rule in isolation,
+    so this test now checks both sides."""
     css = read_css()
     assert "#view-dropdown-trigger.quick-link:hover" in css, (
-        "must have an ID-qualified :hover rule for the header view trigger "
-        "so it wins specificity over .view-dropdown__trigger:hover's boxed look"
+        "must have an ID-qualified :hover rule for the header view trigger"
     )
     assert "#sort-order-select.quick-link:hover" in css, (
-        "must have an ID-qualified :hover rule for the header sort select "
-        "so it wins specificity over .quick-sort-select:hover's boxed look"
+        "must have an ID-qualified :hover rule for the header sort select"
     )
-    # And the declarations those selectors participate in must not reintroduce
-    # a border/background -- they only carry the accent-hover color change.
+    # The shared hover/focus/active block must EXPLICITLY guarantee no box
+    # (not merely omit border/background and hope nothing else sets them).
     hover_block = _extract_rule_block(css, ".quick-link:hover,")
-    assert "border" not in hover_block
-    assert "background" not in hover_block
+    assert "background: transparent" in hover_block, (
+        "the shared interactive-state rule must explicitly force "
+        "background: transparent -- relying on the absence of a competing "
+        "declaration is what let the legacy .view-dropdown__trigger:hover / "
+        ".quick-sort-select:hover box rules keep winning silently"
+    )
+    assert "border: none" in hover_block, (
+        "the shared interactive-state rule must explicitly force "
+        "border: none for the same reason"
+    )
+
+
+def test_css_legacy_classes_have_no_visual_state_rules():
+    """v0.47.8 STRENGTHENED GUARD -- this is the test that should have existed
+    since v0.47.7 and didn't: it directly closes the specific loophole that
+    let the owner-reported drift survive FOUR rounds of fixes.
+
+    Each prior round patched .quick-link (the shared rule) and re-verified
+    only what THAT rule declared. Nobody verified the NEGATIVE: that the two
+    legacy per-element base classes (.view-dropdown__trigger,
+    .quick-sort-select) had stopped declaring their OWN, independent
+    :hover/:focus-visible/:active/[aria-expanded] rules. Because CSS cascades
+    per PROPERTY (not per rule), a higher-specificity rule that is silent on
+    `background` never beats a lower-specificity rule that sets it -- so the
+    legacy .view-dropdown__trigger:hover / .quick-sort-select:hover box
+    rules kept winning silently, invisibly to every test that only looked at
+    .quick-link's own declarations. This test asserts the loophole is closed
+    structurally and permanently:
+
+    1. Neither legacy class may EVER again be paired with an interactive
+       pseudo-class or the aria-expanded attribute selector, anywhere in the
+       file -- that combination is exactly how the box reappeared.
+    2. Each legacy class's own (rest-state) rule body may not declare any of
+       the properties .quick-link already owns (color, border, background,
+       transition) -- only structural resets a <button> vs a native
+       <select> genuinely, differently need.
+
+    If a future change needs either legacy class to react to hover/focus/
+    active/expanded again, that state belongs in .quick-link's own shared
+    rule (see its comment), not a new per-element rule -- extend the
+    existing shared selector list instead of reintroducing this bug a fifth
+    time."""
+    css = read_css()
+
+    forbidden_pairings = (
+        ".view-dropdown__trigger:hover",
+        ".view-dropdown__trigger:focus-visible",
+        ".view-dropdown__trigger:active",
+        ".view-dropdown__trigger[aria-expanded",
+        ".quick-sort-select:hover",
+        ".quick-sort-select:focus-visible",
+        ".quick-sort-select:active",
+        ".quick-sort-select[aria-expanded",
+        ".quick-sort-select:open",
+    )
+    for pairing in forbidden_pairings:
+        assert pairing not in css, (
+            f"{pairing!r} must never exist in style.css -- ALL interactive-"
+            "state styling for the four quick controls (view trigger + "
+            "sort select, header + sidebar) must live solely in the shared "
+            ".quick-link rule. This exact shape of per-element state rule "
+            "is what caused the owner-reported drift to survive four "
+            "rounds of fixes; see .quick-link's own comment for the full "
+            "incident."
+        )
+
+    forbidden_properties = ("color:", "border", "background", "transition")
+
+    trigger_block = _extract_rule_block(css, ".view-dropdown__trigger {")
+    for prop in forbidden_properties:
+        assert prop not in trigger_block, (
+            f".view-dropdown__trigger must not declare {prop!r} -- that "
+            "duplication of what .quick-link already governs is exactly "
+            "what caused the owner-reported drift"
+        )
+
+    select_block = _extract_rule_block(css, ".quick-sort-select {")
+    for prop in forbidden_properties:
+        assert prop not in select_block, (
+            f".quick-sort-select must not declare {prop!r} -- that "
+            "duplication of what .quick-link already governs is exactly "
+            "what caused the owner-reported drift"
+        )
 
 
 def test_css_sidebar_sizing_scoped_to_sidebar_instances_only():

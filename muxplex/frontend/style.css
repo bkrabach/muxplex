@@ -569,62 +569,81 @@ body {
    controls: the overview header's view-dropdown trigger (#view-dropdown-
    trigger) and sort select (#sort-order-select), AND the sidebar's view
    trigger (#sidebar-view-dropdown-trigger) and sort select
-   (#sidebar-sort-order-select). Originally sidebar-only (.sidebar-quick-
-   link) -- the header pair was explicitly out of scope for that pass,
-   read as boxed commands instead (border + background on hover, matching
-   the header's other icon buttons). The owner asked for the SAME
-   treatment on the header pair too, "for consistency" (v0.47.7), so this
-   rule was renamed .quick-link and extended rather than duplicated --
-   the exact drift this rule exists to prevent had already happened once
-   between two independently hand-maintained versions of this same idea
-   (.sidebar-view-trigger, ~19 declarations, vs. a 3-declaration
-   #sidebar-sort-order-select.quick-sort-select--link override); adding a
-   THIRD/FOURTH near-duplicate for the header would just be that mistake
-   again. Changing a value here changes all four controls at once, so
-   they cannot diverge again -- see
-   test_css_quick_link_is_one_shared_rule_not_four.
+   (#sidebar-sort-order-select).
+
+   v0.47.8 -- FOUR ROUNDS of "still not the same" later, the owner asked
+   for these four controls to be treated as one component, full stop,
+   even without a real component system. Every previous round patched a
+   VALUE; the actual bug was structural and survived all of them:
+   .quick-link only ever overrode the properties someone remembered to
+   override, while two legacy per-element base classes
+   (.view-dropdown__trigger, .quick-sort-select, both further down this
+   file) kept their OWN :hover/:focus-visible rules with a border-color +
+   background swap -- "the old boxed-command look" from before either
+   control read as a link at all. CSS cascades PER PROPERTY, not per
+   rule: a higher-specificity rule that never mentions `background` does
+   not beat a lower-specificity rule that sets it, so the legacy
+   background fill kept winning on hover for BOTH the header view trigger
+   and both selects, and -- because only the SELECT's legacy rule also
+   fired on :focus-visible, never the button's -- the sort select alone
+   showed a boxed highlight on keyboard focus that the view trigger never
+   did. That is precisely the bug the owner reported on this round;
+   test_css_quick_link_header_pair_no_longer_boxed_on_hover already
+   existed and still didn't catch it, because it only checked what THIS
+   rule declared, never what the legacy rules still declared alongside
+   it.
+
+   The fix is structural, not another value tweak: .quick-link (the
+   three blocks below -- rest, interactive states, and the focus-visible
+   outline ring) is now the ONLY place anywhere that sets color, border,
+   background, or transition for any of these four controls, in ANY
+   state -- rest, hover, focus-visible, active, or expanded. The legacy
+   base classes still exist in both this file and index.html (see
+   test_html_quick_link_class_on_all_four_controls) but now carry ONLY
+   the structural reset a <button> vs a native <select> genuinely,
+   differently need, and -- this is the part that actually closes the
+   loophole -- NO :hover/:focus-visible/:active/[aria-expanded=...] rules
+   of their own, ever again. See
+   test_css_legacy_classes_have_no_visual_state_rules.
 
    Color + label is the only at-rest affordance for all four: no border,
-   no filled background, no underline (dropped in the same pass -- see
-   below), at rest OR on hover/focus -- a real link never gets a box.
-   Underline was tried for the sidebar pair and reads inconsistently: a
-   native <select>'s own displayed value doesn't reliably honor
-   text-decoration across engines (the color-vs-source-order caveat two
-   paragraphs down is the same class of native-<select>-rendering quirk),
-   so the button showed an underline the select didn't -- removed
-   entirely rather than chasing per-engine reliability; color + the
-   .sidebar-title/label text next to each control already read as
-   "interactive" on their own.
+   no filled background, no underline, at rest OR on hover, focus, or
+   active -- a real link never gets a box, in any state. Underline was
+   tried for the sidebar pair and reads inconsistently: a native
+   <select>'s own displayed value doesn't reliably honor text-decoration
+   across engines, so removed entirely rather than chasing per-engine
+   reliability.
 
    Carets are NOT part of this shared rule and are unaffected by it: the
    sidebar pair has none (the trigger's <span class="view-dropdown__caret">
    was removed outright in index.html; the select's disclosure arrow is
    suppressed via ".sidebar-header-controls .quick-sort-dropdown::after"
    in the "Quick sort control" section further down) -- a spacious two-row
-   rail uses the .sidebar-title caption instead to signal "what is this
-   control". The header pair KEEPS its caret (the trigger's caret span,
-   and the select wrapper's ::after arrow) unchanged: it's a compact
-   command in a packed row of icon buttons, where the caret is still the
-   clearer "this opens something" cue -- see test_html_sidebar_view_trigger_has_no_caret.
+   rail uses the .sidebar-title caption instead. The header pair KEEPS its
+   caret (the trigger's caret span, and the select wrapper's ::after
+   arrow) -- see test_html_sidebar_view_trigger_has_no_caret. That leaves
+   exactly ONE genuine, structural (not "look") difference between the
+   two select instances: only #sort-order-select still draws a visible
+   caret, so only it still needs extra right-padding to keep its text
+   clear of the glyph -- see the "Quick sort control" section's
+   #sort-order-select.quick-link padding-right rule and its comment for
+   why that is not a reintroduction of this same drift bug.
 
-   Sizing/layout is deliberately NOT in this rule -- see the sidebar-only
-   block right below it. The sidebar's two-row rail needs each control to
-   fill its row and shrink/ellipsize inside a fixed-width sidebar; the
-   header pair sits in a packed horizontal toolbar and keeps its own
-   existing sizing from .view-dropdown__trigger / .quick-sort-select
-   unchanged. That's a genuine difference between the two surfaces, not a
-   color/box choice that should ever diverge, so it stays scoped rather
-   than forced into the shared rule.
+   Sizing/layout beyond padding is deliberately NOT in this rule -- see
+   the sidebar-only block right below it. The sidebar's two-row rail
+   needs each control to grow to fill its row and shrink/ellipsize inside
+   a fixed-width sidebar; the header pair keeps the padding set here.
+   That's a genuine difference between the two surfaces, not a color/box
+   choice that should ever diverge -- see
+   test_css_sidebar_sizing_scoped_to_sidebar_instances_only.
 
-   All four selectors are ID-qualified (not bare .quick-link) to reliably
-   win specificity over each control's OTHER base class
-   (.view-dropdown__trigger's own color, .quick-sort-select's
-   display/appearance/padding/hover -- needed for the native-<select>
-   reset; see that class's own comment) regardless of stylesheet order.
-   Equal-specificity + source-order was tried for the sidebar select in
-   the past and verified-in-browser to be unreliable for a native
-   <select>'s own rendering of its selected-option text (some engines
-   silently kept the base rule's color regardless of source order) -- ID+
+   All four selectors are ID-qualified where the control also carries a
+   legacy base class, so this rule reliably wins regardless of
+   stylesheet order; #sidebar-view-dropdown-trigger carries no other
+   class at all, so the bare .quick-link selector already governs it
+   uniquely. Equal-specificity + source-order was tried for the sidebar
+   select in the past and verified-in-browser to be unreliable for a
+   native <select>'s own rendering of its selected-option text -- ID+
    class specificity is unconditional and doesn't depend on stylesheet
    order, so the same ID-qualified pattern is used for all four here
    rather than re-litigating that finding per control. */
@@ -635,6 +654,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 4px 10px;
   background: transparent;
   border: none;
   border-radius: 4px;
@@ -645,15 +665,39 @@ body {
   transition: color 0.15s;
 }
 
+/* Interactive states -- hover, keyboard focus, mouse-down, and the button
+   pair's own expanded state -- all four controls, ONE rule, identical
+   color and an EXPLICIT (not merely absent) no-box guarantee. Explicit
+   background/border here, rather than relying on the legacy classes
+   simply not mentioning them, is the actual fix for the drift bug this
+   section's opening comment describes: an explicit override wins the
+   cascade regardless of what any OTHER rule -- present now, or added
+   later by someone who doesn't know this history -- declares for the
+   same property. focus-visible is folded into the SAME color change as
+   hover (not just the outline ring below) so Tab-focusing any of the
+   four looks identical to hovering any of the four -- previously only
+   the two <select>s did this (a native <select> doesn't reliably fire
+   :hover on keyboard focus, so its own legacy rule listed :focus-visible
+   too), while the two buttons' focus-visible got the outline ring only
+   and nothing else -- an inconsistency the owner's "treat all four as
+   one component" ask rules out too. */
 .quick-link:hover,
+.quick-link:focus-visible,
+.quick-link:active,
 .quick-link[aria-expanded="true"],
 #view-dropdown-trigger.quick-link:hover,
+#view-dropdown-trigger.quick-link:focus-visible,
+#view-dropdown-trigger.quick-link:active,
 #view-dropdown-trigger.quick-link[aria-expanded="true"],
 #sort-order-select.quick-link:hover,
 #sort-order-select.quick-link:focus-visible,
+#sort-order-select.quick-link:active,
 #sidebar-sort-order-select.quick-link:hover,
-#sidebar-sort-order-select.quick-link:focus-visible {
+#sidebar-sort-order-select.quick-link:focus-visible,
+#sidebar-sort-order-select.quick-link:active {
   color: var(--accent-hover);
+  background: transparent;
+  border: none;
 }
 
 .quick-link:focus-visible,
@@ -664,14 +708,30 @@ body {
   outline-offset: 2px;
 }
 
+/* Open-state parity for the two native <select>s, mirroring the button
+   pair's [aria-expanded="true"] rule above (a <select> has no DOM
+   attribute equivalent to aria-expanded for its own native popup). Uses
+   the :open pseudo-class (CSS Selectors/Basic UI) -- support varies by
+   engine and OS across this fleet, so this is a best-effort progressive
+   enhancement, not a guarantee: kept as its OWN rule, never merged into
+   a comma list with supported selectors, so an engine that doesn't
+   recognize :open drops only this one rule and nothing else. This
+   cannot reach the native OS popup surface itself (the actual list of
+   options), which is drawn entirely outside CSS's control on every
+   platform this fleet spans -- it only affects the trigger's own color
+   while open, where the engine supports detecting that state at all. */
+#sort-order-select.quick-link:open,
+#sidebar-sort-order-select.quick-link:open {
+  color: var(--accent-hover);
+}
+
 /* Sidebar-only sizing -- the genuine surface difference the shared rule
    above deliberately does not cover (see its comment). The two-row rail
    (.sidebar-header-controls) needs each control to grow to fill its own
    row and shrink/ellipsize instead of overflowing the sidebar's fixed
-   width; the header pair keeps its own existing sizing
-   (.view-dropdown__trigger's padding, .quick-sort-select's
-   caret-reserving padding) untouched, so this block is scoped to the
-   sidebar instances only via the ID qualifier. */
+   width; the header pair keeps the padding set in the shared rule above
+   untouched, so this block is scoped to the sidebar instances only via
+   the ID qualifier. */
 #sidebar-view-dropdown-trigger.quick-link,
 #sidebar-sort-order-select.quick-link {
   flex: 1;
@@ -2385,25 +2445,19 @@ body {
   margin-left: 12px;
 }
 
+/* v0.47.8: this class used to carry its own color/border/background/
+   transition/hover/[aria-expanded] declarations -- an independent,
+   near-duplicate copy of what .quick-link already governs for all four
+   quick controls, and the actual source of the owner-reported drift (see
+   the "Quick link" section's opening comment for the full incident). It
+   now carries nothing at all; kept only because the class name still
+   appears in index.html (see test_html_quick_link_class_on_all_four_
+   controls) and as a stable place to point future readers at .quick-link
+   instead. Every visual property and every state -- rest, hover,
+   focus-visible, active, expanded -- lives solely in .quick-link. See
+   test_css_legacy_classes_have_no_visual_state_rules, which guards this
+   class from ever regaining one of its own. */
 .view-dropdown__trigger {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  font-size: 13px;
-  font-family: var(--font-ui);
-  color: var(--text);
-  cursor: pointer;
-  padding: 4px 10px;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.view-dropdown__trigger:hover,
-.view-dropdown__trigger[aria-expanded="true"] {
-  border-color: var(--border);
-  background: var(--bg-surface);
 }
 
 .view-dropdown__caret {
@@ -2521,29 +2575,27 @@ body {
    #sort-order-select / #sidebar-sort-order-select stay native <select>s
    (test_frontend_html.py asserts el.name == "select" for both -- a
    deliberate, guarded contract, not an oversight to "fix" by swapping in
-   a custom listbox). What was actually wrong was styling: .settings-select
-   gave them a full border + solid background, so they read as a boxed
-   form control, while the view dropdown trigger next to them read as a
-   command. .quick-sort-select instead borrows .view-dropdown__trigger's
-   visual language directly -- full-contrast text, no border/background at
-   rest, a visible caret, a hover/focus affordance -- so both controls read
-   as the same kind of interactive, compact command. `appearance: none`
-   drops the browser's native arrow (and the width it reserves); the caret
-   glyph is redrawn via ::after on the wrapper (a <select> can't reliably
-   host generated content itself) using the exact glyph .view-dropdown__caret
-   uses, so the two read as one visual family. The wrapper also gives the
-   select room to size to its longest option ("Alphabetical") without a
-   fixed control width -- the actual "we can see the names better" ask.
+   a custom listbox).
 
-   This base class + wrapper is what BOTH the HEADER instance
-   (#sort-order-select) and the SIDEBAR instance (#sidebar-sort-order-select)
-   use for the shared appearance/cursor/font reset -- both controls' actual
-   rest-state color/box look is then fully overridden by .quick-link (ID-
-   qualified per control) -- see the "Quick link" section earlier in this
-   file, where that shared rule and its rationale live. Only the
-   disclosure-arrow suppression for the sidebar instance is handled down
-   here, right after .quick-sort-dropdown::after, since it targets the
-   wrapper this comment describes (the header instance keeps its arrow). */
+   `appearance: none` drops the browser's native arrow (and the width it
+   reserves); the caret glyph is redrawn via ::after on the wrapper (a
+   <select> can't reliably host generated content itself) using the exact
+   glyph .view-dropdown__caret uses. The wrapper also gives the select
+   room to size to its longest option ("Alphabetical") without a fixed
+   control width.
+
+   v0.47.8: .quick-sort-select used to ALSO carry its own color/border/
+   background/transition/hover/focus-visible declarations -- an
+   independent, near-duplicate copy of what .quick-link already governs,
+   and the actual source of the owner-reported drift (see the "Quick
+   link" section's opening comment for the full incident). It now
+   carries ONLY the structural reset a native <select> genuinely needs
+   that a <button> does not: the appearance reset, and a max-width so a
+   long option ("Alphabetical") can't overflow its flex container. Every
+   color/border/background/transition/state declaration lives SOLELY in
+   .quick-link (see that section earlier in this file) -- see
+   test_css_legacy_classes_have_no_visual_state_rules, which guards this
+   class from ever regaining one of its own. */
 .quick-sort-dropdown {
   position: relative;
   display: flex;
@@ -2566,25 +2618,27 @@ body {
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
-  display: flex;
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  font-size: 13px;
-  font-family: var(--font-ui);
-  color: var(--text);
-  cursor: pointer;
-  padding: 4px 22px 4px 10px; /* right padding reserves room for the caret */
   max-width: 100%;
-  transition: border-color 0.15s, background 0.15s;
 }
 
-.quick-sort-select:hover,
-.quick-sort-select:focus-visible {
-  border-color: var(--border);
-  background: var(--bg-surface);
-  outline: none;
+/* Caret clearance -- structural, not a "look" difference, and the ONE
+   genuine remaining difference between the two select instances. Of the
+   two <select>s, only the HEADER instance (#sort-order-select) still
+   draws a visible caret (the sidebar's is suppressed just below); that
+   caret is an absolutely-positioned pseudo-element overlaid on the select
+   itself (a <select> can't host a real sibling <span> the way the button
+   trigger's caret does), so only ITS text needs extra right-padding to
+   stay clear of the glyph. Scoped to the one selector that needs it,
+   layered on top of .quick-link's shared padding (same specificity as
+   that rule, declared later in the file, so only padding-right is
+   affected here) -- not a reintroduction of a parallel visual rule:
+   color/border/background/hover/focus/active/expanded all remain
+   governed entirely by .quick-link. The sidebar select needs no
+   equivalent -- its own sizing block (see the "Quick link" section)
+   already replaces this padding outright, and it draws no caret to
+   clear in the first place. */
+#sort-order-select.quick-link {
+  padding-right: 22px;
 }
 
 /* Header instance sits after the view dropdown -- same gap .header-sort-select
