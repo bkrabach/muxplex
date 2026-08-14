@@ -257,9 +257,22 @@ def test_css_quick_link_reads_as_a_link():
 
 def test_css_quick_link_focus_visible_has_outline_ring():
     """.quick-link must have a keyboard-visible focus-visible outline
-    (there's no border left to recolor for focus, since rest state has none)."""
+    (there's no border left to recolor for focus, since rest state has none).
+    Anchored on the full 4-selector list (not the bare ".quick-link:focus-
+    visible," prefix) -- that bare prefix is also a substring of the EARLIER
+    hover-color rule's own ID-qualified select entries (e.g.
+    "#sidebar-sort-order-select.quick-link:focus-visible,", which triggers
+    the same hover color since a native <select> doesn't reliably get a CSS
+    :hover on keyboard focus), so a naive substring search finds that rule's
+    brace first instead of the dedicated outline rule below it."""
     css = read_css()
-    block = _extract_rule_block(css, ".quick-link:focus-visible,")
+    block = _extract_rule_block(
+        css,
+        ".quick-link:focus-visible,\n"
+        "#view-dropdown-trigger.quick-link:focus-visible,\n"
+        "#sort-order-select.quick-link:focus-visible,\n"
+        "#sidebar-sort-order-select.quick-link:focus-visible {",
+    )
     assert "outline:" in block
     assert "var(--accent)" in block
 
@@ -290,20 +303,25 @@ def test_css_quick_link_is_one_shared_rule_not_four():
 
 def test_css_quick_link_select_overrides_exist():
     """Both #sort-order-select.quick-link and
-    #sidebar-sort-order-select.quick-link must give their selects the same
-    link styling (accent color, no underline) as the trigger buttons.
-    Scoped with the ID (not a bare .quick-link class) for unambiguous
-    specificity over the base .quick-sort-select rules -- see style.css's
-    comment for why equal-specificity + source-order cascade was tried and
-    replaced with this."""
+    #sidebar-sort-order-select.quick-link must be part of the shared
+    .quick-link rule, giving both selects the same link styling (accent
+    color) as the trigger buttons. Scoped with the ID (not a bare .quick-link
+    class) for unambiguous specificity over the base .quick-sort-select
+    rules -- see style.css's comment for why equal-specificity + source-order
+    cascade was tried and replaced with this. Only the LAST selector in the
+    shared list is immediately followed by "{" (the other three are followed
+    by a comma), so this checks selector presence directly rather than
+    trying to extract a per-selector block -- the actual declarations are
+    verified once, for the whole shared rule, by
+    test_css_quick_link_reads_as_a_link."""
     css = read_css()
     for selector in (
         "#sort-order-select.quick-link",
         "#sidebar-sort-order-select.quick-link",
     ):
-        assert selector in css
-        block = _extract_rule_block(css, selector + " {")
-        assert "color: var(--accent)" in block
+        assert selector in css, (
+            f"{selector} must be part of the shared .quick-link rule"
+        )
 
 
 def test_css_quick_link_never_shows_a_box():

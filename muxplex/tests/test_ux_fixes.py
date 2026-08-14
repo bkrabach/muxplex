@@ -162,9 +162,16 @@ def test_manage_view_delete_removes_view_from_settings() -> None:
     )
     assert match, "openManageViewPanel function not found"
     body = match.group(1)
-    # openManageViewPanel must either patch directly or call a helper that does
+    # openManageViewPanel must either patch directly or call a helper that does.
+    # persistActiveView() is the v0.47.7 delegation point for the rename path's
+    # active_view PATCH (previously a direct api() call inline here) -- see
+    # test_switch_view_patches_state's docstring for the same convention.
     assert (
-        "api(" in body or "PATCH" in body or "_saveViews" in body or "splice" in body
+        "api(" in body
+        or "PATCH" in body
+        or "_saveViews" in body
+        or "splice" in body
+        or "persistActiveView" in body
     ), "Manage View delete must call PATCH /api/settings to remove the view"
 
 
