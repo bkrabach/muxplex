@@ -57,6 +57,20 @@
                 aria-pressed="false" aria-label="Independent view"
                 title="Following this server's view">&#128279;</button>
         <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge" class="error-count-badge hidden"></span></button>
+        <!-- Muxplex Agent entry point (see /chat.js): Amplifier-powered chat panel.
+             Grouped with the other header-actions controls rather than centered --
+             .app-header already spends its width on the wordmark + view/sort
+             dropdowns via justify-content:space-between, so true centering would
+             mean restructuring that layout; this instead joins the other
+             global-action icon buttons it belongs alongside (new session /
+             settings / sync), widened just enough to carry the logo + label the
+             owner asked for. Label collapses to icon-only at <=599px to match
+             how every sibling button in this row already behaves on narrow/
+             mobile widths (see .header-btn--agent in style.css). -->
+        <button id="chat-open-btn" class="header-btn header-btn--agent" aria-label="Ask Muxplex Agent" title="Muxplex Agent -- powered by Amplifier Agent">
+          <img src="/amplifier-icon-32.png" alt="" width="16" height="16" class="agent-btn-logo" />
+          <span class="agent-btn-label">Agent</span>
+        </button>
         <span id="connection-status"></span>
       </div>
     </header>
@@ -78,6 +92,18 @@
               aria-pressed="false" aria-label="Independent view"
               title="Following this server's view">&#128279;</button>
       <button id="settings-btn-expanded" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge-expanded" class="error-count-badge hidden"></span></button>
+      <!-- Same Muxplex Agent entry point as the overview header (#chat-open-btn),
+           mirrored here following this file's own established convention for
+           global controls (compare sync-group-btn/-expanded and settings-btn/
+           -expanded above): a session open in the expanded terminal view is
+           exactly when a user is most likely to want to ask the agent about
+           it, so the panel stays reachable in both header variants. Wired as
+           an optional second listener in chat.js -- the panel's required-
+           element check does not depend on this button existing. -->
+      <button id="chat-open-btn-expanded" class="header-btn header-btn--agent" aria-label="Ask Muxplex Agent" title="Muxplex Agent -- powered by Amplifier Agent">
+        <img src="/amplifier-icon-32.png" alt="" width="16" height="16" class="agent-btn-logo" />
+        <span class="agent-btn-label">Agent</span>
+      </button>
     </header>
     <div class="view-body">
       <div id="session-sidebar" class="session-sidebar">
@@ -515,6 +541,31 @@
   </dialog>
 
   <!-- ── Scripts ──────────────────────────────────────────────────────────── -->
+
+  <!-- Muxplex Agent panel (see /chat.js). Branding pass: real classes onto
+       style.css's own tokens (--bg-surface, --border, --text, --accent,
+       --header-height, etc.) instead of the plumbing-phase inline styles --
+       see .agent-panel* rules in style.css. Slides in from the right per the
+       owner's ask; "Muxplex Agent" is the panel's name, with a "Powered by
+       Amplifier Agent" attribution line and the Amplifier logo both always
+       visible in the header row so the panel never reads as unbranded. -->
+  <div id="chat-panel" class="agent-panel hidden">
+    <div class="agent-panel-header">
+      <img src="/amplifier-icon-48.png" alt="Amplifier" width="22" height="22" class="agent-panel-logo" />
+      <div class="agent-panel-title-group">
+        <span class="agent-panel-name">Muxplex Agent</span>
+        <span class="agent-panel-attribution">Powered by Amplifier Agent</span>
+      </div>
+      <button id="chat-new-btn" class="header-btn" title="Start a new conversation">New</button>
+      <button id="chat-close-btn" class="header-btn" aria-label="Close chat">&#10005;</button>
+    </div>
+    <div id="chat-messages" class="agent-panel-messages"></div>
+    <div class="agent-panel-composer">
+      <textarea id="chat-input" class="agent-panel-input" rows="2" placeholder="Ask about your sessions..."></textarea>
+      <button id="chat-send-btn" class="header-btn agent-panel-send-btn">Send</button>
+    </div>
+  </div>
+
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/xterm-addon-fit.js"></script>
   <script src="/vendor/xterm-addon-web-links.js"></script>
@@ -522,5 +573,6 @@
   <script src="/vendor/addon-image.js"></script>
   <script src="/app.js" defer></script>
   <script src="/terminal.js" defer></script>
+  <script src="/chat.js" defer></script>
 </body>
 </html>

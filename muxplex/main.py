@@ -31,7 +31,7 @@ from urllib.parse import quote
 import httpx
 import websockets
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
@@ -1070,6 +1070,17 @@ async def lifespan(app: FastAPI):
     )
     _federation_client = app.state.federation_client
 
+    # Separate client (not federation_client) for the amplifier-agent chat
+    # proxy: federation_client's 5s timeout is sized for a quick session-list
+    # poll, not a model turn. read=None here because the agent's own SSE
+    # contract emits a keepalive comment every 3s of silence specifically so
+    # a long model turn or internal tool loop never trips a client read
+    # timeout (see amplifier-agent docs/spec/http-face.md) -- this client
+    # must not impose a shorter one of its own underneath that contract.
+    app.state.agent_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
+    )
+
     yield
 
     # Shutdown — ordered and bounded so a SIGTERM (systemctl stop/restart)
@@ -1108,6 +1119,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("federation_client aclose error")
     _federation_client = None
+
+    try:
+        agent_client = getattr(app.state, "agent_client", None)
+        if agent_client is not None:
+            await agent_client.aclose()
+    except Exception:
+        _log.exception("agent_client aclose error")
 
     _log.info(
         "shutdown: cancelled poll loop, closed %d terminal relay(s), stopped ttyd",
@@ -1178,6 +1196,18 @@ _auth_mode, _auth_password = _resolve_auth()
 _auth_secret = load_or_create_secret()
 _auth_ttl = int(os.environ.get("MUXPLEX_SESSION_TTL", "604800"))
 _federation_key = load_federation_key()
+
+# ---------------------------------------------------------------------------
+# amplifier-agent chat-panel proxy (POC) -- see /api/agent/chat/completions
+# below. muxplex holds this bearer secret so it can call the sidecar's
+# OpenAI-compatible HTTP face on the browser's behalf; the sidecar itself
+# holds no muxplex credential of any kind (no cookie, no muxplex API key, no
+# federation key) and cannot reach muxplex's loopback bypass -- it runs as a
+# separate, network-isolated user (see iptables OUTPUT rule dropping that
+# user's traffic to muxplex's port). This is the only bridge, and only ever
+# flows browser -> muxplex -> agent, never the reverse.
+_AGENT_PROXY_URL = os.environ.get("AMPLIFIER_AGENT_URL", "http://127.0.0.1:9099")
+_AGENT_PROXY_TOKEN = os.environ.get("AMPLIFIER_AGENT_BEARER_TOKEN", "")
 
 app.add_middleware(
     AuthMiddleware,
@@ -5281,6 +5311,91 @@ class _NoCacheStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "no-cache"
         return response
+
+
+# ---------------------------------------------------------------------------
+# amplifier-agent chat-panel proxy (POC)
+# ---------------------------------------------------------------------------
+#
+# Registered before the static-file mount below (route order matters: FastAPI
+# matches routes in registration order, and the mount below is "/", which
+# would otherwise shadow nothing here since this is an explicit path -- but
+# every API route in this file is declared before the mount for the same
+# reason). Not in auth.py's _AUTH_EXEMPT_PATHS, so a non-localhost caller must
+# already carry a valid muxplex_session cookie to reach it -- same gate as
+# every other /api/ route.
+
+
+@app.post("/api/agent/chat/completions")
+async def agent_chat_completions_proxy(request: Request) -> Response:
+    """Same-origin proxy to the amplifier-agent HTTP chat-completions sidecar.
+
+    The browser talks only to muxplex's own origin, authenticated by the
+    caller's normal muxplex_session cookie (AuthMiddleware already gates this
+    route, same as every other /api/ route -- it is not in
+    auth.py's _AUTH_EXEMPT_PATHS). muxplex then forwards the request
+    server-side to the sidecar's OpenAI-compatible endpoint, attaching the
+    sidecar's own bearer secret (_AGENT_PROXY_TOKEN) -- a credential scoped
+    only to "muxplex may call the agent's chat API", never the reverse. The
+    agent process itself holds no muxplex credential of any kind (no cookie,
+    no muxplex API key, no federation key) and is further network-isolated
+    (see the deployment notes: it runs as its own unprivileged user with an
+    iptables OUTPUT rule dropping that user's traffic to muxplex's port) so
+    that this is structurally true, not merely true by convention.
+
+    This is a raw byte relay: the request body is forwarded unmodified and
+    the upstream response body (SSE chunks, per amplifier-agent's
+    docs/spec/http-face.md) is streamed back unmodified. muxplex does not
+    parse or transform the wire format here -- the browser is the OpenAI
+    chat-completions client, not this route.
+    """
+    if not _AGENT_PROXY_TOKEN:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "Agent proxy is not configured on this server "
+                    "(AMPLIFIER_AGENT_BEARER_TOKEN unset)",
+                    "type": "server_error",
+                }
+            },
+            status_code=503,
+        )
+
+    body = await request.body()
+    client_session_id = request.headers.get("x-client-session-id", "")
+
+    upstream_headers = {
+        "Authorization": f"Bearer {_AGENT_PROXY_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    if client_session_id:
+        upstream_headers["X-Client-Session-Id"] = client_session_id
+
+    client: httpx.AsyncClient = request.app.state.agent_client
+    upstream_url = f"{_AGENT_PROXY_URL.rstrip('/')}/v1/chat/completions"
+
+    async def relay():
+        try:
+            async with client.stream(
+                "POST", upstream_url, content=body, headers=upstream_headers
+            ) as upstream:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+        except httpx.HTTPError as exc:
+            # Loud, visible, in-stream failure -- never a silent empty
+            # response. Mirrors the agent's own mid-stream error convention
+            # (see http-face.md's "[amplifier-agent error: ...]" shape) so a
+            # broken sidecar looks the same to the panel as a broken turn.
+            _log.warning("agent proxy: upstream request failed: %s", exc)
+            err = {
+                "error": {
+                    "message": f"agent sidecar unreachable at {_AGENT_PROXY_URL}: {exc}",
+                    "type": "server_error",
+                }
+            }
+            yield f"data: {json.dumps(err)}\n\ndata: [DONE]\n\n".encode()
+
+    return StreamingResponse(relay(), media_type="text/event-stream")
 
 
 app.mount(

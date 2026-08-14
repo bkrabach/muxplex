@@ -1872,6 +1872,192 @@ body {
 }
 
 /* ============================================================
+   Muxplex Agent -- header entry point
+   ============================================================
+   The chat button (#chat-open-btn / #chat-open-btn-expanded) is a
+   .header-btn like its siblings (same 32px height, border, hover-to-accent
+   behavior) but widened via this modifier to carry the Amplifier logo +
+   an "Agent" label, per the owner's ask for a labeled, branded entry point.
+   Grouped with the other header-actions icons rather than centered -- see
+   the comment on the button markup in index.html for the placement
+   rationale. At <=599px the label drops and the button returns to the
+   same 32px square as its siblings, matching how every other header-btn
+   already behaves at that width (icon only, no label). */
+
+.header-btn--agent {
+  width: auto;
+  padding: 0 10px 0 8px;
+  gap: 6px;
+}
+
+.agent-btn-logo {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.agent-btn-label {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+@media (max-width: 599px) {
+  .header-btn--agent {
+    width: 32px;
+    padding: 0;
+  }
+
+  .agent-btn-label {
+    display: none;
+  }
+}
+
+/* ============================================================
+   Muxplex Agent -- chat panel
+   ============================================================
+   Replaces the plumbing-phase inline styles on #chat-panel with real
+   classes onto the app's own tokens, matching the same dark-surface /
+   border / spacing language as the rest of muxplex (compare
+   .settings-dialog, .session-sidebar). Fixed slide-over from the right,
+   per the owner's ask; the header row inside always shows the Amplifier
+   logo + "Muxplex Agent" name + "Powered by Amplifier Agent" attribution,
+   so the branding is visible any time the panel is open, at any width. */
+
+.agent-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 92vw);
+  z-index: 9000;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--text);
+  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.45);
+}
+
+.agent-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--header-height);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.agent-panel-logo {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: block;
+}
+
+.agent-panel-title-group {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.3;
+}
+
+.agent-panel-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-panel-attribution {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.agent-panel-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.agent-panel-composer {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.agent-panel-input {
+  flex: 1 1 auto;
+  resize: none;
+  background: var(--bg-secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: 13px var(--font-ui);
+}
+
+.agent-panel-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.agent-panel-send-btn {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 0 12px;
+}
+
+/* Message rendering (chat.js's appendSystemLine/appendBubble/appendError) --
+   replaces the plumbing-phase inline hex colors (#1d3a1d/#1d1d3a/#3a1d1d,
+   unrelated to the app palette) with the same tokens used everywhere else. */
+
+.agent-msg-system {
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 4px 0;
+}
+
+.agent-msg-bubble {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  border: 1px solid var(--border-subtle);
+}
+
+.agent-msg-bubble--user {
+  background: var(--bg-tile-hover);
+}
+
+.agent-msg-bubble--assistant {
+  background: var(--bg-secondary);
+  border-color: var(--accent-dim);
+}
+
+.agent-msg-error {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--err);
+  border: 1px solid rgba(248, 81, 73, 0.35);
+}
+
+/* ============================================================
    Settings dialog
    ============================================================ */
 

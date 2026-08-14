@@ -1,0 +1,261 @@
+# The agent chat sidecar (POC deployment notes)
+
+> **Status: proof-of-concept.** This documents a working POC, not a shipped
+> feature. The panel (`muxplex/frontend/chat.js`) and the proxy route
+> (`/api/agent/chat/completions`) are in-repo; the sidecar that route talks to
+> is *not* — it is a separate process, owned by a separate OS user, wired up
+> out-of-band. This file is that wiring, written down, so the POC can be stood
+> back up from a clean box instead of being re-derived.
+
+## What this is
+
+An AI chat panel embedded in the muxplex dashboard. The interesting property
+is not the panel — it is where tool execution happens.
+
+The model is *declared* six tools. It never calls any of them. Every tool call
+comes back down the SSE stream to the browser, and **the browser executes it**,
+against muxplex's own origin, with the logged-in user's own `muxplex_session`
+cookie. The agent therefore inherits **exactly** the calling user's authority,
+because it is literally the user's browser making every request.
+
+The agent process holds **no muxplex credential of any kind** — no cookie, no
+muxplex API key, no federation key. That is the whole point, and the sections
+below are what make it structurally true rather than merely conventional.
+
+## Request path
+
+```
+browser  --(muxplex_session cookie)-->  muxplex  --(sidecar bearer)-->  amplifier-agent
+   ^                                                                         |
+   |                                                                         |
+   +----------------- SSE: tool_calls come back to the browser --------------+
+   |
+   +--(muxplex_session cookie)--> muxplex /api/sessions, /api/state, ...
+                                  (the browser executes the tool, not the agent)
+```
+
+Traffic only ever flows browser → muxplex → agent. Never the reverse. There is
+no path by which the sidecar initiates a call into muxplex — and the iptables
+rule below is what removes that path from the realm of "we just don't do that."
+
+## The six tools
+
+All six are declared in `chat.js`'s `TOOLS` array and dispatched in the same
+file. Each maps to an existing public `/api/*` endpoint — no new capability was
+added for the agent, and no endpoint was widened for it.
+
+| Tool | Endpoint | Kind |
+|---|---|---|
+| `list_muxplex_sessions` | `GET /api/sessions` | read |
+| `get_muxplex_session_details` | `GET /api/sessions/{name}` | read |
+| `list_muxplex_federated_sessions` | `GET /api/federation/sessions` | read |
+| `switch_muxplex_session` | `POST /api/sessions/{name}/connect` | drive |
+| `switch_muxplex_view` | `PATCH /api/state` | drive |
+| `send_muxplex_session_input` | `POST /api/sessions/{name}/input` | **write (RCE by design)** |
+
+### The input fence governs the agent exactly as it governs a human
+
+`send_muxplex_session_input` hits the same fenced endpoint documented in
+AGENTS.md → "Terminal input: `POST /api/sessions/{name}/input` (RCE by design,
+fenced)". It is gated server-side by `settings.input_enabled` and
+`settings.input_allowed_sessions` — both `LOCAL_ONLY_KEYS`, settable only by
+the operator editing `settings.json` on disk, never over the API.
+
+`chat.js` makes no attempt to open, probe around, or route past that fence. It
+calls the endpoint and surfaces whatever muxplex decides, including a 403.
+**This was proven in the POC**: with `input_enabled` false on disk, the agent's
+input tool gets the same 403 a human clicking the same control gets. The
+operator's on-disk fence is the single control point for both.
+
+This is the load-bearing claim of the whole design: there is no "agent mode"
+bypass, because the agent has no channel of its own to bypass anything with.
+
+## Standing up the sidecar
+
+Everything below lives outside the repo, on the host. Reproduce in order.
+
+### 1. An unprivileged user for the agent
+
+```bash
+sudo useradd --system --create-home --shell /bin/bash aa-svc
+```
+
+The POC ran it as `uid=999(aa-svc) gid=990(aa-svc)`. **Note the UID** — the
+iptables rule in §5 matches on it. Substitute your actual UID there.
+
+### 2. Install amplifier-agent as that user
+
+```bash
+sudo -u aa-svc -H bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+sudo -u aa-svc -H bash -lc 'uv tool install amplifier-agent'
+```
+
+POC ran `amplifier-agent, version 0.12.0`, landing at
+`/home/aa-svc/.local/bin/amplifier-agent`.
+
+### 3. Host config — prompt caching disabled
+
+`/etc/amplifier-agent-host-config.json`, world-readable:
+
+```json
+{
+  "providers": {
+    "anthropic": { "module": "anthropic", "config": { "enable_prompt_caching": false } }
+  },
+  "provider": {
+    "module": "anthropic",
+    "config": { "enable_prompt_caching": false }
+  }
+}
+```
+
+`enable_prompt_caching: false` is **a workaround, not a preference** — it works
+around a filed upstream bug. Re-check whether it is still needed before
+carrying this forward; if the upstream fix has landed, this whole file may be
+deletable.
+
+### 4. The sidecar environment file
+
+`/etc/amplifier-agent-http-aasvc.env`, mode `0600`, owned `aa-svc:aa-svc`.
+
+```ini
+AMPLIFIER_AGENT_HTTP_BIND=127.0.0.1
+AMPLIFIER_AGENT_HTTP_PORT=9099
+AMPLIFIER_AGENT_HTTP_WORKSPACE=muxplex-chat-poc
+AMPLIFIER_AGENT_HTTP_MODEL_ID=amplifier
+AMPLIFIER_AGENT_HTTP_CONFIG_PATH=/etc/amplifier-agent-host-config.json
+PATH=/home/aa-svc/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOME=/home/aa-svc
+
+# SECRETS — supply real values, never commit them:
+AMPLIFIER_AGENT_HTTP_API_KEY=<generate: openssl rand -hex 32>
+ANTHROPIC_API_KEY=<your Anthropic API key>
+```
+
+> `AMPLIFIER_AGENT_HTTP_API_KEY` is the bearer muxplex presents to the sidecar.
+> It must match `AMPLIFIER_AGENT_BEARER_TOKEN` in §6. Generate it; do not reuse
+> a credential from anywhere else. It is scoped to exactly one thing — "muxplex
+> may call the agent's chat API" — and grants nothing in the other direction.
+
+Bind is `127.0.0.1` deliberately: the sidecar is loopback-only, never on the
+LAN, in the same spirit as AGENTS.md → "ttyd is loopback-only by design".
+
+### 5. systemd unit
+
+`/etc/systemd/system/amplifier-agent-http.service`:
+
+```ini
+[Unit]
+Description=amplifier-agent HTTP chat-completions face (muxplex chat POC sidecar, isolated user)
+After=network.target
+
+[Service]
+Type=simple
+User=aa-svc
+Group=aa-svc
+EnvironmentFile=/etc/amplifier-agent-http-aasvc.env
+ExecStart=/home/aa-svc/.local/bin/amplifier-agent serve chat-completions
+Restart=on-failure
+RestartSec=2
+WorkingDirectory=/home/aa-svc
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now amplifier-agent-http.service
+```
+
+### 6. The network fence — this is the mechanism, not decoration
+
+The claim "the agent holds no muxplex credential" is only worth anything if the
+agent also *cannot reach muxplex to use one*. muxplex treats loopback specially;
+a process on the same box that could open a socket to muxplex's port would be
+sitting inside that trust boundary. So the agent's UID is firewalled away from
+muxplex's port outright:
+
+```bash
+MUXPLEX_PORT=8088
+AA_UID=$(id -u aa-svc)
+
+# Loopback: the trust-sensitive one.
+sudo iptables -A OUTPUT -d 127.0.0.1/32 -p tcp \
+  -m owner --uid-owner "$AA_UID" --dport "$MUXPLEX_PORT" \
+  -j REJECT --reject-with tcp-reset
+
+# The host's own LAN address, so the agent cannot loop back around via the NIC.
+# Substitute this box's real LAN IP (the POC host was 10.119.176.180).
+sudo iptables -A OUTPUT -d <THIS_HOST_LAN_IP>/32 -p tcp \
+  -m owner --uid-owner "$AA_UID" --dport "$MUXPLEX_PORT" \
+  -j REJECT --reject-with tcp-reset
+```
+
+`--reject-with tcp-reset` rather than `DROP` on purpose: a reset fails fast and
+loudly, instead of hanging until a timeout and looking like a network blip.
+
+Verify — from the agent's UID, muxplex must be unreachable:
+
+```bash
+sudo -u aa-svc curl -sS --max-time 5 http://127.0.0.1:8088/api/sessions
+# expect: connection reset by peer
+sudo iptables -L OUTPUT -n -v   # expect nonzero pkts on the loopback rule
+```
+
+**These rules are not persistent.** The POC host had no
+`iptables-persistent`/`netfilter-persistent`, so they are lost on reboot — and
+the fence silently disappears with them while everything still *appears* to
+work. Install `iptables-persistent` (or add an equivalent `ExecStartPre`) before
+treating this as anything but a POC.
+
+### 7. Point muxplex at the sidecar
+
+`/etc/muxplex-agent-proxy.env`, mode `0600`, owned `root:root`:
+
+```ini
+AMPLIFIER_AGENT_URL=http://127.0.0.1:9099
+AMPLIFIER_AGENT_BEARER_TOKEN=<same value as AMPLIFIER_AGENT_HTTP_API_KEY in §4>
+```
+
+Drop-in at `/etc/systemd/system/muxplex.service.d/agent-proxy.conf`:
+
+```ini
+[Service]
+EnvironmentFile=/etc/muxplex-agent-proxy.env
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart muxplex
+```
+
+If `AMPLIFIER_AGENT_BEARER_TOKEN` is unset, the proxy route returns a `503`
+naming the missing variable rather than failing obscurely — see
+`agent_chat_completions_proxy` in `muxplex/main.py`.
+
+## Secrets inventory
+
+Two secrets exist in this deployment. **Neither is in this repo, and neither
+should ever be.**
+
+| Secret | Lives in | Notes |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | `/etc/amplifier-agent-http-aasvc.env` (`0600`) | Real upstream API key. Supply your own. |
+| `AMPLIFIER_AGENT_HTTP_API_KEY` / `AMPLIFIER_AGENT_BEARER_TOKEN` | `/etc/amplifier-agent-http-aasvc.env` and `/etc/muxplex-agent-proxy.env` (both `0600`) | Same value on both sides. Generate per-deployment. |
+
+Both env files are mode `0600` and outside the repo tree. This document names
+the variables only.
+
+## Known gaps
+
+Honest list of what this POC does **not** have:
+
+- **iptables rules do not survive reboot** (§6). The fence vanishes silently.
+- **No tests.** Nothing in `tests/` or `frontend/tests/` covers `chat.js`, the
+  proxy route, or the fence behavior. The `input_enabled` 403 result was proven
+  by hand, not by an automated test.
+- **Prompt caching disabled** as an upstream-bug workaround (§3); revisit.
+- **The sidecar is not in this repo** and is not versioned with it. A breaking
+  change in `amplifier-agent`'s HTTP face breaks the panel with no signal here.
+- **`MODEL` is hardcoded** in `chat.js`, as is the `9099` default in `main.py`.
