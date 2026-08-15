@@ -74,9 +74,22 @@
         <span id="connection-status"></span>
       </div>
     </header>
-    <div id="filter-bar" class="filter-bar"></div>
-    <div id="session-grid" class="session-grid" role="list"></div>
-    <div id="empty-state" class="empty-state hidden">No active tmux sessions</div>
+    <!-- muxplex-rle: the overview's content now sits inside the SAME
+         .view-body row idiom the expanded view already used, so the agent
+         panel can be a real inline column beside it (a flex sibling) rather
+         than a fixed overlay on top of it. .overview-body is the "main
+         content" child; the agent panel becomes the second child at runtime
+         (chat.js's homeAgentPanel() reparents the single #chat-panel into
+         whichever view is currently active). Nothing here changes what
+         app.js sees: it looks all three of these up by id, never by
+         position or parentage. -->
+    <div class="view-body">
+      <div class="overview-body">
+        <div id="filter-bar" class="filter-bar"></div>
+        <div id="session-grid" class="session-grid" role="list"></div>
+        <div id="empty-state" class="empty-state hidden">No active tmux sessions</div>
+      </div>
+    </div>
   </div>
 
   <!-- ── Expanded (terminal) view ──────────────────────────────────────── -->
@@ -542,44 +555,118 @@
 
   <!-- ── Scripts ──────────────────────────────────────────────────────────── -->
 
-  <!-- Muxplex Agent panel (see /chat.js). Branding pass: real classes onto
-       style.css's own tokens (--bg-surface, --border, --text, --accent,
-       --header-height, etc.) instead of the plumbing-phase inline styles --
-       see .agent-panel* rules in style.css. Slides in from the right per the
-       owner's ask; "Muxplex Agent" is the panel's name, with a "Powered by
-       Amplifier Agent" attribution line and the Amplifier logo both always
-       visible in the header row so the panel never reads as unbranded. -->
+  <!-- Muxplex Agent panel (see /chat.js). Classes map onto style.css's own
+       tokens (--bg-surface, --border, --text, --accent, --header-height)
+       rather than the plumbing-phase inline styles -- see the .agent-panel*
+       rules in style.css.
+
+       muxplex-rle: this is NO LONGER a fixed overlay. It is an inline
+       column that sits BELOW the header bar alongside content, exactly the
+       way .session-sidebar does -- a flex child of the active view's
+       .view-body. It is authored here, at body level, as its parking spot
+       and is reparented into whichever view is active by chat.js's
+       homeAgentPanel(). ONE element, one code path: authoring a second
+       copy inside each view would duplicate every id in this markup and
+       break chat.js's element lookups outright.
+
+       Deliberately not re-homed in markup: if chat.js ever fails its
+       required-element check and throws, this element stays here and stays
+       `hidden` (display:none !important), so a broken panel is invisible
+       rather than a stray 380px box wedged under the views. -->
   <div id="chat-panel" class="agent-panel hidden">
+    <!-- muxplex-z6h -- chrome stripped to essentials. What USED to be here and
+         why it is gone:
+           - the Amplifier logo: the same mark is already on the Agent button
+             in the app header three inches away, and a design review flagged
+             three brand marks stacked in one region as unreconciled
+             co-branding. One mark on the button, one byline at the bottom.
+           - the "Muxplex Agent" title: you opened it; you know what it is.
+           - the live attention badge (muxplex-n7z): it existed ONLY to
+             compensate for the panel OVERLAYING the dashboard and hiding
+             session state. muxplex-rle made the panel inline, so the sessions
+             it was summarising are on screen next to it now. Do not re-add it
+             on the strength of that earlier reasoning -- the premise it was
+             built on no longer exists, and the owner separately asked for it
+             gone as clutter. Its polling code went with it.
+         What is left is what you can act on: New, Export, close. -->
     <div class="agent-panel-header">
-      <img src="/amplifier-icon-48.png" alt="Amplifier" width="22" height="22" class="agent-panel-logo" />
-      <div class="agent-panel-title-group">
-        <span class="agent-panel-name">Muxplex Agent</span>
-        <span class="agent-panel-attribution">Powered by Amplifier Agent</span>
-      </div>
-      <!-- Live attention count (muxplex-n7z). This panel covers the whole
-           screen on a phone, so while it is open the dashboard behind it
-           cannot tell you that something started needing you. This is the
-           one piece of session state that is actionable mid-question, and
-           it rides in a row that already exists, so it costs no layout
-           space -- the same "signal without chrome" move deck/
-           DESIGN_SOFTDECK.md 7 makes for staleness on the soft deck.
-           Populated by chat.js's startAttentionPolling(); polls only while
-           the panel is open. aria-live so it is announced, not just seen. -->
-      <span id="chat-attention" class="agent-panel-attention" aria-live="polite"></span>
-      <button id="chat-new-btn" class="header-btn" title="Start a new conversation">New</button>
+      <!-- muxplex-5bn: New and Export are .quick-link -- the SAME shared
+           component the header/sidebar view and sort controls use. They
+           deliberately carry NO other class. That is the whole lesson of
+           style.css's "Quick link" incident: three of the original four
+           controls still wear a legacy base class, which is why that rule
+           has to be ID-qualified to win. These two have nothing to fight,
+           so the bare .quick-link selector governs them outright and can
+           never be silently out-cascaded on a single property the way
+           .view-dropdown__trigger's leftover :hover background was.
+           They used to be .header-btn: a 32x32 bordered icon SQUARE, which
+           is the wrong register for a text label and is what the owner was
+           looking at when he said "the new and export buttons are gross." -->
+      <button id="chat-new-btn" class="quick-link" title="Start a new conversation">New</button>
       <!-- muxplex-4kl: exports a structured debug record (transcript, tool
            calls, raw tool results, timings, the SSE stream, console/network
            errors, app state) of this conversation to a local .json file --
            see exportCaptureRecord() in chat.js. Never sends anything over
            the network; local file only, on explicit click. -->
-      <button id="chat-export-btn" class="header-btn" title="Export a structured debug record of this conversation (transcript, tool calls, raw results, timings, errors) to a local JSON file. Nothing is sent anywhere.">Export</button>
+      <button id="chat-export-btn" class="quick-link" title="Download this conversation as a markdown file — transcript, tool calls with their arguments and results, exact HTTP failures, timings and correlation ids. Written locally; nothing is sent anywhere.">Export</button>
+      <!-- Close deliberately KEEPS .header-btn. It is an icon-only glyph
+           control, which is exactly the register that class exists for --
+           .quick-link's flex+gap+13px-text layout is built around a word,
+           not a bare ✕. Listed here rather than silently left behind. -->
       <button id="chat-close-btn" class="header-btn" aria-label="Close chat">&#10005;</button>
     </div>
-    <div id="chat-messages" class="agent-panel-messages"></div>
+    <!-- muxplex-46p, WCAG 4.1.3. role="log" is the right role for a running
+         transcript, but its IMPLICIT aria-live is "polite" -- which on a
+         token-by-token stream means one announcement per token, i.e. the
+         naive fix the review explicitly warned about. aria-live="off" here
+         turns that off deliberately; the coherent announcements come from
+         #chat-live below, which chat.js flushes at sentence boundaries.
+         Do not "restore" aria-live on this element. -->
+    <div id="chat-messages" class="agent-panel-messages" role="log"
+         aria-label="Conversation with the Muxplex Agent" aria-live="off"></div>
+
+    <!-- The only live region in this panel. Visually hidden, never shown to
+         sighted users; chat.js writes whole clauses into it (see
+         announceStreamed / flushLive) rather than raw deltas, so a screen
+         reader hears sentences, not tokens. aria-atomic="true" because each
+         write is a complete thought that should be read as one. -->
+    <div id="chat-live" class="agent-panel-live" aria-live="polite" aria-atomic="true"></div>
     <div class="agent-panel-composer">
-      <textarea id="chat-input" class="agent-panel-input" rows="2" placeholder="Ask about your sessions..."></textarea>
-      <button id="chat-send-btn" class="header-btn agent-panel-send-btn">Send</button>
+      <!-- muxplex-8qp: rows="1" is the FLOOR, not the size. chat.js's
+           autoGrowInput() sets the height from scrollHeight on every input
+           event, bounded at a stated maximum, after which the textarea
+           scrolls internally instead of eating the transcript. Starting at
+           one row means an empty composer is one line and a three-line draft
+           is three lines -- it used to be a fixed two rows forever.
+           The send chord is advertised in the BYLINE below, not in this
+           placeholder. It was in the placeholder first, and a vision pass
+           over the real pixels caught it truncating to "(Ctrl+Enter to" in
+           a 380px composer -- a hint that cuts off mid-word is worse than
+           no hint. The byline has the full panel width, and unlike a
+           placeholder it does not vanish the moment you start typing,
+           which is exactly when you still need to know how to send. -->
+      <textarea id="chat-input" class="agent-panel-input" rows="1"
+                placeholder="Ask about your sessions..."
+                aria-keyshortcuts="Control+Enter Meta+Enter"></textarea>
+      <!-- muxplex-5bn, decided: Send is a REAL button, not a link. The owner
+           left this open ("match our existing button designs if it needs to
+           be a full on button, or if it should just be a link button, use
+           this new component"). It is the composer's commit action, and
+           muxplex already has exactly one of those -- the terminal compose
+           bar's own send (.compose-bar__send), an accent-dim fill with an
+           accent border. This adopts that same token pair rather than
+           inventing a fourth. It also drops .header-btn, whose 32px square
+           this project's own mobile-compose-bar plan already rejected in
+           writing as "too small for a primary action on a phone." -->
+      <button id="chat-send-btn" class="agent-panel-send-btn"
+              title="Send (Ctrl+Enter, or Cmd+Enter on a Mac). Enter, Shift+Enter and Ctrl+J all insert a newline instead of sending.">Send</button>
     </div>
+    <!-- muxplex-z6h: the attribution moved here from the panel header. It is
+         a byline, not a banner -- last thing in the panel, under the input,
+         muted and small. Attribution is still always present whenever the
+         panel is open (nothing collapses or scrolls it away), it just no
+         longer spends the top of the panel saying who built it. -->
+    <p class="agent-panel-byline"><span class="agent-panel-hint">Ctrl+Enter to send</span> &middot; Powered by Amplifier Agent</p>
   </div>
 
   <!-- muxplex-4kl: persistent download trigger for exportCaptureRecord() in
@@ -587,7 +674,8 @@
        + append + click + remove); its href (a Blob object URL) is only ever
        set from a local Blob and only ever clicked programmatically in
        response to the Export button -- never a real navigation, never a
-       network request. -->
+       network request. muxplex-6oq changed what the Blob contains (markdown,
+       not JSON); the anchor mechanism is unchanged. -->
   <a id="chat-export-link" class="hidden" aria-hidden="true"></a>
 
   <!-- Confirmation gate for send_muxplex_session_input -- the ONE agent tool

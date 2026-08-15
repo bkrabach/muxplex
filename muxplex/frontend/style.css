@@ -1903,6 +1903,19 @@ body {
   white-space: nowrap;
 }
 
+/* Toggle state (muxplex-rle). The button opens AND closes the panel now, so
+   it has to say which of the two the next click will do. aria-pressed is the
+   single source of truth -- set by chat.js on BOTH header instances -- and
+   this rule styles off that same attribute rather than a parallel class, so
+   the pixels and the accessibility tree can never disagree about whether the
+   panel is open. Same convention #sync-group-btn and #compose-toggle-btn
+   already use in this app. */
+.header-btn--agent[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
 @media (max-width: 599px) {
   .header-btn--agent {
     width: 32px;
@@ -1917,29 +1930,77 @@ body {
 /* ============================================================
    Muxplex Agent -- chat panel
    ============================================================
-   Replaces the plumbing-phase inline styles on #chat-panel with real
-   classes onto the app's own tokens, matching the same dark-surface /
+   Classes onto the app's own tokens, matching the same dark-surface /
    border / spacing language as the rest of muxplex (compare
-   .settings-dialog, .session-sidebar). Fixed slide-over from the right,
-   per the owner's ask; the header row inside always shows the Amplifier
-   logo + "Muxplex Agent" name + "Powered by Amplifier Agent" attribution,
-   so the branding is visible any time the panel is open, at any width. */
+   .settings-dialog, .session-sidebar).
+
+   muxplex-rle -- GEOMETRY REWRITE. This panel used to be
+   `position: fixed; top:0; right:0; bottom:0; width:min(420px,92vw);
+   z-index:9000` with a drop shadow: a full-viewport-height slide-over that
+   covered the terminal AND the top-right half of the header bar, so the
+   settings / sync / new-session controls were unreachable while it was
+   open. The owner's correction was explicit: it "should function _exactly
+   the same_ as the way the session selector/preview sidebar on the left
+   looks and works when viewed alongside a session."
+
+   So it is now the mirror image of .session-sidebar, and deliberately
+   shares that component's structure rather than inventing a second layout
+   idiom:
+
+     .session-sidebar          .agent-panel
+     ----------------          ------------
+     flex child of .view-body  flex child of .view-body   (same row)
+     border-RIGHT              border-LEFT                (opposite edge)
+     fixed width, no shrink    fixed width, no shrink
+     inline >=960px            inline >=960px
+     drawer  <=959px           drawer  <=959px            (see below)
+
+   Content is RESIZED, not covered: .view-body is `display:flex` with the
+   main content on `flex:1; min-width:0`, so adding this column reflows the
+   terminal / session grid instead of painting over it. The header bar is a
+   SIBLING of .view-body, never inside it, which is what structurally
+   guarantees every header control stays visible and clickable -- that is a
+   property of where this element lives now, not a z-index someone has to
+   keep tuning.
+
+   Width: 380px. The sidebar is 200px, which is right for a list of session
+   names and too narrow for a conversation (this panel wraps prose, code
+   blocks and tool payloads). 380 is a hair under the old 420 overlay, which
+   is affordable now that it no longer has to be a comfortable reading
+   surface all by itself. */
 
 .agent-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(420px, 92vw);
-  z-index: 9000;
+  flex: 0 0 auto;
+  width: 380px;
+  min-width: 380px;
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   font-family: var(--font-ui);
   font-size: 14px;
   color: var(--text);
-  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.45);
+}
+
+/* The overview view's "main content" column -- the flex sibling the agent
+   panel sits beside, and the reason #session-grid keeps its own scrolling
+   now that it is one level deeper (see index.html's .view-body wrapper).
+   min-width:0 is load-bearing: without it a flex item refuses to shrink
+   below its content's intrinsic width, and the grid would push the panel
+   off the right edge instead of reflowing. */
+.overview-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Positioning context for the <=959px drawer rule below. Harmless at wider
+   widths (nothing inside is absolutely positioned there). */
+.view-body {
+  position: relative;
 }
 
 .agent-panel-header {
@@ -1952,37 +2013,60 @@ body {
   flex: 0 0 auto;
 }
 
-.agent-panel-logo {
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  display: block;
+/* muxplex-z6h: .agent-panel-logo / -title-group / -name / -attribution /
+   -attention were all deleted here, along with their markup. The header row
+   now holds only the three things you can act on (New, Export, close), and
+   the close button is pushed to the far edge by the rule below rather than by
+   a title element that happened to be flex:1. The attribution did not
+   disappear -- it moved to .agent-panel-byline at the bottom of the panel. */
+
+.agent-panel-header #chat-close-btn {
+  margin-left: auto;
 }
 
-.agent-panel-title-group {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  line-height: 1.3;
-}
+/* muxplex-5bn -- SHARED LINK-BUTTON COMPONENT: the survey, and the verdicts.
+   ---------------------------------------------------------------------
+   The component already existed: .quick-link (see the long "Quick link"
+   section near the top of this file). Nothing new was invented here; this
+   panel's controls were moved onto it. The whole app was surveyed for other
+   controls that should collapse into it. Verdicts, so the next person does
+   not have to redo the search:
 
-.agent-panel-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+   ADOPTED .quick-link
+     #chat-new-btn, #chat-export-btn -- text-labelled lightweight actions
+       that were wearing .header-btn, a 32x32 bordered icon SQUARE. Both
+       now carry NO other class, so the bare .quick-link selector governs
+       them and cannot be out-cascaded on a single property (which is
+       exactly how the original four-control incident happened).
 
-.agent-panel-attribution {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--text-muted);
-  letter-spacing: 0.02em;
-}
+   DELIBERATELY NOT .quick-link, with reasons
+     #chat-close-btn -- icon-only glyph. .header-btn is the correct
+       register for a bare mark; .quick-link's flex+gap+13px-text layout is
+       built around a word.
+     #chat-send-btn -- a commit action, not chrome. See the
+       .agent-panel-send-btn block below for the full reasoning.
+     .settings-close-btn, .manage-view-panel__close-btn, .tile-options-btn
+       -- icon-only or modal-dismissal controls; same reason as close.
+     .view-dropdown__item, .flyout-menu__item, .flyout-sheet__item --
+       full-width menu ROWS. A menu row and an inline link are different
+       components that happen to both be <button>.
+
+   SHOULD adopt it, but NOT changed here -- out of this lane's ownership
+     .followups-panel__clear ("Clear all") is already a hand-rolled link:
+       transparent background, no border, text-coloured, its own one-off
+       rule. It is the single clearest remaining consolidation candidate in
+       the app, and it lives in the follow-ups section, not the agent-panel
+       section this lane owns. Recorded rather than reached into: touching
+       another lane's region of this file is how two lanes clobber each
+       other, which has already happened once in this project.
+
+   ALSO FOUND, not a link-button question but worth recording:
+     .source-tile__login-btn (a solid-accent button) appears to be dead CSS
+       -- no generation site for it exists in app.js.
+     This app has no general "primary button" convention. The only
+       treatment that genuinely recurs app-wide is the DANGER one for
+       "this acts for real" controls. That is a design-language question,
+       not a link-button one, and belongs to the design-language item. */
 
 .agent-panel-messages {
   flex: 1 1 auto;
@@ -1996,17 +2080,33 @@ body {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
+  /* muxplex-8qp: the textarea grows with its content now, so the default
+     `stretch` would stretch Send to match it -- a Send button that gets
+     taller the more you type. flex-end keeps it beside the LAST line, where
+     the caret is. */
+  align-items: flex-end;
 }
 
+/* muxplex-8qp: height is owned by chat.js's autoGrowInput() (set inline from
+   scrollHeight, bounded at a stated maximum, internal scroll past it), so
+   this rule must not set `height` and must not reintroduce `rows`-based
+   sizing. It sets the floor and the line box the measurement depends on:
+   an explicit line-height means scrollHeight is predictable rather than
+   font-metric-dependent, and box-sizing:border-box means the padding and
+   border are inside the height chat.js computes. overflow-y starts hidden
+   so a one-line composer never shows a scrollbar; chat.js switches it to
+   auto only once the content actually exceeds the maximum. */
 .agent-panel-input {
   flex: 1 1 auto;
   resize: none;
+  box-sizing: border-box;
   background: var(--bg-secondary);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 6px 8px;
-  font: 13px var(--font-ui);
+  font: 13px/1.45 var(--font-ui);
+  overflow-y: hidden;
 }
 
 .agent-panel-input:focus {
@@ -2014,37 +2114,189 @@ body {
   border-color: var(--accent);
 }
 
+/* Send (muxplex-5bn) -- a REAL button, deliberately, not a link.
+   ---------------------------------------------------------------------
+   New and Export next door are .quick-link, the app's shared link-button
+   component. Send is not, and the difference is the point: New and Export
+   are idempotent chrome, Send is the composer's commit action. The owner
+   left the call open -- "match our existing button designs if it needs to
+   be a full on button, or if it should just be a link button, use this new
+   component" -- so this is the decision, recorded here.
+
+   muxplex already has exactly ONE composer-commit button: the terminal
+   compose bar's .compose-bar__send, an accent-dim fill inside an accent
+   border, hover shifting both to --accent-hover, and a 0.5-opacity
+   disabled state. That token pair is reused verbatim below rather than a
+   fourth accent treatment being invented. (A survey of this app found no
+   general "primary button" convention to inherit from: .new-session-fab
+   and .source-tile__login-btn are solid-accent one-offs, and the only
+   pattern that genuinely recurs app-wide is the DANGER treatment for
+   "this acts for real" controls -- which is correctly used one hop
+   downstream by .agent-confirm-btn--send for the actual keystroke
+   injection, and would be wrong here: sending a chat message is not the
+   irreversible act, and dressing it as one would devalue the gate that
+   guards the act that is.)
+
+   It also drops .header-btn, whose 32x32 square this project already
+   rejected in writing for a composer's primary action -- see
+   docs/plans/2026-08-05-mobile-compose-bar-plan.md: "the header's 32px
+   .header-btn is too small for a primary action on a phone".
+
+   :disabled is new. chat.js disables Send for the whole duration of a
+   turn, and under .header-btn that state was styled identically to the
+   enabled one -- a dead control that looked live. */
+
 .agent-panel-send-btn {
   flex: 0 0 auto;
-  width: auto;
-  padding: 0 12px;
+  padding: 0 14px;
+  min-height: 32px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font: 500 13px var(--font-ui);
+  cursor: pointer;
+}
+
+.agent-panel-send-btn:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+
+/* Same focus ring the .quick-link family draws -- 2px accent, 2px offset --
+   so every control in this panel signals keyboard focus the same way. Most
+   of this app still signals focus with a border/background swap identical to
+   hover, which is indistinguishable when the pointer is already there; the
+   .quick-link convention is the one worth spreading. */
+.agent-panel-send-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-panel-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* muxplex-z6h: the "Powered by Amplifier Agent" attribution, relocated from
+   the panel header. Byline register -- last element in the panel, under the
+   composer, muted and small. It is always present while the panel is open
+   (nothing collapses or scrolls it away), it just no longer spends the top of
+   the panel. flex:0 0 auto so it never steals height from the transcript. */
+.agent-panel-byline {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 12px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+  text-align: center;
+  /* One line, never wrapping into two, never truncating mid-word: the
+     send-chord hint lives here (see index.html) and a hint that cuts off is
+     worse than no hint. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The send chord. Slightly stronger than the attribution beside it, because
+   one of the two is something you need and the other is a credit. */
+.agent-panel-hint {
+  color: var(--text-muted);
+}
+
+/* What the transcript shows before the first message. This used to be the raw
+   conversation id ("New conversation (chat-msu6r65f-...)"). Replaced with an
+   actual starting point in the user's own vocabulary -- chat.js removes it on
+   the first real message, so it is an opening line, not permanent chrome. */
+.agent-msg-empty {
+  margin: 8px 2px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 /* Message rendering (chat.js's appendSystemLine/appendBubble/appendError) --
    replaces the plumbing-phase inline hex colors (#1d3a1d/#1d1d3a/#3a1d1d,
    unrelated to the app palette) with the same tokens used everywhere else. */
 
+/* muxplex-46p -- WCAG 1.4.1: message ROLE must not be carried by colour
+   alone. It previously was: four background tints and nothing else, which
+   collapses to four near-identical grey boxes in greyscale, in bright
+   outdoor light, and for a colour-blind reader.
+   Every role now carries THREE independent cues, only one of which is
+   colour:
+     - which side it is inset from (you are inset from the left, the agent
+       from the right) -- survives any colour treatment at all
+     - corner shape: the bubble's "tail" corner is squared off on the side
+       its speaker is on
+     - a left rule whose WEIGHT and STYLE differ per role (3px solid accent
+       for the agent, 2px dashed for status, 3px solid for an error)
+   plus a screen-reader-only role word inside each message, since none of
+   the above reaches assistive tech (see roleLabel() in chat.js).
+
+   Visually hidden, not display:none -- display:none removes it from the
+   accessibility tree too, which would defeat the entire purpose. This is
+   the standard clip-rect pattern. */
+.agent-msg-role,
+.agent-panel-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Status lines. The review's note was that grey + italic stacks two WEAK
+   cues where one strong one is needed, so the italic is gone and a dashed
+   left rule -- a shape cue, legible in greyscale -- takes its place. The
+   colour stays --text-muted (#8E95A3), which this file already documents
+   as 6.28:1 against the surface, comfortably past the 4.5:1 minimum. */
 .agent-msg-system {
   color: var(--text-muted);
-  font-style: italic;
   margin: 4px 0;
+  padding-left: 8px;
+  border-left: 2px dashed var(--border);
 }
 
 .agent-msg-bubble {
   margin: 6px 0;
   padding: 6px 8px;
-  border-radius: 4px;
   white-space: pre-wrap;
   border: 1px solid var(--border-subtle);
 }
 
+/* CAUGHT BY THE GREYSCALE PASS, not by reading the tokens: the user bubble
+   used to be `background: var(--bg-tile-hover)`, and --bg-tile-hover
+   (#1A1F2B) is byte-identical to --bg-surface, which IS this panel's own
+   background. Its 1px --border-subtle outline (#1E2430) is four steps from
+   the same colour. So the user's own messages were an invisible box --
+   bare text on the panel. A vision pass over a fully desaturated screenshot
+   reported it as "centered text with no container" and answered "no" to
+   "can you tell which message came from the human". Colour was not merely
+   the ONLY cue, it was not even a working one.
+   So the two speakers are now separated by FILL vs OUTLINE, which needs no
+   colour at all: you are an outlined box with no fill, inset from the left;
+   the agent is a filled box with a heavy left rule, inset from the right.
+   The insets went 22px -> 44px in the same pass, because 22px in a 380px
+   column did not read as a side. */
 .agent-msg-bubble--user {
-  background: var(--bg-tile-hover);
+  background: transparent;
+  border-color: var(--border);            /* visible outline, unlike --border-subtle */
+  margin-left: 44px;                      /* inset from the left */
+  border-radius: 8px 8px 2px 8px;         /* squared corner on the user's side */
 }
 
 .agent-msg-bubble--assistant {
-  background: var(--bg-secondary);
-  border-color: var(--accent-dim);
+  background: var(--bg-secondary);        /* filled, and darker than the panel */
+  border-color: var(--border-subtle);
+  border-left: 3px solid var(--accent);
+  margin-right: 44px;                     /* inset from the right */
+  border-radius: 8px 8px 8px 2px;         /* squared corner on the agent's side */
 }
 
 .agent-msg-error {
@@ -2055,6 +2307,186 @@ body {
   background: rgba(248, 81, 73, 0.12);
   color: var(--err);
   border: 1px solid rgba(248, 81, 73, 0.35);
+  border-left: 3px solid var(--err);
+}
+
+/* Live status row (muxplex-l2y).
+   ---------------------------------------------------------------------
+   Exactly one of these exists at a time, pinned to the foot of the
+   transcript, naming the concrete action in progress. It is NOT a spinner:
+   there is no animation carrying no information here, which was the
+   explicit condition attached to this work.
+
+   Reads and writes are different registers, and look it. A read is muted
+   with a neutral marker. The one WRITE tool -- real keystrokes into a live
+   session -- gets the app's own "this acts for real" colour (--warn/--err
+   family, the same vocabulary every destructive control in muxplex already
+   uses) and a heavier rule, so the row that means "something is about to
+   land in your terminal" cannot be mistaken at a glance for the row that
+   means "reading a list". A stalled turn gets a third treatment, because
+   "appears to still be working" is the specific lie this row exists to
+   avoid telling. */
+.agent-status {
+  margin: 6px 0;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+}
+
+.agent-status::before {
+  content: "\00B7\00B7\00B7";       /* a mark, not a moving thing */
+  flex: 0 0 auto;
+  letter-spacing: 1px;
+}
+
+.agent-status--wait::before {
+  content: "\00B7\00B7\00B7";
+}
+
+.agent-status--read::before {
+  content: "\21BB\FE0E";            /* read: neutral cycle glyph */
+}
+
+/* The write register. Same amber this app already uses for "needs you". */
+.agent-status--write {
+  color: var(--warn, #d29922);
+  border-left: 3px solid var(--warn, #d29922);
+  background: rgba(210, 153, 34, 0.10);
+  font-weight: 600;
+}
+
+.agent-status--write::before {
+  content: "\26A0\FE0E";
+}
+
+/* Stalled: unambiguous, never mistakable for "still working normally". */
+.agent-status--stalled {
+  color: var(--err);
+  border-left: 3px solid var(--err);
+  background: rgba(248, 81, 73, 0.10);
+}
+
+.agent-status--stalled::before {
+  content: "\21AF\FE0E";
+}
+
+/* Humanised tool failures (muxplex-oi2). The headline is the sentence that
+   answers "what happened"; the remedy answers "what can I do"; the raw text
+   lives in the collapsed <details> below them, still there, no longer the
+   first thing anyone reads. */
+.agent-msg-error-headline {
+  font-weight: 600;
+}
+
+.agent-msg-error-remedy {
+  margin-top: 4px;
+  font-weight: 400;
+  color: var(--text);
+  opacity: 0.92;
+}
+
+.agent-msg-error .agent-msg-tool {
+  margin-top: 6px;
+}
+
+.agent-msg-error .agent-msg-tool-summary {
+  color: var(--err);
+  font-style: normal;
+  opacity: 0.85;
+}
+
+/* Rendered model markdown (muxplex-04m).
+   ---------------------------------------------------------------------
+   .agent-msg-bubble sets white-space:pre-wrap, which is right for raw
+   streamed text and wrong for rendered blocks -- it would re-add every
+   newline the block structure has already accounted for. This class is put
+   on the body only once the turn is finished and rendered. */
+.agent-msg-body--md {
+  white-space: normal;
+  display: block;
+}
+
+.agent-md-p {
+  margin: 0 0 8px;
+}
+
+.agent-md-p:last-child,
+.agent-md-list:last-child,
+.agent-md-pre:last-child {
+  margin-bottom: 0;
+}
+
+.agent-md-heading {
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.agent-md-list {
+  margin: 0 0 8px;
+  /* The panel is 380px wide and goes narrower on a phone. A browser's
+     default list indent (40px) spends a tenth of that on whitespace. */
+  padding-left: 20px;
+}
+
+.agent-md-list li {
+  margin: 2px 0;
+}
+
+/* Inline code. overflow-wrap:anywhere is load-bearing at this width: a long
+   unbroken token (a path, a session id, a hash) would otherwise set the
+   bubble's minimum width and push the whole panel into horizontal scroll. */
+.agent-md-code {
+  font: 0.92em var(--font-mono, monospace);
+  background: var(--bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0 4px;
+  overflow-wrap: anywhere;
+}
+
+/* Fenced code blocks. Visually distinct (own surface + border), monospace,
+   and -- the acceptance criterion that actually constrains the CSS -- they
+   must not force the PANEL to scroll sideways at 400px. So the block
+   scrolls internally instead: white-space:pre preserves the code's own
+   formatting, max-width:100% + min-width:0 stop it widening its flex
+   parent, and overflow-x:auto keeps the overflow inside this element. */
+.agent-md-pre {
+  margin: 0 0 8px;
+  padding: 8px;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font: 12px/1.5 var(--font-mono, monospace);
+  white-space: pre;
+}
+
+.agent-md-link {
+  color: var(--accent);
+}
+
+.agent-md-link:hover {
+  color: var(--accent-hover);
+}
+
+/* Non-colour marker for errors: a shape that survives greyscale and does not
+   depend on the reader distinguishing red. The real, reliable label is the
+   hidden "Error:" text roleLabel() inserts -- generated content is announced
+   by some screen readers and not others, so this glyph is treated as a
+   visual cue only and nothing depends on it being read. The variation
+   selector (FE0E) forces the text presentation rather than an emoji. */
+.agent-msg-error::before {
+  content: "\26A0\FE0E";
+  margin-right: 6px;
+  font-weight: 700;
 }
 
 /* Collapsed tool result (chat.js appendToolResult). The summary line reads
@@ -2109,54 +2541,86 @@ body {
 }
 
 /* ------------------------------------------------------------------
-   Muxplex Agent -- phone width (muxplex-n7z)
+   Muxplex Agent -- narrow viewports (<=959px)
    ------------------------------------------------------------------
-   The <=599px entry button above is deliberately KEPT. The decision
-   recorded in muxplex-n7z is that this panel is the dashboard PWA's
-   agent surface at every width, and that the soft deck (/deck/, its own
-   PWA, its own contract) gets no agent affordance at all. Keeping the
-   button therefore obliges this panel to actually be usable in a hand,
-   which these rules are.
+   STATED, DELIBERATE narrow-viewport behaviour, not an overlay leftover
+   (muxplex-rle's last acceptance clause asks for exactly this to be
+   decided rather than inherited).
 
-   Two things are fixed here, both measured on a real 390x844 viewport:
+   The decision: mirror .session-sidebar at every width, including this
+   one. muxplex's own sidebar is an inline column at >=960px and becomes a
+   FIXED DRAWER at <=959px -- see "Responsive overlay sidebar at <960px"
+   further down this file. Below 960px there is simply not room for two
+   content columns beside a terminal, and this app already made that call
+   once. So the agent panel does the same thing at the same breakpoint,
+   rather than inventing a second, differently-shaped answer.
 
-   1. Touch targets. This project adopted a floor and wrote it down:
-      "Adopted floor: 48 x 48 CSS px" (deck/DESIGN_RESPONSIVE.md 2.1),
-      which DESIGN_SOFTDECK.md 12 still lists as "carried and
-      load-bearing". The panel's own controls measured 32x32 (New,
-      close) and 66x32 (Send). Below the floor, on the surface where a
-      92%-coverage overlay's ONLY exit is that close button.
+   The one difference from the sidebar, and it is the whole point of
+   muxplex-rle: this drawer is `position: absolute; inset: 0` inside
+   .view-body, NOT `position: fixed` against the viewport. .view-body
+   starts below the header bar, so the panel fills the content area and
+   the header bar stays fully visible and clickable even here. That is
+   precisely the failure the old fixed overlay had, and it does not come
+   back at narrow widths.
 
-   2. Width. .agent-panel is min(420px, 92vw), which on a 390px phone
-      leaves a 31px strip of dashboard down the left edge. A vision pass
-      on the real pixels reported that strip as "too fragmentary to
-      provide any meaningful status or session context" -- it is the
-      APPEARANCE of session awareness, not session awareness. Take it to
-      100% and stop implying otherwise; the panel header carries the
-      live attention count instead (chat.js startAttentionPolling), which
-      is the one piece of session state that is actually actionable while
-      you are mid-question, and it costs no layout space.
+   Deliberately NOT done: hiding .terminal-wrapper / .overview-body with
+   display:none to "make room". xterm.js does not re-fit on a container
+   size change (no ResizeObserver in terminal.js -- it re-fits on window
+   resize and on visualViewport changes), so a display-toggled terminal
+   would come back mis-sized until the next unrelated resize. Overlaying
+   the content area leaves the terminal's own box untouched, so closing
+   the panel restores it exactly.
 
-   The composer input also goes to 16px here: iOS Safari auto-zooms the
-   whole page on focus for any font-size below 16px, which on this panel
-   scrolls the send button off-screen. */
+   z-index 150 sits BELOW .session-sidebar's 200, so the sidebar drawer
+   still wins if both are open -- the sidebar is how you leave the
+   session, so it must never be the thing that gets covered.
+
+   SUPERSEDED by this block (muxplex-n7z's compensating work, both of
+   which existed only because the panel was an overlay):
+   - `width: 100%` at <=599px. That existed to close a useless 31px
+     sliver of dashboard down the left edge. There is no sliver now: the
+     panel either reflows the content (>=960px) or fills the content area
+     exactly (<=959px).
+   - the panel-header attention badge, which existed because the overlay
+     blinded the user to session state. Removed in muxplex-z6h; the
+     inline layout is the real fix, and the owner asked for the badge
+     gone as clutter.
+
+   KEPT from that work, unchanged and still load-bearing: the 48x48 touch
+   floor (deck/DESIGN_RESPONSIVE.md 2.1) and the 16px composer font --
+   below 16px, iOS Safari auto-zooms the page on focus and scrolls the
+   send control off-screen. Neither had anything to do with the overlay. */
+
+@media (max-width: 959px) {
+  .agent-panel {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    min-width: 0;
+    border-left: none;
+    z-index: 150;
+  }
+}
 
 @media (max-width: 599px) {
-  .agent-panel {
-    width: 100%;
-    border-left: none;
-  }
-
   .agent-panel-header {
     height: auto;
     min-height: 56px;
     padding: 4px 8px;
   }
 
+  /* The project's adopted floor is 48x48 CSS px
+     (assets/branding/DESIGN-SYSTEM.md 10.3, --picker-row-height-touch;
+     44px is the WCAG minimum it deliberately exceeds).
+     muxplex-5bn added #chat-export-btn here: it was the one control in this
+     panel's header that had never been given the floor, purely because it
+     was added later than the rule. Applying the shared component to a
+     control is the moment to notice that. */
   #chat-new-btn,
+  #chat-export-btn,
   #chat-close-btn {
-    width: 48px;
-    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
   }
 
   .agent-panel-composer {
@@ -2174,33 +2638,6 @@ body {
     height: auto;
     min-height: 48px;
   }
-}
-
-/* Live attention count in the panel header -- see the media query above for
-   why this exists. Sits in the row the branding already occupies, so it
-   consumes no vertical space at any width. */
-
-.agent-panel-attention {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 3px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.agent-panel-attention--attention {
-  color: #000;
-  background: var(--warn, #F1A640);
-  border-color: var(--warn, #F1A640);
-}
-
-.agent-panel-attention--unknown {
-  color: var(--err);
-  border-color: rgba(248, 81, 73, 0.5);
 }
 
 /* ============================================================

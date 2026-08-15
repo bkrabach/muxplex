@@ -143,9 +143,10 @@
           "(settings.input_allowed_sessions) on the server -- a setting only " +
           "changeable by editing a file on disk, never through this or any " +
           "API call. If either is not set for the target session, this call " +
-          "fails with the server's real 403 error -- report that error to " +
-          "the user verbatim; never imply there is a way around it or retry " +
-          "as if it might succeed differently. Separately, and even when " +
+          "fails with the server's real 403 error. Never retry it and never " +
+          "imply you can work around it -- but the error text itself tells " +
+          "the user how a local operator unblocks it, so relay that instead " +
+          "of dead-ending on \"not possible\". Separately, and even when " +
           "enabled server-side: EVERY call to this tool pauses for an " +
           "explicit human confirmation click in the browser before anything " +
           "is sent -- there is no way to skip, pre-approve, or batch-approve " +
@@ -223,8 +224,12 @@
     "\"hidden\", or a configured view name).\n" +
     "- send_muxplex_session_input: type text/keys into a session's terminal " +
     "-- real remote code execution, fenced server-side and OFF by default. " +
-    "If it's disabled you will get a real 403 back; report that error " +
-    "verbatim rather than guessing a workaround or retrying. Every call " +
+    "If it's disabled you will get a real 403 back. Never retry it and never " +
+    "invent a way around it -- but do NOT stop at \"no workaround\" either: " +
+    "the 403 you get back explains which of the two fences refused, names the " +
+    "settings file and the two settings that control it, and says that only a " +
+    "local operator (often the person you are talking to) can change it. Pass " +
+    "that on in plain language. Every call " +
     "ALSO pauses for a human confirmation click in the browser first, with " +
     "no way to skip or pre-approve it; if declined, tell the user rather " +
     "than retrying the same call.\n" +
@@ -467,42 +472,382 @@
     };
   }
 
+  // ---------------------------------------------------------------------
+  // Markdown export (muxplex-6oq)
+  // ---------------------------------------------------------------------
+  // Export used to write the raw JSON record above. It now writes MARKDOWN,
+  // and markdown is the only format -- no dropdown, no format chooser.
+  //
+  // That was a decision the owner explicitly left open, on one condition:
+  // "Make that call based on whether anything actually imports the JSON --
+  // do not build a format chooser for a format nobody reads." A repo-wide
+  // search for the JSON's own format string ("muxplex-agent-panel-debug-
+  // record"), its filename prefix, and its format_version found exactly
+  // three hits, all of them inside this file -- i.e. the producer and
+  // nothing else. Nothing in muxplex, its tests, its docs, its deck, or its
+  // tooling has ever read one. So there is no data-driven consumer to serve,
+  // and the actual use case -- paste it into an LLM session, or read it
+  // yourself -- is served strictly better by prose.
+  //
+  // WHAT IS DELIBERATELY COLLAPSED, and why that is not a fidelity loss:
+  //   * Per-token SSE chunks. These are the bulk of the JSON by count (one
+  //     event per streamed token) and carry nothing the concatenated
+  //     assistant text does not already say. Collapsed to a count, with the
+  //     chunk id kept -- the chunk id is the correlator, not the chunks.
+  //   * The re-POSTed message history on each continuation request. The
+  //     provider requires the whole conversation on every round trip, so the
+  //     JSON contains turn 1 verbatim once per subsequent request. Collapsed
+  //     to a role/size manifest; the turns themselves are rendered above it.
+  //   * The response body of SUCCESSFUL HTTP calls, clipped at 1200 chars
+  //     with a visible marker. The tool result derived from it is printed in
+  //     full right below, unclipped -- that is what the model actually saw.
+  //
+  // WHAT IS NEVER COLLAPSED OR CLIPPED, because it is the reason this
+  // feature exists: any FAILING HTTP call's method, URL, exact status code
+  // and exact response body; every tool call's arguments; every tool
+  // result the model was handed; every confirmation-gate transition; every
+  // console error, page error and unhandled rejection; and both correlation
+  // ids (the conversation id and each request's chunk id) that let an
+  // engineer grep the sidecar's own journal for the matching entries.
+  //
+  // Still local-only: a Blob object URL and a synthetic click on a
+  // persistent anchor. No network request, nothing automatic, nothing
+  // transmitted anywhere.
+
+  var MD_OK_BODY_CLIP = 1200; // successful HTTP bodies only -- failures are never clipped
+
+  function fence(lang, body) {
+    // Long backtick runs inside terminal scrollback would otherwise break out
+    // of a 3-backtick fence; widen the fence past anything in the payload.
+    var longest = 0;
+    String(body).replace(/`+/g, function (m) { longest = Math.max(longest, m.length); return m; });
+    var bar = new Array(Math.max(3, longest + 1) + 1).join("`");
+    return bar + (lang || "") + "\n" + String(body) + "\n" + bar;
+  }
+
+  function clipBody(text, limit) {
+    text = String(text == null ? "" : text);
+    if (text.length <= limit) return text;
+    return text.slice(0, limit) + "\n[... " + (text.length - limit) + " more characters omitted]";
+  }
+
+  function kb(n) {
+    return (n / 1024).toFixed(1) + " KB";
+  }
+
+  /** Render one tool call -- its arguments, the HTTP it performed, its
+   * confirmation gate if it had one, and its result or its failure. */
+  function mdToolCall(call, evs) {
+    var L = [];
+    L.push("#### tool: `" + call.name + "`  (id `" + call.id + "`)");
+    var args = call.arguments_raw;
+    L.push("Arguments:");
+    L.push(fence("json", args && args.trim() ? args : "{}"));
+
+    var gate = evs.filter(function (e) {
+      return (e.type === "confirmation_requested" || e.type === "confirmation_resolved") &&
+        e.tool_call_id === call.id;
+    });
+    gate.forEach(function (e) {
+      if (e.type === "confirmation_requested") {
+        L.push("Confirmation gate: REQUESTED -- session `" + e.session_name +
+          "`, text " + JSON.stringify(e.text) + ", then " + e.keys_description + ".");
+      } else {
+        L.push("Confirmation gate: " + (e.confirmed ? "CONFIRMED by the user." : "DECLINED by the user."));
+      }
+    });
+
+    // HTTP calls made while this tool ran. apiFetch records them in order, so
+    // the ones between this call's start and its result belong to it.
+    (call._http || []).forEach(function (n) {
+      if (n.transport_error) {
+        L.push("HTTP: `" + n.method + " " + n.url + "` -- **TRANSPORT ERROR** after " +
+          n.duration_ms + " ms: " + n.transport_error);
+        return;
+      }
+      L.push("HTTP: `" + n.method + " " + n.url + "` -> **" + n.status + "**" +
+        (n.ok ? "" : "  <-- FAILED") + "  (" + n.duration_ms + " ms)");
+      if (n.request_body) {
+        L.push("Request body:");
+        L.push(fence("json", clipBody(n.request_body, MD_OK_BODY_CLIP)));
+      }
+      if (!n.ok) {
+        // Verbatim, never clipped. This is the thing you opened the file for.
+        L.push("Response body (verbatim):");
+        L.push(fence("", n.body_raw == null ? "(empty)" : n.body_raw));
+      } else if (n.body_raw) {
+        L.push("Response body (clipped -- the tool result below is what the model saw):");
+        L.push(fence("json", clipBody(n.body_raw, MD_OK_BODY_CLIP)));
+      }
+    });
+
+    var res = call._result;
+    if (!res) {
+      L.push("Result: **NONE RECORDED** -- the tool never returned. Something " +
+        "interrupted the turn between the call and its result.");
+    } else if (res.ok) {
+      L.push("Result (ok, " + res.duration_ms + " ms) -- exactly what the model was handed:");
+      L.push(fence("json", res.result_raw));
+    } else {
+      L.push("Result: **FAILED** after " + res.duration_ms + " ms:");
+      L.push(fence("", res.error));
+    }
+    return L.join("\n\n");
+  }
+
+  /** The whole conversation as markdown. Pure function of captureEvents --
+   * safe to call repeatedly, and safe to call for a size comparison without
+   * side effects. */
+  function buildMarkdownRecord() {
+    var evs = captureEvents;
+    var L = [];
+    L.push("# muxplex agent panel -- conversation record");
+    L.push("");
+    L.push("- **Generated:** " + nowIso());
+    L.push("- **Conversation id (`client_session_id`):** `" + clientSessionId + "`");
+    L.push("- **Model:** `" + MODEL + "`");
+    L.push("- **Page:** " + location.href);
+    L.push("- **Viewport:** " + window.innerWidth + "x" + window.innerHeight);
+    L.push("- **User agent:** " + navigator.userAgent);
+    L.push("- **Events captured:** " + evs.length + (captureCapped ? " (CAPPED -- buffer full, later events dropped)" : ""));
+    L.push("");
+    L.push("> To line this up against the agent sidecar's own log, grep its journal");
+    L.push("> (`journalctl -u amplifier-agent-http`) for the conversation id above --");
+    L.push("> it appears on every `chat-completion start` line -- or for the per-request");
+    L.push("> chunk id printed under each request below, which is tighter.");
+    L.push("");
+    L.push("> Nothing here was transmitted anywhere. This file was written locally");
+    L.push("> from this browser tab, on an explicit click.");
+
+    // Index events by turn -> request so the flat log can be re-grouped.
+    var turns = {};
+    var turnOrder = [];
+    evs.forEach(function (e) {
+      var t = e.turn == null ? -1 : e.turn;
+      if (!turns[t]) { turns[t] = []; turnOrder.push(t); }
+      turns[t].push(e);
+    });
+
+    turnOrder.sort(function (a, b) { return a - b; }).forEach(function (t) {
+      var tev = turns[t];
+      if (t < 0) {
+        // Pre-conversation / unattached events (conversation_new, any console
+        // error raised before the first message).
+        var pre = tev.filter(function (e) { return e.type !== "conversation_new"; });
+        if (!pre.length) return;
+        L.push("");
+        L.push("## Before the first message");
+        pre.forEach(function (e) { L.push(mdLooseEvent(e)); });
+        return;
+      }
+
+      var um = tev.filter(function (e) { return e.type === "user_message"; })[0];
+      L.push("");
+      L.push("## Turn " + (t + 1) + " -- user");
+      L.push("");
+      L.push(um ? fence("", um.text) : "_(no user message recorded for this turn)_");
+      if (um && um.app_state) {
+        var st = um.app_state;
+        L.push("");
+        L.push("App state at this turn: " + (st.rendered_session_names || []).length +
+          " session(s) on screen" +
+          ((st.rendered_session_names || []).length ? " (" + st.rendered_session_names.join(", ") + ")" : "") +
+          ", panel " + (st.panel_open ? "open" : "closed") +
+          ", viewport " + (st.viewport ? st.viewport.width + "x" + st.viewport.height : "?") +
+          ", " + st.conversation_message_count + " message(s) in history.");
+      }
+
+      // Group this turn's events by request index.
+      var reqs = {};
+      var reqOrder = [];
+      tev.forEach(function (e) {
+        var r = e.request == null ? -1 : e.request;
+        if (!reqs[r]) { reqs[r] = []; reqOrder.push(r); }
+        reqs[r].push(e);
+      });
+
+      reqOrder.sort(function (a, b) { return a - b; }).forEach(function (r) {
+        if (r < 0) return;
+        var rev = reqs[r];
+        var start = rev.filter(function (e) { return e.type === "request_start"; })[0];
+        var end = rev.filter(function (e) { return e.type === "request_end"; })[0];
+        var rerr = rev.filter(function (e) { return e.type === "request_error"; })[0];
+        var chunks = rev.filter(function (e) { return e.type === "sse_chunk"; });
+
+        L.push("");
+        L.push("### Request " + (r + 1) +
+          (end && end.chunk_id ? "  (`chunk_id` `" + end.chunk_id + "`)" : ""));
+
+        if (start) {
+          var roles = {};
+          (start.messages || []).forEach(function (m) { roles[m.role] = (roles[m.role] || 0) + 1; });
+          var manifest = Object.keys(roles).map(function (k) { return roles[k] + " " + k; }).join(", ");
+          L.push("`POST " + start.url + "` with " + (start.messages || []).length +
+            " message(s) [" + manifest + "] and " + (start.tool_names || []).length + " tool(s) declared.");
+        }
+        if (rerr) {
+          L.push("**REQUEST FAILED** after " + rerr.duration_ms + " ms" +
+            (rerr.http_status ? " -- HTTP **" + rerr.http_status + "**" : "") +
+            (rerr.transport_error ? " -- transport error: " + rerr.transport_error : "") + ".");
+          if (rerr.body_raw) {
+            L.push("Response body (verbatim):");
+            L.push(fence("", rerr.body_raw));
+          }
+        }
+        if (end) {
+          L.push("Finished `" + end.finish_reason + "` in " + end.duration_ms + " ms" +
+            " -- " + chunks.length + " SSE chunk(s) (per-token deltas collapsed; the" +
+            " assistant text they concatenate into is below)" +
+            (end.tool_call_count ? ", " + end.tool_call_count + " tool call(s)" : "") + ".");
+          if (end.assistant_text && end.assistant_text.trim()) {
+            L.push("");
+            L.push("**assistant:**");
+            L.push("");
+            L.push(end.assistant_text);
+          }
+        }
+
+        // Tool calls: stitch each requested call to its result and to the
+        // HTTP traffic recorded between them.
+        var requested = rev.filter(function (e) { return e.type === "tool_calls_requested"; })[0];
+        if (requested) {
+          var results = rev.filter(function (e) { return e.type === "tool_call_result"; });
+          var nets = rev.filter(function (e) { return e.type === "network_call"; });
+          var netIdx = 0;
+          requested.tool_calls.forEach(function (c) {
+            var call = { id: c.id, name: c.name, arguments_raw: c.arguments_raw, _http: [], _result: null };
+            var res = results.filter(function (e) { return e.tool_call_id === c.id; })[0];
+            call._result = res || null;
+            // apiFetch's network_call events are appended in execution order,
+            // and executeToolCall runs the calls in order, so consuming them
+            // in sequence attributes each HTTP round trip to the right tool.
+            if (res) {
+              while (netIdx < nets.length && nets[netIdx].seq < res.seq) {
+                call._http.push(nets[netIdx]);
+                netIdx++;
+              }
+            }
+            L.push("");
+            L.push(mdToolCall(call, rev));
+          });
+        }
+
+        rev.filter(function (e) {
+          return e.type === "console_error" || e.type === "console_warn" ||
+            e.type === "window_error" || e.type === "unhandled_rejection" ||
+            e.type === "turn_error" || e.type === "capture_capped";
+        }).forEach(function (e) { L.push(""); L.push(mdLooseEvent(e)); });
+      });
+    });
+
+    L.push("");
+    return L.join("\n") + "\n";
+  }
+
+  /** Anything that is not part of the request/tool spine: errors, warnings,
+   * the capture cap. Never silently dropped. */
+  function mdLooseEvent(e) {
+    if (e.type === "console_error" || e.type === "console_warn") {
+      return "- **" + (e.type === "console_error" ? "console.error" : "console.warn") + "** " +
+        e.ts + ": " + (e.args || []).map(function (a) {
+          return typeof a === "string" ? a : JSON.stringify(a);
+        }).join(" ");
+    }
+    if (e.type === "window_error") {
+      return "- **uncaught error** " + e.ts + ": " + e.message +
+        " (" + e.filename + ":" + e.lineno + ":" + e.colno + ")" +
+        (e.stack ? "\n" + fence("", e.stack) : "");
+    }
+    if (e.type === "unhandled_rejection") {
+      return "- **unhandled promise rejection** " + e.ts + ": " + JSON.stringify(e.reason);
+    }
+    if (e.type === "turn_error") {
+      return "- **turn failed** " + e.ts + ": " + e.error;
+    }
+    if (e.type === "capture_capped") {
+      return "- **capture capped** " + e.ts + ": " + e.note;
+    }
+    return "- " + e.type + " " + e.ts;
+  }
+
   // The previous export's Blob object URL, so it can be revoked once a new
   // export supersedes it (rather than on a fixed timer -- there's no way to
   // know how long a slow download or a manual "save as" dialog needs it).
   var lastExportUrl = null;
 
-  /** The ONLY export path: writes a local .json file via a Blob object URL
-   * and a synthetic click on the persistent #chat-export-link anchor --
-   * never a network request, never anything automatic. Sensitive-by-
-   * default: tool results in `events` can contain live terminal scrollback,
-   * so this never fires without the user explicitly clicking the Export
-   * button. Failures are reported in the transcript AND re-thrown -- never
-   * a silent no-op button click. */
+  /** The ONLY export path: writes a local .md file via a Blob object URL and
+   * a synthetic click on the persistent #chat-export-link anchor -- never a
+   * network request, never anything automatic. Sensitive-by-default: tool
+   * results can contain live terminal scrollback, so this never fires
+   * without the user explicitly clicking Export. Failures are reported in
+   * the transcript AND re-thrown -- never a silent no-op button click. */
   function exportCaptureRecord() {
-    var record;
+    var md;
     try {
-      record = buildCaptureRecord();
+      md = buildMarkdownRecord();
     } catch (buildErr) {
-      appendError("chat panel: failed to build debug record: " + String(buildErr && buildErr.message || buildErr));
+      appendError("chat panel: failed to build the conversation record: " +
+        String(buildErr && buildErr.message || buildErr));
       throw buildErr;
     }
-    var json = JSON.stringify(record, null, 2);
-    var blob = new Blob([json], { type: "application/json" });
+    var blob = new Blob([md], { type: "text/markdown" });
     var url = URL.createObjectURL(blob);
     if (lastExportUrl) URL.revokeObjectURL(lastExportUrl);
     lastExportUrl = url;
     exportLinkEl.href = url;
-    exportLinkEl.download = "muxplex-agent-debug-" + clientSessionId + "-" + Date.now() + ".json";
+    exportLinkEl.download = "muxplex-agent-" + clientSessionId + "-" + Date.now() + ".md";
     exportLinkEl.click();
+    // Say what the collapsing actually bought, with both numbers, rather than
+    // asserting "token optimized" and leaving the user to take it on faith.
+    var jsonSize = JSON.stringify(buildCaptureRecord(), null, 2).length;
     appendSystemLine(
-      "exported debug record (" + record.event_count + " events" +
-      (record.capped ? ", capped" : "") + ") to a local file -- nothing was sent anywhere."
+      "exported this conversation as markdown (" + captureEvents.length + " events, " +
+      kb(md.length) + (captureCapped ? ", capture capped" : "") +
+      "; the raw JSON equivalent would be " + kb(jsonSize) + ") to a local file -- " +
+      "nothing was sent anywhere."
     );
   }
 
   function $(id) {
     return document.getElementById(id);
+  }
+
+  // ---------------------------------------------------------------------
+  // Composer sizing and editing helpers (muxplex-8qp)
+  // ---------------------------------------------------------------------
+
+  // STATED MAXIMUM. The composer grows with its content up to this height and
+  // then scrolls internally instead of continuing to eat the transcript. 160px
+  // is roughly eight lines at the desktop 13px, five at the phone 16px --
+  // enough to see a paragraph you are composing, not enough to push the
+  // conversation you are replying to off the top of the panel.
+  var COMPOSER_MAX_PX = 160;
+
+  /** Resize the composer to fit its content, bounded. Sets height to "auto"
+   * first because scrollHeight only shrinks back down once the element is
+   * not already being held open by its own inline height. */
+  function autoGrowInput() {
+    if (!inputEl) return;
+    inputEl.style.height = "auto";
+    var needed = inputEl.scrollHeight;
+    var h = Math.min(needed, COMPOSER_MAX_PX);
+    inputEl.style.height = h + "px";
+    // Only show a scrollbar once there is genuinely something to scroll --
+    // a permanently-scrollable box with two lines in it looks broken.
+    inputEl.style.overflowY = needed > COMPOSER_MAX_PX ? "auto" : "hidden";
+  }
+
+  /** Insert a newline at the caret, replacing any selection, and keep the
+   * caret after it. Used only by Ctrl+J, whose browser default (open the
+   * downloads panel) has to be suppressed -- so the newline the user asked
+   * for has to be produced explicitly rather than left to the textarea. */
+  function insertNewlineAtCursor() {
+    var start = inputEl.selectionStart;
+    var end = inputEl.selectionEnd;
+    var v = inputEl.value;
+    inputEl.value = v.slice(0, start) + "\n" + v.slice(end);
+    inputEl.selectionStart = inputEl.selectionEnd = start + 1;
+    autoGrowInput();
   }
 
   function newConversation() {
@@ -517,8 +862,34 @@
     captureCapped = false;
     turnIndex = -1;
     requestIndex = -1;
-    appendSystemLine("New conversation (" + clientSessionId + ")");
+    appendEmptyState();
+    // The conversation id is still recorded here, and still travels in the
+    // exported record and in the X-Client-Session-Id header -- it is the
+    // string an engineer greps the sidecar journal with. muxplex-z6h removed
+    // it from the SCREEN, not from the record: it was the first thing the
+    // panel said to a human, which one reviewer called "the equivalent of a
+    // person introducing themselves with their employee ID number."
     capPush("conversation_new", { client_session_id: clientSessionId });
+  }
+
+  /** What occupies the transcript before the first message: an actual
+   * starting point, in the user's own vocabulary. Removed the moment the
+   * conversation has real content (see handleSend), so it is an opening
+   * line rather than permanent chrome. */
+  function appendEmptyState() {
+    var div = document.createElement("div");
+    div.className = "agent-msg-empty";
+    div.id = "chat-empty-state";
+    div.textContent =
+      "Ask about your sessions \u2014 what's running, what one of them is " +
+      "printing right now, or switch the dashboard to a different session " +
+      "or view.";
+    messagesEl.appendChild(div);
+  }
+
+  function clearEmptyState() {
+    var el = document.getElementById("chat-empty-state");
+    if (el && el.parentNode) el.parentNode.removeChild(el);
   }
 
   // Branding pass: these three renderers used to set raw inline styles
@@ -526,28 +897,316 @@
   // class names defined in style.css (.agent-msg-*), which use the same
   // --bg-surface/--border/--text/--accent tokens as the rest of muxplex.
   // DOM shape, text content, and scroll behavior are unchanged.
+  // ---------------------------------------------------------------------
+  // Announcements to assistive tech (muxplex-46p, WCAG 4.1.3)
+  // ---------------------------------------------------------------------
+  // The transcript itself is deliberately NOT a live region (see the
+  // aria-live="off" on #chat-messages in index.html and the comment there).
+  // A live transcript on a token-by-token stream announces once per token,
+  // which is the naive fix the review specifically called out. Instead the
+  // accumulated text is buffered here and flushed into a hidden live region
+  // at CLAUSE boundaries, at most every LIVE_FLUSH_MS -- so a screen reader
+  // hears "Three sessions are running: counter, logtail and sysmon." once,
+  // not thirty times mid-word.
+  //
+  // Silence is the other failure, so the buffer is also flushed
+  // unconditionally at the end of a turn: whatever is left over is announced
+  // even if it never reached a full stop.
+
+  var LIVE_FLUSH_MS = 1200;
+  var liveEl = null;
+  var liveFullText = "";   // everything streamed so far this turn
+  var liveAnnounced = 0;   // how much of it has been announced
+  var liveTimer = null;
+
+  function announceNow(text) {
+    if (!liveEl || !text) return;
+    // aria-atomic="true", so replacing the content re-announces the whole
+    // of it -- one complete thought per write, which is the point.
+    liveEl.textContent = text;
+  }
+
+  function flushLive() {
+    liveTimer = null;
+    if (!liveEl) return;
+    var pending = liveFullText.slice(liveAnnounced);
+    if (!pending) return;
+    // Announce only up to the last sentence/line boundary, so nothing is
+    // ever read out mid-clause. If there is no boundary yet, wait for one.
+    var m = /^[\s\S]*[.!?\n:](?=\s|$)/.exec(pending);
+    if (!m) {
+      liveTimer = setTimeout(flushLive, LIVE_FLUSH_MS);
+      return;
+    }
+    liveAnnounced += m[0].length;
+    announceNow(m[0].trim());
+    if (liveFullText.length > liveAnnounced) {
+      liveTimer = setTimeout(flushLive, LIVE_FLUSH_MS);
+    }
+  }
+
+  /** Called with the ACCUMULATED assistant text on every content delta. */
+  function announceStreamed(fullSoFar) {
+    liveFullText = fullSoFar;
+    if (!liveTimer) liveTimer = setTimeout(flushLive, LIVE_FLUSH_MS);
+  }
+
+  /** End of a turn: say whatever is left, even if it never reached a full
+   * stop, then reset for the next turn. Silence would be the worse bug. */
+  function announceStreamEnd() {
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    var rest = liveFullText.slice(liveAnnounced).trim();
+    if (rest) announceNow(rest);
+    liveFullText = "";
+    liveAnnounced = 0;
+  }
+
+  /** A short, complete status sentence -- announced immediately rather than
+   * buffered, because these are what tell a non-sighted user that something
+   * is happening at all during the long silent gap while a tool runs. */
+  function announceStatus(text) {
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    var rest = liveFullText.slice(liveAnnounced).trim();
+    liveAnnounced = liveFullText.length;
+    announceNow(rest ? rest + " " + text : text);
+  }
+
+  // ---------------------------------------------------------------------
+  // Minimal markdown renderer (muxplex-04m)
+  // ---------------------------------------------------------------------
+  // The model emits markdown -- **bold**, bullet lists, `code` -- and the
+  // panel used to print the asterisks and backticks verbatim.
+  //
+  // SAFETY IS STRUCTURAL HERE, NOT A SANITISER. This renderer NEVER touches
+  // innerHTML, never builds an HTML string, and never parses HTML. It walks
+  // the markdown source and builds DOM with createElement/createTextNode.
+  // Any HTML in the source -- <script>, <img onerror=...>, an unclosed tag,
+  // anything -- reaches the page as a TEXT NODE, because a text node is the
+  // only thing this code can produce for content it does not recognise as
+  // markdown. There is no escaping step to forget and no sanitiser
+  // allowlist to get wrong, which matters: what renders here is model
+  // output and tool results, i.e. content this panel does not control.
+  //
+  // Links are the one construct that could still smuggle behaviour (a
+  // `javascript:` href), so the href is allowlisted to http/https by regex
+  // at the point of matching -- anything else never becomes an anchor at
+  // all and stays literal text.
+  //
+  // Applied to ASSISTANT output only. A user's own message is echoed back
+  // verbatim: rendering it as markdown would be surface for no benefit, and
+  // silently reformatting what someone just typed is its own small lie.
+
+  // Ordered alternation: a code span is matched FIRST and its contents are
+  // consumed whole, so nothing inside backticks is ever re-parsed as
+  // emphasis. Bold before italic so ** is not read as two nested *.
+  //
+  // Held as a SOURCE STRING, and a fresh RegExp is built per call. That is
+  // not stylistic -- it is a bug fix. mdInline() recurses (bold can contain
+  // code, a link label can contain bold), and a /g regex carries mutable
+  // `lastIndex` state on the object itself. Sharing one instance meant an
+  // inner call reset and advanced the SAME lastIndex the outer loop was
+  // walking with, so the outer loop resumed from an unrelated offset and
+  // could re-match the same position forever. Measured, not theorised: it
+  // hung the render loop and took the whole browser tab down with it, on
+  // the first response that contained bold text.
+  var MD_INLINE_SRC =
+    "(`+)([\\s\\S]*?)\\1" +                        // 1,2  `code`
+    "|\\*\\*([\\s\\S]+?)\\*\\*" +                  // 3    **bold**
+    "|__([\\s\\S]+?)__" +                          // 4    __bold__
+    "|\\*([^*\\n]+?)\\*" +                         // 5    *italic*
+    "|_([^_\\n]+?)_" +                             // 6    _italic_
+    "|\\[([^\\]\\n]*)\\]\\((https?://[^\\s)]+)\\)"; // 7,8  [text](https://...)
+
+  // Recursion depth guard. Belt-and-braces beside the per-call regex above:
+  // this renders untrusted model output, and a pathological string must
+  // degrade to plain text, never to a hung tab.
+  var MD_MAX_DEPTH = 8;
+
+  function mdInline(parent, text, depth) {
+    text = String(text);
+    depth = depth || 0;
+    if (depth >= MD_MAX_DEPTH) {
+      parent.appendChild(document.createTextNode(text));
+      return;
+    }
+    var re = new RegExp(MD_INLINE_SRC, "g");
+    var last = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0].length === 0) { re.lastIndex++; continue; } // cannot stall
+      if (m.index > last) {
+        parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+      }
+      if (m[2] !== undefined) {
+        var code = document.createElement("code");
+        code.className = "agent-md-code";
+        code.textContent = m[2];
+        parent.appendChild(code);
+      } else if (m[3] !== undefined || m[4] !== undefined) {
+        var strong = document.createElement("strong");
+        mdInline(strong, m[3] !== undefined ? m[3] : m[4], depth + 1);
+        parent.appendChild(strong);
+      } else if (m[5] !== undefined || m[6] !== undefined) {
+        var em = document.createElement("em");
+        mdInline(em, m[5] !== undefined ? m[5] : m[6], depth + 1);
+        parent.appendChild(em);
+      } else if (m[8] !== undefined) {
+        var a = document.createElement("a");
+        a.href = m[8]; // already constrained to http/https by the pattern
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.className = "agent-md-link";
+        mdInline(a, m[7] || m[8], depth + 1);
+        parent.appendChild(a);
+      }
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) {
+      parent.appendChild(document.createTextNode(text.slice(last)));
+    }
+  }
+
+  /** Render markdown source into `el`, replacing its contents. Block level:
+   * fenced code, headings, bullet and numbered lists, paragraphs. Anything
+   * unrecognised falls through to a paragraph of literal text -- the
+   * renderer degrades to plain text rather than to nothing. */
+  function renderMarkdownInto(el, src) {
+    el.textContent = "";
+    var lines = String(src).split("\n");
+    var i = 0;
+
+    function inlineOf(tag, text) {
+      var node = document.createElement(tag);
+      mdInline(node, text);
+      return node;
+    }
+
+    while (i < lines.length) {
+      var line = lines[i];
+
+      var fence = /^\s*(```+|~~~+)\s*([A-Za-z0-9_+-]*)\s*$/.exec(line);
+      if (fence) {
+        var marker = fence[1];
+        var body = [];
+        i++;
+        while (i < lines.length && !new RegExp("^\\s*" + marker[0] + "{" + marker.length + ",}\\s*$").test(lines[i])) {
+          body.push(lines[i]);
+          i++;
+        }
+        i++; // consume the closing fence (or run off the end -- unclosed is fine)
+        var pre = document.createElement("pre");
+        pre.className = "agent-md-pre";
+        var codeEl = document.createElement("code");
+        codeEl.textContent = body.join("\n");
+        pre.appendChild(codeEl);
+        el.appendChild(pre);
+        continue;
+      }
+
+      var heading = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (heading) {
+        var h = inlineOf("div", heading[2]);
+        h.className = "agent-md-heading";
+        el.appendChild(h);
+        i++;
+        continue;
+      }
+
+      var bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+      var numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (bullet || numbered) {
+        var ordered = !!numbered;
+        var list = document.createElement(ordered ? "ol" : "ul");
+        list.className = "agent-md-list";
+        while (i < lines.length) {
+          var b = /^\s*[-*+]\s+(.*)$/.exec(lines[i]);
+          var n = /^\s*\d+[.)]\s+(.*)$/.exec(lines[i]);
+          if (ordered ? !n : !b) break;
+          list.appendChild(inlineOf("li", (ordered ? n : b)[1]));
+          i++;
+        }
+        el.appendChild(list);
+        continue;
+      }
+
+      if (!line.trim()) { i++; continue; }
+
+      // Paragraph: consecutive non-blank lines that do not start a block.
+      var para = [];
+      while (i < lines.length && lines[i].trim() &&
+             !/^\s*(```+|~~~+)/.test(lines[i]) &&
+             !/^#{1,6}\s+/.test(lines[i]) &&
+             !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) {
+        para.push(lines[i]);
+        i++;
+      }
+      if (para.length) {
+        var p = inlineOf("p", para.join("\n"));
+        p.className = "agent-md-p";
+        el.appendChild(p);
+      }
+    }
+  }
+
+  /** Swap a finished assistant turn from streamed plain text to rendered
+   * markdown. Deliberately done ONCE, at the end of the turn, not on every
+   * delta: mid-stream the source is routinely half-written (an unclosed
+   * fence, a lone `**`), so re-rendering per token would flash malformed
+   * structure at the reader and cost a full re-parse per token for it.
+   * While streaming, the raw text is shown as-is -- which is honest, and is
+   * what the panel did before this. */
+  function finishAssistantBubble(bodyEl, text) {
+    if (!bodyEl || !text) return;
+    renderMarkdownInto(bodyEl, text);
+    bodyEl.classList.add("agent-msg-body--md");
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  /** Screen-reader-only role label. WCAG 1.4.1 is about not using colour as
+   * the ONLY visual cue -- the CSS handles that with offset, corner shape
+   * and a left rule -- but a screen reader gets no cue from any of those,
+   * so each message also carries its role as real (hidden) text. */
+  function roleLabel(text) {
+    var span = document.createElement("span");
+    span.className = "agent-msg-role";
+    span.textContent = text + ": ";
+    return span;
+  }
+
   function appendSystemLine(text) {
     var div = document.createElement("div");
     div.className = "agent-msg-system";
-    div.textContent = text;
+    div.appendChild(roleLabel("Status"));
+    div.appendChild(document.createTextNode(text));
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    announceStatus(text);
   }
 
   function appendBubble(role) {
     var div = document.createElement("div");
     div.className = "agent-msg-bubble " +
       (role === "user" ? "agent-msg-bubble--user" : "agent-msg-bubble--assistant");
-    div.textContent = "";
+    div.appendChild(roleLabel(role === "user" ? "You" : "Agent"));
+    // The text node the caller writes into, kept separate from the hidden
+    // role label so assigning to it can never wipe the label out.
+    var body = document.createElement("span");
+    body.className = "agent-msg-body";
+    div.appendChild(body);
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-    return div;
+    return body;
   }
 
   function appendError(text) {
     var div = document.createElement("div");
     div.className = "agent-msg-error";
-    div.textContent = text;
+    // role="alert" makes this its own assertive live region: an error is the
+    // one thing that must interrupt rather than queue politely behind a
+    // streaming response.
+    div.setAttribute("role", "alert");
+    div.appendChild(roleLabel("Error"));
+    div.appendChild(document.createTextNode(text));
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
@@ -636,76 +1295,222 @@
     return clipText(raw, 90);
   }
 
-  // ----------------------------------------------------------------------
-  // Live attention count in the panel header (muxplex-n7z)
-  // ----------------------------------------------------------------------
-  // On a phone this panel is the whole screen, so while it is open the
-  // dashboard behind it can no longer tell you that something started
-  // needing you. Rather than shrink the panel to leave a 31px strip that a
-  // vision pass on the real pixels called "too fragmentary to provide any
-  // meaningful status" -- the appearance of session awareness rather than
-  // session awareness -- carry the one signal that is actually actionable
-  // mid-question, in a header row that already exists.
+  // ---------------------------------------------------------------------
+  // What the agent is DOING right now (muxplex-l2y)
+  // ---------------------------------------------------------------------
+  // The transcript used to say "model requested tool call(s):
+  // get_muxplex_session_details" -- the function name, in the model's
+  // vocabulary, not the user's -- and then nothing at all for the seconds
+  // the tool actually took. During that gap the token stream produces
+  // nothing, and silence reads as broken.
   //
-  // Source of truth is GET /api/view?sort=attention -- the SAME endpoint and
-  // the SAME server-computed `needs_attention` flag the soft deck reads
-  // (deck.js's poll). This deliberately does not re-derive the bell/
-  // follow-up predicate client-side: two implementations of one rule drift,
-  // and deck.js's own header comment says so.
+  // A generic spinner would be the wrong fix and was explicitly ruled out:
+  // motion manufactured to feel alive, carrying no information. So the
+  // status line names the CONCRETE action, in ordinary words, including the
+  // session or view it is about.
   //
-  // Polls only while the panel is visible. A failed poll says "attention: ?"
-  // in the error colour -- it must never render as "all clear", which is the
-  // one lie that would matter.
+  // READS AND WRITES ARE DELIBERATELY DIFFERENT REGISTERS. Reading a
+  // session's output and typing keystrokes into it are not the same kind of
+  // event and must not look the same. Reads are muted with a neutral
+  // marker; the one write tool gets its own treatment, names the target
+  // session AND the exact text, and stays on screen while the confirmation
+  // gate is open -- which makes the status line the cheapest safety net
+  // there is: the moment you can see, and stop, something before it lands.
 
-  var ATTENTION_POLL_MS = 5000;
-  var attentionTimer = null;
-  var attentionEl = null;
+  var statusEl = null;      // the single live status row, or null
+  var statusWatchdog = null; // fires if a turn goes quiet for too long
+  var STATUS_STALL_MS = 15000;
 
-  function renderAttention(state, count) {
-    if (!attentionEl) return;
-    attentionEl.classList.remove("agent-panel-attention--attention",
-      "agent-panel-attention--unknown");
-    if (state === "unknown") {
-      attentionEl.classList.add("agent-panel-attention--unknown");
-      attentionEl.textContent = "attention: ?";
-      attentionEl.title = "Could not read /api/view -- session state is UNKNOWN, not clear.";
-      return;
+  /** Human phrasing for a tool call, and which register it belongs to.
+   * Falls back to the raw tool name rather than inventing a description for
+   * a tool this function has not been taught -- an honest "running X" beats
+   * a confident wrong sentence. */
+  function describeToolAction(name, args) {
+    args = args || {};
+    var sess = args.session_name ? '"' + args.session_name + '"' : "a session";
+    if (name === "list_muxplex_sessions") {
+      return { kind: "read", text: "Reading your list of sessions" };
     }
-    if (count > 0) {
-      attentionEl.classList.add("agent-panel-attention--attention");
-      attentionEl.textContent = count + " need" + (count === 1 ? "s" : "") + " you";
-    } else {
-      attentionEl.textContent = "all clear";
+    if (name === "list_muxplex_federated_sessions") {
+      return { kind: "read", text: "Reading sessions across every connected device" };
     }
-    attentionEl.title = "Live count of sessions in the current view flagged " +
-      "needs_attention by the server -- the same flag the deck reads.";
+    if (name === "get_muxplex_session_details") {
+      return { kind: "read", text: "Reading what " + sess + " is showing right now" };
+    }
+    if (name === "switch_muxplex_session") {
+      return { kind: "read", text: "Switching the dashboard to " + sess };
+    }
+    if (name === "switch_muxplex_view") {
+      return { kind: "read", text: "Switching the view to \"" + (args.view || "?") + "\"" };
+    }
+    if (name === "send_muxplex_session_input") {
+      return {
+        kind: "write",
+        text: "Typing " + JSON.stringify(typeof args.text === "string" ? args.text : "") +
+          " into " + sess,
+      };
+    }
+    return { kind: "read", text: "Running " + name };
   }
 
-  async function pollAttentionOnce() {
-    try {
-      var resp = await fetch("/api/view?sort=attention", { method: "GET" });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      var data = await resp.json();
-      var sessions = (data && data.sessions) || [];
-      var n = sessions.filter(function (s) { return !!s.needs_attention; }).length;
-      renderAttention("ok", n);
-    } catch (e) {
-      // Loud, not silent: an unreadable server is not an empty queue.
-      console.warn("chat panel: attention poll failed:", e);
-      renderAttention("unknown", 0);
+  /** Show (or replace) the single status row at the foot of the transcript.
+   * kind: "read" | "write" | "wait" | "stalled". */
+  function setStatus(kind, text) {
+    clearStatusWatchdog();
+    if (!statusEl) {
+      statusEl = document.createElement("div");
+      messagesEl.appendChild(statusEl);
     }
+    statusEl.className = "agent-status agent-status--" + kind;
+    statusEl.textContent = "";
+    statusEl.appendChild(roleLabel("Status"));
+    statusEl.appendChild(document.createTextNode(text));
+    messagesEl.appendChild(statusEl); // keep it last, even after new bubbles
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    announceStatus(text);
   }
 
-  function startAttentionPolling() {
-    if (attentionTimer !== null) return;
-    pollAttentionOnce();
-    attentionTimer = setInterval(pollAttentionOnce, ATTENTION_POLL_MS);
+  function clearStatus() {
+    clearStatusWatchdog();
+    if (statusEl && statusEl.parentNode) statusEl.parentNode.removeChild(statusEl);
+    statusEl = null;
   }
 
-  function stopAttentionPolling() {
-    if (attentionTimer === null) return;
-    clearInterval(attentionTimer);
-    attentionTimer = null;
+  function clearStatusWatchdog() {
+    if (statusWatchdog) { clearTimeout(statusWatchdog); statusWatchdog = null; }
+  }
+
+  /** Arm the stall detector. If nothing arrives for STATUS_STALL_MS the row
+   * stops claiming to be working and says so instead -- "appears to still be
+   * working" is precisely the failure this guards against. */
+  function armStallWatch(what) {
+    clearStatusWatchdog();
+    var startedAt = Date.now();
+    statusWatchdog = setTimeout(function () {
+      if (!statusEl) return;
+      var secs = Math.round((Date.now() - startedAt) / 1000);
+      setStatus("stalled", "No response for " + secs + "s while " +
+        what + ". It may still finish, or the connection may have dropped.");
+      armStallWatch(what); // keep counting rather than going quiet again
+    }, STATUS_STALL_MS);
+  }
+
+  // ---------------------------------------------------------------------
+  // Humanised tool failures (muxplex-oi2, and the 403 remedy of muxplex-5so)
+  // ---------------------------------------------------------------------
+  // What the user used to see, verbatim:
+  //   chat panel: tool execution failed: {"error":"POST /api/sessions/
+  //   counter/input failed: HTTP 403 -- {\"detail\":\"Session input is
+  //   disabled (settings.input_enabled=false)\"}"}
+  // A JSON string inside a JSON string, an HTTP status, and an internal
+  // config key, handed to someone who just wanted to type into a terminal.
+  //
+  // The rule now: ONE plain sentence about what happened and what they can
+  // do, with the raw text still one click away. Transparency is a feature
+  // of this tool; being the primary reading surface is not.
+
+  /** Turn a thrown tool error into { headline, remedy } in plain language.
+   * `remedy` may be null when there is genuinely nothing the user can do. */
+  function humaniseToolError(name, message) {
+    var msg = String(message || "");
+    var action = describeToolAction(name, {});
+    var m403 = /HTTP 403/.test(msg);
+    var m404 = /HTTP 404/.test(msg);
+    var m5xx = /HTTP 5\d\d/.test(msg);
+
+    if (name === "send_muxplex_session_input" && m403) {
+      // A 403 here is not a fault. It is a permission state with a known
+      // human remedy, and the person reading this is usually the one person
+      // who can apply it. Never say "no workaround" -- see muxplex-5so.
+      // Same rule as the thrower: decided from the server's own wording.
+      var globallyOff = !/input_allowed_sessions/i.test(msg);
+      return {
+        headline: globallyOff
+          ? "muxplex is not accepting typed input into any session yet."
+          : "muxplex is not accepting typed input into that particular session.",
+        remedy: globallyOff
+          ? "This is off by default on purpose. Whoever runs muxplex on that machine can turn it " +
+            "on by editing ~/.config/muxplex/settings.json and setting input_enabled to true, then " +
+            "listing the sessions they want to allow in input_allowed_sessions. If that is you, " +
+            "you are the only person who can: both settings are deliberately local-file-only and " +
+            "cannot be changed from this or any other API, including by the agent."
+          : "Typed input is on, but this session is not on the allowlist. Whoever runs muxplex can " +
+            "add it to input_allowed_sessions in ~/.config/muxplex/settings.json. That file is " +
+            "deliberately the only way -- the allowlist cannot be changed through any API, " +
+            "including by the agent.",
+      };
+    }
+    if (/User declined/i.test(msg)) {
+      return {
+        headline: "You declined that, so nothing was sent.",
+        remedy: "Ask again if you change your mind -- every one of these needs a fresh confirmation.",
+      };
+    }
+    if (m404) {
+      return {
+        headline: "muxplex could not find that session.",
+        remedy: "It may have been closed or renamed. Ask for the list of sessions to see what is live.",
+      };
+    }
+    if (m403) {
+      return { headline: "muxplex refused that request.", remedy: null };
+    }
+    if (m5xx) {
+      return {
+        headline: "muxplex hit an error of its own while handling that.",
+        remedy: "Worth retrying once; if it keeps happening, the server log will have the detail.",
+      };
+    }
+    if (/NetworkError|Failed to fetch|TypeError: |load failed/i.test(msg)) {
+      return {
+        headline: "Could not reach muxplex.",
+        remedy: "The connection dropped or the server is down. Check it is still running.",
+      };
+    }
+    return {
+      headline: "Could not finish " + action.text.charAt(0).toLowerCase() + action.text.slice(1) + ".",
+      remedy: null,
+    };
+  }
+
+  /** Render a failed tool call: a sentence, a remedy if one exists, and the
+   * raw text collapsed underneath. */
+  function appendToolError(name, message) {
+    var h = humaniseToolError(name, message);
+    var div = document.createElement("div");
+    div.className = "agent-msg-error";
+    div.setAttribute("role", "alert");
+    div.appendChild(roleLabel("Error"));
+
+    var head = document.createElement("div");
+    head.className = "agent-msg-error-headline";
+    head.textContent = h.headline;
+    div.appendChild(head);
+
+    if (h.remedy) {
+      var rem = document.createElement("div");
+      rem.className = "agent-msg-error-remedy";
+      rem.textContent = h.remedy;
+      div.appendChild(rem);
+    }
+
+    // Raw detail, collapsed. Never the primary reading surface, never gone.
+    var det = document.createElement("details");
+    det.className = "agent-msg-tool";
+    var sum = document.createElement("summary");
+    sum.className = "agent-msg-tool-summary";
+    sum.textContent = "technical detail";
+    var pre = document.createElement("pre");
+    pre.className = "agent-msg-tool-raw";
+    pre.textContent = message;
+    det.appendChild(sum);
+    det.appendChild(pre);
+    div.appendChild(det);
+
+    messagesEl.appendChild(div);
+    if (statusEl) messagesEl.appendChild(statusEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    announceStatus(h.headline + (h.remedy ? " " + h.remedy : ""));
   }
 
   /** Collapsed tool result: summary on screen, full payload on demand. */
@@ -714,13 +1519,18 @@
     det.className = "agent-msg-tool";
     var sum = document.createElement("summary");
     sum.className = "agent-msg-tool-summary";
-    sum.textContent = "tool result (" + name + "): " + summarizeToolResult(raw);
+    // Human phrasing, not the function name (muxplex-oi2/l2y). The raw
+    // payload underneath is unchanged and still one click away.
+    sum.textContent = describeToolAction(name, {}).text.replace(/^Reading/, "Read")
+      .replace(/^Switching/, "Switched").replace(/^Typing/, "Typed")
+      .replace(/^Running/, "Ran") + " \u2014 " + summarizeToolResult(raw);
     var pre = document.createElement("pre");
     pre.className = "agent-msg-tool-raw";
     pre.textContent = raw;
     det.appendChild(sum);
     det.appendChild(pre);
     messagesEl.appendChild(det);
+    if (statusEl) messagesEl.appendChild(statusEl); // status stays last
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -979,12 +1789,54 @@
         body: JSON.stringify(inputBody),
       });
       if (!inputResp.ok) {
-        // THIS is the fenced endpoint. A 403 here (settings.input_enabled is
-        // false, or the session isn't in input_allowed_sessions) is muxplex's
-        // fence doing exactly its job -- surface the server's real detail
-        // text verbatim. Never retry, never imply a workaround exists: the
-        // fence can only be widened by a local operator editing
-        // settings.json on disk, which this browser code has no path to do.
+        // THIS is the fenced endpoint. A 403 here is muxplex's fence doing
+        // exactly its job, and the server's real text is always surfaced
+        // verbatim. This code never retries and never tries to widen the
+        // fence -- it cannot: both settings are local-file-only by design.
+        //
+        // muxplex-5so: what it must ALSO do is stop dead-ending the user. A
+        // 403 from this endpoint is not a fault, it is a PERMISSION STATE
+        // with a known human remedy, and the person reading the answer is
+        // usually the exact person who can apply it. The observed failure
+        // was the agent replying "No workaround available on my end" while
+        // this file knew the setting names, the file path, and that they
+        // are operator-only. So the error handed back to the model now
+        // carries all of that, and distinguishes the two distinct 403s.
+        if (inputResp.status === 403) {
+          var fenceText = inputResp.text || "";
+          // Which of the two fences refused, decided from the server's OWN
+          // wording rather than from a guess. muxplex says either
+          // "Session input is disabled (settings.input_enabled=false)" or
+          // "Session 'x' does not match any input_allowed_sessions pattern".
+          // Keying on the PRESENCE of the allowlist phrase (rather than the
+          // absence of the other) means an unrecognised future message
+          // degrades to the global case -- the more conservative advice --
+          // instead of confidently naming the wrong fence.
+          var globallyOff = !/input_allowed_sessions/i.test(fenceText);
+          throw new Error(
+            "POST " + inputUrl + " failed: HTTP 403" +
+            (fenceText ? " -- " + fenceText : "") + "\n\n" +
+            "This is NOT a dead end and NOT a fault -- it is a permission state with a " +
+            "known human remedy. Terminal input is gated by whoever operates this muxplex, " +
+            "in the file ~/.config/muxplex/settings.json on the machine running it, via two " +
+            "settings: input_enabled (a global on/off switch, false by default) and " +
+            "input_allowed_sessions (a per-session allowlist). " +
+            (globallyOff
+              ? "This particular refusal is the GLOBAL switch: input_enabled is false, so no " +
+                "session accepts typed input yet. The operator needs to set it to true AND list " +
+                "the sessions they want to allow."
+              : "input_enabled is already on -- this refusal is the ALLOWLIST: the session " +
+                JSON.stringify(args.session_name) + " is not in input_allowed_sessions. The " +
+                "operator needs to add that session name to that list.") + " " +
+            "Both settings are deliberately local-file-only: they cannot be changed through " +
+            "this or any other API call, by you or by anyone else -- only by a person editing " +
+            "that file on disk. " +
+            "TELL THE USER exactly this: what is blocked, which of the two cases it is, the " +
+            "file name and both setting names, and that a local operator (very possibly them) " +
+            "is the one who can change it. Do NOT tell them there is no workaround. Do NOT " +
+            "retry this call."
+          );
+        }
         throw new Error(
           "POST " + inputUrl + " failed: HTTP " + inputResp.status +
           (inputResp.text ? " -- " + inputResp.text : "")
@@ -1035,6 +1887,8 @@
   async function runTurn() {
     requestIndex++;
     var requestStartedAt = performance.now();
+    setStatus("wait", "Thinking about what to do next...");
+    armStallWatch("waiting for the agent to respond");
     var body = {
       model: MODEL,
       stream: true,
@@ -1092,9 +1946,10 @@
         body_raw: truncateForCapture(errText),
         duration_ms: Math.round(performance.now() - requestStartedAt),
       });
-      appendError(
-        "chat panel: /api/agent/chat/completions failed: HTTP " + resp.status + " " + errText
-      );
+      clearStatus();
+      appendToolError("__request__",
+        "POST /api/agent/chat/completions failed: HTTP " + resp.status +
+        (errText ? " -- " + errText : ""));
       return;
     }
 
@@ -1131,9 +1986,11 @@
         if (!choice) continue;
 
         if (choice.delta && typeof choice.delta.content === "string" && choice.delta.content) {
-          if (!assistantBubble) assistantBubble = appendBubble("assistant");
+          if (!assistantBubble) { clearStatus(); assistantBubble = appendBubble("assistant"); }
           assistantText += choice.delta.content;
           assistantBubble.textContent = assistantText;
+          // Buffered, clause-boundary announcement -- NOT one per token.
+          announceStreamed(assistantText);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
@@ -1190,10 +2047,9 @@
         .map(function (k) { return toolCallsByIndex[k]; })
         .sort(function (a, b) { return a.__seq - b.__seq; });
 
-      appendSystemLine(
-        "model requested tool call(s): " + toolCalls.map(function (t) { return t.function.name; }).join(", ")
-      );
 
+      announceStreamEnd();
+      finishAssistantBubble(assistantBubble, assistantText);
       capPush("request_end", {
         finish_reason: finishReason,
         chunk_id: sseChunkId,
@@ -1219,11 +2075,20 @@
         var tc2 = toolCalls[t];
         var resultContent;
         var toolStartedAt = performance.now();
+        // Name the concrete action before doing it, in the right register
+        // (muxplex-l2y). Arguments are parsed leniently here purely for
+        // phrasing -- executeToolCall does its own strict validation.
+        var __args = {};
+        try { __args = JSON.parse(tc2.function.arguments || "{}"); } catch (e) { __args = {}; }
+        var __act = describeToolAction(tc2.function.name, __args);
+        setStatus(__act.kind, __act.text + "...");
+        armStallWatch(__act.text.charAt(0).toLowerCase() + __act.text.slice(1));
         try {
           resultContent = await executeToolCall(tc2);
           // Summary on screen, full payload one tap away. `resultContent`
           // itself is untouched and still goes to the model verbatim below
           // -- the capture event immediately below also gets it raw.
+          clearStatus();
           appendToolResult(tc2.function.name, resultContent);
           capPush("tool_call_result", {
             tool_call_id: tc2.id,
@@ -1234,8 +2099,13 @@
             duration_ms: Math.round(performance.now() - toolStartedAt),
           });
         } catch (toolErr) {
-          resultContent = JSON.stringify({ error: String(toolErr && toolErr.message || toolErr) });
-          appendError("chat panel: tool execution failed: " + resultContent);
+          var __errMsg = String(toolErr && toolErr.message || toolErr);
+          // The MODEL still gets the full, unedited error (it is what lets it
+          // explain the remedy). The USER gets one plain sentence, with this
+          // exact text collapsed underneath -- see appendToolError.
+          resultContent = JSON.stringify({ error: __errMsg });
+          clearStatus();
+          appendToolError(tc2.function.name, __errMsg);
           capPush("tool_call_result", {
             tool_call_id: tc2.id,
             name: tc2.function.name,
@@ -1253,6 +2123,8 @@
       return;
     }
 
+    announceStreamEnd();
+    finishAssistantBubble(assistantBubble, assistantText);
     capPush("request_end", {
       finish_reason: finishReason,
       chunk_id: sseChunkId,
@@ -1271,6 +2143,8 @@
     var text = inputEl.value.trim();
     if (!text) return;
     inputEl.value = "";
+    autoGrowInput(); // collapse the composer back down with its content
+    clearEmptyState(); // the opening line has done its job the moment there is a real message
     var bubble = appendBubble("user");
     bubble.textContent = text;
     messages.push({ role: "user", content: text });
@@ -1283,9 +2157,14 @@
     try {
       await runTurn();
     } catch (err) {
-      appendError("chat panel: request failed: " + String(err && err.message || err));
+      clearStatus();
+      appendToolError("__request__", String(err && err.message || err));
       capPush("turn_error", { error: String(err && err.message || err) });
     } finally {
+      // Whatever happened, the turn is over: no row may be left saying the
+      // agent is still working. This is the "stalled or dropped must be
+      // unambiguous" half of muxplex-l2y.
+      clearStatus();
       sendBtn.disabled = false;
     }
   }
@@ -1300,6 +2179,15 @@
     openBtn = $("chat-open-btn");
     exportBtn = $("chat-export-btn");
     exportLinkEl = $("chat-export-link");
+    // Deliberately NOT in the fatal __missing check below: a missing live
+    // region degrades accessibility, it does not break the panel. But it is
+    // never silent -- a missing one would otherwise look exactly like a
+    // working one to anyone not using a screen reader.
+    liveEl = $("chat-live");
+    if (!liveEl) {
+      console.warn("chat panel: #chat-live not found -- streaming responses " +
+        "will NOT be announced to assistive technology");
+    }
 
     confirmBackdropEl = $("chat-confirm-backdrop");
     confirmDialogEl = $("chat-confirm-dialog");
@@ -1344,29 +2232,150 @@
       throw new Error(__msg);
     }
 
-    // The attention badge is deliberately NOT in the fatal __missing check
-    // above: it is an added signal, not part of the panel's own contract.
-    // If the markup is absent the panel must still work -- but say so, so a
-    // missing badge can never be mistaken for "nothing needs you".
-    attentionEl = $("chat-attention");
-    if (!attentionEl) {
-      console.warn("chat panel: #chat-attention not found -- panel will not " +
-        "show the live needs-attention count while open");
-    }
-
     newConversation();
 
-    function togglePanel() {
-      var nowHidden = panelEl.classList.toggle("hidden");
-      // Poll only while visible: this panel is a foreground surface, and a
-      // background timer hitting /api/view forever is exactly the kind of
-      // cost nobody asked for.
-      if (nowHidden) {
-        stopAttentionPolling();
-      } else {
-        startAttentionPolling();
+    // ------------------------------------------------------------------
+    // Inline panel placement (muxplex-rle)
+    // ------------------------------------------------------------------
+    // The panel is no longer a fixed overlay: it is an inline column that
+    // sits beside content, below the header bar, exactly the way
+    // .session-sidebar does. Both views (#view-overview and #view-expanded)
+    // now use the same .view-body flex row, so "beside content" means "the
+    // last flex child of the ACTIVE view's .view-body".
+    //
+    // There is exactly ONE #chat-panel element and it gets reparented,
+    // rather than one copy per view: two copies would duplicate every id in
+    // that markup (#chat-input, #chat-send-btn, the whole confirmation
+    // wiring) and getElementById would silently bind to whichever came
+    // first -- a panel that looks fine and types into the wrong DOM.
+    //
+    // Reparenting a live node preserves its state (the textarea's value is
+    // a property, the transcript nodes move with it); it does not re-run
+    // any of this file's wiring, because the listeners are bound to the
+    // elements, not to their position.
+
+    /** The .view-body of whichever view is currently on screen, or null if
+     * the DOM does not look the way this function expects. Never guesses. */
+    function activeViewBody() {
+      var expanded = document.getElementById("view-expanded");
+      var overview = document.getElementById("view-overview");
+      var showing = (expanded && !expanded.classList.contains("hidden"))
+        ? expanded
+        : overview;
+      return showing ? showing.querySelector(".view-body") : null;
+    }
+
+    var _homeWarned = false;
+
+    /** Move the panel into the active view's content row, if it is not
+     * already there. Safe to call repeatedly -- a no-op when already
+     * correctly placed, so it can be driven from a MutationObserver
+     * without churning the DOM on every unrelated class change. */
+    function homeAgentPanel() {
+      var host = activeViewBody();
+      if (!host) {
+        // Loud once, then stop: an unplaced panel still works (it keeps its
+        // parking spot at body level), but it will not be beside content,
+        // and that is worth saying rather than silently degrading.
+        if (!_homeWarned) {
+          _homeWarned = true;
+          console.warn("chat panel: no .view-body found for the active view -- " +
+            "panel cannot be placed inline beside content");
+        }
+        return;
+      }
+      if (panelEl.parentNode !== host) host.appendChild(panelEl);
+    }
+
+    homeAgentPanel();
+
+    // app.js switches views by toggling #view-expanded's `hidden`/
+    // `view--active` classes (see openSession/closeSession). It does not
+    // publish an event for that, and it is not this lane's file to change,
+    // so observe the class attribute directly -- one observer, no polling.
+    // If the panel is open when the view changes it follows the user across;
+    // if it is closed this just keeps its parking spot correct for the next
+    // open.
+    var expandedViewEl = document.getElementById("view-expanded");
+    if (expandedViewEl && typeof MutationObserver === "function") {
+      new MutationObserver(function () {
+        homeAgentPanel();
+      }).observe(expandedViewEl, { attributes: true, attributeFilter: ["class"] });
+    } else {
+      console.warn("chat panel: cannot observe view switches -- the panel will " +
+        "still be re-homed on every open, but not mid-view-change");
+    }
+
+    /** Every header entry point for the panel. Both carry the toggle state,
+     * so the two headers can never disagree about whether it is open. */
+    function agentButtons() {
+      var btns = [openBtn];
+      var expandedBtn = document.getElementById("chat-open-btn-expanded");
+      if (expandedBtn) btns.push(expandedBtn);
+      return btns;
+    }
+
+    // ------------------------------------------------------------------
+    // Focus handling on open/close (muxplex-d5v, and WCAG 2.4.3 from
+    // muxplex-46p -- one implementation, not two)
+    // ------------------------------------------------------------------
+    // On open: the composer takes focus, so typing goes straight in with no
+    // intermediate click. Opening the panel IS the signal that you want to
+    // use it.
+    //
+    // On close: focus goes back to the button that opened it. Without this a
+    // keyboard user is dumped at the top of a dense dashboard and has to tab
+    // all the way back every single time -- and focus lands on a
+    // display:none element's former position, which is worse than useless.
+    // The button that opened it is remembered, so closing returns you to the
+    // header you actually came from rather than always to the overview one.
+    //
+    // COARSE POINTERS ARE DELIBERATELY EXEMPT FROM THE AUTO-FOCUS. Focusing
+    // a text input on a touch device raises the software keyboard
+    // immediately, which on this panel would cover the composer's own Send
+    // button before the user has read a word of the transcript. That is a
+    // real risk and it is NOT verifiable in this environment -- a headless
+    // browser has no software keyboard to raise, so "it looked fine in the
+    // test" would be a claim about nothing. So the safe, checkable
+    // behaviour ships: no auto-focus on a coarse pointer, no keyboard, the
+    // composer is one tap away. Focus RESTORATION on close is unconditional
+    // -- it costs nothing and raises no keyboard.
+    //
+    // This is a media QUERY, not a width check: it asks what the pointing
+    // device actually is, so a touchscreen laptop at 1400px is treated as
+    // touch and a mouse-driven small window is not.
+    var finePointer = !window.matchMedia || window.matchMedia("(pointer: fine)").matches;
+    var panelIsOpen = false;
+    var lastOpener = null;
+
+    /** Single source of truth for "is the panel open", reflected onto both
+     * buttons' aria-pressed (which style.css also styles off -- see
+     * .header-btn--agent[aria-pressed="true"]) so the visual active state
+     * and the accessibility tree cannot drift apart. */
+    function setPanelOpen(open, opener) {
+      var wasOpen = panelIsOpen;
+      panelIsOpen = !!open;
+      panelEl.classList.toggle("hidden", !open);
+      agentButtons().forEach(function (b) {
+        b.setAttribute("aria-pressed", open ? "true" : "false");
+      });
+      if (open) {
+        homeAgentPanel();
+        if (opener) lastOpener = opener;
+        if (finePointer) inputEl.focus();
+      } else if (wasOpen) {
+        // `wasOpen` guards the init-time call below: restoring focus to a
+        // button at page load would steal it from wherever the user actually
+        // is. Only a real close moves focus.
+        (lastOpener || openBtn).focus();
       }
     }
+
+    function togglePanel(e) {
+      setPanelOpen(!panelIsOpen, e && e.currentTarget);
+    }
+
+    setPanelOpen(false); // establish aria-pressed="false" before any click
 
     openBtn.addEventListener("click", togglePanel);
 
@@ -1383,18 +2392,55 @@
     }
 
     closeBtn.addEventListener("click", function () {
-      panelEl.classList.add("hidden");
-      stopAttentionPolling();
+      setPanelOpen(false);
     });
     newBtn.addEventListener("click", newConversation);
     exportBtn.addEventListener("click", exportCaptureRecord);
     sendBtn.addEventListener("click", handleSend);
+
+    // ------------------------------------------------------------------
+    // Composer keys (muxplex-8qp)
+    // ------------------------------------------------------------------
+    // This inverts the old behaviour, deliberately. It used to be
+    // Enter = send, Shift+Enter = newline. It is now:
+    //
+    //   Enter, Shift+Enter, Alt+Enter, Ctrl+J  -> newline, never sends
+    //   Ctrl+Enter, Cmd+Enter                  -> send
+    //   the Send button                        -> send
+    //
+    // The failure mode that matters here is silently sending a half-written
+    // message, so every path that a habit might reach for is routed to
+    // "newline", and only the two explicit chords send. Shift+Enter and
+    // Ctrl+J are in that list precisely BECAUSE they are habits from other
+    // chat clients -- someone who reaches for them must not be punished by
+    // having their draft fired off.
+    //
+    // Note on how each case is implemented, because they are not the same:
+    //  * Plain/Shift/Alt Enter: do NOTHING. A textarea already inserts a
+    //    newline on Enter; the correct fix is to stop calling
+    //    preventDefault(), not to insert one ourselves.
+    //  * Ctrl+J: MUST be intercepted. Its browser default is "open the
+    //    downloads panel" in Chrome/Edge/Firefox, so leaving it alone would
+    //    yank the user out of the composer instead of adding a line. It is
+    //    preventDefault()'d and the newline inserted explicitly.
+    //  * Ctrl/Cmd+Enter: preventDefault() as well -- without it the browser
+    //    inserts a newline into the draft on its way out, so the input would
+    //    be cleared with a stray blank line already typed into the next one.
     inputEl.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter") {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          handleSend();
+        }
+        return; // plain / Shift / Alt Enter: the textarea's own newline
+      }
+      if (e.ctrlKey && !e.metaKey && (e.key === "j" || e.key === "J")) {
         e.preventDefault();
-        handleSend();
+        insertNewlineAtCursor();
       }
     });
+    inputEl.addEventListener("input", autoGrowInput);
+    autoGrowInput();
 
     // Confirmation gate wiring. Exactly one path resolves true: an explicit
     // click on Send. Every other path -- Cancel click, backdrop click,
