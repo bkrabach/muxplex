@@ -1596,22 +1596,69 @@ def _resolve_upgrade_kit_ref(
     return f"v{version}", None
 
 
-def _install_cmd_preserves_kit_override(install_cmd: list[str], info_kit: dict) -> bool:
+def _install_cmd_preserves_kit_override(
+    install_cmd: list[str], info_kit: dict, mux_install_target: str
+) -> bool:
     """Defense-in-depth (mirrors `_target_matches_source`'s role, but for the
-    PAIR rather than muxplex alone): an install command must carry a `--with
-    tmux-kit @ git+...` override whenever tmux-kit's recorded source is git.
+    PAIR rather than muxplex alone): confirm the constructed install command
+    pins a git-sourced tmux-kit CORRECTLY for the muxplex target it is
+    paired with.
 
-    Catches a future regression that reconstructs `install_cmd` without the
-    override -- exactly how the bare-name uv-managed shortcut silently
-    dropped it before this fix (docs/plans/2026-08-09-tmuxkit-own-repo-and-
-    pypi-plan.md §2.5 step 5).
+    Catches a future regression that reconstructs `install_cmd` incorrectly
+    -- originally written to require a `--with tmux-kit @ git+...` override
+    unconditionally whenever tmux-kit's recorded source is git (exactly how
+    the bare-name uv-managed shortcut silently dropped it before the first
+    fix here -- docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md
+    §2.5 step 5).
+
+    **That unconditional rule was itself wrong, and shipped a real
+    production failure (2026-08-15, v0.47.11):** when `mux_install_target`
+    is ALSO a git target (`git+https://.../muxplex@vX`), that target's own
+    `pyproject.toml` already carries `[tool.uv.sources] tmux-kit = { git =
+    ..., tag = ... }` -- uv resolves tmux-kit from THAT pin on its own, with
+    no override needed. Adding a `--with tmux-kit @ git+...@vX` override on
+    top of it gives uv TWO url-bearing requirement origins for the same
+    package and it refuses to resolve -- `Requirements contain conflicting
+    URLs for package 'tmux-kit'` -- even when both origins name the
+    byte-identical URL. Reproduced in isolation in a scratch `UV_TOOL_DIR`:
+    `uv tool install git+.../muxplex@v0.47.11 --with 'tmux-kit @
+    git+.../tmux-kit@v0.4.0'` fails with that error; the identical install
+    WITHOUT `--with` succeeds and resolves tmux-kit from git at the
+    expected ref (verified via the installed package's own
+    `direct_url.json` showing `vcs_info`). So a git muxplex target
+    satisfies this guarantee by the ABSENCE of `--with`, not its presence
+    -- do not "fix" this back to requiring it unconditionally; that
+    reintroduces the exact failure above. It is PyPI-sourced muxplex
+    targets (and any other non-git target) that need the override: a
+    published wheel's metadata strips `[tool.uv.sources]` entirely (see
+    AGENTS.md's "tmux-kit pin/tag agreement" section), so `--with` is the
+    ONLY thing pinning tmux-kit to git in that case, and its absence there
+    would silently drop the pin -- the original failure mode this function
+    was written to catch, and it must still catch it.
+
+    Why the git-target/PyPI-target distinction can't be read off
+    `install_cmd` alone: both a bare `"muxplex"` (PyPI) and a `"git+..."`
+    element could in principle appear in the list, and the *correct*
+    element to look for depends on which shape was actually requested --
+    passing `mux_install_target` explicitly (rather than re-deriving it by
+    scanning the built command) keeps this check anchored to what was
+    ACTUALLY decided to install, not a guess reconstructed from strings.
     """
     if info_kit["source"] != "git":
         return True
-    return "--with" in install_cmd and any(
+
+    has_override = "--with" in install_cmd and any(
         isinstance(arg, str) and arg.startswith("tmux-kit @ git+")
         for arg in install_cmd
     )
+
+    if mux_install_target.startswith("git+"):
+        # The muxplex git target's own [tool.uv.sources] pin already
+        # resolves tmux-kit -- an ADDED --with here is the regression (see
+        # docstring above), not its absence.
+        return not has_override
+
+    return has_override
 
 
 def _verify_install_shape_preserved(
@@ -1798,8 +1845,34 @@ def upgrade(*, force: bool = False) -> None:
         # its own. If no ref can be determined at all, refuse rather than
         # silently drop the override and let tmux-kit fall through to an
         # index a managed device may not be able to reach.
+        #
+        # CORRECTED 2026-08-15 (v0.47.11 incident): the paragraph above is
+        # true ONLY when muxplex's own install target is NOT itself git. A
+        # git muxplex target's pyproject.toml already carries
+        # [tool.uv.sources] for tmux-kit (see AGENTS.md's "tmux-kit pin/tag
+        # agreement" section) -- uv honors that pin on its own, no override
+        # needed. Adding --with on TOP of that pin gives uv two url-bearing
+        # requirement origins for the identical package, and it refuses to
+        # resolve even when both origins name the byte-identical URL:
+        #   `uv tool install git+.../muxplex@vX --with 'tmux-kit @
+        #   git+.../tmux-kit@vY'` -> "Requirements contain conflicting URLs
+        #   for package `tmux-kit`"
+        # -- reproduced in isolation in a scratch UV_TOOL_DIR; the identical
+        # install WITHOUT --with succeeds and resolves tmux-kit from git at
+        # the expected ref. This is exactly what broke a real `muxplex
+        # update` in production (git muxplex + git tmux-kit, identical
+        # pinned URLs on both sides). See
+        # _install_cmd_preserves_kit_override's docstring for the full
+        # writeup and the corrected guard.
+        mux_target_is_git = install_target.startswith("git+")
         kit_with_args: list[str] = []
-        if info_kit["source"] == "git":
+        if info_kit["source"] == "git" and mux_target_is_git:
+            print(
+                "  tmux-kit: git-sourced, pinned via the muxplex git"
+                " target's own [tool.uv.sources] -- no --with override"
+                " needed (adding one would conflict with that pin)."
+            )
+        elif info_kit["source"] == "git":
             kit_url = info_kit.get("url") or ""
             if not kit_url:
                 print(
@@ -1877,7 +1950,9 @@ def upgrade(*, force: bool = False) -> None:
             # _target_matches_source's role for muxplex alone -- catches a
             # future regression that reconstructs install_cmd without the
             # override.
-            if not _install_cmd_preserves_kit_override(install_cmd, info_kit):
+            if not _install_cmd_preserves_kit_override(
+                install_cmd, info_kit, install_target
+            ):
                 print(
                     "\n  REFUSING: the constructed install command has no"
                     " --with tmux-kit override, but tmux-kit is recorded as a"
