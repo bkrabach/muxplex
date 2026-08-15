@@ -5,20 +5,36 @@
    Written prose, principles and component rules: docs/DESIGN_LANGUAGE.md
 
    ----------------------------------------------------------------
+   THIS IS THE ONLY TOKEN FILE. THERE IS NO SECOND ONE.
+   ----------------------------------------------------------------
+   Asserted structurally by test_design_tokens.py, which walks the repo
+   and fails if a second tokens.css appears anywhere. Do not add one —
+   add a name here instead.
+
+   There USED to be a second one, and reading why it is gone is the
+   fastest way to understand this file. assets/branding/tokens.css
+   (354 lines, 2026-03-27) was complete and coherent on its own terms,
+   with an 856-line DESIGN-SYSTEM.md beside it — and had never been
+   linked from index.html or referenced by style.css a single time, so
+   not one of its values had ever rendered. It nonetheless shared 13
+   custom-property names with this file, and NINE of them held a
+   different value: --text-md was 1rem (16px) there against the 13px
+   the app actually renders, --text-lg 20px against 14px, --radius-md
+   6px against 8px, plus both font stacks. A developer who found that
+   file first got a value that was silently, plausibly wrong — no error,
+   no warning, just the wrong number. It was deleted in muxplex-cnd;
+   docs/DESIGN_LANGUAGE.md §3.4 records the decision and the full
+   divergence table.
+
    WHAT THIS FILE IS, AND WHAT IT DELIBERATELY IS NOT
    ----------------------------------------------------------------
    This file was NOT designed from a blank page. Every value below is
    either (a) already shipping in style.css today, or (b) the value the
    existing code already used most often, promoted to a name. Where a
-   number here disagrees with a number in assets/branding/tokens.css,
-   the SHIPPED value wins and the divergence is stated inline. Rationale:
-   the branded system in assets/branding/ is complete and current on
-   its own terms (DESIGN-SYSTEM.md is 856 lines, dated 2026-03-27, with
-   a working 354-line tokens.css beside it) — and has never been linked
-   from index.html or referenced by style.css a single time, so not one
-   of its values has ever rendered. Two token systems that disagree is how
-   the agent panel ended up with a spacing scale nobody else uses. This
-   file resolves that by codifying the one that actually renders.
+   number here disagreed with the branded system, the SHIPPED value won
+   and the divergence is stated inline. Two token systems that disagree
+   is how the agent panel ended up with a spacing scale nobody else
+   uses. This file resolves that by codifying the one that renders.
 
    Adopting this file changes NOTHING on its own. Defining a custom
    property has no rendering effect until a rule references it. That is
@@ -71,12 +87,14 @@
    ----------------------------------------------------------------
    Restated from style.css exactly. Dark is the only theme that ships.
 
-   The palette itself agrees with assets/branding/DESIGN-SYSTEM.md —
-   this is the one dimension where the branded system and the shipped
-   app never diverged, because the colours were lifted from the brand
-   work when the app was built. Only the NAMES differ (--bg here vs
-   --color-bg-base there); the shipped short names are canonical
-   because style.css already uses them everywhere.
+   The palette agrees with assets/branding/DESIGN-SYSTEM.md — the one
+   dimension where the branded system and the shipped app never
+   diverged, because the colours were lifted from the brand work when
+   the app was built. Only the NAMES differed (--bg here vs
+   --color-bg-base there), and the shipped short names are canonical
+   because style.css already uses them everywhere. That agreement is
+   why deleting the branded tokens.css cost nothing in colour: every
+   value it held is below, under the name the app already reads.
    ---------------------------------------------------------------- */
 
 :root {
@@ -162,11 +180,19 @@
    So the scale below is a description of the app, not a proposal for
    it. Adopting it is mostly renaming numbers that were already right.
 
-   T-SHIRT NAMES, NOT NUMBERS — this matters. assets/branding/tokens.css
-   defines --space-1 .. --space-16 where the digit means px/4, so its
-   --space-2 is 8px. A numeric scale here would collide with that name
-   at a DIFFERENT value and produce a silent 2x spacing error in any
-   file that ever saw both. Named steps cannot collide.
+   T-SHIRT NAMES, NOT NUMBERS. The branded system defined --space-1 ..
+   --space-16 where the digit meant px/4, so its --space-2 was 8px. A
+   numeric scale here would have collided with that name at a DIFFERENT
+   value — a silent 2x spacing error in any file that saw both. Naming
+   the steps kept spacing out of that trap.
+
+   It is worth being honest that this reasoning did NOT generalise, and
+   that is why muxplex-cnd happened. Spacing avoided the collision;
+   --text-*, --radius-* and the font stacks used identical names in
+   both files at different values, and nobody noticed until the two
+   files were diffed against each other. Distinct naming protects one
+   family at a time. Only having ONE file protects all of them, which
+   is the fix that actually shipped.
 
    The scale is not a strict 4px multiple, because the app is not. 6px
    is the second most common value in the entire stylesheet; a "pure"
@@ -192,10 +218,13 @@
    with real usage (8 and 7 uses). Everything else — 2px, 3px, 6px, 7px,
    10px, 14px, 20px — is a one-or-two-off.
 
-   DIVERGENCE FROM assets/branding/tokens.css: it defines --radius-md
-   as 6px and recommends it for "session tiles, cards, panels". The
-   shipped app renders those at 4px and has used 6px three times in
-   total. The shipped value wins. */
+   DIVERGENCE FROM THE SUPERSEDED BRANDED SYSTEM: it defined --radius-md
+   as 6px and recommended it for "session tiles, cards, panels", and
+   --radius-lg as 8px. The shipped app renders tiles at 4px and has used
+   6px three times in total. The shipped values win: --radius-md is 8px
+   and --radius-lg is 12px here. Both names existed in both files at
+   different values, which is one of the nine collisions that got the
+   branded file deleted (muxplex-cnd). */
 
 :root {
   --radius-sm: 4px;     /* default. Controls, tiles, cards, inputs.    */
@@ -210,11 +239,18 @@
    ----------------------------------------------------------------
    Font stacks restated from style.css unchanged.
 
-   DIVERGENCE FROM assets/branding/DESIGN-SYSTEM.md: it specifies
-   Urbanist / DM Sans / JetBrains Mono. The app ships system-ui and
-   SF Mono and always has — no webfont is loaded by index.html. Naming
-   fonts here that the app does not load would make this file describe
+   DIVERGENCE FROM THE SUPERSEDED BRANDED SYSTEM: it specified
+   Urbanist / DM Sans / JetBrains Mono under the SAME names this file
+   uses (--font-ui, --font-mono). The app ships system-ui and SF Mono
+   and always has — no webfont is loaded by index.html. Naming fonts
+   here that the app does not load would make this file describe
    something nobody can see.
+
+   Its --text-* scale also shared every name with this one at a
+   different value: --text-md 1rem (16px) against the 13px the app
+   actually renders, --text-lg 20px against 14px, --text-xs 12px
+   against 11px. Five of the nine value collisions behind muxplex-cnd
+   were in this one family.
 
    The SIZE scale is new. Measured: of 125 font-size declarations,
    13px (32), 12px (31) and 11px (20) account for 66% of the app. The

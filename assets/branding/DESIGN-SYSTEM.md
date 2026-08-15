@@ -1,21 +1,54 @@
 # muxplex Design System
 
-**Version:** 1.0.0
+> # ⚠️ SUPERSEDED — DO NOT USE THESE VALUES
+>
+> **The values in this document are not the ones muxplex renders, and never
+> were.** This system was written in March 2026, was never linked from
+> `index.html`, and was never referenced by `style.css` once — not one of its
+> values has ever reached a screen.
+>
+> **The canonical token values live in
+> [`muxplex/frontend/tokens.css`](../../muxplex/frontend/tokens.css)**, with
+> their reasoning in
+> [`docs/DESIGN_LANGUAGE.md`](../../docs/DESIGN_LANGUAGE.md). That file is what
+> `index.html` links and what the app actually renders. Go there for any value.
+>
+> Its companion `tokens.css` and `tokens.json` were **deleted** (work item
+> `muxplex-cnd`) because they duplicated the shipped tokens under **13 shared
+> names, 9 of which held a different value** — `--text-md` was `1rem` (16px)
+> here against the shipped 13px, `--text-lg` 20px against 14px, `--radius-md`
+> 6px against 8px. A developer who found this system first and used it got a
+> value that was silently, plausibly wrong.
+>
+> **What this document is still good for:** the brand palette derivation, the
+> measured contrast ratios, and the light-mode design that muxplex has not
+> shipped. It is provenance for the brand assets in this directory
+> (`svg/`, `icons/`, `favicons/`, `og/`, `lockup/`, `wordmark/`), all of which
+> remain live and current. Read it as history and as brand reference — never
+> as a source of CSS values.
+
+**Version:** 1.0.0 — superseded 2026-08-15
 **Date:** 2026-03-27
 **Applies to:** muxplex web-based tmux session dashboard
 
-This document defines every visual property used in muxplex. It is the single
-source of truth. All values reference `tokens.css` (CSS custom properties) and
-`tokens.json` (structured data for tooling).
+This document defines every visual property of the *brand system as originally
+specified*. Where it disagrees with `muxplex/frontend/tokens.css`, the shipped
+file wins — see `docs/DESIGN_LANGUAGE.md` §3.4 for the divergence table and the
+reasoning behind each one.
 
 ---
 
 ## How to Use This File
 
-1. Add `<link rel="stylesheet" href="tokens.css">` before your app styles.
-2. Reference any token as `var(--color-bg-base)`, `var(--space-4)`, etc.
-3. This document explains *when* and *why* to use each token.
-4. The JSON file mirrors every value for scripts, linters, or framework config.
+**For token values: don't.** Use `muxplex/frontend/tokens.css`, linked by
+`index.html` and consumed by `style.css`. This document's own `tokens.css` and
+`tokens.json` no longer exist.
+
+For brand work — palette derivation, contrast ratios, logo and asset
+construction — read on. Sections 1 (Color System) and 9 (Dark / Light Mode)
+carry the reasoning behind the palette that the shipped tokens inherited
+unchanged; the colours are the one dimension where the two systems never
+diverged.
 
 ---
 
@@ -671,8 +704,13 @@ The bell is the only element that should interrupt the user's scanning pattern.
 
 ### 9.1 How It Works
 
-`tokens.css` defines dark mode as the default (`:root`). Light mode activates in
-two ways:
+*(Historical — describes the deleted `tokens.css`. muxplex ships dark-only;
+`muxplex/frontend/tokens.css` defines no light theme and `index.html` sets no
+`data-theme`. Kept because the light palette below is real design work, and is
+the starting point if light mode is ever built.)*
+
+The superseded `tokens.css` defined dark mode as the default (`:root`). Light
+mode activated in two ways:
 
 1. **Automatic:** `@media (prefers-color-scheme: light)` overrides all tokens.
 2. **Manual:** Add `data-theme="light"` to `<html>` for user toggle.
@@ -847,11 +885,20 @@ Reference the semantic HTML structure in the layout spec. Key points:
 
 ## File Inventory
 
-| File | Format | Purpose |
-|------|--------|---------|
-| `tokens.css` | CSS custom properties | Link into HTML — single source of truth for styles |
-| `tokens.json` | Structured JSON | Machine-readable for tooling, scripts, or framework config |
-| `DESIGN-SYSTEM.md` | This document | Human-readable specification and usage guide |
+| File | Format | Status |
+|------|--------|--------|
+| `tokens.css` | CSS custom properties | **DELETED** — superseded by `muxplex/frontend/tokens.css` (`muxplex-cnd`) |
+| `tokens.json` | Structured JSON | **DELETED** — machine-readable mirror of the same superseded values |
+| `DESIGN-SYSTEM.md` | This document | Retained as brand provenance; **not** a source of CSS values |
 
-All three files live in `muxplex/assets/branding/` alongside the existing brand
-assets (icons, wordmark, lockup, etc.).
+This document lives in `assets/branding/` alongside the brand assets (icons,
+wordmark, lockup, favicons, OG images), which are current and in use.
+
+**Where the values went instead:**
+
+| Need | File |
+|------|------|
+| A token value | `muxplex/frontend/tokens.css` |
+| Why that value | `docs/DESIGN_LANGUAGE.md` |
+| The rules that consume them | `muxplex/frontend/style.css` |
+| The guard that keeps it single | `muxplex/tests/test_design_tokens.py` |

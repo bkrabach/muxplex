@@ -9,6 +9,12 @@ document — say so rather than inventing a sixth answer.
 holds the reasoning, the component vocabulary, and the rules for when each
 applies. Neither is useful without the other.
 
+**There is exactly one token file, and that is it.** If you find another set of
+token values anywhere in this repo — including
+`assets/branding/DESIGN-SYSTEM.md` — it is superseded and its numbers are wrong.
+§3.4 records why, and `muxplex/tests/test_design_tokens.py` fails the build if a
+second `tokens.css` ever reappears.
+
 ---
 
 ## 0. Why this exists
@@ -221,27 +227,84 @@ Measured, not designed. Every value is one `style.css` already uses:
 Two anomalies are recorded rather than quietly fixed, because reordering live
 stacking is a repaint and needs P7 evidence — see §7.
 
-### 3.4 Deliberate divergences from `assets/branding/`
+### 3.4 There is exactly one token file — and why the second one was deleted
 
-`assets/branding/DESIGN-SYSTEM.md` (856 lines) and its `tokens.css` (354 lines)
-are complete and coherent. They have also **never been linked from
-`index.html`, and never been referenced by `style.css` once** — not one of their
-values has ever rendered. Where the two disagree, the shipped value wins,
-because a design system nobody can see cannot arbitrate one they can.
+**The rule, in one sentence: every token value muxplex uses lives in
+`muxplex/frontend/tokens.css`, and adding a second token file anywhere in the
+repo is a defect.** `muxplex/tests/test_design_tokens.py` enforces this by
+walking the tree and failing if a second `tokens.css` appears.
 
-| Dimension | Branded system | Shipped, and canonical here | Why |
+This rule was bought, not assumed. Until 2026-08-15 the repo shipped **two**
+token files at different paths:
+
+| | `assets/branding/tokens.css` | `muxplex/frontend/tokens.css` |
+|---|---|---|
+| Introduced | `8234e2e`, 2026-03-27 | `89104aa`, 2026-08-15 |
+| Size | 12,716 B · 100 names | 19,234 B · 67 names |
+| Linked by `index.html` | never | yes (line 31) |
+| Referenced by `style.css` | never, not once | yes |
+| Served over HTTP | no route, no mount | `/tokens.css` |
+| In the published wheel | no (`packages = ["muxplex"]`) | yes |
+
+Git never flagged it, because the paths differ — it surfaced only by diffing
+across lanes.
+
+**Why "two clearly-scoped layers" was not available.** A brand-primitives layer
+under a UI layer is a legitimate pattern, and it was the option this decision
+had to rule out rather than dismiss. It requires the layers to either use
+disjoint names or agree on shared ones. Measured, they did neither: **13 names
+were defined in both files, and 9 of them held a different value.**
+
+| Name | Branded | Shipped, and canonical | Error if the wrong one won |
 |---|---|---|---|
-| Typeface | Urbanist / DM Sans / JetBrains Mono | `system-ui` / SF Mono | no webfont is loaded by `index.html` |
-| Base text | 14px | **13px** | 13px is 32 uses, 14px is 12 |
-| `--radius-md` | 6px | **8px** | app uses 6px three times total; 8px is the real second tier |
-| Spacing names | `--space-1…16` (digit = px/4) | **t-shirt names** | numeric names would collide at *different* values — a silent 2× error |
-| Units | `rem` | **`px`** | see §7; switching units is a real, verifiable change |
-| Colour palette | — | identical | the one dimension that never diverged |
+| `--text-md` | `1rem` (16px) | **13px** | 23% — on the app's *default* text size |
+| `--text-lg` | `1.25rem` (20px) | **14px** | 43% |
+| `--text-xl` | `1.5rem` (24px) | **16px** | 50% |
+| `--text-sm` | `0.8125rem` (13px) | **12px** | 8% |
+| `--text-xs` | `0.75rem` (12px) | **11px** | 9% |
+| `--radius-md` | 6px | **8px** | app uses 6px three times total |
+| `--radius-lg` | 8px | **12px** | |
+| `--font-ui` | Urbanist / DM Sans | **`system-ui`** | no webfont is loaded by `index.html` |
+| `--font-mono` | JetBrains Mono | **SF Mono** | same |
 
-The colours agreeing is not luck: they were lifted from the brand work when the
-app was built. Only the *names* differ (`--bg` here, `--color-bg-base` there),
-and the shipped short names win on the strength of thousands of existing call
-sites.
+The remaining four (`--radius-sm`, `--grid-gap`, `--tile-height`,
+`--tile-min-width`) agreed. CSS resolves a same-specificity collision by source
+order, so a developer who linked both — or simply *read* the wrong one — got a
+plausible, silently wrong number. No error, no warning.
+
+**A second finding settled it.** The branded file was already stale against the
+app it claimed to describe: its `--tile-min-width: 360px` against the 420px
+`style.css` actually ships. And it was not a passive token file at all — it
+carried live rules (`:focus-visible { outline: … }`), so loading it as a
+"primitives layer" would have applied a global focus ring.
+
+**Decision: superseded and deleted.** `assets/branding/tokens.css` and its
+machine-readable mirror `assets/branding/tokens.json` are gone.
+`assets/branding/DESIGN-SYSTEM.md` is **kept** and carries a supersession
+banner: it holds the palette derivation, the measured contrast ratios, and an
+unshipped light-mode design, and it is the provenance for the brand assets in
+that directory — which are live and current. It is history and brand reference.
+**It is not a source of CSS values.**
+
+Nothing was lost in the deletion. The one dimension that never diverged is
+colour — the palette was lifted from the brand work when the app was built, so
+every colour the branded file held is already in `tokens.css` under the name
+`style.css` reads (`--bg` here, `--color-bg-base` there). Of its 87 non-colliding
+names, none had a call site anywhere in the app; adopting any of them would have
+meant adding values nobody uses, which is the problem, not the fix.
+
+Two divergences survive as *deliberate* choices rather than collisions:
+
+| Dimension | Branded system | Shipped, and canonical | Why |
+|---|---|---|---|
+| Spacing names | `--space-1…16` (digit = px/4) | **t-shirt names** | numeric names would have collided at *different* values — a silent 2× error |
+| Units | `rem` | **`px`** | §7 item 5; switching units is a real, browser-verifiable change |
+
+The t-shirt naming is worth reading honestly: it protected `--space-*` and
+nothing else. `--text-*`, `--radius-*` and the font stacks collided anyway.
+**Distinct naming protects one family at a time; a single file protects all of
+them.** That is why the fix is deletion and a structural guard, not a naming
+convention.
 
 ---
 
@@ -362,10 +425,12 @@ defining a custom property has no rendering effect until a rule reads it.
 
 **Order:**
 
-1. **Land `tokens.css`.** Zero visual change. Guarded by
-   `muxplex/tests/test_design_tokens.py`, which fails if any name shared with
+1. ~~**Land `tokens.css`.**~~ **Done** (`89104aa`). Zero visual change. Guarded
+   by `muxplex/tests/test_design_tokens.py`, which fails if any name shared with
    `style.css` resolves to a different value — so link order cannot matter.
-2. **Link it before `style.css`** in `index.html`. Still zero visual change:
+   Superseding `assets/branding/tokens.css` was part of landing it, and is
+   recorded in §3.4.
+2. ~~**Link it before `style.css`**~~ **Done** — `index.html:31`/`:32`. Still zero visual change:
    `style.css`'s own `:root` wins every shared name, at an identical value.
 3. **Migrate one component at a time**, cheapest first — the agent panel is the
    loudest and has its map in §5. Each migration is its own change with its own
@@ -429,8 +494,12 @@ the affected file, and each needs P7 evidence.
    not, because no consistent value exists to promote yet. Measure before
    naming. *Owner: whoever next touches controls.*
 
-8. **`index.html` does not link `tokens.css`.** Step 2 of §6. Nothing consumes
-   the tokens until it does. *Owner: `index.html`.*
+8. ~~**`index.html` does not link `tokens.css`.**~~ **Done.** `index.html:31`
+   links `/tokens.css` immediately before `/style.css:32` — step 2 of §6, in the
+   prescribed order. Still zero visual change, because `style.css`'s own
+   `:root` wins every shared name at an identical value, which is what
+   `test_design_tokens.py` exists to keep true. Step 3 (migrate one component at
+   a time) and step 4 (delete `style.css`'s `:root`) remain open.
 
 ---
 
@@ -441,9 +510,15 @@ the affected file, and each needs P7 evidence.
 | `docs/DESIGN_LANGUAGE.md` | this — principles, components, decisions |
 | `muxplex/frontend/tokens.css` | every value, with its provenance in comments |
 | `muxplex/frontend/style.css` | the rules that consume them |
-| `muxplex/tests/test_design_tokens.py` | the guard that keeps the two token homes from diverging |
+| `muxplex/tests/test_design_tokens.py` | the guard — keeps `tokens.css`/`style.css` from diverging, **and keeps a second token file from ever appearing** (§3.4) |
 | `muxplex/frontend/deck/DESIGN_RESPONSIVE.md` | the soft deck's own spec; source of the 48×48 floor |
-| `assets/branding/` | brand assets and the earlier, unadopted system (§3.4) |
+| `assets/branding/` | brand **assets** (SVG, icons, favicons, OG, lockup) — live and current |
+| `assets/branding/DESIGN-SYSTEM.md` | **superseded** (§3.4). Brand provenance and palette derivation only — never a source of CSS values. Its `tokens.css`/`tokens.json` were deleted. |
+
+**If you are looking for a value, there is exactly one place: `muxplex/frontend/tokens.css`.**
+If it is not there, add it there — and to this document — in the same change. Do
+not create a second token file; the guard test will reject it, which is the
+point.
 
 `deck/DESIGN_*.md` describe the soft deck, a different surface with different
 constraints — it deliberately runs a 56px header where the PWA runs 44px, and
