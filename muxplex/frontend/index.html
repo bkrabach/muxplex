@@ -608,7 +608,7 @@
            errors, app state) of this conversation to a local .json file --
            see exportCaptureRecord() in chat.js. Never sends anything over
            the network; local file only, on explicit click. -->
-      <button id="chat-export-btn" class="quick-link" title="Export a structured debug record of this conversation (transcript, tool calls, raw results, timings, errors) to a local JSON file. Nothing is sent anywhere.">Export</button>
+      <button id="chat-export-btn" class="quick-link" title="Download this conversation as a markdown file — transcript, tool calls with their arguments and results, exact HTTP failures, timings and correlation ids. Written locally; nothing is sent anywhere.">Export</button>
       <!-- Close deliberately KEEPS .header-btn. It is an icon-only glyph
            control, which is exactly the register that class exists for --
            .quick-link's flex+gap+13px-text layout is built around a word,
@@ -643,7 +643,8 @@
        + append + click + remove); its href (a Blob object URL) is only ever
        set from a local Blob and only ever clicked programmatically in
        response to the Export button -- never a real navigation, never a
-       network request. -->
+       network request. muxplex-6oq changed what the Blob contains (markdown,
+       not JSON); the anchor mechanism is unchanged. -->
   <a id="chat-export-link" class="hidden" aria-hidden="true"></a>
 
   <!-- Confirmation gate for send_muxplex_session_input -- the ONE agent tool

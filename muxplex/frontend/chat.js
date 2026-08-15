@@ -467,37 +467,339 @@
     };
   }
 
+  // ---------------------------------------------------------------------
+  // Markdown export (muxplex-6oq)
+  // ---------------------------------------------------------------------
+  // Export used to write the raw JSON record above. It now writes MARKDOWN,
+  // and markdown is the only format -- no dropdown, no format chooser.
+  //
+  // That was a decision the owner explicitly left open, on one condition:
+  // "Make that call based on whether anything actually imports the JSON --
+  // do not build a format chooser for a format nobody reads." A repo-wide
+  // search for the JSON's own format string ("muxplex-agent-panel-debug-
+  // record"), its filename prefix, and its format_version found exactly
+  // three hits, all of them inside this file -- i.e. the producer and
+  // nothing else. Nothing in muxplex, its tests, its docs, its deck, or its
+  // tooling has ever read one. So there is no data-driven consumer to serve,
+  // and the actual use case -- paste it into an LLM session, or read it
+  // yourself -- is served strictly better by prose.
+  //
+  // WHAT IS DELIBERATELY COLLAPSED, and why that is not a fidelity loss:
+  //   * Per-token SSE chunks. These are the bulk of the JSON by count (one
+  //     event per streamed token) and carry nothing the concatenated
+  //     assistant text does not already say. Collapsed to a count, with the
+  //     chunk id kept -- the chunk id is the correlator, not the chunks.
+  //   * The re-POSTed message history on each continuation request. The
+  //     provider requires the whole conversation on every round trip, so the
+  //     JSON contains turn 1 verbatim once per subsequent request. Collapsed
+  //     to a role/size manifest; the turns themselves are rendered above it.
+  //   * The response body of SUCCESSFUL HTTP calls, clipped at 1200 chars
+  //     with a visible marker. The tool result derived from it is printed in
+  //     full right below, unclipped -- that is what the model actually saw.
+  //
+  // WHAT IS NEVER COLLAPSED OR CLIPPED, because it is the reason this
+  // feature exists: any FAILING HTTP call's method, URL, exact status code
+  // and exact response body; every tool call's arguments; every tool
+  // result the model was handed; every confirmation-gate transition; every
+  // console error, page error and unhandled rejection; and both correlation
+  // ids (the conversation id and each request's chunk id) that let an
+  // engineer grep the sidecar's own journal for the matching entries.
+  //
+  // Still local-only: a Blob object URL and a synthetic click on a
+  // persistent anchor. No network request, nothing automatic, nothing
+  // transmitted anywhere.
+
+  var MD_OK_BODY_CLIP = 1200; // successful HTTP bodies only -- failures are never clipped
+
+  function fence(lang, body) {
+    // Long backtick runs inside terminal scrollback would otherwise break out
+    // of a 3-backtick fence; widen the fence past anything in the payload.
+    var longest = 0;
+    String(body).replace(/`+/g, function (m) { longest = Math.max(longest, m.length); return m; });
+    var bar = new Array(Math.max(3, longest + 1) + 1).join("`");
+    return bar + (lang || "") + "\n" + String(body) + "\n" + bar;
+  }
+
+  function clipBody(text, limit) {
+    text = String(text == null ? "" : text);
+    if (text.length <= limit) return text;
+    return text.slice(0, limit) + "\n[... " + (text.length - limit) + " more characters omitted]";
+  }
+
+  function kb(n) {
+    return (n / 1024).toFixed(1) + " KB";
+  }
+
+  /** Render one tool call -- its arguments, the HTTP it performed, its
+   * confirmation gate if it had one, and its result or its failure. */
+  function mdToolCall(call, evs) {
+    var L = [];
+    L.push("#### tool: `" + call.name + "`  (id `" + call.id + "`)");
+    var args = call.arguments_raw;
+    L.push("Arguments:");
+    L.push(fence("json", args && args.trim() ? args : "{}"));
+
+    var gate = evs.filter(function (e) {
+      return (e.type === "confirmation_requested" || e.type === "confirmation_resolved") &&
+        e.tool_call_id === call.id;
+    });
+    gate.forEach(function (e) {
+      if (e.type === "confirmation_requested") {
+        L.push("Confirmation gate: REQUESTED -- session `" + e.session_name +
+          "`, text " + JSON.stringify(e.text) + ", then " + e.keys_description + ".");
+      } else {
+        L.push("Confirmation gate: " + (e.confirmed ? "CONFIRMED by the user." : "DECLINED by the user."));
+      }
+    });
+
+    // HTTP calls made while this tool ran. apiFetch records them in order, so
+    // the ones between this call's start and its result belong to it.
+    (call._http || []).forEach(function (n) {
+      if (n.transport_error) {
+        L.push("HTTP: `" + n.method + " " + n.url + "` -- **TRANSPORT ERROR** after " +
+          n.duration_ms + " ms: " + n.transport_error);
+        return;
+      }
+      L.push("HTTP: `" + n.method + " " + n.url + "` -> **" + n.status + "**" +
+        (n.ok ? "" : "  <-- FAILED") + "  (" + n.duration_ms + " ms)");
+      if (n.request_body) {
+        L.push("Request body:");
+        L.push(fence("json", clipBody(n.request_body, MD_OK_BODY_CLIP)));
+      }
+      if (!n.ok) {
+        // Verbatim, never clipped. This is the thing you opened the file for.
+        L.push("Response body (verbatim):");
+        L.push(fence("", n.body_raw == null ? "(empty)" : n.body_raw));
+      } else if (n.body_raw) {
+        L.push("Response body (clipped -- the tool result below is what the model saw):");
+        L.push(fence("json", clipBody(n.body_raw, MD_OK_BODY_CLIP)));
+      }
+    });
+
+    var res = call._result;
+    if (!res) {
+      L.push("Result: **NONE RECORDED** -- the tool never returned. Something " +
+        "interrupted the turn between the call and its result.");
+    } else if (res.ok) {
+      L.push("Result (ok, " + res.duration_ms + " ms) -- exactly what the model was handed:");
+      L.push(fence("json", res.result_raw));
+    } else {
+      L.push("Result: **FAILED** after " + res.duration_ms + " ms:");
+      L.push(fence("", res.error));
+    }
+    return L.join("\n\n");
+  }
+
+  /** The whole conversation as markdown. Pure function of captureEvents --
+   * safe to call repeatedly, and safe to call for a size comparison without
+   * side effects. */
+  function buildMarkdownRecord() {
+    var evs = captureEvents;
+    var L = [];
+    L.push("# muxplex agent panel -- conversation record");
+    L.push("");
+    L.push("- **Generated:** " + nowIso());
+    L.push("- **Conversation id (`client_session_id`):** `" + clientSessionId + "`");
+    L.push("- **Model:** `" + MODEL + "`");
+    L.push("- **Page:** " + location.href);
+    L.push("- **Viewport:** " + window.innerWidth + "x" + window.innerHeight);
+    L.push("- **User agent:** " + navigator.userAgent);
+    L.push("- **Events captured:** " + evs.length + (captureCapped ? " (CAPPED -- buffer full, later events dropped)" : ""));
+    L.push("");
+    L.push("> To line this up against the agent sidecar's own log, grep its journal");
+    L.push("> (`journalctl -u amplifier-agent-http`) for the conversation id above --");
+    L.push("> it appears on every `chat-completion start` line -- or for the per-request");
+    L.push("> chunk id printed under each request below, which is tighter.");
+    L.push("");
+    L.push("> Nothing here was transmitted anywhere. This file was written locally");
+    L.push("> from this browser tab, on an explicit click.");
+
+    // Index events by turn -> request so the flat log can be re-grouped.
+    var turns = {};
+    var turnOrder = [];
+    evs.forEach(function (e) {
+      var t = e.turn == null ? -1 : e.turn;
+      if (!turns[t]) { turns[t] = []; turnOrder.push(t); }
+      turns[t].push(e);
+    });
+
+    turnOrder.sort(function (a, b) { return a - b; }).forEach(function (t) {
+      var tev = turns[t];
+      if (t < 0) {
+        // Pre-conversation / unattached events (conversation_new, any console
+        // error raised before the first message).
+        var pre = tev.filter(function (e) { return e.type !== "conversation_new"; });
+        if (!pre.length) return;
+        L.push("");
+        L.push("## Before the first message");
+        pre.forEach(function (e) { L.push(mdLooseEvent(e)); });
+        return;
+      }
+
+      var um = tev.filter(function (e) { return e.type === "user_message"; })[0];
+      L.push("");
+      L.push("## Turn " + (t + 1) + " -- user");
+      L.push("");
+      L.push(um ? fence("", um.text) : "_(no user message recorded for this turn)_");
+      if (um && um.app_state) {
+        var st = um.app_state;
+        L.push("");
+        L.push("App state at this turn: " + (st.rendered_session_names || []).length +
+          " session(s) on screen" +
+          ((st.rendered_session_names || []).length ? " (" + st.rendered_session_names.join(", ") + ")" : "") +
+          ", panel " + (st.panel_open ? "open" : "closed") +
+          ", viewport " + (st.viewport ? st.viewport.width + "x" + st.viewport.height : "?") +
+          ", " + st.conversation_message_count + " message(s) in history.");
+      }
+
+      // Group this turn's events by request index.
+      var reqs = {};
+      var reqOrder = [];
+      tev.forEach(function (e) {
+        var r = e.request == null ? -1 : e.request;
+        if (!reqs[r]) { reqs[r] = []; reqOrder.push(r); }
+        reqs[r].push(e);
+      });
+
+      reqOrder.sort(function (a, b) { return a - b; }).forEach(function (r) {
+        if (r < 0) return;
+        var rev = reqs[r];
+        var start = rev.filter(function (e) { return e.type === "request_start"; })[0];
+        var end = rev.filter(function (e) { return e.type === "request_end"; })[0];
+        var rerr = rev.filter(function (e) { return e.type === "request_error"; })[0];
+        var chunks = rev.filter(function (e) { return e.type === "sse_chunk"; });
+
+        L.push("");
+        L.push("### Request " + (r + 1) +
+          (end && end.chunk_id ? "  (`chunk_id` `" + end.chunk_id + "`)" : ""));
+
+        if (start) {
+          var roles = {};
+          (start.messages || []).forEach(function (m) { roles[m.role] = (roles[m.role] || 0) + 1; });
+          var manifest = Object.keys(roles).map(function (k) { return roles[k] + " " + k; }).join(", ");
+          L.push("`POST " + start.url + "` with " + (start.messages || []).length +
+            " message(s) [" + manifest + "] and " + (start.tool_names || []).length + " tool(s) declared.");
+        }
+        if (rerr) {
+          L.push("**REQUEST FAILED** after " + rerr.duration_ms + " ms" +
+            (rerr.http_status ? " -- HTTP **" + rerr.http_status + "**" : "") +
+            (rerr.transport_error ? " -- transport error: " + rerr.transport_error : "") + ".");
+          if (rerr.body_raw) {
+            L.push("Response body (verbatim):");
+            L.push(fence("", rerr.body_raw));
+          }
+        }
+        if (end) {
+          L.push("Finished `" + end.finish_reason + "` in " + end.duration_ms + " ms" +
+            " -- " + chunks.length + " SSE chunk(s) (per-token deltas collapsed; the" +
+            " assistant text they concatenate into is below)" +
+            (end.tool_call_count ? ", " + end.tool_call_count + " tool call(s)" : "") + ".");
+          if (end.assistant_text && end.assistant_text.trim()) {
+            L.push("");
+            L.push("**assistant:**");
+            L.push("");
+            L.push(end.assistant_text);
+          }
+        }
+
+        // Tool calls: stitch each requested call to its result and to the
+        // HTTP traffic recorded between them.
+        var requested = rev.filter(function (e) { return e.type === "tool_calls_requested"; })[0];
+        if (requested) {
+          var results = rev.filter(function (e) { return e.type === "tool_call_result"; });
+          var nets = rev.filter(function (e) { return e.type === "network_call"; });
+          var netIdx = 0;
+          requested.tool_calls.forEach(function (c) {
+            var call = { id: c.id, name: c.name, arguments_raw: c.arguments_raw, _http: [], _result: null };
+            var res = results.filter(function (e) { return e.tool_call_id === c.id; })[0];
+            call._result = res || null;
+            // apiFetch's network_call events are appended in execution order,
+            // and executeToolCall runs the calls in order, so consuming them
+            // in sequence attributes each HTTP round trip to the right tool.
+            if (res) {
+              while (netIdx < nets.length && nets[netIdx].seq < res.seq) {
+                call._http.push(nets[netIdx]);
+                netIdx++;
+              }
+            }
+            L.push("");
+            L.push(mdToolCall(call, rev));
+          });
+        }
+
+        rev.filter(function (e) {
+          return e.type === "console_error" || e.type === "console_warn" ||
+            e.type === "window_error" || e.type === "unhandled_rejection" ||
+            e.type === "turn_error" || e.type === "capture_capped";
+        }).forEach(function (e) { L.push(""); L.push(mdLooseEvent(e)); });
+      });
+    });
+
+    L.push("");
+    return L.join("\n") + "\n";
+  }
+
+  /** Anything that is not part of the request/tool spine: errors, warnings,
+   * the capture cap. Never silently dropped. */
+  function mdLooseEvent(e) {
+    if (e.type === "console_error" || e.type === "console_warn") {
+      return "- **" + (e.type === "console_error" ? "console.error" : "console.warn") + "** " +
+        e.ts + ": " + (e.args || []).map(function (a) {
+          return typeof a === "string" ? a : JSON.stringify(a);
+        }).join(" ");
+    }
+    if (e.type === "window_error") {
+      return "- **uncaught error** " + e.ts + ": " + e.message +
+        " (" + e.filename + ":" + e.lineno + ":" + e.colno + ")" +
+        (e.stack ? "\n" + fence("", e.stack) : "");
+    }
+    if (e.type === "unhandled_rejection") {
+      return "- **unhandled promise rejection** " + e.ts + ": " + JSON.stringify(e.reason);
+    }
+    if (e.type === "turn_error") {
+      return "- **turn failed** " + e.ts + ": " + e.error;
+    }
+    if (e.type === "capture_capped") {
+      return "- **capture capped** " + e.ts + ": " + e.note;
+    }
+    return "- " + e.type + " " + e.ts;
+  }
+
   // The previous export's Blob object URL, so it can be revoked once a new
   // export supersedes it (rather than on a fixed timer -- there's no way to
   // know how long a slow download or a manual "save as" dialog needs it).
   var lastExportUrl = null;
 
-  /** The ONLY export path: writes a local .json file via a Blob object URL
-   * and a synthetic click on the persistent #chat-export-link anchor --
-   * never a network request, never anything automatic. Sensitive-by-
-   * default: tool results in `events` can contain live terminal scrollback,
-   * so this never fires without the user explicitly clicking the Export
-   * button. Failures are reported in the transcript AND re-thrown -- never
-   * a silent no-op button click. */
+  /** The ONLY export path: writes a local .md file via a Blob object URL and
+   * a synthetic click on the persistent #chat-export-link anchor -- never a
+   * network request, never anything automatic. Sensitive-by-default: tool
+   * results can contain live terminal scrollback, so this never fires
+   * without the user explicitly clicking Export. Failures are reported in
+   * the transcript AND re-thrown -- never a silent no-op button click. */
   function exportCaptureRecord() {
-    var record;
+    var md;
     try {
-      record = buildCaptureRecord();
+      md = buildMarkdownRecord();
     } catch (buildErr) {
-      appendError("chat panel: failed to build debug record: " + String(buildErr && buildErr.message || buildErr));
+      appendError("chat panel: failed to build the conversation record: " +
+        String(buildErr && buildErr.message || buildErr));
       throw buildErr;
     }
-    var json = JSON.stringify(record, null, 2);
-    var blob = new Blob([json], { type: "application/json" });
+    var blob = new Blob([md], { type: "text/markdown" });
     var url = URL.createObjectURL(blob);
     if (lastExportUrl) URL.revokeObjectURL(lastExportUrl);
     lastExportUrl = url;
     exportLinkEl.href = url;
-    exportLinkEl.download = "muxplex-agent-debug-" + clientSessionId + "-" + Date.now() + ".json";
+    exportLinkEl.download = "muxplex-agent-" + clientSessionId + "-" + Date.now() + ".md";
     exportLinkEl.click();
+    // Say what the collapsing actually bought, with both numbers, rather than
+    // asserting "token optimized" and leaving the user to take it on faith.
+    var jsonSize = JSON.stringify(buildCaptureRecord(), null, 2).length;
     appendSystemLine(
-      "exported debug record (" + record.event_count + " events" +
-      (record.capped ? ", capped" : "") + ") to a local file -- nothing was sent anywhere."
+      "exported this conversation as markdown (" + captureEvents.length + " events, " +
+      kb(md.length) + (captureCapped ? ", capture capped" : "") +
+      "; the raw JSON equivalent would be " + kb(jsonSize) + ") to a local file -- " +
+      "nothing was sent anywhere."
     );
   }
 
