@@ -936,12 +936,17 @@ you're looking at, suspect a concurrent `make test` run before suspecting your
 change. Run concurrent builders against distinct DTU names
 (`make test DTU=muxplex-test-<yourname>`) or serialize `make test` invocations.
 
-`MUXPLEX_TEST_ALLOW_LIVE_HOST=1` overrides the guard. Legitimate on a CI runner
-or a fresh container with no muxplex. Not legitimate on your dev box because the
-guard is inconvenient.
+There is no environment-variable override anymore (`MUXPLEX_TEST_ALLOW_LIVE_HOST`
+is retired along with the refusal it used to bypass) — the structural guard has
+no bypass on purpose: a test either has the dangerous shape (fix it) or it
+doesn't (nothing to override). The DTU remains the recommended way to test —
+it's still how CI and release validation work, and still what proves you're
+testing the exact artifact you're about to push — but it is no longer required
+just to run the suite safely on this host.
 
-- Python (inside an isolated env only): `uv sync --extra dev && uv run pytest`
-  (tests marked `integration` need a real tmux binary).
+- Python: `uv sync --extra dev && uv run pytest` (an isolated env is no longer
+  required for safety, but is still recommended for reproducibility; tests
+  marked `integration` need a real tmux binary and are deselected by default).
 - Frontend: `node --test frontend/tests/*.mjs`. Use the glob, not a single
   file — the previously-documented `test_app.mjs`-only command silently
   never ran `test_terminal.mjs`.
