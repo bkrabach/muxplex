@@ -24,6 +24,7 @@ test('deck.js exports all pure functions', () => {
     'classifyStaleness',
     'formatAge',
     'formatLastActivity',
+    'stripAnsi',
     'previewLines',
     'tileVisualState',
     'computeGrid',
@@ -133,6 +134,56 @@ test('formatLastActivity: older activity renders a relative age', () => {
 
 // ─── previewLines ────────────────────────────────────────────────────────────
 
+// stripAnsi (muxplex-111)
+//
+// The API's snapshots are captured with `tmux capture-pane -e`, i.e. WITH
+// escape sequences (muxplex/tests/test_sessions.py's
+// test_capture_pane_calls_correct_tmux_args pins that flag). The dashboard
+// renders them through ansiToHtml(); the deck paints .key-preview with
+// textContent, so anything not stripped shows up as literal garbage on a
+// ~13x6 character face.
+
+test('stripAnsi: removes SGR sequences, keeps the text around them', () => {
+  assert.strictEqual(deck.stripAnsi('MiB Swap:\u001b[1m 0'), 'MiB Swap: 0');
+  assert.strictEqual(deck.stripAnsi('\u001b[0m 419052 root'), ' 419052 root');
+});
+
+test('stripAnsi: real `top` bytes observed on the live sysmon session', () => {
+  // Captured verbatim from GET /api/sessions on the seeded `sysmon` pane
+  // (96 ESC bytes in one snapshot). This is the exact shape muxplex-111
+  // reported reaching the face.
+  const raw = '\u001b[1m   3296 root      20   0   14796   4080   1900 R   0.5   0.1   0:26.07 top';
+  const clean = deck.stripAnsi(raw);
+  assert.ok(!clean.includes('\u001b'), 'no ESC byte may survive');
+  assert.strictEqual(clean, '   3296 root      20   0   14796   4080   1900 R   0.5   0.1   0:26.07 top');
+});
+
+test('stripAnsi: removes private-mode, erase and cursor CSI sequences', () => {
+  assert.strictEqual(deck.stripAnsi('\u001b[?25lhidden\u001b[?25h'), 'hidden');
+  assert.strictEqual(deck.stripAnsi('\u001b[2J\u001b[Hcleared'), 'cleared');
+  assert.strictEqual(deck.stripAnsi('a\u001b[38;5;196mb'), 'ab');
+});
+
+test('stripAnsi: removes OSC sequences terminated by BEL or ST', () => {
+  assert.strictEqual(deck.stripAnsi('\u001b]0;a title\u0007text'), 'text');
+  assert.strictEqual(deck.stripAnsi('\u001b]2;t\u001b\\text'), 'text');
+});
+
+test('stripAnsi: removes two-byte C1 escapes', () => {
+  assert.strictEqual(deck.stripAnsi('a\u001bMb'), 'ab');
+});
+
+test('stripAnsi: plain text and newlines pass through untouched', () => {
+  // counter/logtail carry zero ESC bytes -- the common case must be a no-op.
+  assert.strictEqual(deck.stripAnsi('tick 41\ntick 42\n'), 'tick 41\ntick 42\n');
+});
+
+test('stripAnsi: empty/null input returns empty string', () => {
+  assert.strictEqual(deck.stripAnsi(''), '');
+  assert.strictEqual(deck.stripAnsi(null), '');
+  assert.strictEqual(deck.stripAnsi(undefined), '');
+});
+
 test('previewLines: returns the last N lines, newest last', () => {
   const snapshot = ['a', 'b', 'c', 'd', 'e', 'f'].join('\n');
   assert.strictEqual(deck.previewLines(snapshot, 3), 'd\ne\nf');
@@ -150,6 +201,68 @@ test('previewLines: trailing blank lines are dropped before budgeting', () => {
 test('previewLines: empty/falsy input returns empty string', () => {
   assert.strictEqual(deck.previewLines('', 5), '');
   assert.strictEqual(deck.previewLines(null, 5), '');
+});
+
+// muxplex-111: the preview is what actually reaches .key-preview's
+// textContent, so the escape bytes have to be gone by the time previewLines
+// returns -- not merely strippable by some later caller.
+
+test('previewLines: no ESC byte survives into the returned preview', () => {
+  const snapshot = [
+    'MiB Swap:\u001b[1m      0.0 total',
+    '\u001b[0m 419052 root      20   0   35712   5292 S   0.5 ttyd',
+  ].join('\n');
+  const preview = deck.previewLines(snapshot, 20);
+  assert.ok(!preview.includes('\u001b'), 'preview still carries an ESC byte');
+  assert.strictEqual(
+    preview,
+    'MiB Swap:      0.0 total\n 419052 root      20   0   35712   5292 S   0.5 ttyd',
+  );
+});
+
+test('previewLines: an escape-only trailing row is treated as blank and dropped', () => {
+  // Stripping AFTER the blank-trim would leave this row in place: '\u001b[0m'
+  // is non-empty to .trim() while the bytes are still there, so it would
+  // survive the pop and then render as an empty line, spending one of the
+  // very few line slots a ~13x6 key face has.
+  assert.strictEqual(deck.previewLines('a\nb\n\u001b[0m\n', 5), 'a\nb');
+});
+
+test('previewLines: the line budget counts stripped lines, not escape rows', () => {
+  const snapshot = ['\u001b[1ma', '\u001b[0mb', 'c', 'd'].join('\n');
+  assert.strictEqual(deck.previewLines(snapshot, 2), 'c\nd');
+});
+
+test('previewLines: stripping is display-only -- the caller\'s snapshot is untouched', () => {
+  // The poll loop keeps `snapshots[name]` as the raw capture and hands it to
+  // previewLines by reference; nothing may write a stripped value back.
+  const snapshots = { sysmon: 'MiB Swap:\u001b[1m 0' };
+  const before = snapshots.sysmon;
+  deck.previewLines(snapshots.sysmon, 20);
+  assert.strictEqual(snapshots.sysmon, before);
+  assert.ok(snapshots.sysmon.includes('\u001b'), 'raw capture lost its escape bytes');
+});
+
+test('computeKeyPlan: session faces carry a stripped preview, snapshots stay raw', () => {
+  const snapshots = { alpha: 'line one\nMiB Swap:\u001b[1m 0' };
+  const { plan } = deck.computeKeyPlan({
+    grid: { rows: 2, cols: 4 },
+    reserved: deck.reservedControlKeys(2, 4),
+    mode: 'grid',
+    sessions: [{ name: 'alpha', active: true, needs_attention: false, last_activity_at: null }],
+    viewName: 'all',
+    viewsList: [],
+    page: 0,
+    pickerPage: 0,
+    snapshots: snapshots,
+    previewLinesMax: 20,
+    nowMs: 1_700_000_000_000,
+  });
+  const face = plan.find((f) => f.role === 'session' && f.name === 'alpha');
+  assert.ok(face, 'expected a session face for alpha');
+  assert.ok(!face.preview.includes('\u001b'), 'face.preview still carries an ESC byte');
+  assert.strictEqual(face.preview, 'line one\nMiB Swap: 0');
+  assert.strictEqual(snapshots.alpha, 'line one\nMiB Swap:\u001b[1m 0');
 });
 
 // ─── tileVisualState -- the "never lie" state machine ───────────────────────
