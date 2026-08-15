@@ -1,3 +1,72 @@
+## v0.47.11 (2026-08-15)
+
+"Scrolling up silently enters it" -- `muxplex/tmux_templates/base.conf:98`'s own
+comment already knew about this. With `mouse on` (`base.conf:27`), tmux enters
+copy-mode silently on mouse wheel-up, and every key sent afterward through
+`send-keys` is captured by copy-mode's key table instead of reaching the
+pane's program. Scroll back in a terminal panel, send a command from the
+compose bar, and nothing happens -- no error, no feedback. Two
+developer-facing hardening PRs landed alongside the fix.
+
+### Fixed
+
+- **Scrolling back in a terminal panel no longer swallows keystrokes --
+  including interrupts.** tmux-kit bumped 0.3.5 -> 0.4.0 (PR #31, `ffdfea8`).
+  Worse than the silent-no-op above: `api.stop()` (tmux-kit's MCP-exposed
+  interrupt, what an AI agent calls to kill a runaway process) sends `C-c`
+  the same way it sends any other key. Measured on real tmux 3.4 with
+  muxplex's own `base.conf`: with the pane scrolled back, a `while true` loop
+  kept running after `stop()` -- output went from 5 lines to 9 over 4
+  seconds -- because `base.conf` rebinds `C-c` in copy-mode to
+  `copy-selection-and-cancel`. The interrupt was consumed as "copy the
+  selection," never delivered.
+  - The fix lives in the library, not in muxplex: `build_send_text_argv()`/
+    `build_send_key_argv()` now each chain a `copy-mode -q` exit into the
+    SAME argv ahead of `send-keys`, via a literal `;` separator -- the
+    identical one-invocation-chaining technique
+    `observe.capture_pane_window()` already used:
+    ```
+    ["copy-mode","-q","-t",name,";","send-keys","-l","-t",name,"--",text]
+    ["copy-mode","-q","-t",name,";","send-keys","-t",name,key]
+    ```
+  - `/api/sessions/{name}/input` needed no runtime change at all -- it, and
+    every other tmux-kit consumer, gets the guarantee for free, and no
+    future caller can forget it.
+  - `copy-mode -q` was chosen over `send-keys -X cancel`, which exits 1 with
+    "not in a mode" on a pane that isn't already in one -- that would have
+    made every ordinary send raise. A single chained invocation also closes
+    the window for the user to re-scroll between the exit and the send.
+  - Verified: text containing a literal `;` still passes as one argv element
+    after `--` and reaches the shell as characters -- the literal-send
+    security property is unchanged.
+
+### Changed
+
+- **The test suite now runs cleanly on a host serving a live muxplex,
+  instead of refusing to start** (PR #32, `5071a86`). Previously
+  `pytest_sessionstart` refused the entire suite whenever anything answered
+  `DEFAULT_SETTINGS["port"]` (8088) -- safe, but unrunnable on a dev box
+  running a real muxplex. Refusal is replaced with structural isolation:
+  `uvicorn.run` is neutralized by default (opt in via the new
+  `allow_real_uvicorn_run` marker, which must still pin a port), a
+  `free_port` fixture hands out an OS-allocated ephemeral port, and the
+  session guard is now a cheap AST scan for the one shape that actually
+  caused past damage, rather than a network probe. The
+  `MUXPLEX_TEST_ALLOW_LIVE_HOST` bypass is retired -- there's no override
+  needed once the dangerous shape is structurally impossible. Audit finding:
+  the suite never needed a live port in the first place -- every API/UI
+  test uses `TestClient`, and the two tests that need a real server already
+  bound port 0.
+- **The tmux-kit bump bot is now idempotent on branch existence, not just
+  open PRs** (PR #33, `5e27b70`). Real incident: run `31891698184` pushed
+  branch `bump-tmux-kit-v0.4.0`, then failed at `gh pr create` ("GitHub
+  Actions is not permitted to create or approve pull requests"). With a
+  pushed branch and no PR, the next scheduled run would have re-committed
+  identical content under a new timestamp and been rejected
+  non-fast-forward -- a red run every day, indefinitely. The workflow now
+  probes the branch with `git ls-remote` first and, when the branch exists
+  with no open PR, opens the PR against it instead of re-committing.
+
 ## v0.47.10 (2026-08-15)
 
 Follow-up to v0.47.2: the terminal no longer corrupts while scrolling on
