@@ -1,0 +1,62 @@
+Fix: stop calling a well-formed tool continuation a broken transcript
+
+Repo:    amplifier-agent (file is HTTP-face-private)
+Against: amplifier-agent 0.12.0 / amplifier-foundation 1.0.0 / amplifier-core 1.6.1
+File:    amplifier_agent_http/_reconciler.py
+Item:    muxplex-3aw (evidence in docs/findings/2026-08-15-sidecar-transcript-repair.md)
+
+`diagnose_transcript` is written for a stored, at-rest transcript, where ending
+on a tool result means the process died before the model answered. On the
+chat-completions wire that same shape is a CONTINUATION -- the client ran the
+tools and is asking for the closing assistant response -- and it is the only
+legal shape for that request. The reconciler applies the at-rest rule to the
+in-flight case on every continuation turn, then writes a fabricated
+"the previous tool calls were interrupted" assistant message into the session
+store, in the exact slot the real answer belongs.
+
+The exemption below is TRAILING-ONLY: an incomplete turn anywhere earlier in
+the array is still genuine breakage and is still repaired. Verified against
+seven cases by probe_reconciler.py, including a non-trailing incomplete turn
+and an orphaned tool call, both of which must keep repairing.
+
+--- a/amplifier_agent_http/_reconciler.py
++++ b/amplifier_agent_http/_reconciler.py
+@@ -76,6 +76,27 @@ def reconcile_client_history(
+         annotated = [{**m, "line_num": i + 1} for i, m in enumerate(client_messages)]
+         diagnosis = diagnose_transcript(annotated)
+ 
++        # A transcript that ends on a tool result is a CONTINUATION on this
++        # wire, not a casualty: the client has run the tools and is asking for
++        # the closing assistant response. `diagnose_transcript` cannot know
++        # that -- its failure mode 3 fires on `next_idx >= len(entries)`, which
++        # is true of every continuation request by construction -- so the HTTP
++        # face, which does know, waives it here.
++        #
++        # TRAILING ONLY. An incomplete assistant turn anywhere earlier in the
++        # array is real breakage and still repairs. A client resuming a
++        # genuinely interrupted conversation sends an indistinguishable array
++        # and wants the same outcome -- run the model, produce the closing
++        # response -- so the exemption is correct in that case too.
++        last_idx = len(annotated) - 1
++        if (
++            diagnosis["failure_modes"] == ["incomplete_assistant_turn"]
++            and diagnosis["incomplete_turns"]
++            and all(t.get("after_index") == last_idx for t in diagnosis["incomplete_turns"])
++        ):
++            diagnosis = {
++                **diagnosis,
++                "status": "healthy",
++                "failure_modes": [],
++                "incomplete_turns": [],
++                "recommended_action": "none",
++            }
++
+         if diagnosis["status"] != "healthy":
+             repaired = repair_transcript(annotated, diagnosis)
+             client_messages = [{k: v for k, v in m.items() if k != "line_num"} for m in repaired]
+
+Preferred alternative if amplifier-foundation is also in scope for the fixer:
+give `diagnose_transcript` an explicit `expect_closing_response: bool = True`
+parameter and have the HTTP face pass `False`. That puts the contract where the
+rule lives instead of post-filtering the result, and removes the need for the
+caller to know the shape of the diagnosis dict.
