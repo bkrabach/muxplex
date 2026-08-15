@@ -2,6 +2,9 @@
 
 **Work item:** muxplex-2nm · **Date:** 2026-08-15 · **Status:** root cause identified, fix recommended, not applied (investigation lane)
 
+**Fix tracked as muxplex-3aw** — filed separately because the change lands in
+`amplifier-agent`, not in this repo. No muxplex file needs to change.
+
 ## Verdict
 
 **The sidecar owns this defect. The panel is correct and needs no change.**
