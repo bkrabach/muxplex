@@ -224,14 +224,22 @@ enter/keys flags, a ≤16-char redacted preview). Full text only at `debug` (may
 contain secrets). Rejections log at `warning`.
 
 Implementation: endpoint in `main.py` (`send_session_input`); argv/key-allowlist
-helpers in `terminal_input.py`. Injection-safety is verified by `test_input.py:316`
-(`test_text_sent_literally_via_argv`), which posts a hostile payload
-`; rm -rf / && $(reboot) `id` | tee /etc/passwd` and asserts the exact argv is
-`("send-keys", "-l", "-t", name, "--", payload)` — `-l` literal mode and `--`
-end-of-options prevent shell interpretation, text goes as a single uninterpreted
-argv element.
-
-## Follow-up queue: muxplex's first autonomous write
+helpers in `tmux_kit.keys` (re-exported through `terminal_input.py`). Injection-safety
+is verified by `test_input.py`'s `test_text_sent_literally_via_argv`, which posts a
+hostile payload `; rm -rf / && $(reboot) `id` | tee /etc/passwd` and asserts the
+exact argv is `("copy-mode", "-q", "-t", name, ";", "send-keys", "-l", "-t", name,
+"--", payload)` — `-l` literal mode and `--` end-of-options prevent shell
+interpretation, text goes as a single uninterpreted argv element. The leading
+`copy-mode -q -t <name> ;` is **tmux-kit 0.4.0's own guarantee, not this
+endpoint's**: `build_send_text_argv()`/`build_send_key_argv()` chain the
+copy-mode-exit step into the SAME argv ahead of `send-keys`, via a literal `;`
+argv element (two tmux commands, one subprocess call, one command-loop tick —
+atomic). This endpoint used to also issue `build_exit_copy_mode_argv()` as its
+own separate leading call; that call is now redundant (every send already
+carries it) and has been removed — the guarantee living in the library, not a
+caller, is what makes it impossible for a NEW consumer of the send builders to
+forget it (exactly what happened to tmux-kit's own `lifecycle.interrupt_session()`
+before 0.4.0: see `tmux_kit.keys.build_exit_copy_mode_argv`'s docstring).
 
 A per-session, server-side, persisted list of text items (`state["followups"]`,
 `muxplex/followups.py`) that fires one item per bell, until it drains. See
