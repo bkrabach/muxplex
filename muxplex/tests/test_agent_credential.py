@@ -244,7 +244,7 @@ def test_post_good_key_not_served_triggers_restart(monkeypatch):
 
 def test_get_status_response_never_contains_key_material(monkeypatch):
     async def _fake_run(args, **kwargs):
-        if args[:1] == ["status"]:
+        if args[:2] == ["auth", "status"]:
             return (
                 0,
                 (
