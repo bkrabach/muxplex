@@ -5364,10 +5364,19 @@ async def agent_chat_completions_proxy(request: Request) -> Response:
     body = await request.body()
     client_session_id = request.headers.get("x-client-session-id", "")
 
-    upstream_headers = {
-        "Authorization": f"Bearer {_AGENT_PROXY_TOKEN}",
-        "Content-Type": "application/json",
-    }
+    # Guarded inline (`{...} if key else {}`), matching every other federation
+    # Bearer-header call site in this module (see e.g. line ~261, ~4622,
+    # ~4839): even though the early `if not _AGENT_PROXY_TOKEN: return` above
+    # already makes an empty token unreachable here today, that guarantee is
+    # only visible to a reader who traces the control flow up several lines.
+    # Writing the guard at the point of use keeps the invariant this route
+    # depends on locally verifiable -- and self-enforcing if a future
+    # refactor ever moves or removes the early return -- rather than relying
+    # solely on a guard elsewhere in the function.
+    upstream_headers = {"Content-Type": "application/json"}
+    upstream_headers.update(
+        {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
+    )
     if client_session_id:
         upstream_headers["X-Client-Session-Id"] = client_session_id
 

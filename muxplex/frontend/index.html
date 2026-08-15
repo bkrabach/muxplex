@@ -17,6 +17,18 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <link rel="stylesheet" href="/vendor/xterm.css" />
+  <!-- tokens.css must load BEFORE style.css (docs/DESIGN_LANGUAGE.md section 6,
+       step 2): style.css still carries its own historical :root block, and CSS
+       resolves a same-specificity collision by SOURCE ORDER, so the file linked
+       SECOND wins every shared custom-property name. Loading tokens.css first
+       means style.css's :root keeps winning at an IDENTICAL value for every
+       name the two files share (guarded by
+       muxplex/tests/test_design_tokens.py::test_shared_names_resolve_identically_so_link_order_cannot_matter),
+       so this link is a zero-visual-change step -- it only makes the token
+       scale available for future migrations, per DESIGN_LANGUAGE.md's
+       incremental-adoption plan (section 6). Reversing this order would let
+       tokens.css's :root win instead, which is untested and unverified. -->
+  <link rel="stylesheet" href="/tokens.css" />
   <link rel="stylesheet" href="/style.css" />
   <title>muxplex</title>
 </head>
