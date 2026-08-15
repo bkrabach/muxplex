@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+#
+# muxplex-agent-fence -- the network fence that makes the agent sidecar's
+# central security claim structurally true rather than merely conventional.
+#
+# THE CLAIM (docs/AGENT_CHAT_SIDECAR.md):
+#   "The agent process holds no muxplex credential of any kind ... there is no
+#    path by which the sidecar initiates a call into muxplex."
+#
+# That claim is worth exactly nothing if the sidecar can open a socket to
+# muxplex anyway, because muxplex grants an *unauthenticated* bypass to any
+# peer whose socket address is 127.0.0.1 (muxplex/auth.py, _LOCALHOST_ADDRS).
+# A sidecar that can reach loopback is therefore not merely "inside the
+# network" -- it is inside the trust boundary, unauthenticated, as root-
+# equivalent as the API allows.
+#
+# WHY THIS REPLACES THE ORIGINAL TWO-RULE FENCE
+# ---------------------------------------------
+# The POC fence rejected exactly two destinations:
+#     -d 127.0.0.1/32 --dport 8088
+#     -d <LAN IP>/32  --dport 8088
+# Measured on the POC host, that left every one of these open:
+#     127.0.0.2:8088   -> HTTP 200  (all of 127.0.0.0/8 is loopback; muxplex
+#     127.0.0.9:8088   -> HTTP 200   binds 0.0.0.0 so it answers on all of it,
+#                                    and `ip route get 127.0.0.2` returns
+#                                    `src 127.0.0.1`, so the *unauthenticated*
+#                                    loopback bypass fires on the way in)
+#     127.0.0.1:8188   -> HTTP 200  (a second muxplex instance, unfenced)
+#     127.0.0.1:7681   -> HTTP 404  (ttyd -- a terminal server)
+# An address-by-address denylist cannot express "you may not talk to this
+# machine". This fence inverts it: aa-svc may not open a connection to
+# anything local, full stop, with one narrow allowance for the DNS stub
+# resolver it needs to reach its upstream model API.
+#
+# SUBCOMMANDS
+#   apply      install the fence (idempotent; safe to re-run)
+#   verify     PROVE the fence holds, empirically, from the sidecar's own UID
+#   watchdog   verify; on failure stop the sidecar and log at alert priority
+#   status     human-readable dump of current state
+#
+# `verify` is the load-bearing one. It does not inspect rules and conclude
+# "looks right" -- it actually attempts the connections the fence exists to
+# stop, from the real UID, and fails if any of them succeed. It also runs a
+# positive control first, so that "muxplex is down" can never masquerade as
+# "the fence is working".
+
+set -uo pipefail
+
+CHAIN="MUXPLEX_AGENT_FENCE"
+CONF="${MUXPLEX_AGENT_FENCE_CONF:-/etc/muxplex-agent-fence.conf}"
+SIDECAR_UNIT="amplifier-agent-http.service"
+FENCE_UNIT="muxplex-agent-fence.service"
+
+# ---------------------------------------------------------------- config ----
+AA_USER="aa-svc"
+MUXPLEX_PORTS="8088"
+DNS_STUB_PORTS="53"
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+die() { printf 'muxplex-agent-fence: FATAL: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+command -v iptables  >/dev/null 2>&1 || die "iptables not found"
+command -v ip6tables >/dev/null 2>&1 || die "ip6tables not found"
+
+AA_UID="$(id -u "$AA_USER" 2>/dev/null)" \
+  || die "user '$AA_USER' does not exist -- refusing to install a fence around nobody"
+
+_ports_csv() { printf '%s' "$MUXPLEX_PORTS" | tr -d ' '; }
+
+# Every IPv4 address this machine answers on.
+#
+# 127.0.0.2 is in here deliberately and is not padding: it is the address
+# that proved the original fence was already porous. muxplex binds 0.0.0.0
+# so it answers on all of 127.0.0.0/8, and `ip route get 127.0.0.2` selects
+# `src 127.0.0.1`, so a connection there arrives wearing the address that
+# muxplex's auth middleware treats as an unauthenticated pass. Any future
+# fence that stops covering it regresses to the original hole, and the probe
+# below is what notices.
+_local_v4() {
+    { printf '127.0.0.1\n127.0.0.2\n'
+      # `ip -brief` appends non-address columns ("metric 100"); keep only
+      # fields that actually parse as dotted-quad/CIDR.
+      ip -4 -brief addr show scope global \
+        | awk '{for(i=3;i<=NF;i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/) {split($i,a,"/"); print a[1]}}'
+    } | sort -u
+}
+
+# --------------------------------------------------------------- probing ----
+# Attempt one TCP connect as $1, to $2:$3. Echoes exactly one verdict word:
+#   OPEN     connect() succeeded  -- the fence did NOT hold
+#   BLOCKED  refused/reset/unreachable -- the fence held, and failed fast
+#   TIMEOUT  no answer at all -- treated as FAILURE, see below
+#   ERROR    something else went wrong; probe is not trustworthy
+#
+# TIMEOUT counts as a failure on purpose. A silent blackhole does not prove
+# the fence is in place -- it is equally consistent with a wedged host, and
+# this fence uses --reject-with tcp-reset precisely so that a real block is
+# instantaneous and unambiguous. Refusing to score an ambiguous result as a
+# pass is the whole point of this script.
+_probe() {
+    local user="$1" addr="$2" port="$3"
+    sudo -n -u "$user" /usr/bin/env python3 -c '
+import errno, socket, sys
+addr, port = sys.argv[1], int(sys.argv[2])
+fam = socket.AF_INET6 if ":" in addr else socket.AF_INET
+s = socket.socket(fam, socket.SOCK_STREAM)
+s.settimeout(4)
+try:
+    s.connect((addr, port))
+    print("OPEN")
+except socket.timeout:
+    print("TIMEOUT")
+except OSError as e:
+    blocked = (errno.ECONNREFUSED, errno.ECONNRESET, errno.ENETUNREACH,
+               errno.EHOSTUNREACH, errno.EACCES, errno.EPERM)
+    print("BLOCKED" if e.errno in blocked else "ERROR")
+finally:
+    s.close()
+' "$addr" "$port" 2>/dev/null || echo ERROR
+}
+
+# Ports that a live muxplex process is actually listening on, right now,
+# discovered independently of the configured list. Drift between the two is
+# a fence gap, and `verify` fails on it.
+_listening_muxplex_ports() {
+    ss -lntpH 2>/dev/null \
+      | awk '/muxplex/ {split($4,a,":"); print a[length(a)]}' \
+      | sort -un
+}
+
+# ----------------------------------------------------------------- apply ----
+_apply_family() {
+    local ipt="$1" lo_net="$2" ; shift 2
+
+    "$ipt" -N "$CHAIN" 2>/dev/null || true
+    "$ipt" -F "$CHAIN"
+
+    # 1. Replies on connections the sidecar did NOT initiate. It is a server
+    #    (0.0.0.0:9099 <- muxplex); its responses are OUTPUT traffic and must
+    #    not be caught by the rules below. This permits no new reach.
+    "$ipt" -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+    # 2. The single local service the sidecar legitimately needs: the DNS
+    #    stub resolver, without which it cannot resolve its upstream model
+    #    API and the chat panel dies. Narrow, and not an authority-bearing
+    #    service inside muxplex's trust boundary.
+    local p
+    for p in $(printf '%s' "$DNS_STUB_PORTS" | tr ',' ' '); do
+        "$ipt" -A "$CHAIN" -d "$lo_net" -p udp --dport "$p" -j RETURN
+        "$ipt" -A "$CHAIN" -d "$lo_net" -p tcp --dport "$p" -j RETURN
+    done
+
+    # 3. Everything else on this machine is off-limits. This is the rule the
+    #    original address-denylist could not express: not "not muxplex's
+    #    port on two addresses", but "nothing local, at all". Covers all of
+    #    127.0.0.0/8, both muxplex instances, ttyd, and anything added later.
+    "$ipt" -A "$CHAIN" -d "$lo_net" -p tcp -j REJECT --reject-with "$1"
+    "$ipt" -A "$CHAIN" -d "$lo_net"        -j REJECT --reject-with "$2"
+
+    # 4. muxplex's ports on ANY destination -- so the sidecar cannot loop
+    #    back in via this box's own LAN address, and cannot reach a
+    #    *federated* muxplex on another host either. Survives IP changes,
+    #    which an address-pinned rule does not.
+    "$ipt" -A "$CHAIN" -p tcp -m multiport --dports "$(_ports_csv)" \
+           -j REJECT --reject-with "$1"
+
+    # Hook it into OUTPUT exactly once, for this UID only.
+    while "$ipt" -C OUTPUT -m owner --uid-owner "$AA_UID" -j "$CHAIN" 2>/dev/null; do
+        "$ipt" -D OUTPUT -m owner --uid-owner "$AA_UID" -j "$CHAIN"
+    done
+    "$ipt" -I OUTPUT 1 -m owner --uid-owner "$AA_UID" -j "$CHAIN"
+}
+
+# Retire the POC's standalone per-address rules; this chain subsumes them.
+_drop_legacy_rules() {
+    local ipt="$1" n
+    while :; do
+        n="$("$ipt" -L OUTPUT --line-numbers -n 2>/dev/null \
+             | awk -v uid="$AA_UID" '$0 ~ ("owner UID match " uid) && $2 == "REJECT" {print $1; exit}')"
+        [ -n "$n" ] || break
+        "$ipt" -D OUTPUT "$n"
+    done
+}
+
+cmd_apply() {
+    _drop_legacy_rules iptables
+    _drop_legacy_rules ip6tables
+    _apply_family iptables  127.0.0.0/8 tcp-reset icmp-port-unreachable
+    _apply_family ip6tables ::1/128     tcp-reset icmp6-port-unreachable
+    say "fence applied for ${AA_USER} (uid ${AA_UID}); muxplex ports: $(_ports_csv)"
+}
+
+# ---------------------------------------------------------------- verify ----
+# Exit 0 only if the fence is empirically proven to hold.
+cmd_verify() {
+    local wait_s="${1:-0}" failures=0 warned=0
+
+    # -- structural: the chain and its hook must exist in both families ----
+    local ipt
+    for ipt in iptables ip6tables; do
+        if ! "$ipt" -C OUTPUT -m owner --uid-owner "$AA_UID" -j "$CHAIN" 2>/dev/null; then
+            say "FAIL  [$ipt] OUTPUT has no hook for uid ${AA_UID} -> ${CHAIN}"
+            failures=$((failures + 1))
+        fi
+    done
+
+    # -- drift: every listening muxplex must be a port we fence ------------
+    local live_ports p
+    live_ports="$(_listening_muxplex_ports)"
+    for p in $live_ports; do
+        case ",$(_ports_csv)," in
+            *",$p,"*) ;;
+            *) say "FAIL  a muxplex is listening on port $p but it is not in MUXPLEX_PORTS ($(_ports_csv)) -- fence has drifted"
+               failures=$((failures + 1)) ;;
+        esac
+    done
+
+    # -- positive control --------------------------------------------------
+    # Without this, "muxplex is down" would score as "fence works". Every
+    # negative result below is only meaningful because this one succeeded.
+    local ctl_port ctl="" deadline
+    ctl_port="$(printf '%s' "$live_ports" | head -n1)"
+    [ -n "$ctl_port" ] || ctl_port="$(printf '%s' "$(_ports_csv)" | cut -d, -f1)"
+    deadline=$(( $(date +%s) + wait_s ))
+    while :; do
+        ctl="$(_probe root 127.0.0.1 "$ctl_port")"
+        [ "$ctl" = OPEN ] && break
+        [ "$(date +%s)" -ge "$deadline" ] && break
+        sleep 1
+    done
+    if [ "$ctl" = OPEN ]; then
+        say "ok    control: root CAN reach muxplex 127.0.0.1:${ctl_port} (negatives below are meaningful)"
+    else
+        say "FAIL  control: root cannot reach muxplex 127.0.0.1:${ctl_port} ($ctl)."
+        say "      Cannot distinguish 'fence works' from 'muxplex is down'. Refusing to pass."
+        failures=$((failures + 1))
+    fi
+
+    # -- the real property -------------------------------------------------
+    local addr
+    for p in $(printf '%s' "$(_ports_csv)" | tr ',' ' ') $live_ports; do
+        for addr in $(_local_v4); do
+            local r; r="$(_probe "$AA_USER" "$addr" "$p")"
+            case "$r" in
+                BLOCKED) say "ok    ${AA_USER} BLOCKED from ${addr}:${p}" ;;
+                OPEN)    say "FAIL  ${AA_USER} REACHED ${addr}:${p} -- fence does not hold"
+                         failures=$((failures + 1)) ;;
+                *)       say "FAIL  ${AA_USER} -> ${addr}:${p} inconclusive ($r); not scoring as a pass"
+                         failures=$((failures + 1)) ;;
+            esac
+        done
+    done
+
+    if [ "$failures" -ne 0 ]; then
+        say ""
+        say "VERIFY FAILED: ${failures} problem(s). The sidecar must not run un-fenced."
+        return 1
+    fi
+    say ""
+    say "VERIFY OK: ${AA_USER} cannot reach muxplex on any local address."
+    return 0
+}
+
+# -------------------------------------------------------------- watchdog ----
+# Runtime half of "unmissable". Start-time enforcement cannot see a rule
+# deleted at 3am on a running box; this can, and it fails closed.
+cmd_watchdog() {
+    local out rc
+    out="$(cmd_verify 0)"; rc=$?
+    [ "$rc" -eq 0 ] && return 0
+
+    logger -p auth.alert -t muxplex-agent-fence \
+      "FENCE BREACH: verification failed; stopping ${SIDECAR_UNIT}. The agent sidecar was able to reach muxplex, or the fence could not be proven." || true
+    printf '%s\n' "$out" | logger -p auth.alert -t muxplex-agent-fence || true
+
+    printf '%s\n' "$out" >&2
+    say "muxplex-agent-fence: BREACH -- stopping ${SIDECAR_UNIT} (fail closed)" >&2
+    systemctl stop "$SIDECAR_UNIT" || true
+    # Also drop the fence unit out of "active". Two reasons, both load-bearing:
+    #   - its state stops advertising a protection that demonstrably is not
+    #     there (an "active" fence unit over a flushed chain is the exact
+    #     false-confidence this mechanism exists to destroy);
+    #   - BindsTo= on the sidecar then holds it down via systemd itself,
+    #     rather than relying on the `systemctl stop` above having worked.
+    # Restarting the fence unit re-applies AND re-verifies, so there is no way
+    # back to serving that skips proving the fence.
+    systemctl stop --no-block "$FENCE_UNIT" || true
+    return 1
+}
+
+cmd_status() {
+    say "== config =="
+    say "user=${AA_USER} uid=${AA_UID} muxplex_ports=$(_ports_csv)"
+    say ""
+    say "== listening muxplex ports (discovered) =="
+    _listening_muxplex_ports | tr '\n' ' '; say ""
+    say ""
+    say "== iptables OUTPUT hook =="
+    iptables -L OUTPUT -n -v --line-numbers | head -5
+    say ""
+    say "== ${CHAIN} (IPv4) =="
+    iptables -L "$CHAIN" -n -v 2>&1
+    say ""
+    say "== ${CHAIN} (IPv6) =="
+    ip6tables -L "$CHAIN" -n -v 2>&1
+}
+
+case "${1:-}" in
+    apply)    cmd_apply ;;
+    verify)   shift; cmd_verify "${1:-0}" ;;
+    watchdog) cmd_watchdog ;;
+    status)   cmd_status ;;
+    *) die "usage: muxplex-agent-fence {apply|verify [wait_seconds]|watchdog|status}" ;;
+esac

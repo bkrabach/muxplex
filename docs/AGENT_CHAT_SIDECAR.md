@@ -171,43 +171,91 @@ sudo systemctl enable --now amplifier-agent-http.service
 ### 6. The network fence — this is the mechanism, not decoration
 
 The claim "the agent holds no muxplex credential" is only worth anything if the
-agent also *cannot reach muxplex to use one*. muxplex treats loopback specially;
-a process on the same box that could open a socket to muxplex's port would be
-sitting inside that trust boundary. So the agent's UID is firewalled away from
-muxplex's port outright:
+agent also *cannot reach muxplex to use one*. muxplex treats loopback specially
+(`muxplex/auth.py`, `_LOCALHOST_ADDRS`): a process on the same box that can open
+a socket to muxplex is not merely "inside the network," it is inside the trust
+boundary, **unauthenticated**.
+
+> **An earlier revision of this section published a fence that did not hold.**
+> It rejected two destinations — `127.0.0.1/32` and the host's LAN IP, port 8088
+> only. muxplex binds `0.0.0.0:8088`, so it answers on all of `127.0.0.0/8`.
+> Measured on the live POC host, `aa-svc` reached `127.0.0.2:8088` and
+> `127.0.0.9:8088` with **HTTP 200, unauthenticated**, plus a second muxplex on
+> `127.0.0.1:8188` and ttyd on `127.0.0.1:7681`. The hand-verification below it
+> passed because it probed the one address the rule covered. **Do not rebuild
+> that fence.** If you are reading a copy of this file that still shows two
+> `iptables -A OUTPUT -d <addr>/32` commands here, it is stale.
+
+The fence installed now inverts the default: `aa-svc` may not initiate a
+connection to anything local, with one narrow allowance for the DNS stub
+resolver it needs to reach its upstream model API. An address denylist cannot
+express "you may not talk to this machine"; this does.
+
+Artifacts live in [`agent-chat-sidecar/`](agent-chat-sidecar/), laid out to
+mirror their install paths. See
+[`agent-chat-sidecar/README.md`](agent-chat-sidecar/README.md) for the rule
+set, the measurements above, and the design rationale.
 
 ```bash
-MUXPLEX_PORT=8088
-AA_UID=$(id -u aa-svc)
+cd docs/agent-chat-sidecar
+sudo install -m 0755 usr/local/sbin/muxplex-agent-fence /usr/local/sbin/
+sudo install -m 0644 etc/muxplex-agent-fence.conf        /etc/
+sudo cp -a etc/systemd/system/.                          /etc/systemd/system/
 
-# Loopback: the trust-sensitive one.
-sudo iptables -A OUTPUT -d 127.0.0.1/32 -p tcp \
-  -m owner --uid-owner "$AA_UID" --dport "$MUXPLEX_PORT" \
-  -j REJECT --reject-with tcp-reset
+# Name every port a muxplex serves on this box, and the sidecar's OS user.
+sudoedit /etc/muxplex-agent-fence.conf
 
-# The host's own LAN address, so the agent cannot loop back around via the NIC.
-# Substitute this box's real LAN IP (the POC host was 10.119.176.180).
-sudo iptables -A OUTPUT -d <THIS_HOST_LAN_IP>/32 -p tcp \
-  -m owner --uid-owner "$AA_UID" --dport "$MUXPLEX_PORT" \
-  -j REJECT --reject-with tcp-reset
+sudo systemctl daemon-reload
+sudo systemctl enable --now muxplex-agent-fence.service
+sudo systemctl enable --now muxplex-agent-fence-watchdog.timer
+sudo systemctl restart amplifier-agent-http.service   # picks up the drop-in
 ```
 
-`--reject-with tcp-reset` rather than `DROP` on purpose: a reset fails fast and
+`--reject-with tcp-reset` rather than `DROP` throughout: a reset fails fast and
 loudly, instead of hanging until a timeout and looking like a network blip.
 
-Verify — from the agent's UID, muxplex must be unreachable:
+**Reboot persistence is the fence unit, not `iptables-persistent`.** There is
+none installed and none is needed. `muxplex-agent-fence.service` re-derives the
+rules on every boot and then *proves* them (`ExecStartPost=… verify 60`) before
+declaring success. That is strictly stronger than restoring a saved ruleset — a
+restore that no longer blocks anything still restores, silently. This fails, and
+`Requires=`/`BindsTo=` on the sidecar mean the sidecar does not start.
+
+Verify. The `verify` subcommand is the real check — it attempts the connections
+the fence exists to stop, from the sidecar's own UID, over real sockets, at
+every address muxplex answers on, and refuses to score a timeout or an error as
+a pass:
 
 ```bash
-sudo -u aa-svc curl -sS --max-time 5 http://127.0.0.1:8088/api/sessions
-# expect: connection reset by peer
-sudo iptables -L OUTPUT -n -v   # expect nonzero pkts on the loopback rule
+sudo /usr/local/sbin/muxplex-agent-fence verify   # exit 0 only if PROVEN
+sudo /usr/local/sbin/muxplex-agent-fence status   # human-readable rule dump
 ```
 
-**These rules are not persistent.** The POC host had no
-`iptables-persistent`/`netfilter-persistent`, so they are lost on reboot — and
-the fence silently disappears with them while everything still *appears* to
-work. Install `iptables-persistent` (or add an equivalent `ExecStartPre`) before
-treating this as anything but a POC.
+It runs a positive control first (root *must* be able to reach muxplex),
+because without one "muxplex is down" and "the fence works" produce identical
+green output. It also discovers muxplex's listening ports from the running
+system and **fails** if a live instance is on a port missing from
+`/etc/muxplex-agent-fence.conf` — a new instance widens the hole loudly rather
+than silently.
+
+Three independent locks keep the sidecar from running un-fenced, wired by
+`/etc/systemd/system/amplifier-agent-http.service.d/fence.conf`: `Requires=`
+(boot), `BindsTo=` (the fence unit failing at runtime stops the sidecar), and
+`ExecStartPre=+…verify` (an operator starting the sidecar by hand over a chain
+that has been flushed underneath a nominally-"active" fence unit). A 30s
+watchdog timer re-proves the property and, on breach, logs `auth.alert` and
+stops both units. There is deliberately no warn-and-continue, no
+timeout-and-proceed, and no environment variable that turns any of it off.
+
+**Side effect worth knowing before you debug it:** the sidecar can no longer
+reach ttyd on `127.0.0.1:7681`, where it previously could. The "nothing local"
+rule is destination-wide, not muxplex-port-specific, and ttyd is inside that
+blast radius. This is intended — ttyd hands out terminals — but it means any
+future local service `aa-svc` legitimately needs must be added to the fence
+explicitly.
+
+Regression coverage: `muxplex/tests/test_agent_fence.py` (see §"Known gaps" for
+what it does and does not cover).
 
 ### 7. Point muxplex at the sidecar
 
@@ -249,13 +297,57 @@ the variables only.
 
 ## Known gaps
 
-Honest list of what this POC does **not** have:
+Honest list of what this POC does **not** have.
 
-- **iptables rules do not survive reboot** (§6). The fence vanishes silently.
-- **No tests.** Nothing in `tests/` or `frontend/tests/` covers `chat.js`, the
-  proxy route, or the fence behavior. The `input_enabled` 403 result was proven
-  by hand, not by an automated test.
+Closed since the first draft of this document:
+
+- ~~**iptables rules do not survive reboot.**~~ Replaced (§6). Reboot
+  persistence is now `muxplex-agent-fence.service`, which re-derives *and*
+  re-proves the rules each boot. Note that non-persistence was never the worst
+  of it — the fence it replaced was **porous while running**, reachable at
+  `127.0.0.2:8088` unauthenticated. See
+  [`agent-chat-sidecar/README.md`](agent-chat-sidecar/README.md).
+- ~~**No test covers the fence.**~~ `muxplex/tests/test_agent_fence.py`, 6
+  tests, probes as the real UID over real sockets at every address muxplex
+  answers on. It requires `MUXPLEX_TEST_ALLOW_LIVE_HOST=1` and a deployment
+  host — it is only evidence *because* it runs against a live system, which is
+  exactly what `conftest.pytest_sessionstart` otherwise refuses.
+
+Still open:
+
+- **The fence test does not run in CI**, and cannot: CI has no `aa-svc` user,
+  no live muxplex, and no iptables privileges. It skips there. The fence is
+  therefore proven on the deployment host by the boot-time `verify` and the 30s
+  watchdog, not by the pipeline. Treat a green CI run as saying nothing about
+  the fence.
+- **`chat.js` and the proxy route are still untested.** Nothing in `tests/` or
+  `frontend/tests/` covers the panel, the six tool handlers, the write-
+  confirmation gate, or `/api/agent/chat/completions`. The `input_enabled` 403
+  result and the confirmation gate were both proven by hand.
+- **`frontend/tests/test_shared_scope.mjs` is red because of `chat.js`**, and
+  has been since the panel landed. That test evaluates every classic script in
+  one shared vm context to catch top-level binding collisions; `chat.js` throws
+  during top-level evaluation there — first on the loud-fail `__missing` DOM
+  check (the harness's `document.getElementById` returns `null` for
+  everything), and now earlier still on `performance`, which the harness
+  sandbox does not stub. **Neither is a real collision**, which is what the
+  test exists to catch — but a permanently-red guard protects nothing, and the
+  next genuine collision will land in a test that was already failing. Fixing
+  it means either stubbing the harness up to what `chat.js` touches at load
+  time, or moving `chat.js`'s load-time work behind an init function. Not done
+  here.
+- **The write-confirmation gate is client-side only.** It is a
+  mistake-and-surprise stop on `send_muxplex_session_input`, not a security
+  boundary — the server-side `input_enabled` / `input_allowed_sessions` fence
+  is the security boundary, and it is unchanged. Anyone with the user's cookie
+  and a terminal can still call the endpoint directly. Do not let the dialog's
+  presence be mistaken for authorization.
 - **Prompt caching disabled** as an upstream-bug workaround (§3); revisit.
 - **The sidecar is not in this repo** and is not versioned with it. A breaking
   change in `amplifier-agent`'s HTTP face breaks the panel with no signal here.
 - **`MODEL` is hardcoded** in `chat.js`, as is the `9099` default in `main.py`.
+- **The debug-capture recorder is always on.** `chat.js` wraps all six tool
+  handlers plus page-wide console/error hooks and buffers events in memory for
+  the Export button. It is capped, and never leaves the browser unless a human
+  clicks Export — but it is instrumentation shipped in the POC path, and should
+  be a deliberate decision before this becomes a feature.
