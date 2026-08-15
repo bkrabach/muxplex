@@ -1,6 +1,6 @@
 """Safety rails for the muxplex test suite.
 
-WHY THIS FILE EXISTS -- do not delete it, and do not weaken the guard:
+WHY THIS FILE EXISTS -- do not delete it, and do not weaken what it guarantees:
 
 On 2026-07-25 this suite was run repeatedly on a developer host that was also
 running a live muxplex instance. It caused real production damage, twice over:
@@ -21,18 +21,58 @@ running a live muxplex instance. It caused real production damage, twice over:
 Neither failure was noticed for hours, because from inside the suite everything
 looked green. That is the point: a test that damages its host still passes.
 
-The guard below makes the whole class fail LOUD and up front instead. It is a
-mechanism, not a reminder -- a future session with none of this context still
-gets stopped. ``test_safety_rails.py`` fails if this file or its guard goes
-missing, so removing it cannot pass silently either.
+RETIRED FIX: a ``pytest_sessionstart`` hook used to refuse to run the ENTIRE
+suite whenever anything answered 127.0.0.1:8088. Safe, but backwards: it meant
+the suite could never run at all on a host already serving a live muxplex
+(this project's own primary dev host included) -- even though, by the time
+that guard existed, the suite itself no longer needed that port for anything.
+Refusing based on "is something else running" is an environment probe, not an
+isolation guarantee.
 
-The correct way to run this suite is inside an isolated environment (a Digital
-Twin Universe container). See ``AGENTS.md`` -> "Running the test suite".
+CURRENT FIX -- structural isolation instead of refusal. Every fixture below is
+autouse and applies to EVERY test, regardless of what else is running on the
+host:
+
+  * ``_isolate_settings_path`` -- no test's settings write can ever reach the
+    real ``~/.config/muxplex/settings.json`` (closes incident 1).
+  * ``_isolate_tmux_socket_dir`` -- no test's real tmux subprocess call can
+    ever reach the ambient/production tmux server.
+  * ``_neutralize_port_killer`` -- no test can invoke the REAL
+    ``_kill_stale_port_holder`` (closes incident 2's *signal* step).
+  * ``_neutralize_real_uvicorn_run`` -- no test can open a REAL listening
+    socket via ``uvicorn.run`` (closes incident 2's *root cause*: an
+    unmocked, unpinned ``serve()`` can no longer bind ANY port at all, so it
+    is structurally unable to resolve to, bind, or signal 8088 -- or any
+    other real/occupied port).
+
+Together these make the dangerous outcome impossible by construction, not
+merely discouraged. A test that genuinely needs a REAL server binds an
+OS-allocated ephemeral port explicitly (see the ``free_port`` fixture below,
+or ``test_bell_causality_integration.py`` / ``test_bell_hook_delivery_integration.py``
+for two existing examples using the identical bind-port-0 technique) --
+preferred over scanning upward from a well-known port and hoping it's free,
+because an OS-allocated port cannot collide with a real listener by
+construction.
+
+``pytest_sessionstart`` still exists -- it is retargeted at the one thing
+actually worth failing the WHOLE session for, up front: a NEW test
+reintroducing incident 2's exact shape (opts into the real killer via
+``@pytest.mark.allow_real_port_killer`` while calling ``.serve(`` without
+pinning ``port=``). That is a structural (AST) scan of the test SOURCE
+itself, not a probe of the host's network state -- it answers "would this
+suite contain the dangerous shape," never "is something else running
+elsewhere on this machine." It therefore never refuses the normal case, on
+this host or any other, and has no environment-variable bypass: there is no
+legitimate reason to run a suite that contains the dangerous shape, only a
+reason to fix it.
+
+``test_safety_rails.py`` fails if this file or any of the above goes missing
+or is weakened, so removing it cannot pass silently either.
 """
 
 from __future__ import annotations
 
-import os
+import ast
 import shutil
 import socket
 import tempfile
@@ -41,68 +81,69 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-# Escape hatch: set this when you are certain nothing live is at risk (CI
-# runners, a fresh container, a machine with no muxplex). It is deliberately
-# verbose -- typing it should feel like a decision, not a reflex.
-_OVERRIDE_ENV = "MUXPLEX_TEST_ALLOW_LIVE_HOST"
 
+def _serve_calls_without_pinned_port(tests_dir: Path) -> list[str]:
+    """AST-scan every ``test_*.py`` file in *tests_dir* for the ONE shape
+    that has actually caused live-host damage (incident 2 above): a test
+    that opts into the real port killer
+    (``@pytest.mark.allow_real_port_killer``) and calls ``.serve(`` without
+    pinning ``port=``.
 
-def _something_is_listening(
-    port: int, host: str = "127.0.0.1", timeout: float = 0.5
-) -> bool:
-    """True if *port* accepts a TCP connection on *host*.
-
-    Deliberately dependency-free (no lsof) and deliberately dumb: any listener
-    at all is treated as a hazard. We are not trying to identify muxplex
-    specifically -- if something owns the port the suite targets by default,
-    that is reason enough to stop.
+    Returns ``"<file>::<test_name>"`` for every offender, empty if none.
+    Deliberately narrow: the marker is the ONLY way a test reaches the real
+    killer at all (``_neutralize_port_killer`` below defaults every other
+    test to a no-op), so this is the *complete* set of tests capable of
+    repeating incident 2 -- not a heuristic sample of them. Used both by
+    ``pytest_sessionstart`` (fail the session before any test runs) and by
+    ``test_safety_rails.py`` (prove it currently finds nothing, and prove it
+    actually finds something when something is there to find).
     """
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _default_port() -> int:
-    """The port an unmocked ``serve()`` would resolve to."""
-    try:
-        from muxplex.settings import DEFAULT_SETTINGS
-
-        return int(DEFAULT_SETTINGS.get("port", 8088))
-    except Exception:
-        return 8088
+    offenders: list[str] = []
+    for path in sorted(tests_dir.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or not node.name.startswith(
+                "test_"
+            ):
+                continue
+            decorators = " ".join(ast.unparse(d) for d in node.decorator_list)
+            if "allow_real_port_killer" not in decorators:
+                continue
+            body = ast.unparse(node)
+            if ".serve(" in body and "port=" not in body:
+                offenders.append(f"{path.name}::{node.name}")
+    return offenders
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Refuse to run when a live server could be harmed.
+    """Fail the whole session, up front, if the suite itself contains the
+    one shape that has actually destroyed a live server -- never merely
+    because something else happens to be running on this host.
 
-    Fails the whole session before a single test is collected, rather than
-    letting a careless test discover the live server mid-run.
+    See this module's docstring for why this replaced a host-network probe:
+    a probe answers the wrong question ("is 8088 occupied?") and refuses the
+    suite even when every test in it is isolated by construction. This asks
+    the right one ("does any test still have the exact shape that killed a
+    live server before?") and can only ever say yes about code that is
+    actually sitting in this repo, not about a process this suite has no
+    connection to.
     """
-    if os.environ.get(_OVERRIDE_ENV) == "1":
-        return
-
-    port = _default_port()
-    if not _something_is_listening(port):
+    offenders = _serve_calls_without_pinned_port(Path(__file__).parent)
+    if not offenders:
         return
 
     raise pytest.UsageError(
-        f"\n"
-        f"REFUSING TO RUN: something is already serving 127.0.0.1:{port}.\n"
-        f"\n"
-        f"This suite has previously destroyed a live muxplex's settings.json and\n"
-        f"SIGTERMed the running server (see muxplex/tests/conftest.py for the\n"
-        f"full history). Tests that call the real serve() resolve to this port\n"
-        f"and will signal whatever process owns it.\n"
-        f"\n"
-        f"Run the suite in an isolated environment instead -- see AGENTS.md,\n"
-        f"'Running the test suite'.\n"
-        f"\n"
-        f"If you are certain nothing live is at risk (fresh container, CI runner,\n"
-        f"no muxplex on this host), override explicitly:\n"
-        f"\n"
-        f"    {_OVERRIDE_ENV}=1 pytest\n"
+        "\n"
+        "REFUSING TO RUN: the shape that destroyed a live muxplex before is\n"
+        "back. These tests opt into the REAL port killer\n"
+        "(@pytest.mark.allow_real_port_killer) and call .serve( without\n"
+        "pinning port= -- exactly incident 2 in muxplex/tests/conftest.py's\n"
+        "module docstring:\n"
+        "\n" + "\n".join(f"    {offender}" for offender in offenders) + "\n"
+        "\n"
+        "Fix: pin an OS-allocated ephemeral port (see the `free_port` "
+        "fixture)\n"
+        "or drop the marker if the real killer isn't actually needed.\n"
     )
 
 
@@ -232,6 +273,62 @@ def _neutralize_port_killer(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_real_uvicorn_run(request, monkeypatch):
+    """No test may open a REAL listening socket via ``uvicorn.run`` by accident.
+
+    This is the fixture that actually closes incident 2 (see this module's
+    docstring), not merely its symptom: the port killer neutered above stops
+    the SIGNAL, but an unmocked, unpinned ``serve()`` would still attempt a
+    REAL bind to whatever ``DEFAULT_SETTINGS["port"]`` resolves to (8088). On
+    a host where nothing is listening there yet, that bind would SUCCEED --
+    ``uvicorn.run`` then blocks forever serving a real, world-reachable
+    socket on the default port, hanging the test run instead of merely
+    signalling something. Patching this ONE chokepoint makes that
+    structurally impossible regardless of what port a test computes, without
+    touching ``cli.py`` at all: ``uvicorn.run`` is called nowhere in
+    production code except ``cli.serve()`` (verified by grep across
+    ``muxplex/``). The two tests that legitimately need a real server
+    (``test_bell_causality_integration.py``,
+    ``test_bell_hook_delivery_integration.py``) build their own
+    ``uvicorn.Config``/``Server`` directly on an OS-allocated ephemeral port
+    -- a different API this fixture never touches.
+
+    Every test in this suite that exercises ``cli.serve()``'s real call into
+    ``uvicorn.run`` already patches it locally with its own recording fake
+    (see test_cli.py's ``fake_run`` helpers) -- that local patch simply
+    overrides this default for the lifetime of its own ``with patch(...)``
+    block, so nothing here conflicts with them. This fixture only ever fires
+    for a test that forgot to.
+
+    Tests that genuinely need the real thing opt in explicitly:
+
+        @pytest.mark.allow_real_uvicorn_run
+
+    and must still pin an OS-allocated port (see the ``free_port`` fixture)
+    -- opting in exempts a test from this ONE fixture, not from incident 2's
+    other half (the port killer above, and settings/tmux isolation, still
+    apply regardless).
+    """
+    if "allow_real_uvicorn_run" in request.keywords:
+        yield
+        return
+
+    def _refuse_real_bind(app, *, host="127.0.0.1", port=8088, **kwargs):
+        raise AssertionError(
+            f"A test reached the REAL uvicorn.run(host={host!r}, "
+            f"port={port!r}) without @pytest.mark.allow_real_uvicorn_run. "
+            f"This suite never opens a real listening socket by accident -- "
+            f"patch uvicorn.run (or muxplex.cli.serve) locally the way every "
+            f"other cli.py test does, or add the marker and pin an "
+            f"OS-allocated port (see the `free_port` fixture) if this test "
+            f"genuinely needs a live server."
+        )
+
+    monkeypatch.setattr("uvicorn.run", _refuse_real_bind)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _default_service_ready_wait(request, monkeypatch):
     """Default ``_wait_for_service_ready`` to instantly-ready for every test.
 
@@ -290,6 +387,26 @@ def short_socket_dir():
         yield base
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.fixture
+def free_port() -> int:
+    """An OS-allocated free TCP port on 127.0.0.1.
+
+    Bind port 0, read back what the OS actually assigned, release it
+    immediately. A port picked this way cannot collide with a real listener
+    (the live muxplex on 8088, or anything else) by construction -- unlike
+    scanning upward from a well-known port number and hoping it's free by
+    the time you bind it for real. This is the canonical version of the
+    identical technique already duplicated locally as ``_free_port()`` in
+    ``test_bell_causality_integration.py`` and
+    ``test_bell_hook_delivery_integration.py``; use this fixture for any NEW
+    test that needs to bind a real socket, including one opting into
+    ``@pytest.mark.allow_real_uvicorn_run`` above.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 # The modules whose namespaces BIND ``should_escape`` for a live production
