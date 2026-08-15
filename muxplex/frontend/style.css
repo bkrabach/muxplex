@@ -2014,15 +2014,16 @@ body {
 }
 
 /* muxplex-z6h: .agent-panel-logo / -title-group / -name / -attribution /
-   -attention were all deleted here, along with their markup. The header row
-   now holds only the three things you can act on (New, Export, close), and
-   the close button is pushed to the far edge by the rule below rather than by
-   a title element that happened to be flex:1. The attribution did not
-   disappear -- it moved to .agent-panel-byline at the bottom of the panel. */
+   -attention were all deleted here, along with their markup. The attribution
+   did not disappear -- it moved to .agent-panel-byline at the bottom of the
+   panel.
 
-.agent-panel-header #chat-close-btn {
-  margin-left: auto;
-}
+   muxplex-2qs: the close X went too, and with it the
+   `.agent-panel-header #chat-close-btn { margin-left: auto }` rule that used
+   to push it to the far edge. The header row now holds exactly New and
+   Export, both leading-aligned; there is nothing left to push anywhere. Do
+   not re-add a trailing auto-margin here on the assumption that something
+   belongs at the far edge -- nothing does. */
 
 /* muxplex-5bn -- SHARED LINK-BUTTON COMPONENT: the survey, and the verdicts.
    ---------------------------------------------------------------------
@@ -2040,9 +2041,11 @@ body {
        exactly how the original four-control incident happened).
 
    DELIBERATELY NOT .quick-link, with reasons
-     #chat-close-btn -- icon-only glyph. .header-btn is the correct
-       register for a bare mark; .quick-link's flex+gap+13px-text layout is
-       built around a word.
+     (#chat-close-btn was listed here as an icon-only glyph that belonged on
+       .header-btn rather than .quick-link. The button itself was removed in
+       muxplex-2qs -- the Agent toggle is the only close affordance now -- so
+       the verdict is moot; kept as a note only so the survey below still
+       reads as a complete list of what was considered.)
      #chat-send-btn -- a commit action, not chrome. See the
        .agent-panel-send-btn block below for the full reasoning.
      .settings-close-btn, .manage-view-panel__close-btn, .tile-options-btn
@@ -2659,8 +2662,7 @@ body {
      was added later than the rule. Applying the shared component to a
      control is the moment to notice that. */
   #chat-new-btn,
-  #chat-export-btn,
-  #chat-close-btn {
+  #chat-export-btn {
     min-width: 48px;
     min-height: 48px;
   }

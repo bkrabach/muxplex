@@ -1,0 +1,691 @@
+// Tests for the agent chat panel (chat.js).
+//
+// chat.js is a closed strict-mode IIFE that exports exactly ONE global:
+// window.muxplexAgentPrefs. Everything else -- the tool-call executor, the
+// 403 fence classifier, the confirmation gate, the composer key handling --
+// is private. The only way to exercise it is to load the real source into a
+// stubbed DOM/global environment (via node:vm) and drive it through real DOM
+// events and a stubbed fetch, exactly as a browser would. No mocks of the
+// code under test itself; only the environment around it is stubbed.
+//
+// Covers:
+//   GROUP 1 (muxplex-9n9)  the 403 fence classifier -- BOTH branches, plus an
+//                          explicit consistency check between the rendered
+//                          detail and the rendered prose.
+//   GROUP 2 (muxplex-ixl)  model-facing guidance must never reach the DOM,
+//                          but must still reach the model (the continuation
+//                          request body).
+//   GROUP 3 (muxplex-18f)  configurable send/newline modes, both the
+//                          localStorage-backed preference AND the real
+//                          keydown behavior, plus hint/behavior agreement.
+//   GROUP 4 (muxplex-2qs)  init() must not require a #chat-close-btn.
+//
+// Harness design note: unlike tests/test_compose.mjs's flat id->element
+// registry (sufficient for app.js's compose bar), chat.js dynamically
+// creates elements, assigns them an id (e.g. the empty-state placeholder),
+// and later re-finds them via document.getElementById. A flat registry
+// snapshot cannot see those. So this file's stub DOM implements a real
+// id->element registry backed by a `.id` accessor on every stub node
+// (set on assignment, exactly like a live DOM), and getElementById reads
+// live from that registry -- the same "follow the DOM, not a snapshot"
+// property the real thing has.
+
+import vm from 'node:vm';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const CHAT_JS_PATH = path.join(__dirname, '..', 'chat.js');
+const chatJsSource = fs.readFileSync(CHAT_JS_PATH, 'utf-8');
+
+// ---------------------------------------------------------------------
+// Minimal stub DOM (shared shape with test_compose.mjs's makeClassList).
+// ---------------------------------------------------------------------
+
+function makeClassList(initial) {
+  const classes = new Set(initial || []);
+  return {
+    add(...cs) { for (const c of cs) classes.add(c); },
+    remove(...cs) { for (const c of cs) classes.delete(c); },
+    toggle(c, force) {
+      if (force === undefined) {
+        if (classes.has(c)) { classes.delete(c); return false; }
+        classes.add(c); return true;
+      }
+      if (force) classes.add(c); else classes.delete(c);
+      return !!force;
+    },
+    contains(c) { return classes.has(c); },
+    _set: classes,
+  };
+}
+
+/** A fresh DOM environment: its own id registry, its own StubNode class
+ * closed over that registry (so `.id = "x"` really registers the node,
+ * and getElementById really finds it -- including elements chat.js creates
+ * and ids itself after load, e.g. #chat-empty-state). */
+function createDomEnvironment() {
+  const idRegistry = new Map();
+
+  class StubNode {
+    constructor(tag) {
+      this.tagName = String(tag || 'div').toUpperCase();
+      this._children = [];
+      this._text = '';
+      this._attrs = {};
+      this._listeners = {};
+      this.style = {};
+      this.classList = makeClassList([]);
+      this.parentNode = null;
+      // Form-control-ish properties every stub node carries, harmlessly
+      // unused by non-input elements.
+      this.value = '';
+      this.selectionStart = 0;
+      this.selectionEnd = 0;
+      this.scrollTop = 0;
+      this.scrollHeight = 20;
+      this.disabled = false;
+      this._focused = false;
+      this._id = '';
+    }
+    get id() { return this._id; }
+    set id(v) {
+      if (this._id && idRegistry.get(this._id) === this) idRegistry.delete(this._id);
+      this._id = String(v == null ? '' : v);
+      if (this._id) idRegistry.set(this._id, this);
+    }
+    get textContent() {
+      // Mirrors real DOM: reading textContent recurses through children
+      // (which is what makes a collapsed <details> still report its full
+      // text -- CSS display has no bearing on textContent). A leaf that
+      // only ever had textContent assigned (never appendChild'd) returns
+      // its own assigned text.
+      if (this._children.length === 0) return this._text;
+      return this._children.map((c) => c.textContent).join('');
+    }
+    set textContent(v) {
+      // Mirrors real DOM: assigning textContent clears any children.
+      this._text = v == null ? '' : String(v);
+      this._children = [];
+    }
+    appendChild(child) {
+      this._children.push(child);
+      child.parentNode = this;
+      return child;
+    }
+    removeChild(child) {
+      const i = this._children.indexOf(child);
+      if (i !== -1) this._children.splice(i, 1);
+      child.parentNode = null;
+      return child;
+    }
+    setAttribute(k, v) { this._attrs[k] = String(v); }
+    getAttribute(k) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
+    }
+    removeAttribute(k) { delete this._attrs[k]; }
+    hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this._attrs, k); }
+    addEventListener(ev, fn) { (this._listeners[ev] = this._listeners[ev] || []).push(fn); }
+    removeEventListener(ev, fn) {
+      if (!this._listeners[ev]) return;
+      this._listeners[ev] = this._listeners[ev].filter((f) => f !== fn);
+    }
+    _fire(ev, evObj) {
+      (this._listeners[ev] || []).slice().forEach((fn) => fn(evObj || {}));
+    }
+    click() { this._fire('click', {}); }
+    focus() { this._focused = true; }
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+  }
+
+  function createTextNode(text) {
+    const n = new StubNode('#text');
+    n.textContent = text;
+    return n;
+  }
+
+  /** A <dialog>-shaped stub: showModal()/close() plus the 'open' flag and
+   * native 'close' event that resolveConfirm()'s wiring depends on. */
+  function makeDialog() {
+    const el = new StubNode('dialog');
+    el.open = false;
+    el.showModal = function () { this.open = true; };
+    el.close = function () {
+      this.open = false;
+      this._fire('close', {});
+    };
+    return el;
+  }
+
+  const bodyEl = new StubNode('body');
+
+  const documentStub = {
+    readyState: 'complete', // chat.js must call init() immediately, not wait for DOMContentLoaded
+    title: 'muxplex test',
+    visibilityState: 'visible',
+    body: bodyEl,
+    getElementById: (id) => idRegistry.get(id) || null,
+    createElement: (tag) => new StubNode(tag),
+    createTextNode,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+
+  const windowStub = {
+    innerWidth: 1024,
+    innerHeight: 768,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    matchMedia: () => ({ matches: false, addListener() {}, removeListener() {} }),
+  };
+
+  return { StubNode, createTextNode, makeDialog, document: documentStub, window: windowStub, idRegistry };
+}
+
+/** A localStorage stub supporting per-instance throw-on-get/set, matching
+ * test_compose.mjs's convention but scoped to one harness instance (each
+ * test gets its own fresh store -- no cross-test bleed). */
+function makeLocalStorageStub() {
+  let store = {};
+  let throwOnGet = false;
+  let throwOnSet = false;
+  const api = {
+    getItem(key) {
+      if (throwOnGet) throw new Error('blocked');
+      return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
+    },
+    setItem(key, value) {
+      if (throwOnSet) throw new Error('blocked');
+      store[key] = String(value);
+    },
+    removeItem(key) { delete store[key]; },
+  };
+  return {
+    api,
+    get store() { return store; },
+    setThrowOnGet(v) { throwOnGet = v; },
+    setThrowOnSet(v) { throwOnSet = v; },
+  };
+}
+
+const REQUIRED_IDS = [
+  'chat-panel', 'chat-messages', 'chat-input', 'chat-send-btn', 'chat-new-btn',
+  'chat-open-btn', 'chat-export-btn', 'chat-confirm-backdrop',
+  'chat-confirm-session', 'chat-confirm-text', 'chat-confirm-keys',
+  'chat-confirm-cancel-btn', 'chat-confirm-send-btn',
+];
+const OPTIONAL_IDS = ['chat-live', 'chat-key-hint', 'chat-export-link'];
+
+/** Load a fresh copy of chat.js into its own vm context, with its own DOM,
+ * localStorage, and fetch stub. Every test gets a brand-new context --
+ * chat.js's module state (messages, clientSessionId, statusEl, the
+ * confirmation gate...) is closed over per-load, so this is the only way
+ * to get real per-test isolation. */
+function loadChatPanel({ fetchImpl, includeCloseBtn = false } = {}) {
+  const env = createDomEnvironment();
+  const els = {};
+
+  REQUIRED_IDS.concat(OPTIONAL_IDS).forEach((id) => {
+    const el = new env.StubNode(id === 'chat-input' ? 'textarea' : 'div');
+    el.id = id;
+    els[id] = el;
+  });
+  // The confirm dialog needs showModal()/close()/open -- replace the plain
+  // div created above with a real dialog-shaped stub, same id.
+  els['chat-confirm-dialog'] = env.makeDialog();
+  els['chat-confirm-dialog'].id = 'chat-confirm-dialog';
+
+  if (includeCloseBtn) {
+    const btn = new env.StubNode('button');
+    btn.id = 'chat-close-btn';
+    els['chat-close-btn'] = btn;
+  }
+
+  const storage = makeLocalStorageStub();
+  const fetchCalls = [];
+  const fetchFn = async (url, opts) => {
+    fetchCalls.push({ url, opts });
+    return fetchImpl(url, opts, fetchCalls.length);
+  };
+
+  const sandbox = {
+    console: { error() {}, warn() {}, log() {} },
+    window: env.window,
+    document: env.document,
+    localStorage: storage.api,
+    fetch: fetchFn,
+    navigator: { userAgent: 'test-agent' },
+    location: { href: 'http://localhost/test' },
+    performance: { now: () => Date.now() },
+    Blob: class {
+      constructor(parts, opts) { this.parts = parts; this.type = opts && opts.type; }
+    },
+    URL: { createObjectURL: () => 'blob:fake-url', revokeObjectURL: () => {} },
+    setTimeout,
+    clearTimeout,
+    TextEncoder,
+    TextDecoder,
+  };
+
+  const context = vm.createContext(sandbox);
+  vm.runInContext(chatJsSource, context, { filename: 'chat.js' });
+
+  return {
+    els,
+    document: context.document,
+    storage,
+    fetchCalls,
+    prefs: context.window.muxplexAgentPrefs,
+  };
+}
+
+function fullText(el) {
+  return el.textContent;
+}
+
+async function waitUntil(fn, { timeout = 2000, interval = 5, label = 'condition' } = {}) {
+  const start = Date.now();
+  for (;;) {
+    if (fn()) return;
+    if (Date.now() - start > timeout) {
+      throw new Error(`waitUntil: timed out after ${timeout}ms waiting for: ${label}`);
+    }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+}
+
+// ---------------------------------------------------------------------
+// SSE response builders (fetch stub helpers for /api/agent/chat/completions)
+// ---------------------------------------------------------------------
+
+function sseChunksResponse(chunkObjs) {
+  const raw = chunkObjs.map((c) => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const bytes = new TextEncoder().encode(raw);
+  let delivered = false;
+  return {
+    ok: true,
+    status: 200,
+    text: async () => raw,
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (delivered) return { done: true, value: undefined };
+            delivered = true;
+            return { done: false, value: bytes };
+          },
+        };
+      },
+    },
+  };
+}
+
+function toolCallTurnChunks(toolName, argsObj, callId) {
+  return [
+    {
+      id: 'chunk-1',
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            id: callId,
+            type: 'function',
+            function: { name: toolName, arguments: JSON.stringify(argsObj) },
+          }],
+        },
+      }],
+    },
+    { id: 'chunk-1', choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+  ];
+}
+
+function finalAnswerChunks(text) {
+  return [
+    { id: 'chunk-2', choices: [{ delta: { content: text } }] },
+    { id: 'chunk-2', choices: [{ delta: {}, finish_reason: 'stop' }] },
+  ];
+}
+
+/** Fetch stub for a full send_muxplex_session_input turn: first completions
+ * call requests the tool, the /input call refuses with a 403 carrying
+ * `fenceDetail` as the server's `detail`, and the continuation completions
+ * call finishes the turn with plain text (no further tool calls). */
+function makeInputFenceFetch({ fenceDetail, sessionName = 'counter' }) {
+  let completionsCalls = 0;
+  return async (url) => {
+    if (url === '/api/agent/chat/completions') {
+      completionsCalls++;
+      if (completionsCalls === 1) {
+        return sseChunksResponse(
+          toolCallTurnChunks('send_muxplex_session_input', { session_name: sessionName, text: 'ls', enter: true }, 'call_1')
+        );
+      }
+      return sseChunksResponse(finalAnswerChunks('Okay.'));
+    }
+    if (url === `/api/sessions/${sessionName}/input`) {
+      return { ok: false, status: 403, text: async () => JSON.stringify({ detail: fenceDetail }) };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+/** Fetch stub for a plain, tool-free turn that finishes immediately --
+ * used by the send/newline keydown tests, which only care whether a
+ * request was made at all. */
+function simpleFinalFetch(text) {
+  return async (url) => {
+    if (url === '/api/agent/chat/completions') {
+      return sseChunksResponse(finalAnswerChunks(text || 'ok'));
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+function neverFetch() {
+  return async (url) => { throw new Error('fetch should not have been called for: ' + url); };
+}
+
+/** Drive a full user turn through the real DOM: type text, click Send,
+ * wait for the confirmation gate to open (the panel says so on screen),
+ * click the dialog's Send, then wait for the whole chain (including the
+ * continuation request) to finish. */
+async function driveSendAndConfirm(panel, userText) {
+  panel.els['chat-input'].value = userText;
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(
+    () => fullText(panel.els['chat-messages']).includes('awaiting your confirmation'),
+    { label: 'confirmation gate to open' }
+  );
+  panel.els['chat-confirm-send-btn']._fire('click');
+  await waitUntil(
+    () => panel.els['chat-send-btn'].disabled === false,
+    { label: 'turn (including continuation) to finish' }
+  );
+}
+
+// =======================================================================
+// GROUP 1 (muxplex-9n9) -- the 403 fence classifier, both branches
+// =======================================================================
+
+test('9n9: 403 GLOBAL switch names input_enabled and does not claim the allowlist', async () => {
+  const fenceDetail = 'Session input is disabled (settings.input_enabled=false)';
+  const panel = loadChatPanel({ fetchImpl: makeInputFenceFetch({ fenceDetail }) });
+  await driveSendAndConfirm(panel, 'type ls into counter');
+  const rendered = fullText(panel.els['chat-messages']);
+
+  assert.match(rendered, /input_enabled/, 'must name the global switch');
+  assert.doesNotMatch(rendered, /not on the allowlist/i, 'must not claim the session is missing from an allowlist');
+  assert.match(rendered, /any session yet/, 'GLOBAL headline must be used');
+  assert.doesNotMatch(rendered, /that particular session/, 'ALLOWLIST headline must not appear');
+  // Raw server response still visible (transparency preserved).
+  assert.ok(rendered.includes(fenceDetail), 'the real server detail must still be shown');
+});
+
+test('9n9: 403 ALLOWLIST names the allowlist and not the global-switch remedy', async () => {
+  const fenceDetail = "Session 'counter' does not match any input_allowed_sessions pattern";
+  const panel = loadChatPanel({ fetchImpl: makeInputFenceFetch({ fenceDetail }) });
+  await driveSendAndConfirm(panel, 'type ls into counter');
+  const rendered = fullText(panel.els['chat-messages']);
+
+  assert.match(rendered, /input_allowed_sessions/, 'must name the allowlist setting');
+  assert.match(rendered, /not on the allowlist/i, 'this IS the allowlist case -- the phrase belongs here');
+  assert.doesNotMatch(rendered, /any session yet/, 'GLOBAL headline must not appear');
+  assert.doesNotMatch(rendered, /turn it on by editing/i, 'GLOBAL-only remedy phrasing must not appear');
+  assert.ok(rendered.includes(fenceDetail), 'the real server detail must still be shown');
+});
+
+test('9n9: rendered prose and rendered technical detail never disagree about which fence tripped', async () => {
+  const cases = [
+    { fenceDetail: 'Session input is disabled (settings.input_enabled=false)', expectGlobal: true },
+    { fenceDetail: "Session 'counter' does not match any input_allowed_sessions pattern", expectGlobal: false },
+  ];
+  for (const { fenceDetail, expectGlobal } of cases) {
+    const panel = loadChatPanel({ fetchImpl: makeInputFenceFetch({ fenceDetail }) });
+    await driveSendAndConfirm(panel, 'type ls into counter');
+    const rendered = fullText(panel.els['chat-messages']);
+
+    const detailSaysGlobal = /input_enabled=false/.test(rendered);
+    const proseSaysGlobal = /any session yet/.test(rendered);
+    const proseSaysAllowlist = /that particular session/.test(rendered);
+
+    assert.strictEqual(detailSaysGlobal, expectGlobal, 'sanity: mock detail matches the intended branch');
+    // The exact contradiction muxplex-9n9 shipped: detail says one fence,
+    // prose claims the other. Assert they always agree.
+    if (detailSaysGlobal) {
+      assert.ok(proseSaysGlobal, `detail says GLOBAL but prose does not, for: ${fenceDetail}`);
+      assert.ok(!proseSaysAllowlist, `detail says GLOBAL but prose ALSO claims ALLOWLIST, for: ${fenceDetail}`);
+    } else {
+      assert.ok(proseSaysAllowlist, `detail says ALLOWLIST but prose does not, for: ${fenceDetail}`);
+      assert.ok(!proseSaysGlobal, `detail says ALLOWLIST but prose ALSO claims GLOBAL, for: ${fenceDetail}`);
+    }
+  }
+});
+
+// =======================================================================
+// GROUP 2 (muxplex-ixl) -- model-facing guidance must never reach the DOM
+// =======================================================================
+
+test('ixl: model-directed guidance never reaches the rendered panel', async () => {
+  const fenceDetail = 'Session input is disabled (settings.input_enabled=false)';
+  const panel = loadChatPanel({ fetchImpl: makeInputFenceFetch({ fenceDetail }) });
+  await driveSendAndConfirm(panel, 'type ls into counter');
+  const rendered = fullText(panel.els['chat-messages']);
+
+  for (const phrase of ['TELL THE USER', 'Do NOT retry', 'Do NOT tell them', 'This is NOT a dead end']) {
+    assert.ok(!rendered.includes(phrase), `rendered panel text must not contain: "${phrase}"`);
+  }
+  // Transparency is still a feature: the raw server response is one click away.
+  assert.ok(rendered.includes(fenceDetail), 'the technical-detail block must still show the real server response');
+});
+
+test('ixl: the model still receives the full guidance, via the continuation request body', async () => {
+  const fenceDetail = 'Session input is disabled (settings.input_enabled=false)';
+  const panel = loadChatPanel({ fetchImpl: makeInputFenceFetch({ fenceDetail }) });
+  await driveSendAndConfirm(panel, 'type ls into counter');
+
+  const completionsCalls = panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions');
+  assert.strictEqual(completionsCalls.length, 2, 'expected an initial POST and one continuation POST');
+
+  const continuationBody = JSON.parse(completionsCalls[1].opts.body);
+  const toolMessages = continuationBody.messages.filter((m) => m.role === 'tool');
+  assert.ok(toolMessages.length >= 1, 'expected at least one role:"tool" message in the continuation body');
+
+  const combined = toolMessages.map((m) => m.content).join('\n');
+  assert.match(combined, /TELL THE USER/, 'the model must still receive the guidance -- it was separated, not deleted');
+  assert.match(combined, /Do NOT retry this call/);
+});
+
+// =======================================================================
+// GROUP 3 (muxplex-18f) -- configurable send/newline modes
+// =======================================================================
+
+test('18f: default mode with nothing stored is enter-newline', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  assert.strictEqual(panel.prefs.getSendMode(), panel.prefs.SEND_MODE_NEWLINE);
+});
+
+test('18f: an unrecognised stored value falls back to enter-newline', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  panel.storage.api.setItem('muxplex-agent-send-mode', 'bogus-value');
+  assert.strictEqual(panel.prefs.getSendMode(), panel.prefs.SEND_MODE_NEWLINE);
+});
+
+test('18f: setSendMode persists to localStorage and a fresh read returns it', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  const stored = panel.prefs.setSendMode(panel.prefs.SEND_MODE_SEND);
+  assert.strictEqual(stored, panel.prefs.SEND_MODE_SEND);
+  assert.strictEqual(panel.storage.store['muxplex-agent-send-mode'], panel.prefs.SEND_MODE_SEND);
+  assert.strictEqual(panel.prefs.getSendMode(), panel.prefs.SEND_MODE_SEND);
+});
+
+test('18f: getSendMode does not throw when localStorage throws, and returns the default', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  panel.storage.setThrowOnGet(true);
+  let result;
+  assert.doesNotThrow(() => { result = panel.prefs.getSendMode(); });
+  assert.strictEqual(result, panel.prefs.SEND_MODE_NEWLINE);
+});
+
+test('18f: Mode A (default) -- plain Enter does not send and does not preventDefault', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  panel.els['chat-input'].value = 'hello';
+  let prevented = false;
+  panel.els['chat-input']._fire('keydown', {
+    key: 'Enter', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.strictEqual(prevented, false);
+  assert.strictEqual(panel.fetchCalls.length, 0, 'bare Enter in Mode A must not send');
+});
+
+test('18f: Mode A (default) -- Ctrl+Enter sends', async () => {
+  const panel = loadChatPanel({ fetchImpl: simpleFinalFetch('ok') });
+  panel.els['chat-input'].value = 'hello';
+  let prevented = false;
+  panel.els['chat-input']._fire('keydown', {
+    key: 'Enter', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.strictEqual(prevented, true);
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+  assert.strictEqual(
+    panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 1,
+    'Ctrl+Enter in Mode A must send'
+  );
+});
+
+test('18f: Mode A (default) -- Cmd+Enter (metaKey) sends', async () => {
+  const panel = loadChatPanel({ fetchImpl: simpleFinalFetch('ok') });
+  panel.els['chat-input'].value = 'hello';
+  let prevented = false;
+  panel.els['chat-input']._fire('keydown', {
+    key: 'Enter', ctrlKey: false, metaKey: true, shiftKey: false, altKey: false,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.strictEqual(prevented, true);
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+  assert.strictEqual(
+    panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 1,
+    'Cmd+Enter in Mode A must send'
+  );
+});
+
+test('18f: Mode A (default) -- Ctrl+J does not send and inserts a newline', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  const input = panel.els['chat-input'];
+  input.value = 'ab';
+  input.selectionStart = 1;
+  input.selectionEnd = 1;
+  let prevented = false;
+  input._fire('keydown', {
+    key: 'j', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.strictEqual(prevented, true, 'Ctrl+J must be intercepted (browser default opens downloads panel)');
+  assert.strictEqual(input.value, 'a\nb');
+  assert.strictEqual(panel.fetchCalls.length, 0, 'Ctrl+J must never send');
+});
+
+test('18f: Mode B -- plain Enter sends', async () => {
+  const panel = loadChatPanel({ fetchImpl: simpleFinalFetch('ok') });
+  panel.prefs.setSendMode(panel.prefs.SEND_MODE_SEND);
+  panel.els['chat-input'].value = 'hello';
+  let prevented = false;
+  panel.els['chat-input']._fire('keydown', {
+    key: 'Enter', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.strictEqual(prevented, true);
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+  assert.strictEqual(
+    panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 1,
+    'bare Enter in Mode B must send'
+  );
+});
+
+test('18f: Mode B -- Shift+Enter does not send (newline escape hatch)', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  panel.prefs.setSendMode(panel.prefs.SEND_MODE_SEND);
+  panel.els['chat-input'].value = 'hello';
+  let prevented = false;
+  panel.els['chat-input']._fire('keydown', {
+    key: 'Enter', ctrlKey: false, metaKey: false, shiftKey: true, altKey: false,
+    preventDefault: () => { prevented = true; },
+  });
+  assert.strictEqual(prevented, false);
+  assert.strictEqual(panel.fetchCalls.length, 0, 'Shift+Enter in Mode B must not send');
+});
+
+test('18f: Mode B -- Ctrl+J does not send', () => {
+  const panel = loadChatPanel({ fetchImpl: neverFetch() });
+  panel.prefs.setSendMode(panel.prefs.SEND_MODE_SEND);
+  const input = panel.els['chat-input'];
+  input.value = 'ab';
+  input.selectionStart = 1;
+  input.selectionEnd = 1;
+  input._fire('keydown', {
+    key: 'j', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
+    preventDefault: () => {},
+  });
+  assert.strictEqual(input.value, 'a\nb');
+  assert.strictEqual(panel.fetchCalls.length, 0, 'Ctrl+J in Mode B must not send');
+});
+
+test('18f: the hint names the chord that actually sends, and behavior agrees, in BOTH modes', async () => {
+  // Mode A (default): hint says Ctrl+Enter to send; bare Enter must NOT send.
+  {
+    const panel = loadChatPanel({ fetchImpl: neverFetch() });
+    assert.match(panel.els['chat-key-hint'].textContent, /Ctrl\+Enter to send/);
+    panel.els['chat-input'].value = 'hello';
+    let prevented = false;
+    panel.els['chat-input']._fire('keydown', {
+      key: 'Enter', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
+      preventDefault: () => { prevented = true; },
+    });
+    assert.strictEqual(prevented, false);
+    assert.strictEqual(panel.fetchCalls.length, 0, 'hint said Ctrl+Enter to send -- bare Enter must not send');
+  }
+  // Mode B: hint says Enter to send; bare Enter MUST send.
+  {
+    const panel = loadChatPanel({ fetchImpl: simpleFinalFetch('ok') });
+    panel.prefs.setSendMode(panel.prefs.SEND_MODE_SEND);
+    assert.match(panel.els['chat-key-hint'].textContent, /^Enter to send$/);
+    panel.els['chat-input'].value = 'hello';
+    let prevented = false;
+    panel.els['chat-input']._fire('keydown', {
+      key: 'Enter', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false,
+      preventDefault: () => { prevented = true; },
+    });
+    assert.strictEqual(prevented, true);
+    await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+    assert.strictEqual(
+      panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 1,
+      'hint said Enter to send -- bare Enter must send'
+    );
+  }
+});
+
+// =======================================================================
+// GROUP 4 (muxplex-2qs) -- no close X
+// =======================================================================
+
+test('2qs: init() does not require a #chat-close-btn element', () => {
+  // Every harness in this file already omits #chat-close-btn (it is not in
+  // REQUIRED_IDS or OPTIONAL_IDS) -- this test makes that omission explicit
+  // and asserts init() still completes without throwing.
+  let panel;
+  assert.doesNotThrow(() => {
+    panel = loadChatPanel({ fetchImpl: neverFetch(), includeCloseBtn: false });
+  });
+  assert.strictEqual(panel.document.getElementById('chat-close-btn'), null);
+  // And the panel is otherwise fully wired (init() ran to completion, not
+  // short-circuited before the fatal-missing-element check).
+  assert.strictEqual(typeof panel.prefs.getSendMode, 'function');
+});
