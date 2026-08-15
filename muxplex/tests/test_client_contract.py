@@ -128,8 +128,25 @@ def no_sessions(monkeypatch):
     monkeypatch.setattr(main_mod, "get_session_activity", dict)
 
 
+# A fixed federation key for this test module only. Every contract-test
+# client authenticates with it via `Authorization: Bearer` -- this replaces
+# the old "client_addr=127.0.0.1" localhost-bypass default the moment that
+# bypass was removed (GHSA-7c6r-fvrh-9qp4; muxplex/auth.py's `dispatch`
+# docstring has the full rationale). The `_federation_key` autouse fixture
+# below wires this same value into the running app.
+_TEST_FEDERATION_KEY = "contract-test-federation-key-not-a-real-secret"
+
+
+@pytest.fixture(autouse=True)
+def _federation_key(monkeypatch):
+    """Configure the app's federation key so every client in this module can
+    authenticate with `_TEST_FEDERATION_KEY` instead of relying on the
+    removed localhost bypass."""
+    monkeypatch.setattr("muxplex.main._federation_key", _TEST_FEDERATION_KEY)
+
+
 def _sync_asgi_client(
-    *, client_addr: tuple[str, int] = ("127.0.0.1", 12345)
+    *, client_addr: tuple[str, int] = ("203.0.113.5", 12345)
 ) -> httpx.Client:
     """Build a synchronous httpx.Client driving the real app in-process.
 
@@ -150,14 +167,20 @@ def _sync_asgi_client(
     is exactly the "no network, no port, no live host" shape this test
     needs -- confirmed against a minimal repro before landing this fixture.
 
-    `client_addr` sets the ASGI scope's client address; ("127.0.0.1", ...)
-    triggers `AuthMiddleware`'s localhost bypass (the default for every test
-    here except the explicit non-localhost 401 test below).
+    `client_addr` no longer carries any authentication meaning (the
+    localhost bypass it used to trigger is gone -- GHSA-7c6r-fvrh-9qp4); the
+    default is a non-localhost address on purpose so nothing here can be
+    mistaken for exercising that removed path. Authentication comes from the
+    `Authorization: Bearer` header set below, matched against
+    `_federation_key` (the autouse fixture above).
     """
     return ASGITestClient(
         app,
         base_url="http://testserver",
-        headers={"Accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {_TEST_FEDERATION_KEY}",
+        },
         follow_redirects=False,
         client=client_addr,
     )
