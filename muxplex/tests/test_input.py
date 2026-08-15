@@ -120,9 +120,21 @@ def _enable(monkeypatch, allowed: list, known: list[str]) -> None:
 
 
 def test_input_disabled_by_default_in_settings():
-    """The config defaults must be CLOSED: disabled, empty allowlist."""
+    """The capability is OFF by default -- `input_enabled` is the gate.
+
+    The allowlist default was deliberately WIDENED to "*" (v0.48.0, work
+    item muxplex-ph0): it used to be `[]`, so flipping `input_enabled: true`
+    hit a second, silent 403 wall and the operator had to enumerate session
+    names by hand. `input_enabled` staying False is what keeps the
+    capability closed out of the box -- and that is the assertion that
+    must never be relaxed.
+    """
     assert DEFAULT_SETTINGS["input_enabled"] is False
-    assert DEFAULT_SETTINGS["input_allowed_sessions"] == []
+    # The LIST form on purpose: the fence requires a list, so written this
+    # way the default needs no coercion to work. A bare "*" in a
+    # hand-written settings.json is equally accepted (normalized on load) --
+    # see the bare-string tests at the bottom of this file.
+    assert DEFAULT_SETTINGS["input_allowed_sessions"] == ["*"]
 
 
 def test_input_fences_are_not_syncable():
@@ -669,15 +681,28 @@ def test_patch_settings_ignores_input_enabled(client, settings_file, caplog):
 
 
 def test_patch_settings_ignores_input_allowed_sessions(client, settings_file):
-    """PATCH input_allowed_sessions=[...] is ignored — allowlist stays empty."""
+    """PATCH input_allowed_sessions=[...] is ignored — the file value stands.
+
+    The default is now "*" (normalized to ["*"] on load), so "unchanged"
+    is no longer the same as "empty". What matters is that the value the
+    CALLER supplied never lands: a Bearer-key holder must not be able to
+    steer the allowlist at all -- neither widen it nor NARROW it (narrowing
+    is equally an attack: it could silently cut a legitimate operator's
+    own automation out of the sessions they enabled).
+    """
     resp = client.patch(
         "/api/settings", json={"input_allowed_sessions": ["victim-shell"]}
     )
     assert resp.status_code == 200
-    assert resp.json()["input_allowed_sessions"] == []
+    assert resp.json()["input_allowed_sessions"] == ["*"]
     from muxplex.settings import load_settings
 
-    assert load_settings()["input_allowed_sessions"] == []
+    assert load_settings()["input_allowed_sessions"] == ["*"]
+
+    # And a NARROWING patch is refused just as hard as a widening one.
+    resp = client.patch("/api/settings", json={"input_allowed_sessions": []})
+    assert resp.status_code == 200
+    assert load_settings()["input_allowed_sessions"] == ["*"]
 
 
 def test_patch_cannot_widen_input_fence_end_to_end(
@@ -800,6 +825,15 @@ def test_input_allowed_for_session_true_when_enabled_and_allowlisted():
 def test_input_allowed_for_session_fails_closed_on_string_allowlist():
     """A non-list input_allowed_sessions (e.g. a stray string) must not
     silently widen to substring matching -- treated as empty (deny-all).
+
+    This is the LIBRARY-level contract (tmux_kit.keys), evaluated on a raw
+    settings dict, and it is unchanged. muxplex normalizes a bare string
+    into a one-element list UPSTREAM of this call, in load_settings() --
+    see settings.normalize_input_allowed_sessions() and the
+    "bare-string form" tests at the bottom of this file. The two are not
+    in conflict: the fence never receives a raw string on any real code
+    path, and if one ever did reach it, it still denies rather than
+    substring-matching.
     """
     settings = _settings(input_enabled=True, input_allowed_sessions="alpha")
     assert input_allowed_for_session("al", settings) is False
@@ -811,3 +845,268 @@ def test_input_allowed_for_session_fails_closed_on_truthy_string_enabled():
     """
     settings = _settings(input_enabled="true", input_allowed_sessions=["alpha"])
     assert input_allowed_for_session("alpha", settings) is False
+
+
+# ---------------------------------------------------------------------------
+# The widened default (work item muxplex-ph0)
+#
+# `input_allowed_sessions` used to default to `[]` -- deny everything -- so
+# flipping `input_enabled: true` hit a SECOND silent 403 wall and the
+# operator had to enumerate session names by hand. The default is now "*".
+#
+# These tests are the acceptance criteria for that change, in order:
+#   1. fresh install -> input_enabled False, allowlist "*"
+#   2. flip input_enabled ONLY -> input into any session is accepted
+#   3. narrow the list -> a session outside it is refused, allowlist named
+#   4. the API (Bearer/agent) still cannot change either key
+# ---------------------------------------------------------------------------
+
+
+def test_fresh_install_defaults_gate_closed_but_allowlist_open(settings_file):
+    """AC1: no settings file at all -> input_enabled False, allowlist "*".
+
+    Reads through the REAL load_settings against a redirected (absent)
+    file, so this covers the actual fresh-install path, not just the
+    DEFAULT_SETTINGS literal.
+    """
+    from muxplex.settings import load_settings
+
+    assert not settings_file.exists()
+    loaded = load_settings()
+    assert loaded["input_enabled"] is False
+    # Normalized to the list form the fence requires -- the scalar default
+    # never reaches the fence as a raw string.
+    assert loaded["input_allowed_sessions"] == ["*"]
+    assert input_allowed_for_session("anything", loaded) is False
+
+
+def test_enabling_the_switch_alone_opens_every_session(settings_file):
+    """AC2: operator sets input_enabled: true and changes NOTHING else.
+
+    This is the whole point of the item. Writes a settings.json containing
+    ONLY that one key -- exactly what a human editing the file by hand
+    would do -- and asserts the fence opens for arbitrary session names.
+    Before this change the same file produced a 403 for every session.
+    """
+    import json
+
+    from muxplex.settings import load_settings
+
+    settings_file.write_text(json.dumps({"input_enabled": True}))
+    loaded = load_settings()
+    for name in ("counter", "logtail", "sysmon", "some-other-session"):
+        assert input_allowed_for_session(name, loaded) is True
+
+
+def test_enabling_the_switch_alone_accepts_input_end_to_end(
+    client, settings_file, monkeypatch, tmux_calls
+):
+    """AC2, at the endpoint, through the real settings file and real fence.
+
+    No monkeypatched load_settings: the only thing standing between a
+    stock install and a typed keystroke is the one line the operator wrote.
+    """
+    import json
+
+    settings_file.write_text(json.dumps({"input_enabled": True}))
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["counter"])
+    resp = client.post("/api/sessions/counter/input", json={"text": "hi"})
+    assert resp.status_code == 200
+    assert len(tmux_calls) == 1
+
+
+def test_narrowing_the_allowlist_still_refuses_outside_sessions(
+    client, settings_file, monkeypatch, tmux_calls
+):
+    """AC3: an operator who narrows the list gets the old behavior back.
+
+    Widening the DEFAULT must not remove the ability to narrow. The 403
+    must still name the allowlist as the cause, so the operator is pointed
+    at the setting they actually changed.
+    """
+    import json
+
+    settings_file.write_text(
+        json.dumps({"input_enabled": True, "input_allowed_sessions": ["agent-*"]})
+    )
+    monkeypatch.setattr(
+        "muxplex.main.get_session_list", lambda: ["agent-build", "my-own-shell"]
+    )
+
+    ok = client.post("/api/sessions/agent-build/input", json={"text": "hi"})
+    assert ok.status_code == 200
+
+    refused = client.post("/api/sessions/my-own-shell/input", json={"text": "hi"})
+    assert refused.status_code == 403
+    assert "input_allowed_sessions" in refused.json()["detail"]
+    assert len(tmux_calls) == 1  # only the allowed one reached tmux
+
+
+def test_narrowing_to_empty_list_still_denies_everything(settings_file):
+    """AC3, the strictest narrowing: [] must still mean deny-all.
+
+    The widened DEFAULT must not be confused with "empty means allow-all".
+    An operator who deliberately writes [] is locking the door, and that
+    reading is unchanged.
+    """
+    import json
+
+    from muxplex.settings import load_settings
+
+    settings_file.write_text(
+        json.dumps({"input_enabled": True, "input_allowed_sessions": []})
+    )
+    loaded = load_settings()
+    assert loaded["input_allowed_sessions"] == []
+    assert input_allowed_for_session("counter", loaded) is False
+
+
+def test_widened_default_did_not_move_either_key_out_of_local_only(settings_file):
+    """AC4: the local-file-only partition still holds for BOTH keys.
+
+    Guards the one thing that would turn this convenience change into a
+    real vulnerability: the federation Bearer key IS the agent credential,
+    so if either key became PATCHable the agent could self-authorize
+    typing into the human's own panes -- and with the allowlist now
+    defaulting open, `input_enabled` is the ONLY thing left standing
+    between a Bearer-key holder and RCE on every session.
+    """
+    import json
+
+    from muxplex.settings import load_settings
+
+    assert "input_enabled" in LOCAL_ONLY_KEYS
+    assert "input_allowed_sessions" in LOCAL_ONLY_KEYS
+    assert LOCAL_ONLY_KEYS.isdisjoint(SYNCABLE_KEYS)
+
+    # And prove it behaviorally, not just by set membership.
+    from muxplex.settings import apply_synced_settings, patch_settings
+
+    settings_file.write_text(json.dumps({"input_enabled": False}))
+
+    patched = patch_settings(
+        {"input_enabled": True, "input_allowed_sessions": ["victim-shell"]}
+    )
+    assert patched["input_enabled"] is False
+    assert patched["input_allowed_sessions"] == ["*"]
+
+    # Federation sync is the other remote door -- also refused.
+    synced = apply_synced_settings(
+        {"input_enabled": True, "input_allowed_sessions": ["victim-shell"]},
+        incoming_timestamp=9_999_999_999.0,
+    )
+    assert synced["input_enabled"] is False
+    assert synced["input_allowed_sessions"] == ["*"]
+
+    assert load_settings()["input_enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# The bare-string form (settings.normalize_input_allowed_sessions)
+#
+# The fence requires a list and treats any non-list as empty (deny-all).
+# The default is the bare string "*", and that is also what a human
+# hand-writes after reading the docs -- so a raw string must never reach
+# the fence. Normalization happens in load_settings(), upstream of it.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_wraps_bare_string_into_one_element_list():
+    from muxplex.settings import normalize_input_allowed_sessions as norm
+
+    assert norm("*") == ["*"]
+    assert norm("agent-shell") == ["agent-shell"]
+    assert norm("agent-*") == ["agent-*"]
+
+
+def test_normalize_strips_surrounding_whitespace():
+    """A session name can never carry leading/trailing whitespace
+    (is_valid_session_name restricts the charset), so stripping can only
+    recover intent -- ' * ' is unmistakably "*", and leaving it unstripped
+    would deny everything with no diagnostic."""
+    from muxplex.settings import normalize_input_allowed_sessions as norm
+
+    assert norm(" * ") == ["*"]
+    assert norm("\tagent-*\n") == ["agent-*"]
+
+
+def test_normalize_empty_string_denies_everything():
+    """ "" is not "allow all" -- it collapses to [], the same deny-all an
+    empty list already means."""
+    from muxplex.settings import normalize_input_allowed_sessions as norm
+
+    assert norm("") == []
+    assert norm("   ") == []
+
+
+def test_normalize_does_not_invent_a_comma_syntax():
+    """ "a,b" becomes ONE pattern, which matches nothing (a comma is not a
+    legal session-name character). Inventing an undocumented mini-language
+    is worse than a value that plainly fails closed."""
+    from muxplex.settings import normalize_input_allowed_sessions as norm
+
+    patterns = norm("counter,logtail")
+    assert patterns == ["counter,logtail"]
+    assert isinstance(patterns, list)
+    assert session_matches_allowlist("counter", patterns) is False
+    assert session_matches_allowlist("logtail", patterns) is False
+
+
+def test_normalize_passes_lists_and_junk_through_untouched():
+    """Lists are already the canonical form. Non-str, non-list values have
+    no recoverable operator intent and are left alone -- the fence then
+    treats them as empty (fail closed)."""
+    from muxplex.settings import normalize_input_allowed_sessions as norm
+
+    assert norm(["agent-*", "counter"]) == ["agent-*", "counter"]
+    assert norm([]) == []
+    assert norm(123) == 123
+    assert norm(None) is None
+    assert norm({"a": 1}) == {"a": 1}
+
+
+def test_hand_written_star_string_in_settings_file_actually_works(
+    client, settings_file, monkeypatch, tmux_calls
+):
+    """The regression this normalization exists to prevent.
+
+    An operator reads the docs ("the allowlist defaults to *"), writes the
+    literal string into settings.json, and it must WORK. Without
+    normalization the list-only fence reads a raw string as empty and
+    returns 403 -- silently doing the exact opposite of what was written,
+    in the one file an operator is supposed to edit to widen this fence.
+    """
+    import json
+
+    settings_file.write_text(
+        json.dumps({"input_enabled": True, "input_allowed_sessions": "*"})
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["counter"])
+    resp = client.post("/api/sessions/counter/input", json={"text": "hi"})
+    assert resp.status_code == 200
+    assert len(tmux_calls) == 1
+
+
+def test_hand_written_single_name_string_is_not_substring_matched(
+    client, settings_file, monkeypatch, tmux_calls
+):
+    """Normalization must not reintroduce substring matching.
+
+    A hand-written "alpha" now allows exactly the session `alpha` -- it
+    must NOT allow `al`, which is what a naive `name in allowed` on a raw
+    string would have done. That widening is the reason the fence rejects
+    raw strings in the first place, and it stays rejected here.
+    """
+    import json
+
+    settings_file.write_text(
+        json.dumps({"input_enabled": True, "input_allowed_sessions": "alpha"})
+    )
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["al", "alpha"])
+
+    refused = client.post("/api/sessions/al/input", json={"text": "hi"})
+    assert refused.status_code == 403
+    assert tmux_calls == []
+
+    ok = client.post("/api/sessions/alpha/input", json={"text": "hi"})
+    assert ok.status_code == 200

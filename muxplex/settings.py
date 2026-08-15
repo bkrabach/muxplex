@@ -77,24 +77,69 @@ DEFAULT_SETTINGS: dict = {
     "multi_device_enabled": False,
     # Terminal input over the API (POST /api/sessions/{name}/input).
     # SECURITY: this is remote-code-execution by design -- an agent typing
-    # into a shell pane runs whatever it types. Both fences default CLOSED:
-    #   input_enabled          -- global opt-in; False means the endpoint is
-    #                             a hard 403 regardless of any other config.
+    # into a shell pane runs whatever it types.
+    #
+    #   input_enabled          -- global opt-in, DEFAULT FALSE. This is THE
+    #                             gate. False means the endpoint is a hard
+    #                             403 regardless of any other config, and
+    #                             turning it on is a deliberate local-
+    #                             operator action (see LOCAL_ONLY_KEYS).
     #   input_allowed_sessions -- GLOB PATTERNS, matched case-INSENSITIVELY
     #                             (casefold() + fnmatch.fnmatchcase -- see
-    #                             terminal_input.session_matches_allowlist)
+    #                             tmux_kit.keys.session_matches_allowlist)
     #                             naming sessions input may target, e.g. "*"
     #                             for all, "amplifier-*" for a prefix family
     #                             (case-insensitive), or an exact name (which
     #                             matches only itself, also case-insensitive).
     #                             A session matching none of these is a 403
-    #                             even when input_enabled is True. Keeping a
-    #                             human's own working panes off every pattern
-    #                             is how they stay un-typeable.
+    #                             even when input_enabled is True.
+    #
+    # DEFAULT WIDENED (v0.48.0) -- READ THIS IF YOU REMEMBER THE OLD
+    # TWO-GATE BEHAVIOR. `input_allowed_sessions` used to default to `[]`,
+    # which denies EVERY session. Flipping `input_enabled: true` therefore
+    # did nothing on its own: the operator hit a second 403 and had to
+    # enumerate session names by hand before anything worked. That second
+    # wall is gone. The default is now `*` -- every session.
+    #
+    #   Net effect: ONE deliberate action (`input_enabled: true`) now turns
+    #   typing on for EVERY session, including the operator's own working
+    #   panes. Narrowing is now OPT-IN, not mandatory. If you want only
+    #   some sessions typeable, you must now say so explicitly, e.g.
+    #   `"input_allowed_sessions": ["agent-*"]`.
+    #
+    # What did NOT change, and must not: `input_enabled` still defaults to
+    # False (the capability is still off out of the box), and BOTH keys are
+    # still in LOCAL_ONLY_KEYS -- settable only by editing this file on
+    # disk, never via `PATCH /api/settings`, never by a federation peer,
+    # never by the agent. See LOCAL_ONLY_KEYS's comment block for why that
+    # partition is load-bearing (the federation Bearer key IS the agent
+    # credential).
+    #
+    # BOTH FORMS ARE ACCEPTED for `input_allowed_sessions`: the list
+    # `["*"]` and the bare string `"*"` (what a human naturally hand-writes
+    # after reading a doc that says "the default is *"). A bare string is
+    # normalized to a one-element list on load -- see
+    # normalize_input_allowed_sessions() for why that normalization exists
+    # and why it cannot widen the fence for a remote caller.
+    #
+    # The DEFAULT below is deliberately the LIST form, not the scalar, for
+    # two reasons that both bite silently if reversed:
+    #   1. The fence requires a list. Written as `["*"]` the default works
+    #      with ZERO coercion in the path -- if normalization were ever
+    #      removed or broken, the default still allows every session. A
+    #      scalar default would silently collapse to deny-all instead,
+    #      re-creating the exact dead end this change removes.
+    #   2. `load_settings()` on a fresh install must equal DEFAULT_SETTINGS
+    #      (modulo the device_name hostname fill-in). A scalar default plus
+    #      load-time normalization breaks that invariant -- test_settings.py
+    #      asserts it in two places.
+    # An operator never sees this distinction: both forms behave
+    # identically, and `GET /api/settings` always reports the list.
+    #
     # Deliberately NOT in SYNCABLE_KEYS: a security fence must never be
     # widened by a federation peer's settings sync.
     "input_enabled": False,
-    "input_allowed_sessions": [],
+    "input_allowed_sessions": ["*"],
     "federation_key": "",
     "tls_cert": "",
     "tls_key": "",
@@ -256,6 +301,63 @@ LOCAL_ONLY_KEYS: frozenset[str] = frozenset(
         "focus_app",
     }
 )
+
+
+def normalize_input_allowed_sessions(value: object) -> object:
+    """Normalize a bare-string ``input_allowed_sessions`` into a one-element list.
+
+    Returns *value* unchanged for every type except ``str``.
+
+    WHY THIS EXISTS. The fence itself
+    (``tmux_kit.keys.input_allowed_for_session``) requires a ``list`` and
+    deliberately treats any non-list value as empty -- deny everything.
+    That rule is correct and stays: a raw string reaching a membership test
+    would substring-match, silently widening the fence. But it also means a
+    hand-written::
+
+        "input_allowed_sessions": "*"
+
+    -- the exact form this key now DEFAULTS to, and the form the README,
+    AGENTS.md and AGENT_GUIDE.md all name -- would be read as "deny
+    everything" and produce a 403 with no diagnostic. Silently doing the
+    opposite of what the operator wrote, in the one file they are supposed
+    to edit to widen this fence, is precisely the dead end this default
+    change exists to remove. So the bare string is normalized here, at the
+    muxplex/settings boundary, BEFORE the value ever reaches the fence --
+    the fence keeps receiving a list, always, and its own fail-closed
+    contract is untouched.
+
+    THIS CANNOT WIDEN THE FENCE FOR A REMOTE CALLER.
+    ``input_allowed_sessions`` is in LOCAL_ONLY_KEYS: ``PATCH
+    /api/settings`` drops it and federation sync never carries it, so the
+    only value this function can ever see comes from a local operator
+    editing settings.json on disk -- the one party already authorized to
+    widen this fence. And it is still gated by ``input_enabled``, which is
+    NOT touched here and still defaults to False.
+
+    Rules:
+    - ``"*"`` -> ``["*"]``; ``"agent-shell"`` -> ``["agent-shell"]``.
+      Surrounding whitespace is stripped: a session name can never contain
+      leading/trailing whitespace (``is_valid_session_name`` restricts the
+      charset), so stripping can only ever recover the operator's intent,
+      never match something they did not write.
+    - ``""`` (and any all-whitespace string) -> ``[]``, i.e. deny
+      everything -- same meaning an empty list already has.
+    - NO comma/space splitting. ``"a,b"`` becomes the single pattern
+      ``["a,b"]``, which matches nothing (a comma is not a legal session
+      name character) rather than being invented into two patterns. A
+      config mini-language nobody documented is worse than a value that
+      plainly fails closed.
+    - A list passes through untouched (including an empty one).
+    - Any other type -- int, dict, None -- passes through untouched and is
+      then treated as empty by the fence. Fail closed; there is no
+      plausible operator intent to recover from ``123``.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    return [stripped] if stripped else []
+
 
 # Closed vocabulary for the deviceLabelPlacement setting (see its
 # DEFAULT_SETTINGS comment and reconcile_device_label() below).
@@ -445,6 +547,18 @@ def load_settings() -> dict:
         pass
     if not result["device_name"]:
         result["device_name"] = socket.gethostname()
+
+    # input_allowed_sessions accepts both the bare-string form (the default,
+    # "*") and the list form. Normalize here, at the single read path every
+    # fence caller goes through -- POST /api/sessions/{name}/input, the
+    # terminal WS input gate, the follow-up queue's advance, and the rename
+    # guard all reach the fence via load_settings(), so normalizing once
+    # here is what guarantees tmux_kit's list-only fence can never receive a
+    # raw string. See normalize_input_allowed_sessions() for why this cannot
+    # widen the fence for a remote caller (LOCAL_ONLY_KEYS).
+    result["input_allowed_sessions"] = normalize_input_allowed_sessions(
+        result["input_allowed_sessions"]
+    )
     # One-time migration: an existing settings.json predating deviceLabelPlacement
     # carries only showDeviceBadges. Derive the placement from it so the mirror
     # and its source never start out disagreeing. Idempotent: once

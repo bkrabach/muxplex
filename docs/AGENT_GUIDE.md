@@ -674,10 +674,20 @@ Two fences, both **default-closed**, in `~/.config/muxplex/settings.json`:
   `true` is off; the check is `settings.get("input_enabled") is not True`, so a
   hand-edited `"input_enabled": "false"` (a truthy *string*) correctly disables
   rather than enabling.
-* **`input_allowed_sessions`** (default `[]`) — which session names may be typed
-  into. **An empty list denies everything.** It is never interpreted as "no
-  restriction." A non-list value is treated as empty; non-string entries in the
-  list are skipped rather than crashing the endpoint.
+* **`input_allowed_sessions`** (default `["*"]` — **every session**) — which
+  session names may be typed into. Both the list `["*"]` and the bare string
+  `"*"` are accepted; a bare string is normalized to a one-element list on load. **An
+  *empty list* still denies everything** and is never interpreted as "no
+  restriction" — empty and `"*"` are opposites, not synonyms. Non-string entries
+  in the list are skipped rather than crashing the endpoint.
+
+  > **This default changed.** It used to be `[]` (deny-all), which meant setting
+  > `input_enabled: true` opened nothing by itself — the operator hit a second
+  > 403 and had to enumerate session names by hand. Now the single act of
+  > enabling makes **every** session typeable, the human's own working panes
+  > included. Narrowing is opt-in. If you are an agent and you see a *narrowed*
+  > list, that is a deliberate operator decision — do not suggest widening it
+  > back to `"*"` as a "fix."
 
 **Glob semantics** (`terminal_input.session_matches_allowlist`):
 
@@ -1423,6 +1433,12 @@ confirms it parses). See the README's "Editing local-file-only keys".
 
 There are two legitimate ways to run this, and they give you very different
 guarantees. Know which one you're on.
+
+**"Wide open" is now what you get by default.** `input_allowed_sessions`
+defaults to `["*"]`, so an operator who sets `input_enabled: true` and changes
+nothing else lands in the second posture below, not the first. Scoped is now an
+explicit, opt-in narrowing. Never assume a fresh install is scoped — read the
+actual value.
 
 ### Scoped
 

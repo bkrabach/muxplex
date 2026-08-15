@@ -78,7 +78,8 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
 1. `is_valid_session_name({name})` at the boundary → 400 (same guard as
    connect/delete; no `:`, no leading `-`, no shell metacharacters).
 2. **Global opt-in** `settings.input_enabled` (default `false`) → 403 when off.
-3. **Per-session allowlist** `settings.input_allowed_sessions` (default `[]`)
+3. **Per-session allowlist** `settings.input_allowed_sessions` (default `["*"]`
+   — see "the default was WIDENED" below; it used to be `[]`)
    → 403 if `{name}` matches none of the entries, *even when enabled*.
    Entries are **glob patterns**, matched case-**insensitively** (see
    `terminal_input.session_matches_allowlist`): `"*"` allows every session,
@@ -116,6 +117,41 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
    Fence reads are strict-typed and fail CLOSED: only boolean `true` enables
    (`is not True` check), and a non-list allowlist is treated as empty (a
    string value would substring-match via `in`).
+
+   **THE ALLOWLIST DEFAULT WAS WIDENED (v0.48.0) — if you remember the old
+   two-gate behaviour, this is the paragraph you need.** `input_allowed_sessions`
+   used to default to `[]`, which denies every session. That meant flipping
+   `input_enabled: true` did *nothing on its own*: the operator hit a second
+   403 and had to enumerate session names by hand before anything worked.
+   Three separate times that read as "the feature is broken." The default is
+   now `["*"]` — every session — so **one deliberate operator action
+   (`input_enabled: true`) now opens typing for EVERY session, including the
+   human's own working panes.** Narrowing is opt-in: if you want only some
+   sessions typeable you must now say so explicitly
+   (`"input_allowed_sessions": ["agent-*"]`). What did NOT change, and must
+   not: `input_enabled` still defaults to `false` (the capability is still off
+   out of the box), and both keys are still `LOCAL_ONLY_KEYS`. Consequence
+   worth stating plainly: with the allowlist open by default, `input_enabled`
+   is now the *only* fence standing between a federation-Bearer-key holder and
+   RCE on every session — which is exactly why it must stay local-file-only
+   and default-false. Correction to the sentence above: "this is how a human's
+   own working panes stay un-typeable: don't list them" now requires an
+   explicit narrowing edit; it is no longer what you get by default.
+
+   **Both the list `["*"]` (the default) and the bare string `"*"` are
+   accepted.** The fence itself still requires a list (`tmux_kit.keys.input_allowed_for_session`
+   treats any non-list as empty — unchanged), so `settings.load_settings()`
+   normalizes a bare string into a one-element list *upstream* of the fence
+   (`settings.normalize_input_allowed_sessions`). Without that, a hand-written
+   `"input_allowed_sessions": "*"` — the shorthand a human naturally writes
+   after reading "the default is `*`" — would be read as deny-all and 403
+   silently,
+   which is the same dead end this change exists to remove. The normalization
+   cannot widen anything for a remote caller: the key is `LOCAL_ONLY_KEYS`, so
+   the only value it can ever see came from a local operator editing the file.
+   It deliberately does NOT invent a comma syntax (`"a,b"` is one pattern that
+   matches nothing) and does not reintroduce substring matching (`"alpha"`
+   allows `alpha`, never `al`).
 
    **This fence has two siblings, and neither is optional reading.** The
    `/input` fence above only protects requests to *this one endpoint*. A
