@@ -1,17 +1,40 @@
-# Agent-sidecar network fence
+# Agent-sidecar deployment artifacts
 
-Deployment artifacts for the fence described in
-[`../AGENT_CHAT_SIDECAR.md`](../AGENT_CHAT_SIDECAR.md) §6.
+Host wiring for the agent chat sidecar: the units and env files that run it,
+and the network fence that contains it.
+
+- **Standing it up, start to finish** → [`../AGENT_CHAT_SETUP.md`](../AGENT_CHAT_SETUP.md).
+- **Why the architecture is what it is** → [`../AGENT_CHAT_SIDECAR.md`](../AGENT_CHAT_SIDECAR.md).
+- **Why the fence exists, and the hole it replaced** → the rest of this file.
 
 **The directory layout mirrors the install layout.** `etc/...` installs to
 `/etc/...`, `usr/local/sbin/...` to `/usr/local/sbin/...`. There is no mapping
 table to keep in sync, and no step where a file's destination has to be
 remembered.
 
+## Inventory
+
+| File | Installs to | Mode | What it is |
+|---|---|---|---|
+| `etc/amplifier-agent-host-config.json.example` | `/etc/amplifier-agent-host-config.json` | `0644` | Provider selection. **No secrets** — which is why it can be world-readable. Closed 7-key schema; an unknown key is a hard startup error. |
+| `etc/amplifier-agent-http-aasvc.env.example` | `/etc/amplifier-agent-http-aasvc.env` | `0600` `aa-svc` | Sidecar environment. **Carries both secrets.** |
+| `etc/muxplex-agent-proxy.env.example` | `/etc/muxplex-agent-proxy.env` | `0600` `root` | muxplex's side: where the sidecar is, and the shared bearer. |
+| `etc/systemd/system/amplifier-agent-http.service` | same | `0644` | The sidecar unit. Deliberately minimal — the security properties live in the drop-in below, not here. |
+| `etc/systemd/system/amplifier-agent-http.service.d/fence.conf` | same | `0644` | `Requires=` / `BindsTo=` / `ExecStartPre=` against the fence. **Installing the unit without this drop-in yields an unfenced sidecar.** |
+| `etc/muxplex-agent-fence.conf` | `/etc/muxplex-agent-fence.conf` | `0644` | Fence config: the sidecar's OS user, and every port a muxplex serves here. |
+| `etc/systemd/system/muxplex-agent-fence.service` | same | `0644` | Applies *and proves* the fence at boot. |
+| `etc/systemd/system/muxplex-agent-fence-watchdog.{service,timer}` | same | `0644` | Re-proves it every 30s; on breach, logs `auth.alert` and stops both units. |
+| `usr/local/sbin/muxplex-agent-fence` | same | `0755` | `apply` / `verify` / `status`. |
+
+The three `.example` files ship with **placeholders, never real values**. Fill
+them in after installing; never commit the result.
+
 These files are host wiring, not importable code. Nothing under `muxplex/`
 loads them; `muxplex/tests/test_agent_fence.py` is the only in-repo thing that
 observes their effect, and it does so through the live system rather than by
 reading these files.
+
+The rest of this file is about the fence specifically.
 
 ## What was wrong with the fence this replaces
 

@@ -1,0 +1,59 @@
+{
+  "_comment_install": [
+    "/etc/amplifier-agent-host-config.json -- mode 0644, world-readable.",
+    "Referenced by AMPLIFIER_AGENT_HTTP_CONFIG_PATH. NO SECRETS GO IN THIS",
+    "FILE; that is why it can be world-readable while the env file is 0600.",
+    "See docs/AGENT_CHAT_SETUP.md section 3.3.",
+    "",
+    "INSTALL:",
+    "  sudo install -m 0644 -o root -g root \\",
+    "    docs/agent-chat-sidecar/etc/amplifier-agent-host-config.json.example \\",
+    "    /etc/amplifier-agent-host-config.json",
+    "",
+    "Underscore-prefixed keys in this .example are annotation only. STRIP THEM",
+    "before installing: the schema is a CLOSED 7-key set -- mcp, approval,",
+    "provider, providers, allowProtocolSkew, skills, debug -- and an unknown",
+    "key is a HARD STARTUP ERROR, not a warning."
+  ],
+
+  "_comment_providers": [
+    "AUTHORITATIVE WHEN PRESENT. If this block exists, it decides which",
+    "providers load, and provider env vars are NOT consulted for selection.",
+    "Setting OPENAI_API_KEY on a box whose block names only anthropic gets",
+    "you anthropic, silently, forever.",
+    "",
+    "Delete this block entirely to switch to the auto-enable path, where the",
+    "sidecar enables whatever credentials it can resolve (env var, or a key",
+    "stored by `amplifier-agent auth set`).",
+    "",
+    "A declared provider that fails to authenticate is loud: it logs",
+    "'failed to enumerate models -- AuthenticationError' and, if no provider",
+    "produced any models, the process exits 2 rather than starting empty.",
+    "",
+    "SWITCHING PROVIDER IS NOT A ONE-LINE CHANGE TODAY. The panel sends a",
+    "hardcoded model id (muxplex/frontend/chat.js) which must appear in",
+    "GET /v1/models, so a non-Anthropic provider also needs a chat.js edit or",
+    "every turn returns 400 unknown_model. docs/AGENT_CHAT_SETUP.md 3.5."
+  ],
+  "providers": {
+    "anthropic": {
+      "module": "anthropic",
+      "config": { "enable_prompt_caching": false }
+    }
+  },
+
+  "_comment_provider": [
+    "Default provider for the turn. Kept in step with the providers block",
+    "above.",
+    "",
+    "enable_prompt_caching:false IS A WORKAROUND FOR A FILED UPSTREAM BUG,",
+    "NOT A PREFERENCE. Re-check whether it is still needed before carrying",
+    "this forward -- if the upstream fix has landed, this whole file may be",
+    "deletable, which would move the deployment to the auto-enable path and",
+    "let provider env vars decide."
+  ],
+  "provider": {
+    "module": "anthropic",
+    "config": { "enable_prompt_caching": false }
+  }
+}
