@@ -638,11 +638,15 @@
            scrolls internally instead of eating the transcript. Starting at
            one row means an empty composer is one line and a three-line draft
            is three lines -- it used to be a fixed two rows forever.
-           The placeholder carries the send chord because Enter no longer
-           sends, and a behaviour change to a control you use constantly
-           should not be something you discover by losing a draft. -->
+           The send chord is advertised in the BYLINE below, not in this
+           placeholder. It was in the placeholder first, and a vision pass
+           over the real pixels caught it truncating to "(Ctrl+Enter to" in
+           a 380px composer -- a hint that cuts off mid-word is worse than
+           no hint. The byline has the full panel width, and unlike a
+           placeholder it does not vanish the moment you start typing,
+           which is exactly when you still need to know how to send. -->
       <textarea id="chat-input" class="agent-panel-input" rows="1"
-                placeholder="Ask about your sessions...  (Ctrl+Enter to send)"
+                placeholder="Ask about your sessions..."
                 aria-keyshortcuts="Control+Enter Meta+Enter"></textarea>
       <!-- muxplex-5bn, decided: Send is a REAL button, not a link. The owner
            left this open ("match our existing button designs if it needs to
@@ -662,7 +666,7 @@
          muted and small. Attribution is still always present whenever the
          panel is open (nothing collapses or scrolls it away), it just no
          longer spends the top of the panel saying who built it. -->
-    <p class="agent-panel-byline">Powered by Amplifier Agent</p>
+    <p class="agent-panel-byline"><span class="agent-panel-hint">Ctrl+Enter to send</span> &middot; Powered by Amplifier Agent</p>
   </div>
 
   <!-- muxplex-4kl: persistent download trigger for exportCaptureRecord() in

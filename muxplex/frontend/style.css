@@ -2191,6 +2191,18 @@ body {
   color: var(--text-dim);
   letter-spacing: 0.02em;
   text-align: center;
+  /* One line, never wrapping into two, never truncating mid-word: the
+     send-chord hint lives here (see index.html) and a hint that cuts off is
+     worse than no hint. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The send chord. Slightly stronger than the attribution beside it, because
+   one of the two is something you need and the other is a credit. */
+.agent-panel-hint {
+  color: var(--text-muted);
 }
 
 /* What the transcript shows before the first message. This used to be the raw
