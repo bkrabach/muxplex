@@ -348,6 +348,7 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `activityIndicator` | `"both"` | Activity style: `none`, `glow`, `dot`, `both` |
 | `gridViewMode` | `"flat"` | Multi-device grid layout: `flat`, `grouped`, `filtered` |
 | `sidebarOpen` | `null` | Sidebar state: `true`, `false`, or `null` (auto-detect from screen width) |
+| `agentPanelOpen` | `null` | Agent chat panel state: `true`, `false`, or `null` (never toggled -- stays closed, unlike `sidebarOpen` there is no screen-width auto-detect) |
 | `settings_updated_at` | `0.0` | Unix timestamp of last settings write (used for federation sync) |
 | `views_updated_at` | `0.0` | Unix timestamp of last change to `views`/`hidden_sessions` specifically. Metadata like `settings_updated_at`, used to arbitrate views-specific federation sync conflicts independently of unrelated field changes (e.g. a `fontSize` edit no longer bumps this). Not itself a syncable setting -- see `docs/API_SEMANTICS.md`. |
 
