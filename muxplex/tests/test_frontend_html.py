@@ -685,13 +685,22 @@ def test_html_settings_panels_use_data_tab() -> None:
     switchSettingsTab() in app.js reads panel.dataset.tab which corresponds to the
     data-tab HTML attribute. If panels use data-panel instead, all panels get hidden
     on the first tab click — the entire settings dialog becomes non-functional.
+
+    The count is deliberately hardcoded rather than derived from the tab buttons:
+    it is a tripwire for a panel added (or lost) without anyone noticing, which a
+    self-derived count could never catch. Its sibling
+    test_html_settings_tab_panel_data_tab_alignment separately proves the tabs and
+    the panels correspond 1:1, so this number is not the only thing holding that
+    invariant up. Bump it deliberately when you add a tab, and say which one:
+      Display, Sessions, Views, Commands, Multi-Device, Terminal, Agent
+      (Agent added by muxplex-3lr).
     """
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
     panels = dialog.find_all(class_="settings-panel")
-    assert len(panels) == 6, (
-        f"Expected 6 .settings-panel elements, found: {len(panels)}"
+    assert len(panels) == 7, (
+        f"Expected 7 .settings-panel elements, found: {len(panels)}"
     )
     for panel in panels:
         assert panel.get("data-tab") is not None, (

@@ -348,6 +348,10 @@
         <button class="settings-tab" data-tab="new-session">Commands<span id="settings-tab-command-errors-badge" class="error-count-badge hidden"></span></button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
         <button class="settings-tab" data-tab="tmux">Terminal</button>
+        <!-- muxplex-3lr: the Agent panel's per-device options. Everything in
+             this tab is browser-local (localStorage) and NOT a muxplex server
+             setting -- see the panel's own comment below. -->
+        <button class="settings-tab" data-tab="agent">Agent</button>
       </nav>
       <div class="settings-content">
         <div class="settings-panel" data-tab="display">
@@ -561,6 +565,78 @@
             </div>
           </div>
         </div>
+        <!-- muxplex-3lr: Agent panel options.
+             ===============================================================
+             STORAGE DISCIPLINE -- read before adding anything here.
+             Every control in this tab is PER-DEVICE and BROWSER-LOCAL
+             (localStorage), never a muxplex server setting and never
+             federation-synced. A phone and a desktop are expected to hold
+             different answers, which is the whole point for the send chord.
+             muxplex's server settings carry a deliberate
+             LOCAL_ONLY_KEYS / SYNCABLE_KEYS partition that exists for
+             SECURITY reasons (the federation Bearer key is also the agent's
+             credential); agent UI preferences must not be filed into either
+             of those, so they do not go through patchServerSetting() at all.
+             The values are owned by chat.js and reached through
+             window.muxplexAgentPrefs -- do NOT read or write the
+             localStorage key directly from here, or the composer hint and
+             the keydown handler will drift apart.
+             If an API key ever becomes enterable in this tab, note that
+             "just put it in localStorage" is a real security decision and
+             not a default -- raise it, do not ship it quietly. -->
+        <div class="settings-panel hidden" data-tab="agent">
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Sending a message</label>
+            <div class="settings-checkbox-list">
+              <div class="settings-checkbox-option">
+                <label class="settings-checkbox-item">
+                  <input type="radio" name="agent-send-mode" id="setting-agent-send-mode-newline" class="settings-checkbox" value="enter-newline" />
+                  Ctrl+Enter sends, Enter makes a new line
+                </label>
+                <span class="settings-helper">Matches muxplex's own command bar. The only choice that lets you write more than one line on a phone, where there are no key combinations.</span>
+              </div>
+              <div class="settings-checkbox-option">
+                <label class="settings-checkbox-item">
+                  <input type="radio" name="agent-send-mode" id="setting-agent-send-mode-send" class="settings-checkbox" value="enter-send" />
+                  Enter sends, Shift+Enter makes a new line
+                </label>
+                <span class="settings-helper">Matches the Amplifier terminal app. Ctrl+Enter still sends, and Ctrl+J still makes a new line, in both choices.</span>
+              </div>
+            </div>
+            <span class="settings-helper">This choice is remembered on this device only. Your other devices keep their own.</span>
+          </div>
+          <!-- muxplex-enr: disclosure, not policy. The owner has ACCEPTED
+               amplifier-agent's default session persistence; the only
+               requirement is that a user can find out that conversations are
+               written to disk, and where, without reading source or asking.
+               Do not turn this into a retention/expiry/redaction feature.
+               Every claim below was checked against the running system
+               (64 transcript.jsonl files present under the path named, mode
+               0600, owned by the sidecar's own user, no expiry). The
+               "machine running the agent, not this device" sentence is
+               load-bearing: a reader who sees "stored locally" will assume
+               their own laptop, and be wrong. -->
+          <div class="settings-field settings-field--column settings-field--section-gap">
+            <label class="settings-label">Where your conversations are stored</label>
+            <span class="settings-helper">
+              Every conversation with the Agent is written to disk, in full and word for
+              word, by the agent service &mdash; on the machine running that service, which
+              is not this device. Nothing is deleted on a schedule.
+            </span>
+            <span class="settings-helper">
+              Each conversation becomes a folder under the agent service's own state
+              directory, <code>.amplifier-agent/state/workspaces/&lt;workspace&gt;/sessions/&lt;conversation-id&gt;/</code>,
+              holding <code>transcript.jsonl</code> (the messages), a <code>.backup</code> copy,
+              and <code>metadata.json</code>. The files are readable only by the account the
+              agent service runs as.
+            </span>
+            <span class="settings-helper">
+              Worth knowing: when the Agent reads one of your terminals, what it read is
+              part of the conversation &mdash; so those transcripts can contain terminal
+              scrollback, which is usually the most sensitive thing here.
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   </dialog>
@@ -600,7 +676,17 @@
              on the strength of that earlier reasoning -- the premise it was
              built on no longer exists, and the owner separately asked for it
              gone as clutter. Its polling code went with it.
-         What is left is what you can act on: New, Export, close. -->
+         What is left is what you can act on: New and Export.
+
+         muxplex-2qs: the close X is gone too. The Agent button in the app
+         header is a toggle with an aria-pressed state, so the X was a second
+         way to do a thing there was already one way to do -- and the owner
+         asked for it gone ("the expected behavior is that folks will click on
+         the Agent button again to toggle it open/closed"). With it gone the
+         Agent button is the ONLY close affordance, which makes chat.js's
+         focus-return-to-opener on close load-bearing rather than a nicety:
+         a keyboard user who closes the panel must land back on the control
+         that reopens it. See setPanelOpen() in chat.js. -->
     <div class="agent-panel-header">
       <!-- muxplex-5bn: New and Export are .quick-link -- the SAME shared
            component the header/sidebar view and sort controls use. They
@@ -621,11 +707,6 @@
            see exportCaptureRecord() in chat.js. Never sends anything over
            the network; local file only, on explicit click. -->
       <button id="chat-export-btn" class="quick-link" title="Download this conversation as a markdown file — transcript, tool calls with their arguments and results, exact HTTP failures, timings and correlation ids. Written locally; nothing is sent anywhere.">Export</button>
-      <!-- Close deliberately KEEPS .header-btn. It is an icon-only glyph
-           control, which is exactly the register that class exists for --
-           .quick-link's flex+gap+13px-text layout is built around a word,
-           not a bare ✕. Listed here rather than silently left behind. -->
-      <button id="chat-close-btn" class="header-btn" aria-label="Close chat">&#10005;</button>
     </div>
     <!-- muxplex-46p, WCAG 4.1.3. role="log" is the right role for a running
          transcript, but its IMPLICIT aria-live is "polite" -- which on a
@@ -678,7 +759,19 @@
          muted and small. Attribution is still always present whenever the
          panel is open (nothing collapses or scrolls it away), it just no
          longer spends the top of the panel saying who built it. -->
-    <p class="agent-panel-byline"><span class="agent-panel-hint">Ctrl+Enter to send</span> &middot; Powered by Amplifier Agent</p>
+    <!-- muxplex-18f: the hint is EMPTY in the markup on purpose. The send
+         chord is configurable per device now (Agent settings tab), and the
+         hint is written by chat.js's applyComposerKeyMode() from the SAME
+         value the keydown handler branches on. A hardcoded chord here is
+         exactly the failure the item names: "if the setting says Enter sends
+         and the hint still says Ctrl+Enter, that is worse than no hint."
+         The textarea's aria-keyshortcuts and the Send button's title are
+         rewritten from that same value, for the same reason -- three places
+         that describe the chord, one place that decides it.
+         muxplex-d8f: "Amplifier Agent" is a real link to the upstream repo,
+         in the site accent (var(--accent), from tokens.css -- never a hex),
+         using the app's existing external-link convention. -->
+    <p class="agent-panel-byline"><span class="agent-panel-hint" id="chat-key-hint"></span> &middot; Powered by <a class="agent-panel-byline-link" href="https://github.com/microsoft/amplifier-agent" target="_blank" rel="noopener noreferrer">Amplifier Agent</a></p>
   </div>
 
   <!-- muxplex-4kl: persistent download trigger for exportCaptureRecord() in
