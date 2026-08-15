@@ -74,9 +74,22 @@
         <span id="connection-status"></span>
       </div>
     </header>
-    <div id="filter-bar" class="filter-bar"></div>
-    <div id="session-grid" class="session-grid" role="list"></div>
-    <div id="empty-state" class="empty-state hidden">No active tmux sessions</div>
+    <!-- muxplex-rle: the overview's content now sits inside the SAME
+         .view-body row idiom the expanded view already used, so the agent
+         panel can be a real inline column beside it (a flex sibling) rather
+         than a fixed overlay on top of it. .overview-body is the "main
+         content" child; the agent panel becomes the second child at runtime
+         (chat.js's homeAgentPanel() reparents the single #chat-panel into
+         whichever view is currently active). Nothing here changes what
+         app.js sees: it looks all three of these up by id, never by
+         position or parentage. -->
+    <div class="view-body">
+      <div class="overview-body">
+        <div id="filter-bar" class="filter-bar"></div>
+        <div id="session-grid" class="session-grid" role="list"></div>
+        <div id="empty-state" class="empty-state hidden">No active tmux sessions</div>
+      </div>
+    </div>
   </div>
 
   <!-- ── Expanded (terminal) view ──────────────────────────────────────── -->
@@ -542,13 +555,24 @@
 
   <!-- ── Scripts ──────────────────────────────────────────────────────────── -->
 
-  <!-- Muxplex Agent panel (see /chat.js). Branding pass: real classes onto
-       style.css's own tokens (--bg-surface, --border, --text, --accent,
-       --header-height, etc.) instead of the plumbing-phase inline styles --
-       see .agent-panel* rules in style.css. Slides in from the right per the
-       owner's ask; "Muxplex Agent" is the panel's name, with a "Powered by
-       Amplifier Agent" attribution line and the Amplifier logo both always
-       visible in the header row so the panel never reads as unbranded. -->
+  <!-- Muxplex Agent panel (see /chat.js). Classes map onto style.css's own
+       tokens (--bg-surface, --border, --text, --accent, --header-height)
+       rather than the plumbing-phase inline styles -- see the .agent-panel*
+       rules in style.css.
+
+       muxplex-rle: this is NO LONGER a fixed overlay. It is an inline
+       column that sits BELOW the header bar alongside content, exactly the
+       way .session-sidebar does -- a flex child of the active view's
+       .view-body. It is authored here, at body level, as its parking spot
+       and is reparented into whichever view is active by chat.js's
+       homeAgentPanel(). ONE element, one code path: authoring a second
+       copy inside each view would duplicate every id in this markup and
+       break chat.js's element lookups outright.
+
+       Deliberately not re-homed in markup: if chat.js ever fails its
+       required-element check and throws, this element stays here and stays
+       `hidden` (display:none !important), so a broken panel is invisible
+       rather than a stray 380px box wedged under the views. -->
   <div id="chat-panel" class="agent-panel hidden">
     <div class="agent-panel-header">
       <img src="/amplifier-icon-48.png" alt="Amplifier" width="22" height="22" class="agent-panel-logo" />

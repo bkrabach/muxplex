@@ -1356,17 +1356,112 @@
 
     newConversation();
 
-    function togglePanel() {
-      var nowHidden = panelEl.classList.toggle("hidden");
+    // ------------------------------------------------------------------
+    // Inline panel placement (muxplex-rle)
+    // ------------------------------------------------------------------
+    // The panel is no longer a fixed overlay: it is an inline column that
+    // sits beside content, below the header bar, exactly the way
+    // .session-sidebar does. Both views (#view-overview and #view-expanded)
+    // now use the same .view-body flex row, so "beside content" means "the
+    // last flex child of the ACTIVE view's .view-body".
+    //
+    // There is exactly ONE #chat-panel element and it gets reparented,
+    // rather than one copy per view: two copies would duplicate every id in
+    // that markup (#chat-input, #chat-send-btn, the whole confirmation
+    // wiring) and getElementById would silently bind to whichever came
+    // first -- a panel that looks fine and types into the wrong DOM.
+    //
+    // Reparenting a live node preserves its state (the textarea's value is
+    // a property, the transcript nodes move with it); it does not re-run
+    // any of this file's wiring, because the listeners are bound to the
+    // elements, not to their position.
+
+    /** The .view-body of whichever view is currently on screen, or null if
+     * the DOM does not look the way this function expects. Never guesses. */
+    function activeViewBody() {
+      var expanded = document.getElementById("view-expanded");
+      var overview = document.getElementById("view-overview");
+      var showing = (expanded && !expanded.classList.contains("hidden"))
+        ? expanded
+        : overview;
+      return showing ? showing.querySelector(".view-body") : null;
+    }
+
+    var _homeWarned = false;
+
+    /** Move the panel into the active view's content row, if it is not
+     * already there. Safe to call repeatedly -- a no-op when already
+     * correctly placed, so it can be driven from a MutationObserver
+     * without churning the DOM on every unrelated class change. */
+    function homeAgentPanel() {
+      var host = activeViewBody();
+      if (!host) {
+        // Loud once, then stop: an unplaced panel still works (it keeps its
+        // parking spot at body level), but it will not be beside content,
+        // and that is worth saying rather than silently degrading.
+        if (!_homeWarned) {
+          _homeWarned = true;
+          console.warn("chat panel: no .view-body found for the active view -- " +
+            "panel cannot be placed inline beside content");
+        }
+        return;
+      }
+      if (panelEl.parentNode !== host) host.appendChild(panelEl);
+    }
+
+    homeAgentPanel();
+
+    // app.js switches views by toggling #view-expanded's `hidden`/
+    // `view--active` classes (see openSession/closeSession). It does not
+    // publish an event for that, and it is not this lane's file to change,
+    // so observe the class attribute directly -- one observer, no polling.
+    // If the panel is open when the view changes it follows the user across;
+    // if it is closed this just keeps its parking spot correct for the next
+    // open.
+    var expandedViewEl = document.getElementById("view-expanded");
+    if (expandedViewEl && typeof MutationObserver === "function") {
+      new MutationObserver(function () {
+        homeAgentPanel();
+      }).observe(expandedViewEl, { attributes: true, attributeFilter: ["class"] });
+    } else {
+      console.warn("chat panel: cannot observe view switches -- the panel will " +
+        "still be re-homed on every open, but not mid-view-change");
+    }
+
+    /** Every header entry point for the panel. Both carry the toggle state,
+     * so the two headers can never disagree about whether it is open. */
+    function agentButtons() {
+      var btns = [openBtn];
+      var expandedBtn = document.getElementById("chat-open-btn-expanded");
+      if (expandedBtn) btns.push(expandedBtn);
+      return btns;
+    }
+
+    /** Single source of truth for "is the panel open", reflected onto both
+     * buttons' aria-pressed (which style.css also styles off -- see
+     * .header-btn--agent[aria-pressed="true"]) so the visual active state
+     * and the accessibility tree cannot drift apart. */
+    function setPanelOpen(open) {
+      panelEl.classList.toggle("hidden", !open);
+      agentButtons().forEach(function (b) {
+        b.setAttribute("aria-pressed", open ? "true" : "false");
+      });
       // Poll only while visible: this panel is a foreground surface, and a
       // background timer hitting /api/view forever is exactly the kind of
       // cost nobody asked for.
-      if (nowHidden) {
-        stopAttentionPolling();
-      } else {
+      if (open) {
+        homeAgentPanel();
         startAttentionPolling();
+      } else {
+        stopAttentionPolling();
       }
     }
+
+    function togglePanel() {
+      setPanelOpen(panelEl.classList.contains("hidden"));
+    }
+
+    setPanelOpen(false); // establish aria-pressed="false" before any click
 
     openBtn.addEventListener("click", togglePanel);
 
@@ -1383,8 +1478,7 @@
     }
 
     closeBtn.addEventListener("click", function () {
-      panelEl.classList.add("hidden");
-      stopAttentionPolling();
+      setPanelOpen(false);
     });
     newBtn.addEventListener("click", newConversation);
     exportBtn.addEventListener("click", exportCaptureRecord);

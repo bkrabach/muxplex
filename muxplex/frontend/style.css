@@ -1903,6 +1903,19 @@ body {
   white-space: nowrap;
 }
 
+/* Toggle state (muxplex-rle). The button opens AND closes the panel now, so
+   it has to say which of the two the next click will do. aria-pressed is the
+   single source of truth -- set by chat.js on BOTH header instances -- and
+   this rule styles off that same attribute rather than a parallel class, so
+   the pixels and the accessibility tree can never disagree about whether the
+   panel is open. Same convention #sync-group-btn and #compose-toggle-btn
+   already use in this app. */
+.header-btn--agent[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
 @media (max-width: 599px) {
   .header-btn--agent {
     width: 32px;
@@ -1917,29 +1930,77 @@ body {
 /* ============================================================
    Muxplex Agent -- chat panel
    ============================================================
-   Replaces the plumbing-phase inline styles on #chat-panel with real
-   classes onto the app's own tokens, matching the same dark-surface /
+   Classes onto the app's own tokens, matching the same dark-surface /
    border / spacing language as the rest of muxplex (compare
-   .settings-dialog, .session-sidebar). Fixed slide-over from the right,
-   per the owner's ask; the header row inside always shows the Amplifier
-   logo + "Muxplex Agent" name + "Powered by Amplifier Agent" attribution,
-   so the branding is visible any time the panel is open, at any width. */
+   .settings-dialog, .session-sidebar).
+
+   muxplex-rle -- GEOMETRY REWRITE. This panel used to be
+   `position: fixed; top:0; right:0; bottom:0; width:min(420px,92vw);
+   z-index:9000` with a drop shadow: a full-viewport-height slide-over that
+   covered the terminal AND the top-right half of the header bar, so the
+   settings / sync / new-session controls were unreachable while it was
+   open. The owner's correction was explicit: it "should function _exactly
+   the same_ as the way the session selector/preview sidebar on the left
+   looks and works when viewed alongside a session."
+
+   So it is now the mirror image of .session-sidebar, and deliberately
+   shares that component's structure rather than inventing a second layout
+   idiom:
+
+     .session-sidebar          .agent-panel
+     ----------------          ------------
+     flex child of .view-body  flex child of .view-body   (same row)
+     border-RIGHT              border-LEFT                (opposite edge)
+     fixed width, no shrink    fixed width, no shrink
+     inline >=960px            inline >=960px
+     drawer  <=959px           drawer  <=959px            (see below)
+
+   Content is RESIZED, not covered: .view-body is `display:flex` with the
+   main content on `flex:1; min-width:0`, so adding this column reflows the
+   terminal / session grid instead of painting over it. The header bar is a
+   SIBLING of .view-body, never inside it, which is what structurally
+   guarantees every header control stays visible and clickable -- that is a
+   property of where this element lives now, not a z-index someone has to
+   keep tuning.
+
+   Width: 380px. The sidebar is 200px, which is right for a list of session
+   names and too narrow for a conversation (this panel wraps prose, code
+   blocks and tool payloads). 380 is a hair under the old 420 overlay, which
+   is affordable now that it no longer has to be a comfortable reading
+   surface all by itself. */
 
 .agent-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(420px, 92vw);
-  z-index: 9000;
+  flex: 0 0 auto;
+  width: 380px;
+  min-width: 380px;
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   font-family: var(--font-ui);
   font-size: 14px;
   color: var(--text);
-  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.45);
+}
+
+/* The overview view's "main content" column -- the flex sibling the agent
+   panel sits beside, and the reason #session-grid keeps its own scrolling
+   now that it is one level deeper (see index.html's .view-body wrapper).
+   min-width:0 is load-bearing: without it a flex item refuses to shrink
+   below its content's intrinsic width, and the grid would push the panel
+   off the right edge instead of reflowing. */
+.overview-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Positioning context for the <=959px drawer rule below. Harmless at wider
+   widths (nothing inside is absolutely positioned there). */
+.view-body {
+  position: relative;
 }
 
 .agent-panel-header {
@@ -2109,44 +2170,68 @@ body {
 }
 
 /* ------------------------------------------------------------------
-   Muxplex Agent -- phone width (muxplex-n7z)
+   Muxplex Agent -- narrow viewports (<=959px)
    ------------------------------------------------------------------
-   The <=599px entry button above is deliberately KEPT. The decision
-   recorded in muxplex-n7z is that this panel is the dashboard PWA's
-   agent surface at every width, and that the soft deck (/deck/, its own
-   PWA, its own contract) gets no agent affordance at all. Keeping the
-   button therefore obliges this panel to actually be usable in a hand,
-   which these rules are.
+   STATED, DELIBERATE narrow-viewport behaviour, not an overlay leftover
+   (muxplex-rle's last acceptance clause asks for exactly this to be
+   decided rather than inherited).
 
-   Two things are fixed here, both measured on a real 390x844 viewport:
+   The decision: mirror .session-sidebar at every width, including this
+   one. muxplex's own sidebar is an inline column at >=960px and becomes a
+   FIXED DRAWER at <=959px -- see "Responsive overlay sidebar at <960px"
+   further down this file. Below 960px there is simply not room for two
+   content columns beside a terminal, and this app already made that call
+   once. So the agent panel does the same thing at the same breakpoint,
+   rather than inventing a second, differently-shaped answer.
 
-   1. Touch targets. This project adopted a floor and wrote it down:
-      "Adopted floor: 48 x 48 CSS px" (deck/DESIGN_RESPONSIVE.md 2.1),
-      which DESIGN_SOFTDECK.md 12 still lists as "carried and
-      load-bearing". The panel's own controls measured 32x32 (New,
-      close) and 66x32 (Send). Below the floor, on the surface where a
-      92%-coverage overlay's ONLY exit is that close button.
+   The one difference from the sidebar, and it is the whole point of
+   muxplex-rle: this drawer is `position: absolute; inset: 0` inside
+   .view-body, NOT `position: fixed` against the viewport. .view-body
+   starts below the header bar, so the panel fills the content area and
+   the header bar stays fully visible and clickable even here. That is
+   precisely the failure the old fixed overlay had, and it does not come
+   back at narrow widths.
 
-   2. Width. .agent-panel is min(420px, 92vw), which on a 390px phone
-      leaves a 31px strip of dashboard down the left edge. A vision pass
-      on the real pixels reported that strip as "too fragmentary to
-      provide any meaningful status or session context" -- it is the
-      APPEARANCE of session awareness, not session awareness. Take it to
-      100% and stop implying otherwise; the panel header carries the
-      live attention count instead (chat.js startAttentionPolling), which
-      is the one piece of session state that is actually actionable while
-      you are mid-question, and it costs no layout space.
+   Deliberately NOT done: hiding .terminal-wrapper / .overview-body with
+   display:none to "make room". xterm.js does not re-fit on a container
+   size change (no ResizeObserver in terminal.js -- it re-fits on window
+   resize and on visualViewport changes), so a display-toggled terminal
+   would come back mis-sized until the next unrelated resize. Overlaying
+   the content area leaves the terminal's own box untouched, so closing
+   the panel restores it exactly.
 
-   The composer input also goes to 16px here: iOS Safari auto-zooms the
-   whole page on focus for any font-size below 16px, which on this panel
-   scrolls the send button off-screen. */
+   z-index 150 sits BELOW .session-sidebar's 200, so the sidebar drawer
+   still wins if both are open -- the sidebar is how you leave the
+   session, so it must never be the thing that gets covered.
+
+   SUPERSEDED by this block (muxplex-n7z's compensating work, both of
+   which existed only because the panel was an overlay):
+   - `width: 100%` at <=599px. That existed to close a useless 31px
+     sliver of dashboard down the left edge. There is no sliver now: the
+     panel either reflows the content (>=960px) or fills the content area
+     exactly (<=959px).
+   - the panel-header attention badge, which existed because the overlay
+     blinded the user to session state. Removed in muxplex-z6h; the
+     inline layout is the real fix, and the owner asked for the badge
+     gone as clutter.
+
+   KEPT from that work, unchanged and still load-bearing: the 48x48 touch
+   floor (deck/DESIGN_RESPONSIVE.md 2.1) and the 16px composer font --
+   below 16px, iOS Safari auto-zooms the page on focus and scrolls the
+   send control off-screen. Neither had anything to do with the overlay. */
+
+@media (max-width: 959px) {
+  .agent-panel {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    min-width: 0;
+    border-left: none;
+    z-index: 150;
+  }
+}
 
 @media (max-width: 599px) {
-  .agent-panel {
-    width: 100%;
-    border-left: none;
-  }
-
   .agent-panel-header {
     height: auto;
     min-height: 56px;
@@ -2155,8 +2240,8 @@ body {
 
   #chat-new-btn,
   #chat-close-btn {
-    width: 48px;
-    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
   }
 
   .agent-panel-composer {
