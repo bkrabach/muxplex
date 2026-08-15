@@ -590,19 +590,45 @@
              gone as clutter. Its polling code went with it.
          What is left is what you can act on: New, Export, close. -->
     <div class="agent-panel-header">
-      <button id="chat-new-btn" class="header-btn" title="Start a new conversation">New</button>
+      <!-- muxplex-5bn: New and Export are .quick-link -- the SAME shared
+           component the header/sidebar view and sort controls use. They
+           deliberately carry NO other class. That is the whole lesson of
+           style.css's "Quick link" incident: three of the original four
+           controls still wear a legacy base class, which is why that rule
+           has to be ID-qualified to win. These two have nothing to fight,
+           so the bare .quick-link selector governs them outright and can
+           never be silently out-cascaded on a single property the way
+           .view-dropdown__trigger's leftover :hover background was.
+           They used to be .header-btn: a 32x32 bordered icon SQUARE, which
+           is the wrong register for a text label and is what the owner was
+           looking at when he said "the new and export buttons are gross." -->
+      <button id="chat-new-btn" class="quick-link" title="Start a new conversation">New</button>
       <!-- muxplex-4kl: exports a structured debug record (transcript, tool
            calls, raw tool results, timings, the SSE stream, console/network
            errors, app state) of this conversation to a local .json file --
            see exportCaptureRecord() in chat.js. Never sends anything over
            the network; local file only, on explicit click. -->
-      <button id="chat-export-btn" class="header-btn" title="Export a structured debug record of this conversation (transcript, tool calls, raw results, timings, errors) to a local JSON file. Nothing is sent anywhere.">Export</button>
+      <button id="chat-export-btn" class="quick-link" title="Export a structured debug record of this conversation (transcript, tool calls, raw results, timings, errors) to a local JSON file. Nothing is sent anywhere.">Export</button>
+      <!-- Close deliberately KEEPS .header-btn. It is an icon-only glyph
+           control, which is exactly the register that class exists for --
+           .quick-link's flex+gap+13px-text layout is built around a word,
+           not a bare ✕. Listed here rather than silently left behind. -->
       <button id="chat-close-btn" class="header-btn" aria-label="Close chat">&#10005;</button>
     </div>
     <div id="chat-messages" class="agent-panel-messages"></div>
     <div class="agent-panel-composer">
       <textarea id="chat-input" class="agent-panel-input" rows="2" placeholder="Ask about your sessions..."></textarea>
-      <button id="chat-send-btn" class="header-btn agent-panel-send-btn">Send</button>
+      <!-- muxplex-5bn, decided: Send is a REAL button, not a link. The owner
+           left this open ("match our existing button designs if it needs to
+           be a full on button, or if it should just be a link button, use
+           this new component"). It is the composer's commit action, and
+           muxplex already has exactly one of those -- the terminal compose
+           bar's own send (.compose-bar__send), an accent-dim fill with an
+           accent border. This adopts that same token pair rather than
+           inventing a fourth. It also drops .header-btn, whose 32px square
+           this project's own mobile-compose-bar plan already rejected in
+           writing as "too small for a primary action on a phone." -->
+      <button id="chat-send-btn" class="agent-panel-send-btn">Send</button>
     </div>
     <!-- muxplex-z6h: the attribution moved here from the panel header. It is
          a byline, not a banner -- last thing in the panel, under the input,
