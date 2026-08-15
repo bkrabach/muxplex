@@ -1,3 +1,58 @@
+## v0.47.12 (2026-08-15)
+
+A fix to the upgrade path itself -- v0.47.11 could not be installed by
+`muxplex update` at all. Real failure on a real machine going v0.47.10 ->
+v0.47.11:
+
+```
+  Installing latest version...
+  ERROR: uv tool install failed:
+  × Failed to resolve dependencies for `muxplex` (v0.47.11)
+  ╰─▶ Requirements contain conflicting URLs for package `tmux-kit`:
+      - git+https://github.com/bkrabach/tmux-kit@v0.4.0
+      - git+https://github.com/bkrabach/tmux-kit@v0.4.0
+  ERROR: upgrade failed — muxplex service has been restarted (best-effort).
+```
+
+The two URLs are byte-identical -- uv rejects two url-bearing requirement
+origins for the same package regardless of whether they agree.
+
+### Fixed
+
+- **`muxplex upgrade` no longer adds a `--with tmux-kit` override on top of a
+  git muxplex install target** (PR #34, `735c45d`). `upgrade()`'s uv-managed
+  branch was appending `--with "tmux-kit @ git+<url>@<ref>"` unconditionally
+  whenever tmux-kit's recorded source was git -- including when muxplex's OWN
+  install target was ALSO a git URL (`git+https://github.com/bkrabach/muxplex@vX`).
+  A git muxplex target's own `pyproject.toml` already carries the
+  `[tool.uv.sources] tmux-kit = { git = ..., tag = ... }` pin, which uv reads
+  and honors on its own -- the override then became a SECOND url-bearing
+  origin for the identical package, and uv refuses to resolve.
+  - **The distinction now encoded:** git install target -> `[tool.uv.sources]`
+    is honored, tmux-kit is already pinned to the right git ref, so the
+    override is redundant *and* fatal. PyPI install target ->
+    `[tool.uv.sources]` is stripped from published wheel metadata, so only the
+    plain `tmux-kit==X.Y.Z` pin survives; the override is load-bearing there
+    (managed devices that can't reach PyPI), and that protection is unchanged.
+  - **Reproduced in isolation** in a scratch `UV_TOOL_DIR`: with the override
+    on a git target -> the failure above; without it -> installs cleanly and
+    resolves tmux-kit 0.4.0 from git (verified via the chained
+    `build_send_key_argv` output), proving the git source pin alone suffices.
+  - `_install_cmd_preserves_kit_override()` now takes the install target and
+    enforces both directions -- override absent for a git target, present for
+    a PyPI target -- so the guard still rejects a PyPI command with the
+    override stripped.
+  - **We could not determine why this same git+git pairing did not fail on
+    earlier upgrades** -- the identical shape existed at v0.3.5. The code's
+    own comments already flag uv's `--with` preserve-vs-replace semantics as
+    "unproven and version-dependent," so a uv version change is plausible but
+    unproven. Stated as unknown rather than guessed at.
+  - **Operator note:** anyone currently on v0.47.10 or earlier whose
+    `muxplex update` failed with the conflicting-URLs error can get unstuck
+    with a direct install, e.g. `uv tool install --force --refresh
+    git+https://github.com/bkrabach/muxplex@v0.47.12`, then restart the
+    service.
+
 ## v0.47.11 (2026-08-15)
 
 "Scrolling up silently enters it" -- `muxplex/tmux_templates/base.conf:98`'s own
