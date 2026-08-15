@@ -966,6 +966,197 @@
     announceNow(rest ? rest + " " + text : text);
   }
 
+  // ---------------------------------------------------------------------
+  // Minimal markdown renderer (muxplex-04m)
+  // ---------------------------------------------------------------------
+  // The model emits markdown -- **bold**, bullet lists, `code` -- and the
+  // panel used to print the asterisks and backticks verbatim.
+  //
+  // SAFETY IS STRUCTURAL HERE, NOT A SANITISER. This renderer NEVER touches
+  // innerHTML, never builds an HTML string, and never parses HTML. It walks
+  // the markdown source and builds DOM with createElement/createTextNode.
+  // Any HTML in the source -- <script>, <img onerror=...>, an unclosed tag,
+  // anything -- reaches the page as a TEXT NODE, because a text node is the
+  // only thing this code can produce for content it does not recognise as
+  // markdown. There is no escaping step to forget and no sanitiser
+  // allowlist to get wrong, which matters: what renders here is model
+  // output and tool results, i.e. content this panel does not control.
+  //
+  // Links are the one construct that could still smuggle behaviour (a
+  // `javascript:` href), so the href is allowlisted to http/https by regex
+  // at the point of matching -- anything else never becomes an anchor at
+  // all and stays literal text.
+  //
+  // Applied to ASSISTANT output only. A user's own message is echoed back
+  // verbatim: rendering it as markdown would be surface for no benefit, and
+  // silently reformatting what someone just typed is its own small lie.
+
+  // Ordered alternation: a code span is matched FIRST and its contents are
+  // consumed whole, so nothing inside backticks is ever re-parsed as
+  // emphasis. Bold before italic so ** is not read as two nested *.
+  //
+  // Held as a SOURCE STRING, and a fresh RegExp is built per call. That is
+  // not stylistic -- it is a bug fix. mdInline() recurses (bold can contain
+  // code, a link label can contain bold), and a /g regex carries mutable
+  // `lastIndex` state on the object itself. Sharing one instance meant an
+  // inner call reset and advanced the SAME lastIndex the outer loop was
+  // walking with, so the outer loop resumed from an unrelated offset and
+  // could re-match the same position forever. Measured, not theorised: it
+  // hung the render loop and took the whole browser tab down with it, on
+  // the first response that contained bold text.
+  var MD_INLINE_SRC =
+    "(`+)([\\s\\S]*?)\\1" +                        // 1,2  `code`
+    "|\\*\\*([\\s\\S]+?)\\*\\*" +                  // 3    **bold**
+    "|__([\\s\\S]+?)__" +                          // 4    __bold__
+    "|\\*([^*\\n]+?)\\*" +                         // 5    *italic*
+    "|_([^_\\n]+?)_" +                             // 6    _italic_
+    "|\\[([^\\]\\n]*)\\]\\((https?://[^\\s)]+)\\)"; // 7,8  [text](https://...)
+
+  // Recursion depth guard. Belt-and-braces beside the per-call regex above:
+  // this renders untrusted model output, and a pathological string must
+  // degrade to plain text, never to a hung tab.
+  var MD_MAX_DEPTH = 8;
+
+  function mdInline(parent, text, depth) {
+    text = String(text);
+    depth = depth || 0;
+    if (depth >= MD_MAX_DEPTH) {
+      parent.appendChild(document.createTextNode(text));
+      return;
+    }
+    var re = new RegExp(MD_INLINE_SRC, "g");
+    var last = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      if (m[0].length === 0) { re.lastIndex++; continue; } // cannot stall
+      if (m.index > last) {
+        parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+      }
+      if (m[2] !== undefined) {
+        var code = document.createElement("code");
+        code.className = "agent-md-code";
+        code.textContent = m[2];
+        parent.appendChild(code);
+      } else if (m[3] !== undefined || m[4] !== undefined) {
+        var strong = document.createElement("strong");
+        mdInline(strong, m[3] !== undefined ? m[3] : m[4], depth + 1);
+        parent.appendChild(strong);
+      } else if (m[5] !== undefined || m[6] !== undefined) {
+        var em = document.createElement("em");
+        mdInline(em, m[5] !== undefined ? m[5] : m[6], depth + 1);
+        parent.appendChild(em);
+      } else if (m[8] !== undefined) {
+        var a = document.createElement("a");
+        a.href = m[8]; // already constrained to http/https by the pattern
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.className = "agent-md-link";
+        mdInline(a, m[7] || m[8], depth + 1);
+        parent.appendChild(a);
+      }
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) {
+      parent.appendChild(document.createTextNode(text.slice(last)));
+    }
+  }
+
+  /** Render markdown source into `el`, replacing its contents. Block level:
+   * fenced code, headings, bullet and numbered lists, paragraphs. Anything
+   * unrecognised falls through to a paragraph of literal text -- the
+   * renderer degrades to plain text rather than to nothing. */
+  function renderMarkdownInto(el, src) {
+    el.textContent = "";
+    var lines = String(src).split("\n");
+    var i = 0;
+
+    function inlineOf(tag, text) {
+      var node = document.createElement(tag);
+      mdInline(node, text);
+      return node;
+    }
+
+    while (i < lines.length) {
+      var line = lines[i];
+
+      var fence = /^\s*(```+|~~~+)\s*([A-Za-z0-9_+-]*)\s*$/.exec(line);
+      if (fence) {
+        var marker = fence[1];
+        var body = [];
+        i++;
+        while (i < lines.length && !new RegExp("^\\s*" + marker[0] + "{" + marker.length + ",}\\s*$").test(lines[i])) {
+          body.push(lines[i]);
+          i++;
+        }
+        i++; // consume the closing fence (or run off the end -- unclosed is fine)
+        var pre = document.createElement("pre");
+        pre.className = "agent-md-pre";
+        var codeEl = document.createElement("code");
+        codeEl.textContent = body.join("\n");
+        pre.appendChild(codeEl);
+        el.appendChild(pre);
+        continue;
+      }
+
+      var heading = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (heading) {
+        var h = inlineOf("div", heading[2]);
+        h.className = "agent-md-heading";
+        el.appendChild(h);
+        i++;
+        continue;
+      }
+
+      var bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+      var numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (bullet || numbered) {
+        var ordered = !!numbered;
+        var list = document.createElement(ordered ? "ol" : "ul");
+        list.className = "agent-md-list";
+        while (i < lines.length) {
+          var b = /^\s*[-*+]\s+(.*)$/.exec(lines[i]);
+          var n = /^\s*\d+[.)]\s+(.*)$/.exec(lines[i]);
+          if (ordered ? !n : !b) break;
+          list.appendChild(inlineOf("li", (ordered ? n : b)[1]));
+          i++;
+        }
+        el.appendChild(list);
+        continue;
+      }
+
+      if (!line.trim()) { i++; continue; }
+
+      // Paragraph: consecutive non-blank lines that do not start a block.
+      var para = [];
+      while (i < lines.length && lines[i].trim() &&
+             !/^\s*(```+|~~~+)/.test(lines[i]) &&
+             !/^#{1,6}\s+/.test(lines[i]) &&
+             !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) {
+        para.push(lines[i]);
+        i++;
+      }
+      if (para.length) {
+        var p = inlineOf("p", para.join("\n"));
+        p.className = "agent-md-p";
+        el.appendChild(p);
+      }
+    }
+  }
+
+  /** Swap a finished assistant turn from streamed plain text to rendered
+   * markdown. Deliberately done ONCE, at the end of the turn, not on every
+   * delta: mid-stream the source is routinely half-written (an unclosed
+   * fence, a lone `**`), so re-rendering per token would flash malformed
+   * structure at the reader and cost a full re-parse per token for it.
+   * While streaming, the raw text is shown as-is -- which is honest, and is
+   * what the panel did before this. */
+  function finishAssistantBubble(bodyEl, text) {
+    if (!bodyEl || !text) return;
+    renderMarkdownInto(bodyEl, text);
+    bodyEl.classList.add("agent-msg-body--md");
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
   /** Screen-reader-only role label. WCAG 1.4.1 is about not using colour as
    * the ONLY visual cue -- the CSS handles that with offset, corner shape
    * and a left rule -- but a screen reader gets no cue from any of those,
@@ -1588,6 +1779,7 @@
       );
 
       announceStreamEnd();
+      finishAssistantBubble(assistantBubble, assistantText);
       capPush("request_end", {
         finish_reason: finishReason,
         chunk_id: sseChunkId,
@@ -1648,6 +1840,7 @@
     }
 
     announceStreamEnd();
+    finishAssistantBubble(assistantBubble, assistantText);
     capPush("request_end", {
       finish_reason: finishReason,
       chunk_id: sseChunkId,
