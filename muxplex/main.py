@@ -2181,9 +2181,11 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
     2. Global opt-in: settings ``input_enabled`` (default False) -- 403 when
        off, regardless of anything else.
     3. Per-session allowlist: settings ``input_allowed_sessions`` (default
-       empty) -- exact names only; a session not on the list is 403 even
-       when the feature is enabled. Checked BEFORE existence so the endpoint
-       never leaks whether a non-allowlisted session exists.
+       ``"*"`` -- EVERY session; it used to be empty, see settings.py's
+       DEFAULT_SETTINGS comment) -- glob patterns; a session matching none
+       of them is 403 even when the feature is enabled. Checked BEFORE
+       existence so the endpoint never leaks whether a non-allowlisted
+       session exists.
     4. Fail closed on the known-session set (exact membership, same pattern
        as connect/delete): unknown name or empty/unavailable cache -> 404.
 
