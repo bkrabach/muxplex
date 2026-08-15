@@ -9,8 +9,20 @@ verified end-to-end in the DTU**, then reverted — it belongs upstream, not her
 
 **The change lands in `amplifier-agent`, not in this repo.** No muxplex file
 needs to change, so this repo carries the evidence and the patch, not the fix.
-The patch is `2026-08-15-sidecar-transcript-repair/trailing-continuation-exemption.patch`,
-ready to file verbatim.
+
+> **➜ To file this upstream, use
+> [`upstream/amplifier-agent-01-continuation-flagged-broken.md`](upstream/amplifier-agent-01-continuation-flagged-broken.md).**
+>
+> That is the standalone, self-contained report written for `amplifier-agent`
+> maintainers: same root cause and same verification, but no work-item ids, no
+> lane vocabulary, no assumed knowledge of muxplex or its panel, a paste-able
+> reproduction that needs no server, and the patch inline. **This** document is
+> the internal record — it keeps the muxplex-side reasoning, the ruled-out lead
+> about `chat.js`, and the process notes, none of which belong in someone else's
+> bug tracker.
+>
+> The patch also exists on its own at
+> `2026-08-15-sidecar-transcript-repair/trailing-continuation-exemption.patch`.
 
 ## Verdict
 

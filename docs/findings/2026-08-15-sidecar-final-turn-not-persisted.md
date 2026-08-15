@@ -8,6 +8,14 @@ lands in `amplifier-agent`, not in this repo
 `amplifier-core` 1.6.1, running as `amplifier-agent serve chat-completions` in the
 `muxplex-lan-twin` DTU.
 
+> **➜ To file this upstream, use
+> [`upstream/amplifier-agent-02-final-assistant-turn-not-persisted.md`](upstream/amplifier-agent-02-final-assistant-turn-not-persisted.md).**
+>
+> That is the standalone, self-contained report written for `amplifier-agent`
+> maintainers: same root cause and same evidence, but no work-item ids, no lane
+> vocabulary, and no assumed knowledge of muxplex or its panel. **This** document
+> is the internal record.
+
 **Companion finding:** `2026-08-15-sidecar-transcript-repair.md` (muxplex-3aw).
 The two defects sit in the same slot of the same file and are routinely mistaken
 for one another. Fixing 3aw removes a fabricated entry; it does not add the real
