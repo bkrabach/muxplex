@@ -329,3 +329,71 @@ def test_parse_agent_auth_list_against_captured_output():
     assert result["anthropic"] == ("sk-ant...EwAA", "env=ANTHROPIC_API_KEY")
     assert result["openai"] == ("sk-...abcd", "file")
     assert "azure-openai" not in result
+
+
+# ---------------------------------------------------------------------------
+# systemd-EnvironmentFile shadow detection -- a gap in the CLI-only check
+# (SS3.5) verified live: `auth status` run as a fresh `sudo -u aa-svc`
+# subprocess never sees a var that only exists in the unit's own
+# EnvironmentFile, because sudo's default env_reset strips the calling
+# shell's environment and the file is loaded only into the unit's process.
+# ---------------------------------------------------------------------------
+
+
+def test_get_status_detects_systemd_environment_file_shadow(monkeypatch, tmp_path):
+    """A provider env var present ONLY in the sidecar unit's own
+    EnvironmentFile -- invisible to `auth status` -- must still surface as
+    `source: env` in the response. This is the exact scenario measured
+    live in the twin (SS3.5 "worst failure available": reporting success
+    while doing nothing)."""
+    env_file = tmp_path / "aasvc.env"
+    env_file.write_text(
+        "AMPLIFIER_AGENT_HTTP_API_KEY=irrelevant\nANTHROPIC_API_KEY=sk-shadowed-value\n"
+    )
+
+    async def _fake_run(args, **kwargs):
+        if args[:1] == ["status"]:
+            return (
+                0,
+                (
+                    "Credentials file: /home/aa-svc/.amplifier-agent/credentials.json\n"
+                    "  exists: False\n\n"
+                    "Per-provider resolution (env wins if both are set):\n"
+                    "  anthropic       NOT SET (export ANTHROPIC_API_KEY or run `auth set anthropic ...`)\n"
+                    "  openai          NOT SET (export OPENAI_API_KEY or run `auth set openai ...`)\n"
+                ),
+                "",
+            )
+        return (
+            0,
+            "Credentials file: /home/aa-svc/.amplifier-agent/credentials.json\n  (not present)\n",
+            "",
+        )
+
+    async def _fake_systemctl_show(*args, **kwargs):
+        class _P:
+            returncode = 0
+
+            async def communicate(self):
+                return (
+                    f"Environment=\nEnvironmentFiles={env_file} (ignore_errors=no)\n".encode(),
+                    b"",
+                )
+
+        return _P()
+
+    async def _fake_served(provider):
+        return True
+
+    monkeypatch.setattr("muxplex.main._run_agent_auth_cmd", _fake_run)
+    monkeypatch.setattr("muxplex.main._agent_provider_served", _fake_served)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_systemctl_show)
+
+    client = _authed_client()
+    resp = client.get("/api/agent/provider-credential")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["providers"]["anthropic"]["source"] == "env"
+    assert body["state"] == "configured_shadowed"
+    # The shadow's VALUE must never appear anywhere in the response.
+    assert "sk-shadowed-value" not in resp.text
