@@ -5231,21 +5231,25 @@ class ProviderCredentialRequest(BaseModel):
     api_key: str
 
 
-async def _run_agent_auth_cmd(
+async def _run_agent_cli(
     args: list[str],
     *,
     stdin_text: str | None = None,
     env_overrides: dict[str, str] | None = None,
     timeout: float = 20.0,
 ) -> tuple[int, str, str]:
-    """Run ``sudo -u <aa-svc> -H <AGENT_BIN> auth <args...>`` as a subprocess.
+    """Run ``sudo -u <aa-svc> -H <AGENT_BIN> <args...>`` as a subprocess.
 
-    Fixed argv, no shell -- `args` must already be validated by the caller
-    (the provider name against the allowlist above; this function does not
-    re-validate). Feeds `stdin_text` on stdin when given (the `--stdin` key
-    path, so the secret never touches argv / `/proc/<pid>/cmdline`) and
-    overlays `env_overrides` on top of the current environment (used to
-    point `AMPLIFIER_AGENT_HOME` at a scratch dir for validation).
+    `args` is the FULL command line after the binary -- e.g.
+    ``["auth", "set", provider, "--stdin"]`` or
+    ``["models", "list", "--provider", provider]`` (``models`` is a
+    top-level command, not a subcommand of ``auth``). Fixed argv, no shell
+    -- `args` must already be validated by the caller (the provider name
+    against the allowlist above; this function does not re-validate).
+    Feeds `stdin_text` on stdin when given (the `--stdin` key path, so the
+    secret never touches argv / `/proc/<pid>/cmdline`) and overlays
+    `env_overrides` on top of the current environment (used to point
+    `AMPLIFIER_AGENT_HOME` at a scratch dir for validation).
 
     Returns (returncode, stdout, stderr). Never raises on a non-zero exit --
     callers decide what a given code means (SS9's failure-mode table).
@@ -5260,7 +5264,6 @@ async def _run_agent_auth_cmd(
         for k, v in env_overrides.items():
             argv.append(f"{k}={v}")
     argv.append(_AGENT_AUTH_BIN)
-    argv.append("auth")
     argv.extend(args)
 
     proc = await asyncio.create_subprocess_exec(
@@ -5390,13 +5393,13 @@ async def _validate_agent_credential(provider: str, api_key: str) -> tuple[str, 
             shutil.chown(scratch, user=_AGENT_AUTH_USER)
         env = {"AMPLIFIER_AGENT_HOME": scratch}
 
-        rc, _out, err = await _run_agent_auth_cmd(
-            ["set", provider, "--stdin"], stdin_text=api_key, env_overrides=env
+        rc, _out, err = await _run_agent_cli(
+            ["auth", "set", provider, "--stdin"], stdin_text=api_key, env_overrides=env
         )
         if rc != 0:
             return "error", err.strip() or "auth set failed in scratch home"
 
-        rc, out, err = await _run_agent_auth_cmd(
+        rc, out, err = await _run_agent_cli(
             ["models", "list", "--provider", provider], env_overrides=env, timeout=30.0
         )
         if rc == 0:
@@ -5487,8 +5490,8 @@ async def get_agent_provider_credential(request: Request) -> dict:
     the sidecar's own `/v1/models`, and returns the shape the Settings ->
     Agent UI renders its five states from.
     """
-    status_rc, status_out, status_err = await _run_agent_auth_cmd(["status"])
-    list_rc, list_out, _list_err = await _run_agent_auth_cmd(["list"])
+    status_rc, status_out, status_err = await _run_agent_cli(["auth", "status"])
+    list_rc, list_out, _list_err = await _run_agent_cli(["auth", "list"])
 
     if status_rc != 0:
         return {
@@ -5613,9 +5616,7 @@ async def post_agent_provider_credential(
             )
 
         # verdict == "ok" -- write for real, no scratch home this time.
-        rc, _out, err = await _run_agent_auth_cmd(
-            ["set", provider, "--stdin"], stdin_text=api_key
-        )
+        rc, _out, err = await _run_agent_cli(["auth", "set", provider, "--stdin"], stdin_text=api_key)
         if rc != 0:
             raise HTTPException(
                 status_code=500,

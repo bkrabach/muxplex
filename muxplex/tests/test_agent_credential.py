@@ -101,7 +101,7 @@ def test_post_rejects_endpoint_field_silently_ignored_not_error(monkeypatch):
 
     monkeypatch.setattr("muxplex.main._validate_agent_credential", _fake_validate)
     monkeypatch.setattr("muxplex.main._agent_provider_served", _fake_served)
-    monkeypatch.setattr("muxplex.main._run_agent_auth_cmd", _fake_run)
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
 
     client = _authed_client()
     resp = client.post(
@@ -137,7 +137,7 @@ def test_post_bad_key_never_writes_or_restarts(monkeypatch):
         return True, "ready"
 
     monkeypatch.setattr("muxplex.main._validate_agent_credential", _fake_validate)
-    monkeypatch.setattr("muxplex.main._run_agent_auth_cmd", _fake_run)
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
     monkeypatch.setattr("muxplex.main._restart_agent_sidecar_and_wait", _fake_restart)
 
     client = _authed_client()
@@ -189,7 +189,7 @@ def test_post_good_key_already_served_does_not_restart(monkeypatch):
         return True, "ready"
 
     monkeypatch.setattr("muxplex.main._validate_agent_credential", _fake_validate)
-    monkeypatch.setattr("muxplex.main._run_agent_auth_cmd", _fake_run)
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
     monkeypatch.setattr("muxplex.main._agent_provider_served", _fake_served)
     monkeypatch.setattr("muxplex.main._restart_agent_sidecar_and_wait", _fake_restart)
 
@@ -221,7 +221,7 @@ def test_post_good_key_not_served_triggers_restart(monkeypatch):
         return True, "ready"
 
     monkeypatch.setattr("muxplex.main._validate_agent_credential", _fake_validate)
-    monkeypatch.setattr("muxplex.main._run_agent_auth_cmd", _fake_run)
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
     monkeypatch.setattr("muxplex.main._agent_provider_served", _fake_served)
     monkeypatch.setattr("muxplex.main._restart_agent_sidecar_and_wait", _fake_restart)
     monkeypatch.setattr("muxplex.main._agent_last_restart_at", 0.0)
@@ -270,7 +270,7 @@ def test_get_status_response_never_contains_key_material(monkeypatch):
     async def _fake_served(provider):
         return True
 
-    monkeypatch.setattr("muxplex.main._run_agent_auth_cmd", _fake_run)
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
     monkeypatch.setattr("muxplex.main._agent_provider_served", _fake_served)
 
     client = _authed_client()
@@ -385,7 +385,7 @@ def test_get_status_detects_systemd_environment_file_shadow(monkeypatch, tmp_pat
     async def _fake_served(provider):
         return True
 
-    monkeypatch.setattr("muxplex.main._run_agent_auth_cmd", _fake_run)
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
     monkeypatch.setattr("muxplex.main._agent_provider_served", _fake_served)
     monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_systemctl_show)
 
