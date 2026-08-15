@@ -1723,20 +1723,64 @@
       return btns;
     }
 
+    // ------------------------------------------------------------------
+    // Focus handling on open/close (muxplex-d5v, and WCAG 2.4.3 from
+    // muxplex-46p -- one implementation, not two)
+    // ------------------------------------------------------------------
+    // On open: the composer takes focus, so typing goes straight in with no
+    // intermediate click. Opening the panel IS the signal that you want to
+    // use it.
+    //
+    // On close: focus goes back to the button that opened it. Without this a
+    // keyboard user is dumped at the top of a dense dashboard and has to tab
+    // all the way back every single time -- and focus lands on a
+    // display:none element's former position, which is worse than useless.
+    // The button that opened it is remembered, so closing returns you to the
+    // header you actually came from rather than always to the overview one.
+    //
+    // COARSE POINTERS ARE DELIBERATELY EXEMPT FROM THE AUTO-FOCUS. Focusing
+    // a text input on a touch device raises the software keyboard
+    // immediately, which on this panel would cover the composer's own Send
+    // button before the user has read a word of the transcript. That is a
+    // real risk and it is NOT verifiable in this environment -- a headless
+    // browser has no software keyboard to raise, so "it looked fine in the
+    // test" would be a claim about nothing. So the safe, checkable
+    // behaviour ships: no auto-focus on a coarse pointer, no keyboard, the
+    // composer is one tap away. Focus RESTORATION on close is unconditional
+    // -- it costs nothing and raises no keyboard.
+    //
+    // This is a media QUERY, not a width check: it asks what the pointing
+    // device actually is, so a touchscreen laptop at 1400px is treated as
+    // touch and a mouse-driven small window is not.
+    var finePointer = !window.matchMedia || window.matchMedia("(pointer: fine)").matches;
+    var panelIsOpen = false;
+    var lastOpener = null;
+
     /** Single source of truth for "is the panel open", reflected onto both
      * buttons' aria-pressed (which style.css also styles off -- see
      * .header-btn--agent[aria-pressed="true"]) so the visual active state
      * and the accessibility tree cannot drift apart. */
-    function setPanelOpen(open) {
+    function setPanelOpen(open, opener) {
+      var wasOpen = panelIsOpen;
+      panelIsOpen = !!open;
       panelEl.classList.toggle("hidden", !open);
       agentButtons().forEach(function (b) {
         b.setAttribute("aria-pressed", open ? "true" : "false");
       });
-      if (open) homeAgentPanel();
+      if (open) {
+        homeAgentPanel();
+        if (opener) lastOpener = opener;
+        if (finePointer) inputEl.focus();
+      } else if (wasOpen) {
+        // `wasOpen` guards the init-time call below: restoring focus to a
+        // button at page load would steal it from wherever the user actually
+        // is. Only a real close moves focus.
+        (lastOpener || openBtn).focus();
+      }
     }
 
-    function togglePanel() {
-      setPanelOpen(panelEl.classList.contains("hidden"));
+    function togglePanel(e) {
+      setPanelOpen(!panelIsOpen, e && e.currentTarget);
     }
 
     setPanelOpen(false); // establish aria-pressed="false" before any click
