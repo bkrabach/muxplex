@@ -5268,9 +5268,7 @@ async def _agent_provider_served(provider: str) -> bool | None:
     -- SS3.4: "not served, or the sidecar is unreachable" both mean
     "restart is required", so callers should treat None the same as False.
     """
-    headers = {}
-    if _AGENT_PROXY_TOKEN:
-        headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+    headers = {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
@@ -5362,9 +5360,7 @@ async def _restart_agent_sidecar_and_wait(*, timeout: float = 30.0) -> tuple[boo
     deadline = time.monotonic() + timeout
     last_detail = "no response yet"
     while time.monotonic() < deadline:
-        headers = {}
-        if _AGENT_PROXY_TOKEN:
-            headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+        headers = {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
@@ -5411,9 +5407,7 @@ async def get_agent_provider_credential(request: Request) -> dict:
     sidecar_reachable = await _agent_provider_served("anthropic")
     sidecar_state = "unknown"
     if sidecar_reachable is not None:
-        headers = {}
-        if _AGENT_PROXY_TOKEN:
-            headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+        headers = {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
@@ -5442,9 +5436,7 @@ async def get_agent_provider_credential(request: Request) -> dict:
 
     models: list[str] = []
     if sidecar_state == "running":
-        headers = {}
-        if _AGENT_PROXY_TOKEN:
-            headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+        headers = {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
         with contextlib.suppress(Exception):
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
