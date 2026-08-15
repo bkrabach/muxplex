@@ -20,12 +20,36 @@ name: Bump tmux-kit
 # suite (ci.yml) -- validates the bump exactly like any other change, and
 # the owner merges by hand.
 #
-# Idempotency: at most one bump PR is ever open at a time. If one already
-# exists (any open PR whose branch starts with `bump-tmux-kit-`), this run
-# exits cleanly without touching anything -- re-running (scheduled or via
-# workflow_dispatch) while a PR is pending is a no-op, not a duplicate PR,
-# even if tmux-kit has released again in the meantime. The next release
-# after the pending one merges gets picked up on the following run.
+# Idempotency: this workflow must never re-do work a previous run already
+# did, and must never leave behind a red run when re-triggered against
+# state a previous run produced. Two checks combine to guarantee that:
+#
+#   1. At most one bump PR is ever open at a time. If one already exists
+#      (any open PR whose branch starts with `bump-tmux-kit-`), this run
+#      exits cleanly without touching anything -- re-running (scheduled or
+#      via workflow_dispatch) while a PR is pending is a no-op, not a
+#      duplicate PR, even if tmux-kit has released again in the meantime.
+#      The next release after the pending one merges gets picked up on the
+#      following run.
+#   2. The target branch (`bump-tmux-kit-<tag>`) is checked for existence
+#      on origin directly, independent of whether a PR for it exists --
+#      because a run can push that branch and then fail on the
+#      PR-creation call itself. That's exactly what happened in run
+#      31891698184: it bumped both pins, regenerated uv.lock, passed the
+#      pin/source agreement guard, committed, and pushed
+#      `bump-tmux-kit-v0.4.0` -- then failed with "GitHub Actions is not
+#      permitted to create or approve pull requests (createPullRequest)".
+#      That left a pushed branch with zero open PRs. Checking PRs alone
+#      would have seen 0 and tried the normal path again: the bump step
+#      itself no-ops (already at that version), but the commit step
+#      doesn't -- it re-commits identical content under a new committer
+#      timestamp (a new SHA every time), and
+#      `git push origin bump-tmux-kit-v0.4.0` is then rejected as
+#      non-fast-forward. That's a red run every day until a human deletes
+#      the branch. So: when the branch already exists with no open PR,
+#      this workflow opens the PR against the existing branch and stops
+#      there -- no re-bump, no re-commit, no re-push, and never a
+#      force-push.
 
 on:
   schedule:
@@ -82,21 +106,46 @@ jobs:
       - name: Show current pin (informational)
         run: python3 scripts/bump_tmux_kit.py check
 
-      - name: Skip if a bump PR is already open (idempotency)
-        id: existing_pr
+      - name: Check existing PR / branch state (idempotency)
+        id: existing
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          count=$(gh pr list --state open --json headRefName \
+          branch="bump-tmux-kit-${{ steps.latest.outputs.tag }}"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+          # Property 1 (see header): any open bump-tmux-kit-* PR blocks a new
+          # bump outright, regardless of which tag it targets.
+          pr_count=$(gh pr list --state open --json headRefName \
             --jq '[.[] | select(.headRefName | startswith("bump-tmux-kit-"))] | length')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          if [[ "$count" != "0" ]]; then
-            echo "A bump-tmux-kit-* PR is already open ($count) -- skipping."
+          echo "pr_count=$pr_count" >> "$GITHUB_OUTPUT"
+
+          # Property 2 (see header): does *this run's* target branch already
+          # exist on origin, independent of PR state? A prior run can push
+          # the branch and then fail on the PR-creation call itself (run
+          # 31891698184). `--exit-code` makes a miss a non-zero exit, which
+          # is safe here because it's the condition of an `if` -- errexit
+          # doesn't fire for commands tested by `if`, only for bare commands.
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            branch_exists=true
+          else
+            branch_exists=false
+          fi
+          echo "branch_exists=$branch_exists" >> "$GITHUB_OUTPUT"
+
+          if [[ "$pr_count" != "0" ]]; then
+            echo "A bump-tmux-kit-* PR is already open ($pr_count) -- skipping."
+          elif [[ "$branch_exists" == "true" ]]; then
+            echo "Branch $branch already exists on origin with no open PR -- recovering by opening the PR against it, not re-bumping."
           fi
 
       - name: Bump pin + source tag (no-op if already current)
         id: bump
-        if: steps.existing_pr.outputs.count == '0'
+        # Only the "nothing exists yet" case reaches the normal bump/commit/
+        # push path below. A pending PR is handled by skipping entirely
+        # above; an already-pushed branch with no PR is handled by the
+        # recovery step further down instead of here.
+        if: steps.existing.outputs.pr_count == '0' && steps.existing.outputs.branch_exists == 'false'
         run: |
           result=$(python3 scripts/bump_tmux_kit.py bump "${{ steps.latest.outputs.version }}")
           echo "$result"
@@ -118,12 +167,12 @@ jobs:
         if: steps.bump.outputs.bumped == 'true'
         run: uv run pytest muxplex/tests/test_tmux_kit_pin_source_agreement.py -v
 
-      - name: Commit, push, and open the PR
+      - name: Commit, push, and open the PR (new branch)
         if: steps.bump.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          branch="bump-tmux-kit-${{ steps.latest.outputs.tag }}"
+          branch="${{ steps.existing.outputs.branch }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
@@ -179,11 +228,70 @@ jobs:
           PYEOF
           )"
 
+      - name: Open PR for existing branch (recovery)
+        id: recover
+        # Handles exactly the state run 31891698184 left behind: branch
+        # pushed, PR creation failed. The branch's content is already correct
+        # (bumped, relocked, guard-passed by that prior run) -- this step
+        # only opens the PR against it. No checkout, no commit, no push, and
+        # absolutely no force-push: the branch itself is never touched.
+        if: steps.existing.outputs.pr_count == '0' && steps.existing.outputs.branch_exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="${{ steps.existing.outputs.branch }}"
+          echo "Branch $branch already exists on origin with no open PR -- opening the PR against it as-is."
+          gh pr create \
+            --title "chore: bump tmux-kit to ${{ steps.latest.outputs.tag }}" \
+            --base main \
+            --head "$branch" \
+            --body "$(python3 - <<'PYEOF'
+          print('''Automated tmux-kit dependency bump (scheduled + on-demand
+          via `workflow_dispatch`). Never pushed to `main` directly.
+
+          This PR recovers a branch a prior run already pushed but failed to
+          open a PR for (see .github/workflows/bump-tmux-kit.yml's
+          Idempotency section). Nothing was re-bumped, re-committed, or
+          re-pushed to produce this PR -- the branch's content is exactly
+          what that prior run left behind.
+
+          ## What changed
+
+          - `pyproject.toml`: the `[project.dependencies]` tmux-kit `==` pin
+            and the `[tool.uv.sources]` git `tag` were bumped together, in
+            one commit -- they must always name the same version (see
+            AGENTS.md's "tmux-kit pin/tag agreement" section for why: a
+            public PyPI install only ever sees the plain pin, a managed-
+            device git install resolves from the git tag, and if they ever
+            drift those two install paths silently ship different tmux-kit
+            code from the same muxplex release).
+          - `uv.lock`: regenerated via `uv lock` in that same commit, so a
+            git-sourced install (`uv tool install git+.../muxplex`) resolves
+            the *new* tag instead of whatever ref was previously recorded --
+            a git tool install reads the lock file, not a fresh re-resolve
+            of pyproject.toml.
+
+          ## What to check before merging
+
+          - [ ] CI is green -- in particular `guard-tmux-kit-pin-source-agreement`
+            and the `test` / `test-latest-deps` jobs.
+          - [ ] Skim tmux-kit's release notes for this version for anything
+            worth a mention in muxplex's own CHANGELOG.md at release time.
+          - [ ] Merging this means the next fleet roll picks up the new
+            tmux-kit on BOTH install paths -- PyPI (plain pin, unmanaged
+            devices) and git (source tag, IT-managed devices that can't
+            reach PyPI directly).
+          ''')
+          PYEOF
+          )"
+
       - name: Summary
         if: always()
         run: |
-          if [[ "${{ steps.existing_pr.outputs.count }}" != "0" ]]; then
+          if [[ "${{ steps.existing.outputs.pr_count }}" != "0" ]]; then
             echo "::notice::A bump PR is already open -- no action taken."
+          elif [[ "${{ steps.existing.outputs.branch_exists }}" == "true" ]]; then
+            echo "::notice::Branch bump-tmux-kit-${{ steps.latest.outputs.tag }} already existed with no open PR -- recovered by opening the PR against it (no re-bump/re-commit/re-push)."
           elif [[ "${{ steps.bump.outputs.bumped }}" == "true" ]]; then
             echo "::notice::Opened a PR bumping tmux-kit to ${{ steps.latest.outputs.tag }}."
           else
