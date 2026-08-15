@@ -556,7 +556,23 @@
         <span class="agent-panel-name">Muxplex Agent</span>
         <span class="agent-panel-attribution">Powered by Amplifier Agent</span>
       </div>
+      <!-- Live attention count (muxplex-n7z). This panel covers the whole
+           screen on a phone, so while it is open the dashboard behind it
+           cannot tell you that something started needing you. This is the
+           one piece of session state that is actionable mid-question, and
+           it rides in a row that already exists, so it costs no layout
+           space -- the same "signal without chrome" move deck/
+           DESIGN_SOFTDECK.md 7 makes for staleness on the soft deck.
+           Populated by chat.js's startAttentionPolling(); polls only while
+           the panel is open. aria-live so it is announced, not just seen. -->
+      <span id="chat-attention" class="agent-panel-attention" aria-live="polite"></span>
       <button id="chat-new-btn" class="header-btn" title="Start a new conversation">New</button>
+      <!-- muxplex-4kl: exports a structured debug record (transcript, tool
+           calls, raw tool results, timings, the SSE stream, console/network
+           errors, app state) of this conversation to a local .json file --
+           see exportCaptureRecord() in chat.js. Never sends anything over
+           the network; local file only, on explicit click. -->
+      <button id="chat-export-btn" class="header-btn" title="Export a structured debug record of this conversation (transcript, tool calls, raw results, timings, errors) to a local JSON file. Nothing is sent anywhere.">Export</button>
       <button id="chat-close-btn" class="header-btn" aria-label="Close chat">&#10005;</button>
     </div>
     <div id="chat-messages" class="agent-panel-messages"></div>
@@ -565,6 +581,58 @@
       <button id="chat-send-btn" class="header-btn agent-panel-send-btn">Send</button>
     </div>
   </div>
+
+  <!-- muxplex-4kl: persistent download trigger for exportCaptureRecord() in
+       chat.js. A single reused <a> avoids DOM churn on every export (create
+       + append + click + remove); its href (a Blob object URL) is only ever
+       set from a local Blob and only ever clicked programmatically in
+       response to the Export button -- never a real navigation, never a
+       network request. -->
+  <a id="chat-export-link" class="hidden" aria-hidden="true"></a>
+
+  <!-- Confirmation gate for send_muxplex_session_input -- the ONE agent tool
+       that injects real keystrokes into a live tmux session. Every other
+       agent tool (list/get/switch-session/switch-view/list-federated) is a
+       read or a reversible view-switch and never touches this; this write
+       never fires without it. See requestInputConfirmation()/resolveConfirm()
+       in chat.js. Deliberately NOT styled like a chat bubble or like
+       #settings-dialog: a true modal (separate darkening backdrop + centered
+       dialog, not inline in the transcript) so it cannot be mistaken for a
+       normal reply. Reuses the same split backdrop-div + native <dialog>
+       pattern as #settings-backdrop/#settings-dialog below -- showModal()
+       gives a native focus trap and an Escape -> 'cancel' event for free.
+       Consequence is signalled by icon + label + border + modal position
+       together, never by color alone (WCAG 1.4.1). Cancel is listed first
+       and is the button chat.js focuses on open, so doing nothing (Escape,
+       backdrop click, closing the tab) always lands on Cancel, never Send. -->
+  <div id="chat-confirm-backdrop" class="agent-confirm-backdrop hidden"></div>
+  <dialog id="chat-confirm-dialog" class="agent-confirm-dialog" aria-labelledby="chat-confirm-title">
+    <div class="agent-confirm-header">
+      <span class="agent-confirm-icon" aria-hidden="true">&#9888;</span>
+      <span id="chat-confirm-title" class="agent-confirm-title">Confirm real input</span>
+    </div>
+    <div class="agent-confirm-body">
+      <p class="agent-confirm-lede">
+        The agent wants to type into a live session -- this runs for real. Review it before you allow it.
+      </p>
+      <div class="agent-confirm-field">
+        <span class="agent-confirm-field-label">Session</span>
+        <span id="chat-confirm-session" class="agent-confirm-session"></span>
+      </div>
+      <div class="agent-confirm-field">
+        <span class="agent-confirm-field-label">Text</span>
+        <pre id="chat-confirm-text" class="agent-confirm-text"></pre>
+      </div>
+      <div class="agent-confirm-field">
+        <span class="agent-confirm-field-label">Then</span>
+        <span id="chat-confirm-keys" class="agent-confirm-field-value"></span>
+      </div>
+    </div>
+    <div class="agent-confirm-actions">
+      <button id="chat-confirm-cancel-btn" class="agent-confirm-btn agent-confirm-btn--cancel" type="button">Cancel</button>
+      <button id="chat-confirm-send-btn" class="agent-confirm-btn agent-confirm-btn--send" type="button">Send it</button>
+    </div>
+  </dialog>
 
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/xterm-addon-fit.js"></script>

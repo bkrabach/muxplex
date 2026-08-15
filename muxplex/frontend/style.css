@@ -2057,6 +2057,343 @@ body {
   border: 1px solid rgba(248, 81, 73, 0.35);
 }
 
+/* Collapsed tool result (chat.js appendToolResult). The summary line reads
+   like the .agent-msg-system line it replaces; the raw payload is still
+   present, one tap away, capped so opening it can never bury the answer
+   again. */
+
+.agent-msg-tool {
+  margin: 4px 0;
+}
+
+.agent-msg-tool-summary {
+  color: var(--text-muted);
+  font-style: italic;
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 2px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Safari/Chrome still paint the default disclosure triangle without this. */
+.agent-msg-tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-msg-tool-summary::before {
+  content: "\25B8";
+  color: var(--accent);
+  font-style: normal;
+  flex: 0 0 auto;
+}
+
+.agent-msg-tool[open] > .agent-msg-tool-summary::before {
+  content: "\25BE";
+}
+
+.agent-msg-tool-raw {
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  max-height: 40vh;
+  overflow: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font: 11px/1.45 var(--font-mono, monospace);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------
+   Muxplex Agent -- phone width (muxplex-n7z)
+   ------------------------------------------------------------------
+   The <=599px entry button above is deliberately KEPT. The decision
+   recorded in muxplex-n7z is that this panel is the dashboard PWA's
+   agent surface at every width, and that the soft deck (/deck/, its own
+   PWA, its own contract) gets no agent affordance at all. Keeping the
+   button therefore obliges this panel to actually be usable in a hand,
+   which these rules are.
+
+   Two things are fixed here, both measured on a real 390x844 viewport:
+
+   1. Touch targets. This project adopted a floor and wrote it down:
+      "Adopted floor: 48 x 48 CSS px" (deck/DESIGN_RESPONSIVE.md 2.1),
+      which DESIGN_SOFTDECK.md 12 still lists as "carried and
+      load-bearing". The panel's own controls measured 32x32 (New,
+      close) and 66x32 (Send). Below the floor, on the surface where a
+      92%-coverage overlay's ONLY exit is that close button.
+
+   2. Width. .agent-panel is min(420px, 92vw), which on a 390px phone
+      leaves a 31px strip of dashboard down the left edge. A vision pass
+      on the real pixels reported that strip as "too fragmentary to
+      provide any meaningful status or session context" -- it is the
+      APPEARANCE of session awareness, not session awareness. Take it to
+      100% and stop implying otherwise; the panel header carries the
+      live attention count instead (chat.js startAttentionPolling), which
+      is the one piece of session state that is actually actionable while
+      you are mid-question, and it costs no layout space.
+
+   The composer input also goes to 16px here: iOS Safari auto-zooms the
+   whole page on focus for any font-size below 16px, which on this panel
+   scrolls the send button off-screen. */
+
+@media (max-width: 599px) {
+  .agent-panel {
+    width: 100%;
+    border-left: none;
+  }
+
+  .agent-panel-header {
+    height: auto;
+    min-height: 56px;
+    padding: 4px 8px;
+  }
+
+  #chat-new-btn,
+  #chat-close-btn {
+    width: 48px;
+    height: 48px;
+  }
+
+  .agent-panel-composer {
+    align-items: stretch;
+    padding: 8px;
+  }
+
+  .agent-panel-input {
+    font-size: 16px;
+    min-height: 48px;
+  }
+
+  .agent-panel-send-btn {
+    min-width: 64px;
+    height: auto;
+    min-height: 48px;
+  }
+}
+
+/* Live attention count in the panel header -- see the media query above for
+   why this exists. Sits in the row the branding already occupies, so it
+   consumes no vertical space at any width. */
+
+.agent-panel-attention {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.agent-panel-attention--attention {
+  color: #000;
+  background: var(--warn, #F1A640);
+  border-color: var(--warn, #F1A640);
+}
+
+.agent-panel-attention--unknown {
+  color: var(--err);
+  border-color: rgba(248, 81, 73, 0.5);
+}
+
+/* ============================================================
+   Muxplex Agent -- send-input confirmation gate
+   ============================================================
+   The one agent tool that injects real keystrokes into a live session
+   (send_muxplex_session_input) never fires without this gate; the other
+   five tools (reads + reversible view-switches) never trigger it, so their
+   friction is unchanged. Deliberately NOT styled like the chat bubbles
+   above or like .settings-dialog below: a true modal (separate darkening
+   backdrop, dialog centered over the WHOLE page, not inline in the
+   transcript) so it cannot be mistaken for a normal reply or a routine
+   dialog. Consequence is signalled by icon + label + warn-colored border +
+   modal position together -- never by color alone (WCAG 1.4.1). Reuses the
+   same split backdrop-div + native <dialog> pattern as
+   #settings-backdrop/.settings-dialog (see chat.js's
+   requestInputConfirmation()/resolveConfirm()): showModal() gives a native
+   focus trap and an Escape -> 'cancel' event for free, and the dialog's own
+   ::backdrop is made transparent + click-through so OUR backdrop div (which
+   darkens the page and closes on click) is what the user actually sees and
+   can tap. */
+
+.agent-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 9500; /* above .agent-panel's 9000 -- the gate sits on top of the
+                    chat panel it was raised from */
+}
+
+.agent-confirm-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(380px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  background: var(--bg-surface);
+  border: 2px solid var(--warn);
+  border-radius: 10px;
+  z-index: 9501;
+  color: var(--text);
+  font-family: var(--font-ui);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+}
+
+/* Native <dialog>'s own ::backdrop stays transparent and click-through --
+   .agent-confirm-backdrop (a plain div, painted and clickable) is what
+   actually darkens the page and handles cancel-on-backdrop-click. Same
+   split .settings-dialog uses for the same reason. */
+.agent-confirm-dialog::backdrop {
+  background: transparent;
+  pointer-events: none;
+}
+
+.agent-confirm-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(210, 153, 34, 0.1); /* --warn tint -- distinct from every
+                                           chat-bubble/system-line treatment */
+  border-radius: 8px 8px 0 0;
+}
+
+.agent-confirm-icon {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--warn);
+  flex-shrink: 0;
+}
+
+.agent-confirm-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.agent-confirm-body {
+  padding: 14px 16px;
+}
+
+.agent-confirm-lede {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.agent-confirm-field {
+  margin-bottom: 12px;
+}
+
+.agent-confirm-field:last-child {
+  margin-bottom: 0;
+}
+
+.agent-confirm-field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.agent-confirm-session {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.agent-confirm-text {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.agent-confirm-field-value {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.agent-confirm-actions {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* Both buttons share the same 48px floor and the same flex:1 share of the
+   row -- Cancel is exactly as easy to hit as Send, never smaller or
+   secondary-looking. 48px matches this app's own documented touch-target
+   size for touch devices (--picker-row-height-touch in DESIGN-SYSTEM.md),
+   itself above the 44px WCAG minimum. */
+.agent-confirm-btn {
+  flex: 1 1 0;
+  min-height: 48px;
+  min-width: 48px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-confirm-btn--cancel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.agent-confirm-btn--cancel:hover,
+.agent-confirm-btn--cancel:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Send reuses this app's existing danger-button treatment (compare
+   .manage-view-panel__delete-btn / .views-settings-btn--danger): --err
+   border/text over a faint --err tint, not a solid fill -- consistent with
+   how every other "this acts for real" control in muxplex is already
+   colored, so this doesn't invent a new danger vocabulary. */
+.agent-confirm-btn--send {
+  background: rgba(248, 81, 73, 0.12);
+  border: 1px solid var(--err);
+  color: var(--err);
+}
+
+.agent-confirm-btn--send:hover,
+.agent-confirm-btn--send:focus-visible {
+  background: rgba(248, 81, 73, 0.22);
+}
+
 /* ============================================================
    Settings dialog
    ============================================================ */
