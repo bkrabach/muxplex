@@ -5107,6 +5107,443 @@ async def federation_generate_key() -> dict:
     return {"key": key, "path": str(path)}
 
 
+# ---------------------------------------------------------------------------
+# Agent provider credentials (Settings -> Agent) -- docs/designs/agent-credentials.md
+#
+# muxplex is a CONDUCTOR here, never a STORE: no provider API key is ever
+# persisted by muxplex (settings.json gains zero keys -- not LOCAL_ONLY_KEYS,
+# not SYNCABLE_KEYS), logged, or included in any response body. The key
+# exists in muxplex's address space for the duration of one request only.
+# The system of record is the sidecar's own credentials.json, written and
+# read exclusively through the vendor `amplifier-agent auth` CLI -- muxplex
+# never hand-writes that file's JSON (SS3.2 of the design doc: the format
+# carries a version envelope and legacy-shape upgrade path this repo does
+# not own, and a root-written file is unreadable to aa-svc at 0600).
+# ---------------------------------------------------------------------------
+
+# Configuration, never request data -- no part of a request may influence
+# the executable path, the target user, or any flag (SS3.2).
+_AGENT_AUTH_BIN = os.environ.get("MUXPLEX_AGENT_AUTH_CMD", "/home/aa-svc/.local/bin/amplifier-agent")
+_AGENT_AUTH_USER = os.environ.get("MUXPLEX_AGENT_AUTH_USER", "aa-svc")
+_AGENT_HTTP_SERVICE = os.environ.get("MUXPLEX_AGENT_HTTP_SERVICE", "amplifier-agent-http")
+
+# Positive allowlist (SS3.6/SS7.3). azure-openai and ollama both carry a
+# caller-controlled URL (an `endpoint` field / a host) that the resolver
+# feeds straight to the provider -- accepting either here would let a
+# browser-reachable write redirect all model traffic, including whatever
+# terminal scrollback the agent has read, to a server of the caller's
+# choosing. github-copilot is environment-only; `auth set` refuses it
+# upstream and a stored value would never reach the provider anyway. A new
+# provider appearing upstream must not become settable by silently growing
+# this set.
+_AGENT_CREDENTIAL_ALLOWED_PROVIDERS = frozenset({"anthropic", "openai"})
+
+# Serializes validate -> write -> restart so two racing requests can't
+# interleave (SS9 "concurrent writes"): `auth set` itself is atomic per
+# write, but two racing restarts are not.
+_agent_credential_lock = asyncio.Lock()
+
+# Rate-limit / cooldown (SS7.4): a restart drops every in-flight turn, so a
+# browser-reachable path that can trigger one is a real DoS surface even
+# from an authenticated caller. Tracked in-process; resets on server
+# restart, which is acceptable for a cooldown whose entire purpose is
+# damping a burst of clicks, not a durable audit control.
+_AGENT_RESTART_COOLDOWN_S = 15.0
+_agent_last_restart_at: float = 0.0
+
+
+class ProviderCredentialRequest(BaseModel):
+    """POST body for /api/agent/provider-credential.
+
+    Deliberately has NO `endpoint` field -- not ignored, not validated,
+    ABSENT (SS7.3/SS9's schema-shape test pins this). Adding one later for
+    Azure support means designing an endpoint allowlist first; it is not a
+    matter of adding a field to this model.
+    """
+
+    provider: str
+    api_key: str
+
+
+async def _run_agent_auth_cmd(
+    args: list[str],
+    *,
+    stdin_text: str | None = None,
+    env_overrides: dict[str, str] | None = None,
+    timeout: float = 20.0,
+) -> tuple[int, str, str]:
+    """Run ``sudo -u <aa-svc> -H <AGENT_BIN> auth <args...>`` as a subprocess.
+
+    Fixed argv, no shell -- `args` must already be validated by the caller
+    (the provider name against the allowlist above; this function does not
+    re-validate). Feeds `stdin_text` on stdin when given (the `--stdin` key
+    path, so the secret never touches argv / `/proc/<pid>/cmdline`) and
+    overlays `env_overrides` on top of the current environment (used to
+    point `AMPLIFIER_AGENT_HOME` at a scratch dir for validation).
+
+    Returns (returncode, stdout, stderr). Never raises on a non-zero exit --
+    callers decide what a given code means (SS9's failure-mode table).
+    """
+    argv = ["sudo", "-u", _AGENT_AUTH_USER, "-H", "env"]
+    full_env = dict(os.environ)
+    if env_overrides:
+        full_env.update(env_overrides)
+        # `sudo -u ... -H env KEY=VAL <bin> ...` -- pass overrides as env(1)
+        # assignments rather than relying on `-E` (which sudo policy may
+        # refuse), matching the design doc's SS3.3 invocation shape exactly.
+        for k, v in env_overrides.items():
+            argv.append(f"{k}={v}")
+    argv.append(_AGENT_AUTH_BIN)
+    argv.append("auth")
+    argv.extend(args)
+
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE if stdin_text is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=full_env,
+    )
+    stdin_bytes = stdin_text.encode() if stdin_text is not None else None
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        return 124, "", f"timed out after {timeout}s"
+    return proc.returncode or 0, stdout_b.decode(errors="replace"), stderr_b.decode(errors="replace")
+
+
+def _parse_agent_auth_status(stdout: str) -> dict[str, str]:
+    """Parse `amplifier-agent auth status`'s per-provider resolution lines.
+
+    Returns {provider: "env"|"file"|"default"|"not_set"} for every provider
+    in the allowlist that appears in the output. This is line parsing
+    against another repo's stdout -- a real coupling point (design doc
+    SS3.5/SS10) -- pinned by a unit test asserting against captured output.
+    """
+    result: dict[str, str] = {}
+    for line in stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        provider, verdict = parts
+        if provider not in _AGENT_CREDENTIAL_ALLOWED_PROVIDERS:
+            continue
+        if verdict.startswith("USING env="):
+            result[provider] = "env"
+        elif verdict.startswith("USING file entry"):
+            result[provider] = "file"
+        elif verdict.startswith("USING built-in default"):
+            result[provider] = "default"
+        else:
+            result[provider] = "not_set"
+    return result
+
+
+def _parse_agent_auth_list(stdout: str) -> dict[str, tuple[str, str]]:
+    """Parse `amplifier-agent auth list`'s per-provider rows.
+
+    Returns {provider: (masked, source_label)}. Rows are whitespace-padded
+    columns (2+ spaces between fields); header/blank lines don't match the
+    allowlist and are skipped naturally.
+    """
+    result: dict[str, tuple[str, str]] = {}
+    for line in stdout.splitlines():
+        parts = re.split(r"\s{2,}", line.strip())
+        if len(parts) != 3:
+            continue
+        provider, masked, source = parts
+        if provider in _AGENT_CREDENTIAL_ALLOWED_PROVIDERS:
+            result[provider] = (masked, source)
+    return result
+
+
+async def _agent_provider_served(provider: str) -> bool | None:
+    """Ask the sidecar (not muxplex's own cached registry) whether
+    `provider` currently has at least one served model.
+
+    Returns True/False, or None if the sidecar could not be reached at all
+    -- SS3.4: "not served, or the sidecar is unreachable" both mean
+    "restart is required", so callers should treat None the same as False.
+    """
+    headers = {}
+    if _AGENT_PROXY_TOKEN:
+        headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    return any(m.get("_provider") == provider for m in data.get("data", []))
+
+
+async def _validate_agent_credential(provider: str, api_key: str) -> tuple[str, str]:
+    """Validate `api_key` for `provider` in a scratch home, never touching
+    the live credential (SS3.3).
+
+    Runs the SAME code path the sidecar's own boot uses, as the SAME user,
+    through the SAME egress path, against a throwaway
+    ``AMPLIFIER_AGENT_HOME``: `auth set --stdin` into the scratch dir, then
+    `models list --provider <p>` (exit 0 == a real, live credential; the
+    documented contract for what non-zero means).
+
+    Returns (verdict, detail) where verdict is one of
+    "ok" | "bad_key" | "unreachable" | "error". Deletes the scratch dir in
+    a `finally` regardless of outcome.
+    """
+    import shutil
+    import tempfile
+
+    scratch = tempfile.mkdtemp(prefix="muxplex-agent-cred-")
+    try:
+        os.chmod(scratch, 0o700)
+        with contextlib.suppress(Exception):
+            shutil.chown(scratch, user=_AGENT_AUTH_USER)
+        env = {"AMPLIFIER_AGENT_HOME": scratch}
+
+        rc, _out, err = await _run_agent_auth_cmd(
+            ["set", provider, "--stdin"], stdin_text=api_key, env_overrides=env
+        )
+        if rc != 0:
+            return "error", err.strip() or "auth set failed in scratch home"
+
+        rc, out, err = await _run_agent_auth_cmd(
+            ["models", "list", "--provider", provider], env_overrides=env, timeout=30.0
+        )
+        if rc == 0:
+            return "ok", out.strip()
+        # `models list --provider` exits 2 for an invalid credential (the
+        # documented contract) -- distinguish that from a connectivity
+        # problem (SS9: "the user must not go hunting for a typo that isn't
+        # there") using the vendor CLI's own error text, which already
+        # names the failure kind (AuthenticationError / 401 vs DNS/timeout).
+        combined = f"{out}\n{err}".lower()
+        if "authenticationerror" in combined or "401" in combined or "invalid" in combined:
+            return "bad_key", err.strip() or out.strip()
+        return "unreachable", err.strip() or out.strip() or f"exit code {rc}"
+    finally:
+        with contextlib.suppress(Exception):
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+async def _restart_agent_sidecar_and_wait(*, timeout: float = 30.0) -> tuple[bool, str]:
+    """`systemctl restart <service>`, then poll `/v1/models` until it
+    answers or `timeout` elapses.
+
+    Never `amplifier-agent serve restart` -- that races systemd's own
+    `Restart=on-failure` (SS3.4); systemd owns this process, only systemd
+    cycles it. Never touches the fence, its watchdog, or its timer (SS6) --
+    this function issues exactly one `systemctl restart` on
+    `_AGENT_HTTP_SERVICE` and nothing else.
+
+    Returns (ok, detail). On failure, `detail` distinguishes a crash loop
+    from a fence refusal from a plain unit failure by reading
+    `systemctl is-active`/`is-failed` rather than guessing.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "restart",
+        _AGENT_HTTP_SERVICE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _out, err = await proc.communicate()
+    if proc.returncode != 0:
+        return False, f"systemctl restart {_AGENT_HTTP_SERVICE} failed: {err.decode(errors='replace').strip()}"
+
+    deadline = time.monotonic() + timeout
+    last_detail = "no response yet"
+    while time.monotonic() < deadline:
+        headers = {}
+        if _AGENT_PROXY_TOKEN:
+            headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
+            if resp.status_code == 200:
+                return True, "ready"
+            last_detail = f"HTTP {resp.status_code}"
+        except httpx.HTTPError as exc:
+            last_detail = str(exc)
+        await asyncio.sleep(1.0)
+
+    # Distinguish WHY it never came up, per SS9's failure-mode table.
+    status_proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "is-failed",
+        _AGENT_HTTP_SERVICE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    status_out, _ = await status_proc.communicate()
+    unit_state = status_out.decode(errors="replace").strip()
+    return False, f"sidecar did not become ready within {timeout}s (unit state: {unit_state!r}; last poll: {last_detail})"
+
+
+@app.get("/api/agent/provider-credential")
+async def get_agent_provider_credential(request: Request) -> dict:
+    """Status only -- NEVER a key. See docs/designs/agent-credentials.md SS5.
+
+    Shells `auth status` + `auth list` as aa-svc, plus a direct check of
+    the sidecar's own `/v1/models`, and returns the shape the Settings ->
+    Agent UI renders its five states from.
+    """
+    status_rc, status_out, status_err = await _run_agent_auth_cmd(["status"])
+    list_rc, list_out, _list_err = await _run_agent_auth_cmd(["list"])
+
+    if status_rc != 0:
+        return {
+            "state": "error",
+            "message": status_err.strip() or "auth status failed",
+        }
+
+    resolution = _parse_agent_auth_status(status_out)
+    masked_rows = _parse_agent_auth_list(list_out) if list_rc == 0 else {}
+
+    sidecar_reachable = await _agent_provider_served("anthropic")
+    sidecar_state = "unknown"
+    if sidecar_reachable is not None:
+        headers = {}
+        if _AGENT_PROXY_TOKEN:
+            headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
+            sidecar_state = "running" if resp.status_code == 200 else "sidecar_down"
+        except httpx.HTTPError:
+            sidecar_state = "sidecar_down"
+    else:
+        sidecar_state = "sidecar_down"
+
+    providers: dict[str, dict] = {}
+    any_configured = False
+    for provider in sorted(_AGENT_CREDENTIAL_ALLOWED_PROVIDERS):
+        source = resolution.get(provider, "not_set")
+        masked, _ = masked_rows.get(provider, ("<not set>", "\u2014"))
+        entry = {"source": source, "masked": masked if source != "not_set" else None}
+        providers[provider] = entry
+        if source in ("env", "file"):
+            any_configured = True
+
+    if not any_configured:
+        state = "not_configured"
+    elif any(p["source"] == "env" for p in providers.values()):
+        state = "configured_shadowed"
+    else:
+        state = "configured"
+
+    models: list[str] = []
+    if sidecar_state == "running":
+        headers = {}
+        if _AGENT_PROXY_TOKEN:
+            headers["Authorization"] = f"Bearer {_AGENT_PROXY_TOKEN}"
+        with contextlib.suppress(Exception):
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
+                if resp.status_code == 200:
+                    models = [m.get("id", "") for m in resp.json().get("data", [])]
+
+    return {
+        "state": state,
+        "providers": providers,
+        "sidecar": sidecar_state,
+        "models": models,
+    }
+
+
+@app.post("/api/agent/provider-credential")
+async def post_agent_provider_credential(payload: ProviderCredentialRequest, request: Request) -> dict:
+    """Validate, then write, then restart ONLY if required. Never a bare
+    write-and-restart -- SS0/SS3.3: a bad key that reaches disk and
+    triggers a restart is a permanent crash loop.
+
+    Rate-limited server-side (SS7.4): refuses with 429 inside the cooldown
+    window rather than queuing another restart. Locked (SS9 "concurrent
+    writes") so two racing requests validate/write/restart in series, not
+    interleaved.
+    """
+    provider = payload.provider
+    if provider not in _AGENT_CREDENTIAL_ALLOWED_PROVIDERS:
+        allowed = ", ".join(sorted(_AGENT_CREDENTIAL_ALLOWED_PROVIDERS))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider {provider!r} is not settable from this UI (allowed: {allowed}). "
+                "azure-openai and ollama carry a caller-controlled endpoint/host and are refused "
+                "by design; github-copilot is environment-only and a stored key would never reach it."
+            ),
+        )
+    api_key = payload.api_key
+    if not api_key or len(api_key) > 4096 or any(ord(c) < 0x20 for c in api_key):
+        raise HTTPException(status_code=400, detail="Invalid API key: empty, too long, or contains control characters.")
+
+    async with _agent_credential_lock:
+        global _agent_last_restart_at
+        now = time.monotonic()
+        cooldown_remaining = _AGENT_RESTART_COOLDOWN_S - (now - _agent_last_restart_at)
+
+        verdict, detail = await _validate_agent_credential(provider, api_key)
+        if verdict == "bad_key":
+            # NOTHING is written. NOTHING is restarted. Live state untouched.
+            raise HTTPException(status_code=400, detail=f"Rejected: the provider reported this key as invalid ({detail}).")
+        if verdict == "unreachable":
+            raise HTTPException(status_code=502, detail=f"Could not reach {provider!r}'s API to validate the key ({detail}). Not a bad key -- a connectivity problem.")
+        if verdict == "error":
+            raise HTTPException(status_code=500, detail=f"Validation failed before a verdict could be reached: {detail}")
+
+        # verdict == "ok" -- write for real, no scratch home this time.
+        rc, _out, err = await _run_agent_auth_cmd(["set", provider, "--stdin"], stdin_text=api_key)
+        if rc != 0:
+            raise HTTPException(status_code=500, detail=f"Validated key but writing it failed: {err.strip()}")
+
+        already_served = await _agent_provider_served(provider)
+        restarted = False
+        restart_detail = "not needed -- provider already served; rotation takes effect on the next turn"
+
+        if not already_served:
+            if cooldown_remaining > 0:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        f"Key stored, but a restart is required to serve {provider!r} for the first time "
+                        f"and the last restart was less than {_AGENT_RESTART_COOLDOWN_S:.0f}s ago. "
+                        f"Try again in {cooldown_remaining:.0f}s."
+                    ),
+                )
+            _agent_last_restart_at = time.monotonic()
+            ok, restart_detail = await _restart_agent_sidecar_and_wait()
+            restarted = True
+            if not ok:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Key stored, but the sidecar did not come back up after restart: {restart_detail}",
+                )
+
+        # Audit line: timestamp, provider, principal, restart-or-not. NO key
+        # material, not even masked (SS7.4).
+        _log.info(
+            "agent-credential: provider=%s restarted=%s detail=%s",
+            provider,
+            restarted,
+            restart_detail,
+        )
+
+        return {
+            "ok": True,
+            "provider": provider,
+            "restarted": restarted,
+            "detail": restart_detail,
+        }
+
+
 @app.post("/api/federation/{device_id}/connect/{session_name}")
 async def federation_connect(
     device_id: str, session_name: str, request: Request

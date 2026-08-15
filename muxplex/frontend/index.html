@@ -605,6 +605,38 @@
             </div>
             <span class="settings-helper">This choice is remembered on this device only. Your other devices keep their own.</span>
           </div>
+          <!-- Agent provider credential -- docs/designs/agent-credentials.md.
+               muxplex is a CONDUCTOR here, never a STORE: this form never
+               receives a stored key back (GET returns a masked status
+               only), and nothing typed here is written to settings.json,
+               federation-synced, or logged. The key exists in muxplex's
+               address space for the duration of one POST request. -->
+          <div class="settings-field settings-field--column settings-field--section-gap">
+            <label class="settings-label">Model provider API key</label>
+            <div id="agent-credential-status" class="settings-helper">Checking...</div>
+            <div id="agent-credential-shadow-warning" class="settings-helper hidden" style="color:var(--danger, #d9534f);">
+              A key set in the service's environment file is taking precedence. Changes made here will have no effect until it is removed.
+            </div>
+            <form id="agent-credential-form" class="settings-checkbox-list">
+              <div class="settings-field">
+                <label class="settings-label" for="agent-credential-provider">Provider</label>
+                <select id="agent-credential-provider" class="settings-select">
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+              <div class="settings-field">
+                <label class="settings-label" for="agent-credential-key">API key</label>
+                <input type="password" id="agent-credential-key" class="settings-input"
+                       autocomplete="off" placeholder="Paste the provider's API key" />
+              </div>
+              <div id="agent-credential-restart-warning" class="settings-helper hidden">
+                This may restart the Agent service. Any conversation in progress will be interrupted.
+              </div>
+              <button id="agent-credential-submit-btn" type="submit" class="settings-action-btn">Save key</button>
+              <span id="agent-credential-result" class="settings-helper" role="status" aria-live="polite"></span>
+            </form>
+          </div>
           <!-- muxplex-enr: disclosure, not policy. The owner has ACCEPTED
                amplifier-agent's default session persistence; the only
                requirement is that a user can find out that conversations are

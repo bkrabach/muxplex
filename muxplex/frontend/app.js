@@ -6419,6 +6419,17 @@ function openSettings() {
   // not be inside the loadServerSettings() promise below.
   _renderAgentSettingsTab();
 
+  // Agent provider credential status (docs/designs/agent-credentials.md) --
+  // owned by chat.js (window.muxplexAgentCredential), same "read from
+  // chat.js, don't reimplement here" discipline as the send-mode prefs
+  // above. bindForm() is idempotent-guarded internally by binding once
+  // per page load (via a module-level closure in chat.js), so calling it
+  // every time the dialog opens is safe.
+  if (window.muxplexAgentCredential) {
+    window.muxplexAgentCredential.bindForm();
+    window.muxplexAgentCredential.refreshStatus();
+  }
+
   // Update notification permission status text/button
   const statusEl = $('notification-status-text');
   const reqBtn = $('notification-request-btn');

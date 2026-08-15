@@ -2699,6 +2699,122 @@
     setSendMode: setSendMode,
   };
 
+  // -------------------------------------------------------------------
+  // Agent provider credential (Settings -> Agent) --
+  // docs/designs/agent-credentials.md. Same "own the storage/state,
+  // expose read-only helpers" shape as muxplexAgentPrefs above: the form
+  // lives in index.html (app.js's openSettings() calls into this), the
+  // fetch logic and state lives here.
+  //
+  // NEVER logs, stores, or echoes the key value itself -- only ever
+  // forwarded in the POST body to muxplex's own origin, once, on submit.
+  // -------------------------------------------------------------------
+  async function _fetchAgentCredentialStatus() {
+    const resp = await fetch("/api/agent/provider-credential", {
+      headers: { Accept: "application/json" },
+    });
+    if (!resp.ok) {
+      throw new Error("status fetch failed: HTTP " + resp.status);
+    }
+    return resp.json();
+  }
+
+  function _renderAgentCredentialStatus(data) {
+    const statusEl = document.getElementById("agent-credential-status");
+    const shadowEl = document.getElementById("agent-credential-shadow-warning");
+    const restartWarnEl = document.getElementById("agent-credential-restart-warning");
+    if (!statusEl) return;
+
+    if (data.state === "error") {
+      statusEl.textContent = "Could not check the Agent's credential status: " + (data.message || "unknown error");
+      return;
+    }
+
+    const providers = data.providers || {};
+    const lines = [];
+    for (const p of Object.keys(providers).sort()) {
+      const entry = providers[p];
+      if (entry.source === "not_set") {
+        lines.push(p + ": not configured");
+      } else {
+        lines.push(p + ": " + (entry.masked || "***") + " (" + entry.source + ")");
+      }
+    }
+    if (data.state === "not_configured") {
+      statusEl.textContent = "The Agent has no model provider key. It cannot run until one is set.";
+    } else {
+      statusEl.textContent = (data.sidecar === "running" ? "Agent running. " : "Agent not responding. ") + lines.join(", ");
+    }
+
+    if (shadowEl) {
+      shadowEl.classList.toggle("hidden", data.state !== "configured_shadowed");
+    }
+    // A restart is needed whenever the sidecar isn't already up and
+    // serving -- the server decides for real at submit time; this is
+    // just the pre-submit heads-up the design calls for.
+    if (restartWarnEl) {
+      restartWarnEl.classList.toggle("hidden", data.sidecar === "running");
+    }
+  }
+
+  async function _refreshAgentCredentialStatus() {
+    const statusEl = document.getElementById("agent-credential-status");
+    if (!statusEl) return; // form not in the DOM (older frontend build)
+    try {
+      const data = await _fetchAgentCredentialStatus();
+      _renderAgentCredentialStatus(data);
+    } catch (err) {
+      statusEl.textContent = "Could not check the Agent's credential status.";
+      console.error("[agent-credential] status fetch failed:", err);
+    }
+  }
+
+  function _bindAgentCredentialForm() {
+    const form = document.getElementById("agent-credential-form");
+    const keyInput = document.getElementById("agent-credential-key");
+    const providerSelect = document.getElementById("agent-credential-provider");
+    const resultEl = document.getElementById("agent-credential-result");
+    const submitBtn = document.getElementById("agent-credential-submit-btn");
+    if (!form || !keyInput || !providerSelect || !resultEl || !submitBtn) return;
+
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      const apiKey = keyInput.value;
+      if (!apiKey) {
+        resultEl.textContent = "Enter a key first (clearing is a separate, explicit action).";
+        return;
+      }
+      submitBtn.disabled = true;
+      resultEl.textContent = "Validating...";
+      try {
+        const resp = await fetch("/api/agent/provider-credential", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ provider: providerSelect.value, api_key: apiKey }),
+        });
+        const data = await resp.json().catch(function () { return {}; });
+        if (!resp.ok) {
+          resultEl.textContent = "Rejected: " + (data.detail || ("HTTP " + resp.status));
+          return;
+        }
+        keyInput.value = ""; // never leave the typed key sitting in the form
+        resultEl.textContent = data.restarted
+          ? "Key saved. Agent service restarted (" + data.detail + ")."
+          : "Key saved. Takes effect on the next turn -- no restart needed.";
+        await _refreshAgentCredentialStatus();
+      } catch (err) {
+        resultEl.textContent = "Request failed: " + err;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  }
+
+  window.muxplexAgentCredential = {
+    refreshStatus: _refreshAgentCredentialStatus,
+    bindForm: _bindAgentCredentialForm,
+  };
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
