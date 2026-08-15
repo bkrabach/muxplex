@@ -6819,11 +6819,15 @@ def test_install_cmd_preserves_kit_override_true_when_kit_not_git():
     from muxplex.cli import _install_cmd_preserves_kit_override
 
     assert _install_cmd_preserves_kit_override(
-        ["uv", "tool", "install", "muxplex"], {"source": "pypi"}
+        ["uv", "tool", "install", "muxplex"], {"source": "pypi"}, "muxplex"
     )
 
 
-def test_install_cmd_preserves_kit_override_true_when_with_present():
+def test_install_cmd_preserves_kit_override_true_when_with_present_for_pypi_target():
+    """PyPI muxplex target + git-sourced tmux-kit: the published wheel's
+    metadata has no [tool.uv.sources] (see AGENTS.md's "tmux-kit pin/tag
+    agreement"), so --with is the ONLY thing pinning tmux-kit to git here,
+    and it must be present."""
     from muxplex.cli import _install_cmd_preserves_kit_override
 
     cmd = [
@@ -6831,20 +6835,54 @@ def test_install_cmd_preserves_kit_override_true_when_with_present():
         "tool",
         "install",
         "--force",
-        "git+https://github.com/bkrabach/muxplex@v0.45.0",
+        "muxplex",
         "--with",
         "tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.1.0",
     ]
-    assert _install_cmd_preserves_kit_override(cmd, {"source": "git"})
+    assert _install_cmd_preserves_kit_override(cmd, {"source": "git"}, "muxplex")
 
 
-def test_install_cmd_preserves_kit_override_false_when_with_missing():
+def test_install_cmd_preserves_kit_override_false_when_with_missing_for_pypi_target():
     """Regression guard: this is exactly how the bare-name uv-managed
-    shortcut silently dropped the override before this fix."""
+    shortcut silently dropped the override before the first fix here."""
     from muxplex.cli import _install_cmd_preserves_kit_override
 
     cmd = ["uv", "tool", "install", "--reinstall", "--refresh", "--force", "muxplex"]
-    assert not _install_cmd_preserves_kit_override(cmd, {"source": "git"})
+    assert not _install_cmd_preserves_kit_override(cmd, {"source": "git"}, "muxplex")
+
+
+def test_install_cmd_preserves_kit_override_true_when_with_absent_for_git_target():
+    """2026-08-15 incident (v0.47.11): a GIT muxplex target already carries
+    its own [tool.uv.sources] pin for tmux-kit -- the ABSENCE of --with is
+    what satisfies the guarantee here, not its presence. See
+    _install_cmd_preserves_kit_override's docstring for the full incident."""
+    from muxplex.cli import _install_cmd_preserves_kit_override
+
+    mux_target = "git+https://github.com/bkrabach/muxplex@v0.47.11"
+    cmd = ["uv", "tool", "install", "--force", "--refresh", mux_target]
+    assert _install_cmd_preserves_kit_override(cmd, {"source": "git"}, mux_target)
+
+
+def test_install_cmd_preserves_kit_override_false_when_with_added_for_git_target():
+    """The exact regression that broke a real upgrade at v0.47.11: adding
+    --with BACK on top of a git muxplex target gives uv two url-bearing
+    origins for the same package and it refuses to resolve, even when both
+    origins name the byte-identical URL. The guard must reject this
+    construction, not just the missing-override case."""
+    from muxplex.cli import _install_cmd_preserves_kit_override
+
+    mux_target = "git+https://github.com/bkrabach/muxplex@v0.47.11"
+    cmd = [
+        "uv",
+        "tool",
+        "install",
+        "--force",
+        "--refresh",
+        mux_target,
+        "--with",
+        "tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.4.0",
+    ]
+    assert not _install_cmd_preserves_kit_override(cmd, {"source": "git"}, mux_target)
 
 
 def test_verify_install_shape_preserved_ok_when_unchanged(monkeypatch):
@@ -6902,8 +6940,19 @@ def test_verify_install_shape_preserved_fails_when_mux_shape_changes(monkeypatch
 
 def test_upgrade_preserves_git_kit_override_forbids_bare_name(monkeypatch, capsys):
     """The core regression guard: a uv-tool-managed upgrade with a
-    git-sourced tmux-kit must NOT use the bare 'muxplex' shortcut, and MUST
-    carry a --with tmux-kit override derived from the target's own pin."""
+    git-sourced tmux-kit must NOT use the bare 'muxplex' shortcut -- it must
+    use the full git target.
+
+    CORRECTED 2026-08-15 (v0.47.11 incident): this scenario (muxplex's own
+    install target is ALSO git) must NOT carry a --with tmux-kit override --
+    the git muxplex target's own [tool.uv.sources] pin already resolves
+    tmux-kit, and adding --with on top of it is exactly what broke a real
+    `muxplex update` (uv rejects two url-bearing origins for the same
+    package, even when they name the identical URL). This test used to
+    assert the OPPOSITE (that --with must be present here) -- that
+    assertion encoded the bug. See _install_cmd_preserves_kit_override's
+    docstring for the full incident writeup.
+    """
     import subprocess
 
     import muxplex.cli as cli_mod
@@ -6966,10 +7015,15 @@ def test_upgrade_preserves_git_kit_override_forbids_bare_name(monkeypatch, capsy
         lambda info: ("git+https://github.com/bkrabach/muxplex@v0.45.0", None),
     )
     monkeypatch.setattr(cli_mod, "_target_matches_source", lambda info, target: True)
+
+    resolve_kit_ref_calls: list = []
+
+    def fake_resolve_upgrade_kit_ref(info_mux, mux_target, info_kit):
+        resolve_kit_ref_calls.append((info_mux, mux_target, info_kit))
+        return "v0.2.0", None
+
     monkeypatch.setattr(
-        cli_mod,
-        "_resolve_upgrade_kit_ref",
-        lambda info_mux, mux_target, info_kit: ("v0.2.0", None),
+        cli_mod, "_resolve_upgrade_kit_ref", fake_resolve_upgrade_kit_ref
     )
 
     with patch("muxplex.service.service_install", lambda: None):
@@ -6983,6 +7037,9 @@ def test_upgrade_preserves_git_kit_override_forbids_bare_name(monkeypatch, capsy
 
     # The bare-name shortcut is forbidden -- the exact defect this fix closes.
     assert "--reinstall" not in install_cmd
+    # The --with override is ALSO forbidden here -- the git muxplex target's
+    # own [tool.uv.sources] pin is what resolves tmux-kit; adding --with on
+    # top of it is the v0.47.11 regression, not a protection.
     assert install_cmd == [
         install_cmd[0],
         "tool",
@@ -6990,9 +7047,11 @@ def test_upgrade_preserves_git_kit_override_forbids_bare_name(monkeypatch, capsy
         "--force",
         "--refresh",
         "git+https://github.com/bkrabach/muxplex@v0.45.0",
-        "--with",
-        "tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.2.0",
     ]
+    assert "--with" not in install_cmd
+    # The kit-ref derivation (a network clone) is now skipped entirely for a
+    # git muxplex target -- there is no override left to derive a ref for.
+    assert resolve_kit_ref_calls == []
 
 
 def test_upgrade_pypi_kit_unaffected_still_uses_bare_name_shortcut(monkeypatch, capsys):

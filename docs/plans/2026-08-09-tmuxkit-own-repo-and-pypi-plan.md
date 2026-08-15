@@ -199,6 +199,7 @@ Every load-bearing claim, checked — with what was verified vs assumed.
 | 11 | `uv tool upgrade` preserves the receipt's git source AND `--with` requirements | **UNPROVEN — the §2.5 load-bearing unknown.** uv docs say upgrade "respects the version constraints and sources provided when installing", which *suggests* yes — asserted by no one, uv-version-dependent, and exactly the "tool behaves as I assumed" class that already burned this effort once | Gate **GU** (E1–E4, §2.5) must answer it empirically before S5 merges; the post-install shape verification (§2.5 step 4) is the guard that holds regardless of the answer |
 | 12 | `upgrade()`'s uv-managed branch runs `uv tool install --reinstall --refresh --force muxplex` — a **bare name** | **Verified by code read** (`cli.py:~1548`) | In tension with its own "must never decide WHAT to install" comment (`cli.py:~1502`) for git-sourced uv-managed installs, and carries no `--with`. E3 tests what it actually does to a receipt; §2.5 step 3 forbids the bare-name form whenever any component's recorded source is git |
 | 13 | doctor's install-source machinery hardcodes `distribution("muxplex")` | **Verified** (`cli.py:245`); everything else in `_get_install_info()` is dist-agnostic | The §2.4 generalization is a one-line parameterization, not new machinery |
+| 14 | §2.5 step 3's design (— issue `--with tmux-kit @ git+...` whenever tmux-kit is git-sourced, unconditionally) | **WRONG — corrected 2026-08-15, see §19** | Reproduced against a real uv: issuing `--with` on top of an ALSO-git muxplex target (which already carries its own `[tool.uv.sources]` pin) gives uv two url-bearing origins for the same package — `Requirements contain conflicting URLs for package \`tmux-kit\`` — even with byte-identical URLs. Broke a real production `muxplex update` at v0.47.11. The override is only correct for a non-git (PyPI) muxplex target |
 
 ## 2. The mechanics, resolved
 
@@ -951,3 +952,104 @@ Resolution requires one owner decision — delete the `tmuxkit` project (freeing
 `tmux-kit`), or ship the library under `tmuxkit`, the name already owned. Both
 are one-way doors on PyPI; neither is agent-performable, because PyPI exposes
 no deletion API and its tokens are upload-scoped.
+
+
+## 19. POST-MORTEM — §2.5 step 3's unconditional `--with` broke a real upgrade (ledger #14)
+
+**Added 2026-08-15 after a real `muxplex update` failed in production at
+v0.47.11. Read this before touching the `--with` override logic again.**
+
+### 19.1 The failure
+
+```
+$ muxplex update
+  Installed: v0.47.10 ... via git @ v0.47.10
+  tmux-kit : v0.3.5 ... via git @ v0.3.5
+  Status: update available (v0.47.10 → v0.47.11)
+  ERROR: uv tool install failed:
+  × Failed to resolve dependencies for `muxplex` (v0.47.11)
+  ╰─▶ Requirements contain conflicting URLs for package `tmux-kit`:
+      - git+https://github.com/bkrabach/tmux-kit@v0.4.0
+      - git+https://github.com/bkrabach/tmux-kit@v0.4.0
+```
+
+The two URLs uv complains about are **byte-identical**. uv's conflicting-URL
+check counts requirement *origins*, not disagreements — two url-bearing
+origins for one package is rejected even when they name the exact same URL.
+
+### 19.2 Root cause
+
+§2.5 step 3 (this document, above) designed the override as unconditional:
+"If `info_kit.source == "git"`: ... the command is constructed in full:
+`uv tool install --force --refresh <mux_target> --with 'tmux-kit @
+git+<kit_url>@<kit_ref>'`" — with no case split on what `<mux_target>`
+itself is.
+
+That design never accounted for `<mux_target>` ALSO being a git URL. When
+muxplex itself is installed via `git+https://github.com/bkrabach/muxplex@vX`,
+that target's own `pyproject.toml` (checked out live by uv as part of the
+install) already carries:
+
+```toml
+[tool.uv.sources]
+tmux-kit = { git = "https://github.com/bkrabach/tmux-kit", tag = "vY.Y.Y" }
+```
+
+uv honors that pin **on its own** — no `--with` required. The `--with`
+override this plan designed is then a second, redundant, url-bearing
+origin for the identical package, and uv refuses to resolve rather than
+silently pick one (correctly — that is the same "never resolve an
+ambiguity silently" posture this whole plan otherwise relies on, e.g.
+§2.5 step 4's shape verification).
+
+### 19.3 Reproduced in isolation (scratch `UV_TOOL_DIR`, live install untouched)
+
+```
+A) uv tool install --force --refresh git+https://github.com/bkrabach/muxplex@v0.47.11 \
+     --with "tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.4.0"
+   -> × Failed to resolve dependencies ... conflicting URLs for `tmux-kit`  (the bug)
+
+B) uv tool install --force --refresh git+https://github.com/bkrabach/muxplex@v0.47.11
+   -> Installed. tmux-kit resolved from GIT at v0.4.0 -- exactly as
+      intended -- via the target's OWN [tool.uv.sources] pin, with no
+      --with at all.
+```
+
+Run B is the proof that the override is not merely harmless-but-redundant
+in this case — it is actively unnecessary, and adding it back is the
+regression, not a fix.
+
+### 19.4 The corrected rule (supersedes §2.5 step 3 above)
+
+The `--with tmux-kit @ git+...` override is issued **if and only if**
+tmux-kit's recorded source is git **AND** muxplex's own install target is
+**not** git:
+
+| tmux-kit source | muxplex install target | `--with` override |
+|---|---|---|
+| pypi / not git | (any) | not issued (unchanged) |
+| git | PyPI target (`muxplex`, unpinned or bare) | **issued** — the published wheel's metadata has no `[tool.uv.sources]` (see AGENTS.md's "tmux-kit pin/tag agreement"), so this is the ONLY thing pinning tmux-kit to git |
+| git | git target (`git+.../muxplex@vX`) | **NOT issued** — the target's own `[tool.uv.sources]` pin already does this; adding `--with` conflicts with it (ledger #14) |
+
+`_install_cmd_preserves_kit_override` (`cli.py`) is the mechanical guard for
+this table: it now takes the muxplex install target as an explicit third
+argument and enforces BOTH directions — override present for the
+PyPI-target row, override ABSENT for the git-target row. A command that
+gets either direction wrong fails the guard and the upgrade refuses rather
+than shipping the broken command from §19.1.
+
+### 19.5 What this cost, and the honest gap
+
+No data was lost; the upgrade refused loudly (`ERROR: upgrade failed`) and
+best-effort restarted the pre-upgrade service, per the try/finally
+discipline already in `upgrade()`. The user was stuck on v0.47.10 until
+this fix.
+
+**We could not determine why this exact pairing (git muxplex + git
+tmux-kit, both upgrade targets) hadn't triggered this on an earlier
+upgrade on this host**, even though both components have been git-sourced
+here for some time. Stated plainly rather than guessed at: possibly an
+earlier upgrade predated both pins pointing at tags that produced this
+exact conflict shape, or the uv version in use changed its conflicting-URL
+detection. Anyone revisiting this should look for the actual answer rather
+than assume one of the above without evidence.

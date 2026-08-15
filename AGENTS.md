@@ -864,6 +864,49 @@ tmux-kit checkout. Revert that `path` override back to the committed `git`
 source before committing — both guards above reject a committed `path`
 entry on sight.
 
+### `muxplex upgrade`'s `--with tmux-kit` override must NEVER be added on top of a git muxplex target
+
+**Incident (2026-08-15, v0.47.11): a real `muxplex update` failed with**
+`Requirements contain conflicting URLs for package \`tmux-kit\`` — naming
+**two byte-identical URLs**. uv rejects two requirement origins that both
+carry a URL for the same package, even when the URLs agree exactly; it is
+not a disagreement check, it is a "how many places named a URL for this
+package" check.
+
+Root cause: `upgrade()`'s uv-managed branch was unconditionally appending
+`--with 'tmux-kit @ git+<url>@<ref>'` whenever tmux-kit's recorded source
+was git — including when muxplex's OWN install target was ALSO a git
+target (`git+https://github.com/bkrabach/muxplex@vX`). But a git muxplex
+target's own `pyproject.toml` already carries the `[tool.uv.sources]` pin
+documented at the top of this section — uv reads and honors that pin on
+its own, with no override needed. The `--with` override is then a SECOND
+url-bearing origin for the identical package, and uv refuses to resolve.
+
+**The fix:** the override is only issued when muxplex's own install target
+is NOT git (i.e. the PyPI-target case, where the published wheel's
+metadata has stripped `[tool.uv.sources]` per the section above — there,
+`--with` is the ONLY thing that can pin tmux-kit to git, and it must stay).
+For a git muxplex target, the git target's own pin is sufficient by
+itself — proven by installing the exact real-world command with `--with`
+removed: it resolves tmux-kit from git at the expected ref with no error.
+See `_install_cmd_preserves_kit_override`'s docstring in `cli.py` for the
+full writeup and the corrected guard (it now REQUIRES the override's
+ABSENCE for a git muxplex target, and its presence for every other target
+— both directions are load-bearing, not just one).
+
+**Why this wasn't caught sooner:** every test and design note that shaped
+the original `--with`-override mechanism
+(`docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md` §2.5) exercised
+tmux-kit-is-git against a muxplex target that was either unconstrained or
+implicitly PyPI-shaped — none combined "muxplex itself git-sourced" with
+"tmux-kit git-sourced" through the real uv resolver. **We could not
+determine why this exact pairing hadn't been hit on an earlier upgrade on
+this host** (both muxplex and tmux-kit have been git-sourced here for a
+while) — stated plainly rather than guessed at; possibly earlier upgrades
+landed before both pins independently pointed at the same tag, or uv's own
+conflicting-URL detection changed between versions. Do not invent a cause
+if you're reading this and can't find one either — say so, the same way.
+
 ## Testing & workflow
 
 ### The suite is safe to run on a host running a live muxplex — by structural isolation, not by refusal
