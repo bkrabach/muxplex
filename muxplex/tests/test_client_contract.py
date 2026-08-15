@@ -767,12 +767,19 @@ def test_send_input_disabled_maps_to_input_forbidden_not_auth_error(sync_client)
 def test_no_credential_non_localhost_maps_to_auth_error():
     """A non-localhost caller with no credential must get 401 -> AuthError.
 
-    Every other test in this file uses a ("127.0.0.1", ...) client address,
-    which triggers `AuthMiddleware`'s localhost bypass (see
-    `_sync_asgi_client`). This test deliberately picks a non-localhost
-    address so the real auth-rejection path is exercised too.
+    Every other test in this file goes through `_sync_asgi_client`, which
+    always attaches a valid `muxplex_session` cookie (the localhost bypass
+    that once made a credential optional here is gone -- GHSA-7c6r-fvrh-9qp4).
+    This test builds a client with NO Authorization/Cookie header at all, so
+    the real auth-rejection path is exercised too.
     """
-    raw = _sync_asgi_client(client_addr=("203.0.113.5", 12345))
+    raw = ASGITestClient(
+        app,
+        base_url="http://testserver",
+        headers={"Accept": "application/json"},
+        follow_redirects=False,
+        client=("203.0.113.5", 12345),
+    )
     client = MuxplexClient("http://testserver", client=raw)
     try:
         with pytest.raises(AuthError):
