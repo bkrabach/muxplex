@@ -5334,6 +5334,15 @@ def _parse_agent_auth_list(stdout: str) -> dict[str, tuple[str, str]]:
     return result
 
 
+def _agent_bearer_headers() -> dict[str, str]:
+    """Return the Authorization header for calling the agent sidecar's own
+    HTTP face, or an empty dict when no bearer token is configured (an
+    empty ``Authorization: Bearer `` header is illegal and would make the
+    sidecar appear unreachable -- see the identical guard convention this
+    file already uses for the federation Bearer header)."""
+    return {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
+
+
 async def _agent_provider_served(provider: str) -> bool | None:
     """Ask the sidecar (not muxplex's own cached registry) whether
     `provider` currently has at least one served model.
@@ -5342,9 +5351,7 @@ async def _agent_provider_served(provider: str) -> bool | None:
     -- SS3.4: "not served, or the sidecar is unreachable" both mean
     "restart is required", so callers should treat None the same as False.
     """
-    headers = (
-        {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
-    )
+    headers = _agent_bearer_headers()
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
@@ -5443,11 +5450,7 @@ async def _restart_agent_sidecar_and_wait(*, timeout: float = 30.0) -> tuple[boo
     deadline = time.monotonic() + timeout
     last_detail = "no response yet"
     while time.monotonic() < deadline:
-        headers = (
-            {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"}
-            if _AGENT_PROXY_TOKEN
-            else {}
-        )
+        headers = _agent_bearer_headers()
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(
@@ -5507,11 +5510,7 @@ async def get_agent_provider_credential(request: Request) -> dict:
     sidecar_reachable = await _agent_provider_served("anthropic")
     sidecar_state = "unknown"
     if sidecar_reachable is not None:
-        headers = (
-            {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"}
-            if _AGENT_PROXY_TOKEN
-            else {}
-        )
+        headers = _agent_bearer_headers()
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(
@@ -5542,11 +5541,7 @@ async def get_agent_provider_credential(request: Request) -> dict:
 
     models: list[str] = []
     if sidecar_state == "running":
-        headers = (
-            {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"}
-            if _AGENT_PROXY_TOKEN
-            else {}
-        )
+        headers = _agent_bearer_headers()
         with contextlib.suppress(Exception):
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(
