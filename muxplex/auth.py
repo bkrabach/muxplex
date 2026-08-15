@@ -262,10 +262,6 @@ _STATIC_EXTENSIONS = {
 # imports AuthMiddleware from this module).
 _FRONTEND_DIR = (Path(__file__).parent / "frontend").resolve()
 
-# Socket-level localhost addresses — cannot be forged via HTTP headers
-_LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
-
-
 def _is_real_static_asset(path: str) -> bool:
     """Return True only if *path* resolves to an actual file inside
     ``_FRONTEND_DIR`` — i.e. something the static-file mount would genuinely
@@ -326,17 +322,29 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.federation_key = federation_key
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # 1. Localhost bypass — client.host is the socket-level IP and cannot
-        # be forged by the client (unlike the HTTP Host header).
+        # NOTE: there used to be a step 1 here that unconditionally trusted
+        # any request whose socket peer was 127.0.0.1/::1. It is GONE, on
+        # purpose -- see GHSA-7c6r-fvrh-9qp4. muxplex binds 0.0.0.0, so it
+        # answers on every address in 127.0.0.0/8, and any userspace-mode
+        # proxy (socat, `ssh -L`, an Incus/Docker userspace port-forward)
+        # re-originates the connection, so the re-originated socket peer is
+        # 127.0.0.1 for a genuinely REMOTE caller too. Measured live: an
+        # unauthenticated `GET /api/sessions` through such a proxy returned
+        # HTTP 200 with full session data, logged by muxplex itself as
+        # `127.0.0.1:<port>`. There is no socket-level signal that
+        # distinguishes "the process calling me is truly local" from "a
+        # proxy re-originated this for someone remote" -- so no IP-based
+        # rule can be correct here. Anything that needs local, credential-
+        # free access must get a real credential instead (a session cookie,
+        # the federation Bearer key, or HTTP Basic); it does not get a
+        # special case, because a special case IS this bypass.
         client_host = request.client.host if request.client else ""
-        if client_host in _LOCALHOST_ADDRS:
-            return await call_next(request)
 
-        # 2. Exempt paths (login page, auth endpoints)
+        # 1. Exempt paths (login page, auth endpoints)
         if request.url.path in _AUTH_EXEMPT_PATHS:
             return await call_next(request)
 
-        # 3. Static assets — login page needs its CSS/JS/images before auth.
+        # 2. Static assets — login page needs its CSS/JS/images before auth.
         # The extension check is a cheap pre-filter; `_is_real_static_asset`
         # is the actual security boundary -- see its docstring for the
         # incident this closes. Both must pass: a request must both look

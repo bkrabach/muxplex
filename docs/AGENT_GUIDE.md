@@ -43,20 +43,30 @@ muxplex has a single shared auth middleware (`muxplex/auth.py`,
 `AuthMiddleware.dispatch`). A request is accepted if **any** of these hold, in
 this order:
 
-1. **The connection came from localhost.** `127.0.0.1` or `::1` at the *socket*
-   level (`request.client.host`) — not the `Host` header, so it cannot be forged
-   by a remote client. An agent running on the same box as the server needs no
-   credential at all.
-2. **The path is public.** `/api/instance-info` and `/api/ca` are exempt by
+1. **The path is public.** `/api/instance-info` and `/api/ca` are exempt by
    design (`auth._AUTH_EXEMPT_PATHS`), plus `/login`, `/auth/mode`,
    `/auth/logout`. Paths ending in a static-asset extension (`.css`, `.js`,
    `.json`, `.svg`, `.png`, `.ico`, `.woff`, `.woff2`, `.ttf`, `.map`) are also
    served without auth so the login page can load its own assets.
-3. **A valid `muxplex_session` cookie** (what a browser gets after logging in).
-4. **`Authorization: Bearer <federation key>`** — this is the headless path, and
+2. **A valid `muxplex_session` cookie** (what a browser gets after logging in).
+3. **`Authorization: Bearer <federation key>`** — this is the headless path, and
    the one an agent uses.
-5. **`Authorization: Basic <base64 user:pass>`** — password or PAM, depending on
+4. **`Authorization: Basic <base64 user:pass>`** — password or PAM, depending on
    the server's auth mode.
+
+**There used to be a branch 1 here: "the connection came from localhost
+(`127.0.0.1`/`::1` at the socket level) needs no credential at all."  It is
+gone (GHSA-7c6r-fvrh-9qp4). muxplex binds `0.0.0.0`, so it answers on every
+address in `127.0.0.0/8`, and any userspace-mode proxy in front of it
+(`socat`, `ssh -L`, an Incus/Docker userspace port-forward) re-originates
+the connection, so the re-originated socket peer is `127.0.0.1` for a
+genuinely REMOTE caller too — measured live: an unauthenticated
+`GET /api/sessions` through such a proxy returned full session data. There
+is no socket-level signal that distinguishes "an agent on this box" from "a
+proxy re-originated this for someone remote," so the exemption could not be
+narrowed, only removed. If your automation was relying on running on the
+same box needing no credential, it now needs one — a federation key
+(branch 3) is the natural fit for a local script or agent.**
 
 ### Trusting the server's certificate — do this before anything above
 
@@ -103,21 +113,23 @@ openssl x509 -in muxplex-ca.crt -noout -fingerprint -sha256
 From then on, pass it as the verification bundle — never keep using `-k`:
 
 ```bash
-# same machine as the server — localhost bypass, no key needed
-curl -s --cacert muxplex-ca.crt -H "Accept: application/json" \
+# ANY caller, including one on the same machine as the server — a Bearer
+# key is always required now (GHSA-7c6r-fvrh-9qp4 closed the old localhost
+# exemption; see above).
+curl -s --cacert muxplex-ca.crt \
+  -H "Accept: application/json" \
+  -H "Authorization: Bearer $MUXPLEX_KEY" \
   https://127.0.0.1:8088/api/sessions
 
-# another machine — Bearer key required
+# another machine — identical requirement, same command shape
 curl -s --cacert muxplex-ca.crt \
   -H "Accept: application/json" \
   -H "Authorization: Bearer $MUXPLEX_KEY" \
   https://HOST:8088/api/sessions
 ```
 
-The first works with no credential at all because of branch 1 above (socket-level
-localhost); it still needs `--cacert`, because TLS verification happens before
-the auth middleware ever runs. The second is the ordinary remote case: trust
-anchor *and* Bearer key, both required.
+Both need `--cacert` (TLS verification happens before the auth middleware ever
+runs) and both need the Bearer key — there is no longer a same-host exemption.
 
 In Python, the `muxplex-client` package takes the same file
 (`client/muxplex_client/sync_client.py:47-73`):

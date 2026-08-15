@@ -2814,24 +2814,29 @@ def _bearer_only_caller(request: Request) -> bool:
     """Classify an already-authorized HTTP request as ``bearer_only`` or not.
 
     Mirrors ``_ws_auth_check``'s ``WSAuth`` classification for the terminal
-    WebSocket (see that function's docstring for the full rationale) --
-    localhost and a verified ``muxplex_session`` cookie are never
-    ``bearer_only``; only a request authorized SOLELY by the federation
-    Bearer key is. By the time this runs, ``AuthMiddleware`` has already
-    confirmed the request is authorized by ONE of localhost / cookie /
-    Bearer / Basic credentials (see auth.py) -- this only determines WHICH,
-    for the one caller (POST .../rename) that behaves differently for
-    ``bearer_only`` callers than for every other authorized caller.
+    WebSocket (see that function's docstring for the full rationale) -- a
+    verified ``muxplex_session`` cookie is never ``bearer_only``; only a
+    request authorized SOLELY by the federation Bearer key is. By the time
+    this runs, ``AuthMiddleware`` has already confirmed the request is
+    authorized by ONE of cookie / Bearer / Basic credentials (see auth.py)
+    -- this only determines WHICH, for the one caller (POST .../rename) that
+    behaves differently for ``bearer_only`` callers than for every other
+    authorized caller.
 
     A request authorized via HTTP Basic (a script holding real PAM/password
     login credentials, never issued a session cookie) is deliberately
     classified as NOT ``bearer_only`` here, same as a cookie -- it required
     knowing the operator's actual login credentials, strictly MORE trust
     than the shared federation Bearer key this fence exists to constrain.
+
+    NOTE: this used to short-circuit to ``False`` (i.e. "as trusted as a
+    cookie") for any socket peer at 127.0.0.1/::1, mirroring the auth
+    middleware's now-removed loopback bypass (GHSA-7c6r-fvrh-9qp4). That
+    check is gone: a re-originated proxy connection presents the same
+    127.0.0.1 peer for a genuinely remote Bearer-only caller, and there is
+    no socket-level signal that tells the two apart. A Bearer-only caller
+    is ``bearer_only`` regardless of which address it appears to come from.
     """
-    client_host = request.client.host if request.client else ""
-    if client_host in ("127.0.0.1", "::1"):
-        return False
     cookie = request.cookies.get("muxplex_session")
     if cookie and verify_session_cookie(_auth_secret, cookie, _auth_ttl):
         return False
@@ -4020,9 +4025,9 @@ class WSAuth(NamedTuple):
     """Result of a WebSocket authorization check (see ``_ws_auth_check``).
 
     ``bearer_only`` is True exactly when the ONLY credential that
-    authorized this connection was the federation Bearer key -- localhost
-    did not apply and no valid session cookie was presented. This is the
-    caller classification ``terminal_ws_proxy`` uses to decide whether the
+    authorized this connection was the federation Bearer key -- no valid
+    session cookie was presented. This is the caller classification
+    ``terminal_ws_proxy`` uses to decide whether the
     ``input_allowed_sessions`` typing fence applies to this connection (see
     that function's docstring and ``docs/API_SEMANTICS.md``'s "terminal WS
     input fence" section). A valid cookie ALWAYS wins this classification
@@ -4033,8 +4038,7 @@ class WSAuth(NamedTuple):
     also happens to send a Bearer header, never a Bearer-only caller
     impersonating one. Narrowing (gating a Bearer-only caller) is safe;
     widening based on a guess never is -- ``ok=True, bearer_only=False``
-    only when the classification is certain (localhost, or a verified
-    cookie).
+    only when the classification is certain (a verified cookie).
     """
 
     ok: bool
@@ -4045,15 +4049,22 @@ async def _ws_auth_check(websocket: WebSocket) -> WSAuth:
     """Return whether the WebSocket caller is authorized, and how.
 
     Closes the WebSocket with code 4001 and returns ``ok=False`` if the
-    caller is not authorized.  Localhost connections (127.0.0.1 / ::1) are
-    unconditionally trusted.  Remote callers must present a valid
-    ``muxplex_session`` cookie OR a Bearer token matching ``_federation_key``.
-    See ``WSAuth``'s docstring for what ``bearer_only`` means and why cookie
-    always wins the classification when both are present.
+    caller is not authorized. Every caller, including one whose socket peer
+    is 127.0.0.1/::1, must present a valid ``muxplex_session`` cookie OR a
+    Bearer token matching ``_federation_key``.
+
+    NOTE: this used to unconditionally trust any socket peer at
+    127.0.0.1/::1, mirroring the auth middleware's now-removed loopback
+    bypass -- see GHSA-7c6r-fvrh-9qp4 and auth.py's ``dispatch`` docstring
+    for the measured proof that a re-originated proxy connection presents
+    that same peer address for a genuinely remote caller. The terminal
+    WebSocket carries live scrollback and keystroke input, so an
+    unauthenticated bypass here is at least as dangerous as the HTTP one
+    that prompted the fix; it is closed for the identical reason and must
+    not be reintroduced. See ``WSAuth``'s docstring for what ``bearer_only``
+    means and why cookie always wins the classification when both are
+    present.
     """
-    host = websocket.client.host if websocket.client else ""
-    if host in ("127.0.0.1", "::1"):
-        return WSAuth(ok=True, bearer_only=False)
     session_cookie = websocket.cookies.get("muxplex_session")
     cookie_ok = session_cookie and verify_session_cookie(
         _auth_secret, session_cookie, _auth_ttl
