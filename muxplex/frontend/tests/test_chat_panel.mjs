@@ -392,6 +392,38 @@ function neverFetch() {
   return async (url) => { throw new Error('fetch should not have been called for: ' + url); };
 }
 
+/** Fetch stub for GET/PATCH /api/settings (muxplex-2qs persistence tests).
+ * `initial` seeds what GET returns; a PATCH merges its body into that same
+ * in-memory object, mirroring the real server's merge-and-return contract
+ * (muxplex/settings.py's patch_settings()) closely enough for these tests.
+ * `gate`, if given, is awaited before the GET response is returned -- used
+ * to simulate a slow-to-resolve initial load racing against a user click. */
+function settingsFetch(initial, { gate } = {}) {
+  var current = Object.assign({}, initial);
+  return async (url, opts) => {
+    if (url !== '/api/settings') {
+      throw new Error('unexpected fetch url in test: ' + url);
+    }
+    var method = (opts && opts.method) || 'GET';
+    if (method === 'GET') {
+      if (gate) await gate.promise;
+      return { ok: true, status: 200, text: async () => JSON.stringify(current) };
+    }
+    if (method === 'PATCH') {
+      Object.assign(current, JSON.parse(opts.body));
+      return { ok: true, status: 200, text: async () => JSON.stringify(current) };
+    }
+    throw new Error('unexpected method in test: ' + method);
+  };
+}
+
+/** A manually-resolvable gate for delaying a stubbed fetch response. */
+function makeGate() {
+  var resolve;
+  var promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
 /** Drive a full user turn through the real DOM: type text, click Send,
  * wait for the confirmation gate to open (the panel says so on screen),
  * click the dialog's Send, then wait for the whole chain (including the
@@ -542,7 +574,10 @@ test('18f: Mode A (default) -- plain Enter does not send and does not preventDef
     preventDefault: () => { prevented = true; },
   });
   assert.strictEqual(prevented, false);
-  assert.strictEqual(panel.fetchCalls.length, 0, 'bare Enter in Mode A must not send');
+  assert.strictEqual(
+    panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 0,
+    'bare Enter in Mode A must not send'
+  );
 });
 
 test('18f: Mode A (default) -- Ctrl+Enter sends', async () => {
@@ -590,7 +625,10 @@ test('18f: Mode A (default) -- Ctrl+J does not send and inserts a newline', () =
   });
   assert.strictEqual(prevented, true, 'Ctrl+J must be intercepted (browser default opens downloads panel)');
   assert.strictEqual(input.value, 'a\nb');
-  assert.strictEqual(panel.fetchCalls.length, 0, 'Ctrl+J must never send');
+  assert.strictEqual(
+    panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 0,
+    'Ctrl+J must never send'
+  );
 });
 
 test('18f: Mode B -- plain Enter sends', async () => {
@@ -620,7 +658,10 @@ test('18f: Mode B -- Shift+Enter does not send (newline escape hatch)', () => {
     preventDefault: () => { prevented = true; },
   });
   assert.strictEqual(prevented, false);
-  assert.strictEqual(panel.fetchCalls.length, 0, 'Shift+Enter in Mode B must not send');
+  assert.strictEqual(
+    panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 0,
+    'Shift+Enter in Mode B must not send'
+  );
 });
 
 test('18f: Mode B -- Ctrl+J does not send', () => {
@@ -635,7 +676,10 @@ test('18f: Mode B -- Ctrl+J does not send', () => {
     preventDefault: () => {},
   });
   assert.strictEqual(input.value, 'a\nb');
-  assert.strictEqual(panel.fetchCalls.length, 0, 'Ctrl+J in Mode B must not send');
+  assert.strictEqual(
+    panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 0,
+    'Ctrl+J in Mode B must not send'
+  );
 });
 
 test('18f: the hint names the chord that actually sends, and behavior agrees, in BOTH modes', async () => {
@@ -650,7 +694,10 @@ test('18f: the hint names the chord that actually sends, and behavior agrees, in
       preventDefault: () => { prevented = true; },
     });
     assert.strictEqual(prevented, false);
-    assert.strictEqual(panel.fetchCalls.length, 0, 'hint said Ctrl+Enter to send -- bare Enter must not send');
+    assert.strictEqual(
+      panel.fetchCalls.filter((c) => c.url === '/api/agent/chat/completions').length, 0,
+      'hint said Ctrl+Enter to send -- bare Enter must not send'
+    );
   }
   // Mode B: hint says Enter to send; bare Enter MUST send.
   {
@@ -688,4 +735,73 @@ test('2qs: init() does not require a #chat-close-btn element', () => {
   // And the panel is otherwise fully wired (init() ran to completion, not
   // short-circuited before the fatal-missing-element check).
   assert.strictEqual(typeof panel.prefs.getSendMode, 'function');
+});
+
+// =======================================================================
+// GROUP 5 (muxplex-2qs) -- persisted open/closed state via GET/PATCH
+// /api/settings. This is the SAME server-side mechanism app.js's left
+// session sidebar uses (settings.sidebarOpen in muxplex/settings.py --
+// see DEFAULT_SETTINGS/SYNCABLE_KEYS), just fetched independently here
+// since chat.js is a closed IIFE that does not reach into app.js's
+// _serverSettings/patchServerSetting internals (see the file's own
+// "ONE deliberate exception" note near its end). Key name: agentPanelOpen.
+// =======================================================================
+
+test('2qs: agentPanelOpen:true from the server opens the panel on load', async () => {
+  const panel = loadChatPanel({ fetchImpl: settingsFetch({ agentPanelOpen: true }) });
+  await waitUntil(
+    () => panel.els['chat-open-btn'].getAttribute('aria-pressed') === 'true',
+    { label: 'panel to open from persisted settings' }
+  );
+  assert.strictEqual(panel.els['chat-panel'].classList.contains('hidden'), false);
+});
+
+test('2qs: agentPanelOpen:false from the server leaves the panel closed', async () => {
+  const panel = loadChatPanel({ fetchImpl: settingsFetch({ agentPanelOpen: false }) });
+  await new Promise((r) => setTimeout(r, 10)); // let the init-time GET settle
+  assert.strictEqual(panel.els['chat-open-btn'].getAttribute('aria-pressed'), 'false');
+  assert.strictEqual(panel.els['chat-panel'].classList.contains('hidden'), true);
+});
+
+test('2qs: agentPanelOpen:null (never toggled) leaves the panel closed -- no width auto-detect like the sidebar has', async () => {
+  const panel = loadChatPanel({ fetchImpl: settingsFetch({ agentPanelOpen: null }) });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.strictEqual(panel.els['chat-open-btn'].getAttribute('aria-pressed'), 'false');
+  assert.strictEqual(panel.els['chat-panel'].classList.contains('hidden'), true);
+});
+
+test('2qs: clicking the Agent button PATCHes agentPanelOpen with the new value', async () => {
+  const panel = loadChatPanel({ fetchImpl: settingsFetch({ agentPanelOpen: false }) });
+  await new Promise((r) => setTimeout(r, 10)); // let the init-time GET settle first
+  panel.els['chat-open-btn']._fire('click');
+  await waitUntil(
+    () => panel.fetchCalls.some((c) => c.url === '/api/settings' && c.opts && c.opts.method === 'PATCH'),
+    { label: 'PATCH /api/settings after toggle' }
+  );
+  const patchCall = panel.fetchCalls.find((c) => c.url === '/api/settings' && c.opts.method === 'PATCH');
+  assert.deepStrictEqual(JSON.parse(patchCall.opts.body), { agentPanelOpen: true });
+  // Toggling closed again PATCHes false.
+  panel.els['chat-open-btn']._fire('click');
+  await waitUntil(
+    () => panel.fetchCalls.filter((c) => c.url === '/api/settings' && c.opts.method === 'PATCH').length === 2,
+    { label: 'second PATCH /api/settings after re-toggle' }
+  );
+  const secondPatch = panel.fetchCalls.filter((c) => c.url === '/api/settings' && c.opts.method === 'PATCH')[1];
+  assert.deepStrictEqual(JSON.parse(secondPatch.opts.body), { agentPanelOpen: false });
+});
+
+test('2qs: a user toggle that lands before the init-time GET resolves is not clobbered by the stale read', async () => {
+  const gate = makeGate();
+  const panel = loadChatPanel({ fetchImpl: settingsFetch({ agentPanelOpen: false }, { gate }) });
+  // The user opens the panel before the init-time GET (agentPanelOpen:
+  // false, fetched before this click) has resolved.
+  panel.els['chat-open-btn']._fire('click');
+  assert.strictEqual(panel.els['chat-open-btn'].getAttribute('aria-pressed'), 'true');
+  // Now let the stale GET resolve.
+  gate.resolve();
+  await new Promise((r) => setTimeout(r, 10));
+  // The user's own toggle must win -- the panel must still be open, not
+  // reverted to the stale false the GET was carrying.
+  assert.strictEqual(panel.els['chat-open-btn'].getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(panel.els['chat-panel'].classList.contains('hidden'), false);
 });

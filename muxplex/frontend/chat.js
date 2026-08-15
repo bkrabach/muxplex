@@ -2468,19 +2468,31 @@
     var panelIsOpen = false;
     var lastOpener = null;
 
+    /** Apply ONLY the panel's visual open/closed state: the hidden class,
+     * aria-pressed on both header buttons, and (when opening) re-homing the
+     * panel into the active view. No interactive side effects (focus,
+     * autoGrowInput) -- those belong to setPanelOpen below, which wraps this
+     * for real user-driven toggles. This split mirrors app.js's
+     * initSidebar()/toggleSidebar() split: a plain state-application
+     * function, shared by both the init-time restore and the interactive
+     * toggle, so there is exactly one definition of what "open" looks like. */
+    function applyPanelVisualState(open) {
+      panelIsOpen = !!open;
+      panelEl.classList.toggle("hidden", !open);
+      agentButtons().forEach(function (b) {
+        b.setAttribute("aria-pressed", open ? "true" : "false");
+      });
+      if (open) homeAgentPanel();
+    }
+
     /** Single source of truth for "is the panel open", reflected onto both
      * buttons' aria-pressed (which style.css also styles off -- see
      * .header-btn--agent[aria-pressed="true"]) so the visual active state
      * and the accessibility tree cannot drift apart. */
     function setPanelOpen(open, opener) {
       var wasOpen = panelIsOpen;
-      panelIsOpen = !!open;
-      panelEl.classList.toggle("hidden", !open);
-      agentButtons().forEach(function (b) {
-        b.setAttribute("aria-pressed", open ? "true" : "false");
-      });
+      applyPanelVisualState(open);
       if (open) {
-        homeAgentPanel();
         // muxplex-2y1: the composer's resting height is guaranteed by CSS
         // min-height, which is what makes first paint correct. This call is
         // the second half: while the panel was display:none, scrollHeight
@@ -2498,11 +2510,74 @@
       }
     }
 
+    // ------------------------------------------------------------------
+    // Persisted open/closed state (muxplex-2qs)
+    // ------------------------------------------------------------------
+    // Remembers the panel's open/closed state the SAME way the left
+    // session sidebar remembers its own (settings.sidebarOpen in
+    // muxplex/settings.py's DEFAULT_SETTINGS/SYNCABLE_KEYS): a plain
+    // boolean synced through GET/PATCH /api/settings, not a second,
+    // parallel localStorage scheme. This file does not reach into app.js's
+    // _serverSettings/patchServerSetting internals to do it -- this file is
+    // a closed IIFE that talks to muxplex only through its own apiFetch
+    // (see the file header's endpoint list and the "ONE deliberate
+    // exception" note near the bottom of this file), so it fetches and
+    // patches /api/settings directly, using the exact same key
+    // (agentPanelOpen) and the exact same server-side contract the sidebar
+    // relies on. Same mechanism; independent wiring; no drift possible
+    // because there is exactly one key and one server-side definition of
+    // it.
+    //
+    // Unlike sidebarOpen, a null/never-set value does NOT auto-detect from
+    // screen width -- the panel is an opt-in secondary tool (opened via a
+    // button click), not primary navigation, so "never toggled" simply
+    // means "stay closed", which is also today's pre-existing default.
+    var _panelUserToggled = false;
+
+    /** PATCH the persisted state. Fire-and-forget from the caller's point
+     * of view (matches patchServerSetting's own "log and move on" failure
+     * handling) -- a failed save degrades to "this device's next reload
+     * uses the last value the server had", never a thrown error the user
+     * would see. */
+    async function persistPanelOpen(open) {
+      try {
+        await apiFetch("PATCH", "/api/settings", {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentPanelOpen: !!open }),
+        });
+      } catch (e) {
+        console.warn("chat panel: failed to persist agentPanelOpen", e);
+      }
+    }
+
     function togglePanel(e) {
+      _panelUserToggled = true;
       setPanelOpen(!panelIsOpen, e && e.currentTarget);
+      persistPanelOpen(panelIsOpen);
     }
 
     setPanelOpen(false); // establish aria-pressed="false" before any click
+
+    // Restore the persisted value once it's available. Independent of
+    // app.js's own settings load (see note above) -- so this is not racing
+    // app.js's DOMContentLoaded handler, only its own GET. If the user
+    // manages to toggle the panel before this GET resolves, _panelUserToggled
+    // guards against clobbering their fresh, already-persisted choice with
+    // this now-stale read.
+    (async function restorePersistedPanelState() {
+      var resp;
+      try {
+        resp = await apiFetch("GET", "/api/settings");
+      } catch (e) {
+        console.warn("chat panel: failed to load agentPanelOpen", e);
+        return;
+      }
+      if (_panelUserToggled) return;
+      if (!resp.ok || !resp.json) return;
+      var stored = resp.json.agentPanelOpen;
+      if (stored === null || stored === undefined) return; // never set -- stay closed
+      applyPanelVisualState(!!stored);
+    })();
 
     openBtn.addEventListener("click", togglePanel);
 

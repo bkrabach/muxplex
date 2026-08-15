@@ -175,6 +175,13 @@ DEFAULT_SETTINGS: dict = {
     "activityIndicator": "both",
     "gridViewMode": "flat",
     "sidebarOpen": None,
+    # Agent chat panel open/closed state -- syncs the SAME way sidebarOpen
+    # does (see that key's comment above and SYNCABLE_KEYS below). None
+    # means "never toggled"; the panel's own client-side code treats that
+    # as "stay closed" (unlike sidebarOpen, which auto-detects from screen
+    # width -- the panel has no equivalent width heuristic since it is an
+    # opt-in secondary tool, not primary navigation).
+    "agentPanelOpen": None,
     "settings_updated_at": 0.0,
     # Timestamp of the last change to `views` or `hidden_sessions` SPECIFICALLY.
     # Metadata, like settings_updated_at -- not itself a "setting" a client
@@ -396,6 +403,7 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
         "activityIndicator",
         "gridViewMode",
         "sidebarOpen",
+        "agentPanelOpen",
         # Session behavior
         "sort_order",
         "hidden_sessions",
