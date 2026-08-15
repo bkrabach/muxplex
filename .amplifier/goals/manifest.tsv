@@ -1,0 +1,6 @@
+# lane	worktree	branch	tmux	goal	log	session_id	pid
+# batch=mxp1 launched_at=1786807971 wall_s=18000 max_turns=250
+panel	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp1-panel	mxp1/panel	gb__mxp1__panel	.amplifier/goals/panel.md	/tmp/gb-mxp1-panel.log	0f315e0f-599d-4f9e-8170-20335dd26f5d	923117
+design	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp1-design	mxp1/design	gb__mxp1__design	.amplifier/goals/design.md	/tmp/gb-mxp1-design.log	0b223a47-0c07-492d-a05c-a5115213a962	924355
+deck	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp1-deck	mxp1/deck	gb__mxp1__deck	.amplifier/goals/deck.md	/tmp/gb-mxp1-deck.log	ef6749ff-5451-4946-8104-f71bf5b00805	924871
+sidecar	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp1-sidecar	mxp1/sidecar	gb__mxp1__sidecar	.amplifier/goals/sidecar.md	/tmp/gb-mxp1-sidecar.log	8880a9fa-12c7-4805-92db-adf70cb031de	925298
