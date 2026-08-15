@@ -99,7 +99,7 @@ DEFAULT_SETTINGS: dict = {
     # which denies EVERY session. Flipping `input_enabled: true` therefore
     # did nothing on its own: the operator hit a second 403 and had to
     # enumerate session names by hand before anything worked. That second
-    # wall is gone. The default is now `"*"` -- every session.
+    # wall is gone. The default is now `*` -- every session.
     #
     #   Net effect: ONE deliberate action (`input_enabled: true`) now turns
     #   typing on for EVERY session, including the operator's own working
@@ -115,17 +115,31 @@ DEFAULT_SETTINGS: dict = {
     # partition is load-bearing (the federation Bearer key IS the agent
     # credential).
     #
-    # BOTH FORMS ARE ACCEPTED for `input_allowed_sessions`: the bare string
-    # `"*"` (the default, and what a human naturally hand-writes after
-    # reading the docs) and the list `["*"]`. A bare string is normalized
-    # to a one-element list on load -- see
+    # BOTH FORMS ARE ACCEPTED for `input_allowed_sessions`: the list
+    # `["*"]` and the bare string `"*"` (what a human naturally hand-writes
+    # after reading a doc that says "the default is *"). A bare string is
+    # normalized to a one-element list on load -- see
     # normalize_input_allowed_sessions() for why that normalization exists
     # and why it cannot widen the fence for a remote caller.
+    #
+    # The DEFAULT below is deliberately the LIST form, not the scalar, for
+    # two reasons that both bite silently if reversed:
+    #   1. The fence requires a list. Written as `["*"]` the default works
+    #      with ZERO coercion in the path -- if normalization were ever
+    #      removed or broken, the default still allows every session. A
+    #      scalar default would silently collapse to deny-all instead,
+    #      re-creating the exact dead end this change removes.
+    #   2. `load_settings()` on a fresh install must equal DEFAULT_SETTINGS
+    #      (modulo the device_name hostname fill-in). A scalar default plus
+    #      load-time normalization breaks that invariant -- test_settings.py
+    #      asserts it in two places.
+    # An operator never sees this distinction: both forms behave
+    # identically, and `GET /api/settings` always reports the list.
     #
     # Deliberately NOT in SYNCABLE_KEYS: a security fence must never be
     # widened by a federation peer's settings sync.
     "input_enabled": False,
-    "input_allowed_sessions": "*",
+    "input_allowed_sessions": ["*"],
     "federation_key": "",
     "tls_cert": "",
     "tls_key": "",

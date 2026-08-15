@@ -78,7 +78,7 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
 1. `is_valid_session_name({name})` at the boundary → 400 (same guard as
    connect/delete; no `:`, no leading `-`, no shell metacharacters).
 2. **Global opt-in** `settings.input_enabled` (default `false`) → 403 when off.
-3. **Per-session allowlist** `settings.input_allowed_sessions` (default `"*"`
+3. **Per-session allowlist** `settings.input_allowed_sessions` (default `["*"]`
    — see "the default was WIDENED" below; it used to be `[]`)
    → 403 if `{name}` matches none of the entries, *even when enabled*.
    Entries are **glob patterns**, matched case-**insensitively** (see
@@ -124,7 +124,7 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
    `input_enabled: true` did *nothing on its own*: the operator hit a second
    403 and had to enumerate session names by hand before anything worked.
    Three separate times that read as "the feature is broken." The default is
-   now `"*"` — every session — so **one deliberate operator action
+   now `["*"]` — every session — so **one deliberate operator action
    (`input_enabled: true`) now opens typing for EVERY session, including the
    human's own working panes.** Narrowing is opt-in: if you want only some
    sessions typeable you must now say so explicitly
@@ -138,13 +138,14 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
    own working panes stay un-typeable: don't list them" now requires an
    explicit narrowing edit; it is no longer what you get by default.
 
-   **Both the bare string `"*"` and the list `["*"]` are accepted.** The fence
-   itself still requires a list (`tmux_kit.keys.input_allowed_for_session`
+   **Both the list `["*"]` (the default) and the bare string `"*"` are
+   accepted.** The fence itself still requires a list (`tmux_kit.keys.input_allowed_for_session`
    treats any non-list as empty — unchanged), so `settings.load_settings()`
    normalizes a bare string into a one-element list *upstream* of the fence
    (`settings.normalize_input_allowed_sessions`). Without that, a hand-written
-   `"input_allowed_sessions": "*"` — the exact form this key now defaults to,
-   and the form every doc names — would be read as deny-all and 403 silently,
+   `"input_allowed_sessions": "*"` — the shorthand a human naturally writes
+   after reading "the default is `*`" — would be read as deny-all and 403
+   silently,
    which is the same dead end this change exists to remove. The normalization
    cannot widen anything for a remote caller: the key is `LOCAL_ONLY_KEYS`, so
    the only value it can ever see came from a local operator editing the file.

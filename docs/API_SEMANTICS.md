@@ -698,7 +698,7 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   **`session_commands` is a sixth key in the same fence** (named session
   command pairs, below) -- extend the count wherever a client or test
   enumerates it.
-- **`input_allowed_sessions` now DEFAULTS to `"*"` (every session), not `[]`.**
+- **`input_allowed_sessions` now DEFAULTS to `["*"]` (every session), not `[]`.**
   A client that reads this key off `GET /api/settings` and infers a security
   posture from it must not treat "the operator never set this" as "input is
   locked down" -- that inference was correct before this change and is wrong
@@ -709,15 +709,15 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   fences are now asymmetric on purpose: `input_enabled` (still default
   `false`) is the gate, and the allowlist is a narrowing tool the operator
   reaches for only when they want less than everything.
-  - **Wire shape: BOTH the bare string `"*"` and the list `["*"]` are valid
-    on disk, but `GET /api/settings` always returns a LIST.**
+  - **Wire shape: BOTH the list `["*"]` (the default) and the bare string
+    `"*"` are valid on disk, but `GET /api/settings` always returns a LIST.**
     `settings.load_settings()` normalizes a bare string into a one-element
     list (`settings.normalize_input_allowed_sessions`) before any consumer
     sees it, so a client can rely on `list[str]` and never needs to handle
     the scalar form. The normalization exists because the fence itself
     (`tmux_kit.keys.input_allowed_for_session`) requires a list and treats
-    any non-list as empty -- without it, the very form this key now defaults
-    to would silently mean deny-all. It does not split on commas and does
+    any non-list as empty -- without it, the shorthand a human writes after
+    reading "the default is `*`" would silently mean deny-all. It does not split on commas and does
     not reintroduce substring matching.
   - **An empty list still means deny-everything.** `[]` and `"*"` are
     opposites, not synonyms -- do not "helpfully" coerce one into the other.

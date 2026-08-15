@@ -130,7 +130,11 @@ def test_input_disabled_by_default_in_settings():
     must never be relaxed.
     """
     assert DEFAULT_SETTINGS["input_enabled"] is False
-    assert DEFAULT_SETTINGS["input_allowed_sessions"] == "*"
+    # The LIST form on purpose: the fence requires a list, so written this
+    # way the default needs no coercion to work. A bare "*" in a
+    # hand-written settings.json is equally accepted (normalized on load) --
+    # see the bare-string tests at the bottom of this file.
+    assert DEFAULT_SETTINGS["input_allowed_sessions"] == ["*"]
 
 
 def test_input_fences_are_not_syncable():
