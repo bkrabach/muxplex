@@ -1422,7 +1422,8 @@
       // A 403 here is not a fault. It is a permission state with a known
       // human remedy, and the person reading this is usually the one person
       // who can apply it. Never say "no workaround" -- see muxplex-5so.
-      var globallyOff = /input_enabled/i.test(msg);
+      // Same rule as the thrower: decided from the server's own wording.
+      var globallyOff = !/input_allowed_sessions/i.test(msg);
       return {
         headline: globallyOff
           ? "muxplex is not accepting typed input into any session yet."
@@ -1803,7 +1804,15 @@
         // carries all of that, and distinguishes the two distinct 403s.
         if (inputResp.status === 403) {
           var fenceText = inputResp.text || "";
-          var globallyOff = /input_enabled/i.test(fenceText);
+          // Which of the two fences refused, decided from the server's OWN
+          // wording rather than from a guess. muxplex says either
+          // "Session input is disabled (settings.input_enabled=false)" or
+          // "Session 'x' does not match any input_allowed_sessions pattern".
+          // Keying on the PRESENCE of the allowlist phrase (rather than the
+          // absence of the other) means an unrecognised future message
+          // degrades to the global case -- the more conservative advice --
+          // instead of confidently naming the wrong fence.
+          var globallyOff = !/input_allowed_sessions/i.test(fenceText);
           throw new Error(
             "POST " + inputUrl + " failed: HTTP 403" +
             (fenceText ? " -- " + fenceText : "") + "\n\n" +
