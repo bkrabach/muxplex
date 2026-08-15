@@ -7,6 +7,13 @@
 > out-of-band. This file is that wiring, written down, so the POC can be stood
 > back up from a clean box instead of being re-derived.
 
+> **Setting it up for the first time? → [`AGENT_CHAT_SETUP.md`](AGENT_CHAT_SETUP.md).**
+> That page is the task-shaped path — install, configure a provider, prove it
+> works, diagnose it when it doesn't — with the failure modes named and their
+> real log output quoted. **This** page is the architecture and the reasoning
+> behind it: read it to understand *why* the deployment looks like this, or
+> when you need to change something the setup path doesn't cover.
+
 ## What this is
 
 An AI chat panel embedded in the muxplex dashboard. The interesting property
@@ -37,6 +44,36 @@ browser  --(muxplex_session cookie)-->  muxplex  --(sidecar bearer)-->  amplifie
 Traffic only ever flows browser → muxplex → agent. Never the reverse. There is
 no path by which the sidecar initiates a call into muxplex — and the iptables
 rule below is what removes that path from the realm of "we just don't do that."
+
+### Which box needs a key, in a federated deployment
+
+The owner's standing question, answered from the request path above rather than
+by assumption: **the box that served the page, and only that box.**
+
+`chat.js` POSTs to `/api/agent/chat/completions` as a *relative* URL, so it
+reaches whichever muxplex served the page; that muxplex proxies to its **own**
+sidecar at `_AGENT_PROXY_URL` (default `127.0.0.1:9099`). Peers are not in that
+path at any point. One configured device is therefore enough — provided it is
+the one the browser is pointed at. Two people opening the UI on two different
+boxes need two configured boxes.
+
+Federated *visibility* is already free, and for a structural reason rather than
+a lucky one: tools execute in the browser with the user's own cookie, so
+`list_muxplex_federated_sessions` hits `GET /api/federation/sessions` on the
+serving muxplex, which already aggregates every peer. No peer needs a key, a
+sidecar, or any configuration for its sessions to be visible to the agent.
+
+Federated *driving* is a different matter, and it is a capability gap rather
+than a configuration one: the other five tools all call local `/api/sessions`
+and `/api/state` paths, and muxplex has **no federation input route at all**.
+The agent can list a peer's sessions and cannot type into one.
+
+`AMPLIFIER_AGENT_URL` does make it mechanically possible to point muxplex at a
+sidecar on another host. **Not recommended** — the sidecar binds loopback and
+the fence rejects its every other local destination, both deliberately;
+remoting it means publishing an agent endpoint onto a network the fence
+argument was never built against. Treat it as a design change, not a config
+change. Operational detail: [`AGENT_CHAT_SETUP.md`](AGENT_CHAT_SETUP.md) §1.
 
 ## The six tools
 
@@ -93,9 +130,10 @@ sudo -u aa-svc -H bash -lc 'uv tool install amplifier-agent'
 POC ran `amplifier-agent, version 0.12.0`, landing at
 `/home/aa-svc/.local/bin/amplifier-agent`.
 
-### 3. Host config — prompt caching disabled
+### 3. Host config — provider selection, and prompt caching disabled
 
-`/etc/amplifier-agent-host-config.json`, world-readable:
+`/etc/amplifier-agent-host-config.json`, world-readable. Template:
+[`agent-chat-sidecar/etc/amplifier-agent-host-config.json.example`](agent-chat-sidecar/etc/amplifier-agent-host-config.json.example).
 
 ```json
 {
@@ -114,9 +152,27 @@ around a filed upstream bug. Re-check whether it is still needed before
 carrying this forward; if the upstream fix has landed, this whole file may be
 deletable.
 
+**This file also silently decides which provider you get, and that is not
+obvious from looking at it.** When a `providers` block is present it is
+*authoritative*: the sidecar loads exactly those providers and does not consult
+provider environment variables for selection at all. Only when the block is
+absent does it auto-enable from whatever credentials it can resolve. So on this
+deployment, setting `OPENAI_API_KEY` in §4's env file changes nothing — you get
+Anthropic, silently, because this file says so. Deleting the file (or just the
+block) is what hands provider choice back to the environment.
+
+A declared provider that cannot authenticate fails **loudly and at startup**,
+not at message time: it logs `failed to enumerate models — AuthenticationError`
+and, if no declared provider produced any models, the process exits `2` rather
+than starting with an empty registry. See
+[`AGENT_CHAT_SETUP.md`](AGENT_CHAT_SETUP.md) §3.1 and §7 for the operational
+consequences and the verbatim log output.
+
 ### 4. The sidecar environment file
 
 `/etc/amplifier-agent-http-aasvc.env`, mode `0600`, owned `aa-svc:aa-svc`.
+Template:
+[`agent-chat-sidecar/etc/amplifier-agent-http-aasvc.env.example`](agent-chat-sidecar/etc/amplifier-agent-http-aasvc.env.example).
 
 ```ini
 AMPLIFIER_AGENT_HTTP_BIND=127.0.0.1
@@ -142,7 +198,10 @@ LAN, in the same spirit as AGENTS.md → "ttyd is loopback-only by design".
 
 ### 5. systemd unit
 
-`/etc/systemd/system/amplifier-agent-http.service`:
+`/etc/systemd/system/amplifier-agent-http.service` — shipped as an artifact at
+[`agent-chat-sidecar/etc/systemd/system/amplifier-agent-http.service`](agent-chat-sidecar/etc/systemd/system/amplifier-agent-http.service),
+so it installs alongside its own fence drop-in rather than being retyped from
+this page:
 
 ```ini
 [Unit]
@@ -259,7 +318,8 @@ what it does and does not cover).
 
 ### 7. Point muxplex at the sidecar
 
-`/etc/muxplex-agent-proxy.env`, mode `0600`, owned `root:root`:
+`/etc/muxplex-agent-proxy.env`, mode `0600`, owned `root:root`. Template:
+[`agent-chat-sidecar/etc/muxplex-agent-proxy.env.example`](agent-chat-sidecar/etc/muxplex-agent-proxy.env.example).
 
 ```ini
 AMPLIFIER_AGENT_URL=http://127.0.0.1:9099
@@ -345,7 +405,27 @@ Still open:
 - **Prompt caching disabled** as an upstream-bug workaround (§3); revisit.
 - **The sidecar is not in this repo** and is not versioned with it. A breaking
   change in `amplifier-agent`'s HTTP face breaks the panel with no signal here.
-- **`MODEL` is hardcoded** in `chat.js`, as is the `9099` default in `main.py`.
+- **`MODEL` is hardcoded** in `chat.js`, as is the `9099` default in `main.py`
+  — and the consequence is larger than "not configurable." The sidecar's served
+  model list is enumerated **live from the configured provider** at startup and
+  published at `GET /v1/models`; `AMPLIFIER_AGENT_HTTP_MODEL_ID` does not
+  constrain it (measured: that variable was `amplifier` while the served list
+  was three Claude ids, none of them `amplifier`). Whatever `chat.js` sends must
+  appear in that list or **every turn** returns
+  `400 {"code":"unknown_model"}` — verified live by requesting `gpt-4o`. So
+  pointing the host config at a non-Anthropic provider breaks the panel until
+  `chat.js` is edited too: **changing provider is not a configuration-only
+  change today.** Making the panel's model selectable, and surfacing the active
+  provider/model in the UI, is the fix; see
+  [`AGENT_CHAT_SETUP.md`](AGENT_CHAT_SETUP.md) §3.5.
+- **A dead sidecar renders as an empty turn.** When the sidecar is not
+  listening, the proxy route emits a loud in-stream error frame
+  (`agent sidecar unreachable at …`, `main.py`) — but `chat.js`'s stream loop
+  drops any SSE chunk carrying no `choices`, and that frame carries exactly
+  that shape. The user sees a turn that ends with nothing. Since a missing or
+  invalid provider key is a *startup* failure (exit `2`), this is the normal
+  presentation of the single most common misconfiguration. Rendering
+  stream-level `error` objects in the panel would close it.
 - **The debug-capture recorder is always on.** `chat.js` wraps all six tool
   handlers plus page-wide console/error hooks and buffers events in memory for
   the Export button. It is capped, and never leaves the browser unless a human
