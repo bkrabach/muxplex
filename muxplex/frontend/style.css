@@ -2095,7 +2095,22 @@ body {
    font-metric-dependent, and box-sizing:border-box means the padding and
    border are inside the height chat.js computes. overflow-y starts hidden
    so a one-line composer never shows a scrollbar; chat.js switches it to
-   auto only once the content actually exceeds the maximum. */
+   auto only once the content actually exceeds the maximum.
+
+   muxplex-2y1: the floor is `min-height`, and it is load-bearing rather than
+   decorative. autoGrowInput() is the only thing that ever sets `height`, and
+   it runs on `input` -- so before the first keystroke the height is whatever
+   the browser derived, and when chat.js measures a panel that is still
+   `display:none` scrollHeight reads 0 and it writes `height:0px`. The
+   composer then rendered at a fraction of its true size until a character
+   arrived, and never returned to that broken state afterwards ("even if you
+   deleted the char"), which is exactly the signature of a height nothing had
+   set yet. `min-height` fixes it at the layer that cannot be skipped: CSS
+   min-height always wins over an inline `height`, so the resting size is
+   correct from first paint, correct again after the field is emptied, and
+   correct even if the JS handler never runs at all. It is derived from the
+   line box declared just below -- 1.45em line + 12px padding + 2px border --
+   so it tracks the font rather than being a magic number. */
 .agent-panel-input {
   flex: 1 1 auto;
   resize: none;
@@ -2106,6 +2121,7 @@ body {
   border-radius: 4px;
   padding: 6px 8px;
   font: 13px/1.45 var(--font-ui);
+  min-height: calc(1.45em + 14px);
   overflow-y: hidden;
 }
 
@@ -2203,6 +2219,32 @@ body {
    one of the two is something you need and the other is a credit. */
 .agent-panel-hint {
   color: var(--text-muted);
+}
+
+/* muxplex-d8f: "Amplifier Agent" in the byline is a real link to the upstream
+   repo, in the site accent. The colour comes from var(--accent) (tokens.css)
+   and never from a literal -- the byline is the one place in the panel that
+   names the product, so it is exactly where a drifting hardcoded cyan would
+   be most visible and least likely to be noticed.
+   text-underline-offset keeps the rule off the descenders at 11px, where a
+   default-offset underline reads as a strikethrough. The focus ring is
+   explicit rather than inherited: this is the only focusable thing in the
+   byline row, and with the close X gone (muxplex-2qs) the panel has fewer
+   tab stops, so the ones left have to be obvious. */
+.agent-panel-byline-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agent-panel-byline-link:hover {
+  color: var(--accent-hover);
+}
+
+.agent-panel-byline-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* What the transcript shows before the first message. This used to be the raw

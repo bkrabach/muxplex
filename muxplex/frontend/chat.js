@@ -243,7 +243,7 @@
   var clientSessionId = null;
   var messages = []; // OpenAI-style chat messages for the CURRENT conversation
 
-  var panelEl, messagesEl, inputEl, sendBtn, newBtn, closeBtn, openBtn, exportBtn, exportLinkEl;
+  var panelEl, messagesEl, inputEl, sendBtn, newBtn, openBtn, exportBtn, exportLinkEl;
 
   // Confirmation-gate elements (send_muxplex_session_input only -- see
   // requestInputConfirmation()/resolveConfirm() below).
@@ -821,6 +821,82 @@
   // is roughly eight lines at the desktop 13px, five at the phone 16px --
   // enough to see a paragraph you are composing, not enough to push the
   // conversation you are replying to off the top of the panel.
+  // ---------------------------------------------------------------------
+  // Composer send/newline mode (muxplex-18f)
+  // ---------------------------------------------------------------------
+  // Two modes, chosen per device in the Agent settings tab:
+  //
+  //   MODE A "enter-newline" (DEFAULT)
+  //     Enter / Shift+Enter / Alt+Enter / Ctrl+J -> newline
+  //     Ctrl+Enter or Cmd+Enter                  -> send
+  //     Matches muxplex's own command bar. CRITICAL FOR TOUCH: a phone
+  //     keyboard has no chords, so this is the ONLY mode in which multiline
+  //     entry is possible at all. It must stay the default and must stay
+  //     reachable -- do not make mode B the default "because desktop".
+  //
+  //   MODE B "enter-send"
+  //     Enter                                    -> send
+  //     Shift+Enter / Alt+Enter / Ctrl+J         -> newline
+  //     Matches amplifier-app-cli, for people who want the terminal app's
+  //     muscle memory. Ctrl/Cmd+Enter still sends here too: it is a strict
+  //     superset, and a chord that sends in one mode must never silently
+  //     become a newline in the other.
+  //
+  // Storage is localStorage -- PER DEVICE, deliberately NOT a muxplex server
+  // setting and explicitly NOT federation-synced, because the right answer
+  // genuinely differs between a phone and a desktop. Key naming follows the
+  // established 'muxplex-<feature>' convention (see app.js's
+  // COMPOSE_PREF_STORAGE_KEY / SYNC_GROUP_STORAGE_KEY).
+  //
+  // getSendMode() is the ONE source of truth: the keydown handler branches
+  // on it and applyComposerKeyMode() writes every surface that DESCRIBES the
+  // chord from it. A hint that disagrees with the handler is worse than no
+  // hint, so there must never be a second place that decides this.
+  var SEND_MODE_KEY = "muxplex-agent-send-mode";
+  var SEND_MODE_NEWLINE = "enter-newline"; // Mode A
+  var SEND_MODE_SEND = "enter-send";       // Mode B
+
+  /** The active mode. Anything unrecognised (or a blocked localStorage)
+   * falls back to Mode A -- the mode that works on every device. */
+  function getSendMode() {
+    try {
+      var v = localStorage.getItem(SEND_MODE_KEY);
+      if (v === SEND_MODE_SEND || v === SEND_MODE_NEWLINE) return v;
+    } catch (e) {
+      // localStorage blocked (private mode, storage partitioning) -- stay on
+      // the default for this session rather than failing the composer.
+    }
+    return SEND_MODE_NEWLINE;
+  }
+
+  /** Persist the mode and immediately re-describe it everywhere. Returns the
+   * value actually stored, which is never an unrecognised one. */
+  function setSendMode(mode) {
+    var m = mode === SEND_MODE_SEND ? SEND_MODE_SEND : SEND_MODE_NEWLINE;
+    try { localStorage.setItem(SEND_MODE_KEY, m); } catch (e) { /* blocked -- ok */ }
+    applyComposerKeyMode();
+    return m;
+  }
+
+  /** Rewrite every surface that DESCRIBES the send chord, from the single
+   * value the handler BRANCHES on. Three surfaces, one source: the visible
+   * byline hint, the textarea's aria-keyshortcuts (what a screen reader
+   * announces), and the Send button's tooltip. */
+  function applyComposerKeyMode() {
+    var sends = getSendMode() === SEND_MODE_SEND;
+    var hint = document.getElementById("chat-key-hint");
+    if (hint) hint.textContent = (sends ? "Enter" : "Ctrl+Enter") + " to send";
+    if (inputEl) {
+      inputEl.setAttribute("aria-keyshortcuts", sends ? "Enter" : "Control+Enter Meta+Enter");
+    }
+    if (sendBtn) {
+      sendBtn.title = sends
+        ? "Send (Enter). Shift+Enter and Ctrl+J insert a newline instead of sending."
+        : "Send (Ctrl+Enter, or Cmd+Enter on a Mac). Enter, Shift+Enter and Ctrl+J " +
+          "all insert a newline instead of sending.";
+    }
+  }
+
   var COMPOSER_MAX_PX = 160;
 
   /** Resize the composer to fit its content, bounded. Sets height to "auto"
@@ -1409,9 +1485,36 @@
   // do, with the raw text still one click away. Transparency is a feature
   // of this tool; being the primary reading surface is not.
 
+  /** Which of muxplex's two input fences refused a 403, from the server's OWN
+   * wording: "Session input is disabled (settings.input_enabled=false)" (the
+   * GLOBAL switch) versus "...does not match any input_allowed_sessions
+   * pattern" (the ALLOWLIST). Returns "global" or "allowlist".
+   *
+   * muxplex-9n9: this used to be re-derived at render time by testing the
+   * WHOLE thrown message for /input_allowed_sessions/. That message also
+   * carries the model-facing guidance, which NAMES BOTH SETTINGS in every
+   * case -- so the test matched unconditionally and every refusal was
+   * reported as the allowlist case, telling users to edit the wrong setting
+   * while displaying a server detail that said the opposite. Two defences
+   * now: the fence is classified once at the throw site and carried on the
+   * Error (err.inputFence), and this function only ever looks at the part
+   * BEFORE the blank line -- the server's own text -- so even the fallback
+   * path cannot read the guidance prose.
+   *
+   * Keying on the PRESENCE of the allowlist phrase (rather than the absence
+   * of the other) means an unrecognised future message degrades to the
+   * global case -- the more conservative advice -- instead of confidently
+   * naming the wrong fence. */
+  function classifyInputFence(text) {
+    var serverPart = String(text || "").split("\n\n")[0];
+    return /input_allowed_sessions/i.test(serverPart) ? "allowlist" : "global";
+  }
+
   /** Turn a thrown tool error into { headline, remedy } in plain language.
-   * `remedy` may be null when there is genuinely nothing the user can do. */
-  function humaniseToolError(name, message) {
+   * `remedy` may be null when there is genuinely nothing the user can do.
+   * `err` is the original Error when one is available; its structured
+   * fields are preferred over anything re-parsed out of the message. */
+  function humaniseToolError(name, message, err) {
     var msg = String(message || "");
     var action = describeToolAction(name, {});
     var m403 = /HTTP 403/.test(msg);
@@ -1422,8 +1525,10 @@
       // A 403 here is not a fault. It is a permission state with a known
       // human remedy, and the person reading this is usually the one person
       // who can apply it. Never say "no workaround" -- see muxplex-5so.
-      // Same rule as the thrower: decided from the server's own wording.
-      var globallyOff = !/input_allowed_sessions/i.test(msg);
+      // The fence the THROWER classified wins; classifyInputFence() is only
+      // the fallback for a 403 this file did not compose.
+      var fence = (err && err.inputFence) || classifyInputFence(msg);
+      var globallyOff = fence !== "allowlist";
       return {
         headline: globallyOff
           ? "muxplex is not accepting typed input into any session yet."
@@ -1475,8 +1580,8 @@
 
   /** Render a failed tool call: a sentence, a remedy if one exists, and the
    * raw text collapsed underneath. */
-  function appendToolError(name, message) {
-    var h = humaniseToolError(name, message);
+  function appendToolError(name, message, err) {
+    var h = humaniseToolError(name, message, err);
     var div = document.createElement("div");
     div.className = "agent-msg-error";
     div.setAttribute("role", "alert");
@@ -1495,6 +1600,14 @@
     }
 
     // Raw detail, collapsed. Never the primary reading surface, never gone.
+    //
+    // muxplex-ixl: this renders err.userDetail -- the server's own response
+    // -- NOT the thrown message. The thrown message also carries guidance
+    // addressed to the model ("TELL THE USER exactly this", "Do NOT retry
+    // this call"), which was appearing on screen and reading as the app
+    // talking to itself in front of the customer. The model still receives
+    // that guidance in full; see the catch site in runTurn(). Errors with no
+    // userDetail (every other tool path) are unchanged and show as before.
     var det = document.createElement("details");
     det.className = "agent-msg-tool";
     var sum = document.createElement("summary");
@@ -1502,7 +1615,7 @@
     sum.textContent = "technical detail";
     var pre = document.createElement("pre");
     pre.className = "agent-msg-tool-raw";
-    pre.textContent = message;
+    pre.textContent = (err && err.userDetail) || message;
     det.appendChild(sum);
     det.appendChild(pre);
     div.appendChild(det);
@@ -1804,24 +1917,27 @@
         // carries all of that, and distinguishes the two distinct 403s.
         if (inputResp.status === 403) {
           var fenceText = inputResp.text || "";
-          // Which of the two fences refused, decided from the server's OWN
-          // wording rather than from a guess. muxplex says either
-          // "Session input is disabled (settings.input_enabled=false)" or
-          // "Session 'x' does not match any input_allowed_sessions pattern".
-          // Keying on the PRESENCE of the allowlist phrase (rather than the
-          // absence of the other) means an unrecognised future message
-          // degrades to the global case -- the more conservative advice --
-          // instead of confidently naming the wrong fence.
-          var globallyOff = !/input_allowed_sessions/i.test(fenceText);
-          throw new Error(
+          // Which of the two fences refused. Classified ONCE, here, from the
+          // server's own raw response -- and carried on the Error as a field
+          // so nothing downstream ever has to re-derive it from prose.
+          // See classifyInputFence() for why re-deriving it is a trap.
+          var fence = classifyInputFence(fenceText);
+          // The line a human may read. Server's own words, nothing else.
+          var userDetail =
             "POST " + inputUrl + " failed: HTTP 403" +
-            (fenceText ? " -- " + fenceText : "") + "\n\n" +
+            (fenceText ? " -- " + fenceText : "");
+          // Everything after the blank line is addressed to the MODEL and is
+          // never rendered on screen (muxplex-ixl). appendToolError() shows
+          // err.userDetail instead. The model still receives all of it,
+          // because it is what lets the model explain the remedy.
+          var fenceErr = new Error(
+            userDetail + "\n\n" +
             "This is NOT a dead end and NOT a fault -- it is a permission state with a " +
             "known human remedy. Terminal input is gated by whoever operates this muxplex, " +
             "in the file ~/.config/muxplex/settings.json on the machine running it, via two " +
             "settings: input_enabled (a global on/off switch, false by default) and " +
             "input_allowed_sessions (a per-session allowlist). " +
-            (globallyOff
+            (fence === "global"
               ? "This particular refusal is the GLOBAL switch: input_enabled is false, so no " +
                 "session accepts typed input yet. The operator needs to set it to true AND list " +
                 "the sessions they want to allow."
@@ -1836,6 +1952,9 @@
             "is the one who can change it. Do NOT tell them there is no workaround. Do NOT " +
             "retry this call."
           );
+          fenceErr.inputFence = fence;
+          fenceErr.userDetail = userDetail;
+          throw fenceErr;
         }
         throw new Error(
           "POST " + inputUrl + " failed: HTTP " + inputResp.status +
@@ -2100,12 +2219,15 @@
           });
         } catch (toolErr) {
           var __errMsg = String(toolErr && toolErr.message || toolErr);
-          // The MODEL still gets the full, unedited error (it is what lets it
-          // explain the remedy). The USER gets one plain sentence, with this
-          // exact text collapsed underneath -- see appendToolError.
+          // The MODEL still gets the full, unedited error -- including any
+          // guidance addressed to it -- because that is what lets it explain
+          // the remedy. The USER gets one plain sentence, with only the
+          // SERVER's own words collapsed underneath: appendToolError renders
+          // toolErr.userDetail when the thrower supplied one, never this
+          // blended string (muxplex-ixl).
           resultContent = JSON.stringify({ error: __errMsg });
           clearStatus();
-          appendToolError(tc2.function.name, __errMsg);
+          appendToolError(tc2.function.name, __errMsg, toolErr);
           capPush("tool_call_result", {
             tool_call_id: tc2.id,
             name: tc2.function.name,
@@ -2175,7 +2297,6 @@
     inputEl = $("chat-input");
     sendBtn = $("chat-send-btn");
     newBtn = $("chat-new-btn");
-    closeBtn = $("chat-close-btn");
     openBtn = $("chat-open-btn");
     exportBtn = $("chat-export-btn");
     exportLinkEl = $("chat-export-link");
@@ -2203,7 +2324,6 @@
     if (!inputEl) __missing.push("chat-input");
     if (!sendBtn) __missing.push("chat-send-btn");
     if (!newBtn) __missing.push("chat-new-btn");
-    if (!closeBtn) __missing.push("chat-close-btn");
     if (!openBtn) __missing.push("chat-open-btn");
     if (!exportBtn) __missing.push("chat-export-btn");
     // The confirmation gate is required for init, not optional: if any part
@@ -2361,6 +2481,13 @@
       });
       if (open) {
         homeAgentPanel();
+        // muxplex-2y1: the composer's resting height is guaranteed by CSS
+        // min-height, which is what makes first paint correct. This call is
+        // the second half: while the panel was display:none, scrollHeight
+        // read 0, so any inline height left over from a previous session is
+        // stale. Measuring here -- the first moment the element has a real
+        // layout box -- makes the height EXACT rather than merely floored.
+        autoGrowInput();
         if (opener) lastOpener = opener;
         if (finePointer) inputEl.focus();
       } else if (wasOpen) {
@@ -2391,9 +2518,10 @@
       console.warn("chat panel: #chat-open-btn-expanded not found -- panel only reachable from the overview header");
     }
 
-    closeBtn.addEventListener("click", function () {
-      setPanelOpen(false);
-    });
+    // muxplex-2qs: there is no close X any more. The Agent button IS the
+    // toggle, in both headers, and closing through it is what returns focus
+    // to it (see setPanelOpen's else-branch). Do not re-add a second close
+    // control without also deciding where focus lands when it is used.
     newBtn.addEventListener("click", newConversation);
     exportBtn.addEventListener("click", exportCaptureRecord);
     sendBtn.addEventListener("click", handleSend);
@@ -2426,13 +2554,29 @@
     //  * Ctrl/Cmd+Enter: preventDefault() as well -- without it the browser
     //    inserts a newline into the draft on its way out, so the input would
     //    be cleared with a stray blank line already typed into the next one.
+    //
+    // muxplex-18f made the plain-Enter case configurable. What did NOT change:
+    // Ctrl/Cmd+Enter sends in BOTH modes, and Shift+Enter / Alt+Enter / Ctrl+J
+    // insert a newline in BOTH modes. Only bare Enter differs. That is
+    // deliberate -- a chord whose meaning flips between modes is how someone
+    // fires off a half-written message after changing a setting they have
+    // already forgotten about.
     inputEl.addEventListener("keydown", function (e) {
       if (e.key === "Enter") {
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
           handleSend();
+          return;
         }
-        return; // plain / Shift / Alt Enter: the textarea's own newline
+        // Mode B only: bare Enter sends. Shift/Alt are the escape hatches and
+        // stay newline. getSendMode() is read HERE, per keystroke, not cached
+        // at wiring time -- the setting can change in another tab or in the
+        // settings dialog while this listener is already bound.
+        if (getSendMode() === SEND_MODE_SEND && !e.shiftKey && !e.altKey) {
+          e.preventDefault();
+          handleSend();
+        }
+        return; // otherwise: the textarea's own newline
       }
       if (e.ctrlKey && !e.metaKey && (e.key === "j" || e.key === "J")) {
         e.preventDefault();
@@ -2441,6 +2585,9 @@
     });
     inputEl.addEventListener("input", autoGrowInput);
     autoGrowInput();
+    // Describe the chord that is actually active, from the same value the
+    // handler above branches on (muxplex-18f).
+    applyComposerKeyMode();
 
     // Confirmation gate wiring. Exactly one path resolves true: an explicit
     // click on Send. Every other path -- Cancel click, backdrop click,
@@ -2455,6 +2602,27 @@
     confirmDialogEl.addEventListener("cancel", function () { resolveConfirm(false); });
     confirmDialogEl.addEventListener("close", function () { resolveConfirm(false); });
   }
+
+  // ---------------------------------------------------------------------
+  // The panel's per-device preferences, for the Agent settings tab (muxplex-3lr)
+  // ---------------------------------------------------------------------
+  // This file is otherwise a closed IIFE and contributes ZERO globals -- see
+  // AGENTS.md's v0.31.3 shared-scope incident, where two classic scripts each
+  // declared a top-level binding of the same name and the second one silently
+  // failed to parse. This is the single deliberate exception: the settings
+  // dialog lives in app.js and must not re-implement the storage key, the
+  // valid values, or the defaulting, because a second implementation of those
+  // is exactly how the hint and the handler drift apart.
+  //
+  // ONE namespaced object, assigned at IIFE-body level rather than inside
+  // init(), so it exists even if init() throws on a missing DOM element --
+  // the settings tab is then still coherent rather than half-wired.
+  window.muxplexAgentPrefs = {
+    SEND_MODE_NEWLINE: SEND_MODE_NEWLINE,
+    SEND_MODE_SEND: SEND_MODE_SEND,
+    getSendMode: getSendMode,
+    setSendMode: setSendMode,
+  };
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
