@@ -617,7 +617,18 @@
     </div>
     <div id="chat-messages" class="agent-panel-messages"></div>
     <div class="agent-panel-composer">
-      <textarea id="chat-input" class="agent-panel-input" rows="2" placeholder="Ask about your sessions..."></textarea>
+      <!-- muxplex-8qp: rows="1" is the FLOOR, not the size. chat.js's
+           autoGrowInput() sets the height from scrollHeight on every input
+           event, bounded at a stated maximum, after which the textarea
+           scrolls internally instead of eating the transcript. Starting at
+           one row means an empty composer is one line and a three-line draft
+           is three lines -- it used to be a fixed two rows forever.
+           The placeholder carries the send chord because Enter no longer
+           sends, and a behaviour change to a control you use constantly
+           should not be something you discover by losing a draft. -->
+      <textarea id="chat-input" class="agent-panel-input" rows="1"
+                placeholder="Ask about your sessions...  (Ctrl+Enter to send)"
+                aria-keyshortcuts="Control+Enter Meta+Enter"></textarea>
       <!-- muxplex-5bn, decided: Send is a REAL button, not a link. The owner
            left this open ("match our existing button designs if it needs to
            be a full on button, or if it should just be a link button, use
@@ -628,7 +639,8 @@
            inventing a fourth. It also drops .header-btn, whose 32px square
            this project's own mobile-compose-bar plan already rejected in
            writing as "too small for a primary action on a phone." -->
-      <button id="chat-send-btn" class="agent-panel-send-btn">Send</button>
+      <button id="chat-send-btn" class="agent-panel-send-btn"
+              title="Send (Ctrl+Enter, or Cmd+Enter on a Mac). Enter, Shift+Enter and Ctrl+J all insert a newline instead of sending.">Send</button>
     </div>
     <!-- muxplex-z6h: the attribution moved here from the panel header. It is
          a byline, not a banner -- last thing in the panel, under the input,

@@ -2080,17 +2080,33 @@ body {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
+  /* muxplex-8qp: the textarea grows with its content now, so the default
+     `stretch` would stretch Send to match it -- a Send button that gets
+     taller the more you type. flex-end keeps it beside the LAST line, where
+     the caret is. */
+  align-items: flex-end;
 }
 
+/* muxplex-8qp: height is owned by chat.js's autoGrowInput() (set inline from
+   scrollHeight, bounded at a stated maximum, internal scroll past it), so
+   this rule must not set `height` and must not reintroduce `rows`-based
+   sizing. It sets the floor and the line box the measurement depends on:
+   an explicit line-height means scrollHeight is predictable rather than
+   font-metric-dependent, and box-sizing:border-box means the padding and
+   border are inside the height chat.js computes. overflow-y starts hidden
+   so a one-line composer never shows a scrollbar; chat.js switches it to
+   auto only once the content actually exceeds the maximum. */
 .agent-panel-input {
   flex: 1 1 auto;
   resize: none;
+  box-sizing: border-box;
   background: var(--bg-secondary);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 6px 8px;
-  font: 13px var(--font-ui);
+  font: 13px/1.45 var(--font-ui);
+  overflow-y: hidden;
 }
 
 .agent-panel-input:focus {

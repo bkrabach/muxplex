@@ -807,6 +807,44 @@
     return document.getElementById(id);
   }
 
+  // ---------------------------------------------------------------------
+  // Composer sizing and editing helpers (muxplex-8qp)
+  // ---------------------------------------------------------------------
+
+  // STATED MAXIMUM. The composer grows with its content up to this height and
+  // then scrolls internally instead of continuing to eat the transcript. 160px
+  // is roughly eight lines at the desktop 13px, five at the phone 16px --
+  // enough to see a paragraph you are composing, not enough to push the
+  // conversation you are replying to off the top of the panel.
+  var COMPOSER_MAX_PX = 160;
+
+  /** Resize the composer to fit its content, bounded. Sets height to "auto"
+   * first because scrollHeight only shrinks back down once the element is
+   * not already being held open by its own inline height. */
+  function autoGrowInput() {
+    if (!inputEl) return;
+    inputEl.style.height = "auto";
+    var needed = inputEl.scrollHeight;
+    var h = Math.min(needed, COMPOSER_MAX_PX);
+    inputEl.style.height = h + "px";
+    // Only show a scrollbar once there is genuinely something to scroll --
+    // a permanently-scrollable box with two lines in it looks broken.
+    inputEl.style.overflowY = needed > COMPOSER_MAX_PX ? "auto" : "hidden";
+  }
+
+  /** Insert a newline at the caret, replacing any selection, and keep the
+   * caret after it. Used only by Ctrl+J, whose browser default (open the
+   * downloads panel) has to be suppressed -- so the newline the user asked
+   * for has to be produced explicitly rather than left to the textarea. */
+  function insertNewlineAtCursor() {
+    var start = inputEl.selectionStart;
+    var end = inputEl.selectionEnd;
+    var v = inputEl.value;
+    inputEl.value = v.slice(0, start) + "\n" + v.slice(end);
+    inputEl.selectionStart = inputEl.selectionEnd = start + 1;
+    autoGrowInput();
+  }
+
   function newConversation() {
     clientSessionId = "chat-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
     messages = [];
@@ -1527,6 +1565,7 @@
     var text = inputEl.value.trim();
     if (!text) return;
     inputEl.value = "";
+    autoGrowInput(); // collapse the composer back down with its content
     clearEmptyState(); // the opening line has done its job the moment there is a real message
     var bubble = appendBubble("user");
     bubble.textContent = text;
@@ -1722,12 +1761,50 @@
     newBtn.addEventListener("click", newConversation);
     exportBtn.addEventListener("click", exportCaptureRecord);
     sendBtn.addEventListener("click", handleSend);
+
+    // ------------------------------------------------------------------
+    // Composer keys (muxplex-8qp)
+    // ------------------------------------------------------------------
+    // This inverts the old behaviour, deliberately. It used to be
+    // Enter = send, Shift+Enter = newline. It is now:
+    //
+    //   Enter, Shift+Enter, Alt+Enter, Ctrl+J  -> newline, never sends
+    //   Ctrl+Enter, Cmd+Enter                  -> send
+    //   the Send button                        -> send
+    //
+    // The failure mode that matters here is silently sending a half-written
+    // message, so every path that a habit might reach for is routed to
+    // "newline", and only the two explicit chords send. Shift+Enter and
+    // Ctrl+J are in that list precisely BECAUSE they are habits from other
+    // chat clients -- someone who reaches for them must not be punished by
+    // having their draft fired off.
+    //
+    // Note on how each case is implemented, because they are not the same:
+    //  * Plain/Shift/Alt Enter: do NOTHING. A textarea already inserts a
+    //    newline on Enter; the correct fix is to stop calling
+    //    preventDefault(), not to insert one ourselves.
+    //  * Ctrl+J: MUST be intercepted. Its browser default is "open the
+    //    downloads panel" in Chrome/Edge/Firefox, so leaving it alone would
+    //    yank the user out of the composer instead of adding a line. It is
+    //    preventDefault()'d and the newline inserted explicitly.
+    //  * Ctrl/Cmd+Enter: preventDefault() as well -- without it the browser
+    //    inserts a newline into the draft on its way out, so the input would
+    //    be cleared with a stray blank line already typed into the next one.
     inputEl.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter") {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          handleSend();
+        }
+        return; // plain / Shift / Alt Enter: the textarea's own newline
+      }
+      if (e.ctrlKey && !e.metaKey && (e.key === "j" || e.key === "J")) {
         e.preventDefault();
-        handleSend();
+        insertNewlineAtCursor();
       }
     });
+    inputEl.addEventListener("input", autoGrowInput);
+    autoGrowInput();
 
     // Confirmation gate wiring. Exactly one path resolves true: an explicit
     // click on Send. Every other path -- Cancel click, backdrop click,
