@@ -615,7 +615,22 @@
            not a bare ✕. Listed here rather than silently left behind. -->
       <button id="chat-close-btn" class="header-btn" aria-label="Close chat">&#10005;</button>
     </div>
-    <div id="chat-messages" class="agent-panel-messages"></div>
+    <!-- muxplex-46p, WCAG 4.1.3. role="log" is the right role for a running
+         transcript, but its IMPLICIT aria-live is "polite" -- which on a
+         token-by-token stream means one announcement per token, i.e. the
+         naive fix the review explicitly warned about. aria-live="off" here
+         turns that off deliberately; the coherent announcements come from
+         #chat-live below, which chat.js flushes at sentence boundaries.
+         Do not "restore" aria-live on this element. -->
+    <div id="chat-messages" class="agent-panel-messages" role="log"
+         aria-label="Conversation with the Muxplex Agent" aria-live="off"></div>
+
+    <!-- The only live region in this panel. Visually hidden, never shown to
+         sighted users; chat.js writes whole clauses into it (see
+         announceStreamed / flushLive) rather than raw deltas, so a screen
+         reader hears sentences, not tokens. aria-atomic="true" because each
+         write is a complete thought that should be read as one. -->
+    <div id="chat-live" class="agent-panel-live" aria-live="polite" aria-atomic="true"></div>
     <div class="agent-panel-composer">
       <!-- muxplex-8qp: rows="1" is the FLOOR, not the size. chat.js's
            autoGrowInput() sets the height from scrollHeight on every input

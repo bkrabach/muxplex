@@ -892,28 +892,125 @@
   // class names defined in style.css (.agent-msg-*), which use the same
   // --bg-surface/--border/--text/--accent tokens as the rest of muxplex.
   // DOM shape, text content, and scroll behavior are unchanged.
+  // ---------------------------------------------------------------------
+  // Announcements to assistive tech (muxplex-46p, WCAG 4.1.3)
+  // ---------------------------------------------------------------------
+  // The transcript itself is deliberately NOT a live region (see the
+  // aria-live="off" on #chat-messages in index.html and the comment there).
+  // A live transcript on a token-by-token stream announces once per token,
+  // which is the naive fix the review specifically called out. Instead the
+  // accumulated text is buffered here and flushed into a hidden live region
+  // at CLAUSE boundaries, at most every LIVE_FLUSH_MS -- so a screen reader
+  // hears "Three sessions are running: counter, logtail and sysmon." once,
+  // not thirty times mid-word.
+  //
+  // Silence is the other failure, so the buffer is also flushed
+  // unconditionally at the end of a turn: whatever is left over is announced
+  // even if it never reached a full stop.
+
+  var LIVE_FLUSH_MS = 1200;
+  var liveEl = null;
+  var liveFullText = "";   // everything streamed so far this turn
+  var liveAnnounced = 0;   // how much of it has been announced
+  var liveTimer = null;
+
+  function announceNow(text) {
+    if (!liveEl || !text) return;
+    // aria-atomic="true", so replacing the content re-announces the whole
+    // of it -- one complete thought per write, which is the point.
+    liveEl.textContent = text;
+  }
+
+  function flushLive() {
+    liveTimer = null;
+    if (!liveEl) return;
+    var pending = liveFullText.slice(liveAnnounced);
+    if (!pending) return;
+    // Announce only up to the last sentence/line boundary, so nothing is
+    // ever read out mid-clause. If there is no boundary yet, wait for one.
+    var m = /^[\s\S]*[.!?\n:](?=\s|$)/.exec(pending);
+    if (!m) {
+      liveTimer = setTimeout(flushLive, LIVE_FLUSH_MS);
+      return;
+    }
+    liveAnnounced += m[0].length;
+    announceNow(m[0].trim());
+    if (liveFullText.length > liveAnnounced) {
+      liveTimer = setTimeout(flushLive, LIVE_FLUSH_MS);
+    }
+  }
+
+  /** Called with the ACCUMULATED assistant text on every content delta. */
+  function announceStreamed(fullSoFar) {
+    liveFullText = fullSoFar;
+    if (!liveTimer) liveTimer = setTimeout(flushLive, LIVE_FLUSH_MS);
+  }
+
+  /** End of a turn: say whatever is left, even if it never reached a full
+   * stop, then reset for the next turn. Silence would be the worse bug. */
+  function announceStreamEnd() {
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    var rest = liveFullText.slice(liveAnnounced).trim();
+    if (rest) announceNow(rest);
+    liveFullText = "";
+    liveAnnounced = 0;
+  }
+
+  /** A short, complete status sentence -- announced immediately rather than
+   * buffered, because these are what tell a non-sighted user that something
+   * is happening at all during the long silent gap while a tool runs. */
+  function announceStatus(text) {
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    var rest = liveFullText.slice(liveAnnounced).trim();
+    liveAnnounced = liveFullText.length;
+    announceNow(rest ? rest + " " + text : text);
+  }
+
+  /** Screen-reader-only role label. WCAG 1.4.1 is about not using colour as
+   * the ONLY visual cue -- the CSS handles that with offset, corner shape
+   * and a left rule -- but a screen reader gets no cue from any of those,
+   * so each message also carries its role as real (hidden) text. */
+  function roleLabel(text) {
+    var span = document.createElement("span");
+    span.className = "agent-msg-role";
+    span.textContent = text + ": ";
+    return span;
+  }
+
   function appendSystemLine(text) {
     var div = document.createElement("div");
     div.className = "agent-msg-system";
-    div.textContent = text;
+    div.appendChild(roleLabel("Status"));
+    div.appendChild(document.createTextNode(text));
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    announceStatus(text);
   }
 
   function appendBubble(role) {
     var div = document.createElement("div");
     div.className = "agent-msg-bubble " +
       (role === "user" ? "agent-msg-bubble--user" : "agent-msg-bubble--assistant");
-    div.textContent = "";
+    div.appendChild(roleLabel(role === "user" ? "You" : "Agent"));
+    // The text node the caller writes into, kept separate from the hidden
+    // role label so assigning to it can never wipe the label out.
+    var body = document.createElement("span");
+    body.className = "agent-msg-body";
+    div.appendChild(body);
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
-    return div;
+    return body;
   }
 
   function appendError(text) {
     var div = document.createElement("div");
     div.className = "agent-msg-error";
-    div.textContent = text;
+    // role="alert" makes this its own assertive live region: an error is the
+    // one thing that must interrupt rather than queue politely behind a
+    // streaming response.
+    div.setAttribute("role", "alert");
+    div.appendChild(roleLabel("Error"));
+    div.appendChild(document.createTextNode(text));
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
@@ -1428,6 +1525,8 @@
           if (!assistantBubble) assistantBubble = appendBubble("assistant");
           assistantText += choice.delta.content;
           assistantBubble.textContent = assistantText;
+          // Buffered, clause-boundary announcement -- NOT one per token.
+          announceStreamed(assistantText);
           messagesEl.scrollTop = messagesEl.scrollHeight;
         }
 
@@ -1488,6 +1587,7 @@
         "model requested tool call(s): " + toolCalls.map(function (t) { return t.function.name; }).join(", ")
       );
 
+      announceStreamEnd();
       capPush("request_end", {
         finish_reason: finishReason,
         chunk_id: sseChunkId,
@@ -1547,6 +1647,7 @@
       return;
     }
 
+    announceStreamEnd();
     capPush("request_end", {
       finish_reason: finishReason,
       chunk_id: sseChunkId,
@@ -1596,6 +1697,15 @@
     openBtn = $("chat-open-btn");
     exportBtn = $("chat-export-btn");
     exportLinkEl = $("chat-export-link");
+    // Deliberately NOT in the fatal __missing check below: a missing live
+    // region degrades accessibility, it does not break the panel. But it is
+    // never silent -- a missing one would otherwise look exactly like a
+    // working one to anyone not using a screen reader.
+    liveEl = $("chat-live");
+    if (!liveEl) {
+      console.warn("chat panel: #chat-live not found -- streaming responses " +
+        "will NOT be announced to assistive technology");
+    }
 
     confirmBackdropEl = $("chat-confirm-backdrop");
     confirmDialogEl = $("chat-confirm-dialog");
