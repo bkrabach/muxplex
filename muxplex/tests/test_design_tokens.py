@@ -26,9 +26,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 FRONTEND = Path(__file__).resolve().parents[1] / "frontend"
 TOKENS_CSS = FRONTEND / "tokens.css"
 STYLE_CSS = FRONTEND / "style.css"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# A second token file is the failure this guard exists for -- see
+# test_exactly_one_token_file_exists_in_the_repo and
+# docs/DESIGN_LANGUAGE.md section 3.4.
+TOKEN_FILENAMES = {"tokens.css", "tokens.json"}
 
 # Values that carry essentially all spacing / radius / type in style.css today
 # (see docs/DESIGN_LANGUAGE.md section 3.2 for the counts). The scale exists to
@@ -123,6 +131,81 @@ def _px_values(declared: dict[str, str], prefix: str) -> set[str]:
 def test_both_token_files_exist():
     assert TOKENS_CSS.is_file(), f"missing {TOKENS_CSS}"
     assert STYLE_CSS.is_file(), f"missing {STYLE_CSS}"
+
+
+def _repo_token_files() -> list[Path]:
+    """Every tokens.css / tokens.json in the working tree.
+
+    Dot-directories are skipped, and that exclusion is load-bearing rather than
+    tidiness: `.git` stores object data, and this repo is routinely checked out
+    with sibling git worktrees under `.worktrees/`, each carrying its own
+    legitimate copy of `muxplex/frontend/tokens.css`. Walking into those would
+    fail this test on every developer who uses worktrees, for no real defect.
+    `node_modules` and `__pycache__` are skipped for the same "not source we
+    wrote" reason.
+
+    Vendored third-party directories are deliberately NOT skipped. If a
+    dependency ever ships its own tokens.css into the tree, that is exactly the
+    situation a human should look at rather than a hole this guard quietly
+    permits.
+    """
+    skip = {"node_modules", "__pycache__"}
+    found: list[Path] = []
+    for path in REPO_ROOT.rglob("*"):
+        if not path.is_file() or path.name not in TOKEN_FILENAMES:
+            continue
+        rel = path.relative_to(REPO_ROOT)
+        if any(part.startswith(".") or part in skip for part in rel.parts):
+            continue
+        found.append(path)
+    return sorted(found)
+
+
+def test_exactly_one_token_file_exists_in_the_repo():
+    """A second token file is the defect this guard exists to make impossible.
+
+    The repo shipped two for months: `assets/branding/tokens.css` (2026-03-27,
+    100 names) alongside `muxplex/frontend/tokens.css` (67 names). Git never
+    flagged it, because the paths differ -- there is no conflict to raise. It
+    surfaced only when someone diffed the two files against each other.
+
+    They shared 13 custom-property names and disagreed on NINE of them:
+    --text-md was 1rem (16px) against the 13px the app renders, --text-lg 20px
+    against 14px, --radius-md 6px against 8px, plus both font stacks. CSS
+    resolves a same-specificity collision by source order, so the failure mode
+    was silent in both directions -- a developer reading the wrong file, or a
+    page linking both, got a plausible wrong number with no error.
+
+    Naming conventions do not fix this. The branded file's `--space-1..16`
+    scale versus this one's t-shirt names was a deliberate anti-collision
+    choice, and it worked -- for spacing, and for nothing else. Distinct naming
+    protects one family at a time; a single file protects all of them.
+
+    So the guard is structural, in the spirit of the `.quick-link`
+    consolidation (d9061ba): it does not check that two files agree, it asserts
+    that the second file cannot exist. Adding a token means adding a name to
+    `muxplex/frontend/tokens.css` -- never a new file. See
+    docs/DESIGN_LANGUAGE.md section 3.4 and work item muxplex-cnd.
+    """
+    if not (REPO_ROOT / "pyproject.toml").is_file():
+        pytest.skip(
+            f"not running from a source checkout (no pyproject.toml in {REPO_ROOT})"
+        )
+
+    found = _repo_token_files()
+    extra = [p for p in found if p != TOKENS_CSS]
+    assert not extra, (
+        "the repo contains a second design-token file, which is the exact defect "
+        "muxplex-cnd removed -- two token files at different paths, disagreeing "
+        "silently because git cannot see a conflict between them: "
+        + ", ".join(str(p.relative_to(REPO_ROOT)) for p in extra)
+        + ". Add the value to muxplex/frontend/tokens.css instead. If a second "
+        "file is genuinely required, docs/DESIGN_LANGUAGE.md section 3.4 has to "
+        "change first -- it currently states there is exactly one."
+    )
+    assert TOKENS_CSS in found, (
+        f"the canonical token file is missing from the tree: {TOKENS_CSS}"
+    )
 
 
 def test_shared_names_resolve_identically_so_link_order_cannot_matter():

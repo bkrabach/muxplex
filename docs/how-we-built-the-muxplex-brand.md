@@ -184,6 +184,15 @@ Plus machine-readable tokens:
 - `tokens.json` — W3C Design Tokens format
 - `tokens.css` — CSS custom properties
 
+> **What happened to these (Aug 2026).** This walkthrough is a record of the
+> March–April 2026 session, so the tree below is what existed *then*. The two
+> token files were deleted in `muxplex-cnd`: they had never been linked from
+> `index.html` or referenced by `style.css`, yet shared 13 property names with
+> the tokens the app actually renders and disagreed on nine of them. The
+> canonical tokens are now `muxplex/frontend/tokens.css`, with the reasoning in
+> [`docs/DESIGN_LANGUAGE.md`](DESIGN_LANGUAGE.md) §3.4. `DESIGN-SYSTEM.md` and
+> every brand asset below survive unchanged.
+
 ---
 
 ## The Agent Roster

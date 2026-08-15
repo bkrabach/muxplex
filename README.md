@@ -452,6 +452,7 @@ muxplex/
 │   │   ├── login.html        # Login page
 │   │   ├── app.js            # Dashboard, sidebar, settings, previews
 │   │   ├── terminal.js       # xterm.js terminal + clipboard
+│   │   ├── tokens.css        # Design tokens — the ONE home for every value
 │   │   ├── style.css         # All styles (dark theme)
 │   │   ├── manifest.json     # PWA manifest
 │   │   ├── wordmark-on-dark.svg
@@ -501,7 +502,17 @@ node --test muxplex/frontend/tests/test_app.mjs
 
 ## Brand Assets
 
-Design language, color tokens, and brand assets live in `assets/branding/`. See [`assets/branding/DESIGN-SYSTEM.md`](assets/branding/DESIGN-SYSTEM.md) for the full design reference.
+Brand assets — logos, icons, favicons, OG images — live in `assets/branding/`.
+
+**Design language and colour tokens do not.** They live in
+[`docs/DESIGN_LANGUAGE.md`](docs/DESIGN_LANGUAGE.md) (principles, components,
+decisions) and [`muxplex/frontend/tokens.css`](muxplex/frontend/tokens.css)
+(every value). That is the one place to look up a token.
+
+`assets/branding/DESIGN-SYSTEM.md` is **superseded** and kept only as brand
+provenance — its palette derivation and contrast ratios are still good, its CSS
+values are not. Nine of them silently disagreed with what the app renders; see
+`docs/DESIGN_LANGUAGE.md` §3.4.
 
 To regenerate PNG/favicon assets from SVG sources:
 
