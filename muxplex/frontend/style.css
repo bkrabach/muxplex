@@ -2298,6 +2298,97 @@ body {
   border-left: 3px solid var(--err);
 }
 
+/* Live status row (muxplex-l2y).
+   ---------------------------------------------------------------------
+   Exactly one of these exists at a time, pinned to the foot of the
+   transcript, naming the concrete action in progress. It is NOT a spinner:
+   there is no animation carrying no information here, which was the
+   explicit condition attached to this work.
+
+   Reads and writes are different registers, and look it. A read is muted
+   with a neutral marker. The one WRITE tool -- real keystrokes into a live
+   session -- gets the app's own "this acts for real" colour (--warn/--err
+   family, the same vocabulary every destructive control in muxplex already
+   uses) and a heavier rule, so the row that means "something is about to
+   land in your terminal" cannot be mistaken at a glance for the row that
+   means "reading a list". A stalled turn gets a third treatment, because
+   "appears to still be working" is the specific lie this row exists to
+   avoid telling. */
+.agent-status {
+  margin: 6px 0;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+}
+
+.agent-status::before {
+  content: "\00B7\00B7\00B7";       /* a mark, not a moving thing */
+  flex: 0 0 auto;
+  letter-spacing: 1px;
+}
+
+.agent-status--wait::before {
+  content: "\00B7\00B7\00B7";
+}
+
+.agent-status--read::before {
+  content: "\21BB\FE0E";            /* read: neutral cycle glyph */
+}
+
+/* The write register. Same amber this app already uses for "needs you". */
+.agent-status--write {
+  color: var(--warn, #d29922);
+  border-left: 3px solid var(--warn, #d29922);
+  background: rgba(210, 153, 34, 0.10);
+  font-weight: 600;
+}
+
+.agent-status--write::before {
+  content: "\26A0\FE0E";
+}
+
+/* Stalled: unambiguous, never mistakable for "still working normally". */
+.agent-status--stalled {
+  color: var(--err);
+  border-left: 3px solid var(--err);
+  background: rgba(248, 81, 73, 0.10);
+}
+
+.agent-status--stalled::before {
+  content: "\21AF\FE0E";
+}
+
+/* Humanised tool failures (muxplex-oi2). The headline is the sentence that
+   answers "what happened"; the remedy answers "what can I do"; the raw text
+   lives in the collapsed <details> below them, still there, no longer the
+   first thing anyone reads. */
+.agent-msg-error-headline {
+  font-weight: 600;
+}
+
+.agent-msg-error-remedy {
+  margin-top: 4px;
+  font-weight: 400;
+  color: var(--text);
+  opacity: 0.92;
+}
+
+.agent-msg-error .agent-msg-tool {
+  margin-top: 6px;
+}
+
+.agent-msg-error .agent-msg-tool-summary {
+  color: var(--err);
+  font-style: normal;
+  opacity: 0.85;
+}
+
 /* Rendered model markdown (muxplex-04m).
    ---------------------------------------------------------------------
    .agent-msg-bubble sets white-space:pre-wrap, which is right for raw

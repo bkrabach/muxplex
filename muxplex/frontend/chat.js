@@ -143,9 +143,10 @@
           "(settings.input_allowed_sessions) on the server -- a setting only " +
           "changeable by editing a file on disk, never through this or any " +
           "API call. If either is not set for the target session, this call " +
-          "fails with the server's real 403 error -- report that error to " +
-          "the user verbatim; never imply there is a way around it or retry " +
-          "as if it might succeed differently. Separately, and even when " +
+          "fails with the server's real 403 error. Never retry it and never " +
+          "imply you can work around it -- but the error text itself tells " +
+          "the user how a local operator unblocks it, so relay that instead " +
+          "of dead-ending on \"not possible\". Separately, and even when " +
           "enabled server-side: EVERY call to this tool pauses for an " +
           "explicit human confirmation click in the browser before anything " +
           "is sent -- there is no way to skip, pre-approve, or batch-approve " +
@@ -223,8 +224,12 @@
     "\"hidden\", or a configured view name).\n" +
     "- send_muxplex_session_input: type text/keys into a session's terminal " +
     "-- real remote code execution, fenced server-side and OFF by default. " +
-    "If it's disabled you will get a real 403 back; report that error " +
-    "verbatim rather than guessing a workaround or retrying. Every call " +
+    "If it's disabled you will get a real 403 back. Never retry it and never " +
+    "invent a way around it -- but do NOT stop at \"no workaround\" either: " +
+    "the 403 you get back explains which of the two fences refused, names the " +
+    "settings file and the two settings that control it, and says that only a " +
+    "local operator (often the person you are talking to) can change it. Pass " +
+    "that on in plain language. Every call " +
     "ALSO pauses for a human confirmation click in the browser first, with " +
     "no way to skip or pre-approve it; if declined, tell the user rather " +
     "than retrying the same call.\n" +
@@ -1290,19 +1295,241 @@
     return clipText(raw, 90);
   }
 
+  // ---------------------------------------------------------------------
+  // What the agent is DOING right now (muxplex-l2y)
+  // ---------------------------------------------------------------------
+  // The transcript used to say "model requested tool call(s):
+  // get_muxplex_session_details" -- the function name, in the model's
+  // vocabulary, not the user's -- and then nothing at all for the seconds
+  // the tool actually took. During that gap the token stream produces
+  // nothing, and silence reads as broken.
+  //
+  // A generic spinner would be the wrong fix and was explicitly ruled out:
+  // motion manufactured to feel alive, carrying no information. So the
+  // status line names the CONCRETE action, in ordinary words, including the
+  // session or view it is about.
+  //
+  // READS AND WRITES ARE DELIBERATELY DIFFERENT REGISTERS. Reading a
+  // session's output and typing keystrokes into it are not the same kind of
+  // event and must not look the same. Reads are muted with a neutral
+  // marker; the one write tool gets its own treatment, names the target
+  // session AND the exact text, and stays on screen while the confirmation
+  // gate is open -- which makes the status line the cheapest safety net
+  // there is: the moment you can see, and stop, something before it lands.
+
+  var statusEl = null;      // the single live status row, or null
+  var statusWatchdog = null; // fires if a turn goes quiet for too long
+  var STATUS_STALL_MS = 15000;
+
+  /** Human phrasing for a tool call, and which register it belongs to.
+   * Falls back to the raw tool name rather than inventing a description for
+   * a tool this function has not been taught -- an honest "running X" beats
+   * a confident wrong sentence. */
+  function describeToolAction(name, args) {
+    args = args || {};
+    var sess = args.session_name ? '"' + args.session_name + '"' : "a session";
+    if (name === "list_muxplex_sessions") {
+      return { kind: "read", text: "Reading your list of sessions" };
+    }
+    if (name === "list_muxplex_federated_sessions") {
+      return { kind: "read", text: "Reading sessions across every connected device" };
+    }
+    if (name === "get_muxplex_session_details") {
+      return { kind: "read", text: "Reading what " + sess + " is showing right now" };
+    }
+    if (name === "switch_muxplex_session") {
+      return { kind: "read", text: "Switching the dashboard to " + sess };
+    }
+    if (name === "switch_muxplex_view") {
+      return { kind: "read", text: "Switching the view to \"" + (args.view || "?") + "\"" };
+    }
+    if (name === "send_muxplex_session_input") {
+      return {
+        kind: "write",
+        text: "Typing " + JSON.stringify(typeof args.text === "string" ? args.text : "") +
+          " into " + sess,
+      };
+    }
+    return { kind: "read", text: "Running " + name };
+  }
+
+  /** Show (or replace) the single status row at the foot of the transcript.
+   * kind: "read" | "write" | "wait" | "stalled". */
+  function setStatus(kind, text) {
+    clearStatusWatchdog();
+    if (!statusEl) {
+      statusEl = document.createElement("div");
+      messagesEl.appendChild(statusEl);
+    }
+    statusEl.className = "agent-status agent-status--" + kind;
+    statusEl.textContent = "";
+    statusEl.appendChild(roleLabel("Status"));
+    statusEl.appendChild(document.createTextNode(text));
+    messagesEl.appendChild(statusEl); // keep it last, even after new bubbles
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    announceStatus(text);
+  }
+
+  function clearStatus() {
+    clearStatusWatchdog();
+    if (statusEl && statusEl.parentNode) statusEl.parentNode.removeChild(statusEl);
+    statusEl = null;
+  }
+
+  function clearStatusWatchdog() {
+    if (statusWatchdog) { clearTimeout(statusWatchdog); statusWatchdog = null; }
+  }
+
+  /** Arm the stall detector. If nothing arrives for STATUS_STALL_MS the row
+   * stops claiming to be working and says so instead -- "appears to still be
+   * working" is precisely the failure this guards against. */
+  function armStallWatch(what) {
+    clearStatusWatchdog();
+    var startedAt = Date.now();
+    statusWatchdog = setTimeout(function () {
+      if (!statusEl) return;
+      var secs = Math.round((Date.now() - startedAt) / 1000);
+      setStatus("stalled", "No response for " + secs + "s while " +
+        what + ". It may still finish, or the connection may have dropped.");
+      armStallWatch(what); // keep counting rather than going quiet again
+    }, STATUS_STALL_MS);
+  }
+
+  // ---------------------------------------------------------------------
+  // Humanised tool failures (muxplex-oi2, and the 403 remedy of muxplex-5so)
+  // ---------------------------------------------------------------------
+  // What the user used to see, verbatim:
+  //   chat panel: tool execution failed: {"error":"POST /api/sessions/
+  //   counter/input failed: HTTP 403 -- {\"detail\":\"Session input is
+  //   disabled (settings.input_enabled=false)\"}"}
+  // A JSON string inside a JSON string, an HTTP status, and an internal
+  // config key, handed to someone who just wanted to type into a terminal.
+  //
+  // The rule now: ONE plain sentence about what happened and what they can
+  // do, with the raw text still one click away. Transparency is a feature
+  // of this tool; being the primary reading surface is not.
+
+  /** Turn a thrown tool error into { headline, remedy } in plain language.
+   * `remedy` may be null when there is genuinely nothing the user can do. */
+  function humaniseToolError(name, message) {
+    var msg = String(message || "");
+    var action = describeToolAction(name, {});
+    var m403 = /HTTP 403/.test(msg);
+    var m404 = /HTTP 404/.test(msg);
+    var m5xx = /HTTP 5\d\d/.test(msg);
+
+    if (name === "send_muxplex_session_input" && m403) {
+      // A 403 here is not a fault. It is a permission state with a known
+      // human remedy, and the person reading this is usually the one person
+      // who can apply it. Never say "no workaround" -- see muxplex-5so.
+      var globallyOff = /input_enabled/i.test(msg);
+      return {
+        headline: globallyOff
+          ? "muxplex is not accepting typed input into any session yet."
+          : "muxplex is not accepting typed input into that particular session.",
+        remedy: globallyOff
+          ? "This is off by default on purpose. Whoever runs muxplex on that machine can turn it " +
+            "on by editing ~/.config/muxplex/settings.json and setting input_enabled to true, then " +
+            "listing the sessions they want to allow in input_allowed_sessions. If that is you, " +
+            "you are the only person who can: both settings are deliberately local-file-only and " +
+            "cannot be changed from this or any other API, including by the agent."
+          : "Typed input is on, but this session is not on the allowlist. Whoever runs muxplex can " +
+            "add it to input_allowed_sessions in ~/.config/muxplex/settings.json. That file is " +
+            "deliberately the only way -- the allowlist cannot be changed through any API, " +
+            "including by the agent.",
+      };
+    }
+    if (/User declined/i.test(msg)) {
+      return {
+        headline: "You declined that, so nothing was sent.",
+        remedy: "Ask again if you change your mind -- every one of these needs a fresh confirmation.",
+      };
+    }
+    if (m404) {
+      return {
+        headline: "muxplex could not find that session.",
+        remedy: "It may have been closed or renamed. Ask for the list of sessions to see what is live.",
+      };
+    }
+    if (m403) {
+      return { headline: "muxplex refused that request.", remedy: null };
+    }
+    if (m5xx) {
+      return {
+        headline: "muxplex hit an error of its own while handling that.",
+        remedy: "Worth retrying once; if it keeps happening, the server log will have the detail.",
+      };
+    }
+    if (/NetworkError|Failed to fetch|TypeError: |load failed/i.test(msg)) {
+      return {
+        headline: "Could not reach muxplex.",
+        remedy: "The connection dropped or the server is down. Check it is still running.",
+      };
+    }
+    return {
+      headline: "Could not finish " + action.text.charAt(0).toLowerCase() + action.text.slice(1) + ".",
+      remedy: null,
+    };
+  }
+
+  /** Render a failed tool call: a sentence, a remedy if one exists, and the
+   * raw text collapsed underneath. */
+  function appendToolError(name, message) {
+    var h = humaniseToolError(name, message);
+    var div = document.createElement("div");
+    div.className = "agent-msg-error";
+    div.setAttribute("role", "alert");
+    div.appendChild(roleLabel("Error"));
+
+    var head = document.createElement("div");
+    head.className = "agent-msg-error-headline";
+    head.textContent = h.headline;
+    div.appendChild(head);
+
+    if (h.remedy) {
+      var rem = document.createElement("div");
+      rem.className = "agent-msg-error-remedy";
+      rem.textContent = h.remedy;
+      div.appendChild(rem);
+    }
+
+    // Raw detail, collapsed. Never the primary reading surface, never gone.
+    var det = document.createElement("details");
+    det.className = "agent-msg-tool";
+    var sum = document.createElement("summary");
+    sum.className = "agent-msg-tool-summary";
+    sum.textContent = "technical detail";
+    var pre = document.createElement("pre");
+    pre.className = "agent-msg-tool-raw";
+    pre.textContent = message;
+    det.appendChild(sum);
+    det.appendChild(pre);
+    div.appendChild(det);
+
+    messagesEl.appendChild(div);
+    if (statusEl) messagesEl.appendChild(statusEl);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    announceStatus(h.headline + (h.remedy ? " " + h.remedy : ""));
+  }
+
   /** Collapsed tool result: summary on screen, full payload on demand. */
   function appendToolResult(name, raw) {
     var det = document.createElement("details");
     det.className = "agent-msg-tool";
     var sum = document.createElement("summary");
     sum.className = "agent-msg-tool-summary";
-    sum.textContent = "tool result (" + name + "): " + summarizeToolResult(raw);
+    // Human phrasing, not the function name (muxplex-oi2/l2y). The raw
+    // payload underneath is unchanged and still one click away.
+    sum.textContent = describeToolAction(name, {}).text.replace(/^Reading/, "Read")
+      .replace(/^Switching/, "Switched").replace(/^Typing/, "Typed")
+      .replace(/^Running/, "Ran") + " \u2014 " + summarizeToolResult(raw);
     var pre = document.createElement("pre");
     pre.className = "agent-msg-tool-raw";
     pre.textContent = raw;
     det.appendChild(sum);
     det.appendChild(pre);
     messagesEl.appendChild(det);
+    if (statusEl) messagesEl.appendChild(statusEl); // status stays last
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -1561,12 +1788,46 @@
         body: JSON.stringify(inputBody),
       });
       if (!inputResp.ok) {
-        // THIS is the fenced endpoint. A 403 here (settings.input_enabled is
-        // false, or the session isn't in input_allowed_sessions) is muxplex's
-        // fence doing exactly its job -- surface the server's real detail
-        // text verbatim. Never retry, never imply a workaround exists: the
-        // fence can only be widened by a local operator editing
-        // settings.json on disk, which this browser code has no path to do.
+        // THIS is the fenced endpoint. A 403 here is muxplex's fence doing
+        // exactly its job, and the server's real text is always surfaced
+        // verbatim. This code never retries and never tries to widen the
+        // fence -- it cannot: both settings are local-file-only by design.
+        //
+        // muxplex-5so: what it must ALSO do is stop dead-ending the user. A
+        // 403 from this endpoint is not a fault, it is a PERMISSION STATE
+        // with a known human remedy, and the person reading the answer is
+        // usually the exact person who can apply it. The observed failure
+        // was the agent replying "No workaround available on my end" while
+        // this file knew the setting names, the file path, and that they
+        // are operator-only. So the error handed back to the model now
+        // carries all of that, and distinguishes the two distinct 403s.
+        if (inputResp.status === 403) {
+          var fenceText = inputResp.text || "";
+          var globallyOff = /input_enabled/i.test(fenceText);
+          throw new Error(
+            "POST " + inputUrl + " failed: HTTP 403" +
+            (fenceText ? " -- " + fenceText : "") + "\n\n" +
+            "This is NOT a dead end and NOT a fault -- it is a permission state with a " +
+            "known human remedy. Terminal input is gated by whoever operates this muxplex, " +
+            "in the file ~/.config/muxplex/settings.json on the machine running it, via two " +
+            "settings: input_enabled (a global on/off switch, false by default) and " +
+            "input_allowed_sessions (a per-session allowlist). " +
+            (globallyOff
+              ? "This particular refusal is the GLOBAL switch: input_enabled is false, so no " +
+                "session accepts typed input yet. The operator needs to set it to true AND list " +
+                "the sessions they want to allow."
+              : "input_enabled is already on -- this refusal is the ALLOWLIST: the session " +
+                JSON.stringify(args.session_name) + " is not in input_allowed_sessions. The " +
+                "operator needs to add that session name to that list.") + " " +
+            "Both settings are deliberately local-file-only: they cannot be changed through " +
+            "this or any other API call, by you or by anyone else -- only by a person editing " +
+            "that file on disk. " +
+            "TELL THE USER exactly this: what is blocked, which of the two cases it is, the " +
+            "file name and both setting names, and that a local operator (very possibly them) " +
+            "is the one who can change it. Do NOT tell them there is no workaround. Do NOT " +
+            "retry this call."
+          );
+        }
         throw new Error(
           "POST " + inputUrl + " failed: HTTP " + inputResp.status +
           (inputResp.text ? " -- " + inputResp.text : "")
@@ -1617,6 +1878,8 @@
   async function runTurn() {
     requestIndex++;
     var requestStartedAt = performance.now();
+    setStatus("wait", "Thinking about what to do next...");
+    armStallWatch("waiting for the agent to respond");
     var body = {
       model: MODEL,
       stream: true,
@@ -1674,9 +1937,10 @@
         body_raw: truncateForCapture(errText),
         duration_ms: Math.round(performance.now() - requestStartedAt),
       });
-      appendError(
-        "chat panel: /api/agent/chat/completions failed: HTTP " + resp.status + " " + errText
-      );
+      clearStatus();
+      appendToolError("__request__",
+        "POST /api/agent/chat/completions failed: HTTP " + resp.status +
+        (errText ? " -- " + errText : ""));
       return;
     }
 
@@ -1713,7 +1977,7 @@
         if (!choice) continue;
 
         if (choice.delta && typeof choice.delta.content === "string" && choice.delta.content) {
-          if (!assistantBubble) assistantBubble = appendBubble("assistant");
+          if (!assistantBubble) { clearStatus(); assistantBubble = appendBubble("assistant"); }
           assistantText += choice.delta.content;
           assistantBubble.textContent = assistantText;
           // Buffered, clause-boundary announcement -- NOT one per token.
@@ -1774,9 +2038,6 @@
         .map(function (k) { return toolCallsByIndex[k]; })
         .sort(function (a, b) { return a.__seq - b.__seq; });
 
-      appendSystemLine(
-        "model requested tool call(s): " + toolCalls.map(function (t) { return t.function.name; }).join(", ")
-      );
 
       announceStreamEnd();
       finishAssistantBubble(assistantBubble, assistantText);
@@ -1805,11 +2066,20 @@
         var tc2 = toolCalls[t];
         var resultContent;
         var toolStartedAt = performance.now();
+        // Name the concrete action before doing it, in the right register
+        // (muxplex-l2y). Arguments are parsed leniently here purely for
+        // phrasing -- executeToolCall does its own strict validation.
+        var __args = {};
+        try { __args = JSON.parse(tc2.function.arguments || "{}"); } catch (e) { __args = {}; }
+        var __act = describeToolAction(tc2.function.name, __args);
+        setStatus(__act.kind, __act.text + "...");
+        armStallWatch(__act.text.charAt(0).toLowerCase() + __act.text.slice(1));
         try {
           resultContent = await executeToolCall(tc2);
           // Summary on screen, full payload one tap away. `resultContent`
           // itself is untouched and still goes to the model verbatim below
           // -- the capture event immediately below also gets it raw.
+          clearStatus();
           appendToolResult(tc2.function.name, resultContent);
           capPush("tool_call_result", {
             tool_call_id: tc2.id,
@@ -1820,8 +2090,13 @@
             duration_ms: Math.round(performance.now() - toolStartedAt),
           });
         } catch (toolErr) {
-          resultContent = JSON.stringify({ error: String(toolErr && toolErr.message || toolErr) });
-          appendError("chat panel: tool execution failed: " + resultContent);
+          var __errMsg = String(toolErr && toolErr.message || toolErr);
+          // The MODEL still gets the full, unedited error (it is what lets it
+          // explain the remedy). The USER gets one plain sentence, with this
+          // exact text collapsed underneath -- see appendToolError.
+          resultContent = JSON.stringify({ error: __errMsg });
+          clearStatus();
+          appendToolError(tc2.function.name, __errMsg);
           capPush("tool_call_result", {
             tool_call_id: tc2.id,
             name: tc2.function.name,
@@ -1873,9 +2148,14 @@
     try {
       await runTurn();
     } catch (err) {
-      appendError("chat panel: request failed: " + String(err && err.message || err));
+      clearStatus();
+      appendToolError("__request__", String(err && err.message || err));
       capPush("turn_error", { error: String(err && err.message || err) });
     } finally {
+      // Whatever happened, the turn is over: no row may be left saying the
+      // agent is still working. This is the "stalled or dropped must be
+      // unambiguous" half of muxplex-l2y.
+      clearStatus();
       sendBtn.disabled = false;
     }
   }
