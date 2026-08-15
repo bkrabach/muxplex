@@ -212,7 +212,21 @@ def test_allowlist_matching_is_case_insensitive(client, monkeypatch, tmux_calls)
     _enable(monkeypatch, allowed=["Amplifier-*"], known=["amplifier-foo"])
     resp = client.post("/api/sessions/amplifier-foo/input", json={"text": "hi"})
     assert resp.status_code == 200
-    assert tmux_calls == [("send-keys", "-l", "-t", "amplifier-foo", "--", "hi")]
+    assert tmux_calls == [
+        (
+            "copy-mode",
+            "-q",
+            "-t",
+            "amplifier-foo",
+            ";",
+            "send-keys",
+            "-l",
+            "-t",
+            "amplifier-foo",
+            "--",
+            "hi",
+        ),
+    ]
 
 
 def test_allowlist_junk_entries_skipped_valid_pattern_still_works(
@@ -318,33 +332,126 @@ def test_empty_payload_returns_400(client, monkeypatch, tmux_calls):
 
 
 def test_text_sent_literally_via_argv(client, monkeypatch, tmux_calls):
-    """text goes as ONE argv element after `send-keys -l -t name --`."""
+    """text goes as ONE argv element after `send-keys -l -t name --`,
+    chained behind tmux-kit's copy-mode-exit prefix in a single argv/call."""
     _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
     hostile = "; rm -rf / && $(reboot) `id` | tee /etc/passwd"
     resp = client.post("/api/sessions/alpha/input", json={"text": hostile})
     assert resp.status_code == 200
-    assert tmux_calls == [("send-keys", "-l", "-t", "alpha", "--", hostile)]
+    assert tmux_calls == [
+        (
+            "copy-mode",
+            "-q",
+            "-t",
+            "alpha",
+            ";",
+            "send-keys",
+            "-l",
+            "-t",
+            "alpha",
+            "--",
+            hostile,
+        ),
+    ]
 
 
 def test_enter_sends_enter_after_text(client, monkeypatch, tmux_calls):
-    """enter=true appends a named Enter key after the literal text."""
+    """enter=true appends a named Enter key after the literal text, each as
+    its own chained (copy-mode-exit + send-keys) call."""
     _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
     resp = client.post("/api/sessions/alpha/input", json={"text": "ls", "enter": True})
     assert resp.status_code == 200
     assert tmux_calls == [
-        ("send-keys", "-l", "-t", "alpha", "--", "ls"),
-        ("send-keys", "-t", "alpha", "Enter"),
+        (
+            "copy-mode",
+            "-q",
+            "-t",
+            "alpha",
+            ";",
+            "send-keys",
+            "-l",
+            "-t",
+            "alpha",
+            "--",
+            "ls",
+        ),
+        ("copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "Enter"),
     ]
 
 
 def test_named_keys_sent_in_order(client, monkeypatch, tmux_calls):
-    """keys are sent individually, in order, non-literal (named-key mode)."""
+    """keys are sent individually, in order, non-literal (named-key mode),
+    each chained behind its own copy-mode-exit prefix."""
     _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
     resp = client.post("/api/sessions/alpha/input", json={"keys": ["C-c", "Up"]})
     assert resp.status_code == 200
     assert tmux_calls == [
-        ("send-keys", "-t", "alpha", "C-c"),
-        ("send-keys", "-t", "alpha", "Up"),
+        ("copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "C-c"),
+        ("copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "Up"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Copy-mode exit -- now the library's guarantee, verified at this boundary
+# ---------------------------------------------------------------------------
+
+
+def test_copy_mode_exit_is_chained_into_every_send_path(
+    client, monkeypatch, tmux_calls
+):
+    """Every path that reaches tmux -- text+enter, enter-only, keys-only --
+    must carry tmux-kit's copy-mode-exit prefix chained into the SAME
+    argv/subprocess call as the send-keys itself.
+
+    This endpoint no longer issues ``build_exit_copy_mode_argv()`` as its
+    own separate leading call (see ``send_session_input``'s docstring):
+    ``tmux_kit.keys.build_send_text_argv`` / ``build_send_key_argv`` chain
+    it in as of tmux-kit 0.4.0, so every accepted call this endpoint makes
+    to ``run_tmux`` already starts with ``copy-mode -q -t <name> ;``. This
+    test verifies that guarantee holds at muxplex's own boundary, for each
+    of the three send paths -- it is what stops the app-level code from
+    silently regressing to a bare ``send-keys`` with no copy-mode prefix,
+    which would resume the exact "scroll then send does nothing" bug this
+    was written to fix (scrolling back silently puts the pane in tmux
+    copy-mode via ``mouse on``, base.conf; a pane in that state consumes
+    ``send-keys`` through the copy-mode key table instead of the shell).
+    """
+    _enable(monkeypatch, allowed=["alpha"], known=["alpha"])
+
+    resp = client.post("/api/sessions/alpha/input", json={"text": "ls", "enter": True})
+    assert resp.status_code == 200
+    assert tmux_calls == [
+        (
+            "copy-mode",
+            "-q",
+            "-t",
+            "alpha",
+            ";",
+            "send-keys",
+            "-l",
+            "-t",
+            "alpha",
+            "--",
+            "ls",
+        ),
+        ("copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "Enter"),
+    ]
+    for call in tmux_calls:
+        assert call[:4] == ("copy-mode", "-q", "-t", "alpha")
+    tmux_calls.clear()
+
+    resp = client.post("/api/sessions/alpha/input", json={"enter": True})
+    assert resp.status_code == 200
+    assert tmux_calls == [
+        ("copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "Enter"),
+    ]
+    tmux_calls.clear()
+
+    resp = client.post("/api/sessions/alpha/input", json={"keys": ["C-c", "Up"]})
+    assert resp.status_code == 200
+    assert tmux_calls == [
+        ("copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "C-c"),
+        ("copy-mode", "-q", "-t", "alpha", ";", "send-keys", "-t", "alpha", "Up"),
     ]
 
 
@@ -497,8 +604,24 @@ def test_session_target_is_plain_name():
 
 
 def test_build_send_text_argv_shape():
+    """As of tmux-kit 0.4.0 this is CHAINED: copy-mode-exit then send-keys,
+    in one argv via a literal ``;`` element -- see this module's
+    ``test_copy_mode_exit_is_chained_into_every_send_path`` for the
+    boundary-level proof this chain is what muxplex actually sends."""
     argv = build_send_text_argv("s1", "-rf --danger")
-    assert argv == ["send-keys", "-l", "-t", "s1", "--", "-rf --danger"]
+    assert argv == [
+        "copy-mode",
+        "-q",
+        "-t",
+        "s1",
+        ";",
+        "send-keys",
+        "-l",
+        "-t",
+        "s1",
+        "--",
+        "-rf --danger",
+    ]
 
 
 def test_build_send_key_argv_rejects_non_allowlisted():

@@ -309,7 +309,10 @@ async def test_seeded_bell_does_not_advance_queue(client, monkeypatch, tmux_call
     # be untouched: still 1 pending item, no tmux send-keys call fired.
     get_resp = client.get("/api/sessions/seeded-session/followups")
     assert get_resp.json()["items"] == [resp.json()["item"]]
-    send_calls = [c for c in tmux_calls if c[0] == "send-keys"]
+    # Chained (tmux-kit 0.4.0): a real send call is a copy-mode-exit +
+    # send-keys pair fused into ONE argv/tuple, so "send-keys" is no longer
+    # c[0] -- it's somewhere inside the chained tuple.
+    send_calls = [c for c in tmux_calls if "send-keys" in c]
     assert send_calls == []
 
 
@@ -350,7 +353,10 @@ async def test_receive_bell_sends_exactly_head_item_and_removes_it(
     resp = client.post("/api/sessions/sess/bell")
     assert resp.status_code == 200
 
-    send_calls = [c for c in tmux_calls if c[0] == "send-keys"]
+    # Chained (tmux-kit 0.4.0): a real send call is a copy-mode-exit +
+    # send-keys pair fused into ONE argv/tuple, so "send-keys" is no longer
+    # c[0] -- it's somewhere inside the chained tuple.
+    send_calls = [c for c in tmux_calls if "send-keys" in c]
     assert any("MARK_ONE" in c for c in send_calls)
     assert not any("MARK_TWO" in c for c in send_calls)
 
@@ -375,7 +381,10 @@ async def test_two_concurrent_bells_send_exactly_one_item(
         main_mod._advance_followup_queue("sess"),
     )
 
-    send_calls = [c for c in tmux_calls if c[0] == "send-keys"]
+    # Chained (tmux-kit 0.4.0): a real send call is a copy-mode-exit +
+    # send-keys pair fused into ONE argv/tuple, so "send-keys" is no longer
+    # c[0] -- it's somewhere inside the chained tuple.
+    send_calls = [c for c in tmux_calls if "send-keys" in c]
     marks_sent = [c for c in send_calls if any("MARK_" in str(x) for x in c)]
     assert len(marks_sent) == 1
 
@@ -462,7 +471,10 @@ async def test_fire_time_halts_when_fence_closes_after_enqueue(
     resp = client.post("/api/sessions/sess/bell")
     assert resp.status_code == 200
 
-    send_calls = [c for c in tmux_calls if c[0] == "send-keys"]
+    # Chained (tmux-kit 0.4.0): a real send call is a copy-mode-exit +
+    # send-keys pair fused into ONE argv/tuple, so "send-keys" is no longer
+    # c[0] -- it's somewhere inside the chained tuple.
+    send_calls = [c for c in tmux_calls if "send-keys" in c]
     assert send_calls == []  # nothing typed
 
     state = client.get("/api/sessions/sess/followups").json()
@@ -532,7 +544,7 @@ async def test_halted_queue_ignores_bells_until_resume(client, monkeypatch, tmux
         time.time() - followups.FOLLOWUP_SETTLE_SECONDS - 1
     )
     client.post("/api/sessions/sess/bell")
-    assert any(c[0] == "send-keys" for c in calls)
+    assert any("send-keys" in c for c in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +683,10 @@ async def test_seeded_bell_isolation_preserved_after_halt_bell_feature(
     assert bell["source"] == "seeded"
     get_resp = client.get("/api/sessions/seeded-session/followups")
     assert get_resp.json()["items"] == [resp.json()["item"]]
-    send_calls = [c for c in tmux_calls if c[0] == "send-keys"]
+    # Chained (tmux-kit 0.4.0): a real send call is a copy-mode-exit +
+    # send-keys pair fused into ONE argv/tuple, so "send-keys" is no longer
+    # c[0] -- it's somewhere inside the chained tuple.
+    send_calls = [c for c in tmux_calls if "send-keys" in c]
     assert send_calls == []
 
 

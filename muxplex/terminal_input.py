@@ -10,6 +10,16 @@ stay app-side in ``settings.py``, exactly as before.
 
 All existing import paths keep working through this shim; new code should
 import from ``tmux_kit.keys``.
+
+``build_exit_copy_mode_argv`` is deliberately NOT re-exported here (unlike
+the other builders): as of tmux-kit 0.4.0 the two send builders below chain
+it in themselves, and no code left in this app package calls it directly
+(the one caller, ``main.py``'s ``send_session_input``, dropped its own
+explicit call for exactly that reason -- see that function's docstring).
+Re-exporting a symbol nothing here uses would be dead surface a future
+reader could mistake for still being on the critical path; import it from
+``tmux_kit.keys`` directly if a new consumer ever genuinely needs it
+standalone.
 """
 
 from tmux_kit.keys import (

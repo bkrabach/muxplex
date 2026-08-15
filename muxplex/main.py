@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
 from starlette.types import Scope
+from tmux_kit.bell import build_alert_bell_hook
 from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
@@ -133,7 +134,6 @@ from muxplex.terminal_input import (
     redact_preview,
 )
 from muxplex.tls import get_local_ca_cert_bytes
-from tmux_kit.bell import build_alert_bell_hook
 from muxplex.ttyd import (
     TTYD_PORT,
     TtydCapacityError,
@@ -2163,8 +2163,27 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
     Input is sent via ``tmux send-keys`` through
     ``asyncio.create_subprocess_exec`` (argv, never a shell); *text* uses
     literal mode (``-l``) so shell metacharacters are typed as characters,
-    never interpreted by anything muxplex spawns. Send order:
-    text -> keys -> enter.
+    never interpreted by anything muxplex spawns. Send order: text -> keys
+    -> enter.
+
+    The exit-copy-mode step is no longer issued explicitly by this endpoint
+    -- as of tmux-kit 0.4.0, ``build_send_text_argv()`` and
+    ``build_send_key_argv()`` (tmux_kit.keys) each CHAIN it themselves,
+    ahead of their own ``send-keys`` call, via a literal ``;`` argv element.
+    This endpoint used to also call ``build_exit_copy_mode_argv()`` up
+    front; that call is now redundant (every send already carries it) and
+    has been removed. The guarantee moved into the library on purpose: a
+    caller of the send builders can forget to call the standalone
+    exit-copy-mode step first (0.3.6 shipped it exactly that way, and
+    ``lifecycle.interrupt_session()`` in tmux-kit did forget, silently
+    failing to deliver C-c to a pane left in copy-mode); the library itself
+    cannot. ``mouse on`` (tmux_templates/base.conf) puts a pane into
+    copy-mode silently on wheel-up, and keys sent to a pane in copy-mode are
+    consumed by the copy-mode key table instead of reaching the shell -- so
+    without this, a compose-bar send after the user has scrolled back
+    silently does nothing. This endpoint only, not the terminal WS: raw
+    keystrokes typed directly into the terminal should still drive
+    copy-mode, since that is the user deliberately navigating scrollback.
 
     After a short settle (~400ms) the session's pane is re-captured and
     returned, so the caller immediately sees the effect of what it typed:
@@ -2233,6 +2252,10 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
         )
 
     try:
+        # Exiting copy-mode before a send is now the send builders' own job
+        # (tmux_kit.keys.build_send_text_argv/build_send_key_argv chain it
+        # ahead of send-keys as of tmux-kit 0.4.0) -- see this function's
+        # docstring for why that guarantee moved into the library.
         if payload.text:
             await run_tmux(*build_send_text_argv(name, payload.text))
         for key in payload.keys:
