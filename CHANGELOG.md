@@ -1,3 +1,50 @@
+## v0.47.10 (2026-08-15)
+
+Follow-up to v0.47.2: the terminal no longer corrupts while scrolling on
+mobile, but it still wasn't *smooth* -- "the scrolling wasn't smooth [on
+mobile] ... it's very smooth on desktop." That desktop/mobile split was the
+clue: desktop's `visualViewport` `resize` essentially never fires during a
+scroll, so v0.47.2's height-unchanged guard makes it a no-op every time;
+mobile's `scroll`/`resize` genuinely re-fire a NEW height on every tick of a
+toolbar-collapse/keyboard-open animation, and each one still ran
+`_termRefit()` (`FitAddon.fit()`) fully synchronously -- a forced layout
+read right after the CSS write invalidates layout, competing with the
+browser's own scroll/toolbar compositing on every single tick.
+
+### Fixed
+
+- **Mobile terminal scrolling now coalesces the local refit to at most once
+  per rendered animation frame**, instead of once per raw `visualViewport`
+  event. `initVisualViewport()`'s `_vpHandler` (`terminal.js`) now schedules
+  `_termRefit()` through `requestAnimationFrame` (schedule-if-not-already-
+  scheduled, the same pattern `initMobileTerminalScroll()`'s rAF-batched
+  wheel dispatch already uses further down the same file) rather than
+  calling it directly. The `--app-viewport-height` CSS write remains fully
+  immediate and unthrottled on every genuine height change -- only the
+  comparatively expensive `fit()` call is batched, so the container still
+  visually tracks the animating viewport in real time.
+  - Measured directly against a synthesized 20-tick burst of genuinely
+    different heights: the pre-fix code ran `fit()` 20 times (one per
+    event); the fix runs it once per animation frame -- 1 time when the
+    whole burst arrives before a single frame is painted, exactly 2 when
+    split across two frames, etc. (`tests/test_terminal.mjs`, new tests in
+    the "mobile scroll SMOOTHNESS" section).
+  - Falls back to the old synchronous-immediate call when
+    `requestAnimationFrame` is unavailable, so Node's test environment (and
+    any other non-browser context) is byte-for-byte unaffected -- this is
+    also why both v0.47.2 corruption regression tests
+    (`initVisualViewport: a scroll/resize tick with an UNCHANGED height is a
+    true no-op` and `connectWebSocket: rapid onResize firings are throttled
+    to the server`) still pass unmodified.
+  - `closeTerminal()` now cancels a still-pending coalesced refit
+    (`cancelAnimationFrame`) so a stray callback from a closed session can
+    never fire an extra `fit()` against whatever session opens next.
+  - **Not independently confirmed on a physical mobile device** -- the
+    available tooling has no way to drive a real browser-toolbar animation.
+    The fix is evidenced by the measured refit-count reduction above and by
+    it degrading to exactly today's behavior wherever `requestAnimationFrame`
+    isn't exercised; a phone is needed to confirm the felt smoothness.
+
 ## v0.47.9 (2026-08-14)
 
 Fifth round of "the four quick-link controls still don't behave the same" --

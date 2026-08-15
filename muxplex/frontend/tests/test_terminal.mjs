@@ -891,6 +891,246 @@ test('initVisualViewport: a scroll/resize tick with an UNCHANGED height is a tru
   delete globalThis.window.visualViewport;
 });
 
+// --- Mobile scroll SMOOTHNESS: per-frame refit coalescing -------------------
+//
+// The height-unchanged guard above (v0.47.2) only removes NO-OP events. A
+// real mobile toolbar-collapse/keyboard-open animation still fires several
+// GENUINELY different heights in quick succession -- one per animation tick
+// -- and each one used to still run _termRefit() (FitAddon.fit()) fully
+// synchronously. That's real main-thread work (a forced layout read right
+// after the CSS write invalidates layout, plus xterm's own resize/render)
+// competing with the browser's own scroll/toolbar compositing on every
+// single tick -- desktop's `resize` essentially never fires mid-scroll (the
+// guard above makes it a no-op every time), so it never pays this cost,
+// which is the reported desktop/mobile smoothness asymmetry. The fix
+// coalesces _termRefit() to at most once per rendered animation frame via
+// requestAnimationFrame, falling back to the old synchronous-immediate
+// behavior when rAF is unavailable (Node's test environment has none, which
+// is exactly why the two tests above are unaffected by any of this).
+
+function installMockRaf() {
+  // Minimal, manually-flushable requestAnimationFrame/cancelAnimationFrame
+  // pair -- gives a controllable stand-in for "the next rendered frame" so
+  // burst-coalescing can be exercised deterministically in Node.
+  let queue = [];
+  const cancelled = new Set();
+  globalThis.requestAnimationFrame = (fn) => {
+    const id = queue.length + 1;
+    queue.push({ id, fn });
+    return id;
+  };
+  globalThis.cancelAnimationFrame = (id) => { cancelled.add(id); };
+  function flush() {
+    const toRun = queue;
+    queue = [];
+    toRun.forEach(({ id, fn }) => { if (!cancelled.has(id)) fn(); });
+  }
+  function pendingCount() { return queue.length; }
+  function uninstall() {
+    delete globalThis.requestAnimationFrame;
+    delete globalThis.cancelAnimationFrame;
+  }
+  return { flush, pendingCount, cancelled, uninstall };
+}
+
+test('initVisualViewport: a burst of genuinely-different heights within one animation frame coalesces to a SINGLE _termRefit() call (mobile scroll smoothness)', () => {
+  const t = loadTerminal();
+
+  const expandedViewEl = { style: { setProperty: () => {} } };
+  const origGetElementById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) =>
+    id === 'view-expanded' ? expandedViewEl : origGetElementById(id);
+
+  const handlers = {};
+  globalThis.window.visualViewport = {
+    height: 400,
+    addEventListener: (event, fn) => { handlers[event] = fn; },
+    removeEventListener: () => {},
+  };
+
+  const raf = installMockRaf();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => 0;
+  t.openTerminal('test-session');
+  globalThis.setTimeout = orig;
+
+  // With rAF available, nothing has fit() synchronously at all -- both the
+  // visualViewport seed call AND createTerminal()'s own initial-fit-on-open
+  // (elsewhere in this file) now go through requestAnimationFrame instead of
+  // running immediately.
+  assert.strictEqual(t.fitCallCount, 0,
+    'no fit() should run synchronously at open time when rAF is available');
+  raf.flush(); // settle whatever startup-time work queued itself (seed call, initial-open fit, etc.)
+  const baseline = t.fitCallCount;
+  assert.ok(baseline >= 1, 'at least one fit() should have run once the startup frame is flushed');
+
+  // Synthesize ~20 genuinely different heights firing before the browser's
+  // next paint -- e.g. a mobile toolbar collapsing across many animation
+  // ticks, all delivered faster than requestAnimationFrame drains its queue.
+  for (let h = 399; h >= 380; h--) {
+    globalThis.window.visualViewport.height = h;
+    handlers.scroll();
+  }
+  assert.strictEqual(t.fitCallCount, baseline,
+    'none of the 20 burst events should fit() synchronously -- all coalesced into the single pending frame');
+  assert.strictEqual(raf.pendingCount(), 1,
+    'only ONE rAF callback should ever be queued no matter how many genuine changes arrive before it runs');
+
+  raf.flush();
+  assert.strictEqual(t.fitCallCount, baseline + 1,
+    'the entire 20-event burst resolves to exactly one fit() call once its coalesced frame runs (was 20 calls pre-fix -- see measured comparison in the PR description)');
+
+  raf.uninstall();
+  delete globalThis.window.visualViewport;
+});
+
+test('initVisualViewport: the CSS custom property write is NOT coalesced -- every genuine height change applies immediately even while a refit is pending', () => {
+  // The container must keep tracking the animating viewport in real time;
+  // only the comparatively expensive fit() is batched, never the cheap CSS
+  // write. A user watching the toolbar animate should see the CONTAINER
+  // resize continuously, even during the single frame where the refit
+  // itself is still queued.
+  const t = loadTerminal();
+
+  let setPropertyCalls = 0;
+  const lastSetValue = { value: null };
+  const expandedViewEl = {
+    style: {
+      setProperty: (name, value) => {
+        if (name === '--app-viewport-height') { setPropertyCalls++; lastSetValue.value = value; }
+      },
+    },
+  };
+  const origGetElementById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) =>
+    id === 'view-expanded' ? expandedViewEl : origGetElementById(id);
+
+  const handlers = {};
+  globalThis.window.visualViewport = {
+    height: 400,
+    addEventListener: (event, fn) => { handlers[event] = fn; },
+    removeEventListener: () => {},
+  };
+
+  const raf = installMockRaf();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => 0;
+  t.openTerminal('test-session');
+  globalThis.setTimeout = orig;
+
+  const baseline = setPropertyCalls;
+  assert.ok(baseline >= 1, 'the seed call should apply the CSS property immediately regardless of rAF');
+
+  for (let h = 399; h >= 380; h--) {
+    globalThis.window.visualViewport.height = h;
+    handlers.scroll();
+  }
+  assert.strictEqual(setPropertyCalls, baseline + 20,
+    'every one of the 20 genuine height changes must apply --app-viewport-height immediately -- only fit() coalesces, not the CSS write');
+  assert.strictEqual(lastSetValue.value, '380px',
+    'the CSS property must reflect the LATEST height at the time of each event, not a stale/batched one');
+
+  raf.uninstall();
+  delete globalThis.window.visualViewport;
+});
+
+test('initVisualViewport: coalesced refits span multiple animation frames -- sustained bursts get one fit() per frame, not one total', () => {
+  // Guards against an overly-aggressive fix that coalesces an entire
+  // multi-frame animation down to a single trailing refit (which would
+  // reintroduce the "terminal visibly mis-sized for the whole animation"
+  // problem the original v0.44.0 immediate-refit was written to avoid).
+  const t = loadTerminal();
+
+  const expandedViewEl = { style: { setProperty: () => {} } };
+  const origGetElementById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) =>
+    id === 'view-expanded' ? expandedViewEl : origGetElementById(id);
+
+  const handlers = {};
+  globalThis.window.visualViewport = {
+    height: 400,
+    addEventListener: (event, fn) => { handlers[event] = fn; },
+    removeEventListener: () => {},
+  };
+
+  const raf = installMockRaf();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => 0;
+  t.openTerminal('test-session');
+  globalThis.setTimeout = orig;
+
+  raf.flush(); // settle the seed call
+  const baseline = t.fitCallCount;
+
+  // Frame 1: 5 genuine changes -> exactly 1 fit() once flushed.
+  for (let h = 399; h >= 395; h--) {
+    globalThis.window.visualViewport.height = h;
+    handlers.scroll();
+  }
+  raf.flush();
+  assert.strictEqual(t.fitCallCount, baseline + 1, 'frame 1 of the animation should resolve to exactly one fit()');
+
+  // Frame 2: 5 more genuine changes -> exactly 1 MORE fit() once flushed.
+  for (let h = 394; h >= 390; h--) {
+    globalThis.window.visualViewport.height = h;
+    handlers.scroll();
+  }
+  raf.flush();
+  assert.strictEqual(t.fitCallCount, baseline + 2,
+    'frame 2 of the animation should add exactly one more fit(), not zero (never fully swallowed) and not five (still coalesced)');
+
+  raf.uninstall();
+  delete globalThis.window.visualViewport;
+});
+
+test('closeTerminal cancels a still-pending coalesced refit so a stray callback cannot fire against the next session', () => {
+  const t = loadTerminal();
+
+  // closeTerminal() itself calls expandedViewEl.style.removeProperty(...) to
+  // clear --app-viewport-height -- unlike the other tests in this section,
+  // this one actually invokes closeTerminal(), so the mock needs it too.
+  const expandedViewEl = { style: { setProperty: () => {}, removeProperty: () => {} } };
+  const origGetElementById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) =>
+    id === 'view-expanded' ? expandedViewEl : origGetElementById(id);
+
+  const handlers = {};
+  globalThis.window.visualViewport = {
+    height: 400,
+    addEventListener: (event, fn) => { handlers[event] = fn; },
+    removeEventListener: () => {},
+  };
+
+  const raf = installMockRaf();
+
+  const orig = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => 0;
+  t.openTerminal('test-session');
+  globalThis.setTimeout = orig;
+
+  raf.flush(); // settle the seed call so the pending id below is a fresh one from OUR event, not the seed's
+
+  // Trigger a genuine change so a refit is queued (pending, not yet run).
+  globalThis.window.visualViewport.height = 250;
+  handlers.scroll();
+  assert.strictEqual(raf.pendingCount(), 1, 'a refit should be queued for the next frame');
+
+  t.closeTerminal();
+
+  // The queued callback must have been cancelled -- flushing now must not
+  // increment fitCallCount.
+  const beforeFlush = t.fitCallCount;
+  raf.flush();
+  assert.strictEqual(t.fitCallCount, beforeFlush,
+    'a pending refit cancelled by closeTerminal() must not fire once its frame is later flushed');
+
+  raf.uninstall();
+  delete globalThis.window.visualViewport;
+});
+
 test('connectWebSocket: rapid onResize firings are throttled to the server (regression: mobile scroll corruption)', async () => {
   // Root cause continued: even when every tick corresponds to a genuinely
   // different height (a real keyboard-open or mobile-toolbar animation,

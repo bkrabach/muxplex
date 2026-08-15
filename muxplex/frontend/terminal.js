@@ -9,6 +9,10 @@ let _reconnectTimer = null;
 let _currentSession = null;
 let _vpHandler = null;
 let _vpScrollHandler = null;
+// rAF handle for the coalesced visualViewport refit (see _scheduleVpRefit
+// below) -- module-level (not local to initVisualViewport()) so closeTerminal()
+// can cancel a still-pending one, exactly like _vpHandler/_vpScrollHandler.
+let _vpRefitRafId = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 let _searchAddon = null;
 let _resizeObserver = null;
@@ -527,22 +531,67 @@ window._refitTerminal = _termRefit;
  * handler, since a `scroll` can change `visualViewport.height` too on some
  * browsers without a corresponding `resize`.
  *
- * HEIGHT-UNCHANGED GUARD (mobile scroll corruption fix): `scroll` fires far
- * more often than the viewport genuinely changes height -- it also fires
- * on ordinary content panning while the keyboard/browser toolbar is
- * already settled (mobile-only; a desktop `resize` from a window drag has
- * no such noisy sibling). Every one of those events used to still run an
- * unconditional CSS write + _termRefit() call, which -- via FitAddon's own
- * fit() -> term.resize() -- could dispatch a PTY resize to the server on
- * every single scroll tick during a touch-scroll gesture. See
- * connectWebSocket()'s _sendResizeToServer/RESIZE_SEND_THROTTLE_MS comment
- * for the full mechanism (tmux SIGWINCH-redraw races) and
- * tests/test_terminal.mjs for the reproduction. Bailing out here when the
- * height genuinely hasn't changed removes the large majority of that
- * traffic at the source, for free -- it is a strict no-op in the case that
- * matters (a real height change still refits immediately, exactly as
- * before).
+ * HEIGHT-UNCHANGED GUARD (mobile scroll corruption fix, v0.47.2): `scroll`
+ * fires far more often than the viewport genuinely changes height -- it
+ * also fires on ordinary content panning while the keyboard/browser
+ * toolbar is already settled (mobile-only; a desktop `resize` from a
+ * window drag has no such noisy sibling). Every one of those events used
+ * to still run an unconditional CSS write + _termRefit() call, which --
+ * via FitAddon's own fit() -> term.resize() -- could dispatch a PTY
+ * resize to the server on every single scroll tick during a touch-scroll
+ * gesture. See connectWebSocket()'s
+ * _sendResizeToServer/RESIZE_SEND_THROTTLE_MS comment for the full
+ * mechanism (tmux SIGWINCH-redraw races) and tests/test_terminal.mjs for
+ * the reproduction. Bailing out here when the height genuinely hasn't
+ * changed removes the large majority of that traffic at the source, for
+ * free -- it is a strict no-op in the case that matters (a real height
+ * change still refits, exactly as before).
+ *
+ * PER-FRAME REFIT COALESCING (mobile scroll SMOOTHNESS, this fix): the
+ * height-unchanged guard above only filters out no-op events -- a real
+ * mobile toolbar-collapse/keyboard-open animation still fires several
+ * GENUINELY different heights in quick succession (one per animation
+ * tick), and until now every single one still ran `_termRefit()`
+ * (FitAddon.fit()) synchronously and immediately. `fit()` reads layout
+ * (offsetWidth/offsetHeight) right after the CSS write above just
+ * invalidated it -- a forced synchronous layout recalculation -- and may
+ * also trigger xterm.js's own resize/render work. Desktop's `resize`
+ * event essentially never fires during a scroll (the height-unchanged
+ * guard makes it a no-op every time), so none of this cost is ever paid
+ * there; mobile's `scroll`/`resize` genuinely re-fire with new heights
+ * throughout the whole toolbar animation, so this cost is paid on every
+ * single animation tick -- real main-thread work competing with the
+ * browser's own scroll/toolbar compositing, i.e. exactly the reported
+ * asymmetry ("very smooth on desktop", rough on mobile).
+ *
+ * Fix: coalesce `_termRefit()` to at most once per rendered animation
+ * frame via `requestAnimationFrame`, using the same schedule-if-not-
+ * already-scheduled pattern as `initMobileTerminalScroll()`'s rAF-batched
+ * wheel dispatch further down this file. The CSS write stays immediate
+ * and unconditional on every genuine change (cheap; keeps the container
+ * glued to the viewport in real time with zero added lag) -- only the
+ * comparatively expensive `fit()` call is batched, and any events that
+ * arrive before the queued frame runs are absorbed into that single call
+ * (FitAddon measures live layout, not a captured value, so the eventual
+ * call always reflects the LATEST height). Falls back to an immediate,
+ * synchronous call when `requestAnimationFrame` is unavailable -- the
+ * same fallback idiom already used in createTerminal() below -- which
+ * keeps this byte-for-byte identical to the pre-fix behavior in the
+ * Node test environment (no rAF there), so the v0.47.2 corruption
+ * regression tests are unaffected.
  */
+function _scheduleVpRefit() {
+  if (typeof requestAnimationFrame === 'undefined') {
+    _termRefit();
+    return;
+  }
+  if (_vpRefitRafId !== null) return; // a refit is already queued for the next frame
+  _vpRefitRafId = requestAnimationFrame(function() {
+    _vpRefitRafId = null;
+    _termRefit();
+  });
+}
+
 function initVisualViewport() {
   if (!window.visualViewport) return;
   if (_vpHandler) window.visualViewport.removeEventListener('resize', _vpHandler);
@@ -557,12 +606,14 @@ function initVisualViewport() {
     if (h === _lastVpHeight) return; // no genuine change -- true no-op, see docstring above
     _lastVpHeight = h;
     expandedView.style.setProperty('--app-viewport-height', h + 'px');
-    // Refit xterm.js -- the ResizeObserver in openTerminal() would also
-    // eventually catch this (debounced 50ms), but refitting immediately
-    // here avoids a visible one-frame lag while the keyboard animates.
-    // (The server-bound PTY resize this can trigger is separately
-    // throttled -- see connectWebSocket()'s _sendResizeToServer.)
-    _termRefit();
+    // Refit xterm.js -- coalesced to at most one per animation frame (see
+    // _scheduleVpRefit above and its docstring). The ResizeObserver in
+    // openTerminal() would also eventually catch this (debounced 50ms);
+    // per-frame rAF coalescing keeps the terminal tracking the animating
+    // viewport far more tightly than that while still bounding the cost
+    // per frame. (The server-bound PTY resize this can trigger is
+    // separately throttled -- see connectWebSocket()'s _sendResizeToServer.)
+    _scheduleVpRefit();
   };
   _vpScrollHandler = _vpHandler;
 
@@ -931,6 +982,13 @@ function closeTerminal() {
     }
     _vpHandler = null;
     _vpScrollHandler = null;
+  }
+  // Cancel a still-pending coalesced refit (see _scheduleVpRefit) so a stray
+  // callback from THIS session never fires an extra (harmless but wasted)
+  // fit() against whatever terminal/session comes next.
+  if (_vpRefitRafId !== null) {
+    if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(_vpRefitRafId);
+    _vpRefitRafId = null;
   }
   // Clear the custom property this view was using -- #view-expanded falls
   // back to its CSS default (100dvh) the moment it's set again, but an
