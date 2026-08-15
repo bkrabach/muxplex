@@ -2013,36 +2013,15 @@ body {
   flex: 0 0 auto;
 }
 
-.agent-panel-logo {
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  display: block;
-}
+/* muxplex-z6h: .agent-panel-logo / -title-group / -name / -attribution /
+   -attention were all deleted here, along with their markup. The header row
+   now holds only the three things you can act on (New, Export, close), and
+   the close button is pushed to the far edge by the rule below rather than by
+   a title element that happened to be flex:1. The attribution did not
+   disappear -- it moved to .agent-panel-byline at the bottom of the panel. */
 
-.agent-panel-title-group {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  line-height: 1.3;
-}
-
-.agent-panel-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-panel-attribution {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--text-muted);
-  letter-spacing: 0.02em;
+.agent-panel-header #chat-close-btn {
+  margin-left: auto;
 }
 
 .agent-panel-messages {
@@ -2079,6 +2058,32 @@ body {
   flex: 0 0 auto;
   width: auto;
   padding: 0 12px;
+}
+
+/* muxplex-z6h: the "Powered by Amplifier Agent" attribution, relocated from
+   the panel header. Byline register -- last element in the panel, under the
+   composer, muted and small. It is always present while the panel is open
+   (nothing collapses or scrolls it away), it just no longer spends the top of
+   the panel. flex:0 0 auto so it never steals height from the transcript. */
+.agent-panel-byline {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 12px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+/* What the transcript shows before the first message. This used to be the raw
+   conversation id ("New conversation (chat-msu6r65f-...)"). Replaced with an
+   actual starting point in the user's own vocabulary -- chat.js removes it on
+   the first real message, so it is an opening line, not permanent chrome. */
+.agent-msg-empty {
+  margin: 8px 2px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 /* Message rendering (chat.js's appendSystemLine/appendBubble/appendError) --
@@ -2259,33 +2264,6 @@ body {
     height: auto;
     min-height: 48px;
   }
-}
-
-/* Live attention count in the panel header -- see the media query above for
-   why this exists. Sits in the row the branding already occupies, so it
-   consumes no vertical space at any width. */
-
-.agent-panel-attention {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 3px 7px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.agent-panel-attention--attention {
-  color: #000;
-  background: var(--warn, #F1A640);
-  border-color: var(--warn, #F1A640);
-}
-
-.agent-panel-attention--unknown {
-  color: var(--err);
-  border-color: rgba(248, 81, 73, 0.5);
 }
 
 /* ============================================================

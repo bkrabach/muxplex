@@ -517,8 +517,34 @@
     captureCapped = false;
     turnIndex = -1;
     requestIndex = -1;
-    appendSystemLine("New conversation (" + clientSessionId + ")");
+    appendEmptyState();
+    // The conversation id is still recorded here, and still travels in the
+    // exported record and in the X-Client-Session-Id header -- it is the
+    // string an engineer greps the sidecar journal with. muxplex-z6h removed
+    // it from the SCREEN, not from the record: it was the first thing the
+    // panel said to a human, which one reviewer called "the equivalent of a
+    // person introducing themselves with their employee ID number."
     capPush("conversation_new", { client_session_id: clientSessionId });
+  }
+
+  /** What occupies the transcript before the first message: an actual
+   * starting point, in the user's own vocabulary. Removed the moment the
+   * conversation has real content (see handleSend), so it is an opening
+   * line rather than permanent chrome. */
+  function appendEmptyState() {
+    var div = document.createElement("div");
+    div.className = "agent-msg-empty";
+    div.id = "chat-empty-state";
+    div.textContent =
+      "Ask about your sessions \u2014 what's running, what one of them is " +
+      "printing right now, or switch the dashboard to a different session " +
+      "or view.";
+    messagesEl.appendChild(div);
+  }
+
+  function clearEmptyState() {
+    var el = document.getElementById("chat-empty-state");
+    if (el && el.parentNode) el.parentNode.removeChild(el);
   }
 
   // Branding pass: these three renderers used to set raw inline styles
@@ -634,78 +660,6 @@
     }
 
     return clipText(raw, 90);
-  }
-
-  // ----------------------------------------------------------------------
-  // Live attention count in the panel header (muxplex-n7z)
-  // ----------------------------------------------------------------------
-  // On a phone this panel is the whole screen, so while it is open the
-  // dashboard behind it can no longer tell you that something started
-  // needing you. Rather than shrink the panel to leave a 31px strip that a
-  // vision pass on the real pixels called "too fragmentary to provide any
-  // meaningful status" -- the appearance of session awareness rather than
-  // session awareness -- carry the one signal that is actually actionable
-  // mid-question, in a header row that already exists.
-  //
-  // Source of truth is GET /api/view?sort=attention -- the SAME endpoint and
-  // the SAME server-computed `needs_attention` flag the soft deck reads
-  // (deck.js's poll). This deliberately does not re-derive the bell/
-  // follow-up predicate client-side: two implementations of one rule drift,
-  // and deck.js's own header comment says so.
-  //
-  // Polls only while the panel is visible. A failed poll says "attention: ?"
-  // in the error colour -- it must never render as "all clear", which is the
-  // one lie that would matter.
-
-  var ATTENTION_POLL_MS = 5000;
-  var attentionTimer = null;
-  var attentionEl = null;
-
-  function renderAttention(state, count) {
-    if (!attentionEl) return;
-    attentionEl.classList.remove("agent-panel-attention--attention",
-      "agent-panel-attention--unknown");
-    if (state === "unknown") {
-      attentionEl.classList.add("agent-panel-attention--unknown");
-      attentionEl.textContent = "attention: ?";
-      attentionEl.title = "Could not read /api/view -- session state is UNKNOWN, not clear.";
-      return;
-    }
-    if (count > 0) {
-      attentionEl.classList.add("agent-panel-attention--attention");
-      attentionEl.textContent = count + " need" + (count === 1 ? "s" : "") + " you";
-    } else {
-      attentionEl.textContent = "all clear";
-    }
-    attentionEl.title = "Live count of sessions in the current view flagged " +
-      "needs_attention by the server -- the same flag the deck reads.";
-  }
-
-  async function pollAttentionOnce() {
-    try {
-      var resp = await fetch("/api/view?sort=attention", { method: "GET" });
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      var data = await resp.json();
-      var sessions = (data && data.sessions) || [];
-      var n = sessions.filter(function (s) { return !!s.needs_attention; }).length;
-      renderAttention("ok", n);
-    } catch (e) {
-      // Loud, not silent: an unreadable server is not an empty queue.
-      console.warn("chat panel: attention poll failed:", e);
-      renderAttention("unknown", 0);
-    }
-  }
-
-  function startAttentionPolling() {
-    if (attentionTimer !== null) return;
-    pollAttentionOnce();
-    attentionTimer = setInterval(pollAttentionOnce, ATTENTION_POLL_MS);
-  }
-
-  function stopAttentionPolling() {
-    if (attentionTimer === null) return;
-    clearInterval(attentionTimer);
-    attentionTimer = null;
   }
 
   /** Collapsed tool result: summary on screen, full payload on demand. */
@@ -1271,6 +1225,7 @@
     var text = inputEl.value.trim();
     if (!text) return;
     inputEl.value = "";
+    clearEmptyState(); // the opening line has done its job the moment there is a real message
     var bubble = appendBubble("user");
     bubble.textContent = text;
     messages.push({ role: "user", content: text });
@@ -1342,16 +1297,6 @@
         document.body.appendChild(__b);
       } catch (e) {}
       throw new Error(__msg);
-    }
-
-    // The attention badge is deliberately NOT in the fatal __missing check
-    // above: it is an added signal, not part of the panel's own contract.
-    // If the markup is absent the panel must still work -- but say so, so a
-    // missing badge can never be mistaken for "nothing needs you".
-    attentionEl = $("chat-attention");
-    if (!attentionEl) {
-      console.warn("chat panel: #chat-attention not found -- panel will not " +
-        "show the live needs-attention count while open");
     }
 
     newConversation();
@@ -1446,15 +1391,7 @@
       agentButtons().forEach(function (b) {
         b.setAttribute("aria-pressed", open ? "true" : "false");
       });
-      // Poll only while visible: this panel is a foreground surface, and a
-      // background timer hitting /api/view forever is exactly the kind of
-      // cost nobody asked for.
-      if (open) {
-        homeAgentPanel();
-        startAttentionPolling();
-      } else {
-        stopAttentionPolling();
-      }
+      if (open) homeAgentPanel();
     }
 
     function togglePanel() {

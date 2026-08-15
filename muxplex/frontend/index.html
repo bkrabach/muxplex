@@ -574,22 +574,22 @@
        `hidden` (display:none !important), so a broken panel is invisible
        rather than a stray 380px box wedged under the views. -->
   <div id="chat-panel" class="agent-panel hidden">
+    <!-- muxplex-z6h -- chrome stripped to essentials. What USED to be here and
+         why it is gone:
+           - the Amplifier logo: the same mark is already on the Agent button
+             in the app header three inches away, and a design review flagged
+             three brand marks stacked in one region as unreconciled
+             co-branding. One mark on the button, one byline at the bottom.
+           - the "Muxplex Agent" title: you opened it; you know what it is.
+           - the live attention badge (muxplex-n7z): it existed ONLY to
+             compensate for the panel OVERLAYING the dashboard and hiding
+             session state. muxplex-rle made the panel inline, so the sessions
+             it was summarising are on screen next to it now. Do not re-add it
+             on the strength of that earlier reasoning -- the premise it was
+             built on no longer exists, and the owner separately asked for it
+             gone as clutter. Its polling code went with it.
+         What is left is what you can act on: New, Export, close. -->
     <div class="agent-panel-header">
-      <img src="/amplifier-icon-48.png" alt="Amplifier" width="22" height="22" class="agent-panel-logo" />
-      <div class="agent-panel-title-group">
-        <span class="agent-panel-name">Muxplex Agent</span>
-        <span class="agent-panel-attribution">Powered by Amplifier Agent</span>
-      </div>
-      <!-- Live attention count (muxplex-n7z). This panel covers the whole
-           screen on a phone, so while it is open the dashboard behind it
-           cannot tell you that something started needing you. This is the
-           one piece of session state that is actionable mid-question, and
-           it rides in a row that already exists, so it costs no layout
-           space -- the same "signal without chrome" move deck/
-           DESIGN_SOFTDECK.md 7 makes for staleness on the soft deck.
-           Populated by chat.js's startAttentionPolling(); polls only while
-           the panel is open. aria-live so it is announced, not just seen. -->
-      <span id="chat-attention" class="agent-panel-attention" aria-live="polite"></span>
       <button id="chat-new-btn" class="header-btn" title="Start a new conversation">New</button>
       <!-- muxplex-4kl: exports a structured debug record (transcript, tool
            calls, raw tool results, timings, the SSE stream, console/network
@@ -604,6 +604,12 @@
       <textarea id="chat-input" class="agent-panel-input" rows="2" placeholder="Ask about your sessions..."></textarea>
       <button id="chat-send-btn" class="header-btn agent-panel-send-btn">Send</button>
     </div>
+    <!-- muxplex-z6h: the attribution moved here from the panel header. It is
+         a byline, not a banner -- last thing in the panel, under the input,
+         muted and small. Attribution is still always present whenever the
+         panel is open (nothing collapses or scrolls it away), it just no
+         longer spends the top of the panel saying who built it. -->
+    <p class="agent-panel-byline">Powered by Amplifier Agent</p>
   </div>
 
   <!-- muxplex-4kl: persistent download trigger for exportCaptureRecord() in
