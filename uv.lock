@@ -380,7 +380,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "python-pam", specifier = ">=1.8.4" },
     { name = "six", specifier = ">=1.16.0" },
-    { name = "tmux-kit", git = "https://github.com/bkrabach/tmux-kit?tag=v0.3.5" },
+    { name = "tmux-kit", git = "https://github.com/bkrabach/tmux-kit?tag=v0.4.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
     { name = "websockets", specifier = ">=14.0" },
 ]
@@ -718,8 +718,8 @@ wheels = [
 
 [[package]]
 name = "tmux-kit"
-version = "0.3.5"
-source = { git = "https://github.com/bkrabach/tmux-kit?tag=v0.3.5#58ec2854766cf0375d623c373678e2aa3648a500" }
+version = "0.4.0"
+source = { git = "https://github.com/bkrabach/tmux-kit?tag=v0.4.0#148c15d9ff7d660ff001888f13ef82873bcbca8d" }
 
 [[package]]
 name = "typing-extensions"
