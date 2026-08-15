@@ -84,6 +84,7 @@ markers = [
     "integration: marks tests as integration tests requiring real tmux (deselect with '-m not integration')",
     "allow_real_port_killer: test intentionally exercises the real _kill_stale_port_holder (see tests/conftest.py)",
     "allow_real_service_ready_wait: test intentionally exercises the real _wait_for_service_ready (see tests/conftest.py)",
+    "allow_real_uvicorn_run: test intentionally exercises the real uvicorn.run (see tests/conftest.py); must still pin an OS-allocated port",
     # NOTE: the 'differential' marker/harness retired from this repo at the
     # tmux-kit cutover (docs/plans/2026-08-09-tmuxkit-own-repo-and-pypi-plan.md
     # SS3.2/SS5): the harness tests tmux-kit's own internals and now lives,

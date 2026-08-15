@@ -858,10 +858,10 @@ entry on sight.
 
 ## Testing & workflow
 
-### ⚠️ NEVER run the test suite on a host running a live muxplex
+### The suite is safe to run on a host running a live muxplex — by structural isolation, not by refusal
 
-`uv run pytest` on a developer box that is also serving muxplex has caused real
-production damage, twice in one session:
+`uv run pytest` on a developer box that is also serving muxplex caused real
+production damage, twice in one session (2026-07-25):
 
 1. A test that wrote settings without redirecting `SETTINGS_PATH` overwrote the
    host's real `~/.config/muxplex/settings.json`, replacing an 8-view production
@@ -876,19 +876,33 @@ production damage, twice in one session:
 Both were invisible from inside the suite: **a test that destroys its host still
 passes.**
 
-`muxplex/tests/conftest.py` now makes this fail loud instead. Read its docstring
-before changing anything there; `test_safety_rails.py` fails if a guard is
-removed. The rails:
+The original fix was a `pytest_sessionstart` hook that refused to run the
+ENTIRE suite whenever anything answered the default port — safe, but it meant
+the suite could never run at all on a host already serving a live muxplex
+(this repo's own primary dev host included), even though nothing in the suite
+still needed that port. **That guard has been replaced with structural
+isolation**: every fixture below is autouse, applies to EVERY test regardless
+of what else is running, and together makes the dangerous outcome impossible
+by construction rather than merely refusing to proceed. Read
+`muxplex/tests/conftest.py`'s module docstring before changing anything there;
+`test_safety_rails.py` fails if a rail is removed or weakened. The rails:
 
 | Rail | Stops |
 |---|---|
-| `pytest_sessionstart` guard | Running at all when something serves the default port |
-| autouse `SETTINGS_PATH` → tmp | Tests reaching the real user config |
-| autouse killer-neutering | Tests SIGTERMing whatever owns the port |
-| `test_safety_rails.py` | Silent removal of any of the above |
+| autouse `SETTINGS_PATH` → tmp | Tests reaching the real user config (closes incident 1) |
+| autouse tmux-socket isolation | Tests' real tmux subprocess calls reaching the ambient/live tmux server |
+| autouse killer-neutering | Tests SIGTERMing whatever owns the port (closes incident 2's signal step) |
+| autouse `uvicorn.run` neutering | Any test opening a REAL listening socket for the app by accident (closes incident 2's root cause) |
+| `pytest_sessionstart` structural (AST) scan | A NEW test reintroducing incident 2's exact shape (opts into the real killer without pinning a port) — fails at collection, not merely a code-review nit; never refuses just because something else is running |
+| `test_safety_rails.py` | Silent removal or weakening of any of the above |
 
-To reach the real port killer a test must opt in explicitly with
-`@pytest.mark.allow_real_port_killer` — visible in review.
+To reach the real port killer or the real `uvicorn.run`, a test must opt in
+explicitly with `@pytest.mark.allow_real_port_killer` /
+`@pytest.mark.allow_real_uvicorn_run` — visible in review, and (for the
+latter) still required to pin an OS-allocated port via the `free_port`
+fixture. Proven on this host: the full suite (`.venv/bin/python -m pytest
+muxplex/tests/`) passes with the real production muxplex listening on 8088
+the entire time, its PID unchanged before and after (verified via `ss -ltnp`).
 
 ### Run it in an isolated environment
 

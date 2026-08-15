@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import socket
 from pathlib import Path
 
 import pytest
@@ -30,27 +31,73 @@ def test_conftest_exists():
 
 
 def test_session_guard_is_installed():
-    """``pytest_sessionstart`` must refuse to run against a live server."""
+    """``pytest_sessionstart`` must still exist and still fail LOUD -- now
+    for a structural reason (see conftest.py's module docstring: it used to
+    probe the host's network, and now scans the test suite's own source),
+    not a network probe."""
     from . import conftest as ct
 
     assert hasattr(ct, "pytest_sessionstart"), (
         "conftest.pytest_sessionstart was removed. That hook is what refuses "
-        "to run the suite when something is already serving the default port."
+        "the whole session if the suite itself reintroduces the exact test "
+        "shape that destroyed a live server before (see incident 2 in "
+        "conftest.py's module docstring)."
     )
     src = inspect.getsource(ct.pytest_sessionstart)
-    assert "UsageError" in src or "exit" in src, (
+    assert "UsageError" in src, (
         "pytest_sessionstart no longer aborts. It must FAIL, not warn -- a "
         "warning gets scrolled past and the server dies anyway."
     )
 
 
-def test_override_requires_explicit_optin():
-    """The escape hatch must be explicit, not a default-on convenience."""
+def test_session_guard_does_not_refuse_the_normal_case():
+    """The guard must never refuse merely because this repo, as it stands,
+    is clean -- proving it answers 'does a dangerous test exist', never 'is
+    something else running on this host'. This is what makes the suite
+    RUNNABLE on a host serving a live muxplex on the default port, which the
+    retired network-probe guard could never do.
+
+    (The real suite having zero offenders is proven independently by
+    ``test_no_dangerous_serve_calls_exist_anywhere_in_the_suite`` below; this
+    test additionally proves the hook itself does not raise given that.)
+    """
     from . import conftest as ct
 
-    assert ct._OVERRIDE_ENV == "MUXPLEX_TEST_ALLOW_LIVE_HOST"
+    ct.pytest_sessionstart(session=None)  # type: ignore[arg-type]
+
+
+def test_session_guard_refuses_when_the_dangerous_shape_exists(monkeypatch):
+    """Prove the backstop actually catches the shape it claims to, rather
+    than being vacuously satisfied because the real repo happens to be
+    clean right now."""
+    from . import conftest as ct
+
+    monkeypatch.setattr(
+        ct,
+        "_serve_calls_without_pinned_port",
+        lambda tests_dir: ["test_synthetic.py::test_offender"],
+    )
+    with pytest.raises(pytest.UsageError, match="test_offender"):
+        ct.pytest_sessionstart(session=None)  # type: ignore[arg-type]
+
+
+def test_structural_guard_has_no_bypass():
+    """Unlike the retired network-probe guard, this one must not be
+    overridable by an environment variable. There is no legitimate reason to
+    run a suite that contains the dangerous shape -- only a reason to fix
+    it -- so, unlike the old guard, this one gets no escape hatch."""
+    from . import conftest as ct
+
+    assert not hasattr(ct, "_OVERRIDE_ENV"), (
+        "conftest._OVERRIDE_ENV reappeared. The structural guard must never "
+        "have an escape hatch: a test either has the dangerous shape (fix "
+        "it) or it doesn't (nothing to override)."
+    )
     src = inspect.getsource(ct.pytest_sessionstart)
-    assert '== "1"' in src, "override must require an exact opt-in value"
+    assert "os.environ" not in src, (
+        "pytest_sessionstart must not read any environment variable to "
+        "decide whether to run."
+    )
 
 
 def test_port_killer_is_neutralized_by_default():
@@ -73,6 +120,44 @@ def test_optin_marker_restores_the_real_function():
     import muxplex.cli as cli_mod
 
     assert cli_mod._kill_stale_port_holder.__name__ == "_kill_stale_port_holder"
+
+
+def test_real_uvicorn_run_is_neutralized_by_default():
+    """A test that does not opt in must not be able to open a real socket
+    via ``uvicorn.run`` -- the fixture that actually closes incident 2 (see
+    conftest.py's module docstring): the port killer alone stops the
+    SIGNAL, but an unmocked, unpinned ``serve()`` would still attempt a REAL
+    bind without this."""
+    import uvicorn
+
+    assert uvicorn.run.__name__ == "_refuse_real_bind", (
+        "The autouse _neutralize_real_uvicorn_run fixture is not active. "
+        "Without it, an unmocked, unpinned serve() can open a REAL "
+        "listening socket on the default port."
+    )
+    with pytest.raises(AssertionError, match="allow_real_uvicorn_run"):
+        uvicorn.run(object(), host="127.0.0.1", port=8088)  # type: ignore[arg-type]
+
+
+@pytest.mark.allow_real_uvicorn_run
+def test_optin_marker_restores_the_real_uvicorn_run():
+    """The opt-in marker must actually hand back the real ``uvicorn.run``,
+    not the neutered stub."""
+    import uvicorn
+
+    assert uvicorn.run.__name__ == "run", (
+        "@pytest.mark.allow_real_uvicorn_run must hand back the real uvicorn.run."
+    )
+
+
+def test_free_port_fixture_returns_a_bindable_ephemeral_port(free_port):
+    """The ``free_port`` fixture must hand back a port THIS process can
+    immediately bind -- proving it's a real, currently-unused ephemeral
+    port an OS actually allocated, not just a plausible-looking integer."""
+    assert isinstance(free_port, int)
+    assert 1024 < free_port < 65536
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", free_port))  # must not raise
 
 
 def test_settings_path_is_isolated(tmp_path):
