@@ -1,3 +1,93 @@
+## v0.48.2 (2026-08-16)
+
+**If you run muxplex on macOS and had the agent sidecar configured,
+`Settings -> Agent` crashed instead of showing you your credential
+status.** `GET /api/agent/provider-credential` reached a bare
+`asyncio.create_subprocess_exec("systemctl", ...)`. macOS has no
+systemd, so that call raised `FileNotFoundError` -- and because no
+exception handler is registered on the app, the raw traceback went
+straight to you. Nothing was wrong with your setup; muxplex was running
+a Linux-only command on a platform where it cannot exist.
+
+This is the same bug v0.48.1 fixed, in a function that patch did not
+reach. v0.48.1 (muxplex-at9) stopped the credential check from leaking
+raw subprocess stderr into the UI by refusing to spawn a subprocess it
+knew would fail. The precondition it added,
+`_agent_sidecar_install_gap()`, checks the `aa-svc` service account and
+the CLI binary -- both of which can genuinely exist on a non-systemd
+host -- and never asks whether systemd itself is present. So the
+identical failure survived in the two functions that call `systemctl`
+directly. Finding one instance of a class of bug and not sweeping the
+module for its siblings is what turned one fix into two releases.
+
+### Fixed
+
+- **`systemctl` is now a checked precondition, not an assumed binary**
+  on the agent-sidecar path. A `_have_systemctl()` helper
+  (`shutil.which`) gates both direct callers before any process is
+  spawned: `_agent_service_env_shadow_vars()` returns an empty set (on
+  a host with no systemd there is no unit to introspect, so "no shadow
+  vars" is the correct answer, not a degraded fallback), and
+  `_restart_agent_sidecar_and_wait()` returns a plain-language failure
+  saying the agent sidecar is systemd-only. Neither swallows an
+  exception -- the guard runs *before* `create_subprocess_exec`, so
+  there is no error to catch. This mirrors the existing
+  `_have_systemctl`/`_is_darwin` split in `muxplex/service.py` and
+  `muxplex/cli.py`; it is duplicated rather than imported because the
+  three modules gate unrelated units and none needs a cross-module
+  dependency for a one-line `shutil.which`.
+
+### What we could not verify
+
+**The macOS fix has not been run on macOS.** There was no macOS machine
+available to reproduce the original crash or confirm the corrected
+behaviour. It was established by reading the reported traceback against
+the code path, and by confirming that the guard precedes the spawn at
+both call sites.
+
+CI's `test (macOS, arm64)` job does run the full suite on a real macOS
+runner, and it passes -- but that is not verification of this fix.
+No test exercises `_agent_service_env_shadow_vars()` at all, and every
+test that touches `_restart_agent_sidecar_and_wait()` monkeypatches the
+whole function away. A green macOS job proves the module imports and
+the suite passes there; it does not execute either repaired path.
+
+That gap is stated rather than glossed because v0.48.0 shipped its
+headline feature dead on arrival for exactly this reason -- it was
+verified only in the environment that happened to be at hand. If you
+run muxplex on macOS with the agent sidecar configured, this release is
+the one to report back on.
+
+### CI hygiene (no user-facing change)
+
+Two test failures fixed. Both were faults in the tests themselves; in
+neither case was the code under test wrong, and no assertion was
+weakened to make either pass.
+
+- **`frontend, node:test`** (muxplex-fii). The vm harness never stubbed
+  `performance`, and its `elementStub()` was too thin for what
+  `chat.js`'s `init()` actually touches. The harness was fixed -- a
+  `performance.now()` stub, and `elementStub()` rebuilt as a Proxy --
+  while the test's assertion was left untouched. 988 passing, 0
+  failing.
+- **`integration, real tmux/ttyd`.** Three tests called real endpoints
+  with no credential. They did not break on their own: commit
+  `52a2634` deliberately closed the loopback auth bypass (the
+  GHSA-7c6r-fvrh-9qp4 fix) and these three were never updated to match.
+  They now authenticate via session cookie, exactly as
+  `test_session_rename_integration.py` already did. The security fix
+  was not weakened or worked around -- the tests were brought in line
+  with it. 50 passing, 1 xfailed, 1 xpassed.
+
+### Testing
+
+2,472 passing, 10 skipped, 0 failing on Linux -- unchanged from the
+v0.48.1 baseline, as expected for a change whose only non-test edit is
+a guard that is false only on non-systemd hosts. The frontend and
+integration suites are green for the first time in this release series
+(counts above); previously both were red, and the release before this
+one was cut with them red.
+
 ## v0.48.1 (2026-08-15)
 
 **If you tried the agent panel on v0.48.0 and gave up, that was our bug,
