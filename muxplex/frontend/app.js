@@ -567,15 +567,26 @@ async function setSyncGroup(mode) {
  */
 function renderSyncGroupControls() {
   var independent = _syncGroup === 'device';
+  var following = !independent;
 
+  // Bug fix (2026-08-16): this used to toggle .header-btn--active on
+  // `independent`, so the button rendered "selected" only when NOT
+  // following -- backwards from what the static link glyph implies, and
+  // the common (following) state showed no active styling at all. Active
+  // styling and the icon now both key off `following` instead. See
+  // tests/test_app.mjs's "sync-group toggle button" coverage.
   ['sync-group-btn', 'sync-group-btn-expanded'].forEach(function(id) {
     var btn = $(id);
     if (!btn) return;
-    btn.setAttribute('aria-pressed', independent ? 'true' : 'false');
-    btn.classList.toggle('header-btn--active', independent);
-    btn.title = independent
-      ? 'Independent — not following this server\'s view'
-      : 'Following this server\'s view';
+    btn.setAttribute('aria-pressed', following ? 'true' : 'false');
+    btn.classList.toggle('header-btn--active', following);
+    // Distinct icon per state, not just a color change: linked chain when
+    // following, broken chain when independent -- so the state reads
+    // without needing to hover for the title tooltip.
+    btn.innerHTML = following ? '&#128279;' : '&#9939;&#65039;&#8205;&#128165;';
+    btn.title = following
+      ? 'Following this server\'s view'
+      : 'Independent — not following this server\'s view';
   });
 
   var checkbox = $('setting-independent-view');
