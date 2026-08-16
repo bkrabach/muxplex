@@ -1,7 +1,7 @@
 # scripts/
 
-Standalone developer scripts. Not part of the package, not run by CI, not
-imported by `muxplex/`. Two kinds live here:
+Standalone developer scripts. Not part of the package, not imported by
+`muxplex/`. Three kinds live here:
 
 - **Spike probes** (`spike_*.py`) — small experiments that answer one platform
   question with real processes. Kept in-repo so the answer can be re-verified
@@ -198,3 +198,85 @@ Neither is a ttyd or muxplex bug; both cost real time to rediscover.
   tmux server but leaves its socket file under `/tmp/tmux-<uid>/`. Dead files
   only — no server process survives — but they piled up across unattended runs.
   `ttyd_session()`'s teardown now unlinks it (`tmux_socket_file()`).
+
+## Container drift
+
+`check_container_drift.py` — a guard, not a probe. Wired into `make check`.
+
+### What it guards
+
+Browser proof is this project's reality gate. Four separate times a change was
+reported working on non-browser evidence and turned out dead, clobbered, or
+wrong. But that gate only means something if **the tree being clicked is the
+tree being committed.**
+
+`muxplex-cxd` made the LAN twin's `/opt/muxplex` a real git checkout precisely
+so edits would be reviewable and collisions visible. It then decayed silently:
+work moved to host worktrees, the container was never re-synced, and browser
+verification was done by hand-patching container files to approximate whatever
+the branch held at the time. When someone finally looked (`muxplex-cky`) it was
+**54 commits behind with 3198 lines of uncommitted hand-patching on top.**
+
+Nothing detected that. A person happened to notice. This script is the machine
+that notices instead.
+
+### What it checks, and what it returns
+
+Two things: container `HEAD` == host `HEAD`, and container tree clean.
+
+| Exit | Meaning |
+|------|---------|
+| 0 | IN SYNC — verified |
+| 1 | DRIFT — fails `make check` |
+| 2 | Could not verify (no twin CLI, container down, no checkout) |
+
+Exit 2 is **not** a soft pass. It is a third named state, printed as loudly as
+DRIFT. `make check` tolerates it because a contributor with no LAN twin has no
+container to be stale — but the check never prints a reassuring "in sync" it
+has not earned.
+
+Overridable: `MUXPLEX_CONTAINER` (default `muxplex-lan-twin`),
+`MUXPLEX_CONTAINER_SRC` (default `/opt/muxplex`).
+
+### Re-syncing when it fires
+
+**First, find out what the drift actually is. The answer must arrive before the
+risk does.** The container may hold the only copy of something. In `muxplex-cky`
+7 of 8 modified files turned out to be hand-applied approximations of commits
+that had since landed byte-for-byte identically — but the 8th held 12 lines that
+existed in no commit on any ref, and would have been destroyed by a reflexive
+`reset --hard`.
+
+Prove it rather than assuming it. Hash each container file and search all of
+history for that blob:
+
+```sh
+git hash-object <file-pulled-from-container>
+for c in $(git rev-list --all); do
+  git rev-parse "$c:muxplex/frontend/style.css" 2>/dev/null
+done | grep -q <hash> && echo "already on the branch"
+```
+
+If a file matches no commit anywhere, diff it against HEAD and account for
+**every** differing line before overwriting it. Stop and report anything unique
+rather than folding it in on your own judgement.
+
+Then, once the drift is understood — the container has no network route to the
+host repo, so history moves in as a bundle:
+
+```sh
+git bundle create /tmp/muxplex.bundle poc/agent-chat-panel
+git bundle verify /tmp/muxplex.bundle          # confirm complete history
+amplifier-digital-twin file-push muxplex-lan-twin /tmp/muxplex.bundle /root/muxplex.bundle
+amplifier-digital-twin exec muxplex-lan-twin -- bash -c \
+  'cd /opt/muxplex && git fetch /root/muxplex.bundle \
+     "refs/heads/poc/agent-chat-panel:refs/remotes/sync/poc/agent-chat-panel" \
+   && git reset --hard <branch-head>'
+```
+
+Verify by comparing `git rev-parse HEAD^{tree}` on both sides — equal tree
+hashes prove the working trees are identical, which `HEAD` alone does not.
+
+Frontend files are static: **reload the page, do not restart the service.**
+Restarting muxplex in the twin wipes the seeded `counter` / `logtail` / `sysmon`
+tmux sessions.

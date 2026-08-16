@@ -9,7 +9,7 @@ DTU      ?= muxplex-test
 PROFILE  ?= ../.amplifier/digital-twin-universe/profiles/muxplex-test.yaml
 TARBALL  ?= ../.amplifier/digital-twin-universe/profiles/muxplex-src.tar.gz
 
-.PHONY: test test-host check fmt
+.PHONY: test test-host check fmt check-container-drift
 
 ## Run the full suite inside the DTU (the safe, default path).
 test:
@@ -31,8 +31,27 @@ test-host:
 	uv run pytest
 
 check: fmt
+	@$(MAKE) --no-print-directory check-container-drift
 	uv run ruff check muxplex/
 	uv run pyright muxplex/
+
+## Fail if the browser-verification container has drifted from this checkout.
+##
+## Browser proof is this project's reality gate, and it only means anything if
+## the tree being clicked IS the tree being committed. That invariant decayed
+## silently for 54 commits once (muxplex-cxd -> muxplex-cky) and was caught only
+## because a person happened to look. This is the machine that looks instead.
+##
+## exit 1 (DRIFT) fails the build. exit 2 (could not verify -- no twin CLI, no
+## container) is reported on screen but not fatal: a contributor without the LAN
+## twin has no container to be stale. It is never silently treated as a pass.
+check-container-drift:
+	@./scripts/check_container_drift.py; rc=$$?; \
+	  if [ $$rc -eq 1 ]; then exit 1; fi; \
+	  if [ $$rc -eq 2 ]; then \
+	    echo "[container-drift] NOT FATAL for 'make check' -- but this was NOT a pass."; \
+	  fi; \
+	  exit 0
 
 fmt:
 	uv run ruff format muxplex/
