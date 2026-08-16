@@ -262,6 +262,11 @@ let _pendingLocalSwitches = 0;
 let _pendingViewSwitches = 0;
 let _pollingTimer;
 let _statePollTimer;
+// Set while the tab is hidden, by handleVisibilityChange() only. Both poll
+// loops consult it in their tail before re-arming -- see the "Visibility
+// handling" section's "the re-arm race" note for why clearing the pending
+// timer is only half the job.
+let _visibilityPaused = false;
 let _heartbeatTimer;
 let _notificationPermission = 'default';
 let _pollFailCount = 0;
@@ -888,9 +893,24 @@ function startPolling() {
   _pollingTimer = true; // sentinel: prevents double-start before first setTimeout fires
   async function pollLoop() {
     await pollSessions();
-    _pollingTimer = setTimeout(pollLoop, POLL_MS);
+    // Re-arm only if the tab did not hide while that poll was in flight --
+    // see the re-arm race note in the "Visibility handling" section below.
+    if (!_visibilityPaused) _pollingTimer = setTimeout(pollLoop, POLL_MS);
   }
   pollLoop();
+}
+
+/**
+ * Stop the session polling loop (cancels the pending reschedule, if any) and
+ * clear the sentinel so a later startPolling() call is not treated as a
+ * double-start no-op. Used by handleVisibilityChange() when the tab is
+ * hidden, and as a test-reset helper.
+ */
+function stopPolling() {
+  if (_pollingTimer) {
+    clearTimeout(_pollingTimer);
+    _pollingTimer = undefined;
+  }
 }
 
 /**
@@ -937,10 +957,87 @@ function startStatePolling() {
   _statePollTimer = true; // sentinel: prevents double-start before first setTimeout fires
   async function statePollLoop() {
     await pollActiveState();
-    _statePollTimer = setTimeout(statePollLoop, STATE_POLL_MS);
+    // Re-arm only if the tab did not hide while that poll was in flight --
+    // see the re-arm race note in the "Visibility handling" section below.
+    if (!_visibilityPaused) _statePollTimer = setTimeout(statePollLoop, STATE_POLL_MS);
   }
   statePollLoop();
 }
+
+/**
+ * Stop the dedicated /api/state follow-poll loop (cancels the pending
+ * reschedule, if any) and clear the sentinel so a later startStatePolling()
+ * call is not treated as a double-start no-op. Used by
+ * handleVisibilityChange() when the tab is hidden, and as a test-reset
+ * helper.
+ */
+function stopStatePolling() {
+  if (_statePollTimer) {
+    clearTimeout(_statePollTimer);
+    _statePollTimer = undefined;
+  }
+}
+
+// ─── Visibility handling ────────────────────────────────────────────────────
+//
+// A backgrounded (or occluded-but-not-hidden, in the PWA case -- see
+// deck.js's identical caveat) tab must not keep polling at full rate: with
+// no visibilitychange handling at all, the session poll (POLL_MS=2000) and
+// the dedicated state poll (STATE_POLL_MS=1000) kept running unthrottled,
+// pinning the main thread against xterm/DOM work and contributing to a
+// user-visible "beachball" stall whenever the tab regained focus. Mirrors
+// deck.js's existing stopPolling()/releaseWakeLock() visibilitychange
+// pattern (deck/deck.js's "Visibility handling" section).
+//
+// On hidden: pause both poll loops via the stop functions above.
+// On visible: resume both loops (each fires its own single immediate poll
+// as part of its existing start-up sequence -- see pollLoop()/
+// statePollLoop() above, no separate "kick" needed) AND explicitly
+// re-register via the existing sendHeartbeat() global. That re-register is
+// deliberate, not redundant: the server prunes a device from its registry
+// after ~300s without a heartbeat (see pollActiveState()'s 404 handling
+// above), and browsers throttle or fully suspend background timers
+// unpredictably during long backgrounding -- so a device can age out of the
+// registry despite startHeartbeat()'s own loop nominally still running.
+// Firing sendHeartbeat() immediately on resume (rather than waiting for
+// whatever remains of the next natural HEARTBEAT_MS tick) re-registers
+// before the resumed state poll's first tick, so a pruned device heals
+// cleanly instead of surfacing one avoidable 404.
+//
+// THE RE-ARM RACE (why _visibilityPaused exists, and why stopPolling()
+// alone is not enough). Both loops are self-scheduling: each awaits its own
+// fetch, then arms the next timer. stopPolling()/stopStatePolling() can only
+// cancel a timer that is ALREADY pending -- they have nothing to cancel when
+// the loop is parked mid-await. So a hide that lands while a poll is in
+// flight used to be silently undone: the clear ran first, then the
+// in-flight poll resolved and re-armed the loop behind it, and the hidden
+// tab kept polling forever. That is not an exotic interleaving -- at a 1s/2s
+// cadence against a server whose federation fetch can block for seconds on a
+// down remote (see pollSessions()'s note), it is the COMMON case, which
+// means the visibility fix would have done nothing in exactly the situation
+// it exists for. The flag closes it from the other side: hiding both cancels
+// the pending timer AND refuses the next re-arm. Belt and braces, on purpose
+// -- neither half is sufficient alone.
+//
+// Ordering is load-bearing on resume: the flag is cleared BEFORE
+// startPolling()/startStatePolling(), or the fresh loops would immediately
+// refuse to re-arm and die after a single tick. Only this function ever
+// writes the flag; stopPolling()/stopStatePolling() stay pure timer stops so
+// they remain usable as plain "stop this loop" helpers (and as test resets)
+// without implying anything about visibility.
+function handleVisibilityChange() {
+  if (document.hidden) {
+    _visibilityPaused = true;
+    stopPolling();
+    stopStatePolling();
+  } else {
+    _visibilityPaused = false;
+    sendHeartbeat().catch(function() {});
+    startPolling();
+    startStatePolling();
+  }
+}
+document.addEventListener('visibilitychange', handleVisibilityChange);
 
 // ─── Grid rendering ──────────────────────────────────────────────────────────
 
@@ -8423,7 +8520,10 @@ if (typeof module !== 'undefined' && module.exports) {
     followRemoteViewDefinitions,
     pollActiveState,
     startPolling,
+    stopPolling,
     startStatePolling,
+    stopStatePolling,
+    handleVisibilityChange,
     escapeHtml,
     formatDeviceVersion,
     deviceLabelPlacement,

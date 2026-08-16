@@ -620,6 +620,276 @@ test('startPolling guards against double-start (only starts one poll loop)', asy
   globalThis.fetch = origFetch;
 });
 
+// --- Visibility handling (background-tab poll throttling) ---
+//
+// Root cause: a backgrounded/occluded browser tab kept both poll loops
+// (session poll POLL_MS=2000, dedicated state poll STATE_POLL_MS=1000)
+// running at full rate with no visibilitychange handling at all, pinning
+// the main thread and contributing to a user-visible "beachball" stall on
+// refocus. Mirrors deck.js's existing stopPolling()/releaseWakeLock()
+// visibilitychange pattern (deck/deck.js's "Visibility handling" section).
+
+test('stopPolling clears the pending session-poll timer so a scheduled tick never fires', async () => {
+  // Normalize BEFORE installing mocks: a leftover timer/sentinel from another
+  // test's real (or Symbol-returning) setTimeout must not be counted below.
+  app.stopPolling();
+
+  const scheduled = [];
+  const cleared = [];
+  let nextId = 0;
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const id = ++nextId;
+    scheduled.push({ id, ms });
+    return id;
+  };
+  globalThis.clearTimeout = (id) => { cleared.push(id); };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => [] });
+
+  app.startPolling();
+  // Yield a real macrotask so pollLoop's first await resolves and schedules the reschedule timeout
+  await new Promise((r) => origSetTimeout(r, 0));
+  assert.strictEqual(scheduled.length, 1, 'startPolling should have scheduled exactly one reschedule timeout');
+
+  app.stopPolling();
+  assert.deepStrictEqual(cleared, [scheduled[0].id], 'stopPolling must clearTimeout the exact pending poll timer');
+
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.clearTimeout = origClearTimeout;
+  globalThis.fetch = origFetch;
+});
+
+test('stopStatePolling clears the pending /api/state timer so a scheduled tick never fires', async () => {
+  // Normalize BEFORE installing mocks -- see comment in the stopPolling test above.
+  app.stopStatePolling();
+
+  const scheduled = [];
+  const cleared = [];
+  let nextId = 0;
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const id = ++nextId;
+    scheduled.push({ id, ms });
+    return id;
+  };
+  globalThis.clearTimeout = (id) => { cleared.push(id); };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+
+  app.startStatePolling();
+  await new Promise((r) => origSetTimeout(r, 0));
+  assert.strictEqual(scheduled.length, 1, 'startStatePolling should have scheduled exactly one reschedule timeout');
+
+  app.stopStatePolling();
+  assert.deepStrictEqual(cleared, [scheduled[0].id], 'stopStatePolling must clearTimeout the exact pending state-poll timer');
+
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.clearTimeout = origClearTimeout;
+  globalThis.fetch = origFetch;
+});
+
+test('handleVisibilityChange is exported', () => {
+  assert.strictEqual(typeof app.handleVisibilityChange, 'function');
+});
+
+test('handleVisibilityChange (hidden) stops both poll loops -- no further scheduled polls', async () => {
+  // Normalize BEFORE installing mocks -- see comment in the stopPolling test above.
+  app.stopPolling();
+  app.stopStatePolling();
+
+  const scheduled = [];
+  const cleared = [];
+  let nextId = 0;
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const id = ++nextId;
+    scheduled.push({ id, ms });
+    return id;
+  };
+  globalThis.clearTimeout = (id) => { cleared.push(id); };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+
+  app.startPolling();
+  app.startStatePolling();
+  await new Promise((r) => origSetTimeout(r, 0));
+  assert.strictEqual(scheduled.length, 2, 'both loops should have scheduled their reschedule timeouts before hiding');
+
+  globalThis.document.hidden = true;
+  app.handleVisibilityChange();
+
+  assert.strictEqual(cleared.length, 2, 'hiding must clear BOTH the session-poll and state-poll timers');
+  assert.deepStrictEqual(
+    cleared.slice().sort(),
+    scheduled.map((s) => s.id).sort(),
+    'hiding must clear exactly the two timers that were scheduled -- no others, none missed',
+  );
+
+  globalThis.document.hidden = false;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.clearTimeout = origClearTimeout;
+  globalThis.fetch = origFetch;
+});
+
+test('handleVisibilityChange (visible) resumes both loops and fires exactly one immediate poll + heartbeat re-register', async () => {
+  const origSetTimeout = globalThis.setTimeout;
+  const timeouts = [];
+  globalThis.setTimeout = (fn, ms) => {
+    timeouts.push(ms);
+    return Symbol('timer');
+  };
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    calls.push(method + ' ' + url);
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app.stopPolling();
+  app.stopStatePolling();
+  globalThis.document.hidden = false;
+
+  app.handleVisibilityChange();
+  // Flush the fire-and-forget async internals (sendHeartbeat, pollLoop, statePollLoop)
+  await new Promise((r) => origSetTimeout(r, 0));
+
+  const sessionCalls = calls.filter((c) => c === 'GET /api/sessions');
+  const stateCalls = calls.filter((c) => c.indexOf('GET /api/state') === 0);
+  const heartbeatCalls = calls.filter((c) => c === 'POST /api/heartbeat');
+
+  assert.strictEqual(sessionCalls.length, 1, 'resuming must fire exactly one immediate session poll');
+  assert.strictEqual(stateCalls.length, 1, 'resuming must fire exactly one immediate /api/state poll');
+  assert.strictEqual(heartbeatCalls.length, 1, 'resuming must fire exactly one immediate heartbeat/re-register call');
+  assert.strictEqual(timeouts.length, 2, 'both loops must reschedule exactly once each after their immediate poll');
+  assert.ok(timeouts.includes(2000), 'session-poll loop must reschedule at POLL_MS');
+  assert.ok(timeouts.includes(1000), 'state-poll loop must reschedule at STATE_POLL_MS');
+
+  app.stopPolling();
+  app.stopStatePolling();
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.fetch = origFetch;
+});
+
+// The timer re-arm race.
+//
+// stopPolling()/stopStatePolling() clear the PENDING timer, which is only
+// half the job: each loop's tail unconditionally re-armed itself after its
+// own `await` resolved. If the tab hid while a poll was in flight -- common,
+// not exotic, at a 1s/2s cadence against a server that can block for seconds
+// on a down federation remote -- the clear happened first and the in-flight
+// poll then re-armed the loop behind it, so the hidden tab kept polling
+// forever and the visibility fix silently did nothing for exactly the case
+// it exists to handle. Clearing the timer AND refusing to re-arm is what
+// makes hidden-suppression robust; either alone is not.
+
+test('pollLoop does not re-arm the session poll when an in-flight poll resolves AFTER the tab hid (timer re-arm race)', async () => {
+  // Normalize BEFORE installing mocks -- see the stopPolling test above.
+  app.stopPolling();
+  app.stopStatePolling();
+
+  const scheduled = [];
+  let nextId = 0;
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    scheduled.push(ms);
+    return ++nextId;
+  };
+  globalThis.clearTimeout = () => {};
+
+  // Park the loop mid-tick: this fetch stays pending until we release it, so
+  // the hide below lands while a poll is genuinely in flight.
+  let releaseFetch;
+  const inFlight = new Promise((r) => { releaseFetch = r; });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    await inFlight;
+    return { ok: true, json: async () => [] };
+  };
+
+  app.startPolling();
+  await new Promise((r) => origSetTimeout(r, 0));
+  assert.deepStrictEqual(scheduled, [], 'precondition: the poll is still in flight, so nothing has been rescheduled yet');
+
+  globalThis.document.hidden = true;
+  app.handleVisibilityChange(); // stopPolling() runs while that fetch is STILL pending
+
+  releaseFetch();
+  await new Promise((r) => origSetTimeout(r, 0));
+
+  assert.deepStrictEqual(
+    scheduled,
+    [],
+    'a poll that resolves after the tab hid must NOT re-arm the loop -- clearing the timer alone loses this race',
+  );
+
+  // Reset visibility state for later tests through the real code path (no
+  // test-only backdoor), letting the resumed loops arm against the MOCKED
+  // setTimeout before we stop them and restore the globals.
+  globalThis.document.hidden = false;
+  app.handleVisibilityChange();
+  await new Promise((r) => origSetTimeout(r, 0));
+  app.stopPolling();
+  app.stopStatePolling();
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.clearTimeout = origClearTimeout;
+  globalThis.fetch = origFetch;
+});
+
+test('statePollLoop does not re-arm the /api/state poll when an in-flight poll resolves AFTER the tab hid (timer re-arm race)', async () => {
+  // Normalize BEFORE installing mocks -- see the stopPolling test above.
+  app.stopPolling();
+  app.stopStatePolling();
+
+  const scheduled = [];
+  let nextId = 0;
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    scheduled.push(ms);
+    return ++nextId;
+  };
+  globalThis.clearTimeout = () => {};
+
+  let releaseFetch;
+  const inFlight = new Promise((r) => { releaseFetch = r; });
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    await inFlight;
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app.startStatePolling();
+  await new Promise((r) => origSetTimeout(r, 0));
+  assert.deepStrictEqual(scheduled, [], 'precondition: the state poll is still in flight, so nothing has been rescheduled yet');
+
+  globalThis.document.hidden = true;
+  app.handleVisibilityChange(); // stopStatePolling() runs while that fetch is STILL pending
+
+  releaseFetch();
+  await new Promise((r) => origSetTimeout(r, 0));
+
+  assert.deepStrictEqual(
+    scheduled,
+    [],
+    'a /api/state poll that resolves after the tab hid must NOT re-arm the loop -- clearing the timer alone loses this race',
+  );
+
+  globalThis.document.hidden = false;
+  app.handleVisibilityChange();
+  await new Promise((r) => origSetTimeout(r, 0));
+  app.stopPolling();
+  app.stopStatePolling();
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.clearTimeout = origClearTimeout;
+  globalThis.fetch = origFetch;
+});
+
 // --- escapeHtml ---
 
 test('escapeHtml replaces & with &amp;', () => {

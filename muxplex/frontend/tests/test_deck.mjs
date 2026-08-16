@@ -1093,6 +1093,72 @@ test('deck.js source (guard): focus_app dispatch calls postJSON(\'/api/focus\'),
   assert.ok(!caseBody.includes('is not yet implemented'), 'the old no-op console.info message must be gone');
 });
 
+// muxplex beachball fix: the deck's fast render tick (`setInterval(..., 1000)`)
+// used to run unconditionally forever, even while `document.hidden` -- see
+// app.js's identical "Visibility handling" section for the full incident
+// (a backgrounded/occluded tab kept polling/repainting at full rate, pinning
+// the main thread and contributing to a user-visible "beachball" stall on
+// refocus). The render ticker and the visibilitychange wiring both live
+// inside the DOM-wiring block (not exported as pure functions -- they need a
+// live `mode`/`grid`/`renderTimer` closure this file's harness deliberately
+// doesn't build, per this file's header comment), so these are source-text
+// regression guards rather than behavioral unit tests, matching the
+// 'focus_app dispatch' guard above.
+
+test('deck.js source (guard): render ticker is lifecycle-controlled via start/stop functions, not a bare setInterval', () => {
+  const deckSourcePath = join(__dirname, '..', 'deck', 'deck.js');
+  const src = fs.readFileSync(deckSourcePath, 'utf8');
+
+  assert.ok(src.includes('function startRenderTicker()'), 'deck.js must define startRenderTicker()');
+  assert.ok(src.includes('function stopRenderTicker()'), 'deck.js must define stopRenderTicker()');
+
+  const stopStart = src.indexOf('function stopRenderTicker()');
+  assert.ok(stopStart !== -1);
+  const stopEnd = src.indexOf('function ', stopStart + 1);
+  const stopBody = src.slice(stopStart, stopEnd === -1 ? undefined : stopEnd);
+  assert.ok(stopBody.includes('clearInterval'), 'stopRenderTicker must clearInterval the render ticker');
+
+  // The old unconditional call must be gone -- it must now be guarded behind
+  // startRenderTicker()'s own double-start guard, not a bare top-level call.
+  const bareIntervalRegex = /(?<!renderTimer = )setInterval\(function \(\) \{\s*\n\s*if \(mode === 'grid'/;
+  assert.ok(!bareIntervalRegex.test(src), 'the render setInterval must be assigned to renderTimer, not fired bare');
+});
+
+test('deck.js source (guard): visibilitychange hidden branch stops the render ticker', () => {
+  const deckSourcePath = join(__dirname, '..', 'deck', 'deck.js');
+  const src = fs.readFileSync(deckSourcePath, 'utf8');
+
+  const vizIndex = src.indexOf("document.addEventListener('visibilitychange'");
+  assert.ok(vizIndex !== -1, 'deck.js must still register a visibilitychange listener');
+  const elseIndex = src.indexOf('} else {', vizIndex);
+  assert.ok(elseIndex !== -1, 'visibilitychange handler must have an else (visible) branch');
+  const hiddenBranch = src.slice(vizIndex, elseIndex);
+
+  assert.ok(hiddenBranch.includes('stopPolling()'), 'hidden branch must still stop polling (unchanged behavior)');
+  assert.ok(hiddenBranch.includes('releaseWakeLock()'), 'hidden branch must still release the wake lock (unchanged behavior)');
+  assert.ok(
+    hiddenBranch.includes('stopRenderTicker()'),
+    'hidden branch must stop the 1s render ticker so a backgrounded/occluded deck stops repainting every second',
+  );
+});
+
+test('deck.js source (guard): visibilitychange visible branch restarts the render ticker', () => {
+  const deckSourcePath = join(__dirname, '..', 'deck', 'deck.js');
+  const src = fs.readFileSync(deckSourcePath, 'utf8');
+
+  const vizIndex = src.indexOf("document.addEventListener('visibilitychange'");
+  assert.ok(vizIndex !== -1, 'deck.js must still register a visibilitychange listener');
+  const elseIndex = src.indexOf('} else {', vizIndex);
+  const handlerEnd = src.indexOf('});', elseIndex);
+  assert.ok(elseIndex !== -1 && handlerEnd !== -1, 'visibilitychange handler must be a well-formed if/else block');
+  const visibleBranch = src.slice(elseIndex, handlerEnd);
+
+  assert.ok(visibleBranch.includes('requestWakeLock()'), 'visible branch must still re-request the wake lock (unchanged behavior)');
+  assert.ok(visibleBranch.includes('recomputeGrid()'), 'visible branch must still recompute the grid (unchanged behavior)');
+  assert.ok(visibleBranch.includes('poll().then(schedulePoll)'), 'visible branch must still resume polling (unchanged behavior)');
+  assert.ok(visibleBranch.includes('startRenderTicker()'), 'visible branch must restart the render ticker on resume');
+});
+
 test('parseControlAddress: valid key/dial forms', () => {
   assert.deepEqual(deck.parseControlAddress('key.0'), { control: 'key', index: 0, sub: null, text: 'key.0' });
   assert.deepEqual(deck.parseControlAddress('key.31'), { control: 'key', index: 31, sub: null, text: 'key.31' });
