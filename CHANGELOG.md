@@ -1,3 +1,71 @@
+## v0.48.1 (2026-08-15)
+
+**If you tried the agent panel on v0.48.0 and gave up, that was our bug,
+not your setup.** On any server where the agent sidecar had never been
+installed -- the default state of every muxplex install, and so the state
+essentially every v0.48.0 upgrader was in -- the feature dead-ended
+twice, and neither dead end told you what was actually missing:
+
+- The chat panel rendered the plain "the agent isn't set up here" 503 as
+  a transient server fault: *"muxplex hit an error of its own while
+  handling that. Worth retrying once."* Retrying could never help. There
+  was no fault to recover from and nothing on your end to fix -- the
+  sidecar was simply never installed.
+- `Settings -> Agent` rendered raw subprocess stderr straight into the
+  UI -- `sudo: unknown user aa-svc`, `sudo: error initializing audit
+  plugin sudoers_audit` -- because the credential check shelled out to
+  `sudo -u aa-svc <binary>` with nothing checking first whether that user
+  or that binary existed.
+
+Upgrading fixes both. Where the sidecar is genuinely absent, muxplex now
+says so plainly and points at `Settings -> Agent` and
+`docs/AGENT_CHAT_SETUP.md`. The configured, working path is unchanged.
+
+### Fixed
+
+- **"Not installed" is now a precondition, not a failed command**
+  (muxplex-at9). `_agent_sidecar_install_gap()` answers "can the sidecar
+  be invoked at all?" using only `pwd.getpwnam` and `os.path.exists` --
+  it NEVER shells out, so detecting the not-installed case cannot itself
+  produce subprocess stderr to leak. `_run_agent_cli` consults it first
+  and raises `AgentSidecarNotInstalled` **before**
+  `create_subprocess_exec` is reached, so "we never tried" can no longer
+  be dressed up as "we tried and it failed" -- which is precisely the
+  conflation both symptoms came from.
+- **A new `not_installed` credential state, distinct from
+  `not_configured`.** The two were collapsing into the generic `error`
+  state carrying whatever stderr came back. `not_installed` (no service
+  account, no CLI binary) now renders as a fact with a next step and
+  disables the key-submission form rather than offering a POST that could
+  only ever be refused; `not_configured` (installed, no provider key yet)
+  is unchanged. Both agent endpoints refuse cleanly when the sidecar is
+  absent, however they are reached.
+- **The chat panel checks for the not-configured 503 before its generic
+  5xx branch** (`chat.js`), so the specific, actionable message wins
+  instead of being swallowed by "worth retrying once". Matched on the
+  server's own wording rather than on the error name, because this
+  failure arrives through the plain `!resp.ok` path, never the SSE
+  error-frame path.
+
+### Why this shipped broken
+
+Every pre-release verification of the agent panel ran in an environment
+where the sidecar was already installed. The configured path was
+exercised thoroughly; the state every upgrading user would actually land
+in -- no sidecar at all -- was never exercised once. That is a process
+failure rather than a coding one, and it is the whole reason a headline
+feature shipped dead on arrival for its entire audience.
+
+### Testing
+
+2,472 passing, 10 skipped, 0 failing -- up from 2,466 at v0.48.0. The six
+new tests cover the install-gap detection (missing service account,
+missing binary, both present), the guarantee that `_run_agent_cli` raises
+without spawning a subprocess, and both endpoints' clean refusal when the
+sidecar is absent. Verified in a browser in both states: a server with
+genuinely no sidecar (the production state that broke), and a configured
+server (working path unchanged).
+
 ## v0.48.0 (2026-08-15)
 
 **If you run muxplex, upgrade.** This release closes three unauthenticated
