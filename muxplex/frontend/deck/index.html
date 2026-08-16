@@ -94,6 +94,24 @@
       <button type="button" id="settings-close">&larr; BACK</button>
       <h1>Deck Settings</h1>
 
+      <!-- Pairing target picker (docs/plans/2026-08-16-deck-control-target-design.md
+           \u00a79.1/\u00a79.3 -- Step 3, "prototype the UX here first"). Options are built
+           entirely by deck.js (renderFollowsUI): two escape hatches first
+           ("Server (shared)" / "Nothing -- just me"), never alphabetized,
+           followed by an <optgroup> of every OTHER device registered with
+           THIS server -- the same visually/semantically distinct two-section
+           shape \u00a79.1 specifies, using a plain, accessible, cross-browser
+           <optgroup> rather than custom markup. Local section only -- no
+           federated/"Elsewhere" section in this step (\u00a710 Step 6). -->
+      <section>
+        <h2>Follows</h2>
+        <p>Which device's active session/view this Soft Deck controls and highlights.</p>
+        <label>Follows
+          <select id="settings-follows"></select>
+        </label>
+        <p id="settings-follows-error" class="settings-error"></p>
+      </section>
+
       <section>
         <h2>Session order</h2>
         <label>Sort

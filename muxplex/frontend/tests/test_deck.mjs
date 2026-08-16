@@ -73,6 +73,19 @@ test('deck.js exports all pure functions', () => {
     'buildStripPickerStatusMessage',
     // Soft deck settings menu defects (BACKLOG.md item 2)
     'bindingApplicability',
+    // "Follows" dropdown (docs/plans/2026-08-16-deck-control-target-design.md
+    // §9.1/§9.3, Step 3)
+    'deviceDisplayLabel',
+    'sanitizeFollows',
+    'computeFollowsDegraded',
+    'degradedOptionLabel',
+    'buildFollowsMenu',
+    'followsCandidateFromValue',
+    'resolveHeartbeatSyncGroup',
+    'targetNotSelfOwningMessage',
+    'generateDeckDeviceId',
+    'loadOrCreateDeckDeviceId',
+    'deckHeartbeatLabel',
   ];
   for (const fn of expected) {
     assert.ok(fn in deck, `deck.js should export "${fn}"`);
@@ -2050,12 +2063,21 @@ test('sanitizeBindings (guard): still accepts key.20/dial.2.turn/strip.3.tap reg
   assert.deepEqual(result, { 'key.20': 'refresh_now', 'dial.2.turn': 'view_cycle', 'strip.3.tap': 'page_next' });
 });
 
-// U9: defaultDeckSettings() is unchanged by this item -- no new setting.
-// This discharges docs/plans/2026-08-06-settings-recovery-plan.md \u00a710's
-// standing rule vacuously (\u00a710 of the settings-menu plan).
-test('defaultDeckSettings (U9): unchanged shape -- this item adds no new soft-deck setting', () => {
+// U9: defaultDeckSettings() was unchanged by the settings-menu-defects item
+// (docs/plans/2026-08-06-settings-recovery-plan.md \u00a710's standing rule,
+// discharged vacuously at the time). `follows` was added later by
+// docs/plans/2026-08-16-deck-control-target-design.md \u00a79.1/\u00a79.3 (Step 3) --
+// per AGENTS.md's rule for a source-shape tripwire like this one ("first ask
+// whether the BEHAVIOR changed... fix the assertion to follow the new
+// structure rather than loosening it"): the behavior genuinely changed (a
+// new, intentional setting), so the assertion is updated to match, not
+// weakened.
+test('defaultDeckSettings (U9): unchanged shape aside from the Step-3 "follows" addition', () => {
   const d = deck.defaultDeckSettings();
-  assert.deepEqual(Object.keys(d).sort(), ['bindings', 'brightness', 'dialCount', 'gridOverride', 'pollIntervalMs', 'sort', 'stripCount', 'version']);
+  assert.deepEqual(
+    Object.keys(d).sort(),
+    ['bindings', 'brightness', 'dialCount', 'follows', 'gridOverride', 'pollIntervalMs', 'sort', 'stripCount', 'version']
+  );
   assert.deepEqual(d.bindings, {});
   assert.strictEqual(d.brightness, 100);
   assert.strictEqual(d.dialCount, 0);
@@ -2063,6 +2085,7 @@ test('defaultDeckSettings (U9): unchanged shape -- this item adds no new soft-de
   assert.strictEqual(d.gridOverride, null);
   assert.strictEqual(d.pollIntervalMs > 0, true);
   assert.strictEqual(d.version, 1);
+  assert.deepEqual(d.follows, { mode: 'global', targetId: null, targetLabel: null });
 });
 
 // U10: ACTION_CATALOG/STRIP_ACTION_CATALOG are untouched by this item --
@@ -2315,4 +2338,420 @@ test('sw.js caches nothing (regression guard: this project has shipped stale-fro
   assert.ok(!lowered.includes('cache.put'), 'sw.js must never write to a cache');
   assert.ok(!lowered.includes('cache.addall'), 'sw.js must never pre-cache assets');
   assert.ok(src.includes("addEventListener('fetch'"), 'sw.js must have a fetch handler (required for the install prompt)');
+});
+
+// ─── "Follows" dropdown (docs/plans/2026-08-16-deck-control-target-design.md
+// §9.1/§9.3/§10 Step 3) ──────────────────────────────────────────────────────
+
+// ── deviceDisplayLabel ──
+
+test('deviceDisplayLabel: prefers display_name over label over the raw id (§2.2\'s clobber-avoidance split)', () => {
+  assert.strictEqual(deck.deviceDisplayLabel({ display_name: 'My iPad', label: 'Chrome' }, 'd-abc'), 'My iPad');
+  assert.strictEqual(deck.deviceDisplayLabel({ label: 'Chrome on spark-1' }, 'd-abc'), 'Chrome on spark-1');
+  assert.strictEqual(deck.deviceDisplayLabel({}, 'd-abc'), 'd-abc');
+  assert.strictEqual(deck.deviceDisplayLabel(null, 'd-abc'), 'd-abc');
+  assert.strictEqual(deck.deviceDisplayLabel(null, undefined), 'device');
+});
+
+// ── sanitizeFollows / mergeDeckSettings ──
+
+test('sanitizeFollows: accepts global/none, drops targetId/targetLabel for them', () => {
+  assert.deepEqual(deck.sanitizeFollows({ mode: 'global', targetId: 'whatever' }), {
+    mode: 'global',
+    targetId: null,
+    targetLabel: null,
+  });
+  assert.deepEqual(deck.sanitizeFollows({ mode: 'none' }), { mode: 'none', targetId: null, targetLabel: null });
+});
+
+test('sanitizeFollows: accepts a valid device pick with its cached label', () => {
+  assert.deepEqual(deck.sanitizeFollows({ mode: 'device', targetId: 'd-xyz', targetLabel: 'Stream Deck (alienware)' }), {
+    mode: 'device',
+    targetId: 'd-xyz',
+    targetLabel: 'Stream Deck (alienware)',
+  });
+});
+
+test('sanitizeFollows: a device pick with a missing/empty targetId is dropped to the default rather than accepted half-formed', () => {
+  assert.deepEqual(deck.sanitizeFollows({ mode: 'device' }), { mode: 'global', targetId: null, targetLabel: null });
+  assert.deepEqual(deck.sanitizeFollows({ mode: 'device', targetId: '' }), { mode: 'global', targetId: null, targetLabel: null });
+});
+
+test('sanitizeFollows: garbage input (wrong type, unknown mode, hostile object) recovers to the default -- never throws', () => {
+  assert.deepEqual(deck.sanitizeFollows(null), { mode: 'global', targetId: null, targetLabel: null });
+  assert.deepEqual(deck.sanitizeFollows(undefined), { mode: 'global', targetId: null, targetLabel: null });
+  assert.deepEqual(deck.sanitizeFollows('device:d-xyz'), { mode: 'global', targetId: null, targetLabel: null });
+  assert.deepEqual(deck.sanitizeFollows({ mode: 'server-side-group-id-injection' }), {
+    mode: 'global',
+    targetId: null,
+    targetLabel: null,
+  });
+});
+
+test('mergeDeckSettings: round-trips a persisted device-follow pick through sanitizeFollows', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), {
+    follows: { mode: 'device', targetId: 'd-alien', targetLabel: 'Stream Deck (alienware)' },
+  });
+  assert.deepEqual(merged.follows, { mode: 'device', targetId: 'd-alien', targetLabel: 'Stream Deck (alienware)' });
+});
+
+test('mergeDeckSettings: a missing/hostile follows field in the persisted blob recovers to the default (not a thrown error)', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), { follows: 'nonsense' });
+  assert.deepEqual(merged.follows, { mode: 'global', targetId: null, targetLabel: null });
+  const merged2 = deck.mergeDeckSettings(deck.defaultDeckSettings(), {});
+  assert.deepEqual(merged2.follows, { mode: 'global', targetId: null, targetLabel: null });
+});
+
+// ── buildFollowsMenu: ordering (escape hatches first, never alphabetized) ──
+
+test('buildFollowsMenu: escape hatches are always first, in fixed order, regardless of registered-device names that would sort earlier', () => {
+  const menu = deck.buildFollowsMenu({
+    devices: {
+      'd-aaa': { label: 'AAAA -- would sort before every escape hatch alphabetically' },
+      'd-zzz': { label: 'ZZZZ' },
+    },
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'global', targetId: null, targetLabel: null },
+    degraded: false,
+  });
+  assert.deepEqual(menu.escapeHatches.map((o) => o.value), ['global', 'none']);
+  assert.strictEqual(menu.escapeHatches[0].label, 'spark-1 (shared)');
+  assert.strictEqual(menu.escapeHatches[1].label, 'Nothing \u2014 just me');
+  // The registered section is a separate list/header entirely -- never
+  // interleaved with the escape hatches, regardless of alphabetical order.
+  assert.deepEqual(
+    menu.registered.map((o) => o.targetId).sort(),
+    ['d-aaa', 'd-zzz']
+  );
+  assert.strictEqual(menu.registeredHeader, 'Registered with spark-1');
+});
+
+test('buildFollowsMenu: excludes the Soft Deck\'s own device_id from the registered (selectable) list', () => {
+  const menu = deck.buildFollowsMenu({
+    devices: {
+      'd-self': { label: 'This very Soft Deck' },
+      'd-other': { label: 'Stream Deck (alienware)' },
+    },
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'global', targetId: null, targetLabel: null },
+    degraded: false,
+  });
+  assert.deepEqual(menu.registered.map((o) => o.targetId), ['d-other']);
+});
+
+test('buildFollowsMenu: no federated/"Elsewhere" section exists on the returned menu at all (§10 Step 6 is out of scope)', () => {
+  const menu = deck.buildFollowsMenu({
+    devices: { 'd-other': { label: 'Stream Deck (alienware)' } },
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'global', targetId: null, targetLabel: null },
+    degraded: false,
+  });
+  assert.deepEqual(
+    Object.keys(menu).sort(),
+    ['escapeHatches', 'registered', 'registeredHeader', 'selectedValue']
+  );
+});
+
+test('buildFollowsMenu: selectedValue reflects each mode correctly', () => {
+  const devices = { 'd-other': { label: 'Stream Deck (alienware)' } };
+  assert.strictEqual(
+    deck.buildFollowsMenu({ devices, ownDeviceId: 'd-self', follows: { mode: 'global', targetId: null } }).selectedValue,
+    'global'
+  );
+  assert.strictEqual(
+    deck.buildFollowsMenu({ devices, ownDeviceId: 'd-self', follows: { mode: 'none', targetId: null } }).selectedValue,
+    'none'
+  );
+  assert.strictEqual(
+    deck.buildFollowsMenu({ devices, ownDeviceId: 'd-self', follows: { mode: 'device', targetId: 'd-other' } })
+      .selectedValue,
+    'device:d-other'
+  );
+});
+
+test('buildFollowsMenu: falls back to a generic server label/header when serverName is unknown', () => {
+  const menu = deck.buildFollowsMenu({ devices: {}, ownDeviceId: 'd-self', follows: { mode: 'global', targetId: null } });
+  assert.strictEqual(menu.escapeHatches[0].label, 'this server (shared)');
+  assert.strictEqual(menu.registeredHeader, 'Registered with this server');
+});
+
+// ── buildFollowsMenu: degraded ("sticky and loud", §7.2/§9.1) ──
+
+test('buildFollowsMenu: a degraded, still-registered target gets the offline suffix on its OWN entry only', () => {
+  const menu = deck.buildFollowsMenu({
+    devices: {
+      'd-alien': { label: 'Stream Deck (alienware)' },
+      'd-other': { label: 'Some other device' },
+    },
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'device', targetId: 'd-alien', targetLabel: null },
+    degraded: true,
+  });
+  const alien = menu.registered.find((o) => o.targetId === 'd-alien');
+  const other = menu.registered.find((o) => o.targetId === 'd-other');
+  assert.strictEqual(alien.label, 'Stream Deck (alienware) \u2014 offline');
+  assert.strictEqual(alien.degraded, true);
+  assert.strictEqual(other.label, 'Some other device');
+  assert.strictEqual(other.degraded, false);
+  assert.strictEqual(menu.selectedValue, 'device:d-alien');
+});
+
+test('buildFollowsMenu: a degraded target that is GONE from the registry entirely still appears, synthesized from the cached targetLabel -- never silently reverts selectedValue to "global" (the v0.48.3 anti-pattern, applied to this widget)', () => {
+  const menu = deck.buildFollowsMenu({
+    devices: { 'd-other': { label: 'Some other device' } }, // d-alien has been GC'd
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'device', targetId: 'd-alien', targetLabel: 'Stream Deck (alienware)' },
+    degraded: true,
+  });
+  assert.strictEqual(menu.selectedValue, 'device:d-alien');
+  const alien = menu.registered.find((o) => o.targetId === 'd-alien');
+  assert.ok(alien, 'a placeholder entry must exist for the sticky selection to resolve to');
+  assert.strictEqual(alien.label, 'Stream Deck (alienware) \u2014 offline');
+  assert.strictEqual(alien.degraded, true);
+});
+
+test('buildFollowsMenu: a gone target with no cached targetLabel falls back to the raw device_id in the offline placeholder', () => {
+  const menu = deck.buildFollowsMenu({
+    devices: {},
+    ownDeviceId: 'd-self',
+    follows: { mode: 'device', targetId: 'd-alien', targetLabel: null },
+    degraded: true,
+  });
+  const alien = menu.registered.find((o) => o.targetId === 'd-alien');
+  assert.strictEqual(alien.label, 'd-alien \u2014 offline');
+});
+
+test('buildFollowsMenu: global/none modes are never decorated as degraded regardless of the degraded flag', () => {
+  const menu = deck.buildFollowsMenu({
+    devices: {},
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'global', targetId: null },
+    degraded: true, // computeFollowsDegraded would never actually produce this combination; guard anyway
+  });
+  assert.strictEqual(menu.escapeHatches[0].label, 'spark-1 (shared)');
+  assert.strictEqual(menu.selectedValue, 'global');
+});
+
+// ── computeFollowsDegraded ──
+
+test('computeFollowsDegraded: false for global/none modes regardless of registry contents', () => {
+  assert.strictEqual(deck.computeFollowsDegraded({ mode: 'global', targetId: null }, {}, null), false);
+  assert.strictEqual(deck.computeFollowsDegraded({ mode: 'none', targetId: null }, {}, null), false);
+});
+
+test('computeFollowsDegraded: false when the device target is live in the registry and has no recorded heartbeat rejection', () => {
+  const devices = { 'd-alien': { label: 'Stream Deck (alienware)' } };
+  assert.strictEqual(
+    deck.computeFollowsDegraded({ mode: 'device', targetId: 'd-alien' }, devices, null),
+    false
+  );
+});
+
+test('computeFollowsDegraded: true when the device target has been pruned from the live registry (the normal target_gone case)', () => {
+  assert.strictEqual(
+    deck.computeFollowsDegraded({ mode: 'device', targetId: 'd-alien' }, { 'd-other': {} }, null),
+    true
+  );
+});
+
+test('computeFollowsDegraded: true when the most recent heartbeat for this exact target was rejected, even if it still appears live (a race between the state poll and the heartbeat 409/400)', () => {
+  const devices = { 'd-alien': { label: 'Stream Deck (alienware)' } };
+  assert.strictEqual(
+    deck.computeFollowsDegraded({ mode: 'device', targetId: 'd-alien' }, devices, 'd-alien'),
+    true
+  );
+});
+
+test('computeFollowsDegraded: a stale gone-marker for a DIFFERENT target than the current pick does not mark the current pick degraded', () => {
+  const devices = { 'd-alien': { label: 'Stream Deck (alienware)' } };
+  assert.strictEqual(
+    deck.computeFollowsDegraded({ mode: 'device', targetId: 'd-alien' }, devices, 'd-some-other-id'),
+    false
+  );
+});
+
+// ── degradedOptionLabel ──
+
+test('degradedOptionLabel: appends the closed-widget offline suffix', () => {
+  assert.strictEqual(deck.degradedOptionLabel('Stream Deck (alienware)'), 'Stream Deck (alienware) \u2014 offline');
+});
+
+// ── followsCandidateFromValue ──
+
+test('followsCandidateFromValue: "none"/"global"/unknown parse to the escape-hatch candidates', () => {
+  assert.deepEqual(deck.followsCandidateFromValue('none', []), { mode: 'none', targetId: null, targetLabel: null });
+  assert.deepEqual(deck.followsCandidateFromValue('global', []), { mode: 'global', targetId: null, targetLabel: null });
+  assert.deepEqual(deck.followsCandidateFromValue('anything-unrecognized', []), {
+    mode: 'global',
+    targetId: null,
+    targetLabel: null,
+  });
+});
+
+test('followsCandidateFromValue: "device:<id>" recovers the RAW (undecorated) label from the registered list, never a degraded-suffixed one', () => {
+  const registered = [
+    { targetId: 'd-alien', rawLabel: 'Stream Deck (alienware)', label: 'Stream Deck (alienware) \u2014 offline' },
+  ];
+  assert.deepEqual(deck.followsCandidateFromValue('device:d-alien', registered), {
+    mode: 'device',
+    targetId: 'd-alien',
+    targetLabel: 'Stream Deck (alienware)',
+  });
+});
+
+test('followsCandidateFromValue: "device:<id>" for an id absent from the registered list still parses (targetLabel null, not thrown)', () => {
+  assert.deepEqual(deck.followsCandidateFromValue('device:d-unknown', []), {
+    mode: 'device',
+    targetId: 'd-unknown',
+    targetLabel: null,
+  });
+});
+
+// ── resolveHeartbeatSyncGroup ──
+
+test('resolveHeartbeatSyncGroup: "none" mode resolves to null -- meaning the field must be OMITTED from the heartbeat body entirely (§6.2.6\'s literal contract)', () => {
+  assert.strictEqual(deck.resolveHeartbeatSyncGroup({ mode: 'none', targetId: null }, false), null);
+});
+
+test('resolveHeartbeatSyncGroup: "global" mode resolves to \'global\'', () => {
+  assert.strictEqual(deck.resolveHeartbeatSyncGroup({ mode: 'global', targetId: null }, false), 'global');
+});
+
+test('resolveHeartbeatSyncGroup: a non-degraded device pick resolves to \'device:<id>\'', () => {
+  assert.strictEqual(deck.resolveHeartbeatSyncGroup({ mode: 'device', targetId: 'd-alien' }, false), 'device:d-alien');
+});
+
+test('resolveHeartbeatSyncGroup: a DEGRADED device pick falls back to \'global\' at the wire level (§6.2.4: keeps this Soft Deck\'s own presence heartbeat alive) while the UI stays sticky to the pick elsewhere', () => {
+  assert.strictEqual(deck.resolveHeartbeatSyncGroup({ mode: 'device', targetId: 'd-alien' }, true), 'global');
+});
+
+test('resolveHeartbeatSyncGroup: a null/undefined follows object defaults to \'global\' rather than throwing', () => {
+  assert.strictEqual(deck.resolveHeartbeatSyncGroup(null, false), 'global');
+  assert.strictEqual(deck.resolveHeartbeatSyncGroup(undefined, false), 'global');
+});
+
+// ── targetNotSelfOwningMessage (400 target_not_self_owning) ──
+
+test('targetNotSelfOwningMessage: names the follower by its resolved label when known', () => {
+  const devices = { 'd-alien': { label: 'Stream Deck (alienware)' } };
+  assert.strictEqual(
+    deck.targetNotSelfOwningMessage({ target_not_self_owning: true, controlled_by: 'd-alien' }, devices),
+    "Can't follow \u2014 Stream Deck (alienware) is already following you"
+  );
+});
+
+test('targetNotSelfOwningMessage: falls back to the raw follower id when it is not in the local registry', () => {
+  assert.strictEqual(
+    deck.targetNotSelfOwningMessage({ target_not_self_owning: true, controlled_by: 'd-unknown' }, {}),
+    "Can't follow \u2014 d-unknown is already following you"
+  );
+});
+
+test('targetNotSelfOwningMessage: a malformed/missing detail body still produces a sensible message, never throws', () => {
+  assert.strictEqual(
+    deck.targetNotSelfOwningMessage({}, {}),
+    "Can't follow another device while something is following you."
+  );
+  assert.strictEqual(
+    deck.targetNotSelfOwningMessage(null, {}),
+    "Can't follow another device while something is following you."
+  );
+});
+
+// ── device_id generation/persistence ──
+
+test('generateDeckDeviceId: matches the "d-" + 8 alphanumeric chars shape (same convention as app.js\'s generateDeviceId)', () => {
+  const id = deck.generateDeckDeviceId();
+  assert.match(id, /^d-[a-z0-9]{8}$/);
+});
+
+test('loadOrCreateDeckDeviceId: mints and persists a fresh id when storage is empty', () => {
+  const store = {};
+  const fakeStorage = {
+    getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null),
+    setItem: (k, v) => {
+      store[k] = v;
+    },
+  };
+  const id = deck.loadOrCreateDeckDeviceId(fakeStorage);
+  assert.match(id, /^d-[a-z0-9]{8}$/);
+  assert.strictEqual(store[deck.DECK_DEVICE_ID_KEY], id);
+});
+
+test('loadOrCreateDeckDeviceId: reuses a previously-persisted id rather than minting a new one', () => {
+  const store = { [deck.DECK_DEVICE_ID_KEY]: 'd-existing' };
+  const fakeStorage = { getItem: (k) => store[k] || null, setItem: () => {} };
+  assert.strictEqual(deck.loadOrCreateDeckDeviceId(fakeStorage), 'd-existing');
+});
+
+test('loadOrCreateDeckDeviceId: no storage (node --test, or a fresh install with localStorage blocked) still returns a valid id, never throws', () => {
+  assert.match(deck.loadOrCreateDeckDeviceId(null), /^d-[a-z0-9]{8}$/);
+  assert.match(deck.loadOrCreateDeckDeviceId(undefined), /^d-[a-z0-9]{8}$/);
+});
+
+// ── deckHeartbeatLabel ──
+
+test('deckHeartbeatLabel: falls back to the bare "Soft Deck" label when navigator is unavailable (this test env, and the §9.1 default)', () => {
+  assert.strictEqual(deck.deckHeartbeatLabel(), 'Soft Deck');
+});
+
+test('deckHeartbeatLabel: includes a device-family hint from navigator.userAgent, matching §9.1\'s own worked example ("Soft Deck \u2014 iPad")', () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: { userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X)' },
+  });
+  try {
+    assert.strictEqual(deck.deckHeartbeatLabel(), 'Soft Deck \u2014 iPad');
+  } finally {
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, 'navigator', originalDescriptor);
+    } else {
+      delete globalThis.navigator;
+    }
+  }
+});
+
+// ── Regression: nothing about the Soft Deck's pre-existing settings shape
+// changed for someone who never touches the new dropdown ──
+
+test('regression: defaultDeckSettings() still has every pre-existing field at its pre-existing default, "follows" is purely additive', () => {
+  const d = deck.defaultDeckSettings();
+  assert.strictEqual(d.version, 1);
+  assert.strictEqual(d.sort, 'attention');
+  assert.strictEqual(d.pollIntervalMs > 0, true);
+  assert.strictEqual(d.gridOverride, null);
+  assert.strictEqual(d.dialCount, 0);
+  assert.strictEqual(d.stripCount, 0);
+  assert.strictEqual(d.brightness, 100);
+  assert.deepEqual(d.bindings, {});
+});
+
+test('regression: persistableDeckSettings still excludes only brightness -- "follows" persists like every other non-brightness field', () => {
+  const settings = deck.defaultDeckSettings();
+  settings.follows = { mode: 'device', targetId: 'd-alien', targetLabel: 'Stream Deck (alienware)' };
+  const persisted = deck.persistableDeckSettings(settings);
+  assert.ok(!('brightness' in persisted), 'brightness must still be excluded');
+  assert.deepEqual(persisted.follows, { mode: 'device', targetId: 'd-alien', targetLabel: 'Stream Deck (alienware)' });
+});
+
+test('regression: importSettingsJSON on a pre-Step-3 export blob (no "follows" key at all) still succeeds and fills in the default -- an old exported backup must not be rejected', () => {
+  const oldBlob = JSON.stringify({
+    version: 1,
+    sort: 'attention',
+    pollIntervalMs: 2000,
+    gridOverride: null,
+    dialCount: 0,
+    stripCount: 0,
+    bindings: {},
+  });
+  const result = deck.importSettingsJSON(oldBlob, deck.defaultDeckSettings());
+  assert.strictEqual(result.error, null);
+  assert.deepEqual(result.settings.follows, { mode: 'global', targetId: null, targetLabel: null });
 });
