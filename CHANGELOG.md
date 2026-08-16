@@ -1,3 +1,212 @@
+## v0.48.0 (2026-08-15)
+
+**If you run muxplex, upgrade.** This release closes three unauthenticated
+authentication bypasses (GHSA-7c6r-fvrh-9qp4, High) that let a *remote*
+caller reach the full muxplex API, and the terminal WebSocket, with no
+credential at all. It also lands the embedded agent chat panel, but the
+security fix is the reason to take this release.
+
+**Read the "Upgrading" note below before you upgrade** -- closing the
+bypass is a deliberate behavior change, and anything that reached muxplex
+credential-free over loopback will now get a 401.
+
+### Security
+
+- **Three loopback authentication bypasses are closed
+  (GHSA-7c6r-fvrh-9qp4, High).** muxplex unconditionally trusted any
+  request whose socket peer address was `127.0.0.1`/`::1`. That is not a
+  safe test, for two compounding reasons:
+  - muxplex binds `0.0.0.0`, so it answers on **every** address in
+    `127.0.0.0/8` -- not just `127.0.0.1`. Measured on a live host:
+    `127.0.0.2:8088` and `127.0.0.9:8088` both returned HTTP 200
+    unauthenticated, because `ip route get 127.0.0.2` selects
+    `src 127.0.0.1`, the exact address the check waved through.
+  - Any userspace-mode proxy -- `socat`, `ssh -L`, an Incus/Docker
+    userspace port-forward -- **re-originates** the connection, so the
+    peer address is `127.0.0.1` for a genuinely **remote** caller too.
+    Measured live: an unauthenticated `GET /api/sessions` through such a
+    proxy returned HTTP 200 with full session data, which muxplex itself
+    logged as `127.0.0.1:<port>`.
+
+  There is no socket-level signal that distinguishes "the process calling
+  me is truly local" from "a proxy re-originated this for someone
+  remote", so **no IP-based rule can be correct here.** All three sites
+  are removed rather than tightened:
+
+  1. **`muxplex/auth.py`** -- `SessionAuthMiddleware.dispatch` had a step
+     1 that short-circuited auth entirely for a loopback peer. Every HTTP
+     request now requires a session cookie, the federation Bearer key, or
+     HTTP Basic. The `dispatch` NOTE block (`auth.py:325`) is the
+     canonical write-up; `main.py` and `docs/AGENT_GUIDE.md` reference it.
+  2. **`muxplex/main.py`** -- `_ws_auth_check` mirrored the same bypass
+     for the terminal WebSocket, which carries **live scrollback and
+     keystroke input**. Arguably the worse of the two: it exposed both
+     read of everything on screen and write into the pane. Now requires a
+     cookie or the Bearer key.
+  3. **`muxplex/main.py`** -- `_bearer_only_caller` short-circuited to
+     "as trusted as a cookie" for a loopback peer, dissolving the fence
+     that constrains what the shared federation key may do. A Bearer-only
+     caller is now classified Bearer-only regardless of apparent source
+     address.
+
+  Regression coverage asserting the bypass stays closed lives in
+  `test_auth.py`, `test_api.py`, `test_ws_proxy.py`, and
+  `test_client_contract.py`.
+
+### Upgrading -- a behavior change you will notice
+
+**Anything that previously reached muxplex unauthenticated over loopback
+now gets a 401.** This is the fix working, not a regression. It will
+affect, at minimum:
+
+- local scripts and cron jobs hitting `/api/*` with no credential
+- health checks and monitoring probes against `http://127.0.0.1:<port>/`
+- `localhost` browser bookmarks that were never asked to log in
+- anything driving the terminal WebSocket from the same box
+- reverse proxies that terminate in front of muxplex and forward without
+  passing a credential through
+
+Each of these needs a real credential now: a `muxplex_session` cookie,
+the federation Bearer key, or HTTP Basic. There is deliberately no
+"local" exemption to re-enable, because a special case is exactly what
+this bypass was.
+
+### Added
+
+- **Embedded agent chat panel ("Muxplex Agent")** -- an in-browser AI
+  chat panel served by muxplex and proxied to a local `amplifier-agent`
+  sidecar via `POST /api/agent/chat/completions`. Streaming SSE responses
+  with markdown rendering, an attention badge, transcript export, WCAG
+  streaming announcements, and focus management.
+
+  The interesting property is not the panel, it is **where tool execution
+  happens.** The model is *declared* six tools and never calls any of
+  them: every tool call comes back down the SSE stream to the browser,
+  and **the browser** executes it, same-origin, under the logged-in
+  user's own `muxplex_session` cookie. The agent therefore inherits
+  *exactly* the calling user's authority -- it is literally the user's
+  browser making every request -- and can never grant itself more than
+  the cookie already permits. The agent process holds no muxplex
+  credential of any kind: no cookie, no API key, no federation key.
+
+  All six tools map to existing public `/api/*` endpoints. **No new
+  capability was added for the agent and no endpoint was widened for
+  it:**
+
+  | | tool | endpoint |
+  |---|---|---|
+  | read | `list_muxplex_sessions` | `GET /api/sessions` |
+  | read | `get_muxplex_session_details` | `GET /api/sessions/{name}` |
+  | read | `list_muxplex_federated_sessions` | `GET /api/federation/sessions` |
+  | drive | `switch_muxplex_session` | `POST /api/sessions/{name}/connect` |
+  | drive | `switch_muxplex_view` | `PATCH /api/state` |
+  | write | `send_muxplex_session_input` | `POST /api/sessions/{name}/input` |
+
+- **Write-confirmation gate on `send_muxplex_session_input`.** That last
+  tool is the fenced RCE-by-design endpoint (AGENTS.md -> "Terminal
+  input"). It now routes through a modal showing the target session and
+  the literal text before anything is sent, with Cancel as the focused
+  default so dismissing by any route (Escape, backdrop, blur) lands on
+  "do not send". The gate's DOM elements join the panel's loud-fail
+  `__missing` check -- the panel refuses to initialise at all rather than
+  run with the gate absent, because a gate that silently isn't there is
+  worse than no gate.
+
+  **This is a mistake-and-surprise stop, NOT a security boundary.** The
+  server-side `input_enabled` / `input_allowed_sessions` fence is
+  unchanged and remains the only thing standing between that endpoint and
+  anyone holding the user's cookie. Proven behaviorally: with
+  `input_enabled` false on disk, the agent's input tool gets the same 403
+  a human clicking the same control gets. There is no "agent mode"
+  bypass, because the agent has no channel of its own to bypass anything
+  with.
+
+- **Provider API key setup via Settings -> Agent**
+  (`GET`/`POST /api/agent/provider-credential`). The key is validated
+  against a scratch `AMPLIFIER_AGENT_HOME` **before** it is persisted --
+  never write-then-restart-and-hope -- and a sidecar restart is decided
+  by asking the sidecar's own `/v1/models`, not performed
+  unconditionally. Provider allowlist is `anthropic` and `openai` only;
+  the request schema carries no endpoint field at all. **muxplex stores
+  nothing:** `settings.json` gains zero keys.
+
+- **Debug export path.** All six tool handlers go through one
+  `apiFetch()` wrapper recording request/response/duration into a capped
+  in-memory log, alongside page-wide console and error hooks. Nothing
+  leaves the browser unless a human clicks Export.
+
+- **A UID-level firewall isolating the sidecar from muxplex**
+  (`muxplex-agent-fence`, `docs/agent-chat-sidecar/`). The first version
+  of this fence was an address denylist and **did not hold** -- it named
+  `127.0.0.1/32` and the LAN IP, while muxplex answers on all of
+  `127.0.0.0/8`, so the sidecar retained the full unauthenticated API on
+  a box whose hand-verification had passed. It checked one address out of
+  sixteen million. The replacement inverts the default: the sidecar's UID
+  may not initiate a connection to *anything* local, with one narrow
+  allowance for the DNS stub resolver it needs to reach its upstream
+  model API, plus a destination-independent reject on muxplex's ports.
+  Mirrored in ip6tables. Reboot persistence is a systemd unit that
+  re-derives the rules each boot and then **proves** them
+  (`ExecStartPost=verify`) before declaring success -- a restored ruleset
+  that no longer blocks anything still restores silently, whereas this
+  fails and `Requires=`/`BindsTo=` keep the sidecar down. A 30s watchdog
+  re-proves at runtime and stops both units on breach. `verify` runs a
+  positive control first so "muxplex is down" cannot masquerade as "the
+  fence works", and refuses to score a timeout or error as a pass.
+
+  Documented deliberate side effect: the sidecar UID can no longer reach
+  ttyd on `127.0.0.1:7681`, where it previously could.
+
+- **Design tokens** -- a muxplex design language and token scales, with a
+  guard, superseding `assets/branding/tokens.css` as the single token
+  file.
+
+### Changed
+
+- **`input_allowed_sessions` now defaults to `["*"]` (was `[]`).** The
+  per-session allowlist defaulted to deny-every-session, so flipping
+  `input_enabled: true` opened nothing on its own -- the operator hit a
+  SECOND 403 naming the allowlist and had to enumerate session names by
+  hand. Three separate times that read as "the feature is broken." One
+  deliberate operator action now turns typing on for every session;
+  narrowing is opt-in (`["agent-*"]`), and a bare string form (`"*"`) is
+  normalized to a one-element list upstream of the fence.
+
+  **The real boundary is untouched.** `input_enabled` still defaults to
+  `False`; with the allowlist now open by default it is the *only* fence
+  between a federation-Bearer-key holder and RCE on every session, which
+  is exactly why it stays local-file-only and default-false. Both keys
+  stay in `LOCAL_ONLY_KEYS` -- not PATCHable, not federation-syncable,
+  not settable by the agent -- and that is now proved behaviorally: a new
+  test drives both remote doors (`patch_settings` and
+  `apply_synced_settings`) and asserts neither can widen OR narrow.
+
+- **Settings gains an Agent tab** (7 tabs, was 6): per-device send/newline
+  bindings and a transcript disclosure, plus the provider-credential form
+  above. The agent panel's open/closed state persists via a new
+  `agentPanelOpen` setting, documented in the README settings table.
+
+- **Merge shape, recorded deliberately.** The 60-commit
+  `poc/agent-chat-panel` branch was merged with `--no-ff` rather than
+  squashed. AGENTS.md says PRs are squash-merged; that convention is
+  sized for an ordinary feature PR, and squashing a branch carrying a
+  security fix whose reasoning is spread across several commits would
+  destroy history worth keeping.
+
+### Verification
+
+- `tmux-kit` pin/tag/lock three-way agreement re-checked at release time
+  per AGENTS.md's "tmux-kit pin/tag agreement": `[project.dependencies]`
+  `tmux-kit==0.4.0`, `[tool.uv.sources]` `tag = "v0.4.0"`, and `uv.lock`
+  `source = { git = "...?tag=v0.4.0#148c15d9..." }`. The locked commit
+  `148c15d9` is confirmed to be what upstream's annotated tag `v0.4.0`
+  peels to, and `v0.4.0` is the newest upstream tag. **No change needed
+  this release** -- recorded because "they agree" is only worth anything
+  when it was actually looked at.
+- Full suite green on the exact published tree: **2466 passed, 10
+  skipped, 0 failed**, run in the `muxplex-test` DTU on a clean
+  extraction.
+
 ## v0.47.12 (2026-08-15)
 
 A fix to the upgrade path itself -- v0.47.11 could not be installed by
