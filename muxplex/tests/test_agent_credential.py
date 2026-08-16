@@ -43,6 +43,23 @@ def _authed_client() -> TestClient:
     return client
 
 
+@pytest.fixture(autouse=True)
+def _force_sidecar_mode(monkeypatch):
+    """Every test in this file pins the SIDECAR-oriented credential flow
+    (auth CLI shelling as aa-svc, systemd env-file shadow detection,
+    masked-key display, /v1/models polling) -- that is what this whole
+    module exists to test (see module docstring). Embedded mode is now
+    the default (muxplex.agent_embedded), and GET /api/agent/provider-
+    credential short-circuits to an embedded-mode branch before any of
+    that sidecar logic runs. Without this fixture, every test here would
+    silently start exercising (and asserting against) the wrong code
+    path the moment the default flipped -- exactly the kind of coupling
+    ISSUE_HANDLING.md's "Test-Before-Advising" principle warns about:
+    tests must guard the contract they name, not whatever the default
+    happens to be today."""
+    monkeypatch.setattr("muxplex.agent_embedded.is_embedded_mode", lambda: False)
+
+
 # ---------------------------------------------------------------------------
 # Schema: no `endpoint` field, ever (SS7.3/SS9)
 # ---------------------------------------------------------------------------
