@@ -51,6 +51,33 @@ from muxplex.main import (
     app,
 )
 
+# amplifier-agent (the `agent` extra, see pyproject.toml) is genuinely,
+# structurally absent in two cases that are not bugs: this repo's own
+# Python 3.11 CI matrix leg (amplifier-agent's own pyproject.toml requires
+# python_version>='3.12', so no installer can ever put it there) and a
+# local `pytest` run on a host that hasn't run `uv sync --extra agent`.
+# .github/workflows/ci.yml's "Install dependencies" steps DO install this
+# extra on every interpreter that can satisfy it (3.12/3.13), so the real
+# provider-loading code path below genuinely runs there -- this is not a
+# blanket skip that would hide missing coverage; it only covers the two
+# cases above, mirroring test_tmux_config.py's `needs_tmux` / test_service
+# .py's `needs_launchd`.
+try:
+    import amplifier_agent_cli  # noqa: F401
+except ImportError:
+    HAS_AMPLIFIER_AGENT_CLI = False
+else:
+    HAS_AMPLIFIER_AGENT_CLI = True
+
+needs_amplifier_agent_cli = pytest.mark.skipif(
+    not HAS_AMPLIFIER_AGENT_CLI,
+    reason=(
+        "amplifier-agent (pyproject.toml's `agent` extra) is not installed "
+        "in this environment -- see .github/workflows/ci.yml's agent-extra "
+        "install steps and this repo's Python >=3.12 requirement for it"
+    ),
+)
+
 
 def _authed_client() -> TestClient:
     """A TestClient with a valid session cookie (non-localhost address --
@@ -155,6 +182,7 @@ def test_post_rejects_non_allowlisted_providers(provider, monkeypatch):
     assert "sk-whatever" not in resp.text
 
 
+@needs_amplifier_agent_cli
 def test_post_endpoint_field_is_silently_dropped_not_an_error(monkeypatch):
     """Sending an `endpoint` field in the body is simply not part of the
     schema -- FastAPI/pydantic drops unknown fields by default, so it must
@@ -182,6 +210,7 @@ def test_post_endpoint_field_is_silently_dropped_not_an_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@needs_amplifier_agent_cli
 def test_resolve_status_reports_not_set_when_nothing_configured():
     status = agent_embedded_credentials.resolve_status("anthropic")
     assert status["source"] == "not_set"
@@ -189,6 +218,7 @@ def test_resolve_status_reports_not_set_when_nothing_configured():
     assert status["env_var"] == "ANTHROPIC_API_KEY"
 
 
+@needs_amplifier_agent_cli
 def test_resolve_status_reports_env_and_masks_the_value(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-abcdefghijklmnop")
     status = agent_embedded_credentials.resolve_status("anthropic")
@@ -197,6 +227,7 @@ def test_resolve_status_reports_env_and_masks_the_value(monkeypatch):
     assert "sk-ant-abcdefghijklmnop" not in status["masked"]
 
 
+@needs_amplifier_agent_cli
 def test_resolve_status_reports_file_when_only_stored(tmp_path):
     creds_path = tmp_path / "credentials.json"
     creds_path.write_text(
@@ -212,6 +243,7 @@ def test_resolve_status_reports_file_when_only_stored(tmp_path):
     assert status["masked"] == "sk-ant...y123"
 
 
+@needs_amplifier_agent_cli
 def test_resolve_status_env_wins_over_file(tmp_path, monkeypatch):
     """The owner's explicit instruction: env first, always -- even when a
     (different) value is also on disk."""
@@ -235,6 +267,7 @@ def test_resolve_status_env_wins_over_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@needs_amplifier_agent_cli
 def test_persist_key_writes_the_same_file_the_library_reads(tmp_path):
     path = agent_embedded_credentials.persist_key("anthropic", "sk-ant-realvalue1234")
     assert path == tmp_path / "credentials.json"
@@ -249,6 +282,7 @@ def test_persist_key_writes_the_same_file_the_library_reads(tmp_path):
     assert status["source"] == "file"
 
 
+@needs_amplifier_agent_cli
 def test_persist_key_preserves_other_providers(tmp_path):
     agent_embedded_credentials.persist_key("anthropic", "sk-ant-first-value12")
     agent_embedded_credentials.persist_key("openai", "sk-openai-secondvalue")
@@ -307,6 +341,7 @@ def _patch_provider_loading(
     )
 
 
+@needs_amplifier_agent_cli
 async def test_validate_key_ok_on_real_models_returned(monkeypatch):
     _patch_provider_loading(
         monkeypatch,
@@ -319,6 +354,7 @@ async def test_validate_key_ok_on_real_models_returned(monkeypatch):
     assert "1 model" in detail
 
 
+@needs_amplifier_agent_cli
 async def test_validate_key_bad_key_on_authentication_error(monkeypatch):
     _patch_provider_loading(
         monkeypatch,
@@ -335,6 +371,7 @@ async def test_validate_key_bad_key_on_authentication_error(monkeypatch):
     assert "401" in detail or "invalid" in detail.lower()
 
 
+@needs_amplifier_agent_cli
 async def test_validate_key_unreachable_on_connection_error(monkeypatch):
     _patch_provider_loading(
         monkeypatch,
@@ -347,6 +384,7 @@ async def test_validate_key_unreachable_on_connection_error(monkeypatch):
     assert "timed out" in detail.lower()
 
 
+@needs_amplifier_agent_cli
 async def test_validate_key_module_missing(monkeypatch):
     _patch_provider_loading(monkeypatch, module_import_error=True)
     verdict, _detail = await agent_embedded_credentials.validate_key(
@@ -355,6 +393,7 @@ async def test_validate_key_module_missing(monkeypatch):
     assert verdict == "module_missing"
 
 
+@needs_amplifier_agent_cli
 async def test_validate_key_never_persists_anything(monkeypatch, tmp_path):
     """validate_key must be side-effect-free on the credentials file --
     persistence is a SEPARATE, explicit step (persist_key), only reached
@@ -387,6 +426,7 @@ async def test_full_status_not_installed_when_library_unavailable(monkeypatch):
     assert status["providers"] == {}
 
 
+@needs_amplifier_agent_cli
 async def test_full_status_not_configured_when_nothing_resolves():
     status = await agent_embedded_credentials.full_status()
     assert status["state"] == "not_configured"
@@ -396,6 +436,7 @@ async def test_full_status_not_configured_when_nothing_resolves():
     assert status["mode"] == "embedded"
 
 
+@needs_amplifier_agent_cli
 async def test_full_status_configured_from_file():
     agent_embedded_credentials.persist_key("anthropic", "sk-ant-storedvalue123")
     status = await agent_embedded_credentials.full_status()
@@ -403,6 +444,7 @@ async def test_full_status_configured_from_file():
     assert status["providers"]["anthropic"]["source"] == "file"
 
 
+@needs_amplifier_agent_cli
 async def test_full_status_configured_shadowed_when_env_set(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fromenv1234567")
     status = await agent_embedded_credentials.full_status()
@@ -410,6 +452,7 @@ async def test_full_status_configured_shadowed_when_env_set(monkeypatch):
     assert status["providers"]["anthropic"]["source"] == "env"
 
 
+@needs_amplifier_agent_cli
 async def test_full_status_gating_ignores_a_non_active_provider(monkeypatch):
     """A stored/env openai key must NOT flip the gate open -- the embedded
     runner only ever mounts `active_provider()` (anthropic) for a turn.
@@ -427,6 +470,7 @@ async def test_full_status_gating_ignores_a_non_active_provider(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@needs_amplifier_agent_cli
 def test_get_embedded_not_configured():
     client = _authed_client()
     resp = client.get("/api/agent/provider-credential")
@@ -436,6 +480,7 @@ def test_get_embedded_not_configured():
     assert body["mode"] == "embedded"
 
 
+@needs_amplifier_agent_cli
 def test_get_embedded_configured_shadowed_when_env_set(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fromenv1234567")
     client = _authed_client()
@@ -454,6 +499,7 @@ def test_get_embedded_configured_shadowed_when_env_set(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@needs_amplifier_agent_cli
 def test_post_embedded_env_set_is_a_no_op(monkeypatch, tmp_path):
     """Branch 1: env var set -> a UI save is a no-op-with-explanation.
     Nothing is written to disk."""
@@ -474,6 +520,7 @@ def test_post_embedded_env_set_is_a_no_op(monkeypatch, tmp_path):
     assert "sk-ant-submittedbyuser" not in resp.text
 
 
+@needs_amplifier_agent_cli
 def test_post_embedded_valid_key_persists_and_is_then_resolvable(monkeypatch, tmp_path):
     """Branch 2: no env var, a VALID key is validated then persisted to
     the durable store, and is immediately resolvable by the exact chain a
@@ -503,6 +550,7 @@ def test_post_embedded_valid_key_persists_and_is_then_resolvable(monkeypatch, tm
     assert status["source"] == "file"
 
 
+@needs_amplifier_agent_cli
 def test_post_embedded_bad_key_rejected_and_never_persisted(monkeypatch, tmp_path):
     """Branch 3: no env var, a BAD key is rejected with the real provider
     error, and nothing is written -- validate-before-persist, unchanged
@@ -526,6 +574,7 @@ def test_post_embedded_bad_key_rejected_and_never_persisted(monkeypatch, tmp_pat
     assert "sk-ant-badvalue123456" not in resp.text
 
 
+@needs_amplifier_agent_cli
 def test_post_embedded_unreachable_is_502_and_never_persisted(monkeypatch, tmp_path):
     _patch_provider_loading(
         monkeypatch,
@@ -560,6 +609,7 @@ def test_post_embedded_rejects_non_allowlisted_provider_before_any_validation(
     assert not called["validate"]
 
 
+@needs_amplifier_agent_cli
 def test_post_embedded_never_shells_out(monkeypatch):
     """No subprocess of any kind may be spawned by the embedded POST path
     -- the whole point of embedded mode is that sudo/aa-svc/systemctl are
