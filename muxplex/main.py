@@ -41,8 +41,8 @@ from tmux_kit.bell import build_alert_bell_hook
 from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
+from muxplex import agent_embedded, focus, followups, tmux_config
 from muxplex import bells as bells_mod
-from muxplex import focus, followups, tmux_config
 from muxplex import ttyd as ttyd_mod
 from muxplex.auth import (
     AuthMiddleware,
@@ -6169,6 +6169,65 @@ class _NoCacheStaticFiles(StaticFiles):
 
 @app.post("/api/agent/chat/completions")
 async def agent_chat_completions_proxy(request: Request) -> Response:
+    """Dispatch to the embedded or sidecar chat-completions path.
+
+    Selected by ``MUXPLEX_AGENT_MODE`` (default "embedded"; see
+    ``muxplex.agent_embedded``). Both paths are wire-compatible -- chat.js
+    cannot tell which one produced a given stream. The sidecar path
+    (``_agent_chat_completions_sidecar``, below) is unchanged from before
+    this dispatch existed; it stays available for
+    ``MUXPLEX_AGENT_MODE=sidecar`` and is not being removed in this pass.
+    """
+    if agent_embedded.is_embedded_mode():
+        return await _agent_chat_completions_embedded(request)
+    return await _agent_chat_completions_sidecar(request)
+
+
+async def _agent_chat_completions_embedded(request: Request) -> Response:
+    """Run the turn IN-PROCESS via ``muxplex.agent_embedded`` -- no
+    separate sidecar process. See that package's docstring for the full
+    architecture; this handler's job is just the HTTP plumbing: parse the
+    body, fail loudly (clean JSON, no SSE) if the embedded path isn't
+    usable yet, otherwise stream the turn.
+    """
+    try:
+        body = json.loads(await request.body())
+    except json.JSONDecodeError:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "invalid JSON request body",
+                    "type": "invalid_request_error",
+                }
+            },
+            status_code=400,
+        )
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "request body must be a JSON object",
+                    "type": "invalid_request_error",
+                }
+            },
+            status_code=400,
+        )
+
+    unavailable_reason = await agent_embedded.runner.check_available()
+    if unavailable_reason:
+        return JSONResponse(
+            {"error": {"message": unavailable_reason, "type": "server_error"}},
+            status_code=503,
+        )
+
+    client_session_id = request.headers.get("x-client-session-id", "")
+    generator = agent_embedded.runner.stream_embedded_chat_completion(
+        body, client_session_id=client_session_id
+    )
+    return StreamingResponse(generator, media_type="text/event-stream")
+
+
+async def _agent_chat_completions_sidecar(request: Request) -> Response:
     """Same-origin proxy to the amplifier-agent HTTP chat-completions sidecar.
 
     The browser talks only to muxplex's own origin, authenticated by the

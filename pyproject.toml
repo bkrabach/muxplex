@@ -64,6 +64,27 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "beautifulsoup4>=4.12",
 ]
+# Embedded amplifier-agent (muxplex/agent_embedded/). NOT installed by
+# default: MUXPLEX_AGENT_MODE=embedded (the default mode) fails with a
+# clean, actionable error -- see agent_embedded/runner.py's
+# EmbeddedAgentUnavailable -- when this extra hasn't been installed, so the
+# base `uv sync` / `uv sync --extra dev` install (and every CI job that
+# runs it) is completely unaffected by this dependency existing.
+# Not published on PyPI (see [tool.uv.sources] below) -- this is a
+# from-source pin, re-verify against amplifier-agent's own release tags
+# before bumping.
+#
+# `python_version>='3.12'` marker: amplifier-agent==0.12.0 itself requires
+# Python >=3.12, stricter than muxplex's own `requires-python = ">=3.11"`.
+# Without the marker, `uv sync --extra agent` refuses to resolve AT ALL on
+# 3.11 (uv checks every extra against the full requires-python range, not
+# just the interpreter actually in use) -- the marker scopes the
+# constraint to interpreters that can actually satisfy it, so the `agent`
+# extra is simply unavailable (with a clear resolver message, not a broken
+# lock) under Python 3.11.
+agent = [
+    "amplifier-agent==0.12.0; python_version>='3.12'",
+]
 
 [project.scripts]
 muxplex = "muxplex.cli:main"
@@ -145,3 +166,13 @@ muxplex-client = { workspace = true }
 # drift. A `path` source here (the cross-repo dev loop's `uv add --editable
 # ../tmux-kit`) must be reverted before committing -- the guard rejects it.
 tmux-kit = { git = "https://github.com/bkrabach/tmux-kit", tag = "v0.4.0" }
+# amplifier-agent (the `agent` extra, muxplex/agent_embedded/) is NOT
+# published on PyPI -- source-only, same shape as tmux-kit above but
+# without a registry fallback (there is no registry copy to fall back to).
+# `tag` matches the `amplifier-agent==` pin above.
+amplifier-agent = { git = "https://github.com/microsoft/amplifier-agent", tag = "v0.12.0" }
+# Transitive dependency of amplifier-agent (`amplifier-foundation>=1.0.0`
+# in its own pyproject.toml), also not on PyPI. Mirrors amplifier-agent's
+# own [tool.uv.sources] entry for this package exactly (branch, not a
+# tag -- that's how amplifier-agent itself pins it).
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
