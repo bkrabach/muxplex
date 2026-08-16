@@ -7122,6 +7122,143 @@ function _saveRemoteInstances() {
   patchServerSetting('remote_instances', instances);
 }
 
+// ─── Generic list editor (reusable add/remove string-list rows) ──────
+//
+// Modeled on _buildRemoteInstanceRow()/_saveRemoteInstances() above,
+// collapsed to a single field per row instead of three (url/name/key).
+// Deliberately named after the MECHANISM, not the one setting it is wired
+// to today (input_allowed_sessions) -- so a future string-list setting can
+// reuse these two functions instead of hand-rolling another row builder.
+
+/**
+ * Build a single generic list-editor row: one text input + remove button.
+ * @param {string} value
+ * @param {string} [placeholder]
+ * @returns {HTMLDivElement}
+ */
+function _buildListEditorRow(value, placeholder) {
+  var row = document.createElement('div');
+  row.className = 'settings-list-editor-row';
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'settings-list-editor-value';
+  input.placeholder = placeholder || '';
+  input.value = value || '';
+  input.setAttribute('aria-label', 'List entry');
+  _suppressAutofill(input);
+  var removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'settings-list-editor-remove';
+  removeBtn.textContent = '\u00d7';
+  removeBtn.setAttribute('aria-label', 'Remove entry');
+  row.appendChild(input);
+  row.appendChild(removeBtn);
+  return row;
+}
+
+/**
+ * Read a generic list-editor container's rows into a trimmed,
+ * blank-filtered string array. An empty (or all-blank) list serializes as
+ * `[]`, never `[""]` -- same "only push if truthy after trim" rule
+ * _saveRemoteInstances() applies to its own url field.
+ * @param {HTMLElement|null} container - element with `.settings-list-editor-row` children
+ * @returns {string[]}
+ */
+function _serializeListEditor(container) {
+  var values = [];
+  if (!container) return values;
+  container.querySelectorAll('.settings-list-editor-row').forEach(function(row) {
+    var input = row.querySelector('.settings-list-editor-value');
+    var value = (input && input.value) ? input.value.trim() : '';
+    if (value) values.push(value);
+  });
+  return values;
+}
+
+/**
+ * Read #setting-input-allowed-sessions rows and save to
+ * settings.input_allowed_sessions -- case-insensitive glob patterns naming
+ * which sessions may receive typed input (see
+ * terminal_input.session_matches_allowlist; this file never re-derives
+ * that matcher, per AGENTS.md's "the matcher lives in exactly one place").
+ */
+function _saveInputAllowedSessions() {
+  var container = $('setting-input-allowed-sessions');
+  patchServerSetting('input_allowed_sessions', _serializeListEditor(container));
+}
+
+// ─── Agent Terminal Input (input_enabled / input_allowed_sessions) ───
+//
+// SECURITY: these two settings.py keys are OPERATOR_SETTABLE_LOCAL_KEYS --
+// PATCH /api/settings accepts them ONLY from a real operator credential
+// (browser cookie / HTTP Basic), never from a caller authorized solely by
+// the federation Bearer key (the SAME credential handed to remote agents).
+// This file relies entirely on that server-side fence: nothing here needs
+// to know or check the caller's credential type -- the normal
+// patchServerSetting()/patchSettingsGuarded() path already 403s for a
+// Bearer-only caller, exactly like every other settings write.
+
+/**
+ * Show/hide the allowed-sessions list editor alongside the input_enabled
+ * checkbox -- it is meaningless (and disabled server-side) while input is
+ * off.
+ * @param {boolean} enabled
+ */
+function _updateInputAllowedSessionsFieldVisibility(enabled) {
+  var field = $('settings-input-allowed-sessions-field');
+  if (!field) return;
+  field.classList.toggle('hidden', !enabled);
+}
+
+/**
+ * Pure patch-body builder for the one-click "Enable typing for this
+ * fleet" button. Always turns input_enabled on. ALSO widens
+ * input_allowed_sessions to `["*"]` -- but ONLY when it is currently
+ * empty -- so a deliberately-narrowed allow-list (e.g. `["agent-*"]`) is
+ * never silently clobbered back to "every session".
+ * @param {object} baseline - current settings, as patchSettingsGuarded's
+ *   mutateFn receives them (a deep copy of _serverSettings)
+ * @returns {{input_enabled: true, input_allowed_sessions?: string[]}}
+ */
+function _enableFederationTypingPatch(baseline) {
+  var patch = { input_enabled: true };
+  var current = (baseline && baseline.input_allowed_sessions) || [];
+  if (!current.length) patch.input_allowed_sessions = ['*'];
+  return patch;
+}
+
+/**
+ * One-click handler: enable input for the whole fleet in a single PATCH
+ * (see _enableFederationTypingPatch()), then reflect the new state into
+ * the checkbox, the allowed-sessions list editor, and the compose-bar
+ * gate (_composeRenderEnabledState()) -- no page reload required.
+ * @returns {Promise<void>}
+ */
+async function _enableFederationTypingForFleet() {
+  try {
+    var body = await patchSettingsGuarded(_enableFederationTypingPatch);
+    _serverSettings = Object.assign({}, _serverSettings);
+    if (typeof body.input_enabled === 'boolean') _serverSettings.input_enabled = body.input_enabled;
+    if (body.input_allowed_sessions) _serverSettings.input_allowed_sessions = body.input_allowed_sessions;
+
+    var checkboxEl = $('setting-input-enabled');
+    if (checkboxEl) checkboxEl.checked = !!_serverSettings.input_enabled;
+    var listEl = $('setting-input-allowed-sessions');
+    if (listEl && body.input_allowed_sessions) {
+      listEl.innerHTML = '';
+      body.input_allowed_sessions.forEach(function(pattern) {
+        listEl.appendChild(_buildListEditorRow(pattern));
+      });
+    }
+    _updateInputAllowedSessionsFieldVisibility(true);
+    _composeRenderEnabledState();
+    showToast('Typing enabled for this fleet');
+  } catch (err) {
+    showToast('Failed to enable typing');
+    console.warn('[_enableFederationTypingForFleet] failed:', err);
+  }
+}
+
 // ─── Multi-Device helper ──────────────────────────────────────────────────────────
 
 /**
@@ -7510,6 +7647,24 @@ function openSettings() {
       var remotes = (ss && ss.remote_instances) || [];
       remotes.forEach(function(r) {
         remoteInstancesEl.appendChild(_buildRemoteInstanceRow(r.url || '', r.name || '', r.key || ''));
+      });
+    }
+
+    // Agent Terminal Input (input_enabled / input_allowed_sessions) --
+    // see settings.py's OPERATOR_SETTABLE_LOCAL_KEYS comment block for why
+    // GET /api/settings reports these two keys unredacted (only PATCH
+    // fences them) and why this UI needs no credential-type check of its
+    // own.
+    const inputEnabledEl = $('setting-input-enabled');
+    const inputEnabled = !!(ss && ss.input_enabled === true);
+    if (inputEnabledEl) inputEnabledEl.checked = inputEnabled;
+    _updateInputAllowedSessionsFieldVisibility(inputEnabled);
+    const inputAllowedSessionsEl = $('setting-input-allowed-sessions');
+    if (inputAllowedSessionsEl) {
+      inputAllowedSessionsEl.innerHTML = '';
+      var allowedSessions = (ss && ss.input_allowed_sessions) || [];
+      allowedSessions.forEach(function(pattern) {
+        inputAllowedSessionsEl.appendChild(_buildListEditorRow(pattern));
       });
     }
 
@@ -8020,6 +8175,142 @@ function switchSettingsTab(tabName) {
       panel.classList.add('hidden');
     }
   });
+}
+
+// ─── First-run welcome (one-time) ────────────────────────────────────
+//
+// muxplex has no onboarding flow, and until now nothing ever told a new
+// user that federation/agent typing into this host's sessions is OFF by
+// default (settings.py's `input_enabled`). The only way to discover that
+// safety default was to try typing and collect a 403 -- which is exactly
+// how this feature's own owner found it, across six machines. This dialog
+// is that missing signpost, and nothing more.
+//
+// SCOPE, deliberately small: it is shown at most ONCE per browser, it
+// never blocks anything, and its default action changes nothing. It is
+// NOT an onboarding framework -- there is no step sequencing, no progress
+// state, no server-side "has this user been onboarded" concept. If a
+// second first-run message is ever wanted, that is the moment to decide
+// whether this becomes a real onboarding component; do not grow this one
+// into one by accident.
+//
+// STORAGE: browser-local only (localStorage), per-device, never a server
+// setting and never federation-synced -- the same discipline
+// COMPOSE_PREF_STORAGE_KEY and STT_CLOUD_CONSENT_STORAGE_KEY follow. "Has
+// this browser seen the welcome?" is a property of this browser, not of
+// the host; a second device SHOULD see it once too. It deliberately does
+// NOT go through patchServerSetting().
+const FIRSTRUN_STORAGE_KEY = 'muxplex_firstrun_seen';
+
+/**
+ * Pure decision: should the first-run welcome be shown, given the raw
+ * stored flag? Kept separate from the localStorage read so the policy is
+ * testable without a storage stub.
+ *
+ * Absent (null/undefined) or empty means "never seen" -> show. ANY other
+ * value means seen -> don't. Deliberately not `=== '1'`: if a future
+ * version ever writes a different marker (a timestamp, a version string),
+ * the honest reading of "there is something recorded here" is still
+ * "this browser has seen it", and a value we don't recognise must never
+ * cause the dialog to reappear for a user who already dismissed it.
+ *
+ * @param {string|null|undefined} storedFlag - raw localStorage value
+ * @returns {boolean}
+ */
+function _firstRunShouldShow(storedFlag) {
+  return storedFlag === null || storedFlag === undefined || storedFlag === '';
+}
+
+/**
+ * Record that this browser has seen the welcome. Defensive about a
+ * blocked/throwing localStorage in the same shape as initComposePref()
+ * and _sttCloudConsentAllow(): a failed write is not fatal, the dialog's
+ * action still proceeds.
+ */
+function _firstRunMarkSeen() {
+  try {
+    localStorage.setItem(FIRSTRUN_STORAGE_KEY, '1');
+  } catch (_) {
+    // localStorage blocked -- nothing to record. _firstRunMaybeShow()
+    // treats a blocked READ as "already seen" for exactly this reason,
+    // so this cannot turn into a dialog that reappears every load.
+  }
+}
+
+/** Open the welcome dialog (modal) and mark it seen immediately. */
+function _firstRunOpen() {
+  var dialog = $('firstrun-dialog');
+  var backdrop = $('firstrun-backdrop');
+  // Marked seen on SHOW, not only on action: if the user closes the tab
+  // without touching a button, they have still seen it, and re-showing it
+  // next load would be the nagging this is supposed to avoid.
+  _firstRunMarkSeen();
+  if (backdrop) backdrop.classList.remove('hidden');
+  if (dialog && dialog.showModal) dialog.showModal();
+}
+
+/** Close the welcome dialog. Safe to call when it was never opened. */
+function _firstRunClose() {
+  var dialog = $('firstrun-dialog');
+  var backdrop = $('firstrun-backdrop');
+  if (dialog && dialog.close && dialog.open) dialog.close();
+  if (backdrop) backdrop.classList.add('hidden');
+}
+
+/**
+ * Show the welcome dialog if this browser has never seen it. Called once
+ * at init, after bindStaticEventListeners() -- its buttons must already
+ * be wired before it can be shown.
+ * @returns {boolean} whether it was shown
+ */
+function _firstRunMaybeShow() {
+  var stored;
+  try {
+    stored = localStorage.getItem(FIRSTRUN_STORAGE_KEY);
+  } catch (_) {
+    // localStorage blocked: we could show it, but we could never record
+    // the dismissal -- so it would reappear on EVERY load. Treat blocked
+    // storage as "already seen" and stay quiet. Note this is the opposite
+    // call from _sttCloudConsentGranted(), correctly: that gate protects a
+    // privacy decision (never assume consent), this one is a one-time
+    // informational notice (never nag).
+    return false;
+  }
+  if (!_firstRunShouldShow(stored)) return false;
+  _firstRunOpen();
+  return true;
+}
+
+/**
+ * Welcome action 1 -- "Enable typing for this fleet". Delegates to the
+ * SAME _enableFederationTypingForFleet() the Multi-Device tab's one-click
+ * button uses (input_enabled=true, plus ["*"] only when the allow-list is
+ * empty); this path adds no second copy of that policy.
+ * @returns {Promise<void>}
+ */
+function _firstRunEnableTyping() {
+  _firstRunMarkSeen();
+  _firstRunClose();
+  return _enableFederationTypingForFleet();
+}
+
+/**
+ * Welcome action 2 -- "Open federation settings". Deep-links into the
+ * Multi-Device tab, where both the Federation Key block and the new Agent
+ * Terminal Input controls live. Same openSettings()+switchSettingsTab()
+ * pair chat.js's agent-gate link already uses.
+ */
+function _firstRunOpenFederationSettings() {
+  _firstRunMarkSeen();
+  _firstRunClose();
+  openSettings();
+  switchSettingsTab('devices');
+}
+
+/** Welcome action 3 -- "Not now". Marks seen, closes, changes nothing. */
+function _firstRunDismiss() {
+  _firstRunMarkSeen();
+  _firstRunClose();
 }
 
 /**
@@ -8815,6 +9106,22 @@ function bindStaticEventListeners() {
     on(tab, 'click', function() { switchSettingsTab(tab.dataset.tab); });
   });
 
+  // First-run welcome dialog — three actions, all of which mark the flag
+  // seen (see _firstRunMarkSeen()). Escape (<dialog>'s native 'cancel'
+  // event) and a backdrop click both route to the same "Not now" path, so
+  // every possible way out is a no-op that still never nags again.
+  on($('firstrun-enable-typing-btn'), 'click', _firstRunEnableTyping);
+  on($('firstrun-open-federation-btn'), 'click', _firstRunOpenFederationSettings);
+  on($('firstrun-dismiss-btn'), 'click', _firstRunDismiss);
+  on($('firstrun-backdrop'), 'click', _firstRunDismiss);
+  const firstrunDialog = $('firstrun-dialog');
+  if (firstrunDialog) {
+    firstrunDialog.addEventListener('cancel', _firstRunDismiss);
+    firstrunDialog.addEventListener('click', function(e) {
+      if (e.target === firstrunDialog) _firstRunDismiss();
+    });
+  }
+
   // Hover preview — delegated on grid container (tiles are re-rendered each poll)
   var gridEl = $('session-grid');
   if (gridEl && !('ontouchstart' in window)) {  // desktop only
@@ -9034,6 +9341,62 @@ function bindStaticEventListeners() {
         showToast('Failed to generate federation key');
       });
   });
+
+  // Multi-Device tab — one-click "Enable typing for this fleet" button.
+  // See _enableFederationTypingForFleet() for the patch logic (turns
+  // input_enabled on, widens input_allowed_sessions to ["*"] only if it
+  // was empty) and why no credential check is needed here (the server-side
+  // OPERATOR_SETTABLE_LOCAL_KEYS fence already does it).
+  on($('federation-enable-typing-btn'), 'click', function() {
+    _enableFederationTypingForFleet();
+  });
+
+  // Devices tab — Agent Terminal Input enable/disable toggle. See this
+  // key's SECURITY note above _updateInputAllowedSessionsFieldVisibility()
+  // for why this file needs no credential-type check of its own: PATCH
+  // /api/settings already 403s a Bearer-only (federation/agent) caller for
+  // this key server-side.
+  on($('setting-input-enabled'), 'change', function() {
+    var enabled = this.checked;
+    _updateInputAllowedSessionsFieldVisibility(enabled);
+    patchServerSetting('input_enabled', enabled).then(function() {
+      // Refresh the compose-bar gate immediately -- no page reload -- now
+      // that _serverSettings.input_enabled reflects the (attempted) write.
+      _composeRenderEnabledState();
+    });
+  });
+
+  // Devices tab — add allowed-session glob pattern button
+  on($('add-input-allowed-session-btn'), 'click', function() {
+    var container = $('setting-input-allowed-sessions');
+    if (container) container.appendChild(_buildListEditorRow('', '* or agent-*'));
+  });
+
+  // Devices tab — delegated remove + debounced-save handlers on the
+  // allowed-sessions list editor, mirroring the remote-instances handlers
+  // immediately below.
+  var inputAllowedSessionsContainer = $('setting-input-allowed-sessions');
+  if (inputAllowedSessionsContainer) {
+    inputAllowedSessionsContainer.addEventListener('click', function(e) {
+      var removeBtn = e.target.closest && e.target.closest('.settings-list-editor-remove');
+      if (!removeBtn) return;
+      var row = removeBtn.closest('.settings-list-editor-row');
+      if (row) {
+        row.remove();
+        _saveInputAllowedSessions();
+      }
+    });
+
+    let _inputAllowedSessionsDebounceTimer;
+    inputAllowedSessionsContainer.addEventListener('input', function(e) {
+      var input = e.target.closest && e.target.closest('.settings-list-editor-value');
+      if (!input) return;
+      clearTimeout(_inputAllowedSessionsDebounceTimer);
+      _inputAllowedSessionsDebounceTimer = setTimeout(function() {
+        _saveInputAllowedSessions();
+      }, 500);
+    });
+  }
 
   // Multi-Device tab — add remote instance button
   on($('add-remote-instance-btn'), 'click', function() {
@@ -9318,6 +9681,11 @@ document.addEventListener('DOMContentLoaded', async function() {
       updatePageTitle();
       startHeartbeat();
       bindStaticEventListeners();
+      // First-run welcome -- MUST come after bindStaticEventListeners(),
+      // which wires its three buttons; showing it before that would put a
+      // modal on screen whose controls do nothing. Shows at most once per
+      // browser (see _firstRunMaybeShow()).
+      _firstRunMaybeShow();
       renderSyncGroupControls();
       renderViewDropdown();
       // Step 6 (§6.2.7): local sections have just rendered above via
@@ -9528,6 +9896,23 @@ if (typeof module !== 'undefined' && module.exports) {
     loadServerSettings,
     patchServerSetting,
     patchSettingsGuarded,
+    // Generic list editor + Agent Terminal Input (input_enabled / input_allowed_sessions)
+    _buildListEditorRow,
+    _serializeListEditor,
+    _saveInputAllowedSessions,
+    _updateInputAllowedSessionsFieldVisibility,
+    _enableFederationTypingPatch,
+    _enableFederationTypingForFleet,
+    // First-run welcome (one-time)
+    FIRSTRUN_STORAGE_KEY,
+    _firstRunShouldShow,
+    _firstRunMarkSeen,
+    _firstRunOpen,
+    _firstRunClose,
+    _firstRunMaybeShow,
+    _firstRunEnableTyping,
+    _firstRunOpenFederationSettings,
+    _firstRunDismiss,
     // Fetch wrapper
     api,
     // Header + button with inline name input
