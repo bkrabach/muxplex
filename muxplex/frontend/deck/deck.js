@@ -16,6 +16,11 @@
 // ─── Pure logic (exported for node --test; no DOM dependency) ─────────────
 
 var POLL_INTERVAL_MS = 2000;
+// This Soft Deck's own presence-heartbeat/devices-registry-refresh cadence
+// (docs/plans/2026-08-16-deck-control-target-design.md \u00a79.1/\u00a79.3, Step 3) --
+// matches app.js's HEARTBEAT_MS, though the two are independent constants
+// (separate files, no shared module today).
+var HEARTBEAT_MS = 5000;
 var STALE_WARN_MS = 6000; // ~3 poll cycles -- dim the grid
 var STALE_ERR_MS = 30000; // -- surface takeover (disconnected)
 var PENDING_TIMEOUT_MS = 2500;
@@ -965,6 +970,12 @@ function defaultDeckSettings() {
     stripCount: 0, // 0-4 touch-strip zones (independent of dialCount)
     brightness: 100, // 10-100, session-local, never persisted -- see persistableDeckSettings
     bindings: {}, // address (key.N | dial.N.turn | dial.N.push | strip.N.tap | strip.N.drag | strip.swipe.left | strip.swipe.right) -> action
+    // Pairing target (docs/plans/2026-08-16-deck-control-target-design.md
+    // \u00a79.1/\u00a79.3): 'global' (Server (shared), this Soft Deck's own default)
+    // | 'none' (client-local, \u00a76.2.6) | 'device' (following targetId, a
+    // foreign device_id). targetLabel caches the label shown at SELECTION
+    // time -- see buildFollowsMenu's placeholder-synthesis branch for why.
+    follows: { mode: 'global', targetId: null, targetLabel: null },
   };
 }
 
@@ -1015,6 +1026,7 @@ function mergeDeckSettings(defaults, incoming) {
     out.stripCount = incoming.stripCount;
   }
   out.bindings = sanitizeBindings(incoming.bindings);
+  out.follows = sanitizeFollows(incoming.follows);
   return out;
 }
 
@@ -1114,6 +1126,308 @@ function importSettingsJSON(text, defaults) {
     return { settings: null, error: 'Invalid JSON: ' + e.message };
   }
   return { settings: mergeDeckSettings(defaults || defaultDeckSettings(), parsed), error: null };
+}
+
+// ─── "Follows" dropdown (docs/plans/2026-08-16-deck-control-target-design.md,
+// §9.1/§9.3/§10 Step 3) ──────────────────────────────────────────────────────
+//
+// Pure, DOM-free logic for the pairing-target picker. `deck.js`'s own
+// DOM-wiring block (below, inside the `if (typeof document !== 'undefined')`
+// guard) calls these to build/interpret the `<select>`; the functions
+// themselves take/return plain data so they're testable under `node --test`
+// with no fake DOM, matching every other settings-menu helper in this file.
+
+/**
+ * Resolve a human label for a device record from `GET /api/state`'s
+ * `devices{}` map. `display_name` (the human's PATCH /api/devices override)
+ * wins over `label` (the client's own heartbeat self-report, per §2.2's
+ * clobber-avoidance split) over the raw device_id as a last resort.
+ * @param {object|null|undefined} deviceRecord
+ * @param {string} fallbackId
+ * @returns {string}
+ */
+function deviceDisplayLabel(deviceRecord, fallbackId) {
+  if (deviceRecord) {
+    if (deviceRecord.display_name) return deviceRecord.display_name;
+    if (deviceRecord.label) return deviceRecord.label;
+  }
+  return fallbackId || 'device';
+}
+
+/**
+ * Validate/sanitize a possibly-partial, possibly-hostile `follows` blob --
+ * same recovery posture as `mergeDeckSettings`'s other fields (drop an
+ * invalid value in favor of the default rather than rejecting the whole
+ * settings object).
+ *
+ * `targetLabel` is a cache of the label shown at SELECTION time, used only
+ * when the target later vanishes from the live registry entirely (the usual
+ * `target_gone` case, once GC has pruned it) -- see `buildFollowsMenu`'s
+ * placeholder-synthesis branch. It carries no validation contract beyond
+ * "string or null".
+ * @param {*} raw
+ * @returns {{mode:string, targetId:?string, targetLabel:?string}}
+ */
+function sanitizeFollows(raw) {
+  var out = { mode: 'global', targetId: null, targetLabel: null };
+  if (!raw || typeof raw !== 'object') return out;
+  if (raw.mode === 'global' || raw.mode === 'none') {
+    out.mode = raw.mode;
+    return out;
+  }
+  if (raw.mode === 'device' && typeof raw.targetId === 'string' && raw.targetId.length > 0) {
+    out.mode = 'device';
+    out.targetId = raw.targetId;
+    out.targetLabel = typeof raw.targetLabel === 'string' ? raw.targetLabel : null;
+  }
+  return out;
+}
+
+/**
+ * Whether the currently-followed device target should render as degraded
+ * ("sticky and loud", §7.2/§9.1): the target is no longer in the live
+ * registry (the normal case -- GC pruned it after its 300s TTL), OR the most
+ * recent heartbeat attempt for this exact target was rejected (409
+ * `target_gone`, or a background re-heartbeat's 400 `target_not_self_owning`
+ * -- see `deck.js`'s `sendDeckHeartbeat` docstring for why the two share one
+ * bucket at the wire-fallback level). Never true for 'global'/'none' modes --
+ * only an explicit device-follow can go stale.
+ * @param {{mode:string, targetId:?string}} follows
+ * @param {object} devices - last-known `GET /api/state` `devices{}` map
+ * @param {?string} lastHeartbeatGoneId - targetId of the most recent
+ *   409/400-rejected heartbeat attempt, or null
+ * @returns {boolean}
+ */
+function computeFollowsDegraded(follows, devices, lastHeartbeatGoneId) {
+  if (!follows || follows.mode !== 'device' || !follows.targetId) return false;
+  var stillLive = !!(devices && Object.prototype.hasOwnProperty.call(devices, follows.targetId));
+  var confirmedGone = lastHeartbeatGoneId === follows.targetId;
+  return confirmedGone || !stillLive;
+}
+
+/**
+ * Append the closed-widget degraded suffix (§6.2.10/§9.1: "state that
+ * requires a hover to discover is not state the user has" -- the suffix must
+ * be part of the OPTION TEXT itself, since that's what a native `<select>`
+ * shows while collapsed).
+ * @param {string} label
+ * @returns {string}
+ */
+function degradedOptionLabel(label) {
+  return label + ' \u2014 offline';
+}
+
+/**
+ * Build the data for the "Follows" `<select>` -- two escape hatches (always
+ * first, never alphabetized, §9.1) plus every OTHER device registered with
+ * THIS server. No federated/"Elsewhere" section (§10 Step 6 -- not built
+ * here at all, not even as a stub).
+ *
+ * If the CURRENTLY-selected device target is degraded, its entry's label
+ * gets the offline suffix (`degradedOptionLabel`). If that target has been
+ * pruned from `devices` entirely (the common case), a synthetic placeholder
+ * entry is appended so the `<select>`'s value still resolves to something
+ * selected -- never silently reverting the visible pick to "Server (shared)"
+ * (§7.2's sticky-and-loud policy; the exact anti-pattern the v0.48.3 icon bug
+ * already taught this codebase not to repeat).
+ * @param {{devices:?object, ownDeviceId:string, serverName:?string,
+ *          follows:{mode:string,targetId:?string,targetLabel:?string},
+ *          degraded:boolean}} params
+ * @returns {{escapeHatches:Array<{mode:string,value:string,label:string}>,
+ *            registeredHeader:string,
+ *            registered:Array<{mode:string,targetId:string,value:string,label:string,rawLabel:string,degraded:boolean}>,
+ *            selectedValue:string}}
+ */
+function buildFollowsMenu(params) {
+  var p = params || {};
+  var devices = p.devices || {};
+  var ownId = p.ownDeviceId;
+  var serverName = p.serverName || 'this server';
+  var follows = p.follows || { mode: 'global', targetId: null, targetLabel: null };
+  var degraded = !!p.degraded;
+
+  var escapeHatches = [
+    { mode: 'global', targetId: null, value: 'global', label: serverName + ' (shared)' },
+    { mode: 'none', targetId: null, value: 'none', label: 'Nothing \u2014 just me' },
+  ];
+
+  var registered = [];
+  for (var id in devices) {
+    if (!Object.prototype.hasOwnProperty.call(devices, id)) continue;
+    if (id === ownId) continue; // never offer following yourself
+    var label = deviceDisplayLabel(devices[id], id);
+    registered.push({
+      mode: 'device',
+      targetId: id,
+      value: 'device:' + id,
+      label: label,
+      rawLabel: label,
+      degraded: false,
+    });
+  }
+
+  var selectedValue = follows.mode === 'device' && follows.targetId ? 'device:' + follows.targetId : follows.mode;
+
+  if (follows.mode === 'device' && follows.targetId && degraded) {
+    var found = false;
+    for (var i = 0; i < registered.length; i++) {
+      if (registered[i].targetId === follows.targetId) {
+        registered[i].label = degradedOptionLabel(registered[i].rawLabel);
+        registered[i].degraded = true;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      // Gone from the live registry entirely (GC already pruned it) --
+      // synthesize a placeholder from the cached targetLabel so the
+      // dropdown still HAS an entry to point the sticky selection at.
+      var fallbackLabel = follows.targetLabel || follows.targetId;
+      registered.push({
+        mode: 'device',
+        targetId: follows.targetId,
+        value: 'device:' + follows.targetId,
+        label: degradedOptionLabel(fallbackLabel),
+        rawLabel: fallbackLabel,
+        degraded: true,
+      });
+    }
+  }
+
+  return {
+    escapeHatches: escapeHatches,
+    registeredHeader: 'Registered with ' + serverName,
+    registered: registered,
+    selectedValue: selectedValue,
+  };
+}
+
+/**
+ * Parse a `<select>`'s chosen `value` (as produced by `buildFollowsMenu`,
+ * 'global' | 'none' | 'device:<id>') back into a follows candidate,
+ * recovering the RAW (undecorated) label from the last-built menu's
+ * `registered` list so a fresh pick never persists an "\u2014 offline" suffix
+ * as if it were the device's real name.
+ * @param {string} value
+ * @param {Array<{targetId:string, rawLabel:string}>} registered - the
+ *   `registered` array from the most recent `buildFollowsMenu()` call
+ * @returns {{mode:string, targetId:?string, targetLabel:?string}}
+ */
+function followsCandidateFromValue(value, registered) {
+  if (value === 'none') return { mode: 'none', targetId: null, targetLabel: null };
+  if (typeof value === 'string' && value.indexOf('device:') === 0) {
+    var id = value.slice('device:'.length);
+    var rawLabel = null;
+    var list = registered || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].targetId === id) {
+        rawLabel = list[i].rawLabel;
+        break;
+      }
+    }
+    return { mode: 'device', targetId: id, targetLabel: rawLabel };
+  }
+  return { mode: 'global', targetId: null, targetLabel: null };
+}
+
+/**
+ * Resolve what `sync_group` value (if any) THIS heartbeat should send, given
+ * the persisted follows preference and whether it's currently degraded.
+ *
+ * Returns `null` to mean "omit the field from the request body entirely" --
+ * the literal §6.2.6 contract for 'none' ("the Soft Deck simply does not
+ * send a sync_group on its next heartbeat"), which is also the fallback used
+ * while a 'device' pick is degraded (§6.2.4: "the deck falls back to global
+ * and renews the heartbeat there" -- keeps this Soft Deck's OWN presence
+ * heartbeat alive at the wire level while the UI stays sticky to the
+ * original pick).
+ * @param {{mode:string, targetId:?string}} follows
+ * @param {boolean} degraded
+ * @returns {?string} 'global' | 'device:<id>' | null
+ */
+function resolveHeartbeatSyncGroup(follows, degraded) {
+  if (!follows) return 'global';
+  if (follows.mode === 'none') return null;
+  if (follows.mode === 'device' && follows.targetId && !degraded) {
+    return 'device:' + follows.targetId;
+  }
+  return 'global';
+}
+
+/**
+ * Render the explanation for a 400 `target_not_self_owning` rejection
+ * (§6.2.5/§7.0(b)/§8.1 #8 -- the cycle guard): naming WHO is already
+ * following this Soft Deck, from the error body's `controlled_by` device_id,
+ * resolved to a human label via the live registry when possible.
+ * @param {{controlled_by:?string}|null|undefined} detail - the INNER
+ *   `detail` object from the 400 response body (i.e. `err.body.detail`, not
+ *   the whole envelope)
+ * @param {object} devices - last-known `GET /api/state` `devices{}` map
+ * @returns {string}
+ */
+function targetNotSelfOwningMessage(detail, devices) {
+  var followerId = detail && detail.controlled_by;
+  if (!followerId) return "Can't follow another device while something is following you.";
+  var label = deviceDisplayLabel(devices && devices[followerId], followerId);
+  return "Can't follow \u2014 " + label + ' is already following you';
+}
+
+/**
+ * Generate a pseudo-random device ID for this Soft Deck. Same shape as
+ * app.js's `generateDeviceId()` (deliberately re-implemented, not imported --
+ * these are two separate pages/bundles with no shared module today, and
+ * `frontend/tests/*.mjs`'s own isolation convention keeps deck.js and app.js
+ * independently `require()`-able).
+ * @returns {string}
+ */
+function generateDeckDeviceId() {
+  return 'd-' + Math.random().toString(36).padEnd(10, '0').slice(2, 10);
+}
+
+var DECK_DEVICE_ID_KEY = 'muxplex-deck-device-id';
+
+/**
+ * Load this Soft Deck's persisted device_id from `storage`, minting and
+ * persisting a fresh one on first run. Same injectable-storage shape as
+ * `loadDeckSettings` -- `node --test` passes `null`/`undefined` and gets a
+ * freshly-generated id every call (no real localStorage in that
+ * environment), which is exactly what a fresh install looks like.
+ * @param {{getItem:function(string):?string, setItem:function(string,string):void}|null|undefined} storage
+ * @returns {string}
+ */
+function loadOrCreateDeckDeviceId(storage) {
+  if (!storage) return generateDeckDeviceId();
+  var id;
+  try {
+    id = storage.getItem(DECK_DEVICE_ID_KEY);
+  } catch (e) {
+    return generateDeckDeviceId();
+  }
+  if (id) return id;
+  id = generateDeckDeviceId();
+  try {
+    storage.setItem(DECK_DEVICE_ID_KEY, id);
+  } catch (e) {
+    // best-effort -- an unpersisted id still works for this page load
+  }
+  return id;
+}
+
+/**
+ * This Soft Deck's own heartbeat `label` -- a crude device-family hint from
+ * `navigator.userAgent`, matching \u00a79.1's own worked example ("Soft Deck \u2014
+ * iPad") so a picker entry reads as more than an opaque device_id. Falls
+ * back to the bare 'Soft Deck' when no hint matches (including under
+ * `node --test`, where `navigator` is undefined).
+ * @returns {string}
+ */
+function deckHeartbeatLabel() {
+  var ua = typeof navigator !== 'undefined' && navigator.userAgent ? navigator.userAgent : '';
+  var hint = '';
+  if (/iPad/.test(ua)) hint = 'iPad';
+  else if (/iPhone/.test(ua)) hint = 'iPhone';
+  else if (/Android/.test(ua)) hint = 'Android';
+  return hint ? 'Soft Deck \u2014 ' + hint : 'Soft Deck';
 }
 
 /**
@@ -1968,6 +2282,23 @@ if (typeof document !== 'undefined') {
     }
     var storage = safeLocalStorage();
 
+    // ── "Follows" pairing state (docs/plans/2026-08-16-deck-control-target-design.md
+    // §9.1/§9.3, Step 3) -- this Soft Deck's own device_id/label are stable
+    // for the page lifetime; the devices registry and server name are
+    // refreshed lazily (see refreshDevicesRegistry/refreshServerName below),
+    // never blocking boot() on the server being slow (§6.2.7's "render
+    // local, fill async", applied here since it's the same principle even
+    // though there's only one server in this step, not a federation
+    // fan-out). ──
+    var deckDeviceId = loadOrCreateDeckDeviceId(storage);
+    var devicesRegistry = {}; // last-known GET /api/state `devices{}`, keyed by device_id
+    var serverName = ''; // GET /api/instance-info's `name`; buildFollowsMenu falls back to 'this server'
+    var lastHeartbeatGoneId = null; // targetId of the most recent 409/400-rejected heartbeat attempt
+    var followsErrorMessage = ''; // current #settings-follows-error text (400 target_not_self_owning)
+    var lastFollowsMenu = null; // most recent buildFollowsMenu() result, for followsCandidateFromValue lookups
+    var heartbeatTimer = null;
+    var followsRegistryTimer = null;
+
     // ── DOM refs ──
     var root = document.getElementById('deck-root');
     var surface = document.getElementById('deck-surface');
@@ -2020,6 +2351,315 @@ if (typeof document !== 'undefined') {
         }
         return res.json();
       });
+    }
+
+    /**
+     * POST /api/heartbeat with the parsed error BODY attached on failure
+     * (`err.status` + `err.body`) -- unlike the generic postJSON() above,
+     * whose callers never need to inspect *why* a write was rejected. The
+     * "Follows" flow needs to distinguish 409 `target_gone` from 400
+     * `target_not_self_owning` (docs/plans/2026-08-16-deck-control-target-design.md
+     * §8.1 #5/#8), so this is a small, scoped helper rather than widening
+     * postJSON()'s contract for every existing caller (connect/create-session
+     * etc.), which never need it.
+     * @param {object} payload
+     * @returns {Promise<object>}
+     */
+    function postHeartbeat(payload) {
+      return fetch('/api/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(function (res) {
+        if (!res.ok) {
+          return res
+            .json()
+            .catch(function () {
+              return null;
+            })
+            .then(function (body) {
+              var err = new Error('HTTP ' + res.status);
+              err.status = res.status;
+              err.body = body;
+              throw err;
+            });
+        }
+        return res.json();
+      });
+    }
+
+    /**
+     * Build this heartbeat's payload from the persisted `follows` preference
+     * and current degraded state (`resolveHeartbeatSyncGroup`). `sync_group`
+     * is OMITTED from the body entirely when that resolves to null (the
+     * literal §6.2.6 "does not send a sync_group" contract for 'none') --
+     * never sent as an explicit `null`.
+     * @returns {object}
+     */
+    function buildDeckHeartbeatPayload() {
+      var degraded = computeFollowsDegraded(deckSettings.follows, devicesRegistry, lastHeartbeatGoneId);
+      var syncGroup = resolveHeartbeatSyncGroup(deckSettings.follows, degraded);
+      var payload = {
+        device_id: deckDeviceId,
+        label: deckHeartbeatLabel(),
+        viewing_session: null,
+        view_mode: 'grid',
+        last_interaction_at: Math.floor(Date.now() / 1000),
+        kind: 'soft-deck',
+      };
+      if (syncGroup !== null) payload.sync_group = syncGroup;
+      return payload;
+    }
+
+    /**
+     * Send this Soft Deck's own presence heartbeat, using whatever the
+     * persisted `follows` preference currently resolves to. Never throws --
+     * failures are handled the same way regardless of trigger (this
+     * scheduled call, or a fresh user selection via attemptFollowsChange()),
+     * via applyHeartbeatOutcome().
+     * @returns {Promise<void>}
+     */
+    function sendDeckHeartbeat() {
+      return postHeartbeat(buildDeckHeartbeatPayload())
+        .then(function (result) {
+          applyHeartbeatOutcome(deckSettings.follows, { ok: true, result: result });
+        })
+        .catch(function (err) {
+          applyHeartbeatOutcome(deckSettings.follows, { ok: false, err: err });
+        });
+    }
+
+    /**
+     * Shared success/failure handling for a heartbeat attempt against
+     * *attemptedFollows* -- used both by the background scheduled heartbeat
+     * (sendDeckHeartbeat) and by an interactive dropdown pick
+     * (attemptFollowsChange). `outcome.ok === false` with a 409 or 400
+     * status is NOT thrown further: both mark `attemptedFollows.targetId` as
+     * the current `lastHeartbeatGoneId` (the wire-level fallback,
+     * §6.2.4 -- the NEXT heartbeat's resolved sync_group becomes 'global' so
+     * this Soft Deck's own presence stays alive) while leaving
+     * `deckSettings.follows` itself untouched here -- the CALLER decides
+     * whether the attempted candidate becomes the new persisted pick (see
+     * attemptFollowsChange's own 409-adopts-anyway vs 400-never-adopts
+     * split; the background heartbeat re-sends the ALREADY-persisted
+     * follows, so there's nothing further to adopt either way).
+     * @param {{mode:string, targetId:?string}} attemptedFollows
+     * @param {{ok:boolean, result:?object, err:?object}} outcome
+     */
+    function applyHeartbeatOutcome(attemptedFollows, outcome) {
+      if (outcome.ok) {
+        if (attemptedFollows.mode === 'device' && attemptedFollows.targetId === lastHeartbeatGoneId) {
+          // Only clear the gone-marker once the server actually confirms
+          // we're back on the intended target -- a bare 200 with
+          // sync_group 'global' (the wire-level fallback) must NOT be
+          // read as "recovered".
+          if (outcome.result && outcome.result.sync_group === 'device:' + attemptedFollows.targetId) {
+            lastHeartbeatGoneId = null;
+          }
+        }
+        renderFollowsUI();
+        return;
+      }
+      var err = outcome.err;
+      if (err && err.status === 409 && attemptedFollows.mode === 'device') {
+        lastHeartbeatGoneId = attemptedFollows.targetId;
+        renderFollowsUI();
+        return;
+      }
+      if (err && err.status === 400 && attemptedFollows.mode === 'device') {
+        // Background re-heartbeat rejected because this Soft Deck itself
+        // started being followed by someone else in between (\u00a76.2.5's
+        // cycle guard) -- same wire-level fallback as target_gone: stop
+        // resending the foreign claim, stay sticky+degraded until the human
+        // acts (\u00a77.2/\u00a79.1). The interactive-selection 400 case is handled
+        // separately in attemptFollowsChange, which shows the naming
+        // message instead of silently degrading.
+        lastHeartbeatGoneId = attemptedFollows.targetId;
+        renderFollowsUI();
+        return;
+      }
+      console.warn('[sendDeckHeartbeat] heartbeat failed:', err);
+    }
+
+    /**
+     * Refresh the local devices registry from GET /api/state (no
+     * `device_id` query param -- the full `devices{}` map is present
+     * unconditionally, per state.py's `empty_bootstrap`; scoping by
+     * device_id only affects which group's active_session/view get
+     * overlaid, which this call doesn't need). Best-effort: a failed fetch
+     * keeps the last-known registry rather than clearing it, so a transient
+     * blip doesn't flash every registered-device entry away.
+     * @returns {Promise<void>}
+     */
+    function refreshDevicesRegistry() {
+      return getJSON('/api/state')
+        .then(function (state) {
+          devicesRegistry = (state && state.devices) || {};
+          renderFollowsUI();
+        })
+        .catch(function () {
+          // best-effort -- see docstring
+        });
+    }
+
+    /**
+     * Fetch this server's display name (GET /api/instance-info's `name`,
+     * \u00a74.2) once, for the "<name> (shared)" escape hatch and the
+     * "Registered with <name>" header. Best-effort: buildFollowsMenu already
+     * falls back to 'this server' when empty.
+     * @returns {Promise<void>}
+     */
+    function refreshServerName() {
+      return getJSON('/api/instance-info')
+        .then(function (info) {
+          if (info && info.name) {
+            serverName = info.name;
+            renderFollowsUI();
+          }
+        })
+        .catch(function () {
+          // best-effort -- see docstring
+        });
+    }
+
+    /**
+     * Populate (or repopulate) `#settings-follows` from the current
+     * deckSettings.follows / devicesRegistry / serverName, and refresh the
+     * error paragraph. No-op if the settings panel's DOM isn't present
+     * (mirrors every other render* helper's `if (!settingsEl) return`
+     * guard).
+     */
+    function renderFollowsUI() {
+      if (!settingsEl) return;
+      var selectEl = settingsEl.querySelector('#settings-follows');
+      var errorEl = settingsEl.querySelector('#settings-follows-error');
+      if (!selectEl) return;
+
+      var degraded = computeFollowsDegraded(deckSettings.follows, devicesRegistry, lastHeartbeatGoneId);
+      var menu = buildFollowsMenu({
+        devices: devicesRegistry,
+        ownDeviceId: deckDeviceId,
+        serverName: serverName,
+        follows: deckSettings.follows,
+        degraded: degraded,
+      });
+      lastFollowsMenu = menu;
+
+      selectEl.innerHTML = '';
+      menu.escapeHatches.forEach(function (opt) {
+        var o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        selectEl.appendChild(o);
+      });
+      if (menu.registered.length > 0) {
+        var group = document.createElement('optgroup');
+        group.label = menu.registeredHeader;
+        menu.registered.forEach(function (opt) {
+          var o = document.createElement('option');
+          o.value = opt.value;
+          o.textContent = opt.label;
+          group.appendChild(o);
+        });
+        selectEl.appendChild(group);
+      }
+      selectEl.value = menu.selectedValue;
+
+      if (errorEl) errorEl.textContent = followsErrorMessage || '';
+    }
+
+    /**
+     * Attempt to switch this Soft Deck's follows preference to *candidate*,
+     * asserting it against the server immediately (same "don't wait for the
+     * next tick" posture as app.js's setSyncGroup). Three outcomes,
+     * distinctly:
+     *   - success: candidate becomes the persisted `deckSettings.follows`.
+     *   - 409 target_gone: candidate is adopted anyway (sticky), marked
+     *     degraded -- \u00a77.2/\u00a79.1's policy applies even to a selection made
+     *     the instant the target vanished (a render race), not only to a
+     *     target that goes stale later.
+     *   - 400 target_not_self_owning: candidate is REJECTED outright -- the
+     *     persisted follows is left unchanged, the <select> reverts to it on
+     *     the next renderFollowsUI(), and the naming message is shown.
+     * @param {{mode:string, targetId:?string, targetLabel:?string}} candidate
+     * @returns {Promise<void>}
+     */
+    function attemptFollowsChange(candidate) {
+      var degraded = false; // a fresh pick is never pre-degraded
+      var syncGroup = resolveHeartbeatSyncGroup(candidate, degraded);
+      var payload = {
+        device_id: deckDeviceId,
+        label: deckHeartbeatLabel(),
+        viewing_session: null,
+        view_mode: 'grid',
+        last_interaction_at: Math.floor(Date.now() / 1000),
+        kind: 'soft-deck',
+      };
+      if (syncGroup !== null) payload.sync_group = syncGroup;
+
+      return postHeartbeat(payload)
+        .then(function () {
+          deckSettings.follows = candidate;
+          lastHeartbeatGoneId = null;
+          followsErrorMessage = '';
+          saveDeckSettings(storage, deckSettings);
+          renderFollowsUI();
+        })
+        .catch(function (err) {
+          if (err && err.status === 409 && candidate.mode === 'device') {
+            deckSettings.follows = candidate;
+            lastHeartbeatGoneId = candidate.targetId;
+            followsErrorMessage = '';
+            saveDeckSettings(storage, deckSettings);
+            renderFollowsUI();
+            return;
+          }
+          if (err && err.status === 400 && err.body && err.body.detail && err.body.detail.target_not_self_owning) {
+            followsErrorMessage = targetNotSelfOwningMessage(err.body.detail, devicesRegistry);
+            renderFollowsUI(); // reverts the <select> to the still-current deckSettings.follows
+            return;
+          }
+          followsErrorMessage = "Couldn't reach the server \u2014 try again.";
+          renderFollowsUI();
+        });
+    }
+
+    /**
+     * Start this Soft Deck's own presence heartbeat loop -- unconditional
+     * from boot(), independent of whether Settings is ever opened (a Soft
+     * Deck that only registered while its settings panel happened to be
+     * open would be an unreliable picker entry for every OTHER device).
+     * Same self-scheduling-setTimeout shape as schedulePoll(), so at most
+     * one heartbeat is ever in flight.
+     */
+    function scheduleHeartbeat() {
+      heartbeatTimer = setTimeout(function () {
+        sendDeckHeartbeat().then(scheduleHeartbeat);
+      }, HEARTBEAT_MS);
+    }
+
+    /**
+     * Start (or restart) refreshing the devices registry while Settings is
+     * open -- see openSettings/closeSettings. Deliberately NOT running while
+     * Settings is closed: the dropdown isn't visible, and the registry isn't
+     * needed for anything else (the heartbeat's own sync_group comes from
+     * the persisted `follows` preference, not from re-deriving it here).
+     */
+    function startFollowsRegistryPolling() {
+      if (followsRegistryTimer) return;
+      function tick() {
+        refreshDevicesRegistry().then(function () {
+          followsRegistryTimer = setTimeout(tick, HEARTBEAT_MS);
+        });
+      }
+      tick();
+    }
+
+    function stopFollowsRegistryPolling() {
+      if (followsRegistryTimer) {
+        clearTimeout(followsRegistryTimer);
+        followsRegistryTimer = null;
+      }
     }
 
     // ── Polling ──
@@ -3406,6 +4046,13 @@ if (typeof document !== 'undefined') {
       if (surface) surface.classList.add('hidden');
       if (dialStripEl) dialStripEl.classList.add('hidden');
       if (stripStripEl) stripStripEl.classList.add('hidden');
+      // "Follows" (Step 3): render immediately from whatever's cached
+      // (avoids a blank flash), then refresh the live registry -- and keep
+      // refreshing it on a timer while the panel stays open, so a followed
+      // target going offline is reflected without needing to close/reopen
+      // Settings.
+      renderFollowsUI();
+      startFollowsRegistryPolling();
     }
 
     function closeSettings() {
@@ -3414,6 +4061,7 @@ if (typeof document !== 'undefined') {
       if (surface) surface.classList.remove('hidden');
       recomputeGrid(); // pick up any grid-override/dial-count/strip-count change made in settings
       render();
+      stopFollowsRegistryPolling();
       // Deliberately no "you're still stranded" warning here: if the config
       // is still unreachable, the detector fires again on the next cold
       // start (\u00a76.3). This surface has no toast/banner vocabulary outside
@@ -3445,6 +4093,7 @@ if (typeof document !== 'undefined') {
 
       renderKeyMap();
       renderBindingsList();
+      renderFollowsUI();
     }
 
     /**
@@ -3633,6 +4282,16 @@ if (typeof document !== 'undefined') {
           saveDeckSettings(storage, deckSettings);
           applyBrightness();
           populateSettingsForm();
+        });
+      }
+
+      var followsSel = settingsEl.querySelector('#settings-follows');
+      if (followsSel) {
+        followsSel.addEventListener('change', function () {
+          followsErrorMessage = '';
+          var registered = (lastFollowsMenu && lastFollowsMenu.registered) || [];
+          var candidate = followsCandidateFromValue(followsSel.value, registered);
+          attemptFollowsChange(candidate);
         });
       }
 
@@ -3872,6 +4531,13 @@ if (typeof document !== 'undefined') {
       lockLandscapeOrientation();
       registerServiceWorker();
       poll().then(schedulePoll);
+      // "Follows" (§9.1/§9.3, Step 3): this Soft Deck's own presence
+      // heartbeat starts unconditionally, independent of whether Settings
+      // is ever opened -- otherwise it would be an unreliable picker entry
+      // for every OTHER device. The devices-registry poll, by contrast,
+      // only runs while Settings is open (see openSettings/closeSettings).
+      refreshServerName();
+      sendDeckHeartbeat().then(scheduleHeartbeat);
       if (wantsSettings) openSettings(null);
       else if (reach.level !== 'full') openSettings(reach.reasons);
     }
@@ -3972,5 +4638,19 @@ if (typeof module !== 'undefined' && module.exports) {
     contentBoxForStrip: contentBoxForStrip,
     buildStripStatusMessage: buildStripStatusMessage,
     buildStripPickerStatusMessage: buildStripPickerStatusMessage,
+    // "Follows" dropdown (docs/plans/2026-08-16-deck-control-target-design.md
+    // \u00a79.1/\u00a79.3, Step 3)
+    deviceDisplayLabel: deviceDisplayLabel,
+    sanitizeFollows: sanitizeFollows,
+    computeFollowsDegraded: computeFollowsDegraded,
+    degradedOptionLabel: degradedOptionLabel,
+    buildFollowsMenu: buildFollowsMenu,
+    followsCandidateFromValue: followsCandidateFromValue,
+    resolveHeartbeatSyncGroup: resolveHeartbeatSyncGroup,
+    targetNotSelfOwningMessage: targetNotSelfOwningMessage,
+    generateDeckDeviceId: generateDeckDeviceId,
+    loadOrCreateDeckDeviceId: loadOrCreateDeckDeviceId,
+    deckHeartbeatLabel: deckHeartbeatLabel,
+    DECK_DEVICE_ID_KEY: DECK_DEVICE_ID_KEY,
   };
 }
