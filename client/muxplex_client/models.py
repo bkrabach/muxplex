@@ -179,11 +179,31 @@ class ViewResult:
 
 @dataclass(frozen=True)
 class ServerState:
-    """GET /api/state."""
+    """GET /api/state.
+
+    `sync_group`, `controlled_by`, and `active_remote_id` are additive
+    fields for the deck-control-target feature
+    (docs/plans/2026-08-16-deck-control-target-design.md §8.1 #10, §8.3).
+    All three parse via `.get()` and default to `None` -- a pre-feature
+    server that omits them parses cleanly, never raises.
+
+    `sync_group`: the group `?device_id=` resolved to (`"global"` when no
+    `device_id` was sent), echoed by the server today. `controlled_by`:
+    the device_id of whoever is following THIS device, if any -- `None`
+    on every server today (the field itself is Step 2 of that design;
+    absent-safe now so no follow-up client release is needed once it
+    ships). `active_remote_id`: non-`None` when the projected group's
+    active session came from a federation peer rather than this server
+    (docs/plans/2026-08-16-deck-control-target-design.md §4.5/§7.2's v1
+    ship-blocker) -- previously dropped on the floor entirely.
+    """
 
     active_session: str | None
     active_view: str  # defaults to "all" when absent/empty
     settings_updated_at: float | None = None
+    sync_group: str | None = None
+    controlled_by: str | None = None
+    active_remote_id: str | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
@@ -232,6 +252,23 @@ class ConnectResult:
 
     active_session: str
     ttyd_port: int
+
+
+@dataclass(frozen=True)
+class HeartbeatResult:
+    """POST /api/heartbeat.
+
+    `sync_group` is the group the device is ACTUALLY in after this call
+    -- when the caller omitted `sync_group` (meaning "leave unchanged"),
+    this still reports the resolved value, exactly the same
+    request-vs-resolved distinction `ConnectResult.active_session` and
+    `main.py`'s `get_state()`/`patch_state()` docstrings already make
+    (see docs/plans/2026-08-16-deck-control-target-design.md §8.3).
+    """
+
+    device_id: str
+    status: str
+    sync_group: str
 
 
 @dataclass(frozen=True)

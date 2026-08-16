@@ -8,8 +8,15 @@ the complete error-mapping table.
 from __future__ import annotations
 
 from muxplex_client import _protocol as protocol
-from muxplex_client.errors import ApiError, AuthError, InputForbidden, SessionNotFound
-from muxplex_client.models import Bell, FollowupItem, Followups
+from muxplex_client.errors import (
+    ApiError,
+    AuthError,
+    InputForbidden,
+    SessionNotFound,
+    TargetGoneError,
+    TargetNotSelfOwningError,
+)
+from muxplex_client.models import Bell, FollowupItem, Followups, HeartbeatResult
 
 # ---------------------------------------------------------------------------
 # Bell / needs_attention
@@ -181,6 +188,114 @@ def test_parse_server_state_preserves_raw() -> None:
     raw = {"active_session": "x", "active_view": "all", "future_field": 42}
     state = protocol.parse_server_state(raw)
     assert state.raw == raw
+
+
+def test_parse_server_state_new_fields_present() -> None:
+    """docs/plans/2026-08-16-deck-control-target-design.md §8.3: sync_group,
+    controlled_by, and active_remote_id all parse when present."""
+    state = protocol.parse_server_state(
+        {
+            "active_session": "x",
+            "active_view": "all",
+            "sync_group": "device:d-mac-tab",
+            "controlled_by": "d-deck-alien",
+            "active_remote_id": "d-remote-1",
+        }
+    )
+    assert state.sync_group == "device:d-mac-tab"
+    assert state.controlled_by == "d-deck-alien"
+    assert state.active_remote_id == "d-remote-1"
+
+
+def test_parse_server_state_new_fields_absent_default_none() -> None:
+    """A pre-feature server that omits all three must parse cleanly --
+    never raise -- and each defaults to None."""
+    state = protocol.parse_server_state({"active_session": "x", "active_view": "all"})
+    assert state.sync_group is None
+    assert state.controlled_by is None
+    assert state.active_remote_id is None
+
+
+# ---------------------------------------------------------------------------
+# HeartbeatResult
+# ---------------------------------------------------------------------------
+
+
+def test_parse_heartbeat_result_full() -> None:
+    result = protocol.parse_heartbeat_result(
+        {"device_id": "d-1", "status": "ok", "sync_group": "device:d-1"}
+    )
+    assert result == HeartbeatResult(
+        device_id="d-1", status="ok", sync_group="device:d-1"
+    )
+
+
+def test_parse_heartbeat_result_defaults_status_and_sync_group() -> None:
+    result = protocol.parse_heartbeat_result({"device_id": "d-1"})
+    assert result.status == "ok"
+    assert result.sync_group == "global"
+
+
+# ---------------------------------------------------------------------------
+# map_status_error -- target_gone / target_not_self_owning discriminators
+# ---------------------------------------------------------------------------
+
+
+def test_map_409_with_target_gone_discriminator_is_target_gone_error() -> None:
+    err = protocol.map_status_error(
+        409,
+        "/api/heartbeat",
+        "target gone",
+        detail_obj={"target_gone": True, "device_id": "d-abc"},
+    )
+    assert isinstance(err, TargetGoneError)
+    assert err.status == 409
+
+
+def test_map_409_without_detail_obj_is_plain_api_error() -> None:
+    """No discriminator at all (the common case today) -> unchanged
+    generic ApiError, exactly as before this feature existed."""
+    err = protocol.map_status_error(409, "/api/heartbeat", "some conflict")
+    assert type(err) is ApiError
+    assert err.status == 409
+
+
+def test_map_409_with_detail_obj_but_falsy_target_gone_is_plain_api_error() -> None:
+    err = protocol.map_status_error(
+        409, "/api/heartbeat", "conflict", detail_obj={"target_gone": False}
+    )
+    assert type(err) is ApiError
+
+
+def test_map_400_with_target_not_self_owning_discriminator() -> None:
+    err = protocol.map_status_error(
+        400,
+        "/api/heartbeat",
+        "cycle",
+        detail_obj={"target_not_self_owning": True, "controlled_by": "d-x"},
+    )
+    assert isinstance(err, TargetNotSelfOwningError)
+    assert err.status == 400
+
+
+def test_map_400_without_detail_obj_is_plain_api_error() -> None:
+    """Existing 400s (e.g. an invalid sync_group value today) are
+    unaffected -- this is the exact regression case §10 calls out."""
+    err = protocol.map_status_error(
+        400, "/api/heartbeat", "sync_group must be 'global' or 'device:<id>'"
+    )
+    assert type(err) is ApiError
+    assert err.status == 400
+
+
+def test_map_400_with_detail_obj_but_falsy_discriminator_is_plain_api_error() -> None:
+    err = protocol.map_status_error(
+        400,
+        "/api/heartbeat",
+        "bad request",
+        detail_obj={"target_not_self_owning": False},
+    )
+    assert type(err) is ApiError
 
 
 def test_parse_settings_defaults() -> None:
