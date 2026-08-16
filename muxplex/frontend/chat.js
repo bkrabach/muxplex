@@ -3030,8 +3030,7 @@
     // gives that same clean refusal if this is reached some other way).
     if (data.state === "not_installed") {
       statusEl.textContent = data.message ||
-        "The Agent sidecar isn't installed on this server yet. See docs/AGENT_CHAT_SETUP.md " +
-        "to install it, then come back here to add a key.";
+        "The Agent sidecar isn't installed on this server yet.";
       if (shadowEl) shadowEl.classList.add("hidden");
       if (restartWarnEl) restartWarnEl.classList.add("hidden");
       if (submitBtn) submitBtn.disabled = true;
