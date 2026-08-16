@@ -3154,6 +3154,17 @@
           _renderCredentialFailure(resultEl, resp.status, data.detail || ("HTTP " + resp.status));
           return;
         }
+        // muxplex embedded credentials: a save attempted while the
+        // provider's env var is set is a deliberate NO-OP (env always
+        // wins -- "read env first"), never silently treated as a normal
+        // save. The typed key is intentionally left in the field so the
+        // user can see what they tried to enter while deciding whether to
+        // unset the environment variable instead.
+        if (data.no_op) {
+          resultEl.textContent = "Not saved: " + (data.detail || "the environment variable takes precedence.");
+          await _refreshAgentCredentialStatus();
+          return;
+        }
         keyInput.value = ""; // never leave the typed key sitting in the form
         resultEl.textContent = data.restarted
           ? "Key saved. Agent service restarted (" + data.detail + ")."

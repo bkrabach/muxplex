@@ -120,6 +120,53 @@ async def _get_prepared() -> Any:
     return _prepared
 
 
+def active_provider() -> str:
+    """Return the provider short-name the embedded runner actually mounts
+    for a turn (currently always ``"anthropic"`` -- see ``_PROVIDER_ID``
+    above; multi-provider selection is out of scope for this pass).
+
+    Exposed as a function (not a bare module constant re-export) so
+    ``credentials.py``'s status/gating logic depends on the runner's OWN
+    notion of "the provider that matters", rather than a second copy of
+    the same string living in a sibling file.
+    """
+    return _PROVIDER_ID
+
+
+async def library_unavailable_reason() -> str | None:
+    """Return ``None`` if amplifier-agent is importable (and its bundle
+    preparable) in this process, or a human-readable reason it is not.
+
+    Split out of :func:`check_available` so callers that only need to
+    distinguish "the library itself isn't usable" from "the library is
+    fine but no credential is configured" (the Settings -> Agent status
+    endpoint; see ``credentials.full_status``) don't have to duplicate
+    this try/except.
+    """
+    try:
+        await _get_prepared()
+    except EmbeddedAgentUnavailable as exc:
+        return str(exc)
+    return None
+
+
+def _no_credential_message(provider: str, env_var: str | None) -> str:
+    """Build the "nothing resolvable" message for *provider*, naming BOTH
+    halves of the resolution chain (env var AND the credentials file) so
+    the message stays accurate now that embedded mode has a durable
+    fallback store -- see ``credentials.py``'s module docstring.
+    """
+    from amplifier_agent_lib.persistence import amplifier_agent_home
+
+    creds_path = amplifier_agent_home() / "credentials.json"
+    env_clause = f"{env_var} unset" if env_var else "no environment variable set"
+    return (
+        f"amplifier-agent embedded mode: no {provider} credential resolvable "
+        f"({env_clause}, and none stored at {creds_path}). Set one via "
+        "Settings -> Agent, or export the environment variable."
+    )
+
+
 async def check_available() -> str | None:
     """Return ``None`` if the embedded path is ready to run a turn, or a
     human-readable reason it is not (missing library / missing
@@ -127,18 +174,15 @@ async def check_available() -> str | None:
     unavailable embedded path returns a clean JSON error response instead
     of a stream that immediately emits an error frame.
     """
-    try:
-        await _get_prepared()
-    except EmbeddedAgentUnavailable as exc:
-        return str(exc)
+    reason = await library_unavailable_reason()
+    if reason:
+        return reason
 
     from amplifier_agent_cli.provider_sources import resolve_credential_detailed
 
-    if not resolve_credential_detailed(_PROVIDER_ID).resolved:
-        return (
-            f"amplifier-agent embedded mode: no {_PROVIDER_ID} credential resolvable "
-            "in this process's environment (ANTHROPIC_API_KEY unset)"
-        )
+    resolution = resolve_credential_detailed(_PROVIDER_ID)
+    if not resolution.resolved:
+        return _no_credential_message(_PROVIDER_ID, resolution.env_var)
     return None
 
 
@@ -179,10 +223,10 @@ async def stream_embedded_chat_completion(
         HttpQueueDisplaySystem,
     )
 
-    if not resolve_credential_detailed(_PROVIDER_ID).resolved:
+    resolution = resolve_credential_detailed(_PROVIDER_ID)
+    if not resolution.resolved:
         yield wire.sse_error(
-            f"amplifier-agent embedded mode: no {_PROVIDER_ID} credential resolvable "
-            "in this process's environment (ANTHROPIC_API_KEY unset)"
+            _no_credential_message(_PROVIDER_ID, resolution.env_var)
         ).encode()
         return
 

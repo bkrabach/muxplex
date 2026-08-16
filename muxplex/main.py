@@ -44,6 +44,7 @@ from websockets.typing import Subprotocol
 from muxplex import agent_embedded, focus, followups, tmux_config
 from muxplex import bells as bells_mod
 from muxplex import ttyd as ttyd_mod
+from muxplex.agent_embedded import credentials as agent_embedded_credentials
 from muxplex.agent_embedded import runner as agent_embedded_runner
 from muxplex.auth import (
     AuthMiddleware,
@@ -5732,19 +5733,21 @@ async def get_agent_provider_credential(request: Request) -> dict:
 
     In embedded mode (the default -- see `muxplex.agent_embedded`), none
     of the above applies: there is no aa-svc user, no sidecar CLI, no
-    `/v1/models` to poll. `checkAgentGate()` (chat.js) reads only
-    `data.state` from this endpoint to decide whether to show the panel's
-    composer or its "Agent isn't set up" gate, so the embedded branch
-    below answers that ONE question directly from
-    `agent_embedded_runner.check_available()` rather than running any of
-    the sidecar-specific probes, which would be answering questions about
-    a process that, in this mode, does not exist.
+    `/v1/models` to poll, and no subprocess of any kind (`sudo`, `aa-svc`,
+    `systemctl`) -- the credential lives in THIS process. The embedded
+    branch below returns the SAME response shape (`state`, `providers`,
+    `sidecar`, `models`) computed entirely in-process by
+    `agent_embedded.credentials.full_status()`, which resolves each
+    allowed provider via the exact env-first chain
+    (`amplifier_agent_cli.provider_sources.resolve_credential_detailed`)
+    the runner itself uses for a real turn -- so this status can never
+    drift from what a turn would actually do. `checkAgentGate()` (chat.js)
+    reads only `data.state`; the Settings -> Agent tab additionally reads
+    `data.providers` for the per-provider masked/source display, which
+    embedded mode now populates the same way the sidecar always has.
     """
     if agent_embedded.is_embedded_mode():
-        unavailable_reason = await agent_embedded_runner.check_available()
-        if unavailable_reason:
-            return {"state": "not_configured", "message": unavailable_reason}
-        return {"state": "configured", "message": "Embedded agent ready."}
+        return await agent_embedded_credentials.full_status()
 
     try:
         status_rc, status_out, status_err = await _run_agent_cli(["auth", "status"])
@@ -5864,6 +5867,10 @@ async def post_agent_provider_credential(
             detail="Invalid API key: empty, too long, or contains control characters.",
         )
 
+    if agent_embedded.is_embedded_mode():
+        async with _agent_credential_lock:
+            return await _post_agent_provider_credential_embedded(provider, api_key)
+
     async with _agent_credential_lock:
         global _agent_last_restart_at
         now = time.monotonic()
@@ -5950,6 +5957,83 @@ async def post_agent_provider_credential(
             "restarted": restarted,
             "detail": restart_detail,
         }
+
+
+async def _post_agent_provider_credential_embedded(provider: str, api_key: str) -> dict:
+    """Validate-then-persist for ``MUXPLEX_AGENT_MODE=embedded``.
+
+    No subprocess, no `aa-svc`, no `systemctl` restart -- the credential
+    lives in THIS process, so a persisted key takes effect on the very
+    next turn with no restart at all (see
+    ``muxplex.agent_embedded.credentials`` module docstring).
+
+    Read-env-first, honored here too, per the owner's explicit direction
+    ("I'd prefer to read env first, do it right"): if the target
+    provider's credential currently resolves from the environment, a POST
+    here is refused as a NO-OP -- nothing is validated (the submitted key
+    is not what would actually be used) and nothing is written. This is
+    not a silent surprise: the response says exactly why, and the caller
+    (chat.js) renders that explanation instead of a false "Key saved."
+    Unsetting the environment variable is what lets a stored key take
+    effect.
+    """
+    current = agent_embedded_credentials.resolve_status(provider)
+    if current["source"] == "env":
+        env_var = current["env_var"] or _AGENT_PROVIDER_ENV_VARS.get(provider, "")
+        return {
+            "ok": True,
+            "provider": provider,
+            "no_op": True,
+            "restarted": False,
+            "detail": (
+                f"{env_var} is set in this process's environment and always takes "
+                "precedence. Nothing was saved -- unset the environment variable to "
+                "let a stored key take effect."
+            ),
+        }
+
+    verdict, detail = await agent_embedded_credentials.validate_key(provider, api_key)
+    if verdict == "bad_key":
+        # NOTHING is written. Live state (env or an existing stored key)
+        # untouched -- same invariant the sidecar path holds (SS0/SS3.3).
+        raise HTTPException(
+            status_code=400,
+            detail=f"Rejected: the provider reported this key as invalid ({detail}).",
+        )
+    if verdict == "unreachable":
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Could not reach {provider!r}'s API to validate the key ({detail}). "
+                "Not a bad key -- a connectivity problem."
+            ),
+        )
+    if verdict == "module_missing":
+        raise HTTPException(
+            status_code=503,
+            detail=f"The {provider!r} provider module is not installed in this process ({detail}).",
+        )
+    if verdict == "error":
+        raise HTTPException(
+            status_code=500,
+            detail=f"Validation failed before a verdict could be reached: {detail}",
+        )
+
+    # verdict == "ok" -- persist for real, to the SAME file
+    # resolve_credential_detailed (and every future turn) already reads.
+    path = agent_embedded_credentials.persist_key(provider, api_key)
+
+    # Audit line: timestamp, provider, path written. NO key material, not
+    # even masked (mirrors the sidecar path's SS7.4 audit convention).
+    _log.info("agent-credential (embedded): provider=%s written to %s", provider, path)
+
+    return {
+        "ok": True,
+        "provider": provider,
+        "no_op": False,
+        "restarted": False,
+        "detail": "Takes effect on the next turn -- no restart needed (embedded mode runs in-process).",
+    }
 
 
 @app.post("/api/federation/{device_id}/connect/{session_name}")
