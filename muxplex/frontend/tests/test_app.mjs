@@ -309,6 +309,68 @@ test('initSyncGroup with localStorage throwing stays "global" and does not throw
   globalThis.localStorage.getItem = origGetItem;
 });
 
+// --- renderSyncGroupControls: header button visual state ---
+//
+// Regression test for the inverted-boolean bug (2026-08-16): .header-btn--
+// active used to be toggled on `independent`, so the button rendered
+// "selected" only when NOT following -- backwards from what the static link
+// glyph implies. Confirmed to catch the bug it targets: reverting
+// renderSyncGroupControls() to key off `independent` instead of `following`
+// flips both assertions below and fails this test.
+function _makeSyncGroupBtnStub() {
+  const classes = new Set();
+  const attrs = {};
+  return {
+    innerHTML: '',
+    title: '',
+    classList: {
+      add(...cs) { for (const c of cs) classes.add(c); },
+      remove(...cs) { for (const c of cs) classes.delete(c); },
+      toggle(c, force) { if (force) classes.add(c); else classes.delete(c); return !!force; },
+      contains(c) { return classes.has(c); },
+    },
+    setAttribute(k, v) { attrs[k] = String(v); },
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null; },
+  };
+}
+
+test('renderSyncGroupControls: FOLLOWING shows active styling + linked-chain icon', () => {
+  const btn = _makeSyncGroupBtnStub();
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) =>
+    (id === 'sync-group-btn' || id === 'sync-group-btn-expanded') ? btn : null;
+  try {
+    app._setSyncGroupMode('global');
+    app.renderSyncGroupControls();
+    assert.strictEqual(btn.classList.contains('header-btn--active'), true,
+      'active class must apply while following -- this is the bug that shipped');
+    assert.strictEqual(btn.getAttribute('aria-pressed'), 'true');
+    assert.match(btn.title, /^Following/);
+    assert.match(btn.innerHTML, /128279/, 'expected the linked-chain glyph while following');
+  } finally {
+    globalThis.document.getElementById = origGetById;
+  }
+});
+
+test('renderSyncGroupControls: INDEPENDENT clears active styling + shows a distinct icon', () => {
+  const btn = _makeSyncGroupBtnStub();
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) =>
+    (id === 'sync-group-btn' || id === 'sync-group-btn-expanded') ? btn : null;
+  try {
+    app._setSyncGroupMode('device');
+    app.renderSyncGroupControls();
+    assert.strictEqual(btn.classList.contains('header-btn--active'), false,
+      'active class must NOT apply while independent');
+    assert.strictEqual(btn.getAttribute('aria-pressed'), 'false');
+    assert.match(btn.title, /^Independent/);
+    assert.notEqual(btn.innerHTML, '&#128279;', 'independent state must render a different glyph than following');
+  } finally {
+    app._setSyncGroupMode('global'); // restore for subsequent tests
+    globalThis.document.getElementById = origGetById;
+  }
+});
+
 test('setSyncGroup("global") issues no PATCH /api/state (adopt, never push)', async () => {
   const calls = [];
   const origFetch = globalThis.fetch;
