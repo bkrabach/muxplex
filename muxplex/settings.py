@@ -109,11 +109,16 @@ DEFAULT_SETTINGS: dict = {
     #
     # What did NOT change, and must not: `input_enabled` still defaults to
     # False (the capability is still off out of the box), and BOTH keys are
-    # still in LOCAL_ONLY_KEYS -- settable only by editing this file on
-    # disk, never via `PATCH /api/settings`, never by a federation peer,
-    # never by the agent. See LOCAL_ONLY_KEYS's comment block for why that
-    # partition is load-bearing (the federation Bearer key IS the agent
-    # credential).
+    # still in LOCAL_ONLY_KEYS -- still NEVER synced by a federation peer.
+    # UPDATE (OPERATOR_SETTABLE_LOCAL_KEYS): both keys MAY now also be set
+    # via `PATCH /api/settings`, but only when the request is authorized by
+    # a real operator credential (a browser session cookie, or HTTP Basic) --
+    # never by a caller authorized SOLELY by the federation Bearer key, which
+    # is the SAME credential handed to remote agents. A local settings.json
+    # edit remains the only way to set them for a headless/no-cookie
+    # deployment. See LOCAL_ONLY_KEYS's comment block and
+    # OPERATOR_SETTABLE_LOCAL_KEYS below for why that partition is
+    # load-bearing (the federation Bearer key IS the agent credential).
     #
     # BOTH FORMS ARE ACCEPTED for `input_allowed_sessions`: the list
     # `["*"]` and the bare string `"*"` (what a human naturally hand-writes
@@ -258,15 +263,28 @@ DEFAULT_SETTINGS: dict = {
 }
 
 # Keys that can ONLY be changed by editing the settings file on disk
-# (~/.config/muxplex/settings.json) -- never via any API path.
+# (~/.config/muxplex/settings.json) -- never via any API path -- UNLESS the
+# key is ALSO listed in OPERATOR_SETTABLE_LOCAL_KEYS below (currently just
+# `input_enabled`/`input_allowed_sessions`), in which case an
+# operator-credentialed `PATCH /api/settings` (a browser session cookie, or
+# HTTP Basic) may set it too. See that frozenset's comment for the full
+# rationale and the exact mechanism (`main._bearer_only_caller()` /
+# `main.update_settings()`). Every other key below has no such carve-out and
+# remains editable only by hand on disk.
 #
 # SECURITY: PATCH /api/settings sits behind the same shared auth as the rest
 # of the API, and the federation Bearer key satisfies it -- the SAME
 # credential handed to remote agents that call the terminal-input endpoint.
-# If these fence keys were PATCHable, a Bearer-key holder could self-authorize
-# typing into any session (including the human's own panes), defeating the
-# per-session allowlist entirely. Requiring a local file edit makes widening
-# the fence a deliberate local-operator action.
+# If these fence keys were PATCHable **by that credential**, a Bearer-key
+# holder could self-authorize typing into any session (including the
+# human's own panes), defeating the per-session allowlist entirely. The
+# fence is keyed on CREDENTIAL, not on "did this arrive via the API at
+# all" -- a real operator (cookie or HTTP Basic, i.e. someone who already
+# had to authenticate as a human) is a fundamentally different caller than
+# one holding only the shared federation Bearer key, and only the two
+# terminal-input keys carve out an exception for the former. Requiring a
+# local file edit (or an operator-credentialed PATCH, for the carve-out
+# keys) makes widening the fence a deliberate local-operator action.
 #
 # WIDENED SCOPE (confirmed incident): this fence is not only for the two
 # input-typing keys above -- it covers ANY key that names a *command* or a
@@ -318,6 +336,50 @@ LOCAL_ONLY_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# The subset of LOCAL_ONLY_KEYS an OPERATOR -- a caller authorized by a real
+# operator credential, never a bearer_only caller -- may set through
+# `PATCH /api/settings`. Both keys remain default-DENIED to that endpoint
+# (patch_settings()'s LOCAL_ONLY_KEYS drop still fires by default); this
+# frozenset is what `main.update_settings()` passes as `patch_settings()`'s
+# `allow_local_keys=` argument for a non-bearer_only request, so ONLY those
+# requests skip the drop for exactly these two keys:
+#
+#     bearer = _bearer_only_caller(request)
+#     patch_settings(body, allow_local_keys=frozenset() if bearer else
+#                                            OPERATOR_SETTABLE_LOCAL_KEYS)
+#
+# A key in this set still goes through the ordinary per-key copy in
+# patch_settings() -- including whatever validation/normalization already
+# applies to it (e.g. `input_allowed_sessions` is still normalized by
+# `normalize_input_allowed_sessions()` on every subsequent `load_settings()`
+# call, exactly as it already was for a value written by hand-editing
+# settings.json). Nothing about that existing pipeline changes; only the
+# LOCAL_ONLY_KEYS drop itself is skipped, and only for these two keys, and
+# only for a caller who is NOT bearer_only.
+#
+# Still deliberately excluded from SYNCABLE_KEYS (a federation peer's sync
+# must never be able to widen these, operator-settable or not -- see
+# apply_synced_settings(), which never accepts `allow_local_keys` at all).
+#
+# Deliberately limited to the two terminal-input keys, NOT extended to the
+# command/path keys enumerated in LOCAL_ONLY_KEYS's own comment block above
+# (new_session_template, delete_session_template, session_commands,
+# tmux_socket_dir, tls_cert, tls_key, focus_app): those name a *command* or
+# a *filesystem path* the server itself later executes or reads, so a
+# PATCHable value is RCE or an arbitrary file-read no matter which credential
+# sent it -- there is no operator-only use case for setting them remotely
+# that doesn't equally justify handing an agent the same primitive. The two
+# input-typing keys are different in kind: they gate WHETHER typing is
+# allowed at all and WHICH sessions it may target, not what gets executed,
+# and the entire point of this feature is to let a real human operator flip
+# that gate on from the browser instead of hand-editing a JSON file over SSH.
+OPERATOR_SETTABLE_LOCAL_KEYS: frozenset[str] = frozenset(
+    {
+        "input_enabled",
+        "input_allowed_sessions",
+    }
+)
+
 
 def normalize_input_allowed_sessions(value: object) -> object:
     """Normalize a bare-string ``input_allowed_sessions`` into a one-element list.
@@ -343,13 +405,19 @@ def normalize_input_allowed_sessions(value: object) -> object:
     the fence keeps receiving a list, always, and its own fail-closed
     contract is untouched.
 
-    THIS CANNOT WIDEN THE FENCE FOR A REMOTE CALLER.
-    ``input_allowed_sessions`` is in LOCAL_ONLY_KEYS: ``PATCH
-    /api/settings`` drops it and federation sync never carries it, so the
-    only value this function can ever see comes from a local operator
-    editing settings.json on disk -- the one party already authorized to
-    widen this fence. And it is still gated by ``input_enabled``, which is
-    NOT touched here and still defaults to False.
+    THIS CANNOT WIDEN THE FENCE FOR A BEARER-ONLY CALLER.
+    ``input_allowed_sessions`` is in LOCAL_ONLY_KEYS, and federation sync
+    never carries it (it is also not in SYNCABLE_KEYS). ``PATCH
+    /api/settings`` drops it for a ``bearer_only`` caller exactly as before;
+    it is also in OPERATOR_SETTABLE_LOCAL_KEYS, so a request authorized by a
+    real operator credential (a browser session cookie, or HTTP Basic) MAY
+    now set it through the API too, in addition to a local operator editing
+    settings.json on disk directly -- both are the same party this fence
+    already trusts to widen it (see OPERATOR_SETTABLE_LOCAL_KEYS's comment
+    block for the exact mechanism). Either way, the value passed through
+    this function was never supplied by a caller authorized SOLELY by the
+    federation Bearer key. And it is still gated by ``input_enabled``, which
+    is NOT touched here and still defaults to False.
 
     Rules:
     - ``"*"`` -> ``["*"]``; ``"agent-shell"`` -> ``["agent-shell"]``.
@@ -953,7 +1021,12 @@ class InvalidViewRuleRejected(Exception):
         super().__init__("; ".join(errors))
 
 
-def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
+def patch_settings(
+    patch: dict,
+    *,
+    allow_destructive: bool = False,
+    allow_local_keys: frozenset[str] = frozenset(),
+) -> dict:
     """Merge known keys from *patch* into the current settings, save, and return result.
 
     Unknown keys in *patch* are silently ignored.
@@ -978,6 +1051,24 @@ def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
     ``views`` value isn't a list (None, a stray string, etc.), never triggers
     this check -- see assess_views_destruction's docstring for why that's
     always treated as "not changing views."
+
+    ``allow_local_keys`` -- default empty, i.e. no change to the pre-existing
+    behavior: EVERY key in LOCAL_ONLY_KEYS is dropped (with the usual warning
+    log), exactly as before this parameter existed. A caller may pass a
+    subset of LOCAL_ONLY_KEYS (in practice, always OPERATOR_SETTABLE_LOCAL_KEYS
+    -- see that frozenset's comment) to let keys in that subset flow through
+    the normal per-key copy below instead of being dropped. This is how
+    ``main.update_settings()`` lets an operator-credentialed (cookie/Basic)
+    caller set ``input_enabled``/``input_allowed_sessions`` via the API while
+    a ``bearer_only`` caller still cannot: the HTTP layer decides WHICH
+    credential is calling and passes the appropriate ``allow_local_keys``
+    down; this function itself has no notion of "caller identity" and simply
+    trusts whatever set it's given. Every key NOT in ``allow_local_keys`` is
+    still dropped exactly as before, including every other LOCAL_ONLY_KEYS
+    member (new_session_template, session_commands, tmux_socket_dir,
+    tls_cert, tls_key, focus_app) regardless of what ``allow_local_keys``
+    contains -- this parameter only ever narrows the drop, never widens which
+    keys COULD be exempted beyond what the caller explicitly names.
     """
     current = load_settings()
     patch = _translate_legacy_hover_preview_key(patch)
@@ -1028,12 +1119,17 @@ def patch_settings(patch: dict, *, allow_destructive: bool = False) -> dict:
 
     for key in DEFAULT_SETTINGS:
         if key in patch:
-            if key in LOCAL_ONLY_KEYS:
+            if key in LOCAL_ONLY_KEYS and key not in allow_local_keys:
                 # Security fence: these keys can only be widened by editing
-                # settings.json on disk (a local-operator action) -- never
-                # via the API, whose Bearer key is held by the same remote
-                # agents the fence is meant to contain. Skip the key but
-                # apply the rest of the patch (don't fail the whole request).
+                # settings.json on disk (a local-operator action), or --
+                # for exactly the keys the caller named in allow_local_keys
+                # (in practice OPERATOR_SETTABLE_LOCAL_KEYS) -- via the API
+                # when main.update_settings() has determined the caller is
+                # NOT bearer_only. Every other LOCAL_ONLY_KEYS member (and
+                # this key too, for a bearer_only caller) is dropped: the
+                # Bearer key alone is held by the same remote agents the
+                # fence is meant to contain. Skip the key but apply the rest
+                # of the patch (don't fail the whole request).
                 _log.warning(
                     "settings: %r is local-only (edit settings.json directly); "
                     "ignoring value in PATCH",

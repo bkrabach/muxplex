@@ -98,14 +98,25 @@ ships **fenced, default-CLOSED**. Every fence must pass, in this order:
    skipped rather than crashing the endpoint. This is how a human's own
    working panes stay un-typeable: don't list (or pattern-match) them.
    Checked BEFORE existence, so it never leaks whether a non-listed session
-   exists. **Both keys are LOCAL-FILE-ONLY** (`settings.LOCAL_ONLY_KEYS`):
-   they can only be changed by editing `~/.config/muxplex/settings.json` on
-   disk — `PATCH /api/settings` silently ignores them (with a warning log),
-   and they are deliberately NOT in `SYNCABLE_KEYS`. Rationale: the federation
-   Bearer key satisfies the shared auth on PATCH and is the SAME credential
-   handed to the remote agents that call `/input` — if these keys were
-   PATCHable, a Bearer-key holder could self-authorize typing into the
-   human's own panes. Widening the fence must be a local-operator action.
+   exists. **Both keys are `settings.LOCAL_ONLY_KEYS`**, default-DENIED to
+   the API and deliberately NOT in `SYNCABLE_KEYS`: `PATCH /api/settings`
+   silently ignores them (with a warning log) for a caller authorized
+   SOLELY by the federation Bearer key (`bearer_only` — see
+   `main._bearer_only_caller()`), and no federation peer's sync can ever
+   carry them. **They are also `settings.OPERATOR_SETTABLE_LOCAL_KEYS`**,
+   which narrows that default-deny: a caller authorized by a real operator
+   credential (a browser session cookie, or HTTP Basic) MAY set them
+   through `PATCH /api/settings` too, in addition to editing
+   `~/.config/muxplex/settings.json` on disk directly. Both remain
+   equally valid ways for the one already-trusted party (the operator) to
+   widen the fence; only a `bearer_only` caller is still fully blocked, for
+   both keys, on every path. Rationale unchanged: the federation Bearer key
+   satisfies the shared auth on PATCH and is the SAME credential handed to
+   the remote agents that call `/input` — if these keys were PATCHable *by
+   that credential*, a Bearer-key holder could self-authorize typing into
+   the human's own panes. Widening the fence must be an operator action —
+   it no longer has to be a *local-file* action specifically, but it can
+   never be a Bearer-only one.
 
    `session_commands` (a list of named create/kill pairs, each holding the same two
    arbitrary shell commands as `new_session_template`/`delete_session_template` below --

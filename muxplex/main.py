@@ -93,6 +93,7 @@ from muxplex.sessions import (
 )
 from muxplex.settings import (
     DEVICE_LABEL_PLACEMENTS,
+    OPERATOR_SETTABLE_LOCAL_KEYS,
     RESERVED_COMMAND_ID,
     DestructiveSettingsWriteRejected,
     InvalidViewRuleRejected,
@@ -3487,10 +3488,23 @@ async def update_settings(request: Request):
     Pass ``allow_destructive: true`` in the body (also popped before
     reaching ``patch_settings()``, same pattern as the CAS field) to perform
     an intentional bulk deletion.
+
+    Operator-settable local keys: ``input_enabled``/``input_allowed_sessions``
+    are normally in LOCAL_ONLY_KEYS and dropped unconditionally (see
+    ``patch_settings()``). This handler is the one caller that opens a
+    narrow, credential-gated exception -- mirroring ``rename_session()``'s
+    own use of ``_bearer_only_caller()``: a request authorized SOLELY by the
+    federation Bearer key (``bearer_only``) still gets the drop, exactly as
+    before; a request authorized by a real operator credential (a browser
+    session cookie, or HTTP Basic) may now set those two keys through this
+    endpoint. See ``settings.OPERATOR_SETTABLE_LOCAL_KEYS`` for the full
+    rationale. No other LOCAL_ONLY_KEYS member gets this carve-out.
     """
     body = await request.json()
     expected = body.pop("expected_settings_updated_at", None)
     allow_destructive = bool(body.pop("allow_destructive", False))
+    bearer_only = _bearer_only_caller(request)
+    allow_local_keys = frozenset() if bearer_only else OPERATOR_SETTABLE_LOCAL_KEYS
     if (
         "deviceLabelPlacement" in body
         and body["deviceLabelPlacement"] not in DEVICE_LABEL_PLACEMENTS
@@ -3524,7 +3538,11 @@ async def update_settings(request: Request):
                 },
             )
     try:
-        updated = patch_settings(body, allow_destructive=allow_destructive)
+        updated = patch_settings(
+            body,
+            allow_destructive=allow_destructive,
+            allow_local_keys=allow_local_keys,
+        )
     except InvalidViewRuleRejected as exc:
         # 400, not 409: the body is malformed, not conflicted -- retrying
         # with fresh settings cannot help, so a client must not treat this

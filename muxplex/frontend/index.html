@@ -515,8 +515,25 @@
               <div class="settings-federation-key">
                 <span id="federation-key-display" class="settings-key-display">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
                 <button id="federation-generate-btn" class="settings-action-btn">Generate Key</button>
+                <button id="federation-enable-typing-btn" type="button" class="settings-action-btn">Enable typing for this fleet</button>
               </div>
               <span class="settings-helper">Share this key with remote instances to allow federation access</span>
+            </div>
+            <div class="settings-field">
+              <label class="settings-label" for="setting-input-enabled">Agent Terminal Input</label>
+              <input type="checkbox" id="setting-input-enabled" class="settings-checkbox" />
+            </div>
+            <span class="settings-helper">
+              Lets remote/federation callers &mdash; including agents holding the federation
+              key &mdash; type into this host's terminal sessions. This is remote code
+              execution by design. Off by default; only an operator in this browser (never
+              a federation peer) can turn it on.
+            </span>
+            <div id="settings-input-allowed-sessions-field" class="settings-field--column hidden">
+              <label class="settings-label">Allowed sessions</label>
+              <div id="setting-input-allowed-sessions" class="settings-list-editor"></div>
+              <button id="add-input-allowed-session-btn" type="button" class="settings-action-btn">+ Add pattern</button>
+              <span class="settings-helper">Case-insensitive glob patterns naming which sessions may receive typed input &mdash; e.g. <code>*</code> for every session, or <code>agent-*</code> for a prefix family.</span>
             </div>
             <div class="settings-field settings-field--column">
               <label class="settings-label">Remote Instances</label>
@@ -674,6 +691,48 @@
           </div>
         </div>
       </div>
+    </div>
+  </dialog>
+
+  <!-- ── First-run welcome (one-time) ───────────────────────────────────────
+       Shown ONCE per browser, gated on the FIRSTRUN_STORAGE_KEY localStorage flag
+       ('muxplex_firstrun_seen') -- see _firstRunShouldShow()/_firstRunMaybeShow() in
+       app.js. Deliberately reuses the SAME split backdrop-div + native <dialog>
+       pattern as #settings-backdrop/#settings-dialog above (showModal() gives a
+       native focus trap and an Escape -> 'cancel' event for free), and borrows
+       .settings-backdrop / .settings-dialog-header / .settings-action-btn outright
+       rather than inventing a parallel modal component.
+
+       Its ONE job is to make the safety default discoverable: federation/agent
+       typing into this host's sessions is OFF out of the box (settings.py's
+       input_enabled default), and before this there was no way to learn that
+       except to try typing and collect a 403. All three buttons mark the flag
+       seen, so this never nags again whichever one is pressed -- including
+       "Not now", which changes nothing else. -->
+  <div id="firstrun-backdrop" class="settings-backdrop hidden"></div>
+  <dialog id="firstrun-dialog" class="firstrun-dialog" aria-labelledby="firstrun-title">
+    <div class="settings-dialog-header">
+      <h2 id="firstrun-title" class="settings-dialog-title">Welcome to muxplex</h2>
+    </div>
+    <div class="firstrun-body">
+      <p class="firstrun-lede">
+        You're set up. One thing worth knowing up front:
+      </p>
+      <p class="firstrun-lede">
+        <strong>Typing into this host's sessions from another device or an agent is
+        off by default.</strong> That's a deliberate safety default &mdash; anything
+        that can type into a terminal can run commands on this machine. Turning it
+        on lets any caller holding your federation key type into sessions here.
+      </p>
+      <p class="firstrun-lede">
+        Enable it now, look at the settings first, or leave it off and decide later.
+        This message won't appear again.
+      </p>
+    </div>
+    <div class="firstrun-actions">
+      <button id="firstrun-dismiss-btn" type="button" class="settings-action-btn">Not now</button>
+      <button id="firstrun-open-federation-btn" type="button" class="settings-action-btn">Open federation settings</button>
+      <button id="firstrun-enable-typing-btn" type="button" class="settings-action-btn firstrun-btn--primary">Enable typing for this fleet</button>
     </div>
   </dialog>
 

