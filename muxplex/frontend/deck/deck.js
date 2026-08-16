@@ -1913,6 +1913,7 @@ if (typeof document !== 'undefined') {
     var failedByName = {}; // name -> epoch ms the FAILED marker expires
     var pollTimer = null;
     var wakeSentinel = null;
+    var renderTimer = null;
 
     var mode = 'grid'; // 'grid' | 'picker' | 'settings'
     var pickerKind = 'view'; // 'view' | 'page' -- which generic-picker flavor is open
@@ -2571,10 +2572,27 @@ if (typeof document !== 'undefined') {
     }
 
     // Re-render on a fast tick so relative STATE ages stay current between
-    // polls, without re-fetching or rebuilding the grid.
-    setInterval(function () {
-      if (mode === 'grid' && grid && grid.rows > 0) render();
-    }, 1000);
+    // polls, without re-fetching or rebuilding the grid. Lifecycle-controlled
+    // (start/stop) rather than a bare unconditional setInterval -- a hidden
+    // (or occluded-but-not-hidden, see the visibilitychange handler's own
+    // caveat below) deck must not keep repainting every second; see
+    // app.js's identical "Visibility handling" section for the full
+    // beachball incident this closes.
+    function startRenderTicker() {
+      if (renderTimer) return;
+      renderTimer = setInterval(function () {
+        if (mode === 'grid' && grid && grid.rows > 0) render();
+      }, 1000);
+    }
+
+    function stopRenderTicker() {
+      if (renderTimer) {
+        clearInterval(renderTimer);
+        renderTimer = null;
+      }
+    }
+
+    startRenderTicker();
 
     // ── Tap dispatch ──
 
@@ -3289,10 +3307,12 @@ if (typeof document !== 'undefined') {
       if (document.hidden) {
         stopPolling();
         releaseWakeLock();
+        stopRenderTicker();
       } else {
         requestWakeLock();
         recomputeGrid();
         poll().then(schedulePoll);
+        startRenderTicker();
       }
     });
 
