@@ -436,23 +436,33 @@ ERROR:    Application startup failed. Exiting.
 Both exit `2`. With `Restart=on-failure`, systemd restart-loops it, so
 `is-active` may read `activating` rather than a clean `failed`.
 
-**What you see in the browser is nothing like either message.** The sidecar is
-simply absent, so muxplex's proxy emits an in-stream error naming *its* layer —
-`agent sidecar unreachable at http://127.0.0.1:9099` — which points at the
-network rather than at your key.
+**What you see in the browser** is the panel telling you exactly this. The
+sidecar is simply absent, so muxplex's proxy emits an in-stream error naming
+*its* layer — `agent sidecar unreachable at http://127.0.0.1:9099` — and the
+panel renders that as a visible error bubble:
 
-It is very likely worse than that. The panel's stream loop drops any SSE chunk
-carrying no `choices` (`muxplex/frontend/chat.js`, `if (!choice) continue;`),
-and muxplex's error frame carries exactly that shape — so the message above
-appears never to be rendered at all, leaving **a turn that ends with nothing**.
+> **Error: The agent sidecar isn't running.**
+> This is almost always a missing or invalid provider API key at sidecar
+> startup, not a network problem. Its own log names the exact reason -- on the
+> box running the sidecar: `journalctl -u amplifier-agent-http -n 50`
 
-> **Evidence note, so you can weigh this correctly.** The two sidecar startup
-> failures above were reproduced against a real sidecar and their log output is
-> quoted verbatim. This last paragraph is *not* — it is read off the two source
-> files, not observed in a browser, because confirming it means taking the
-> sidecar down on a shared box. Treat "renders as nothing" as a strong
-> prediction rather than a measurement; the two lines it rests on are cited so
-> you can check them yourself.
+That is the panel doing its job — you should not need the rest of this
+section for the common case above. Keep reading only if you want the full
+diagnosis or you hit a *different* stream-level error than this one.
+
+> **Fixed in muxplex-695, confirmed against a real browser.** Earlier versions
+> of the panel dropped any SSE chunk carrying no `choices`
+> (`muxplex/frontend/chat.js`'s stream loop), and this exact error frame
+> carries that shape — so the message above was silently discarded and the
+> turn ended with nothing rendered at all: no error, no explanation, just the
+> "Thinking..." status left on screen indefinitely. That was reproduced
+> against a genuinely stopped sidecar in a real browser (not inferred from
+> source), then fixed by handling any `error`-carrying frame in the stream
+> loop *before* the `choices` check — not just this one message, since the
+> proxy or the sidecar can each emit this shape for different underlying
+> causes. If you are running a panel old enough to predate that fix, the
+> symptom is a silent hang instead of the error box above; the diagnosis
+> command below is unchanged either way.
 
 Either way the diagnosis is the same and does not depend on which of those the
 panel does: `journalctl -u amplifier-agent-http`. The sidecar knows exactly
@@ -462,7 +472,7 @@ what is wrong; the panel is the wrong place to look.
 
 | What you see | Most likely cause | Fix |
 |---|---|---|
-| Turn ends silently, no reply, no error | Sidecar not running — almost always a key problem at startup | `journalctl -u amplifier-agent-http -n 50` |
+| "Error: The agent sidecar isn't running." | Sidecar not running — almost always a key problem at startup | `journalctl -u amplifier-agent-http -n 50` |
 | `HTTP 503 -- ...AMPLIFIER_AGENT_BEARER_TOKEN unset` | muxplex never loaded §5's env file | Check the drop-in; `systemctl restart muxplex` (heed §5's warning) |
 | `HTTP 401 ... Invalid API key` | Bearer mismatch between §3.4 and §5 | Make the two values byte-identical; restart both |
 | Every turn `400 unknown_model` | Panel's model id isn't served by the configured provider | §3.5 — compare `chat.js`'s `MODEL` against `GET /v1/models` |

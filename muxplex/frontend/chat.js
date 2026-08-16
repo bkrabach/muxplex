@@ -1426,6 +1426,13 @@
           " into " + sess,
       };
     }
+    // Sentinel used for a mid-stream SSE error frame (muxplex-695), not a
+    // real tool call -- give it a phrasing of its own so the generic
+    // fallback below ("Could not finish running __stream__.") never
+    // reaches the screen.
+    if (name === "__stream__") {
+      return { kind: "read", text: "Getting the agent's response" };
+    }
     return { kind: "read", text: "Running " + name };
   }
 
@@ -1520,6 +1527,25 @@
     var m403 = /HTTP 403/.test(msg);
     var m404 = /HTTP 404/.test(msg);
     var m5xx = /HTTP 5\d\d/.test(msg);
+
+    // A mid-stream SSE error frame (muxplex-695: name === "__stream__",
+    // see runTurn()'s `if (chunk.error)` handling). muxplex's own proxy
+    // names this exact phrase when the sidecar can't be reached at all --
+    // by far the most common cause is the sidecar failing to START (a bad
+    // or missing provider API key), not a live network problem, so say
+    // that plainly and point straight at the sidecar's own log instead of
+    // repeating the proxy's network-flavoured wording. See
+    // docs/AGENT_CHAT_SETUP.md \u00a77 for the full diagnosis; this message
+    // exists so reading that doc is not required for the common case.
+    if (name === "__stream__" && /agent sidecar unreachable/i.test(msg)) {
+      return {
+        headline: "The agent sidecar isn't running.",
+        remedy: "This is almost always a missing or invalid provider API key at " +
+          "sidecar startup, not a network problem. Its own log names the exact " +
+          "reason -- on the box running the sidecar: " +
+          "journalctl -u amplifier-agent-http -n 50",
+      };
+    }
 
     if (name === "send_muxplex_session_input" && m403) {
       // A 403 here is not a fault. It is a permission state with a known
@@ -2100,6 +2126,30 @@
 
         if (chunk.id && !sseChunkId) sseChunkId = chunk.id;
         capPush("sse_chunk", { chunk: chunk });
+
+        // A frame carrying `error` (and no `choices`) is a fatal,
+        // whole-turn failure -- either muxplex's proxy reporting its own
+        // layer (e.g. the sidecar unreachable) or the sidecar forwarding
+        // a provider error mid-stream. Both deliberately share this shape
+        // (see main.py's agent_chat_completions_proxy docstring: "mirrors
+        // the agent's own mid-stream error convention"). This must be
+        // handled BEFORE the `!choice` guard below -- previously it fell
+        // straight through that guard (an error frame has no `choices`)
+        // and the turn ended with nothing rendered at all (muxplex-695).
+        // Checked for ANY error frame, not just the sidecar-unreachable
+        // message: this is a general blind spot, and the proxy or the
+        // sidecar can each emit this shape for different causes.
+        if (chunk.error) {
+          var streamErrMsg = (chunk.error && chunk.error.message) ||
+            JSON.stringify(chunk.error);
+          capPush("request_error", {
+            sse_error: chunk.error,
+            duration_ms: Math.round(performance.now() - requestStartedAt),
+          });
+          clearStatus();
+          appendToolError("__stream__", streamErrMsg);
+          return;
+        }
 
         var choice = chunk.choices && chunk.choices[0];
         if (!choice) continue;
