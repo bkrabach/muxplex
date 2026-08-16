@@ -32,7 +32,20 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        # `--extra agent` installs amplifier-agent (muxplex/agent_embedded/,
+        # see pyproject.toml's `agent` extra) so
+        # test_agent_credential_embedded.py's non-schema tests exercise the
+        # real provider-loading code path instead of raising
+        # ModuleNotFoundError -- that file's own header comment already
+        # assumed this happened; it never actually did until now (no job in
+        # this workflow installed the extra). Effectively a no-op on this
+        # matrix's 3.11 leg: the `agent` extra's `python_version>='3.12'`
+        # marker means uv installs nothing for it there, since
+        # amplifier-agent itself requires Python >=3.12 -- that test file's
+        # own `needs_amplifier_agent_cli` guard skips cleanly on 3.11 rather
+        # than failing, which is a real, permanent constraint, not a gap
+        # this step can close.
+        run: uv sync --extra dev --extra agent
 
       - name: Run tests
         run: uv run pytest -v
@@ -122,7 +135,11 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        # See the `test` job's identical step for the full rationale. This
+        # runner is always Python 3.13, which always satisfies
+        # amplifier-agent's `python_version>='3.12'` floor, so `--extra
+        # agent` always installs for real here.
+        run: uv sync --extra dev --extra agent
 
       - name: Run tests
         run: uv run pytest -v
@@ -215,9 +232,12 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies (fresh resolve, no lock -- mirrors `uv tool install`)
+        # `.[dev,agent]`, not just `.[dev]` -- see the `test` job's identical
+        # rationale. This runner is Python 3.13, which always satisfies
+        # amplifier-agent's `python_version>='3.12'` floor.
         run: |
           uv venv .venv-latest --python 3.13
-          uv pip install --python .venv-latest/bin/python -e ".[dev]"
+          uv pip install --python .venv-latest/bin/python -e ".[dev,agent]"
           .venv-latest/bin/python -c "import uvicorn, websockets; print('uvicorn', uvicorn.__version__); print('websockets', websockets.__version__)"
 
       - name: Run tests
