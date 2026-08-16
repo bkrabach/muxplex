@@ -201,8 +201,20 @@ def test_get_view_filters_by_group(client):
 # ---------------------------------------------------------------------------
 
 
-def test_heartbeat_rejects_someone_elses_group(client):
+def test_heartbeat_unknown_foreign_device_is_target_gone_not_400(client):
+    """Step 2 (docs/plans/2026-08-16-deck-control-target-design.md §8.1 #1/#5)
+    relaxed validation to accept ANY known device as a foreign target --
+    an UNKNOWN one is now 409 target_gone, not the old blanket 400 (the
+    pre-Step-2 behavior rejected every foreign target regardless of whether
+    it existed; this is the intended behavior change, not a regression)."""
     res = _heartbeat(client, "d1", "device:some-other-device")
+    assert res.status_code == 409
+    detail = res.json()["detail"]
+    assert detail["target_gone"] is True
+
+
+def test_heartbeat_malformed_sync_group_is_400(client):
+    res = _heartbeat(client, "d1", "not-a-real-group")
     assert res.status_code == 400
 
 
@@ -321,3 +333,168 @@ def test_delete_current_owner_kills_ttyd(monkeypatch, client):
     # /connect writes them and the poll cycle clears them if the session vanishes.
     state = client.get("/api/state").json()
     assert state["terminal_session"] == "sessX"
+
+
+# ---------------------------------------------------------------------------
+# Step 2 (docs/plans/2026-08-16-deck-control-target-design.md):
+# pairing to a foreign device's group, the cycle guard, target_gone, and
+# PATCH /api/devices
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_can_follow_a_known_foreign_device(client):
+    """§8.1 #1's relaxation: any KNOWN device's group is now a legal target,
+    not just your own."""
+    _heartbeat(client, "B", "device:B")  # B self-claims first
+    res = _heartbeat(client, "A", "device:B")
+    assert res.status_code == 200
+    assert res.json()["sync_group"] == "device:B"
+
+
+def test_heartbeat_following_sets_controlled_by_visible_via_get_state(client):
+    """§8.1 #2/#9: controlled_by is set on the followed device and shows up
+    in GET /api/state's devices registry."""
+    _heartbeat(client, "B", "device:B")
+    _heartbeat(client, "A", "device:B")
+
+    state = client.get("/api/state").json()
+    assert state["devices"]["B"]["controlled_by"] == "A"
+    assert state["devices"]["A"]["controlled_by"] is None
+
+
+def test_heartbeat_follow_target_that_never_registered_is_target_gone(client):
+    res = _heartbeat(client, "A", "device:ghost")
+    assert res.status_code == 409
+    assert res.json()["detail"]["target_gone"] is True
+
+
+def test_heartbeat_follow_target_pruned_after_being_followed_is_target_gone(client):
+    """§7.1/§6.2.4: the deck lifecycle case -- a previously-known target
+    vanishes from the registry (simulated directly here; the DTU proof
+    script exercises the real TTL path end-to-end)."""
+    _heartbeat(client, "B", "device:B")
+    _heartbeat(client, "A", "device:B")
+
+    # Simulate B's prune (localStorage wipe / TTL expiry) by removing it
+    # directly from the persisted registry.
+    from muxplex.state import load_state, save_state
+
+    state = load_state()
+    del state["devices"]["B"]
+    save_state(state)
+
+    res = _heartbeat(client, "A", "device:B")
+    assert res.status_code == 409
+    assert res.json()["detail"]["target_gone"] is True
+
+
+def test_heartbeat_cycle_attempt_rejected_with_target_not_self_owning(client):
+    """§6.2.5/§7.0(b)/§8.1 #8: A follows B (B.controlled_by == A). B then
+    tries to follow anyone (here, a third device C) -- rejected, because B
+    is itself currently followed by A. This is the two-party cycle guard;
+    naming the follower (A) in the error detail lets a caller explain the
+    rejection without a follow-up read."""
+    _heartbeat(client, "B", "device:B")
+    _heartbeat(client, "C", "device:C")
+    _heartbeat(client, "A", "device:B")  # A follows B
+
+    res = _heartbeat(client, "B", "device:C")  # B tries to follow C
+    assert res.status_code == 400
+    detail = res.json()["detail"]
+    assert detail["target_not_self_owning"] is True
+    assert detail["controlled_by"] == "A"
+
+    # No group corruption: B's sync_group is unchanged, C's controlled_by
+    # untouched, and the attempted mutation never landed.
+    state = client.get("/api/state").json()
+    assert state["devices"]["B"]["sync_group"] == "device:B"
+    assert state["devices"]["C"]["controlled_by"] is None
+
+
+def test_heartbeat_followed_device_can_still_reaffirm_its_own_self_claim(client):
+    """The guard must not block the followed device from continuing to
+    self-claim its OWN group on every subsequent heartbeat -- only claiming
+    a FOREIGN target while followed is rejected (§7.0(b): "cannot claim a
+    foreign group"). Decks resend their current sync_group on every poll
+    tick (§6.2.4), so this must keep working once someone follows them."""
+    _heartbeat(client, "B", "device:B")
+    _heartbeat(client, "A", "device:B")  # A follows B
+
+    res = _heartbeat(client, "B", "device:B")  # B reaffirms its own claim
+    assert res.status_code == 200
+    assert res.json()["sync_group"] == "device:B"
+
+
+def test_heartbeat_followed_device_can_still_return_to_global(client):
+    _heartbeat(client, "B", "device:B")
+    _heartbeat(client, "A", "device:B")
+
+    res = _heartbeat(client, "B", "global")
+    assert res.status_code == 200
+    assert res.json()["sync_group"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# Step 2 (§8.1 #3/#7): PATCH /api/devices/{device_id}
+# ---------------------------------------------------------------------------
+
+
+def test_patch_device_sets_display_name(client):
+    _heartbeat(client, "d1")
+    res = client.patch("/api/devices/d1", json={"display_name": "My iPad"})
+    assert res.status_code == 200
+    assert res.json()["display_name"] == "My iPad"
+
+    state = client.get("/api/state").json()
+    assert state["devices"]["d1"]["display_name"] == "My iPad"
+
+
+def test_patch_device_unknown_device_404(client):
+    res = client.patch("/api/devices/nope", json={"display_name": "X"})
+    assert res.status_code == 404
+
+
+def test_patch_device_display_name_survives_next_heartbeat(client):
+    """§8.1 #7: display_name is never clobbered by a heartbeat -- the exact
+    §2.2 clobber this endpoint exists to fix."""
+    _heartbeat(client, "d1")
+    client.patch("/api/devices/d1", json={"display_name": "My iPad"})
+
+    _heartbeat(client, "d1")  # a plain, ordinary heartbeat -- label churns
+
+    state = client.get("/api/state").json()
+    assert state["devices"]["d1"]["display_name"] == "My iPad"
+    assert state["devices"]["d1"]["label"] == "test"  # label still self-reported
+
+
+def test_patch_device_empty_body_is_a_noop(client):
+    _heartbeat(client, "d1")
+    client.patch("/api/devices/d1", json={"display_name": "My iPad"})
+
+    res = client.patch("/api/devices/d1", json={})
+    assert res.status_code == 200
+    assert res.json()["display_name"] == "My iPad"
+
+
+# ---------------------------------------------------------------------------
+# Regression armor: the new validation/guard code must not alter behavior
+# for a device that never sends sync_group at all (the six endpoints'
+# existing no-device_id armor already covers "no device_id"; this covers
+# "a device_id, but sync_group omitted entirely" -- which every legacy
+# client that predates any of Step 1/2 already does).
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_without_sync_group_field_is_untouched_by_new_validation(client):
+    res = client.post(
+        "/api/heartbeat",
+        json={
+            "device_id": "legacy1",
+            "label": "old client",
+            "viewing_session": None,
+            "view_mode": "grid",
+            "last_interaction_at": 0.0,
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["sync_group"] == "global"

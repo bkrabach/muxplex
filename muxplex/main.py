@@ -115,6 +115,7 @@ from muxplex.state import (
     device_group_id,
     empty_bell,
     gc_sync_groups,
+    group_target_device_id,
     load_state,
     prune_devices,
     read_group_state,
@@ -1238,6 +1239,17 @@ class HeartbeatPayload(BaseModel):
     view_mode: Literal["grid", "fullscreen"]
     last_interaction_at: float
     sync_group: str | None = None
+
+
+class DevicePatchPayload(BaseModel):
+    """Body for PATCH /api/devices/{device_id} (§8.1 #3, #7).
+
+    Only `display_name` today -- deliberately NOT `kind` (that field is
+    absent-safe deferred per docs/plans/2026-08-16-deck-control-target-design.md
+    §8.1's own note; this step never adds it server-side).
+    """
+
+    display_name: str | None = None
 
 
 class CreateSessionPayload(BaseModel):
@@ -3302,19 +3314,46 @@ async def rename_session(
 async def heartbeat(payload: HeartbeatPayload) -> dict:
     """Register or update a device heartbeat.
 
-    Acquires state_lock, loads state, calls register_device() with payload
-    fields, saves state.
+    Acquires state_lock, loads state, validates payload.sync_group against
+    the current registry, calls register_device() with payload fields,
+    saves state.
 
     payload.sync_group (optional) selects the device's sync group:
         None                                  -> leave unchanged
         "global"                              -> OK
-        f"device:{payload.device_id}"         -> OK (the device's own group)
-        anything else                         -> 400
+        f"device:{payload.device_id}"         -> OK (the device's own group,
+                                                  a self-claim)
+        f"device:{other known device_id}"     -> OK (Step 2 relaxation --
+                                                  docs/plans/2026-08-16-deck-control-target-design.md
+                                                  §8.1 #1 -- pairing to a
+                                                  foreign device's group),
+                                                  subject to the self-owning
+                                                  guard below
+        f"device:{unknown/pruned device_id}"  -> 409, body
+                                                  {"detail": {"target_gone":
+                                                  true, ...}} (§8.1 #5 --
+                                                  the deck-lifecycle case,
+                                                  §6.2.4/§7.1: the deck keeps
+                                                  resending a target that got
+                                                  pruned)
+        anything else (malformed)              -> 400
 
-    Rejecting `device:<someone-else>` today is the tight-then-widen choice:
-    allowing it would ship untested surface with no consumer; relaxing this
-    later (pairing a deck to a browser's group) is purely additive and
-    needs no schema change.
+    Self-owning / cycle guard (§6.2.5, §7.0(b), §8.1 #8): a device that is
+    itself currently followed (its own `controlled_by` is non-null) may not
+    claim a FOREIGN group -- doing so is exactly the two-party follow cycle
+    §6.2.5 describes (A follows B, B tries to follow A back). Rejected with
+    400, body {"detail": {"target_not_self_owning": true, "controlled_by":
+    <follower device_id>, ...}}. A device being followed may still
+    self-claim its own group or return to "global" -- only claiming
+    *someone else's* group while being followed is blocked, so a device
+    that's already self-claimed (the normal case for something worth
+    following) can keep resending that same self-claim on every heartbeat
+    without tripping this guard.
+
+    `controlled_by` bookkeeping (§8.1 #2) happens inside register_device():
+    the previously-followed device (if any) has its `controlled_by`
+    cleared, and the newly-followed device (if any) has `controlled_by` set
+    to this device's id.
 
     Group creation happens here and only here (via register_device() ->
     ensure_group()), one site, seeded from global.
@@ -3322,17 +3361,49 @@ async def heartbeat(payload: HeartbeatPayload) -> dict:
     Returns {device_id: str, status: 'ok', sync_group: str}.
     Missing device_id or invalid view_mode returns 422 (handled by Pydantic).
     """
-    if payload.sync_group is not None and payload.sync_group not in (
-        GLOBAL_GROUP,
-        device_group_id(payload.device_id),
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="sync_group must be 'global' or 'device:<own device_id>'",
-        )
+    requested = payload.sync_group
+    own_group = device_group_id(payload.device_id)
 
     async with state_lock:
         state = load_state()
+
+        if requested is not None and requested not in (GLOBAL_GROUP, own_group):
+            target_id = group_target_device_id(requested)
+            if target_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "sync_group must be 'global' or 'device:<a known device_id>'"
+                    ),
+                )
+
+            existing = state["devices"].get(payload.device_id)
+            follower = existing.get("controlled_by") if existing else None
+            if follower is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "target_not_self_owning": True,
+                        "controlled_by": follower,
+                        "message": (
+                            f"device {payload.device_id!r} cannot follow "
+                            f"another device while {follower!r} is "
+                            "following it"
+                        ),
+                    },
+                )
+            if target_id not in state["devices"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "target_gone": True,
+                        "sync_group": requested,
+                        "message": (
+                            f"target device for {requested!r} is not registered"
+                        ),
+                    },
+                )
+
         register_device(
             state,
             device_id=payload.device_id,
@@ -3340,7 +3411,7 @@ async def heartbeat(payload: HeartbeatPayload) -> dict:
             viewing_session=payload.viewing_session,
             view_mode=payload.view_mode,
             last_interaction_at=payload.last_interaction_at,
-            sync_group=payload.sync_group,
+            sync_group=requested,
         )
         resolved_group = state["devices"][payload.device_id]["sync_group"]
         save_state(state)
@@ -3350,6 +3421,50 @@ async def heartbeat(payload: HeartbeatPayload) -> dict:
         "status": "ok",
         "sync_group": resolved_group,
     }
+
+
+@app.patch("/api/devices/{device_id}")
+async def patch_device(device_id: str, patch: DevicePatchPayload) -> dict:
+    """Set a device's human-assigned display_name (§8.1 #3, #7).
+
+    `display_name` is distinct from `label`: `label` is the client's own
+    self-report, clobbered on every heartbeat (register_device() always
+    overwrites it); `display_name` is the human's override, set only here,
+    and register_device() never touches it -- so a rename survives the
+    device's next heartbeat instead of being clobbered within 5s (the
+    §2.2 problem this endpoint exists to fix).
+
+    Local-only, by design: this never proxies to a federation peer (§4.3
+    REV3, §8.1's "Deliberately NOT built" note) -- renaming a device
+    registered on a DIFFERENT server requires talking to that server
+    directly.
+
+    Only fields explicitly present in the request body are changed
+    (matches patch_state()'s `model_fields_set` convention) -- an empty
+    body `{}` is a no-op read, not a reset to null.
+
+    404 if *device_id* is not currently registered (same convention as
+    _resolve_group_or_404, though this never proxies so there is no group
+    to resolve -- just a direct membership check).
+
+    Returns {"device_id": str, "display_name": str | None}.
+    """
+    async with state_lock:
+        state = load_state()
+        device = state["devices"].get(device_id)
+        if device is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown device_id {device_id!r}; send POST /api/heartbeat first",
+            )
+
+        if "display_name" in patch.model_fields_set:
+            device["display_name"] = patch.display_name
+
+        save_state(state)
+        display_name = device["display_name"]
+
+    return {"device_id": device_id, "display_name": display_name}
 
 
 @app.post("/api/sessions/{name}/bell")
@@ -5453,7 +5568,9 @@ def _agent_bearer_headers() -> dict[str, str]:
     empty ``Authorization: Bearer `` header is illegal and would make the
     sidecar appear unreachable -- see the identical guard convention this
     file already uses for the federation Bearer header)."""
-    return {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
+    return (
+        {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
+    )
 
 
 async def _agent_provider_served(provider: str) -> bool | None:
@@ -5769,7 +5886,9 @@ async def post_agent_provider_credential(
             )
 
         # verdict == "ok" -- write for real, no scratch home this time.
-        rc, _out, err = await _run_agent_cli(["auth", "set", provider, "--stdin"], stdin_text=api_key)
+        rc, _out, err = await _run_agent_cli(
+            ["auth", "set", provider, "--stdin"], stdin_text=api_key
+        )
         if rc != 0:
             raise HTTPException(
                 status_code=500,
