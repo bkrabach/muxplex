@@ -27,6 +27,7 @@ from .models import (
     FocusResult,
     FollowupItem,
     FollowupQueue,
+    HeartbeatResult,
     InputResult,
     InstanceInfo,
     RenameResult,
@@ -38,7 +39,7 @@ from .models import (
     ViewResult,
 )
 from .sentinel import make_sentinel
-from .sync_client import _extract_detail
+from .sync_client import _extract_detail, _extract_detail_obj
 
 
 class AsyncMuxplexClient:
@@ -106,6 +107,7 @@ class AsyncMuxplexClient:
                 path,
                 _extract_detail(response),
                 session_name=session_name,
+                detail_obj=_extract_detail_obj(response),
             )
         return response.json()
 
@@ -127,14 +129,27 @@ class AsyncMuxplexClient:
             )
         )
 
-    async def view(self, *, sort: str | None = None) -> ViewResult:
-        params = {"sort": sort} if sort is not None else None
+    async def view(
+        self, *, sort: str | None = None, device_id: str | None = None
+    ) -> ViewResult:
+        """See `sync_client.MuxplexClient.view` for the full `device_id`
+        rationale -- identical here, `await`-shaped."""
+        params: dict[str, Any] = {}
+        if sort is not None:
+            params["sort"] = sort
+        if device_id is not None:
+            params["device_id"] = device_id
         return protocol.parse_view_result(
-            await self._request("GET", "/api/view", params=params)
+            await self._request("GET", "/api/view", params=params or None)
         )
 
-    async def state(self) -> ServerState:
-        return protocol.parse_server_state(await self._request("GET", "/api/state"))
+    async def state(self, *, device_id: str | None = None) -> ServerState:
+        """See `sync_client.MuxplexClient.state` for the full `device_id`
+        rationale -- identical here, `await`-shaped."""
+        params = {"device_id": device_id} if device_id is not None else None
+        return protocol.parse_server_state(
+            await self._request("GET", "/api/state", params=params)
+        )
 
     async def settings(self) -> Settings:
         return protocol.parse_settings(await self._request("GET", "/api/settings"))
@@ -200,15 +215,63 @@ class AsyncMuxplexClient:
                 return False
             await asyncio.sleep(interval)
 
-    async def connect(self, name: str) -> ConnectResult:
+    async def connect(
+        self, name: str, *, device_id: str | None = None
+    ) -> ConnectResult:
+        """POST /api/sessions/{name}/connect.
+
+        See `sync_client.MuxplexClient.connect` for the full `device_id`
+        rationale (including why "active_session is server-global" is no
+        longer unconditionally true) -- identical here, `await`-shaped.
+        """
+        params = {"device_id": device_id} if device_id is not None else None
         return protocol.parse_connect_result(
             await self._request(
-                "POST", f"/api/sessions/{name}/connect", session_name=name
+                "POST",
+                f"/api/sessions/{name}/connect",
+                params=params,
+                session_name=name,
             )
         )
 
-    async def set_active_view(self, view: str) -> None:
-        await self._request("PATCH", "/api/state", json={"active_view": view})
+    async def set_active_view(self, view: str, *, device_id: str | None = None) -> None:
+        """See `sync_client.MuxplexClient.set_active_view` for the full
+        `device_id` rationale -- identical here, `await`-shaped."""
+        params = {"device_id": device_id} if device_id is not None else None
+        await self._request(
+            "PATCH", "/api/state", params=params, json={"active_view": view}
+        )
+
+    async def heartbeat(
+        self,
+        *,
+        device_id: str,
+        label: str,
+        viewing_session: str | None = None,
+        view_mode: str = "grid",
+        last_interaction_at: float = 0.0,
+        sync_group: str | None = None,
+        kind: str | None = None,
+    ) -> HeartbeatResult:
+        """POST /api/heartbeat -- see `sync_client.MuxplexClient.heartbeat`
+        for the full rationale (required-vs-optional wire fields,
+        `sync_group`/`kind` omission semantics) -- identical here,
+        `await`-shaped.
+        """
+        body: dict[str, Any] = {
+            "device_id": device_id,
+            "label": label,
+            "viewing_session": viewing_session,
+            "view_mode": view_mode,
+            "last_interaction_at": last_interaction_at,
+        }
+        if sync_group is not None:
+            body["sync_group"] = sync_group
+        if kind is not None:
+            body["kind"] = kind
+        return protocol.parse_heartbeat_result(
+            await self._request("POST", "/api/heartbeat", json=body)
+        )
 
     # ---- input ----
 

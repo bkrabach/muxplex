@@ -66,6 +66,46 @@ class ApiError(MuxplexError):
         super().__init__(f"HTTP {status}: {detail}")
 
 
+class TargetGoneError(ApiError):
+    """409 from POST /api/heartbeat -- the device's claimed sync-group
+    target no longer exists (its owning device was pruned).
+
+    See docs/plans/2026-08-16-deck-control-target-design.md §7.1/§8.1 #5:
+    the caller should fall back to `sync_group="global"` and re-send the
+    heartbeat. Fixed at status 409 (unlike the generic `ApiError`, which
+    takes any status) because this type IS the 409 case -- constructed
+    with only `detail`.
+
+    Not raised by any server today (the `target_gone` response shape is
+    Step 2 of that design, not yet built) -- this type exists so the
+    client recognizes it the moment a server starts sending it, with no
+    follow-up client release required. Until then, `map_status_error()`
+    never constructs this and a 409 heartbeat response maps to the
+    generic `ApiError(409, ...)` exactly as it does today.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(409, detail)
+
+
+class TargetNotSelfOwningError(ApiError):
+    """400 from POST /api/heartbeat -- the requested target device is
+    itself already following someone else (a follow-cycle attempt).
+
+    See docs/plans/2026-08-16-deck-control-target-design.md §6.2.5/§7.0(b)/
+    §8.1 #8. Fixed at status 400, constructed with only `detail`.
+
+    Not raised by any server today (the `target_not_self_owning` response
+    shape is Step 2 of that design, not yet built) -- see
+    `TargetGoneError`'s docstring for the same forward-compatibility
+    rationale. Until then, a 400 heartbeat response maps to the generic
+    `ApiError(400, ...)` exactly as it does today.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(400, detail)
+
+
 class CommandTimeout(MuxplexError):
     """`run_shell_command()` did not observe the completion sentinel in time."""
 

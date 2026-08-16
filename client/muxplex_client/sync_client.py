@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Callable, Self, Sequence
+from typing import Any, Callable, Mapping, Self, Sequence
 
 import httpx
 
@@ -22,6 +22,7 @@ from .models import (
     FocusResult,
     FollowupItem,
     FollowupQueue,
+    HeartbeatResult,
     InputResult,
     InstanceInfo,
     RenameResult,
@@ -106,6 +107,7 @@ class MuxplexClient:
                 path,
                 _extract_detail(response),
                 session_name=session_name,
+                detail_obj=_extract_detail_obj(response),
             )
         return response.json()
 
@@ -128,16 +130,41 @@ class MuxplexClient:
             )
         )
 
-    def view(self, *, sort: str | None = None) -> ViewResult:
-        """GET /api/view -- the server-resolved current view."""
-        params = {"sort": sort} if sort is not None else None
+    def view(
+        self, *, sort: str | None = None, device_id: str | None = None
+    ) -> ViewResult:
+        """GET /api/view -- the server-resolved current view.
+
+        `device_id` (optional): passed as `?device_id=`, same semantics
+        as `state()`'s -- see that method's docstring. Omitted (the
+        default) is byte-identical to a pre-pairing request.
+        """
+        params: dict[str, Any] = {}
+        if sort is not None:
+            params["sort"] = sort
+        if device_id is not None:
+            params["device_id"] = device_id
         return protocol.parse_view_result(
-            self._request("GET", "/api/view", params=params)
+            self._request("GET", "/api/view", params=params or None)
         )
 
-    def state(self) -> ServerState:
-        """GET /api/state."""
-        return protocol.parse_server_state(self._request("GET", "/api/state"))
+    def state(self, *, device_id: str | None = None) -> ServerState:
+        """GET /api/state.
+
+        `device_id` (optional): passed as `?device_id=`, selecting which
+        sync group's active_session/active_remote_id/active_view is
+        projected into the response and echoed back as `sync_group` --
+        see main.py's `get_state()` docstring and
+        docs/plans/2026-08-16-deck-control-target-design.md §8.3. Omitted
+        (the default) is byte-identical to a pre-pairing request: the
+        shared "global" group. An unknown `device_id` 404s (mapped to
+        `SessionNotFound`, same as every other `?device_id=` endpoint --
+        see `connect()`).
+        """
+        params = {"device_id": device_id} if device_id is not None else None
+        return protocol.parse_server_state(
+            self._request("GET", "/api/state", params=params)
+        )
 
     def settings(self) -> Settings:
         """GET /api/settings."""
@@ -235,22 +262,101 @@ class MuxplexClient:
                 return False
             time.sleep(interval)
 
-    def connect(self, name: str) -> ConnectResult:
+    def connect(self, name: str, *, device_id: str | None = None) -> ConnectResult:
         """POST /api/sessions/{name}/connect.
 
-        WARNING: active_session is server-global. This moves the human's
-        browser view too.
+        WARNING: without `device_id`, active_session is server-global --
+        this moves every tab watching the shared "global" group, and (as
+        of pairing, docs/plans/2026-08-16-deck-control-target-design.md)
+        that is no longer unconditionally true for every caller: with
+        `device_id` set, this instead moves whichever group that device
+        resolves to (its own paired group, once pairing exists), leaving
+        the shared "global" group untouched. Omitted (the default) is
+        byte-identical to a pre-pairing request -- see main.py's
+        `connect_session()` docstring and §8.3.
         """
+        params = {"device_id": device_id} if device_id is not None else None
         return protocol.parse_connect_result(
-            self._request("POST", f"/api/sessions/{name}/connect", session_name=name)
+            self._request(
+                "POST",
+                f"/api/sessions/{name}/connect",
+                params=params,
+                session_name=name,
+            )
         )
 
-    def set_active_view(self, view: str) -> None:
+    def set_active_view(self, view: str, *, device_id: str | None = None) -> None:
         """PATCH /api/state {"active_view": view}.
 
-        WARNING: active_view is server-global, last-writer-wins.
+        WARNING: without `device_id`, active_view is server-global,
+        last-writer-wins. With `device_id` set, the write targets that
+        device's resolved group instead -- see main.py's `patch_state()`
+        docstring. Omitted (the default) is byte-identical to a
+        pre-pairing request.
         """
-        self._request("PATCH", "/api/state", json={"active_view": view})
+        params = {"device_id": device_id} if device_id is not None else None
+        self._request("PATCH", "/api/state", params=params, json={"active_view": view})
+
+    def heartbeat(
+        self,
+        *,
+        device_id: str,
+        label: str,
+        viewing_session: str | None = None,
+        view_mode: str = "grid",
+        last_interaction_at: float = 0.0,
+        sync_group: str | None = None,
+        kind: str | None = None,
+    ) -> HeartbeatResult:
+        """POST /api/heartbeat -- register or refresh this client's presence.
+
+        `device_id`/`label` are the only fields with no wire default;
+        `viewing_session`/`view_mode`/`last_interaction_at` are always
+        sent (they are required, non-optional fields on the server's
+        `HeartbeatPayload` today -- omitting them would 422, not fall
+        back to a default), so a caller that only wants "I exist, please
+        don't prune me" can rely on this method's own defaults for all
+        three.
+
+        `sync_group` (optional): `None` (the default) OMITS the key
+        entirely -- meaning "leave my group unchanged" server-side, the
+        common heartbeat-refresh case, and byte-identical to a
+        pre-pairing request. The only other values the server accepts
+        today are `"global"` or `f"device:{device_id}"` (self-claim
+        only); anything else 400s -- see main.py's `heartbeat()`
+        docstring.
+
+        `kind` (optional): declares the calling client's category
+        (`"browser"`/`"deck"`/`"soft-deck"` --
+        docs/plans/2026-08-16-deck-control-target-design.md §8.1 #6).
+        `None` (the default) OMITS the key entirely rather than sending
+        `null`, so a server predating this field never sees an
+        unrecognized key at all. §8.2's version-tolerance table flags
+        this as genuinely uncertain either way (`HeartbeatPayload` is a
+        plain `BaseModel`, and its extra-field behavior against an
+        unknown key has not been verified against a real pre-`kind`
+        server) -- omitting entirely sidesteps the question rather than
+        relying on it being ignored.
+
+        Returns a `HeartbeatResult` whose `sync_group` is the group the
+        device is ACTUALLY in after this call, which may differ from the
+        one requested (e.g. `sync_group=None` reports the group left
+        unchanged, not `None` itself).
+        """
+        body: dict[str, Any] = {
+            "device_id": device_id,
+            "label": label,
+            "viewing_session": viewing_session,
+            "view_mode": view_mode,
+            "last_interaction_at": last_interaction_at,
+        }
+        if sync_group is not None:
+            body["sync_group"] = sync_group
+        if kind is not None:
+            body["kind"] = kind
+        return protocol.parse_heartbeat_result(
+            self._request("POST", "/api/heartbeat", json=body)
+        )
 
     # ---- input ----
 
@@ -471,3 +577,24 @@ def _extract_detail(response: httpx.Response) -> str:
     except Exception:
         pass
     return response.text
+
+
+def _extract_detail_obj(response: httpx.Response) -> Mapping[str, Any] | None:
+    """Best-effort extraction of a dict-shaped FastAPI `detail` payload.
+
+    Distinct from `_extract_detail()` (always stringifies): a structured
+    error carries a `detail` that is itself a dict with a discriminator
+    key (`target_gone`, `target_not_self_owning` -- see
+    `_protocol.map_status_error()`'s docstring) that must survive as a
+    real mapping, not `str(dict)`, for that function to inspect. Returns
+    `None` for a plain string detail, a non-JSON body, or a body that
+    isn't a dict -- callers must treat `None` as "no structured detail
+    available," never raise.
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return None
+    if isinstance(body, dict) and isinstance(body.get("detail"), dict):
+        return body["detail"]
+    return None

@@ -16,7 +16,15 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from .constants import DEFAULT_CAPTURE_LINES
-from .errors import ApiError, AuthError, InputForbidden, MuxplexError, SessionNotFound
+from .errors import (
+    ApiError,
+    AuthError,
+    InputForbidden,
+    MuxplexError,
+    SessionNotFound,
+    TargetGoneError,
+    TargetNotSelfOwningError,
+)
 from .models import (
     Bell,
     ConnectResult,
@@ -24,6 +32,7 @@ from .models import (
     FollowupItem,
     FollowupQueue,
     Followups,
+    HeartbeatResult,
     InputResult,
     InstanceInfo,
     RenameResult,
@@ -47,6 +56,7 @@ __all__ = [
     "parse_followup_item",
     "parse_followup_queue",
     "parse_followups",
+    "parse_heartbeat_result",
     "parse_input_result",
     "parse_instance_info",
     "parse_rename_result",
@@ -163,6 +173,11 @@ def parse_server_state(raw: Mapping[str, Any]) -> ServerState:
         active_session=raw.get("active_session"),
         active_view=raw.get("active_view") or "all",
         settings_updated_at=raw.get("settings_updated_at"),
+        # Additive, all via .get() -- a pre-feature server that omits any
+        # (or all) of these parses cleanly. See ServerState's docstring.
+        sync_group=raw.get("sync_group"),
+        controlled_by=raw.get("controlled_by"),
+        active_remote_id=raw.get("active_remote_id"),
         raw=raw,
     )
 
@@ -200,6 +215,14 @@ def parse_connect_result(raw: Mapping[str, Any]) -> ConnectResult:
     return ConnectResult(
         active_session=raw["active_session"],
         ttyd_port=int(raw["ttyd_port"]),
+    )
+
+
+def parse_heartbeat_result(raw: Mapping[str, Any]) -> HeartbeatResult:
+    return HeartbeatResult(
+        device_id=raw["device_id"],
+        status=raw.get("status", "ok"),
+        sync_group=raw.get("sync_group", "global"),
     )
 
 
@@ -285,10 +308,20 @@ def map_status_error(
     detail: str,
     *,
     session_name: str | None = None,
+    detail_obj: Mapping[str, Any] | None = None,
 ) -> MuxplexError:
     """Map an HTTP error status + path to the matching MuxplexError subclass.
 
     Rules (applied in order):
+      - 409 with a structured `detail_obj` carrying a truthy `target_gone`
+        -> TargetGoneError. 400 with a truthy `target_not_self_owning`
+        -> TargetNotSelfOwningError. See
+        docs/plans/2026-08-16-deck-control-target-design.md §8.1 #5/#8 --
+        neither shape exists on any server today (that's Step 2 of the
+        design), so `detail_obj` is `None` for every response seen in
+        practice today and these two branches never fire yet. A caller
+        (e.g. `heartbeat()`) not carrying either discriminator falls
+        straight through to the unchanged rules below.
       - 401 -> AuthError (credential rejected).
       - 403 from a path ending in "/input" -> InputForbidden (the operator's
         allowlist fence, NOT a bad credential).
@@ -298,6 +331,14 @@ def map_status_error(
         poll cache rather than a real failure).
       - Anything else -> ApiError(status, detail).
     """
+    if status == 409 and detail_obj is not None and detail_obj.get("target_gone"):
+        return TargetGoneError(detail)
+    if (
+        status == 400
+        and detail_obj is not None
+        and detail_obj.get("target_not_self_owning")
+    ):
+        return TargetNotSelfOwningError(detail)
     if status == 401:
         return AuthError(detail)
     if status == 403:

@@ -36,6 +36,8 @@ from .errors import (
     InputForbidden,
     MuxplexError,
     SessionNotFound,
+    TargetGoneError,
+    TargetNotSelfOwningError,
     UnreachableError,
 )
 from .models import (
@@ -46,6 +48,7 @@ from .models import (
     FollowupItem,
     FollowupQueue,
     Followups,
+    HeartbeatResult,
     InputResult,
     InstanceInfo,
     ServerState,
@@ -82,6 +85,7 @@ __all__ = [
     "FollowupItem",
     "FollowupQueue",
     "Followups",
+    "HeartbeatResult",
     "InputForbidden",
     "InputResult",
     "InstanceInfo",
@@ -99,6 +103,8 @@ __all__ = [
     "SessionNotFound",
     "SessionSnapshot",
     "Settings",
+    "TargetGoneError",
+    "TargetNotSelfOwningError",
     "UnreachableError",
     "View",
     "ViewResult",
