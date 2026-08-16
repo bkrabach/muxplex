@@ -65,9 +65,21 @@
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
         <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
-        <button id="sync-group-btn" class="header-btn"
-                aria-pressed="false" aria-label="Independent view"
-                title="Following this server's view">&#128279;</button>
+        <!-- Step 4 (docs/plans/2026-08-16-deck-control-target-design.md §9.1/§9.4):
+             the link/broken-link icon toggle (fixed in v0.48.3, see AGENTS.md)
+             is replaced by a native <select> with two escape hatches
+             (global/none, never alphabetized) plus a selectable "Registered
+             with <server>" section for following a paired device. Populated
+             and kept in sync by renderSyncGroupControls() -- same function
+             name/call sites as before, new implementation (§9.4). -->
+        <select id="sync-group-select" class="settings-select follows-select"
+                aria-label="Follows"
+                title="Following this server's view"></select>
+        <!-- §7.3: informational, un-dismissable -- not a button, no click
+             action. Shown only while this device's own devices{} entry has
+             a non-null controlled_by (i.e. some OTHER device is following
+             this tab). -->
+        <span id="controlled-by-chip" class="controlled-by-chip hidden"></span>
         <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge" class="error-count-badge hidden"></span></button>
         <!-- Muxplex Agent entry point (see /chat.js): Amplifier-powered chat panel.
              Grouped with the other header-actions controls rather than centered --
@@ -113,9 +125,12 @@
       <button id="compose-toggle-btn" class="header-btn"
               aria-pressed="false" aria-label="Toggle compose bar"
               title="Show compose bar">&#9998;</button>
-      <button id="sync-group-btn-expanded" class="header-btn"
-              aria-pressed="false" aria-label="Independent view"
-              title="Following this server's view">&#128279;</button>
+      <!-- Same replacement as the overview header's #sync-group-select --
+           see the comment there (§9.1/§9.4). -->
+      <select id="sync-group-select-expanded" class="settings-select follows-select"
+              aria-label="Follows"
+              title="Following this server's view"></select>
+      <span id="controlled-by-chip-expanded" class="controlled-by-chip hidden"></span>
       <button id="settings-btn-expanded" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge-expanded" class="error-count-badge hidden"></span></button>
       <!-- Same Muxplex Agent entry point as the overview header (#chat-open-btn),
            mirrored here following this file's own established convention for
@@ -347,6 +362,12 @@
         <button class="settings-tab" data-tab="views">Views<span id="settings-tab-view-errors-badge" class="error-count-badge hidden"></span></button>
         <button class="settings-tab" data-tab="new-session">Commands<span id="settings-tab-command-errors-badge" class="error-count-badge hidden"></span></button>
         <button class="settings-tab" data-tab="devices">Multi-Device</button>
+        <!-- Step 4 (design doc §9.5): named plain "Decks", NOT "Control
+             Decks" -- "Multi-Device" above already means federation, and
+             putting deck-pairing management beside it under a similar name
+             would render that conflation directly in the UI. Do not rename
+             "Multi-Device" as part of this change. -->
+        <button class="settings-tab" data-tab="decks">Decks</button>
         <button class="settings-tab" data-tab="tmux">Terminal</button>
         <!-- muxplex-3lr: the Agent panel's per-device options. Everything in
              this tab is browser-local (localStorage) and NOT a muxplex server
@@ -523,6 +544,28 @@
               <div id="setting-remote-instances" class="settings-remote-list"></div>
               <button id="add-remote-instance-btn" class="settings-action-btn">+ Add Remote</button>
             </div>
+          </div>
+        </div>
+        <!-- Step 4 (design doc §9.5): "Decks" tab -- local section only,
+             no "Elsewhere in your federation" section (needs #11/Step 6,
+             which is not built). Renamed here from the design doc's
+             description as plain "Decks", distinct from "Multi-Device"
+             (federation) above. -->
+        <div class="settings-panel hidden" data-tab="decks">
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Soft Deck</label>
+            <a id="decks-open-soft-deck-link" class="settings-action-btn settings-action-link" href="/deck/" target="_blank" rel="noopener">Open Soft Deck</a>
+            <span class="settings-helper">A browser-based control surface -- no hardware required. Opens in a new tab.</span>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Physical Stream Deck</label>
+            <a id="decks-setup-stream-deck-link" class="settings-action-btn settings-action-link" href="https://github.com/bkrabach/muxplex-deck" target="_blank" rel="noopener">Set up a physical Stream Deck</a>
+            <span class="settings-helper">muxplex-deck project on GitHub.</span>
+          </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label" id="decks-registered-heading">Registered devices</label>
+            <div id="decks-registered-list" class="decks-registered-list"></div>
+            <p class="settings-helper hidden" id="decks-registered-empty">No devices have registered with this server yet.</p>
           </div>
         </div>
         <div class="settings-panel hidden" data-tab="tmux">

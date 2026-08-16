@@ -309,62 +309,81 @@ test('initSyncGroup with localStorage throwing stays "global" and does not throw
   globalThis.localStorage.getItem = origGetItem;
 });
 
-// --- renderSyncGroupControls: header button visual state ---
+// --- renderSyncGroupControls: header "Follows" <select> state ---
 //
-// Regression test for the inverted-boolean bug (2026-08-16): .header-btn--
-// active used to be toggled on `independent`, so the button rendered
-// "selected" only when NOT following -- backwards from what the static link
-// glyph implies. Confirmed to catch the bug it targets: reverting
-// renderSyncGroupControls() to key off `independent` instead of `following`
-// flips both assertions below and fails this test.
-function _makeSyncGroupBtnStub() {
-  const classes = new Set();
+// Step 4 (docs/plans/2026-08-16-deck-control-target-design.md §9.4)
+// replaced the link/broken-link icon toggle button with a native <select>.
+// This is the successor to the retired "sync-group toggle button"
+// coverage above (the v0.48.3 inverted-boolean bug this used to guard):
+// the equivalent invariant now protected is "the Follows <select>'s
+// SELECTED VALUE and title visibly reflect the current follow state" --
+// confirmed to catch a reintroduced inversion the same way the old test
+// caught the button's: swapping `follows.mode === 'global'` for
+// `!== 'global'` in the title ternary flips these assertions.
+/**
+ * A generic fake DOM element for tests that exercise real element-building
+ * code (e.g. _buildDecksDeviceRow) against document.createElement, rather
+ * than mocking each call site's specific shape by hand.
+ * @param {string} tag
+ * @returns {object}
+ */
+function _makeFakeElement(tag) {
   const attrs = {};
-  return {
-    innerHTML: '',
-    title: '',
+  const el = {
+    tagName: (tag || '').toUpperCase(),
+    type: '',
+    className: '',
+    value: '',
+    textContent: '',
+    children: [],
     classList: {
-      add(...cs) { for (const c of cs) classes.add(c); },
-      remove(...cs) { for (const c of cs) classes.delete(c); },
-      toggle(c, force) { if (force) classes.add(c); else classes.delete(c); return !!force; },
-      contains(c) { return classes.has(c); },
+      add() {}, remove() {}, toggle() {}, contains() { return false; },
     },
+    appendChild(child) { el.children.push(child); return child; },
     setAttribute(k, v) { attrs[k] = String(v); },
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null; },
   };
+  return el;
 }
 
-test('renderSyncGroupControls: FOLLOWING shows active styling + linked-chain icon', () => {
-  const btn = _makeSyncGroupBtnStub();
+function _makeSyncGroupSelectStub() {
+  const options = [];
+  return {
+    innerHTML: '',
+    title: '',
+    value: '',
+    appendChild(el) { options.push(el); },
+    querySelectorAll() { return []; },
+  };
+}
+
+test('renderSyncGroupControls: global (following) selects the "shared" escape hatch + matching title', () => {
+  const sel = _makeSyncGroupSelectStub();
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) =>
-    (id === 'sync-group-btn' || id === 'sync-group-btn-expanded') ? btn : null;
+    (id === 'sync-group-select' || id === 'sync-group-select-expanded') ? sel : null;
   try {
     app._setSyncGroupMode('global');
+    app._setFollowTargetForTests(null);
     app.renderSyncGroupControls();
-    assert.strictEqual(btn.classList.contains('header-btn--active'), true,
-      'active class must apply while following -- this is the bug that shipped');
-    assert.strictEqual(btn.getAttribute('aria-pressed'), 'true');
-    assert.match(btn.title, /^Following/);
-    assert.match(btn.innerHTML, /128279/, 'expected the linked-chain glyph while following');
+    assert.strictEqual(sel.value, 'global', 'selected value must be the global escape hatch while following');
+    assert.match(sel.title, /^Following/);
   } finally {
     globalThis.document.getElementById = origGetById;
   }
 });
 
-test('renderSyncGroupControls: INDEPENDENT clears active styling + shows a distinct icon', () => {
-  const btn = _makeSyncGroupBtnStub();
+test('renderSyncGroupControls: device (independent) selects the "just me" escape hatch + matching title', () => {
+  const sel = _makeSyncGroupSelectStub();
   const origGetById = globalThis.document.getElementById;
   globalThis.document.getElementById = (id) =>
-    (id === 'sync-group-btn' || id === 'sync-group-btn-expanded') ? btn : null;
+    (id === 'sync-group-select' || id === 'sync-group-select-expanded') ? sel : null;
   try {
     app._setSyncGroupMode('device');
+    app._setFollowTargetForTests(null);
     app.renderSyncGroupControls();
-    assert.strictEqual(btn.classList.contains('header-btn--active'), false,
-      'active class must NOT apply while independent');
-    assert.strictEqual(btn.getAttribute('aria-pressed'), 'false');
-    assert.match(btn.title, /^Independent/);
-    assert.notEqual(btn.innerHTML, '&#128279;', 'independent state must render a different glyph than following');
+    assert.strictEqual(sel.value, 'none', 'selected value must be the "just me" escape hatch while independent');
+    assert.match(sel.title, /^Independent/);
   } finally {
     app._setSyncGroupMode('global'); // restore for subsequent tests
     globalThis.document.getElementById = origGetById;
@@ -397,6 +416,461 @@ test('setSyncGroup sends a heartbeat immediately rather than waiting for the 5s 
   assert.strictEqual(heartbeatCalls.length, 1);
   app._setSyncGroupMode('global');
   globalThis.fetch = origFetch;
+});
+
+// --- Follows: registered-device pairing (Step 4) ---
+// docs/plans/2026-08-16-deck-control-target-design.md §9.1/§9.3/§9.4/§9.5/§7.3
+// These functions are direct ports of the ones prototyped in
+// frontend/deck/deck.js -- see tests/test_deck.mjs for the ORIGINAL
+// coverage this mirrors (buildFollowsMenu, computeFollowsDegraded, etc.).
+
+test('buildFollowsMenu: escape hatches are always first, in fixed order, regardless of registered-device names that would sort earlier', () => {
+  const menu = app.buildFollowsMenu({
+    devices: {
+      'd-aaa': { label: 'AAA Deck' }, // would sort before both escape hatches alphabetically
+      'd-zzz': { label: 'ZZZ Deck' },
+    },
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'global', targetId: null, targetLabel: null },
+    degraded: false,
+  });
+  assert.strictEqual(menu.escapeHatches.length, 2);
+  assert.strictEqual(menu.escapeHatches[0].value, 'global');
+  assert.strictEqual(menu.escapeHatches[0].label, 'spark-1 (shared)');
+  assert.strictEqual(menu.escapeHatches[1].value, 'none');
+  assert.strictEqual(menu.escapeHatches[1].label, 'Nothing \u2014 just me');
+});
+
+test('buildFollowsMenu: excludes the browser\'s own device_id from the registered (selectable) list', () => {
+  const menu = app.buildFollowsMenu({
+    devices: { 'd-self': { label: 'Me' }, 'd-other': { label: 'Other' } },
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'global', targetId: null, targetLabel: null },
+    degraded: false,
+  });
+  assert.deepStrictEqual(menu.registered.map((r) => r.targetId), ['d-other']);
+});
+
+test('buildFollowsMenu: no federated/"Elsewhere" section exists on the returned menu at all (\u00a710 Step 6 is out of scope)', () => {
+  const menu = app.buildFollowsMenu({
+    devices: {},
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'global', targetId: null, targetLabel: null },
+    degraded: false,
+  });
+  assert.deepStrictEqual(Object.keys(menu).sort(), ['escapeHatches', 'registered', 'registeredHeader', 'selectedValue']);
+});
+
+test('buildFollowsMenu: selectedValue reflects each mode correctly', () => {
+  const devices = { 'd-other': { label: 'Other' } };
+  assert.strictEqual(app.buildFollowsMenu({ devices, ownDeviceId: 'd-self', follows: { mode: 'global' }, degraded: false }).selectedValue, 'global');
+  assert.strictEqual(app.buildFollowsMenu({ devices, ownDeviceId: 'd-self', follows: { mode: 'none' }, degraded: false }).selectedValue, 'none');
+  assert.strictEqual(app.buildFollowsMenu({ devices, ownDeviceId: 'd-self', follows: { mode: 'device', targetId: 'd-other' }, degraded: false }).selectedValue, 'device:d-other');
+});
+
+test('buildFollowsMenu: falls back to a generic server label/header when serverName is unknown', () => {
+  const menu = app.buildFollowsMenu({ devices: {}, ownDeviceId: 'd-self', follows: { mode: 'global' }, degraded: false });
+  assert.strictEqual(menu.escapeHatches[0].label, 'this server (shared)');
+  assert.strictEqual(menu.registeredHeader, 'Registered with this server');
+});
+
+test('buildFollowsMenu: a degraded, still-registered target gets the offline suffix on its OWN entry only', () => {
+  const menu = app.buildFollowsMenu({
+    devices: { 'd-a': { label: 'Alpha' }, 'd-b': { label: 'Bravo' } },
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'device', targetId: 'd-a', targetLabel: 'Alpha' },
+    degraded: true,
+  });
+  const a = menu.registered.find((r) => r.targetId === 'd-a');
+  const b = menu.registered.find((r) => r.targetId === 'd-b');
+  assert.strictEqual(a.label, 'Alpha \u2014 offline');
+  assert.strictEqual(a.degraded, true);
+  assert.strictEqual(b.label, 'Bravo');
+  assert.strictEqual(b.degraded, false);
+});
+
+test('buildFollowsMenu: a degraded target that is GONE from the registry entirely still appears, synthesized from the cached targetLabel -- never silently reverts selectedValue to "global" (the v0.48.3 anti-pattern, applied to this widget)', () => {
+  const menu = app.buildFollowsMenu({
+    devices: {},
+    ownDeviceId: 'd-self',
+    serverName: 'spark-1',
+    follows: { mode: 'device', targetId: 'd-gone', targetLabel: 'Stream Deck (alienware)' },
+    degraded: true,
+  });
+  assert.strictEqual(menu.selectedValue, 'device:d-gone');
+  assert.strictEqual(menu.registered.length, 1);
+  assert.strictEqual(menu.registered[0].label, 'Stream Deck (alienware) \u2014 offline');
+});
+
+test('buildFollowsMenu: a gone target with no cached targetLabel falls back to the raw device_id in the offline placeholder', () => {
+  const menu = app.buildFollowsMenu({
+    devices: {},
+    ownDeviceId: 'd-self',
+    follows: { mode: 'device', targetId: 'd-gone', targetLabel: null },
+    degraded: true,
+  });
+  assert.strictEqual(menu.registered[0].label, 'd-gone \u2014 offline');
+});
+
+test('buildFollowsMenu: global/none modes are never decorated as degraded regardless of the degraded flag', () => {
+  const menu = app.buildFollowsMenu({ devices: {}, ownDeviceId: 'd-self', follows: { mode: 'global' }, degraded: true });
+  assert.strictEqual(menu.registered.length, 0);
+});
+
+test('computeFollowsDegraded: false for a null/empty targetId regardless of registry contents', () => {
+  assert.strictEqual(app.computeFollowsDegraded(null, {}, null), false);
+  assert.strictEqual(app.computeFollowsDegraded('', { 'd-a': {} }, 'd-a'), false);
+});
+
+test('computeFollowsDegraded: false when the target is live in the registry and has no recorded heartbeat rejection', () => {
+  assert.strictEqual(app.computeFollowsDegraded('d-a', { 'd-a': {} }, null), false);
+});
+
+test('computeFollowsDegraded: true when the target has been pruned from the live registry (the normal target_gone case)', () => {
+  assert.strictEqual(app.computeFollowsDegraded('d-a', {}, null), true);
+});
+
+test('computeFollowsDegraded: true when the most recent heartbeat for this exact target was rejected, even if it still appears live (a race between the state poll and the heartbeat 409/400)', () => {
+  assert.strictEqual(app.computeFollowsDegraded('d-a', { 'd-a': {} }, 'd-a'), true);
+});
+
+test('computeFollowsDegraded: a stale gone-marker for a DIFFERENT target than the current pick does not mark the current pick degraded', () => {
+  assert.strictEqual(app.computeFollowsDegraded('d-a', { 'd-a': {} }, 'd-other'), false);
+});
+
+test('degradedOptionLabel: appends the closed-widget offline suffix', () => {
+  assert.strictEqual(app.degradedOptionLabel('Stream Deck (alienware)'), 'Stream Deck (alienware) \u2014 offline');
+});
+
+test('followsCandidateFromValue: "none"/"global" parse to the escape-hatch candidates', () => {
+  assert.deepStrictEqual(app.followsCandidateFromValue('none', []), { mode: 'none', targetId: null, targetLabel: null });
+  assert.deepStrictEqual(app.followsCandidateFromValue('global', []), { mode: 'global', targetId: null, targetLabel: null });
+});
+
+test('followsCandidateFromValue: "device:<id>" recovers the RAW (undecorated) label from the registered list, never a degraded-suffixed one', () => {
+  const registered = [{ targetId: 'd-a', rawLabel: 'Stream Deck (alienware)' }];
+  const candidate = app.followsCandidateFromValue('device:d-a', registered);
+  assert.deepStrictEqual(candidate, { mode: 'device', targetId: 'd-a', targetLabel: 'Stream Deck (alienware)' });
+});
+
+test('followsCandidateFromValue: "device:<id>" for an id absent from the registered list still parses (targetLabel null, not thrown)', () => {
+  const candidate = app.followsCandidateFromValue('device:d-unknown', []);
+  assert.deepStrictEqual(candidate, { mode: 'device', targetId: 'd-unknown', targetLabel: null });
+});
+
+test('targetNotSelfOwningMessage: names the follower by its resolved label when known', () => {
+  const msg = app.targetNotSelfOwningMessage({ controlled_by: 'd-follower' }, { 'd-follower': { display_name: 'Stream Deck (alienware)' } });
+  assert.match(msg, /Stream Deck \(alienware\) is already following you/);
+});
+
+test('targetNotSelfOwningMessage: falls back to the raw follower id when it is not in the local registry', () => {
+  const msg = app.targetNotSelfOwningMessage({ controlled_by: 'd-unknown' }, {});
+  assert.match(msg, /d-unknown is already following you/);
+});
+
+test('currentFollows: reflects _syncGroup escape hatches when no follow target is set', () => {
+  app._setFollowTargetForTests(null);
+  app._setSyncGroupMode('global');
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'global', targetId: null, targetLabel: null });
+  app._setSyncGroupMode('device');
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'none', targetId: null, targetLabel: null });
+  app._setSyncGroupMode('global');
+});
+
+test('currentFollows: a registered-device follow target takes priority over _syncGroup', () => {
+  app._setSyncGroupMode('global');
+  app._setFollowTargetForTests({ targetId: 'd-a', targetLabel: 'Alpha' });
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'device', targetId: 'd-a', targetLabel: 'Alpha' });
+  app._setFollowTargetForTests(null);
+});
+
+test('sanitizeFollowTarget: garbage input (wrong type, missing targetId, hostile object) recovers to null -- never throws', () => {
+  assert.strictEqual(app.sanitizeFollowTarget(null), null);
+  assert.strictEqual(app.sanitizeFollowTarget('garbage'), null);
+  assert.strictEqual(app.sanitizeFollowTarget({}), null);
+  assert.strictEqual(app.sanitizeFollowTarget({ targetId: '' }), null);
+  assert.strictEqual(app.sanitizeFollowTarget({ targetId: 42 }), null);
+});
+
+test('sanitizeFollowTarget: accepts a valid pick with its cached label', () => {
+  assert.deepStrictEqual(app.sanitizeFollowTarget({ targetId: 'd-a', targetLabel: 'Alpha' }), { targetId: 'd-a', targetLabel: 'Alpha' });
+});
+
+test('loadFollowTarget/persistFollowTarget: round-trips a persisted pick through localStorage', () => {
+  app.persistFollowTarget({ targetId: 'd-a', targetLabel: 'Alpha' });
+  assert.deepStrictEqual(app.loadFollowTarget(), { targetId: 'd-a', targetLabel: 'Alpha' });
+  app.persistFollowTarget(null);
+  assert.strictEqual(app.loadFollowTarget(), null);
+});
+
+test('resolveSyncGroupForWire: defers to the pre-existing syncGroupId() when no follow target is set -- byte-identical to pre-Step-4 behavior', () => {
+  app._setFollowTargetForTests(null);
+  app._setSyncGroupMode('global');
+  assert.strictEqual(app.resolveSyncGroupForWire(), 'global');
+  app._setSyncGroupMode('device');
+  assert.strictEqual(app.resolveSyncGroupForWire(), app.syncGroupId());
+  app._setSyncGroupMode('global');
+});
+
+test('resolveSyncGroupForWire: a live follow target resolves to its own device group', () => {
+  app._setDevicesRegistryForTests({ 'd-a': {} });
+  app._setLastHeartbeatGoneIdForTests(null);
+  app._setFollowTargetForTests({ targetId: 'd-a', targetLabel: 'Alpha' });
+  assert.strictEqual(app.resolveSyncGroupForWire(), 'device:d-a');
+  app._setFollowTargetForTests(null);
+  app._setDevicesRegistryForTests({});
+});
+
+test('resolveSyncGroupForWire: a degraded follow target falls back to \'global\' at the wire level while the UI stays sticky elsewhere', () => {
+  app._setDevicesRegistryForTests({});
+  app._setLastHeartbeatGoneIdForTests(null);
+  app._setFollowTargetForTests({ targetId: 'd-gone', targetLabel: 'Gone' });
+  assert.strictEqual(app.resolveSyncGroupForWire(), 'global');
+  app._setFollowTargetForTests(null);
+});
+
+test('attemptFollowTarget: success persists the candidate as the new follow target and clears any prior gone-marker', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  globalThis.fetch = async (path, opts) => {
+    if (path === '/api/heartbeat') return { ok: true, json: async () => ({ device_id: 'd-self', status: 'ok', sync_group: 'device:d-a' }) };
+    return { ok: true, json: async () => ({}) };
+  };
+  app._setDevicesRegistryForTests({ 'd-a': {} }); // target must be LIVE for resolveSyncGroupForWire to resolve it (not degraded)
+  app._setLastHeartbeatGoneIdForTests('d-a');
+  await app.attemptFollowTarget({ targetId: 'd-a', targetLabel: 'Alpha' });
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'device', targetId: 'd-a', targetLabel: 'Alpha' });
+  assert.strictEqual(app.resolveSyncGroupForWire(), 'device:d-a'); // gone-marker cleared -- not degraded
+  app._setFollowTargetForTests(null);
+  app._setLastHeartbeatGoneIdForTests(null);
+  app._setDevicesRegistryForTests({});
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+});
+
+test('attemptFollowTarget: 409 target_gone adopts the candidate anyway (sticky) but marks it degraded', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  globalThis.fetch = async (path) => {
+    if (path === '/api/heartbeat') {
+      const err = new Error('HTTP 409');
+      err.status = 409;
+      err.body = { detail: { target_gone: true } };
+      throw err;
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  await app.attemptFollowTarget({ targetId: 'd-gone', targetLabel: 'Gone Deck' });
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'device', targetId: 'd-gone', targetLabel: 'Gone Deck' });
+  assert.strictEqual(app.resolveSyncGroupForWire(), 'global', 'wire falls back to global while the pick stays sticky in the UI');
+  app._setFollowTargetForTests(null);
+  app._setLastHeartbeatGoneIdForTests(null);
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+});
+
+test('attemptFollowTarget: 400 target_not_self_owning REJECTS the candidate outright -- the persisted follow target is left unchanged', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  const toastMessages = [];
+  const origShowToast = app.showToast;
+  globalThis.fetch = async (path) => {
+    if (path === '/api/heartbeat') {
+      const err = new Error('HTTP 400');
+      err.status = 400;
+      err.body = { detail: { target_not_self_owning: true, controlled_by: 'd-follower' } };
+      throw err;
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  app._setFollowTargetForTests(null);
+  app._setSyncGroupMode('global');
+  await app.attemptFollowTarget({ targetId: 'd-cycle', targetLabel: 'Cycle Deck' });
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'global', targetId: null, targetLabel: null }, 'rejected candidate must never become the persisted pick');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  app.showToast = origShowToast;
+});
+
+test('handleFollowsSelectChange: picking an escape hatch while a foreign device is being followed clears the follow target', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({}) });
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  app._setFollowTargetForTests({ targetId: 'd-a', targetLabel: 'Alpha' });
+  app.handleFollowsSelectChange('global');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.strictEqual(app.currentFollows().mode, 'global');
+  app._setFollowTargetForTests(null);
+  app._setSyncGroupMode('global');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+});
+
+// --- Controlled-by chip (§7.3) ---
+
+test('renderControlledByChip: shows the chip with the follower\'s resolved label when this device\'s own record has controlled_by set', () => {
+  app._setDeviceId('d-self');
+  app._setDevicesRegistryForTests({
+    'd-self': { controlled_by: 'd-follower' },
+    'd-follower': { display_name: 'Stream Deck (alienware)' },
+  });
+  const chip = { textContent: '', classList: { added: [], removed: [], add(c) { this.added.push(c); }, remove(c) { this.removed.push(c); } } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'controlled-by-chip' || id === 'controlled-by-chip-expanded') ? chip : null;
+  app.renderControlledByChip();
+  assert.strictEqual(chip.textContent, 'Controlled by: Stream Deck (alienware)');
+  assert.ok(chip.classList.removed.includes('hidden'));
+  globalThis.document.getElementById = origGetById;
+  app._setDevicesRegistryForTests({});
+});
+
+test('renderControlledByChip: hides the chip when this device is not being followed by anything', () => {
+  app._setDeviceId('d-self');
+  app._setDevicesRegistryForTests({ 'd-self': { controlled_by: null } });
+  const chip = { textContent: 'stale', classList: { added: [], removed: [], add(c) { this.added.push(c); }, remove(c) { this.removed.push(c); } } };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = (id) => (id === 'controlled-by-chip' || id === 'controlled-by-chip-expanded') ? chip : null;
+  app.renderControlledByChip();
+  assert.strictEqual(chip.textContent, '');
+  assert.ok(chip.classList.added.includes('hidden'));
+  globalThis.document.getElementById = origGetById;
+  app._setDevicesRegistryForTests({});
+});
+
+// --- Decks settings tab (§9.5) ---
+
+test('_describeDeviceFollows: describes global/self-claim/foreign-follow in the same human terms as the dropdown', () => {
+  app._setServerNameForTests('spark-1');
+  app._setDevicesRegistryForTests({ 'd-target': { label: 'Target Deck' } });
+  assert.strictEqual(app._describeDeviceFollows({ sync_group: 'global' }, 'd-x'), 'spark-1 (shared)');
+  assert.strictEqual(app._describeDeviceFollows({}, 'd-x'), 'spark-1 (shared)');
+  assert.strictEqual(app._describeDeviceFollows({ sync_group: 'device:d-x' }, 'd-x'), 'Nothing \u2014 just me');
+  assert.strictEqual(app._describeDeviceFollows({ sync_group: 'device:d-target' }, 'd-x'), 'Target Deck');
+  app._setServerNameForTests('');
+  app._setDevicesRegistryForTests({});
+});
+
+test('renderDecksSettingsTab: renders every OTHER registered device, excluding this browser\'s own entry', () => {
+  app._setDeviceId('d-self');
+  app._setServerNameForTests('spark-1');
+  app._setDevicesRegistryForTests({
+    'd-self': { label: 'This Browser' },
+    'd-a': { display_name: 'Stream Deck (alienware)', sync_group: 'global', last_heartbeat_at: Math.floor(Date.now() / 1000) },
+  });
+  const appended = [];
+  const listEl = { innerHTML: '', appendChild(el) { appended.push(el); } };
+  const emptyEl = { classList: { added: [], removed: [], add(c) { this.added.push(c); }, remove(c) { this.removed.push(c); } } };
+  const headingEl = { textContent: '' };
+  const origGetById = globalThis.document.getElementById;
+  const origActiveElement = globalThis.document.activeElement;
+  const origCE = globalThis.document.createElement;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'decks-registered-list') return listEl;
+    if (id === 'decks-registered-empty') return emptyEl;
+    if (id === 'decks-registered-heading') return headingEl;
+    return null;
+  };
+  globalThis.document.activeElement = null;
+  globalThis.document.createElement = (tag) => _makeFakeElement(tag);
+  app.renderDecksSettingsTab();
+  assert.strictEqual(appended.length, 1, 'must render exactly one row (excludes this browser\'s own entry)');
+  assert.strictEqual(headingEl.textContent, 'Registered with spark-1');
+  assert.ok(emptyEl.classList.added.includes('hidden'));
+  const row = appended[0];
+  const nameInput = row.children.find((c) => c.className && c.className.indexOf('decks-device-name') !== -1);
+  assert.ok(nameInput, 'row must contain the device-name input');
+  assert.strictEqual(nameInput.value, 'Stream Deck (alienware)', 'input must be pre-filled with the resolved display label');
+  assert.strictEqual(nameInput.getAttribute('data-device-id'), 'd-a');
+  const followsEl = row.children.find((c) => c.className === 'decks-device-follows');
+  assert.strictEqual(followsEl.textContent, 'spark-1 (shared)');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.activeElement = origActiveElement;
+  globalThis.document.createElement = origCE;
+  app._setDevicesRegistryForTests({});
+  app._setServerNameForTests('');
+});
+
+test('renderDecksSettingsTab: shows the empty-state message and skips the list when no OTHER device is registered', () => {
+  app._setDeviceId('d-self');
+  app._setDevicesRegistryForTests({ 'd-self': { label: 'This Browser' } });
+  const appended = [];
+  const listEl = { innerHTML: '', appendChild(el) { appended.push(el); } };
+  const emptyEl = { classList: { added: [], removed: [], add(c) { this.added.push(c); }, remove(c) { this.removed.push(c); } } };
+  const origGetById = globalThis.document.getElementById;
+  const origActiveElement = globalThis.document.activeElement;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'decks-registered-list') return listEl;
+    if (id === 'decks-registered-empty') return emptyEl;
+    return null;
+  };
+  globalThis.document.activeElement = null;
+  app.renderDecksSettingsTab();
+  assert.strictEqual(appended.length, 0);
+  assert.ok(emptyEl.classList.removed.includes('hidden'));
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.activeElement = origActiveElement;
+  app._setDevicesRegistryForTests({});
+});
+
+test('renderDecksSettingsTab: skips the rebuild entirely while a rename is in progress (focus inside a .decks-device-name input) so a poll tick cannot clobber it', () => {
+  app._setDeviceId('d-self');
+  app._setDevicesRegistryForTests({ 'd-self': {}, 'd-a': { label: 'Alpha' } });
+  const appended = [];
+  const listEl = { innerHTML: '', appendChild(el) { appended.push(el); } };
+  const origGetById = globalThis.document.getElementById;
+  const origActiveElement = globalThis.document.activeElement;
+  globalThis.document.getElementById = (id) => (id === 'decks-registered-list' ? listEl : null);
+  globalThis.document.activeElement = { classList: { contains: (c) => c === 'decks-device-name' } };
+  app.renderDecksSettingsTab();
+  assert.strictEqual(appended.length, 0, 'must not touch listEl.innerHTML/children while a rename input has focus');
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.activeElement = origActiveElement;
+  app._setDevicesRegistryForTests({});
+});
+
+test('_patchDeviceDisplayName: PATCHes /api/devices/{id} with the trimmed input value and updates the local registry cache on success', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (path, opts) => {
+    calls.push({ method: (opts && opts.method) || 'GET', path, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    return { ok: true, json: async () => ({ device_id: 'd-a', display_name: 'Renamed Deck' }) };
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  app._setDevicesRegistryForTests({ 'd-a': { label: 'Alpha' } });
+  const input = { value: '  Renamed Deck  ', getAttribute: () => 'd-a' };
+  await app._patchDeviceDisplayName(input);
+  const patchCall = calls.find((c) => c.method === 'PATCH' && c.path === '/api/devices/d-a');
+  assert.ok(patchCall, 'must PATCH /api/devices/{id}');
+  assert.deepStrictEqual(patchCall.body, { display_name: 'Renamed Deck' }, 'must trim the input value before sending');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  app._setDevicesRegistryForTests({});
+});
+
+test('_patchDeviceDisplayName: an emptied input clears display_name back to null (falls back to the device\'s own self-reported label)', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (path, opts) => {
+    calls.push({ method: (opts && opts.method) || 'GET', path, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    return { ok: true, json: async () => ({ device_id: 'd-a', display_name: null }) };
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  const input = { value: '   ', getAttribute: () => 'd-a' };
+  await app._patchDeviceDisplayName(input);
+  const patchCall = calls.find((c) => c.method === 'PATCH' && c.path === '/api/devices/d-a');
+  assert.deepStrictEqual(patchCall.body, { display_name: null });
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
 });
 
 // --- setConnectionStatus ---
@@ -4236,7 +4710,13 @@ test('DOMContentLoaded sets page title via updatePageTitle after loadServerSetti
   // ~2916 chars in; window widened to 3100. Behavior is unchanged and BOTH
   // assertions below are unchanged -- only the byte offset moved, same
   // source-text-tripwire class as every widening above.
-  const domBlock = source.substring(domIdx, domIdx + 3100);
+  // Updated for Step 4 (docs/plans/2026-08-16-deck-control-target-design.md):
+  // `_followTarget = loadFollowTarget();` added right after initSyncGroup()
+  // to restore the persisted registered-device follow pick, pushing
+  // updatePageTitle to ~3317 chars in -- window widened to 3500. Behavior
+  // is unchanged; only the byte offset moved, same source-text-tripwire
+  // class as every widening above.
+  const domBlock = source.substring(domIdx, domIdx + 3500);
   // The old direct assignment is replaced by updatePageTitle()
   assert.ok(
     !domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),
@@ -4311,16 +4791,17 @@ test('applyFitLayout does NOT measure DOM dimensions (pure arithmetic)', () => {
 
 // ─── Settings tab reorganization (4 tabs) ────────────────────────────────────
 
-test('HTML settings dialog has exactly 7 tab buttons', () => {
+test('HTML settings dialog has exactly 8 tab buttons', () => {
   const source = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const tabMatches = source.match(/class="settings-tab[^"]*"\s+data-tab=/g) || [];
-  // Display, Sessions, Views, Commands, Multi-Device, Terminal, Agent
-  // (Agent added by muxplex-3lr).
+  // Display, Sessions, Views, Commands, Multi-Device, Decks, Terminal, Agent
+  // (Agent added by muxplex-3lr; Decks added by Step 4, design doc §9.5 --
+  // deliberately distinct from Multi-Device, which means federation).
   // Keep the count AND the test name in step with reality: this assertion
   // spent releases titled "exactly 4" while asserting 5, which is how a real
   // count regression got waved through as "pre-existing" instead of read as
   // the breakage it was.
-  assert.strictEqual(tabMatches.length, 7, 'settings dialog must have exactly 7 tab buttons');
+  assert.strictEqual(tabMatches.length, 8, 'settings dialog must have exactly 8 tab buttons');
 });
 
 test('HTML index.html has no Notifications tab button', () => {

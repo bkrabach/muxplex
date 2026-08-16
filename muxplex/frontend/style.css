@@ -1837,6 +1837,40 @@ body {
   color: var(--accent-hover);
 }
 
+/* Step 4 (docs/plans/2026-08-16-deck-control-target-design.md §9.4): the
+   "Follows" <select> that replaces the sync-group toggle button above.
+   Layers minimal header-context sizing on top of .settings-select's shared
+   base (background/border/color/font/padding) -- there is no pre-existing
+   ".sidebar-select" component to reuse (the sidebar's own quick-sort
+   control was converted from a native <select> to a button+menu in
+   v0.47.9; see the "Quick link" section below), so this is a small,
+   header-scoped modifier class rather than an invented sibling of
+   .settings-select. */
+.follows-select {
+  max-width: 160px;
+}
+
+@media (max-width: 599px) {
+  .follows-select {
+    max-width: 110px;
+  }
+}
+
+/* §7.3: informational "Controlled by" chip -- persistent, un-dismissable,
+   not a button (no hover/active states beyond the default cursor). Reuses
+   the same accent-dim treatment as .header-btn--active so it reads as
+   "state", not as an available action. */
+.controlled-by-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* Small count badge for a config error the user otherwise cannot see without
    opening Settings > Commands -- see _updateCommandErrorBadges() in app.js
    (docs/plans/2026-08-02-named-session-command-pairs-ui-design.md §6 item 5). Used both on the header gear
@@ -3327,6 +3361,46 @@ body {
 .settings-action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Step 4 (design doc §9.5): the Decks tab's two plain links ("Open Soft
+   Deck", "Set up a physical Stream Deck") reuse .settings-action-btn's
+   look-and-feel but are real <a> elements, not <button>s -- this modifier
+   only strips the anchor defaults (underline, visited-color) so they read
+   identically to the buttons around them. */
+.settings-action-link {
+  display: inline-block;
+  text-decoration: none;
+}
+
+/* ============================================================
+   Decks settings tab (design doc §9.5)
+   ============================================================ */
+
+.decks-registered-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.decks-device-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.decks-device-name {
+  min-width: 0;
+}
+
+.decks-device-follows,
+.decks-device-last-seen {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 /* ============================================================
