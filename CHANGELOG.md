@@ -1,3 +1,46 @@
+## v0.50.0 (2026-08-16)
+
+**Client library now exports device identity scaffolding** — the first slice of
+the deck control-target design (`docs/plans/2026-08-16-deck-control-target-design.md`).
+Additive only: the server is untouched, and all new client capabilities (`heartbeat()`,
+device identity parameters on the state model, new `ServerState` fields for group sync,
+and new error types for failure diagnosis) are structured to make no behavioral change
+for any existing caller.
+
+### Added
+
+- **`heartbeat()` method**: New optional client capability for device liveness
+  signaling. Sends a device identifier to `POST /api/heartbeat` (server accepts
+  but does not yet act on the call). Clients that do not call it see no change in
+  behavior; calls from clients that do are silently accepted by a v0.49.x server
+  for forward compatibility.
+- **Device identity parameters on `AsyncClient` and `SyncClient`**: `device_id`
+  (UUID), `device_name` (human-readable label), and `device_kind` (classification;
+  e.g. `"deck"`, `"pwa"`, `"agent"`). Clients pass these when constructing the
+  connection and they are carried on every `heartbeat()` call. Servers prior to
+  v0.50.0 ignore the fields.
+- **New `ServerState` fields**: `sync_group` (device group for eventual
+  federated sync), `controlled_by` (which device currently holds write authority
+  on this state), and `active_remote_id` (tracking for multi-device coordination).
+  All fields are optional and default to `None`; existing callers continue to work
+  unchanged.
+- **New error types** in `muxplex_client.errors`: `DeviceNotFoundError`,
+  `DeviceAlreadyExistsError`, `SyncGroupError`, and `DeviceIdentityError` for
+  richer error classification as device-coordination logic lands in the server.
+  Servers prior to v0.50.0 will not raise these; they are forward-compatible
+  containers for future server versions.
+
+### Testing & Proof
+
+- Full test suite: 105 tests pass (65 baseline on v0.49.1 + 40 new), including
+  new wire-shape verification that the device-identity scaffolding does NOT
+  alter the request/response shape for callers that do not use it.
+- All CI jobs green: test (Python 3.11/3.12/3.13), test-latest-deps,
+  test-frontend, and all platform variants (Linux/macOS/arm64).
+- **Backward compatibility verified**: a v0.50.0 client talking to a v0.49.x
+  server sends the new fields but they are silently ignored; a v0.49.x client
+  talking to a v0.50.0 server sees no new fields in responses and continues to work.
+
 ## v0.49.1 (2026-08-16)
 
 **A browser tab or installed PWA showing the muxplex UI kept working at
