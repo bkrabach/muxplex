@@ -60,7 +60,47 @@ function parseLocalScriptSrcs(htmlPath) {
  */
 function buildSharedScopeContext() {
   const classList = () => ({ add() {}, remove() {}, toggle() {}, contains: () => false });
-  const elementStub = () => ({ style: {}, classList: classList(), addEventListener() {}, appendChild() {}, textContent: '' });
+  // A generic DOM element stub. chat.js's init() (called at top-level load
+  // time -- see the performance stub's comment below) is far more
+  // defensive than app.js/terminal.js's, and calls a long tail of DOM
+  // element methods this test has no interest in enumerating one by one
+  // (setAttribute, removeAttribute, focus, scrollIntoView, remove, ...).
+  // A Proxy answers any method call with a no-op and any unset property
+  // read with a stub value, so init() can run to completion without this
+  // fixture growing a new named stub every time chat.js calls one more
+  // DOM method -- exactly the "just enough to run without a
+  // ReferenceError" contract this function's own docstring commits to,
+  // generalized instead of hand-enumerated.
+  const elementStub = () =>
+    new Proxy(
+      {
+        style: {},
+        classList: classList(),
+        textContent: '',
+        dataset: {},
+        // querySelector/querySelectorAll return null/empty (not another
+        // stub) -- callers that use these already null-check (see e.g.
+        // chat.js's activeViewBody()), and stubs-of-stubs buy nothing
+        // this test needs.
+        querySelector: () => null,
+        querySelectorAll: () => [],
+      },
+      {
+        get(target, prop) {
+          if (prop in target) return target[prop];
+          // Any other method this fixture didn't predefine (setAttribute,
+          // removeAttribute, focus, blur, remove, scrollIntoView,
+          // appendChild, insertBefore, closest, matches, ...) becomes a
+          // no-op -- init() only needs the CALL to not throw, never the
+          // real DOM side effect, at top-level load time.
+          return () => undefined;
+        },
+        set(target, prop, value) {
+          target[prop] = value;
+          return true;
+        },
+      }
+    );
 
   const sandbox = {
     console,
@@ -68,6 +108,18 @@ function buildSharedScopeContext() {
     TextDecoder,
     setTimeout,
     clearTimeout,
+    // chat.js's init() runs at top-level load time (see the bottom of that
+    // file: `document.readyState === "loading"` is false in this sandbox,
+    // so it calls `init()` immediately rather than deferring to
+    // DOMContentLoaded). init() can hit a missing #chat-live element in
+    // this DOM-less sandbox and call `console.warn(...)` -- which this
+    // file's own capture hooks (installGlobalCaptureHooks(), installed at
+    // chat.js's own top level) wrap to also log a `performance.now()`
+    // timestamp. Every real browser has `performance.now()` (part of the
+    // standard High Resolution Time API); only this minimal sandbox
+    // didn't, so this stub is completing the harness, not the code
+    // (muxplex-fii).
+    performance: { now: () => Date.now() },
     // Non-touch-matching UA so terminal.js's immediately-invoked mobile-scroll
     // IIFE takes its early-return branch without needing a DOM.
     navigator: { userAgent: 'node-shared-scope-test' },
@@ -79,12 +131,23 @@ function buildSharedScopeContext() {
       removeItem(k) { delete this._store[k]; },
     },
     document: {
-      getElementById: () => null,
+      // A generic stub element for ANY id -- not null. chat.js's init()
+      // (called at top-level load time, see the performance stub's
+      // comment above) fails loud with a thrown Error if any of its
+      // ~14 required elements are missing (by design: "the dangerous
+      // tool must never be reachable without its gate"). That check
+      // exists to catch a genuinely broken index.html, which is not
+      // what this test is for -- it targets top-level binding
+      // collisions only (see this file's module docstring) -- so
+      // getElementById must return SOMETHING truthy here, the same way
+      // a real index.html always provides these elements in production.
+      getElementById: () => elementStub(),
       querySelector: () => null,
       querySelectorAll: () => [],
       createElement: elementStub,
       addEventListener() {},
       removeEventListener() {},
+      body: elementStub(),
     },
     Notification: { permission: 'default', requestPermission: async () => 'default' },
     addEventListener() {}, // app.js registers a top-level `window.addEventListener('resize', ...)`

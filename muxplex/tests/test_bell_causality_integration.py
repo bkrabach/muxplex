@@ -190,7 +190,22 @@ async def test_halt_rings_a_bell_against_real_tmux_and_real_server(tmp_path):
         # explicit poll cycle, exactly like the bell-hook delivery proof does.
         await main_mod._run_poll_cycle()
 
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+        # A valid session cookie -- AuthMiddleware gates every route this
+        # test calls (/api/sessions, /api/sessions/{name}/followups,
+        # /api/sessions/{name}/bell, /api/state). Before the loopback-bypass
+        # removal (GHSA-7c6r-fvrh-9qp4, see auth.py's dispatch() docstring)
+        # an unauthenticated 127.0.0.1 caller sailed through for free; now
+        # it gets a 307 redirect to /login like any other browser caller
+        # with no credential. This test needs to prove real endpoint
+        # behavior, not auth behavior, so it authenticates the same way
+        # test_session_rename_integration.py's `client` fixture does.
+        from muxplex.auth import create_session_cookie
+
+        cookie = create_session_cookie(main_mod._auth_secret, main_mod._auth_ttl)
+
+        async with httpx.AsyncClient(
+            verify=False, timeout=5.0, cookies={"muxplex_session": cookie}
+        ) as client:
             base = f"http://127.0.0.1:{port}"
 
             # Confirm the real session is visible to the real server before

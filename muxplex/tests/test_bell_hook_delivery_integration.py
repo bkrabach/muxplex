@@ -342,10 +342,22 @@ async def _retry_arm_until(
     ``scheme`` must match what the server ACTUALLY serves (the ``tls``
     argument passed to ``_real_server``) -- a client always dials the real
     scheme.
+
+    Authenticates with a real session cookie -- ``POST
+    /api/internal/setup-hooks`` is not in AuthMiddleware's exempt-path
+    list (only ``GET /api/instance-info`` is), so since the loopback-bypass
+    removal (GHSA-7c6r-fvrh-9qp4, see auth.py's dispatch() docstring) an
+    unauthenticated caller gets a 307 redirect to /login instead of 200.
     """
+    from muxplex.auth import create_session_cookie
+    from muxplex.main import _auth_secret, _auth_ttl
+
+    cookie = create_session_cookie(_auth_secret, _auth_ttl)
     deadline = time.monotonic() + timeout
     last = None
-    async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
+    async with httpx.AsyncClient(
+        verify=False, timeout=2.0, cookies={"muxplex_session": cookie}
+    ) as client:
         while time.monotonic() < deadline:
             try:
                 resp = await client.get(
@@ -483,10 +495,20 @@ async def test_arm_succeeds_with_no_http_round_trip_at_arm_time(tmp_path, bell_s
     (one `_arm_bell_hook()` invocation, hence at most one `run_tmux` call)
     is sufficient, with no retry loop needed to "wait out" an HTTP self-call
     racing the accept loop the way the removed probe once required.
+
+    Authenticates with a real session cookie -- see `_retry_arm_until`'s
+    docstring for why an unauthenticated call to this endpoint gets a 307,
+    not a 200, since the loopback-bypass removal (GHSA-7c6r-fvrh-9qp4).
     """
+    from muxplex.auth import create_session_cookie
+    from muxplex.main import _auth_secret, _auth_ttl
+
+    cookie = create_session_cookie(_auth_secret, _auth_ttl)
     async with (
         _real_server(tmp_path, tls=False) as (port, _tls),
-        httpx.AsyncClient(verify=False, timeout=2.0) as client,
+        httpx.AsyncClient(
+            verify=False, timeout=2.0, cookies={"muxplex_session": cookie}
+        ) as client,
     ):
         resp = await client.post(f"http://127.0.0.1:{port}/api/internal/setup-hooks")
         assert resp.status_code == 200
@@ -504,8 +526,15 @@ async def test_arm_bell_hook_never_calls_run_shell_for_a_probe(tmp_path, bell_se
     never issues a `tmux run-shell` for any purpose other than the
     persistent hook's own registration string -- there is no second,
     diagnostic `run-shell` call at arm time.
+
+    Authenticates with a real session cookie -- see `_retry_arm_until`'s
+    docstring for why an unauthenticated call to this endpoint gets a 307,
+    not a 200, since the loopback-bypass removal (GHSA-7c6r-fvrh-9qp4).
     """
     import muxplex.main as main_mod
+    from muxplex.auth import create_session_cookie
+
+    cookie = create_session_cookie(main_mod._auth_secret, main_mod._auth_ttl)
 
     async with _real_server(tmp_path, tls=False) as (port, _tls):
         calls: list[tuple] = []
@@ -517,7 +546,9 @@ async def test_arm_bell_hook_never_calls_run_shell_for_a_probe(tmp_path, bell_se
 
         main_mod.run_tmux = _spying_run_tmux
         try:
-            async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
+            async with httpx.AsyncClient(
+                verify=False, timeout=2.0, cookies={"muxplex_session": cookie}
+            ) as client:
                 resp = await client.post(
                     f"http://127.0.0.1:{port}/api/internal/setup-hooks"
                 )

@@ -20,6 +20,7 @@ import pathlib
 import pwd
 import re
 import shlex
+import shutil
 import socket
 import ssl
 import subprocess
@@ -5216,6 +5217,27 @@ def _agent_sidecar_install_gap() -> str | None:
     return None
 
 
+def _have_systemctl() -> bool:
+    """Return True if `systemctl` is on PATH.
+
+    Gates every direct `systemctl` call in this module (the agent sidecar
+    is systemd-only -- see docs/AGENT_CHAT_SETUP.md's `sudo systemctl
+    daemon-reload` / `enable --now` install steps). Without this guard,
+    `asyncio.create_subprocess_exec("systemctl", ...)` raises an unhandled
+    `FileNotFoundError` on any host that lacks systemd (e.g. macOS) --
+    exactly the "raw subprocess error reaches the UI" class of bug fixed
+    for `_run_agent_cli` in muxplex-at9. `_agent_sidecar_install_gap()`
+    does not cover this: it only checks the aa-svc user and the CLI binary
+    -- both of which can genuinely exist on a non-systemd host -- never
+    whether systemd itself is present. Mirrors `muxplex.service`'s
+    identically-named, identically-implemented helper; duplicated rather
+    than imported because the two modules gate unrelated systemd units
+    (muxplex's own service vs. the agent sidecar's) and neither needs a
+    cross-module dependency for a one-line `shutil.which` check.
+    """
+    return shutil.which("systemctl") is not None
+
+
 async def _agent_service_env_shadow_vars() -> set[str]:
     """Return provider env-var NAMES (never values) present in the agent
     sidecar's OWN systemd environment -- read-only, via `systemctl show`.
@@ -5234,7 +5256,14 @@ async def _agent_service_env_shadow_vars() -> set[str]:
     `auth status` reported "NOT SET" on every invocation, because the var
     never reached the subprocess. Cross-checking the unit's actual
     resolved environment closes that gap.
+
+    Returns an empty set on a non-systemd host (see `_have_systemctl`):
+    there is no systemd unit to introspect there, so "no shadow vars
+    found" is the correct answer, not a fallback.
     """
+    if not _have_systemctl():
+        return set()
+
     proc = await asyncio.create_subprocess_exec(
         "systemctl",
         "show",
@@ -5516,7 +5545,18 @@ async def _restart_agent_sidecar_and_wait(*, timeout: float = 30.0) -> tuple[boo
     Returns (ok, detail). On failure, `detail` distinguishes a crash loop
     from a fence refusal from a plain unit failure by reading
     `systemctl is-active`/`is-failed` rather than guessing.
+
+    Returns `(False, ...)` immediately, without spawning a subprocess, on a
+    host with no `systemctl` (see `_have_systemctl`) -- restarting a
+    systemd unit is simply impossible there, not a failure to diagnose via
+    `is-failed`.
     """
+    if not _have_systemctl():
+        return (
+            False,
+            "systemctl is not available on this host (the agent sidecar is systemd-only); cannot restart it",
+        )
+
     proc = await asyncio.create_subprocess_exec(
         "systemctl",
         "restart",
