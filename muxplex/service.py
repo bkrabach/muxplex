@@ -424,7 +424,22 @@ def _no_systemctl_error(command: str) -> None:
 
 
 def service_install() -> None:
-    """Install the muxplex service unit for the current user."""
+    """Install the muxplex service unit for the current user.
+
+    Also ensures amplifier-agent is installed (the embedded agent panel's
+    dependency -- see cli.ensure_agent's module docstring for why neither a
+    PyPI nor a plain git `uv tool install` of muxplex gets it any other
+    way). This is the documented next command after `uv tool install
+    muxplex` (README's "Install as a Service" section) and the earliest
+    point a fresh install can pick the agent up without a separate manual
+    step. A failure here is printed loudly by ensure_agent() itself but
+    does not abort the service install -- amplifier-agent is an optional
+    capability, not a muxplex-core requirement.
+    """
+    from muxplex.cli import ensure_agent
+
+    ensure_agent()
+
     if _is_darwin():
         _launchd_install()
     elif _have_systemctl():

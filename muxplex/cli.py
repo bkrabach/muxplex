@@ -723,6 +723,231 @@ def _target_matches_source(info: dict, target: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# amplifier-agent bootstrap ("ensure-agent")
+# ---------------------------------------------------------------------------
+#
+# amplifier-agent (muxplex/agent_embedded/) is git-only -- see pyproject.toml's
+# `agent` extra + [tool.uv.sources] entry. Those two mechanisms cover a git
+# CHECKOUT of muxplex (`uv sync --extra agent` / `uv lock`, which honor
+# [tool.uv.sources] for the project actually being resolved) but NOT a
+# `uv tool install` of muxplex from EITHER source: [tool.uv.sources] never
+# enters a published wheel's Requires-Dist (the same rule proven for
+# tmux-kit -- see AGENTS.md's "tmux-kit pin/tag agreement" section), and
+# `agent` is an OPTIONAL extra that a bare `uv tool install muxplex` (or
+# `uv tool install git+.../muxplex`, no extras selected) never resolves on
+# its own. So neither a PyPI install nor a plain git tool-install gets
+# amplifier-agent today -- regardless of which source produced THIS
+# muxplex, that is the gap `ensure_agent()` closes.
+#
+# Verified empirically (2026-08-16, this design's own load-bearing spike, on
+# a clean box with zero amplifier packages pre-cached):
+#
+#   uv tool install muxplex \
+#     --with 'amplifier-agent @ git+https://github.com/microsoft/amplifier-agent@v0.12.0'
+#
+# resolves amplifier-agent's ENTIRE transitive tree with NO extra --with
+# flags needed: amplifier-core comes from PyPI (published there for real, by
+# Microsoft), and amplifier-foundation comes from git -- amplifier-agent's
+# OWN [tool.uv.sources] entry for it is honored by uv even though it is a
+# transitive dependency pulled in via someone else's --with, and even
+# against a PyPI-target install whose own wheel metadata carries no
+# [tool.uv.sources] at all.
+#
+# Unlike tmux-kit's --with override (a base/required dependency, so a git
+# muxplex target's OWN [tool.uv.sources] entry for it is ALWAYS already in
+# play, and adding --with on top gives uv two url-bearing origins for the
+# identical package -- see _install_cmd_preserves_kit_override's docstring
+# for the v0.47.11 incident that taught us this), amplifier-agent is an
+# OPTIONAL extra that a bare install target (git or PyPI) never resolves on
+# its own. So --with is safe to add UNCONDITIONALLY here, regardless of
+# whether muxplex's own install source is git or PyPI -- verified by
+# reproducing the exact git-muxplex + --with-agent combination in isolation
+# (a scratch UV_TOOL_DIR against a local git+file:// source): no
+# "conflicting URLs" error, because muxplex's own project resolution never
+# creates an amplifier-agent requirement in the first place unless the
+# `agent` extra is explicitly selected on the target -- which ensure_agent()
+# never does (it always uses --with, never `muxplex[agent]`).
+
+_AGENT_DIST_NAME = "amplifier-agent"
+_AGENT_REPO_URL = "https://github.com/microsoft/amplifier-agent"
+# Backstop only -- _agent_target_pin() prefers the pin actually declared by
+# THIS install's own metadata (via _declared_dependency_pin), which is
+# always correct for the code that is actually running (see ensure_agent's
+# docstring for why both of its call sites see the right pin there). This
+# constant is read only when that lookup comes back empty (e.g. corrupted or
+# unreadable dist-info metadata) -- keep it equal to the `agent` extra's pin
+# in pyproject.toml; test_amplifier_agent_pin_source_agreement.py fails the
+# suite if the two drift.
+_AGENT_FALLBACK_PIN = "0.12.0"
+
+
+def _agent_target_pin() -> str:
+    """Return the amplifier-agent version THIS install of muxplex declares
+    (via its own `agent` extra's `==` pin), falling back to
+    `_AGENT_FALLBACK_PIN` only if that metadata can't be read.
+    """
+    return _declared_dependency_pin(_AGENT_DIST_NAME) or _AGENT_FALLBACK_PIN
+
+
+def _agent_import_probe() -> tuple[str | None, str | None]:
+    """Try to import amplifier_agent_lib fresh and report its version.
+
+    Returns (version, error) -- exactly one is None. `importlib.invalidate_caches()`
+    first so a package just installed by a PRIOR call in this same process (or
+    by a subprocess that just wrote new dist-info next to this interpreter's
+    site-packages) is actually seen -- see `_verify_install_shape_preserved`'s
+    docstring for the identical importlib-caching gotcha.
+    """
+    import importlib
+
+    importlib.invalidate_caches()
+    try:
+        module = importlib.import_module("amplifier_agent_lib")
+    except ImportError as exc:
+        return None, str(exc)
+    version = getattr(module, "__version__", None)
+    if not version:
+        return None, "amplifier_agent_lib has no __version__ attribute"
+    return version, None
+
+
+def ensure_agent(*, force: bool = False) -> bool:
+    """Idempotently ensure amplifier-agent is installed into muxplex's OWN
+    uv-tool environment -- regardless of whether THIS muxplex came from
+    PyPI or git (see the module note above for why neither source gets it
+    any other way).
+
+    Fast path (the common case on every call after the first): if
+    amplifier_agent_lib already imports at the pin muxplex declares, this
+    is a single import-and-compare check -- no subprocess, no network.
+    Mirrors tower's own bootstrap no-op.
+
+    Called from two places, both AFTER muxplex itself is already on disk at
+    the version whose pin matters:
+      - `service.service_install()` -- the documented next command after
+        `uv tool install muxplex` (README's "Install as a Service" section),
+        and the first point a fresh PyPI install can pick this up without a
+        manual step.
+      - `upgrade()` -- unconditionally, right after the main muxplex
+        (+ tmux-kit) reinstall succeeds, so every update keeps the agent
+        current too -- independent of whether a service manager is present
+        (some hosts have neither systemd nor launchd, and `service_install()`
+        is only reached from `upgrade()` when one of them is).
+
+    Deliberately NOT called from `serve()` itself: `serve()` IS the
+    long-running process this venv serves requests from, and rewriting the
+    venv a process is currently executing from is exactly the fragility
+    tower's own supervisor avoids by installing BEFORE serve, never from
+    inside it. An explicit `muxplex ensure-agent` subcommand covers the bare
+    `muxplex serve` (no service) flow, and `doctor()` surfaces the gap
+    loudly if nobody ran it.
+
+    Returns True if amplifier-agent is (now) importable at the target pin,
+    False otherwise -- NEVER raises and NEVER reports success on faith
+    (every exit prints exactly what happened before returning False).
+    Callers decide whether False is fatal: `muxplex ensure-agent` exits 1;
+    `service_install()`/`upgrade()` print the failure loudly but continue
+    (amplifier-agent is an optional capability -- losing it must not brick
+    muxplex's own service install or update).
+    """
+    import importlib
+
+    importlib.invalidate_caches()
+    target_pin = _agent_target_pin()
+
+    if not force:
+        version, err = _agent_import_probe()
+        if version == target_pin:
+            print(f"  \u2713 amplifier-agent {version} already installed")
+            return True
+        if version is not None:
+            print(
+                f"  amplifier-agent {version} installed but muxplex pins"
+                f" {target_pin} -- reinstalling to match"
+            )
+        else:
+            print(f"  amplifier-agent not installed ({err}) -- installing...")
+
+    info = _get_install_info()
+    if info["source"] == "editable":
+        print(
+            "  amplifier-agent: skipping -- muxplex is an editable checkout."
+            " Install it yourself: uv sync --extra agent"
+        )
+        return False
+
+    install_target, refuse_reason = _upgrade_target(info)
+    if install_target is None:
+        print(f"  ERROR: cannot ensure amplifier-agent -- {refuse_reason}")
+        return False
+    if not _target_matches_source(info, install_target):
+        # Same defense-in-depth as upgrade()'s own check -- never hand the
+        # installer a target that doesn't match the recorded source.
+        print(
+            "  ERROR: cannot ensure amplifier-agent -- computed install"
+            f" target does not match muxplex's recorded install source"
+            f" ({info['source']}): {install_target!r}"
+        )
+        return False
+
+    uv_path = _find_uv()
+    if not uv_path:
+        print(
+            "  ERROR: cannot install amplifier-agent -- uv not found on PATH."
+            " pip has no equivalent of uv's --with; install uv first"
+            " (https://docs.astral.sh/uv/), or from a git checkout run:"
+            " uv sync --extra agent"
+        )
+        return False
+
+    agent_with = f"{_AGENT_DIST_NAME} @ git+{_AGENT_REPO_URL}@v{target_pin}"
+    install_cmd = [
+        uv_path,
+        "tool",
+        "install",
+        "--reinstall",
+        "--refresh",
+        "--force",
+        install_target,
+        "--with",
+        agent_with,
+    ]
+    print(f"  Installing amplifier-agent v{target_pin} (git, pinned)...")
+    result = subprocess.run(install_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(
+            "  ERROR: failed to install amplifier-agent -- git fetch or uv"
+            f" resolution failed:\n{result.stderr}"
+        )
+        return False
+
+    # Defense-in-depth: muxplex's own install source must not have changed
+    # shape as a side effect of this reinstall (mirrors
+    # _verify_install_shape_preserved's role in `upgrade()`).
+    importlib.invalidate_caches()
+    after_info = _get_install_info()
+    if after_info["source"] != info["source"]:
+        print(
+            "  ERROR: muxplex's install source changed shape while ensuring"
+            f" amplifier-agent: {info['source']} -> {after_info['source']}"
+        )
+        return False
+
+    # Never report success on faith -- prove it imports at the pin we asked for.
+    version, err = _agent_import_probe()
+    if version != target_pin:
+        print(
+            "  ERROR: amplifier-agent install command succeeded but the"
+            f" library is still not importable at v{target_pin}"
+            f" (got: {version or err})"
+        )
+        return False
+
+    print(f"  \u2713 amplifier-agent {version} installed")
+    return True
+
+
 def generate_federation_key() -> None:
     """Generate a random federation key and write it to FEDERATION_KEY_PATH."""
     import muxplex.settings as settings_mod
@@ -1191,6 +1416,33 @@ def doctor() -> None:
                 f" v{kit_info['version']} but muxplex declares tmux-kit=={declared_pin}"
                 " \u2014 the environment was modified outside 'muxplex upgrade'"
             )
+
+    # amplifier-agent's own install status -- unlike tmux-kit above this is
+    # OPTIONAL (the embedded agent panel degrades to a clean per-request
+    # error when it's missing; see agent_embedded/runner.py's
+    # EmbeddedAgentUnavailable), so an absent agent is a warning here, never
+    # a failure mark. See cli.ensure_agent's module docstring for why a
+    # bare `uv tool install muxplex` (from PyPI OR git) never gets this on
+    # its own, and why `muxplex service install` / `muxplex upgrade` /
+    # `muxplex ensure-agent` are the commands that do.
+    agent_info = _get_install_info(_AGENT_DIST_NAME)
+    if agent_info["source"] == "not-installed":
+        print(
+            f"  {warn_mark} amplifier-agent -- not installed (embedded agent"
+            " panel unavailable until installed)"
+        )
+        print("    Run: muxplex ensure-agent")
+    else:
+        print(f"  {ok_mark} amplifier-agent {agent_info['version']}")
+        print(f"    \u21b3 from {_provenance_label(agent_info)}")
+        declared_agent_pin = _agent_target_pin()
+        if agent_info["version"] != declared_agent_pin:
+            print(
+                f"  {warn_mark} amplifier-agent version mismatch: installed"
+                f" v{agent_info['version']} but muxplex pins"
+                f" amplifier-agent=={declared_agent_pin}"
+            )
+            print("    Run: muxplex ensure-agent")
 
     # Provenance above is purely informational (green): running from git, a
     # local checkout, or an archive is a legitimate, deliberate choice, not
@@ -2090,6 +2342,17 @@ def upgrade(*, force: bool = False) -> None:
                     _install_failed = True
 
         if not _install_failed:
+            # 2.5. Ensure amplifier-agent stays current too -- unconditional
+            # (not gated on a service manager being present) so "muxplex
+            # upgrade" keeps the agent current on every host, per
+            # ensure_agent's own module docstring. Runs AFTER the reinstall
+            # above so it reads the pin the NEW muxplex version declares,
+            # not the one that was running before this upgrade started. A
+            # failure here is printed loudly by ensure_agent() itself but
+            # does not fail the upgrade -- amplifier-agent is optional.
+            print("  Ensuring amplifier-agent is current...")
+            ensure_agent()
+
             # 3. Regenerate service file (picks up any plist/unit changes)
             if sys.platform == "darwin" or _have_systemctl():
                 print("  Regenerating service file...")
@@ -3155,6 +3418,16 @@ def main() -> None:
 
     sub.add_parser("doctor", help="Check dependencies and system status")
 
+    ensure_agent_parser = sub.add_parser(
+        "ensure-agent",
+        help="Install/verify amplifier-agent for the embedded agent panel",
+    )
+    ensure_agent_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reinstall even if amplifier-agent is already at the pinned version",
+    )
+
     sub.add_parser(
         "env",
         help='Print `eval`-able TMUX_TMPDIR export (use: eval "$(muxplex env)")',
@@ -3300,6 +3573,9 @@ def main() -> None:
         generate_federation_key()
     elif args.command == "doctor":
         doctor()
+    elif args.command == "ensure-agent":
+        ok = ensure_agent(force=getattr(args, "force", False))
+        sys.exit(0 if ok else 1)
     elif args.command == "env":
         cmd_env()
     elif args.command == "restore":
