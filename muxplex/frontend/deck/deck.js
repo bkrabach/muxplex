@@ -1372,6 +1372,76 @@ function targetNotSelfOwningMessage(detail, devices) {
   return "Can't follow \u2014 " + label + ' is already following you';
 }
 
+// \u2500\u2500 Federated device discovery (Step 6: \u00a76.2.7-\u00a76.2.10, \u00a78.1 #11/#12) \u2500\u2500
+// Ported from frontend/app.js (the PWA proved this section first this time;
+// this is the lower-priority port to the Soft Deck, not a fresh design).
+// Pure, top-level, unconditionally exported -- same convention as
+// buildFollowsMenu/computeFollowsDegraded above (see this file's own header
+// comment: DOM-wiring lives inside `if (typeof document !== 'undefined')`
+// further down and is not reachable from tests/test_deck.mjs; these two
+// functions deliberately do NOT live there).
+
+/**
+ * Turn a raw GET /api/federation/devices response into rendering-ready
+ * rows. Pure data-shaping -- no DOM, no fetch. Verbatim port of app.js's
+ * buildFederatedDevicesSection.
+ * @param {Array<object>} rawEntries
+ * @returns {Array<{key:string, kind:('device'|'status'), label:string,
+ *   deviceId:?string, homeDeviceId:string, homeDeviceName:string,
+ *   reachable:boolean}>}
+ */
+function buildFederatedDevicesSection(rawEntries) {
+  var rows = [];
+  (rawEntries || []).forEach(function (entry) {
+    if (!entry) return;
+    if (entry.status) {
+      if (entry.status === 'empty') return; // reachable, nothing to show -- not a failure
+      rows.push({
+        key: 'status:' + entry.homeDeviceId,
+        kind: 'status',
+        label: 'Couldn\'t reach ' + (entry.homeDeviceName || entry.homeDeviceId),
+        deviceId: null,
+        homeDeviceId: entry.homeDeviceId,
+        homeDeviceName: entry.homeDeviceName,
+        reachable: false,
+      });
+      return;
+    }
+    if (!entry.device_id) return; // malformed/unexpected shape -- ignore defensively
+    var ownLabel = entry.display_name || entry.device_id;
+    rows.push({
+      key: entry.homeDeviceId + ':' + entry.device_id,
+      kind: 'device',
+      label: ownLabel + ' \u2014 via ' + (entry.homeDeviceName || entry.homeDeviceId),
+      deviceId: entry.device_id,
+      homeDeviceId: entry.homeDeviceId,
+      homeDeviceName: entry.homeDeviceName,
+      reachable: true,
+    });
+  });
+  return rows;
+}
+
+/**
+ * Resolve a federated device entry's home-server URL from a
+ * remote_instances list (GET /api/settings' remote_instances) -- same
+ * device_id-or-index fallback convention the server itself uses. Pure and
+ * parameterized (unlike app.js's closure-reading equivalent) so it needs
+ * no DOM-wiring state to be unit tested; the DOM-wiring block below passes
+ * its own `remoteInstances` closure var in explicitly.
+ * @param {Array<{url:?string, device_id:?string}>} remoteInstances
+ * @param {string} homeDeviceId
+ * @returns {?string}
+ */
+function resolveFederatedPeerUrl(remoteInstances, homeDeviceId) {
+  var remotes = remoteInstances || [];
+  for (var i = 0; i < remotes.length; i++) {
+    var id = (remotes[i].device_id != null && remotes[i].device_id !== '') ? remotes[i].device_id : String(i);
+    if (id === homeDeviceId) return remotes[i].url || null;
+  }
+  return null;
+}
+
 /**
  * Generate a pseudo-random device ID for this Soft Deck. Same shape as
  * app.js's `generateDeviceId()` (deliberately re-implemented, not imported --
@@ -2298,6 +2368,14 @@ if (typeof document !== 'undefined') {
     var lastFollowsMenu = null; // most recent buildFollowsMenu() result, for followsCandidateFromValue lookups
     var heartbeatTimer = null;
     var followsRegistryTimer = null;
+    // Step 6 (\u00a76.2.7-\u00a76.2.10, \u00a78.1 #11/#12) -- ported from frontend/app.js
+    // (the PWA is where Step 6 was proven first this time; this Soft Deck
+    // section is the lower-priority port, not the prototype). remoteInstances
+    // is this server's OWN federation peer config (GET /api/settings'
+    // remote_instances), needed only to resolve a federated device's home
+    // server URL for the "Open on X" action -- see resolveFederatedPeerUrl.
+    var federatedDevicesRaw = []; // last GET /api/federation/devices response
+    var remoteInstances = []; // last GET /api/settings' remote_instances[]
 
     // ── DOM refs ──
     var root = document.getElementById('deck-root');
@@ -2522,6 +2600,50 @@ if (typeof document !== 'undefined') {
         });
     }
 
+    // \u2500\u2500 Federated device discovery (Step 6: \u00a76.2.7-\u00a76.2.10, \u00a78.1 #11/#12) \u2500\u2500
+    // The pure data-shaping (buildFederatedDevicesSection) and pure URL
+    // lookup (resolveFederatedPeerUrl) live at TOP LEVEL, outside this
+    // document-gated block -- same convention as buildFollowsMenu/
+    // computeFollowsDegraded above, and required for them to be reachable
+    // from tests/test_deck.mjs (which never defines `document`; see that
+    // file's own header comment). Only the DOM/fetch-dependent wrappers
+    // below belong in here.
+
+    /**
+     * Fetch this server's remote_instances (for resolveFederatedPeerUrl's
+     * URL lookup) and its federated device registry, then re-render.
+     * Best-effort, same posture as refreshDevicesRegistry/refreshServerName
+     * above: a failed fetch leaves the last-known state in place.
+     * @returns {Promise<void>}
+     */
+    function refreshFederatedDevices() {
+      return Promise.all([
+        getJSON('/api/settings').then(function (settings) {
+          remoteInstances = (settings && settings.remote_instances) || [];
+        }),
+        getJSON('/api/federation/devices').then(function (data) {
+          federatedDevicesRaw = Array.isArray(data) ? data : [];
+        }),
+      ])
+        .then(function () {
+          renderFollowsUI();
+        })
+        .catch(function () {
+          // best-effort -- see docstring
+        });
+    }
+
+    /**
+     * Navigate to a federated peer's own PWA (\u00a76.2.9's "Open on X" link
+     * action). Same window.open convention as app.js's openFederatedPeer.
+     * @param {string} homeDeviceId
+     */
+    function openFederatedPeer(homeDeviceId) {
+      var url = resolveFederatedPeerUrl(remoteInstances, homeDeviceId);
+      if (!url) return; // no toast surface on this settings panel today; silently no-op is the existing pattern for unresolvable actions here
+      window.open(url, '_blank', 'noopener');
+    }
+
     /**
      * Populate (or repopulate) `#settings-follows` from the current
      * deckSettings.follows / devicesRegistry / serverName, and refresh the
@@ -2562,6 +2684,27 @@ if (typeof document !== 'undefined') {
           group.appendChild(o);
         });
         selectEl.appendChild(group);
+      }
+      // Step 6 (\u00a79.1's third section, ported from app.js's
+      // renderSyncGroupControls): informational, never a real Follows
+      // selection -- each row's VALUE encodes its action (open/retry); the
+      // change handler below performs it and reverts the <select>.
+      var federatedRows = buildFederatedDevicesSection(federatedDevicesRaw);
+      if (federatedRows.length > 0) {
+        var federatedGroup = document.createElement('optgroup');
+        federatedGroup.label = 'Elsewhere in your federation';
+        federatedRows.forEach(function (row) {
+          var o = document.createElement('option');
+          if (row.kind === 'status') {
+            o.value = 'federated-retry:' + row.homeDeviceId;
+            o.textContent = '\u26a0 ' + row.label;
+          } else {
+            o.value = 'federated-open:' + row.homeDeviceId;
+            o.textContent = row.label;
+          }
+          federatedGroup.appendChild(o);
+        });
+        selectEl.appendChild(federatedGroup);
       }
       selectEl.value = menu.selectedValue;
 
@@ -2648,7 +2791,13 @@ if (typeof document !== 'undefined') {
     function startFollowsRegistryPolling() {
       if (followsRegistryTimer) return;
       function tick() {
-        refreshDevicesRegistry().then(function () {
+        // Step 6: piggyback the federated-devices/remote_instances refresh
+        // on this same "Settings is open" tick -- one more request every
+        // HEARTBEAT_MS while the panel with the Follows dropdown is
+        // visible, never a separate always-on timer (\u00a76.2.7: fill async,
+        // never block; here that also means never poll while nobody could
+        // even see the result).
+        Promise.all([refreshDevicesRegistry(), refreshFederatedDevices()]).then(function () {
           followsRegistryTimer = setTimeout(tick, HEARTBEAT_MS);
         });
       }
@@ -4288,6 +4437,21 @@ if (typeof document !== 'undefined') {
       var followsSel = settingsEl.querySelector('#settings-follows');
       if (followsSel) {
         followsSel.addEventListener('change', function () {
+          // Step 6: the federated optgroup's rows are action encodings,
+          // never a real Follows selection (\u00a79.1 -- "not selectable").
+          // Perform the action, then revert to whatever is actually
+          // persisted right now (same pattern as app.js's
+          // handleFollowsSelectChange).
+          if (followsSel.value.indexOf('federated-open:') === 0) {
+            openFederatedPeer(followsSel.value.slice('federated-open:'.length));
+            renderFollowsUI();
+            return;
+          }
+          if (followsSel.value.indexOf('federated-retry:') === 0) {
+            refreshFederatedDevices();
+            renderFollowsUI();
+            return;
+          }
           followsErrorMessage = '';
           var registered = (lastFollowsMenu && lastFollowsMenu.registered) || [];
           var candidate = followsCandidateFromValue(followsSel.value, registered);
@@ -4652,5 +4816,13 @@ if (typeof module !== 'undefined' && module.exports) {
     loadOrCreateDeckDeviceId: loadOrCreateDeckDeviceId,
     deckHeartbeatLabel: deckHeartbeatLabel,
     DECK_DEVICE_ID_KEY: DECK_DEVICE_ID_KEY,
+    // Federated device discovery (Step 6: \u00a76.2.7-\u00a76.2.10, \u00a78.1 #11/#12) --
+    // pure top-level functions only; openFederatedPeer/refreshFederatedDevices
+    // are DOM/fetch-dependent and live inside the document-gated block below
+    // (like attemptFollowsChange/renderFollowsUI/etc.), so they are
+    // deliberately NOT exported here (there is no `document` in this test
+    // environment for them to have ever been defined against).
+    buildFederatedDevicesSection: buildFederatedDevicesSection,
+    resolveFederatedPeerUrl: resolveFederatedPeerUrl,
   };
 }

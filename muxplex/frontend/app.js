@@ -220,6 +220,13 @@ const POLL_MS = 2000;
 const STATE_POLL_MS = 1000;
 const HEARTBEAT_MS = 5000;
 const MOBILE_THRESHOLD = 600;
+// Step 6 (design doc §6.2.7): a real network fan-out to every federation
+// peer, not a same-process poll -- kept an order of magnitude slower than
+// POLL_MS so this control never becomes the thing hammering a fleet of
+// remotes every couple seconds. The server's own circuit breaker/cache
+// (main.py's _federation_breaker/_federation_devices_cache) is the other
+// half of keeping this cheap even at this cadence.
+const FEDERATED_DEVICES_POLL_MS = 10000;
 
 // ─── App state ────────────────────────────────────────────────────────────────
 let _deviceId = '';
@@ -252,6 +259,15 @@ let _devicesRegistry = {};       // last-known GET /api/state `devices` map
 let _lastDevicesSnapshot = '';   // JSON snapshot of _devicesRegistry, for pollActiveState's change-detection guard (no re-render churn on an unchanged poll)
 let _serverName = '';            // GET /api/instance-info's `name`
 let _lastFollowsMenu = null;     // most recent buildFollowsMenu() result (for followsCandidateFromValue's raw-label recovery)
+
+// ── Step 6: federated device discovery (§6.2.7-§6.2.10, §8.1 #11) ──────────
+// Raw GET /api/federation/devices response, refreshed async and NEVER
+// blocking the local Follows menu/Decks tab render (§6.2.7 -- "render
+// local, fill federated async"). Starts empty so the very first render of
+// this session shows local sections only, exactly like today, until the
+// first fetch resolves.
+let _federatedDevicesRaw = [];
+let _federatedDevicesPollTimer;
 
 let _currentSessions = [];
 let _viewingSession = null;
@@ -914,6 +930,19 @@ async function attemptFollowTarget(candidate) {
  * @param {string} value - the selected `<option>`'s value
  */
 function handleFollowsSelectChange(value) {
+  // Step 6: the federated optgroup's rows are action encodings, never a
+  // real Follows selection (§9.1 -- "not selectable"). Perform the action,
+  // then revert the <select> to whatever is actually persisted right now.
+  if (typeof value === 'string' && value.indexOf('federated-open:') === 0) {
+    openFederatedPeer(value.slice('federated-open:'.length));
+    renderSyncGroupControls();
+    return;
+  }
+  if (typeof value === 'string' && value.indexOf('federated-retry:') === 0) {
+    fetchFederatedDevices(); // re-fetch now rather than waiting for the next poll tick
+    renderSyncGroupControls();
+    return;
+  }
   if (value === 'global' || value === 'none') {
     if (_followTarget) {
       _followTarget = null;
@@ -951,6 +980,142 @@ function renderControlledByChip() {
       chip.classList.add('hidden');
     }
   });
+}
+
+// ── Federated device discovery (Step 6: §6.2.7-§6.2.10, §8.1 #11/#12) ──────
+// "Elsewhere in your federation" -- the third, INFORMATIONAL section (§9.1)
+// below the two local sections rendered above. Sourced from
+// GET /api/federation/devices, a server-side read-only fan-out that
+// carries ONLY peer devices (this server's own devices{} registry already
+// surfaces via _devicesRegistry/buildFollowsMenu's "registered" section).
+
+/**
+ * Resolve a federated device entry's home-server URL from this browser's
+ * already-loaded `_serverSettings.remote_instances` -- the same
+ * device_id-or-index convention the server itself uses
+ * (main.py's `remote.get("device_id", str(i))`, also mirrored by
+ * `_createDeviceSelect()` above) so a peer with no explicit `device_id`
+ * configured still resolves via its list position.
+ * @param {string} homeDeviceId
+ * @returns {?string} the peer's configured URL, or null if unresolvable
+ */
+function resolveFederatedPeerUrl(homeDeviceId) {
+  var remotes = (_serverSettings && _serverSettings.remote_instances) || [];
+  for (var i = 0; i < remotes.length; i++) {
+    var id = (remotes[i].device_id != null && remotes[i].device_id !== '') ? remotes[i].device_id : String(i);
+    if (id === homeDeviceId) return remotes[i].url || null;
+  }
+  return null;
+}
+
+/**
+ * Turn a raw GET /api/federation/devices response into rendering-ready
+ * rows. Pure data-shaping -- no DOM, no fetch -- so it is independently
+ * testable (tests/test_app.mjs).
+ *
+ * Device entries (carry `device_id`) are keyed
+ * `<homeDeviceId>:<device_id>` (§6.2.8's composite key): this is what lets
+ * the SAME logical device, registered on two different peers during a
+ * ≤300s move-between-servers window, render as two clearly-labeled rows
+ * ("via spark-1" / "via alienware") instead of colliding under one bare
+ * device_id.
+ *
+ * Per-peer status entries (carry `status`, no `device_id`) become a single
+ * un-clickable row per §6.2.10, UNLESS status is 'empty' -- a REACHABLE
+ * peer with nothing registered is not a failure, so (unlike
+ * 'unreachable'/'auth_failed') it is omitted rather than adding a
+ * permanently-empty, non-actionable row for every quiet peer.
+ *
+ * @param {Array<object>} rawEntries - GET /api/federation/devices response
+ * @returns {Array<{key:string, kind:('device'|'status'), label:string,
+ *   deviceId:?string, homeDeviceId:string, homeDeviceName:string,
+ *   reachable:boolean}>}
+ */
+function buildFederatedDevicesSection(rawEntries) {
+  var rows = [];
+  (rawEntries || []).forEach(function(entry) {
+    if (!entry) return;
+    if (entry.status) {
+      if (entry.status === 'empty') return; // reachable, nothing to show -- not a failure
+      rows.push({
+        key: 'status:' + entry.homeDeviceId,
+        kind: 'status',
+        label: 'Couldn\'t reach ' + (entry.homeDeviceName || entry.homeDeviceId),
+        deviceId: null,
+        homeDeviceId: entry.homeDeviceId,
+        homeDeviceName: entry.homeDeviceName,
+        reachable: false,
+      });
+      return;
+    }
+    if (!entry.device_id) return; // malformed/unexpected shape -- ignore defensively
+    var ownLabel = entry.display_name || entry.device_id;
+    rows.push({
+      key: entry.homeDeviceId + ':' + entry.device_id,
+      kind: 'device',
+      label: ownLabel + ' \u2014 via ' + (entry.homeDeviceName || entry.homeDeviceId),
+      deviceId: entry.device_id,
+      homeDeviceId: entry.homeDeviceId,
+      homeDeviceName: entry.homeDeviceName,
+      reachable: true,
+    });
+  });
+  return rows;
+}
+
+/**
+ * Navigate to a federated peer's own PWA (§6.2.9's "Open on X" link
+ * action). Opens in a new tab (matches the existing external-link
+ * convention in index.html's Decks tab -- "Open Soft Deck"/"Set up a
+ * physical Stream Deck" both use target="_blank" rel="noopener"). A peer
+ * whose URL can't be resolved (e.g. remote_instances hasn't loaded yet)
+ * fails loud via toast rather than silently doing nothing.
+ * @param {string} homeDeviceId
+ */
+function openFederatedPeer(homeDeviceId) {
+  var url = resolveFederatedPeerUrl(homeDeviceId);
+  if (!url) {
+    showToast('Could not find that server\'s address \u2014 try again.');
+    return;
+  }
+  window.open(url, '_blank', 'noopener');
+}
+
+/**
+ * Fetch GET /api/federation/devices and re-render (§6.2.7: "render local,
+ * fill federated async" -- never blocks or delays the local Follows
+ * menu/Decks tab, which have already rendered by the time this resolves).
+ * Best-effort: a failed fetch leaves the last-known `_federatedDevicesRaw`
+ * in place rather than clearing it, so a transient blip doesn't flash the
+ * whole "Elsewhere" section away (same posture as refreshDevicesRegistry's
+ * deck.js counterpart).
+ * @returns {Promise<void>}
+ */
+async function fetchFederatedDevices() {
+  try {
+    const res = await api('GET', '/api/federation/devices');
+    const data = await res.json();
+    _federatedDevicesRaw = Array.isArray(data) ? data : [];
+    renderSyncGroupControls();
+  } catch (err) {
+    console.warn('[fetchFederatedDevices] could not refresh federated devices:', err);
+  }
+}
+
+/**
+ * Start the periodic federated-devices refresh (FEDERATED_DEVICES_POLL_MS).
+ * Guards against double-start; self-scheduling setTimeout, same shape as
+ * startPolling()/startStatePolling() so a slow fan-out never overlaps the
+ * next tick.
+ */
+function startFederatedDevicesPolling() {
+  if (_federatedDevicesPollTimer) return;
+  _federatedDevicesPollTimer = true; // sentinel: prevents double-start before first setTimeout fires
+  async function tick() {
+    await fetchFederatedDevices();
+    if (!_visibilityPaused) _federatedDevicesPollTimer = setTimeout(tick, FEDERATED_DEVICES_POLL_MS);
+  }
+  tick();
 }
 
 /**
@@ -1010,6 +1175,32 @@ function renderSyncGroupControls() {
         group.appendChild(o);
       });
       sel.appendChild(group);
+    }
+    // Step 6 (§9.1's third section): "Elsewhere in your federation" --
+    // informational, never the actual Follows selection. A native
+    // <select> has no way to attach an inline "[Open on X]"/"[Retry]"
+    // button to one row, so each federated row's VALUE instead encodes the
+    // action itself (see handleFollowsSelectChange) -- picking a device
+    // row opens that peer's PWA, picking a status row retries the fetch,
+    // and either way the <select> is immediately reverted to the real
+    // current follows value right after (never persisted as a selection,
+    // matching "not selectable").
+    var federatedRows = buildFederatedDevicesSection(_federatedDevicesRaw);
+    if (federatedRows.length > 0) {
+      var federatedGroup = document.createElement('optgroup');
+      federatedGroup.label = 'Elsewhere in your federation';
+      federatedRows.forEach(function(row) {
+        var o = document.createElement('option');
+        if (row.kind === 'status') {
+          o.value = 'federated-retry:' + row.homeDeviceId;
+          o.textContent = '\u26a0 ' + row.label;
+        } else {
+          o.value = 'federated-open:' + row.homeDeviceId;
+          o.textContent = row.label;
+        }
+        federatedGroup.appendChild(o);
+      });
+      sel.appendChild(federatedGroup);
     }
     sel.value = menu.selectedValue;
     sel.title = title;
@@ -1084,43 +1275,117 @@ function _buildDecksDeviceRow(deviceId, device) {
 }
 
 /**
+ * Build one row of the Decks tab's federated ("Elsewhere in your
+ * federation") list (§9.5, same rules as §9.1's picker section). Unlike
+ * the header `<select>`'s action-encoded-as-a-value workaround, this is a
+ * full custom-rendered panel, so each row gets a REAL clickable action:
+ * a device row's "Open on X" is an `<a target="_blank">` (same convention
+ * as the tab's existing "Open Soft Deck"/"Set up a physical Stream Deck"
+ * links), a status row's "Retry" is a `<button>`. Never selectable --
+ * neither carries a radio/checkbox, matching §9.1's "informational" rule.
+ * @param {{key:string, kind:('device'|'status'), label:string,
+ *   deviceId:?string, homeDeviceId:string, homeDeviceName:string,
+ *   reachable:boolean}} row
+ * @returns {Element}
+ */
+function _buildDecksFederatedRow(row) {
+  var el = document.createElement('div');
+  el.className = 'decks-federated-row' + (row.reachable ? '' : ' decks-federated-row--unreachable');
+
+  var labelSpan = document.createElement('span');
+  labelSpan.className = 'decks-federated-label';
+  labelSpan.textContent = (row.reachable ? '' : '\u26a0 ') + row.label;
+  el.appendChild(labelSpan);
+
+  if (row.reachable) {
+    var openLink = document.createElement('a');
+    openLink.className = 'settings-action-btn settings-action-link decks-federated-action';
+    openLink.textContent = 'Open on ' + (row.homeDeviceName || row.homeDeviceId);
+    openLink.href = resolveFederatedPeerUrl(row.homeDeviceId) || '#';
+    openLink.target = '_blank';
+    openLink.rel = 'noopener';
+    openLink.addEventListener('click', function(ev) {
+      if (!resolveFederatedPeerUrl(row.homeDeviceId)) {
+        ev.preventDefault();
+        showToast('Could not find that server\'s address \u2014 try again.');
+      }
+    });
+    el.appendChild(openLink);
+  } else {
+    var retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'settings-action-btn decks-federated-action';
+    retryBtn.textContent = 'Retry';
+    retryBtn.addEventListener('click', function() {
+      fetchFederatedDevices();
+    });
+    el.appendChild(retryBtn);
+  }
+
+  return el;
+}
+
+/**
  * Populate (or repopulate) the Settings > Decks tab's registered-device
- * list (§9.5) from the current _devicesRegistry/_serverName. Renders every
+ * list (§9.5) from the current _devicesRegistry/_serverName, PLUS the
+ * federated "Elsewhere in your federation" section (§9.5/§9.1, sourced
+ * from _federatedDevicesRaw -- see fetchFederatedDevices). Renders every
  * OTHER device registered with this server (excluding this browser's own
  * entry, which manages its own name via Display > Device Name instead).
- * No-op if the tab's DOM isn't present. Skips the rebuild entirely while a
- * rename is in progress (focus is inside a .decks-device-name input) so a
- * ~1s poll tick can never clobber an in-flight edit -- the next tick after
- * the input blurs picks up any registry changes.
+ * No-op if the tab's DOM isn't present. Skips the LOCAL list's rebuild
+ * entirely while a rename is in progress (focus is inside a
+ * .decks-device-name input) so a ~1s poll tick can never clobber an
+ * in-flight edit -- the next tick after the input blurs picks up any
+ * registry changes. The federated section has no editable inputs, so it
+ * is never subject to that guard.
  */
 function renderDecksSettingsTab() {
   var listEl = $('decks-registered-list');
   var emptyEl = $('decks-registered-empty');
   var headingEl = $('decks-registered-heading');
-  if (!listEl) return;
+  if (listEl) {
+    var active = typeof document !== 'undefined' ? document.activeElement : null;
+    var renamingInProgress = active && active.classList && active.classList.contains('decks-device-name');
 
-  var active = typeof document !== 'undefined' ? document.activeElement : null;
-  if (active && active.classList && active.classList.contains('decks-device-name')) return;
+    if (!renamingInProgress) {
+      if (headingEl) headingEl.textContent = 'Registered with ' + (_serverName || 'this server');
 
-  if (headingEl) headingEl.textContent = 'Registered with ' + (_serverName || 'this server');
+      var entries = [];
+      for (var id in _devicesRegistry) {
+        if (!Object.prototype.hasOwnProperty.call(_devicesRegistry, id)) continue;
+        if (id === _deviceId) continue; // this device -- not offered in the manage-others list
+        entries.push({ id: id, device: _devicesRegistry[id] });
+      }
 
-  var entries = [];
-  for (var id in _devicesRegistry) {
-    if (!Object.prototype.hasOwnProperty.call(_devicesRegistry, id)) continue;
-    if (id === _deviceId) continue; // this device -- not offered in the manage-others list
-    entries.push({ id: id, device: _devicesRegistry[id] });
+      listEl.innerHTML = '';
+      if (entries.length === 0) {
+        if (emptyEl) emptyEl.classList.remove('hidden');
+      } else {
+        if (emptyEl) emptyEl.classList.add('hidden');
+        entries.forEach(function(entry) {
+          listEl.appendChild(_buildDecksDeviceRow(entry.id, entry.device));
+        });
+      }
+    }
   }
 
-  listEl.innerHTML = '';
-  if (entries.length === 0) {
-    if (emptyEl) emptyEl.classList.remove('hidden');
-    return;
+  // Step 6 (§9.5): federated section, same rows/rules as the header
+  // dropdown's third section (§9.1) -- just rendered as a real clickable
+  // list instead of a <select>'s action-encoded options.
+  var federatedListEl = $('decks-federated-list');
+  var federatedEmptyEl = $('decks-federated-empty');
+  if (federatedListEl) {
+    var federatedRows = buildFederatedDevicesSection(_federatedDevicesRaw);
+    federatedListEl.innerHTML = '';
+    if (federatedRows.length === 0) {
+      if (federatedEmptyEl) federatedEmptyEl.classList.remove('hidden');
+    } else {
+      if (federatedEmptyEl) federatedEmptyEl.classList.add('hidden');
+      federatedRows.forEach(function(row) {
+        federatedListEl.appendChild(_buildDecksFederatedRow(row));
+      });
+    }
   }
-  if (emptyEl) emptyEl.classList.add('hidden');
-
-  entries.forEach(function(entry) {
-    listEl.appendChild(_buildDecksDeviceRow(entry.id, entry.device));
-  });
 }
 
 /**
@@ -5022,6 +5287,16 @@ function _setDevicesRegistryForTests(devices) {
 /** Test-only helper: set _serverName directly, bypassing a real /api/instance-info fetch. */
 function _setServerNameForTests(name) {
   _serverName = name || '';
+}
+
+/** Test-only helper: set _federatedDevicesRaw directly, bypassing a real GET /api/federation/devices fetch. */
+function _setFederatedDevicesRawForTests(rawEntries) {
+  _federatedDevicesRaw = rawEntries || [];
+}
+
+/** Test-only helper: set _serverSettings directly, bypassing a real GET /api/settings fetch -- used by resolveFederatedPeerUrl's remote_instances lookup. */
+function _setServerSettingsForTests(settings) {
+  _serverSettings = settings || null;
 }
 
 /** Test-only helper: set _lastHeartbeatGoneId directly. */
@@ -9045,6 +9320,11 @@ document.addEventListener('DOMContentLoaded', async function() {
       bindStaticEventListeners();
       renderSyncGroupControls();
       renderViewDropdown();
+      // Step 6 (§6.2.7): local sections have just rendered above via
+      // renderSyncGroupControls(); the federated section starts empty and
+      // fills in whenever this first fetch resolves -- never blocking or
+      // delaying anything above.
+      startFederatedDevicesPolling();
       // Update sidebar label after restoreState sets _activeView (Issue 7)
       var sidebarLabelEl = $('sidebar-view-label');
       if (sidebarLabelEl) {
@@ -9101,6 +9381,16 @@ if (typeof module !== 'undefined' && module.exports) {
     _setDevicesRegistryForTests,
     _setServerNameForTests,
     _setLastHeartbeatGoneIdForTests,
+    // Federated device discovery (Step 6: §6.2.7-§6.2.10, §8.1 #11/#12)
+    FEDERATED_DEVICES_POLL_MS,
+    resolveFederatedPeerUrl,
+    buildFederatedDevicesSection,
+    openFederatedPeer,
+    fetchFederatedDevices,
+    startFederatedDevicesPolling,
+    _buildDecksFederatedRow,
+    _setFederatedDevicesRawForTests,
+    _setServerSettingsForTests,
     // Compose bar
     COMPOSE_PREF_STORAGE_KEY,
     initComposePref,

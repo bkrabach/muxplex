@@ -2664,6 +2664,72 @@ test('targetNotSelfOwningMessage: a malformed/missing detail body still produces
   );
 });
 
+// ── Federated device discovery (Step 6: §6.2.7-§6.2.10, §8.1 #11/#12) ──
+// Ported from frontend/app.js's coverage of the same functions (the PWA
+// proved this section first this time; this is the lower-priority port to
+// the Soft Deck).
+
+test('buildFederatedDevicesSection: a device entry is keyed `<homeDeviceId>:<deviceId>` and labeled "<name> — via <home>" (§6.2.8)', () => {
+  const rows = deck.buildFederatedDevicesSection([
+    { device_id: 'd-deck-alien', display_name: 'Stream Deck (studio)', homeDeviceId: 'peer-macbook', homeDeviceName: 'macbook' },
+  ]);
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].key, 'peer-macbook:d-deck-alien');
+  assert.strictEqual(rows[0].label, 'Stream Deck (studio) \u2014 via macbook');
+  assert.strictEqual(rows[0].reachable, true);
+});
+
+test('buildFederatedDevicesSection: an unreachable peer becomes a single un-clickable status row (§6.2.10 -- shown, not omitted)', () => {
+  const rows = deck.buildFederatedDevicesSection([
+    { status: 'unreachable', homeDeviceId: 'peer-2', homeDeviceName: 'alienware-r13' },
+  ]);
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].kind, 'status');
+  assert.strictEqual(rows[0].label, "Couldn't reach alienware-r13");
+});
+
+test('buildFederatedDevicesSection: a reachable peer with status=empty produces NO row (not a failure)', () => {
+  assert.deepStrictEqual(
+    deck.buildFederatedDevicesSection([{ status: 'empty', homeDeviceId: 'peer-4', homeDeviceName: 'macbook' }]),
+    []
+  );
+});
+
+test('buildFederatedDevicesSection: empty/absent raw entries produce an empty section', () => {
+  assert.deepStrictEqual(deck.buildFederatedDevicesSection([]), []);
+  assert.deepStrictEqual(deck.buildFederatedDevicesSection(null), []);
+});
+
+test('buildFederatedDevicesSection: the SAME device_id from TWO different peers renders as two distinct rows (§6.2.8)', () => {
+  const rows = deck.buildFederatedDevicesSection([
+    { device_id: 'd-moved', display_name: 'Stream Deck', homeDeviceId: 'peer-spark-1', homeDeviceName: 'spark-1' },
+    { device_id: 'd-moved', display_name: 'Stream Deck', homeDeviceId: 'peer-alienware', homeDeviceName: 'alienware' },
+  ]);
+  assert.strictEqual(rows.length, 2);
+  assert.deepStrictEqual(rows.map((r) => r.key).sort(), ['peer-alienware:d-moved', 'peer-spark-1:d-moved']);
+});
+
+test('resolveFederatedPeerUrl: resolves via configured device_id, falls back to list-position index, returns null when unresolvable', () => {
+  const remoteInstances = [
+    { url: 'http://alienware:8088', device_id: 'peer-alienware' },
+    { url: 'http://spark-3:8088' },
+  ];
+  assert.strictEqual(deck.resolveFederatedPeerUrl(remoteInstances, 'peer-alienware'), 'http://alienware:8088');
+  assert.strictEqual(deck.resolveFederatedPeerUrl(remoteInstances, '1'), 'http://spark-3:8088');
+  assert.strictEqual(deck.resolveFederatedPeerUrl(remoteInstances, 'no-such-peer'), null);
+});
+
+test('resolveFederatedPeerUrl: empty/absent remote_instances resolves to null rather than throwing', () => {
+  assert.strictEqual(deck.resolveFederatedPeerUrl([], 'peer-x'), null);
+  assert.strictEqual(deck.resolveFederatedPeerUrl(undefined, 'peer-x'), null);
+});
+
+// openFederatedPeer/refreshFederatedDevices are DOM/fetch-dependent (like
+// attemptFollowsChange/renderFollowsUI/wireSettingsPanel elsewhere in
+// deck.js) and live inside the `if (typeof document !== 'undefined')`
+// block -- not reachable or unit-tested from this file, matching every
+// other DOM-wiring function's existing coverage posture here.
+
 // ── device_id generation/persistence ──
 
 test('generateDeckDeviceId: matches the "d-" + 8 alphanumeric chars shape (same convention as app.js\'s generateDeviceId)', () => {

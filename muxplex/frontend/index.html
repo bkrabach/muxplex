@@ -546,11 +546,12 @@
             </div>
           </div>
         </div>
-        <!-- Step 4 (design doc §9.5): "Decks" tab -- local section only,
-             no "Elsewhere in your federation" section (needs #11/Step 6,
-             which is not built). Renamed here from the design doc's
-             description as plain "Decks", distinct from "Multi-Device"
-             (federation) above. -->
+        <!-- Step 4 (design doc §9.5): "Decks" tab, local section. Renamed
+             here from the design doc's description as plain "Decks",
+             distinct from "Multi-Device" (federation) above. Step 6 adds
+             the second, federated section below (§9.5/§9.1): informational
+             only, populated from GET /api/federation/devices via
+             renderDecksSettingsTab() -- see app.js. -->
         <div class="settings-panel hidden" data-tab="decks">
           <div class="settings-field settings-field--column">
             <label class="settings-label">Soft Deck</label>
@@ -566,6 +567,15 @@
             <label class="settings-label" id="decks-registered-heading">Registered devices</label>
             <div id="decks-registered-list" class="decks-registered-list"></div>
             <p class="settings-helper hidden" id="decks-registered-empty">No devices have registered with this server yet.</p>
+          </div>
+          <!-- Step 6 (§9.5): "Elsewhere in your federation" -- same
+               informational rows/rules as the header dropdown's third
+               section (§9.1): not selectable, un-clickable + [Retry] when
+               unreachable, an "Open on X" link when reachable. -->
+          <div class="settings-field settings-field--column">
+            <label class="settings-label">Elsewhere in your federation</label>
+            <div id="decks-federated-list" class="decks-federated-list"></div>
+            <p class="settings-helper hidden" id="decks-federated-empty">No other devices found on your federation peers.</p>
           </div>
         </div>
         <div class="settings-panel hidden" data-tab="tmux">
