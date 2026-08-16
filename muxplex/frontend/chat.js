@@ -1586,6 +1586,26 @@
     if (m403) {
       return { headline: "muxplex refused that request.", remedy: null };
     }
+    // muxplex-at9: the 503 muxplex's OWN proxy returns when
+    // AMPLIFIER_AGENT_BEARER_TOKEN is unset -- i.e. the agent was never
+    // installed/configured on THIS server (main.py's
+    // agent_chat_completions_proxy). That is the default starting state
+    // for every fresh muxplex install, not a transient fault, so
+    // "worth retrying" (the generic m5xx phrasing just below) is actively
+    // wrong advice here -- retrying can never help until an operator
+    // configures it. Checked on the server's OWN wording, not on `name`:
+    // this failure reaches here through the plain `!resp.ok` path in
+    // runTurn() (name === "__request__"), never the SSE error-frame path,
+    // so it must not be scoped to name === "__stream__" the way the
+    // sidecar-unreachable case above is.
+    if (m5xx && /not configured on this server/i.test(msg)) {
+      return {
+        headline: "The Agent isn't set up on this server yet.",
+        remedy: "This is the normal starting state, not a fault -- there is nothing to " +
+          "retry. Whoever runs this muxplex server can set it up from Settings -> Agent " +
+          "(docs/AGENT_CHAT_SETUP.md covers installing the sidecar as its own step).",
+      };
+    }
     if (m5xx) {
       return {
         headline: "muxplex hit an error of its own while handling that.",
@@ -2844,7 +2864,31 @@
     const statusEl = document.getElementById("agent-credential-status");
     const shadowEl = document.getElementById("agent-credential-shadow-warning");
     const restartWarnEl = document.getElementById("agent-credential-restart-warning");
+    const submitBtn = document.getElementById("agent-credential-submit-btn");
     if (!statusEl) return;
+
+    // muxplex-at9: "not_installed" (the sidecar's service account / CLI
+    // binary do not exist on this box -- the feature was never set up
+    // here) is a DIFFERENT, more basic state than "error" (the status
+    // check itself failed for some other reason) or "not_configured"
+    // (installed, but no provider key yet). It is the default starting
+    // state for every fresh muxplex install, so this reads as a fact with
+    // a next step -- never the raw `sudo: unknown user aa-svc` /
+    // audit-plugin stderr this used to fall through to as `state: "error"`
+    // (main.py's get_agent_provider_credential no longer even shells out
+    // to learn this). The form is disabled rather than left to fail a
+    // POST that can only ever be refused (post_agent_provider_credential
+    // gives that same clean refusal if this is reached some other way).
+    if (data.state === "not_installed") {
+      statusEl.textContent = data.message ||
+        "The Agent sidecar isn't installed on this server yet. See docs/AGENT_CHAT_SETUP.md " +
+        "to install it, then come back here to add a key.";
+      if (shadowEl) shadowEl.classList.add("hidden");
+      if (restartWarnEl) restartWarnEl.classList.add("hidden");
+      if (submitBtn) submitBtn.disabled = true;
+      return;
+    }
+    if (submitBtn) submitBtn.disabled = false;
 
     if (data.state === "error") {
       statusEl.textContent = "Could not check the Agent's credential status: " + (data.message || "unknown error");

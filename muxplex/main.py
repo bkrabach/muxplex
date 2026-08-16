@@ -5171,6 +5171,51 @@ _AGENT_PROVIDER_ENV_VARS: dict[str, str] = {
 }
 
 
+class AgentSidecarNotInstalled(RuntimeError):
+    """Raised by `_run_agent_cli` when the sidecar's service account or CLI
+    binary do not exist on this box -- i.e. the agent-chat feature was
+    never installed here (muxplex-at9).
+
+    This is the DEFAULT starting state for every fresh muxplex install:
+    `aa-svc` and `/home/aa-svc/.local/bin/amplifier-agent` only exist on a
+    box where someone has already worked through
+    docs/AGENT_CHAT_SETUP.md. Every v0.48.0 upgrader hit this and saw raw
+    `sudo: unknown user aa-svc` / audit-plugin stderr rendered verbatim in
+    Settings -> Agent, because nothing checked for the user or the binary
+    before shelling out to `sudo -u aa-svc ...`.
+
+    Deliberately a precondition failure, not a subprocess result: it is
+    raised BEFORE any subprocess is spawned (see
+    `_agent_sidecar_install_gap`, which never shells out either), so it
+    can never itself carry subprocess stderr. This is why callers must
+    catch it explicitly rather than receiving it via the (rc, stdout,
+    stderr) tuple `_run_agent_cli` normally returns -- conflating "we
+    never tried" with "we tried and it failed" is exactly the bug being
+    fixed.
+    """
+
+
+def _agent_sidecar_install_gap() -> str | None:
+    """Return a short, human-safe reason `_run_agent_cli` cannot be used
+    yet, or None if it can be.
+
+    Pure passwd/filesystem checks -- NEVER shells out -- so that
+    detecting "not installed" can never itself risk leaking subprocess
+    stderr (muxplex-at9). Checked fresh on every call rather than cached:
+    both the service account and the binary are the kind of thing an
+    operator installs once and never touches again, so the cost of two
+    cheap local lookups per request is not worth the staleness risk of a
+    cache that would need its own invalidation story.
+    """
+    try:
+        pwd.getpwnam(_AGENT_AUTH_USER)
+    except KeyError:
+        return f"the {_AGENT_AUTH_USER!r} service account does not exist on this server"
+    if not os.path.exists(_AGENT_AUTH_BIN):
+        return f"the amplifier-agent CLI is not installed at {_AGENT_AUTH_BIN}"
+    return None
+
+
 async def _agent_service_env_shadow_vars() -> set[str]:
     """Return provider env-var NAMES (never values) present in the agent
     sidecar's OWN systemd environment -- read-only, via `systemctl show`.
@@ -5276,7 +5321,20 @@ async def _run_agent_cli(
 
     Returns (returncode, stdout, stderr). Never raises on a non-zero exit --
     callers decide what a given code means (SS9's failure-mode table).
+
+    The one exception: raises `AgentSidecarNotInstalled` -- BEFORE any
+    subprocess is spawned -- when `_agent_sidecar_install_gap()` finds the
+    service account or the CLI binary missing (muxplex-at9). That is a
+    precondition failure, not a subprocess result, so it does not fit the
+    (rc, stdout, stderr) shape above: there is no exit code or stderr,
+    because `sudo` was never invoked. Callers that can reach this
+    function before the sidecar is ever installed (every fresh muxplex
+    install starts in exactly that state) must catch it explicitly.
     """
+    gap = _agent_sidecar_install_gap()
+    if gap is not None:
+        raise AgentSidecarNotInstalled(gap)
+
     argv = ["sudo", "-u", _AGENT_AUTH_USER, "-H", "env"]
     full_env = dict(os.environ)
     if env_overrides:
@@ -5511,10 +5569,27 @@ async def get_agent_provider_credential(request: Request) -> dict:
 
     Shells `auth status` + `auth list` as aa-svc, plus a direct check of
     the sidecar's own `/v1/models`, and returns the shape the Settings ->
-    Agent UI renders its five states from.
+    Agent UI renders its states from -- including `not_installed`, the
+    default starting state for every fresh muxplex install (muxplex-at9).
     """
-    status_rc, status_out, status_err = await _run_agent_cli(["auth", "status"])
-    list_rc, list_out, _list_err = await _run_agent_cli(["auth", "list"])
+    try:
+        status_rc, status_out, status_err = await _run_agent_cli(["auth", "status"])
+        list_rc, list_out, _list_err = await _run_agent_cli(["auth", "list"])
+    except AgentSidecarNotInstalled as exc:
+        # muxplex-at9: the default starting state for every fresh muxplex
+        # install -- there is nothing to configure yet because the agent
+        # sidecar itself was never installed on this box. A FACT the UI
+        # should onboard from, not a command failure: never render this
+        # as `state: "error"` (which used to carry raw `sudo`/audit-plugin
+        # stderr all the way to the settings panel), and never shell out
+        # to learn it (see `_agent_sidecar_install_gap`).
+        return {
+            "state": "not_installed",
+            "message": (
+                f"The Agent sidecar isn't installed on this server yet ({exc}). "
+                "See docs/AGENT_CHAT_SETUP.md for the install step."
+            ),
+        }
 
     if status_rc != 0:
         return {
@@ -5620,7 +5695,22 @@ async def post_agent_provider_credential(
         now = time.monotonic()
         cooldown_remaining = _AGENT_RESTART_COOLDOWN_S - (now - _agent_last_restart_at)
 
-        verdict, detail = await _validate_agent_credential(provider, api_key)
+        try:
+            verdict, detail = await _validate_agent_credential(provider, api_key)
+        except AgentSidecarNotInstalled as exc:
+            # Same precondition as the GET status endpoint, reached via a
+            # different path (a caller who submits a key before ever
+            # loading Settings -> Agent, or hits this route directly):
+            # refuse with a clean, computed fact -- never a raw
+            # subprocess stderr let through from an unguarded
+            # `sudo -u aa-svc ...` (muxplex-at9).
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"The Agent sidecar isn't installed on this server yet ({exc}). "
+                    "See docs/AGENT_CHAT_SETUP.md for the install step."
+                ),
+            ) from None
         if verdict == "bad_key":
             # NOTHING is written. NOTHING is restarted. Live state untouched.
             raise HTTPException(

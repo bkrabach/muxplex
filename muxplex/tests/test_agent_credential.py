@@ -10,17 +10,22 @@ another repo -- see the design doc SS3.5/SS10).
 
 from __future__ import annotations
 
+import pwd
+
 import pytest
 from fastapi.testclient import TestClient
 
 from muxplex.auth import create_session_cookie
 from muxplex.main import (
     _AGENT_CREDENTIAL_ALLOWED_PROVIDERS,
+    AgentSidecarNotInstalled,
     ProviderCredentialRequest,
+    _agent_sidecar_install_gap,
     _auth_secret,
     _auth_ttl,
     _parse_agent_auth_list,
     _parse_agent_auth_status,
+    _run_agent_cli,
     app,
 )
 
@@ -397,3 +402,106 @@ def test_get_status_detects_systemd_environment_file_shadow(monkeypatch, tmp_pat
     assert body["state"] == "configured_shadowed"
     # The shadow's VALUE must never appear anywhere in the response.
     assert "sk-shadowed-value" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# muxplex-at9: sidecar not installed -- detected BEFORE shelling out, never
+# rendered as raw subprocess stderr. This is the default starting state for
+# every fresh muxplex install: the service account and CLI binary only exist
+# on a box someone has already worked through docs/AGENT_CHAT_SETUP.md on.
+# ---------------------------------------------------------------------------
+
+
+def test_install_gap_reports_missing_service_account(monkeypatch):
+    def _no_such_user(_name):
+        raise KeyError("getpwnam(): name not found")
+
+    monkeypatch.setattr(pwd, "getpwnam", _no_such_user)
+    gap = _agent_sidecar_install_gap()
+    assert gap is not None
+    assert "aa-svc" in gap
+
+
+def test_install_gap_reports_missing_binary(monkeypatch):
+    # A real account (root, uid 0) always exists -- isolates this case to
+    # the binary-missing check alone.
+    monkeypatch.setattr("muxplex.main._AGENT_AUTH_USER", "root")
+    monkeypatch.setattr("muxplex.main._AGENT_AUTH_BIN", "/no/such/binary-at9")
+    gap = _agent_sidecar_install_gap()
+    assert gap is not None
+    assert "/no/such/binary-at9" in gap
+
+
+def test_install_gap_is_none_when_both_present(monkeypatch, tmp_path):
+    real_bin = tmp_path / "amplifier-agent"
+    real_bin.write_text("#!/bin/sh\n")
+    monkeypatch.setattr("muxplex.main._AGENT_AUTH_USER", "root")
+    monkeypatch.setattr("muxplex.main._AGENT_AUTH_BIN", str(real_bin))
+    assert _agent_sidecar_install_gap() is None
+
+
+async def test_run_agent_cli_raises_without_spawning_a_subprocess(monkeypatch):
+    """The whole point: detecting "not installed" must never itself shell
+    out (that shelling-out IS the leak this bug is about)."""
+    monkeypatch.setattr(
+        "muxplex.main._AGENT_AUTH_USER", "definitely-not-a-real-user-at9"
+    )
+
+    async def _fail_if_spawned(*_a, **_kw):
+        raise AssertionError(
+            "must not spawn a subprocess when the sidecar isn't installed"
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fail_if_spawned)
+
+    with pytest.raises(AgentSidecarNotInstalled) as excinfo:
+        await _run_agent_cli(["auth", "status"])
+    assert "definitely-not-a-real-user-at9" in str(excinfo.value)
+
+
+def test_get_status_reports_not_installed_not_error(monkeypatch):
+    """The core regression this work item fixes: opening Settings -> Agent
+    on a box with no sidecar installed must read as an onboarding fact
+    (`state: "not_installed"`), and the message must NEVER contain raw
+    `sudo`/audit-plugin stderr -- because no subprocess is ever spawned to
+    produce that stderr in the first place."""
+
+    async def _raise_not_installed(*_a, **_kw):
+        raise AgentSidecarNotInstalled(
+            "the 'aa-svc' service account does not exist on this server"
+        )
+
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _raise_not_installed)
+
+    client = _authed_client()
+    resp = client.get("/api/agent/provider-credential")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "not_installed"
+    assert "AGENT_CHAT_SETUP.md" in body["message"]
+    # No raw sudo/audit-plugin stderr anywhere in the response.
+    assert "sudo:" not in resp.text
+    assert "audit plugin" not in resp.text
+
+
+def test_post_credential_refuses_cleanly_when_not_installed(monkeypatch):
+    """Same precondition, reached via the write path: a clean 503, never
+    a 500 carrying raw subprocess stderr."""
+
+    async def _raise_not_installed(provider, api_key):
+        raise AgentSidecarNotInstalled(
+            "the 'aa-svc' service account does not exist on this server"
+        )
+
+    monkeypatch.setattr("muxplex.main._validate_agent_credential", _raise_not_installed)
+
+    client = _authed_client()
+    resp = client.post(
+        "/api/agent/provider-credential",
+        json={"provider": "anthropic", "api_key": "sk-whatever"},
+    )
+    assert resp.status_code == 503
+    assert "AGENT_CHAT_SETUP.md" in resp.text
+    assert "sudo:" not in resp.text
+    assert "audit plugin" not in resp.text
+    assert "sk-whatever" not in resp.text
