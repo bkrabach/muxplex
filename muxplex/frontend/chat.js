@@ -3109,7 +3109,14 @@
     if (status === 400) headline = "Rejected by the provider.";
     else if (status === 502) headline = "Could not verify the key (connectivity problem, not necessarily a bad key).";
     else if (status === 429) headline = "Saved, but the restart is rate-limited -- try again shortly.";
-    else if (status === 503) headline = "The Agent sidecar isn't installed on this server yet.";
+    // 503 covers both modes' "not usable yet" precondition: the sidecar
+    // isn't installed (sidecar mode), or the amplifier-agent library/a
+    // provider module isn't importable in this process (embedded mode --
+    // see muxplex.agent_embedded.credentials.validate_key's "module_missing"
+    // verdict). The server's own `detail` (rendered below) always names
+    // which one actually happened; this headline stays mode-agnostic on
+    // purpose so it is never wrong for the mode that produced it.
+    else if (status === 503) headline = "The Agent isn't available on this server yet.";
     else headline = "Save failed (HTTP " + status + ").";
     resultEl.appendChild(document.createTextNode(headline + " "));
 
