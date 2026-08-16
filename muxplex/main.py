@@ -44,6 +44,7 @@ from websockets.typing import Subprotocol
 from muxplex import agent_embedded, focus, followups, tmux_config
 from muxplex import bells as bells_mod
 from muxplex import ttyd as ttyd_mod
+from muxplex.agent_embedded import runner as agent_embedded_runner
 from muxplex.auth import (
     AuthMiddleware,
     authenticate_pam,
@@ -5728,7 +5729,23 @@ async def get_agent_provider_credential(request: Request) -> dict:
     the sidecar's own `/v1/models`, and returns the shape the Settings ->
     Agent UI renders its states from -- including `not_installed`, the
     default starting state for every fresh muxplex install (muxplex-at9).
+
+    In embedded mode (the default -- see `muxplex.agent_embedded`), none
+    of the above applies: there is no aa-svc user, no sidecar CLI, no
+    `/v1/models` to poll. `checkAgentGate()` (chat.js) reads only
+    `data.state` from this endpoint to decide whether to show the panel's
+    composer or its "Agent isn't set up" gate, so the embedded branch
+    below answers that ONE question directly from
+    `agent_embedded_runner.check_available()` rather than running any of
+    the sidecar-specific probes, which would be answering questions about
+    a process that, in this mode, does not exist.
     """
+    if agent_embedded.is_embedded_mode():
+        unavailable_reason = await agent_embedded_runner.check_available()
+        if unavailable_reason:
+            return {"state": "not_configured", "message": unavailable_reason}
+        return {"state": "configured", "message": "Embedded agent ready."}
+
     try:
         status_rc, status_out, status_err = await _run_agent_cli(["auth", "status"])
         list_rc, list_out, _list_err = await _run_agent_cli(["auth", "list"])
@@ -6213,7 +6230,7 @@ async def _agent_chat_completions_embedded(request: Request) -> Response:
             status_code=400,
         )
 
-    unavailable_reason = await agent_embedded.runner.check_available()
+    unavailable_reason = await agent_embedded_runner.check_available()
     if unavailable_reason:
         return JSONResponse(
             {"error": {"message": unavailable_reason, "type": "server_error"}},
@@ -6221,7 +6238,7 @@ async def _agent_chat_completions_embedded(request: Request) -> Response:
         )
 
     client_session_id = request.headers.get("x-client-session-id", "")
-    generator = agent_embedded.runner.stream_embedded_chat_completion(
+    generator = agent_embedded_runner.stream_embedded_chat_completion(
         body, client_session_id=client_session_id
     )
     return StreamingResponse(generator, media_type="text/event-stream")
