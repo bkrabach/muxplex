@@ -1,3 +1,44 @@
+## v0.49.1 (2026-08-16)
+
+**A browser tab or installed PWA showing the muxplex UI kept working at
+full rate while you weren't looking at it.** Backgrounded or occluded,
+the web app went on running both poll loops -- the 2s sessions poll and
+the 1s `/api/state` follow poll -- and the deck PWA went on firing its
+1s render tick. None of that is visible work while the tab is hidden, so
+it was pure cost: wasted client CPU, a tab the browser could never put
+to sleep, and a contributor to the switch-to/typing stalls (the macOS
+beachball) seen when the host was already under memory pressure.
+
+The web app had no Page Visibility handling at all. The deck already
+stopped its poll on `document.hidden`, but left its render `setInterval`
+running.
+
+### Fixed
+
+- `app.js` now gates both poll loops on the Page Visibility API: they
+  stop on `document.hidden` and resume on visible, firing one immediate
+  poll plus a `sendHeartbeat()` re-register so a device pruned during a
+  long hide heals on return. A `_visibilityPaused` guard in each loop's
+  tail closes the race where a poll already in flight at the moment the
+  tab hid would re-arm its timer after the visibility handler had
+  cleared it.
+- `deck/deck.js` render tick is now lifecycle-controlled: cleared on
+  `document.hidden`, restarted on visible, instead of a bare 1s
+  `setInterval` that ran while backgrounded.
+- `terminal.js` is deliberately untouched -- gating the terminal
+  WebSocket write path risks dropping or reordering output, and xterm's
+  own renderer is already paused while the tab is hidden.
+
+### Proof
+
+- `node --test tests/*.mjs` (`muxplex/frontend`): 1008 pass, 0 fail
+  (1003 baseline on v0.49.0 + 5 new). The new tests cover: both loops
+  stopping on hidden; resume firing exactly one immediate poll plus
+  heartbeat; the in-flight-fetch re-arm race for each loop; and the
+  deck render-tick lifecycle.
+- Full CI green on PR #37 -- all 11 jobs, including macOS/arm64, the
+  real-tmux/ttyd integration job, and the frontend `node:test` job.
+
 ## v0.49.0 (2026-08-16)
 
 **If you installed muxplex from git rather than PyPI, `muxplex upgrade`
