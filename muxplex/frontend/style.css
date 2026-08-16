@@ -2644,6 +2644,22 @@ body {
     min-width: 0;
     border-left: none;
     z-index: 150;
+    /* muxplex-d5v/muxplex-m3n: the composer is pinned to this panel's
+       bottom edge, and on iOS the software keyboard is painted OVER the
+       page rather than shrinking it -- so `inset: 0` alone puts Send
+       underneath the keyboard the moment the user taps the input.
+       chat.js's syncPanelToVisualViewport() (init(), muxplex-m3n) writes
+       --agent-panel-visual-h from window.visualViewport -- the SAME
+       technique terminal.js established for the terminal view (see
+       terminal.js's _trackVisualViewportHeight, b7186b0, 7fd3296) -- so
+       this panel's bottom edge rides the actually-visible region instead
+       of the keyboard-obscured one. `bottom: auto` hands height control
+       to that variable; the var() fallback keeps the plain inset:0
+       behaviour on any browser without visualViewport support, and
+       whenever the variable is deliberately cleared -- a real, designed
+       degradation path, not a hidden failure. */
+    bottom: auto;
+    height: var(--agent-panel-visual-h, 100%);
   }
 }
 

@@ -2459,6 +2459,71 @@
 
     homeAgentPanel();
 
+    // ------------------------------------------------------------------
+    // iOS keyboard-over-composer fix (muxplex-d5v / muxplex-m3n)
+    // ------------------------------------------------------------------
+    // On iOS the software keyboard is painted OVER the page rather than
+    // shrinking it. The composer is pinned to this panel's bottom edge, and
+    // at <=959px style.css gives the panel `inset: 0` -- so the moment a
+    // user taps the input, Send goes underneath the keyboard.
+    //
+    // Fix: mirror window.visualViewport's height into --agent-panel-visual-h
+    // on this panel, via the SAME mechanism terminal.js established for the
+    // terminal view (terminal.js's _trackVisualViewportHeight -- see
+    // b7186b0, 7fd3296) rather than a second, parallel one. terminal.js
+    // loads before this file (see index.html's <script> order) and exposes
+    // the helper on `window`. style.css's <=959px rule reads the variable
+    // (`bottom: auto; height: var(--agent-panel-visual-h, 100%)`) so the
+    // panel's bottom edge -- and thus the composer/Send pinned to it --
+    // rides the actually-visible region instead of the keyboard-obscured
+    // one. _trackVisualViewportHeight itself subtracts the panel's own
+    // current `getBoundingClientRect().top` from the raw visualViewport
+    // height, which is what makes this correct for THIS panel: unlike
+    // terminal.js's #view-expanded (which always sits at viewport y=0),
+    // #chat-panel is nested below the app's own page-level header, so the
+    // raw height alone would overshoot the visible region by that header's
+    // rendered height.
+    //
+    // Handle kept in _panelVpTracker (module-level, alongside the other
+    // panel-lifecycle state below) rather than created once here: see
+    // syncPanelToVisualViewport()'s own docstring for why the tracker must
+    // be (re)created every time the panel actually becomes VISIBLE, not
+    // once at this init()-time call site.
+    var _panelVpTracker = null;
+
+    /**
+     * (Re)create the visualViewport -> --agent-panel-visual-h tracker for
+     * this panel. Call this every time the panel transitions from hidden to
+     * visible (applyPanelVisualState's open branch, below) -- NOT just once
+     * here at init() time.
+     *
+     * WHY NOT ONCE AT INIT: the panel starts `.hidden` (display:none) until
+     * the user opens it (or a persisted `agentPanelOpen:true` setting
+     * restores it). `getBoundingClientRect()` on a display:none element
+     * always reports `top: 0`, regardless of where the element will render
+     * once shown -- so a seed call made while still hidden bakes in the
+     * WRONG (zero) top offset. Since opening/closing the panel is not
+     * itself a visualViewport `resize`/`scroll` event, that wrong value
+     * would never get corrected until a genuine visualViewport change
+     * happened to fire afterward -- confirmed as a real, measured
+     * regression (44px permanent overshoot, matching the page header's
+     * height) via simulated-keyboard browser verification while building
+     * this fix (muxplex-m3n). Re-creating the tracker at the moment the
+     * panel becomes visible (`.hidden` already removed by the caller
+     * before this runs) measures the CORRECT, current top offset instead.
+     *
+     * Tearing down any previous tracker first keeps this idempotent across
+     * repeated opens (no accumulating duplicate visualViewport listeners).
+     */
+    function syncPanelToVisualViewport() {
+      if (typeof window._trackVisualViewportHeight !== "function") return;
+      if (_panelVpTracker) {
+        _panelVpTracker.teardown();
+        _panelVpTracker = null;
+      }
+      _panelVpTracker = window._trackVisualViewportHeight(panelEl, "--agent-panel-visual-h");
+    }
+
     // app.js switches views by toggling #view-expanded's `hidden`/
     // `view--active` classes (see openSession/closeSession). It does not
     // publish an event for that, and it is not this lane's file to change,
@@ -2532,7 +2597,13 @@
       agentButtons().forEach(function (b) {
         b.setAttribute("aria-pressed", open ? "true" : "false");
       });
-      if (open) homeAgentPanel();
+      if (open) {
+        homeAgentPanel();
+        // Re-measure now, the first moment the panel is actually visible --
+        // see syncPanelToVisualViewport()'s docstring for why this cannot
+        // happen once at init() time instead.
+        syncPanelToVisualViewport();
+      }
     }
 
     /** Single source of truth for "is the panel open", reflected onto both
