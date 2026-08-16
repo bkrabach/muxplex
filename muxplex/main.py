@@ -31,7 +31,7 @@ from urllib.parse import quote
 import httpx
 import websockets
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
@@ -1070,6 +1070,17 @@ async def lifespan(app: FastAPI):
     )
     _federation_client = app.state.federation_client
 
+    # Separate client (not federation_client) for the amplifier-agent chat
+    # proxy: federation_client's 5s timeout is sized for a quick session-list
+    # poll, not a model turn. read=None here because the agent's own SSE
+    # contract emits a keepalive comment every 3s of silence specifically so
+    # a long model turn or internal tool loop never trips a client read
+    # timeout (see amplifier-agent docs/spec/http-face.md) -- this client
+    # must not impose a shorter one of its own underneath that contract.
+    app.state.agent_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=None, write=30.0, pool=5.0),
+    )
+
     yield
 
     # Shutdown — ordered and bounded so a SIGTERM (systemctl stop/restart)
@@ -1108,6 +1119,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         _log.exception("federation_client aclose error")
     _federation_client = None
+
+    try:
+        agent_client = getattr(app.state, "agent_client", None)
+        if agent_client is not None:
+            await agent_client.aclose()
+    except Exception:
+        _log.exception("agent_client aclose error")
 
     _log.info(
         "shutdown: cancelled poll loop, closed %d terminal relay(s), stopped ttyd",
@@ -1178,6 +1196,18 @@ _auth_mode, _auth_password = _resolve_auth()
 _auth_secret = load_or_create_secret()
 _auth_ttl = int(os.environ.get("MUXPLEX_SESSION_TTL", "604800"))
 _federation_key = load_federation_key()
+
+# ---------------------------------------------------------------------------
+# amplifier-agent chat-panel proxy (POC) -- see /api/agent/chat/completions
+# below. muxplex holds this bearer secret so it can call the sidecar's
+# OpenAI-compatible HTTP face on the browser's behalf; the sidecar itself
+# holds no muxplex credential of any kind (no cookie, no muxplex API key, no
+# federation key) and cannot reach muxplex's loopback bypass -- it runs as a
+# separate, network-isolated user (see iptables OUTPUT rule dropping that
+# user's traffic to muxplex's port). This is the only bridge, and only ever
+# flows browser -> muxplex -> agent, never the reverse.
+_AGENT_PROXY_URL = os.environ.get("AMPLIFIER_AGENT_URL", "http://127.0.0.1:9099")
+_AGENT_PROXY_TOKEN = os.environ.get("AMPLIFIER_AGENT_BEARER_TOKEN", "")
 
 app.add_middleware(
     AuthMiddleware,
@@ -2151,9 +2181,11 @@ async def send_session_input(name: str, payload: SessionInputPayload) -> dict:
     2. Global opt-in: settings ``input_enabled`` (default False) -- 403 when
        off, regardless of anything else.
     3. Per-session allowlist: settings ``input_allowed_sessions`` (default
-       empty) -- exact names only; a session not on the list is 403 even
-       when the feature is enabled. Checked BEFORE existence so the endpoint
-       never leaks whether a non-allowlisted session exists.
+       ``["*"]`` -- EVERY session; it used to be empty, see settings.py's
+       DEFAULT_SETTINGS comment) -- glob patterns; a session matching none
+       of them is 403 even when the feature is enabled. Checked BEFORE
+       existence so the endpoint never leaks whether a non-allowlisted
+       session exists.
     4. Fail closed on the known-session set (exact membership, same pattern
        as connect/delete): unknown name or empty/unavailable cache -> 404.
 
@@ -2805,24 +2837,29 @@ def _bearer_only_caller(request: Request) -> bool:
     """Classify an already-authorized HTTP request as ``bearer_only`` or not.
 
     Mirrors ``_ws_auth_check``'s ``WSAuth`` classification for the terminal
-    WebSocket (see that function's docstring for the full rationale) --
-    localhost and a verified ``muxplex_session`` cookie are never
-    ``bearer_only``; only a request authorized SOLELY by the federation
-    Bearer key is. By the time this runs, ``AuthMiddleware`` has already
-    confirmed the request is authorized by ONE of localhost / cookie /
-    Bearer / Basic credentials (see auth.py) -- this only determines WHICH,
-    for the one caller (POST .../rename) that behaves differently for
-    ``bearer_only`` callers than for every other authorized caller.
+    WebSocket (see that function's docstring for the full rationale) -- a
+    verified ``muxplex_session`` cookie is never ``bearer_only``; only a
+    request authorized SOLELY by the federation Bearer key is. By the time
+    this runs, ``AuthMiddleware`` has already confirmed the request is
+    authorized by ONE of cookie / Bearer / Basic credentials (see auth.py)
+    -- this only determines WHICH, for the one caller (POST .../rename) that
+    behaves differently for ``bearer_only`` callers than for every other
+    authorized caller.
 
     A request authorized via HTTP Basic (a script holding real PAM/password
     login credentials, never issued a session cookie) is deliberately
     classified as NOT ``bearer_only`` here, same as a cookie -- it required
     knowing the operator's actual login credentials, strictly MORE trust
     than the shared federation Bearer key this fence exists to constrain.
+
+    NOTE: this used to short-circuit to ``False`` (i.e. "as trusted as a
+    cookie") for any socket peer at 127.0.0.1/::1, mirroring the auth
+    middleware's now-removed loopback bypass (GHSA-7c6r-fvrh-9qp4). That
+    check is gone: a re-originated proxy connection presents the same
+    127.0.0.1 peer for a genuinely remote Bearer-only caller, and there is
+    no socket-level signal that tells the two apart. A Bearer-only caller
+    is ``bearer_only`` regardless of which address it appears to come from.
     """
-    client_host = request.client.host if request.client else ""
-    if client_host in ("127.0.0.1", "::1"):
-        return False
     cookie = request.cookies.get("muxplex_session")
     if cookie and verify_session_cookie(_auth_secret, cookie, _auth_ttl):
         return False
@@ -4011,9 +4048,9 @@ class WSAuth(NamedTuple):
     """Result of a WebSocket authorization check (see ``_ws_auth_check``).
 
     ``bearer_only`` is True exactly when the ONLY credential that
-    authorized this connection was the federation Bearer key -- localhost
-    did not apply and no valid session cookie was presented. This is the
-    caller classification ``terminal_ws_proxy`` uses to decide whether the
+    authorized this connection was the federation Bearer key -- no valid
+    session cookie was presented. This is the caller classification
+    ``terminal_ws_proxy`` uses to decide whether the
     ``input_allowed_sessions`` typing fence applies to this connection (see
     that function's docstring and ``docs/API_SEMANTICS.md``'s "terminal WS
     input fence" section). A valid cookie ALWAYS wins this classification
@@ -4024,8 +4061,7 @@ class WSAuth(NamedTuple):
     also happens to send a Bearer header, never a Bearer-only caller
     impersonating one. Narrowing (gating a Bearer-only caller) is safe;
     widening based on a guess never is -- ``ok=True, bearer_only=False``
-    only when the classification is certain (localhost, or a verified
-    cookie).
+    only when the classification is certain (a verified cookie).
     """
 
     ok: bool
@@ -4036,15 +4072,22 @@ async def _ws_auth_check(websocket: WebSocket) -> WSAuth:
     """Return whether the WebSocket caller is authorized, and how.
 
     Closes the WebSocket with code 4001 and returns ``ok=False`` if the
-    caller is not authorized.  Localhost connections (127.0.0.1 / ::1) are
-    unconditionally trusted.  Remote callers must present a valid
-    ``muxplex_session`` cookie OR a Bearer token matching ``_federation_key``.
-    See ``WSAuth``'s docstring for what ``bearer_only`` means and why cookie
-    always wins the classification when both are present.
+    caller is not authorized. Every caller, including one whose socket peer
+    is 127.0.0.1/::1, must present a valid ``muxplex_session`` cookie OR a
+    Bearer token matching ``_federation_key``.
+
+    NOTE: this used to unconditionally trust any socket peer at
+    127.0.0.1/::1, mirroring the auth middleware's now-removed loopback
+    bypass -- see GHSA-7c6r-fvrh-9qp4 and auth.py's ``dispatch`` docstring
+    for the measured proof that a re-originated proxy connection presents
+    that same peer address for a genuinely remote caller. The terminal
+    WebSocket carries live scrollback and keystroke input, so an
+    unauthenticated bypass here is at least as dangerous as the HTTP one
+    that prompted the fix; it is closed for the identical reason and must
+    not be reintroduced. See ``WSAuth``'s docstring for what ``bearer_only``
+    means and why cookie always wins the classification when both are
+    present.
     """
-    host = websocket.client.host if websocket.client else ""
-    if host in ("127.0.0.1", "::1"):
-        return WSAuth(ok=True, bearer_only=False)
     session_cookie = websocket.cookies.get("muxplex_session")
     cookie_ok = session_cookie and verify_session_cookie(
         _auth_secret, session_cookie, _auth_ttl
@@ -5087,6 +5130,562 @@ async def federation_generate_key() -> dict:
     return {"key": key, "path": str(path)}
 
 
+# ---------------------------------------------------------------------------
+# Agent provider credentials (Settings -> Agent) -- docs/designs/agent-credentials.md
+#
+# muxplex is a CONDUCTOR here, never a STORE: no provider API key is ever
+# persisted by muxplex (settings.json gains zero keys -- not LOCAL_ONLY_KEYS,
+# not SYNCABLE_KEYS), logged, or included in any response body. The key
+# exists in muxplex's address space for the duration of one request only.
+# The system of record is the sidecar's own credentials.json, written and
+# read exclusively through the vendor `amplifier-agent auth` CLI -- muxplex
+# never hand-writes that file's JSON (SS3.2 of the design doc: the format
+# carries a version envelope and legacy-shape upgrade path this repo does
+# not own, and a root-written file is unreadable to aa-svc at 0600).
+# ---------------------------------------------------------------------------
+
+# Configuration, never request data -- no part of a request may influence
+# the executable path, the target user, or any flag (SS3.2).
+_AGENT_AUTH_BIN = os.environ.get(
+    "MUXPLEX_AGENT_AUTH_CMD", "/home/aa-svc/.local/bin/amplifier-agent"
+)
+_AGENT_AUTH_USER = os.environ.get("MUXPLEX_AGENT_AUTH_USER", "aa-svc")
+_AGENT_HTTP_SERVICE = os.environ.get(
+    "MUXPLEX_AGENT_HTTP_SERVICE", "amplifier-agent-http"
+)
+
+# Positive allowlist (SS3.6/SS7.3). azure-openai and ollama both carry a
+# caller-controlled URL (an `endpoint` field / a host) that the resolver
+# feeds straight to the provider -- accepting either here would let a
+# browser-reachable write redirect all model traffic, including whatever
+# terminal scrollback the agent has read, to a server of the caller's
+# choosing. github-copilot is environment-only; `auth set` refuses it
+# upstream and a stored value would never reach the provider anyway. A new
+# provider appearing upstream must not become settable by silently growing
+# this set.
+_AGENT_CREDENTIAL_ALLOWED_PROVIDERS = frozenset({"anthropic", "openai"})
+
+_AGENT_PROVIDER_ENV_VARS: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+
+async def _agent_service_env_shadow_vars() -> set[str]:
+    """Return provider env-var NAMES (never values) present in the agent
+    sidecar's OWN systemd environment -- read-only, via `systemctl show`.
+    Never edits the unit (SS3.5: muxplex must never edit the sidecar's
+    unit environment -- that is route 2, which the owner rejected).
+
+    This exists because `amplifier-agent auth status`, run as a fresh
+    `sudo -u aa-svc` subprocess (SS3.5's own detection mechanism), does
+    NOT see this shadow: sudo's default `env_reset` strips the calling
+    shell's environment, and a systemd `EnvironmentFile=` is loaded only
+    into the unit's own process -- never into an ad-hoc subprocess. So the
+    CLI-based check the design doc specifies can itself be shadowed.
+    Verified live in the twin: `amplifier-agent-http` was genuinely
+    running on `ANTHROPIC_API_KEY` from
+    `/etc/amplifier-agent-http-aasvc.env` (3 models served), yet
+    `auth status` reported "NOT SET" on every invocation, because the var
+    never reached the subprocess. Cross-checking the unit's actual
+    resolved environment closes that gap.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "show",
+        _AGENT_HTTP_SERVICE,
+        "--property=Environment",
+        "--property=EnvironmentFiles",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, _err = await proc.communicate()
+    if proc.returncode != 0:
+        return set()
+
+    provider_vars = set(_AGENT_PROVIDER_ENV_VARS.values())
+    found: set[str] = set()
+    for line in out.decode(errors="replace").splitlines():
+        if line.startswith("Environment="):
+            for var in provider_vars:
+                if f"{var}=" in line:
+                    found.add(var)
+        elif line.startswith("EnvironmentFiles="):
+            # Shape: "EnvironmentFiles=/etc/foo.env (ignore_errors=no)"
+            path_str = line.split("=", 1)[1].split(" ", 1)[0].strip()
+            if not path_str:
+                continue
+            try:
+                text = pathlib.Path(path_str).read_text()
+            except OSError:
+                continue
+            # Variable NAMES only -- never read or forward the value.
+            for raw_line in text.splitlines():
+                name = raw_line.split("=", 1)[0].strip()
+                if name in provider_vars:
+                    found.add(name)
+    return found
+
+
+# Serializes validate -> write -> restart so two racing requests can't
+# interleave (SS9 "concurrent writes"): `auth set` itself is atomic per
+# write, but two racing restarts are not.
+_agent_credential_lock = asyncio.Lock()
+
+# Rate-limit / cooldown (SS7.4): a restart drops every in-flight turn, so a
+# browser-reachable path that can trigger one is a real DoS surface even
+# from an authenticated caller. Tracked in-process; resets on server
+# restart, which is acceptable for a cooldown whose entire purpose is
+# damping a burst of clicks, not a durable audit control.
+_AGENT_RESTART_COOLDOWN_S = 15.0
+_agent_last_restart_at: float = 0.0
+
+
+class ProviderCredentialRequest(BaseModel):
+    """POST body for /api/agent/provider-credential.
+
+    Deliberately has NO `endpoint` field -- not ignored, not validated,
+    ABSENT (SS7.3/SS9's schema-shape test pins this). Adding one later for
+    Azure support means designing an endpoint allowlist first; it is not a
+    matter of adding a field to this model.
+    """
+
+    provider: str
+    api_key: str
+
+
+async def _run_agent_cli(
+    args: list[str],
+    *,
+    stdin_text: str | None = None,
+    env_overrides: dict[str, str] | None = None,
+    timeout: float = 20.0,
+) -> tuple[int, str, str]:
+    """Run ``sudo -u <aa-svc> -H <AGENT_BIN> <args...>`` as a subprocess.
+
+    `args` is the FULL command line after the binary -- e.g.
+    ``["auth", "set", provider, "--stdin"]`` or
+    ``["models", "list", "--provider", provider]`` (``models`` is a
+    top-level command, not a subcommand of ``auth``). Fixed argv, no shell
+    -- `args` must already be validated by the caller (the provider name
+    against the allowlist above; this function does not re-validate).
+    Feeds `stdin_text` on stdin when given (the `--stdin` key path, so the
+    secret never touches argv / `/proc/<pid>/cmdline`) and overlays
+    `env_overrides` on top of the current environment (used to point
+    `AMPLIFIER_AGENT_HOME` at a scratch dir for validation).
+
+    Returns (returncode, stdout, stderr). Never raises on a non-zero exit --
+    callers decide what a given code means (SS9's failure-mode table).
+    """
+    argv = ["sudo", "-u", _AGENT_AUTH_USER, "-H", "env"]
+    full_env = dict(os.environ)
+    if env_overrides:
+        full_env.update(env_overrides)
+        # `sudo -u ... -H env KEY=VAL <bin> ...` -- pass overrides as env(1)
+        # assignments rather than relying on `-E` (which sudo policy may
+        # refuse), matching the design doc's SS3.3 invocation shape exactly.
+        for k, v in env_overrides.items():
+            argv.append(f"{k}={v}")
+    argv.append(_AGENT_AUTH_BIN)
+    argv.extend(args)
+
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE
+        if stdin_text is not None
+        else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=full_env,
+    )
+    stdin_bytes = stdin_text.encode() if stdin_text is not None else None
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(stdin_bytes), timeout=timeout
+        )
+    except TimeoutError:
+        proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        return 124, "", f"timed out after {timeout}s"
+    return (
+        proc.returncode or 0,
+        stdout_b.decode(errors="replace"),
+        stderr_b.decode(errors="replace"),
+    )
+
+
+def _parse_agent_auth_status(stdout: str) -> dict[str, str]:
+    """Parse `amplifier-agent auth status`'s per-provider resolution lines.
+
+    Returns {provider: "env"|"file"|"default"|"not_set"} for every provider
+    in the allowlist that appears in the output. This is line parsing
+    against another repo's stdout -- a real coupling point (design doc
+    SS3.5/SS10) -- pinned by a unit test asserting against captured output.
+    """
+    result: dict[str, str] = {}
+    for line in stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        provider, verdict = parts
+        if provider not in _AGENT_CREDENTIAL_ALLOWED_PROVIDERS:
+            continue
+        if verdict.startswith("USING env="):
+            result[provider] = "env"
+        elif verdict.startswith("USING file entry"):
+            result[provider] = "file"
+        elif verdict.startswith("USING built-in default"):
+            result[provider] = "default"
+        else:
+            result[provider] = "not_set"
+    return result
+
+
+def _parse_agent_auth_list(stdout: str) -> dict[str, tuple[str, str]]:
+    """Parse `amplifier-agent auth list`'s per-provider rows.
+
+    Returns {provider: (masked, source_label)}. Rows are whitespace-padded
+    columns (2+ spaces between fields); header/blank lines don't match the
+    allowlist and are skipped naturally.
+    """
+    result: dict[str, tuple[str, str]] = {}
+    for line in stdout.splitlines():
+        parts = re.split(r"\s{2,}", line.strip())
+        if len(parts) != 3:
+            continue
+        provider, masked, source = parts
+        if provider in _AGENT_CREDENTIAL_ALLOWED_PROVIDERS:
+            result[provider] = (masked, source)
+    return result
+
+
+def _agent_bearer_headers() -> dict[str, str]:
+    """Return the Authorization header for calling the agent sidecar's own
+    HTTP face, or an empty dict when no bearer token is configured (an
+    empty ``Authorization: Bearer `` header is illegal and would make the
+    sidecar appear unreachable -- see the identical guard convention this
+    file already uses for the federation Bearer header)."""
+    return {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
+
+
+async def _agent_provider_served(provider: str) -> bool | None:
+    """Ask the sidecar (not muxplex's own cached registry) whether
+    `provider` currently has at least one served model.
+
+    Returns True/False, or None if the sidecar could not be reached at all
+    -- SS3.4: "not served, or the sidecar is unreachable" both mean
+    "restart is required", so callers should treat None the same as False.
+    """
+    headers = _agent_bearer_headers()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{_AGENT_PROXY_URL}/v1/models", headers=headers)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    return any(m.get("_provider") == provider for m in data.get("data", []))
+
+
+async def _validate_agent_credential(provider: str, api_key: str) -> tuple[str, str]:
+    """Validate `api_key` for `provider` in a scratch home, never touching
+    the live credential (SS3.3).
+
+    Runs the SAME code path the sidecar's own boot uses, as the SAME user,
+    through the SAME egress path, against a throwaway
+    ``AMPLIFIER_AGENT_HOME``: `auth set --stdin` into the scratch dir, then
+    `models list --provider <p>` (exit 0 == a real, live credential; the
+    documented contract for what non-zero means).
+
+    Returns (verdict, detail) where verdict is one of
+    "ok" | "bad_key" | "unreachable" | "error". Deletes the scratch dir in
+    a `finally` regardless of outcome.
+    """
+    import shutil
+    import tempfile
+
+    scratch = tempfile.mkdtemp(prefix="muxplex-agent-cred-")
+    try:
+        os.chmod(scratch, 0o700)
+        with contextlib.suppress(Exception):
+            shutil.chown(scratch, user=_AGENT_AUTH_USER)
+        env = {"AMPLIFIER_AGENT_HOME": scratch}
+
+        rc, _out, err = await _run_agent_cli(
+            ["auth", "set", provider, "--stdin"], stdin_text=api_key, env_overrides=env
+        )
+        if rc != 0:
+            return "error", err.strip() or "auth set failed in scratch home"
+
+        rc, out, err = await _run_agent_cli(
+            ["models", "list", "--provider", provider], env_overrides=env, timeout=30.0
+        )
+        if rc == 0:
+            return "ok", out.strip()
+        # `models list --provider` exits 2 for an invalid credential (the
+        # documented contract) -- distinguish that from a connectivity
+        # problem (SS9: "the user must not go hunting for a typo that isn't
+        # there") using the vendor CLI's own error text, which already
+        # names the failure kind (AuthenticationError / 401 vs DNS/timeout).
+        combined = f"{out}\n{err}".lower()
+        if (
+            "authenticationerror" in combined
+            or "401" in combined
+            or "invalid" in combined
+        ):
+            return "bad_key", err.strip() or out.strip()
+        return "unreachable", err.strip() or out.strip() or f"exit code {rc}"
+    finally:
+        with contextlib.suppress(Exception):
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+async def _restart_agent_sidecar_and_wait(*, timeout: float = 30.0) -> tuple[bool, str]:
+    """`systemctl restart <service>`, then poll `/v1/models` until it
+    answers or `timeout` elapses.
+
+    Never `amplifier-agent serve restart` -- that races systemd's own
+    `Restart=on-failure` (SS3.4); systemd owns this process, only systemd
+    cycles it. Never touches the fence, its watchdog, or its timer (SS6) --
+    this function issues exactly one `systemctl restart` on
+    `_AGENT_HTTP_SERVICE` and nothing else.
+
+    Returns (ok, detail). On failure, `detail` distinguishes a crash loop
+    from a fence refusal from a plain unit failure by reading
+    `systemctl is-active`/`is-failed` rather than guessing.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "restart",
+        _AGENT_HTTP_SERVICE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _out, err = await proc.communicate()
+    if proc.returncode != 0:
+        return (
+            False,
+            f"systemctl restart {_AGENT_HTTP_SERVICE} failed: {err.decode(errors='replace').strip()}",
+        )
+
+    deadline = time.monotonic() + timeout
+    last_detail = "no response yet"
+    while time.monotonic() < deadline:
+        headers = _agent_bearer_headers()
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(
+                    f"{_AGENT_PROXY_URL}/v1/models", headers=headers
+                )
+            if resp.status_code == 200:
+                return True, "ready"
+            last_detail = f"HTTP {resp.status_code}"
+        except httpx.HTTPError as exc:
+            last_detail = str(exc)
+        await asyncio.sleep(1.0)
+
+    # Distinguish WHY it never came up, per SS9's failure-mode table.
+    status_proc = await asyncio.create_subprocess_exec(
+        "systemctl",
+        "is-failed",
+        _AGENT_HTTP_SERVICE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    status_out, _ = await status_proc.communicate()
+    unit_state = status_out.decode(errors="replace").strip()
+    return (
+        False,
+        f"sidecar did not become ready within {timeout}s (unit state: {unit_state!r}; last poll: {last_detail})",
+    )
+
+
+@app.get("/api/agent/provider-credential")
+async def get_agent_provider_credential(request: Request) -> dict:
+    """Status only -- NEVER a key. See docs/designs/agent-credentials.md SS5.
+
+    Shells `auth status` + `auth list` as aa-svc, plus a direct check of
+    the sidecar's own `/v1/models`, and returns the shape the Settings ->
+    Agent UI renders its five states from.
+    """
+    status_rc, status_out, status_err = await _run_agent_cli(["auth", "status"])
+    list_rc, list_out, _list_err = await _run_agent_cli(["auth", "list"])
+
+    if status_rc != 0:
+        return {
+            "state": "error",
+            "message": status_err.strip() or "auth status failed",
+        }
+
+    resolution = _parse_agent_auth_status(status_out)
+    masked_rows = _parse_agent_auth_list(list_out) if list_rc == 0 else {}
+
+    # Cross-check against the sidecar unit's OWN resolved environment --
+    # `auth status` alone misses a systemd-EnvironmentFile-level shadow
+    # (see `_agent_service_env_shadow_vars`'s docstring for why).
+    shadow_vars = await _agent_service_env_shadow_vars()
+    for provider, env_var in _AGENT_PROVIDER_ENV_VARS.items():
+        if env_var in shadow_vars:
+            resolution[provider] = "env"
+
+    sidecar_reachable = await _agent_provider_served("anthropic")
+    sidecar_state = "unknown"
+    if sidecar_reachable is not None:
+        headers = _agent_bearer_headers()
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(
+                    f"{_AGENT_PROXY_URL}/v1/models", headers=headers
+                )
+            sidecar_state = "running" if resp.status_code == 200 else "sidecar_down"
+        except httpx.HTTPError:
+            sidecar_state = "sidecar_down"
+    else:
+        sidecar_state = "sidecar_down"
+
+    providers: dict[str, dict] = {}
+    any_configured = False
+    for provider in sorted(_AGENT_CREDENTIAL_ALLOWED_PROVIDERS):
+        source = resolution.get(provider, "not_set")
+        masked, _ = masked_rows.get(provider, ("<not set>", "\u2014"))
+        entry = {"source": source, "masked": masked if source != "not_set" else None}
+        providers[provider] = entry
+        if source in ("env", "file"):
+            any_configured = True
+
+    if not any_configured:
+        state = "not_configured"
+    elif any(p["source"] == "env" for p in providers.values()):
+        state = "configured_shadowed"
+    else:
+        state = "configured"
+
+    models: list[str] = []
+    if sidecar_state == "running":
+        headers = _agent_bearer_headers()
+        with contextlib.suppress(Exception):
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(
+                    f"{_AGENT_PROXY_URL}/v1/models", headers=headers
+                )
+                if resp.status_code == 200:
+                    models = [m.get("id", "") for m in resp.json().get("data", [])]
+
+    return {
+        "state": state,
+        "providers": providers,
+        "sidecar": sidecar_state,
+        "models": models,
+    }
+
+
+@app.post("/api/agent/provider-credential")
+async def post_agent_provider_credential(
+    payload: ProviderCredentialRequest, request: Request
+) -> dict:
+    """Validate, then write, then restart ONLY if required. Never a bare
+    write-and-restart -- SS0/SS3.3: a bad key that reaches disk and
+    triggers a restart is a permanent crash loop.
+
+    Rate-limited server-side (SS7.4): refuses with 429 inside the cooldown
+    window rather than queuing another restart. Locked (SS9 "concurrent
+    writes") so two racing requests validate/write/restart in series, not
+    interleaved.
+    """
+    provider = payload.provider
+    if provider not in _AGENT_CREDENTIAL_ALLOWED_PROVIDERS:
+        allowed = ", ".join(sorted(_AGENT_CREDENTIAL_ALLOWED_PROVIDERS))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provider {provider!r} is not settable from this UI (allowed: {allowed}). "
+                "azure-openai and ollama carry a caller-controlled endpoint/host and are refused "
+                "by design; github-copilot is environment-only and a stored key would never reach it."
+            ),
+        )
+    api_key = payload.api_key
+    if not api_key or len(api_key) > 4096 or any(ord(c) < 0x20 for c in api_key):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid API key: empty, too long, or contains control characters.",
+        )
+
+    async with _agent_credential_lock:
+        global _agent_last_restart_at
+        now = time.monotonic()
+        cooldown_remaining = _AGENT_RESTART_COOLDOWN_S - (now - _agent_last_restart_at)
+
+        verdict, detail = await _validate_agent_credential(provider, api_key)
+        if verdict == "bad_key":
+            # NOTHING is written. NOTHING is restarted. Live state untouched.
+            raise HTTPException(
+                status_code=400,
+                detail=f"Rejected: the provider reported this key as invalid ({detail}).",
+            )
+        if verdict == "unreachable":
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not reach {provider!r}'s API to validate the key ({detail}). Not a bad key -- a connectivity problem.",
+            )
+        if verdict == "error":
+            raise HTTPException(
+                status_code=500,
+                detail=f"Validation failed before a verdict could be reached: {detail}",
+            )
+
+        # verdict == "ok" -- write for real, no scratch home this time.
+        rc, _out, err = await _run_agent_cli(["auth", "set", provider, "--stdin"], stdin_text=api_key)
+        if rc != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Validated key but writing it failed: {err.strip()}",
+            )
+
+        already_served = await _agent_provider_served(provider)
+        restarted = False
+        restart_detail = "not needed -- provider already served; rotation takes effect on the next turn"
+
+        if not already_served:
+            if cooldown_remaining > 0:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        f"Key stored, but a restart is required to serve {provider!r} for the first time "
+                        f"and the last restart was less than {_AGENT_RESTART_COOLDOWN_S:.0f}s ago. "
+                        f"Try again in {cooldown_remaining:.0f}s."
+                    ),
+                )
+            _agent_last_restart_at = time.monotonic()
+            ok, restart_detail = await _restart_agent_sidecar_and_wait()
+            restarted = True
+            if not ok:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Key stored, but the sidecar did not come back up after restart: {restart_detail}",
+                )
+
+        # Audit line: timestamp, provider, principal, restart-or-not. NO key
+        # material, not even masked (SS7.4).
+        _log.info(
+            "agent-credential: provider=%s restarted=%s detail=%s",
+            provider,
+            restarted,
+            restart_detail,
+        )
+
+        return {
+            "ok": True,
+            "provider": provider,
+            "restarted": restarted,
+            "detail": restart_detail,
+        }
+
+
 @app.post("/api/federation/{device_id}/connect/{session_name}")
 async def federation_connect(
     device_id: str, session_name: str, request: Request
@@ -5304,6 +5903,100 @@ class _NoCacheStaticFiles(StaticFiles):
         response = await super().get_response(path, scope)
         response.headers["Cache-Control"] = "no-cache"
         return response
+
+
+# ---------------------------------------------------------------------------
+# amplifier-agent chat-panel proxy (POC)
+# ---------------------------------------------------------------------------
+#
+# Registered before the static-file mount below (route order matters: FastAPI
+# matches routes in registration order, and the mount below is "/", which
+# would otherwise shadow nothing here since this is an explicit path -- but
+# every API route in this file is declared before the mount for the same
+# reason). Not in auth.py's _AUTH_EXEMPT_PATHS, so a non-localhost caller must
+# already carry a valid muxplex_session cookie to reach it -- same gate as
+# every other /api/ route.
+
+
+@app.post("/api/agent/chat/completions")
+async def agent_chat_completions_proxy(request: Request) -> Response:
+    """Same-origin proxy to the amplifier-agent HTTP chat-completions sidecar.
+
+    The browser talks only to muxplex's own origin, authenticated by the
+    caller's normal muxplex_session cookie (AuthMiddleware already gates this
+    route, same as every other /api/ route -- it is not in
+    auth.py's _AUTH_EXEMPT_PATHS). muxplex then forwards the request
+    server-side to the sidecar's OpenAI-compatible endpoint, attaching the
+    sidecar's own bearer secret (_AGENT_PROXY_TOKEN) -- a credential scoped
+    only to "muxplex may call the agent's chat API", never the reverse. The
+    agent process itself holds no muxplex credential of any kind (no cookie,
+    no muxplex API key, no federation key) and is further network-isolated
+    (see the deployment notes: it runs as its own unprivileged user with an
+    iptables OUTPUT rule dropping that user's traffic to muxplex's port) so
+    that this is structurally true, not merely true by convention.
+
+    This is a raw byte relay: the request body is forwarded unmodified and
+    the upstream response body (SSE chunks, per amplifier-agent's
+    docs/spec/http-face.md) is streamed back unmodified. muxplex does not
+    parse or transform the wire format here -- the browser is the OpenAI
+    chat-completions client, not this route.
+    """
+    if not _AGENT_PROXY_TOKEN:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "Agent proxy is not configured on this server "
+                    "(AMPLIFIER_AGENT_BEARER_TOKEN unset)",
+                    "type": "server_error",
+                }
+            },
+            status_code=503,
+        )
+
+    body = await request.body()
+    client_session_id = request.headers.get("x-client-session-id", "")
+
+    # Guarded inline (`{...} if key else {}`), matching every other federation
+    # Bearer-header call site in this module (see e.g. line ~261, ~4622,
+    # ~4839): even though the early `if not _AGENT_PROXY_TOKEN: return` above
+    # already makes an empty token unreachable here today, that guarantee is
+    # only visible to a reader who traces the control flow up several lines.
+    # Writing the guard at the point of use keeps the invariant this route
+    # depends on locally verifiable -- and self-enforcing if a future
+    # refactor ever moves or removes the early return -- rather than relying
+    # solely on a guard elsewhere in the function.
+    upstream_headers = {"Content-Type": "application/json"}
+    upstream_headers.update(
+        {"Authorization": f"Bearer {_AGENT_PROXY_TOKEN}"} if _AGENT_PROXY_TOKEN else {}
+    )
+    if client_session_id:
+        upstream_headers["X-Client-Session-Id"] = client_session_id
+
+    client: httpx.AsyncClient = request.app.state.agent_client
+    upstream_url = f"{_AGENT_PROXY_URL.rstrip('/')}/v1/chat/completions"
+
+    async def relay():
+        try:
+            async with client.stream(
+                "POST", upstream_url, content=body, headers=upstream_headers
+            ) as upstream:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+        except httpx.HTTPError as exc:
+            # Loud, visible, in-stream failure -- never a silent empty
+            # response. Mirrors the agent's own mid-stream error convention
+            # (see http-face.md's "[amplifier-agent error: ...]" shape) so a
+            # broken sidecar looks the same to the panel as a broken turn.
+            _log.warning("agent proxy: upstream request failed: %s", exc)
+            err = {
+                "error": {
+                    "message": f"agent sidecar unreachable at {_AGENT_PROXY_URL}: {exc}",
+                    "type": "server_error",
+                }
+            }
+            yield f"data: {json.dumps(err)}\n\ndata: [DONE]\n\n".encode()
+
+    return StreamingResponse(relay(), media_type="text/event-stream")
 
 
 app.mount(

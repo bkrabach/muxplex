@@ -329,7 +329,7 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `tmux_theme` | `brand` | Which shipped tmux theme `muxplex tmux install` renders. `brand` is built from muxplex's own UI tokens, so a window that rings a bell turns the same amber in your terminal that its tile turns in the dashboard. Alternatives: `steel`, `catppuccin-mocha`. Not federation-syncable -- it renders to a file on this host. |
 | `tmux_copy_mode` | `desktop` | Which copy-mode keybinding scheme `muxplex tmux install` (and `PATCH /api/tmux-config`) renders as `~/.config/muxplex/tmux.d/30-copy-mode.conf`. `desktop` is tmux's own default (arrow keys, Page Up/Down, Home/End, and Ctrl+C behave like every other desktop text field; no fragment is written). `vi` renders the modal `v`/`y` selection flow for vi/vim muscle memory. Not federation-syncable -- it renders to a file on this host. |
 | `input_enabled` † | `false` | Global opt-in for `POST /api/sessions/{name}/input` (typing into sessions over the API). **RCE by design** — `false` makes the endpoint a hard 403. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` (a Bearer-key holder must not be able to self-authorize input) and not federation-syncable. |
-| `input_allowed_sessions` † | `[]` | **Glob patterns** (matched case-INsensitively — both name and pattern are `.casefold()`-ed before `fnmatch.fnmatchcase`, so behavior is deterministic across platforms) naming sessions that may receive API terminal input, e.g. `["*"]` for all sessions, `["amplifier-*"]` for a prefix family, or an exact name (matches only itself). A session matching none of the patterns is a 403 even when `input_enabled` is true — this is how your own working panes stay un-typeable. Empty list = deny everything. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` and not federation-syncable. |
+| `input_allowed_sessions` † | `["*"]` (all sessions) | **Glob patterns** (matched case-INsensitively — both name and pattern are `.casefold()`-ed before `fnmatch.fnmatchcase`, so behavior is deterministic across platforms) naming sessions that may receive API terminal input. **The default is `["*"]` — every session** — so turning `input_enabled` on is all you need; you do not have to enumerate session names. Narrow it when you want to: `["amplifier-*"]` for a prefix family, or an exact name (matches only itself). Both the list `["*"]` and the bare string `"*"` are accepted. A session matching none of the patterns is a 403 even when `input_enabled` is true. Empty list = deny everything. **This default changed** — it used to be `[]` (deny-all), which meant flipping `input_enabled` on did nothing by itself; see the note below the table. **Local-file-only**: can ONLY be set by editing `settings.json` on disk — deliberately not settable via `PATCH /api/settings` and not federation-syncable. |
 | `tmux_socket_dir` † | `""` | Override tmux's socket directory (maps to `TMUX_TMPDIR`). Set this if your tmux sessions live somewhere other than `/tmp/tmux-$UID` (e.g. a custom `TMUX_TMPDIR` in your shell rc) -- a systemd/launchd service does not inherit your login shell's environment, so without this the service can't see sessions created with a custom socket directory. |
 | `focus_app` † | `""` | **macOS only.** The `.app` bundle name `POST /api/focus` runs `open -a` against to bring the muxplex PWA window to the foreground on this host. Empty = unconfigured (the endpoint returns `409` rather than silently doing nothing). **Wayland and Windows are not supported** -- Wayland has no portable activation path a headless server process can use; Windows has no muxplex port at all (see `docs/API_SEMANTICS.md`'s `POST /api/focus` section for the full platform table). **Local-file-only**: can ONLY be set by editing `settings.json` on disk -- not settable via `PATCH /api/settings` and not federation-syncable. |
 | `device_name` | `""` (hostname) | Display name for this device |
@@ -348,6 +348,7 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `activityIndicator` | `"both"` | Activity style: `none`, `glow`, `dot`, `both` |
 | `gridViewMode` | `"flat"` | Multi-device grid layout: `flat`, `grouped`, `filtered` |
 | `sidebarOpen` | `null` | Sidebar state: `true`, `false`, or `null` (auto-detect from screen width) |
+| `agentPanelOpen` | `null` | Agent chat panel state: `true`, `false`, or `null` (never toggled -- stays closed, unlike `sidebarOpen` there is no screen-width auto-detect) |
 | `settings_updated_at` | `0.0` | Unix timestamp of last settings write (used for federation sync) |
 | `views_updated_at` | `0.0` | Unix timestamp of last change to `views`/`hidden_sessions` specifically. Metadata like `settings_updated_at`, used to arbitrate views-specific federation sync conflicts independently of unrelated field changes (e.g. a `fontSize` edit no longer bumps this). Not itself a syncable setting -- see `docs/API_SEMANTICS.md`. |
 
@@ -387,6 +388,19 @@ Two things that make a good edit look like a no-op:
 - **A hand edit does not bump `settings_updated_at`.** Clients that refetch only
   when that timestamp changes won't notice; reload the PWA to pick the change up.
   The server itself is unaffected — it never consults the timestamp when reading.
+
+> **⚠️ The terminal-input allowlist default changed.** `input_allowed_sessions`
+> used to default to `[]` — deny every session — so setting `input_enabled: true`
+> did nothing on its own; you hit a second 403 and had to list session names by
+> hand before anything worked. It now defaults to `["*"]`, every session.
+>
+> **What that means for you:** turning `input_enabled` on is now a *single*
+> action that makes **every** session typeable over the API, including your own
+> working panes. If you only want some sessions reachable, you must now say so
+> explicitly, e.g. `"input_allowed_sessions": ["agent-*"]`. What did not change:
+> `input_enabled` is still `false` out of the box, and both keys are still
+> local-file-only — neither the API, a federation peer, nor an agent can set
+> them.
 
 > **→ Writing something that drives muxplex?** The rows above define
 > `input_enabled` / `input_allowed_sessions` as *configuration*. For the
@@ -452,6 +466,7 @@ muxplex/
 │   │   ├── login.html        # Login page
 │   │   ├── app.js            # Dashboard, sidebar, settings, previews
 │   │   ├── terminal.js       # xterm.js terminal + clipboard
+│   │   ├── tokens.css        # Design tokens — the ONE home for every value
 │   │   ├── style.css         # All styles (dark theme)
 │   │   ├── manifest.json     # PWA manifest
 │   │   ├── wordmark-on-dark.svg
@@ -501,7 +516,17 @@ node --test muxplex/frontend/tests/test_app.mjs
 
 ## Brand Assets
 
-Design language, color tokens, and brand assets live in `assets/branding/`. See [`assets/branding/DESIGN-SYSTEM.md`](assets/branding/DESIGN-SYSTEM.md) for the full design reference.
+Brand assets — logos, icons, favicons, OG images — live in `assets/branding/`.
+
+**Design language and colour tokens do not.** They live in
+[`docs/DESIGN_LANGUAGE.md`](docs/DESIGN_LANGUAGE.md) (principles, components,
+decisions) and [`muxplex/frontend/tokens.css`](muxplex/frontend/tokens.css)
+(every value). That is the one place to look up a token.
+
+`assets/branding/DESIGN-SYSTEM.md` is **superseded** and kept only as brand
+provenance — its palette derivation and contrast ratios are still good, its CSS
+values are not. Nine of them silently disagreed with what the app renders; see
+`docs/DESIGN_LANGUAGE.md` §3.4.
 
 To regenerate PNG/favicon assets from SVG sources:
 

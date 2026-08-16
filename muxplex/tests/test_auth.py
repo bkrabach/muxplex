@@ -290,17 +290,51 @@ def _make_test_app(auth_mode: str = "password", password: str = "test-pw") -> Fa
     return test_app
 
 
-def test_middleware_localhost_bypasses_auth():
-    """Requests from 127.0.0.1 pass through without auth."""
+def test_middleware_localhost_no_longer_bypasses_auth():
+    """Requests from 127.0.0.1 with no credential are redirected, same as
+    any other unauthenticated caller.
+
+    This is the fix for GHSA-7c6r-fvrh-9qp4: muxplex binds 0.0.0.0, so any
+    userspace-mode proxy (socat, `ssh -L`, an Incus/Docker userspace
+    port-forward) re-originates the connection and the re-originated peer
+    is 127.0.0.1 for a genuinely REMOTE caller too. There is no socket-level
+    signal that distinguishes "truly local" from "proxied for someone
+    remote", so the bypass could never be correct and had to be removed
+    outright rather than narrowed.
+    """
     app = _make_test_app()
     # TestClient always sets request.client.host to "testclient".  Wrap the app
     # with _InjectClientMiddleware to set the socket-level client IP to 127.0.0.1
-    # so the middleware's localhost check is exercised with a real address.
+    # so this exercises a real loopback address, not just TestClient's default.
+    app_with_client = _InjectClientMiddleware(app, "127.0.0.1")
+    client = TestClient(app_with_client, follow_redirects=False)
+    response = client.get("/protected")
+    assert response.status_code == 307
+    assert "/login" in response.headers["location"]
+
+
+def test_middleware_localhost_with_valid_cookie_passes():
+    """A loopback caller WITH a real credential (session cookie) still
+    works -- the fix removes the free pass, not loopback access itself."""
+    app = _make_test_app()
+    cookie = create_session_cookie("test-secret", ttl_seconds=3600)
     app_with_client = _InjectClientMiddleware(app, "127.0.0.1")
     client = TestClient(app_with_client)
+    client.cookies.set("muxplex_session", cookie)
     response = client.get("/protected")
     assert response.status_code == 200
     assert response.text == "OK"
+
+
+def test_middleware_localhost_json_request_gets_401_not_redirect():
+    """Loopback API request (Accept: application/json) with no credential
+    gets 401, matching the non-localhost JSON-client behavior exactly --
+    there is no longer a localhost-shaped exception to this rule either."""
+    app = _make_test_app()
+    app_with_client = _InjectClientMiddleware(app, "127.0.0.1")
+    client = TestClient(app_with_client, follow_redirects=False)
+    response = client.get("/protected", headers={"Accept": "application/json"})
+    assert response.status_code == 401
 
 
 def test_middleware_valid_session_cookie_passes():

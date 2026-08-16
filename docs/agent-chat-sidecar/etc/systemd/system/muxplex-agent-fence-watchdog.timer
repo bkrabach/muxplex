@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically re-prove the agent-sidecar network fence
+Documentation=file:///opt/muxplex/docs/AGENT_CHAT_SIDECAR.md
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=muxplex-agent-fence-watchdog.service
+
+[Install]
+WantedBy=timers.target

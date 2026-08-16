@@ -80,15 +80,73 @@ function formatLastActivity(lastActivityAt, nowMs) {
 }
 
 /**
+ * Strip ANSI CSI/OSC escape sequences from a pane snapshot so it can be
+ * rendered as plain text.
+ *
+ * The capture is deliberately taken with `tmux capture-pane -e` (see
+ * `test_capture_pane_calls_correct_tmux_args`: "Uses -e to preserve ANSI
+ * escape sequences for color rendering"), so every snapshot the API hands
+ * out may carry real escape bytes. The dashboard consumes them --
+ * `app.js`'s `ansiToHtml()` turns SGR params into styled spans. The deck
+ * does not: `.key-preview` is painted with `textContent`, so an unstripped
+ * escape renders as literal visible garbage.
+ *
+ * Measured on the live seeded `sysmon` session (which runs `top`): 96 ESC
+ * bytes in one snapshot, e.g. a line arriving as
+ * `\x1b[1m   3296 root      20   0 ... top`. `counter` and `logtail` carry
+ * zero -- which is exactly why this was easy to miss on a casual look.
+ *
+ * This matters far more here than in the dashboard: a key body is a ~13x6
+ * character budget, so a four-byte `\x1b[1m` eats a third of a line, and
+ * the deck's premise is a glanceable face with no progressive disclosure
+ * to fall back on (KEY_DESIGN_SYSTEM.md: "Everything a face will ever say
+ * is on it now").
+ *
+ * DISPLAY-ONLY, and that is the load-bearing part: this is applied to the
+ * derived preview string alone. The `snapshots` map in the poll loop keeps
+ * the raw capture byte for byte, and nothing writes a stripped value back
+ * into it -- same discipline `chat.js`'s `stripAnsi` follows for its
+ * tool-result summaries (strip the summary, never the payload underneath).
+ *
+ * Deliberately NOT an `ansiToHtml`-style colour renderer: at TEXTURE size
+ * (11px, #7A7A7A, the least important thing on the face) colour carries no
+ * information a glance can use, and rendering it would mean `innerHTML` on
+ * terminal output on a surface that currently has no HTML injection path
+ * at all.
+ *
+ * The three patterns are the same ones `chat.js` uses, in the same order:
+ * OSC (`ESC ] ... BEL`/`ST`) first so its payload can't be mistaken for
+ * CSI, then CSI (covers SGR `[1m`, private modes `[?25l`, erase `[2J`,
+ * cursor moves `[H`), then two-byte C1.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function stripAnsi(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, '')
+    .replace(/\u001b[@-Z\\-_]/g, '');
+}
+
+/**
  * Compute the last N non-empty-trimmed lines of a pane snapshot for the
  * session tile's TEXTURE preview field, newest line last (bottom-anchored).
+ *
+ * Escape sequences are stripped BEFORE the blank-trim and the line budget,
+ * not after. Order is deliberate: a row that holds nothing but a reset
+ * (`\x1b[0m`) is visually blank but `.trim()`s non-empty while the bytes
+ * are still there, so stripping afterwards would let it survive the
+ * trailing-blank pop AND consume one of the very few line slots a key has.
+ *
  * @param {string} snapshot
  * @param {number} maxLines
  * @returns {string}
  */
 function previewLines(snapshot, maxLines) {
   if (!snapshot) return '';
-  var lines = snapshot.split('\n');
+  var lines = stripAnsi(snapshot).split('\n');
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
     lines.pop();
   }
@@ -3812,6 +3870,7 @@ if (typeof module !== 'undefined' && module.exports) {
     classifyStaleness: classifyStaleness,
     formatAge: formatAge,
     formatLastActivity: formatLastActivity,
+    stripAnsi: stripAnsi,
     previewLines: previewLines,
     tileVisualState: tileVisualState,
     computeGrid: computeGrid,

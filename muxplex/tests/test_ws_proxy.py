@@ -751,9 +751,18 @@ class FakeWebSocketForRace:
         self._connect_sent = False
         self.accept_called = False
         self.close_called = False
-        self.cookies: dict[str, str] = {}
+        # A real session cookie -- these tests exercise the pre-accept
+        # disconnect race, not auth, so they must pass _ws_auth_check with a
+        # genuine credential rather than leaning on the removed localhost
+        # bypass (GHSA-7c6r-fvrh-9qp4). `muxplex.main`'s own module-level
+        # `_auth_secret`/`_auth_ttl` sign it so it verifies for real.
+        from muxplex.main import _auth_secret, _auth_ttl
+
+        self.cookies: dict[str, str] = {
+            "muxplex_session": create_session_cookie(_auth_secret, _auth_ttl)
+        }
         self.headers: dict[str, str] = {}
-        self.client = types.SimpleNamespace(host="127.0.0.1")  # localhost auth bypass
+        self.client = types.SimpleNamespace(host="203.0.113.5")
         self.query_params: dict[str, str] = {}
         self.scope = {"query_string": query_string}
 

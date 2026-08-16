@@ -731,21 +731,63 @@ def test_css_sidebar_item_after_toggle_btn_hover():
 # ============================================================
 
 
-def _extract_media_block(css: str, query: str) -> str:
-    """Extract the inner content of a @media block (balanced-brace aware)."""
-    idx = css.index(query)
-    open_brace = css.index("{", idx)
-    depth = 0
-    pos = open_brace
-    while pos < len(css):
-        if css[pos] == "{":
-            depth += 1
-        elif css[pos] == "}":
-            depth -= 1
-            if depth == 0:
-                return css[open_brace + 1 : pos]
-        pos += 1
-    raise ValueError(f"Could not find matching close brace for {query}")
+def _extract_media_block(css: str, query: str, contains: str | None = None) -> str:
+    """Extract the inner content of a @media block (balanced-brace aware).
+
+    style.css can contain multiple @media rules that share the exact same
+    query text (e.g. several independent ``@media (max-width: 599px)``
+    blocks exist for unrelated components, and likewise for
+    ``@media (max-width: 959px)``). Naively taking the FIRST occurrence of
+    `query` silently returns whichever such block happens to come first in
+    the file -- a trap that has bitten this suite twice: tests targeting
+    the responsive sidebar/FAB rules under 959px used to silently match an
+    unrelated `.agent-panel` block instead, and tests targeting the
+    settings dialog's mobile styles under 599px used to silently match an
+    unrelated `.header-btn--agent` block.
+
+    Pass `contains` (a substring expected inside the intended block, e.g.
+    a selector like ".settings-dialog") to disambiguate: every block
+    matching `query` is scanned in file order and the first one whose body
+    includes `contains` is returned. Without `contains`, the first
+    matching block is returned as before -- only safe when `query` is
+    known to be unique in the file (e.g. the single
+    `@media (prefers-reduced-motion: reduce)` block).
+
+    Raises ValueError if `query` has no match at all, or if `contains` is
+    given but no matching block includes it -- so a future third block
+    sharing this query fails loudly here instead of silently returning the
+    wrong content.
+    """
+    search_from = 0
+    while True:
+        try:
+            idx = css.index(query, search_from)
+        except ValueError:
+            if contains is None:
+                raise ValueError(f"Could not find {query!r} in css") from None
+            raise ValueError(
+                f"No @media block matching {query!r} has a body containing "
+                f"{contains!r}"
+            ) from None
+        open_brace = css.index("{", idx)
+        depth = 0
+        pos = open_brace
+        close_brace = None
+        while pos < len(css):
+            if css[pos] == "{":
+                depth += 1
+            elif css[pos] == "}":
+                depth -= 1
+                if depth == 0:
+                    close_brace = pos
+                    break
+            pos += 1
+        if close_brace is None:
+            raise ValueError(f"Could not find matching close brace for {query}")
+        block = css[open_brace + 1 : close_brace]
+        if contains is None or contains in block:
+            return block
+        search_from = close_brace + 1
 
 
 def test_css_responsive_overlay_media_query_exists():
@@ -764,7 +806,9 @@ def test_css_responsive_overlay_at_end():
 def test_css_responsive_overlay_sidebar_fixed():
     """.session-sidebar inside <960px media query must become a fixed overlay."""
     css = read_css()
-    media_block = _extract_media_block(css, "@media (max-width: 959px)")
+    media_block = _extract_media_block(
+        css, "@media (max-width: 959px)", contains=".session-sidebar"
+    )
     assert ".session-sidebar {" in media_block
     block = _extract_rule_block(media_block, ".session-sidebar {")
     assert "position: fixed" in block
@@ -782,7 +826,9 @@ def test_css_responsive_overlay_sidebar_fixed():
 def test_css_responsive_overlay_sidebar_collapsed():
     """.session-sidebar.sidebar--collapsed inside <960px collapses via translateX(-100%)."""
     css = read_css()
-    media_block = _extract_media_block(css, "@media (max-width: 959px)")
+    media_block = _extract_media_block(
+        css, "@media (max-width: 959px)", contains=".session-sidebar"
+    )
     assert ".session-sidebar.sidebar--collapsed" in media_block
     block = _extract_rule_block(media_block, ".session-sidebar.sidebar--collapsed")
     assert "width: 240px" in block
@@ -1138,7 +1184,9 @@ def test_css_settings_mobile_media_query():
     assert "@media (max-width: 599px)" in css, (
         "Missing @media (max-width: 599px) for settings mobile"
     )
-    media_block = _extract_media_block(css, "@media (max-width: 599px)")
+    media_block = _extract_media_block(
+        css, "@media (max-width: 599px)", contains=".settings-dialog"
+    )
     assert ".settings-dialog" in media_block, (
         ".settings-dialog mobile styles must be in 599px media block"
     )
@@ -1154,7 +1202,9 @@ def test_css_settings_mobile_media_query():
 def test_css_settings_mobile_tabs_horizontal():
     """Inside mobile media query, settings tabs must become horizontal scrolling row."""
     css = read_css()
-    media_block = _extract_media_block(css, "@media (max-width: 599px)")
+    media_block = _extract_media_block(
+        css, "@media (max-width: 599px)", contains=".settings-tabs"
+    )
     assert ".settings-tabs" in media_block, (
         ".settings-tabs must have mobile styles in 599px media block"
     )
@@ -1810,12 +1860,15 @@ def test_css_fab_mobile_media_query_shows_flex() -> None:
     """At max-width: 959px, .new-session-fab must be shown as display:flex."""
 
     css = read_css()
-    # Find the 959px media query and check that .new-session-fab uses display:flex
-    match = re.search(
-        r"@media\s*\([^)]*max-width\s*:\s*959px[^)]*\)\s*\{([^@]*)\}", css, re.DOTALL
+    # Find the 959px media query and check that .new-session-fab uses display:flex.
+    # Uses the shared _extract_media_block helper (balanced-brace + `contains`
+    # disambiguation) rather than a standalone regex: an earlier, unrelated
+    # `.agent-panel` block also matches `@media (max-width: 959px)` and comes
+    # first in the file, so a naive "first match" regex silently grabbed the
+    # wrong block's body -- see _extract_media_block's own docstring.
+    media_body = _extract_media_block(
+        css, "@media (max-width: 959px)", contains=".new-session-fab"
     )
-    assert match, "Missing @media (max-width: 959px) block"
-    media_body = match.group(1)
     assert ".new-session-fab" in media_body, (
         "@media (max-width: 959px) block must contain .new-session-fab rule"
     )
@@ -1832,11 +1885,13 @@ def test_css_fab_mobile_media_query_hides_new_session_btn() -> None:
     """At max-width: 959px, #new-session-btn must be hidden."""
 
     css = read_css()
-    match = re.search(
-        r"@media\s*\([^)]*max-width\s*:\s*959px[^)]*\)\s*\{([^@]*)\}", css, re.DOTALL
+    # See test_css_fab_mobile_media_query_shows_flex above: use the shared
+    # helper (with `contains` disambiguation) instead of a standalone
+    # first-match regex, which used to silently grab an unrelated earlier
+    # `.agent-panel` block sharing the same `@media (max-width: 959px)` query.
+    media_body = _extract_media_block(
+        css, "@media (max-width: 959px)", contains="#new-session-btn"
     )
-    assert match, "Missing @media (max-width: 959px) block"
-    media_body = match.group(1)
     assert "#new-session-btn" in media_body, (
         "@media (max-width: 959px) block must contain #new-session-btn rule to hide it"
     )

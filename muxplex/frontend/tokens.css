@@ -1,0 +1,427 @@
+/* ================================================================
+   muxplex — design tokens
+   ================================================================
+   The one home for every value the interface is allowed to use.
+   Written prose, principles and component rules: docs/DESIGN_LANGUAGE.md
+
+   ----------------------------------------------------------------
+   THIS IS THE ONLY TOKEN FILE. THERE IS NO SECOND ONE.
+   ----------------------------------------------------------------
+   Asserted structurally by test_design_tokens.py, which walks the repo
+   and fails if a second tokens.css appears anywhere. Do not add one —
+   add a name here instead.
+
+   There USED to be a second one, and reading why it is gone is the
+   fastest way to understand this file. assets/branding/tokens.css
+   (354 lines, 2026-03-27) was complete and coherent on its own terms,
+   with an 856-line DESIGN-SYSTEM.md beside it — and had never been
+   linked from index.html or referenced by style.css a single time, so
+   not one of its values had ever rendered. It nonetheless shared 13
+   custom-property names with this file, and NINE of them held a
+   different value: --text-md was 1rem (16px) there against the 13px
+   the app actually renders, --text-lg 20px against 14px, --radius-md
+   6px against 8px, plus both font stacks. A developer who found that
+   file first got a value that was silently, plausibly wrong — no error,
+   no warning, just the wrong number. It was deleted in muxplex-cnd;
+   docs/DESIGN_LANGUAGE.md §3.4 records the decision and the full
+   divergence table.
+
+   WHAT THIS FILE IS, AND WHAT IT DELIBERATELY IS NOT
+   ----------------------------------------------------------------
+   This file was NOT designed from a blank page. Every value below is
+   either (a) already shipping in style.css today, or (b) the value the
+   existing code already used most often, promoted to a name. Where a
+   number here disagreed with the branded system, the SHIPPED value won
+   and the divergence is stated inline. Two token systems that disagree
+   is how the agent panel ended up with a spacing scale nobody else
+   uses. This file resolves that by codifying the one that renders.
+
+   Adopting this file changes NOTHING on its own. Defining a custom
+   property has no rendering effect until a rule references it. That is
+   the point: it can land, be reviewed, and be adopted one component at
+   a time without a single pixel moving in between.
+
+   ----------------------------------------------------------------
+   THE PIXEL-NEUTRALITY CONTRACT — load order must not matter
+   ----------------------------------------------------------------
+   style.css still carries its own :root block (lines 3-54). Until that
+   block is deleted, both files define some of the same names. CSS
+   resolves a same-specificity collision by SOURCE ORDER, so whichever
+   file loads second would win.
+
+   Every name defined in BOTH files is therefore defined here at the
+   EXACT value style.css already gives it. Load order cannot change a
+   rendered pixel, whichever way index.html ends up linking them.
+
+   This is not a convention anyone has to remember. It is asserted
+   structurally by muxplex/tests/test_design_tokens.py, which parses
+   both files and fails if any shared name resolves to a different
+   value. That test is the reason the duplication is safe to ship —
+   the same move the .quick-link consolidation made (d9061ba): make the
+   guarantee explicit and machine-checked, rather than trusting that
+   nobody will diverge it later.
+
+   Deleting style.css's :root block (leaving this file as the sole home)
+   is the natural follow-up, and is a change to style.css — owned by a
+   different lane. Until then, duplication + guard test is correct.
+
+   ----------------------------------------------------------------
+   WHY THIS FILE IS MOSTLY ADDITIVE
+   ----------------------------------------------------------------
+   The shipped colour and motion names are fine, and are referenced
+   thousands of times across style.css's 4,077 lines. Renaming them
+   would be churn without a reader-visible benefit, and would make
+   incremental adoption expensive — the opposite of the ask.
+
+   So the rule applied throughout: introduce a NEW name only where the
+   existing name is wrong (duplicated, misleading) or missing entirely.
+   Colour and motion are restated unchanged. Spacing, radius, type
+   scale, elevation, layering and control sizing are genuinely absent
+   from the shipped system — those are the additions, and they are what
+   the "five separate eyeballings" finding was actually about.
+   ================================================================ */
+
+
+/* ----------------------------------------------------------------
+   1. COLOUR
+   ----------------------------------------------------------------
+   Restated from style.css exactly. Dark is the only theme that ships.
+
+   The palette agrees with assets/branding/DESIGN-SYSTEM.md — the one
+   dimension where the branded system and the shipped app never
+   diverged, because the colours were lifted from the brand work when
+   the app was built. Only the NAMES differed (--bg here vs
+   --color-bg-base there), and the shipped short names are canonical
+   because style.css already uses them everywhere. That agreement is
+   why deleting the branded tokens.css cost nothing in colour: every
+   value it held is below, under the name the app already reads.
+   ---------------------------------------------------------------- */
+
+:root {
+  /* Surfaces — a three-step luminance ladder. Higher = nearer the eye. */
+  --bg: #0D1117;            /* page                                    */
+  --bg-secondary: #10131C;  /* tiles, panels, menus, dialogs           */
+  --bg-header: #0D1117;     /* header matches the page, on purpose:    */
+                            /* the chrome is not a separate object     */
+  --bg-surface: #1A1F2B;    /* raised within a surface; hover fills    */
+  --bg-overlay: rgba(13, 17, 23, 0.85);  /* scrim over the page        */
+
+  /* Text — three tiers, and only three. */
+  --text: #F0F6FF;          /* primary          17.4:1 on --bg         */
+  --text-muted: #8E95A3;    /* secondary         6.3:1 on --bg — AA    */
+  --text-dim: #4A5060;      /* disabled          2.4:1 — decorative,   */
+                            /* never the only carrier of meaning       */
+
+  /* Lines — decorative separation, never the sole signal. */
+  --border: #2A3040;
+  --border-subtle: #1E2430;
+
+  /* Accent — one colour, used for "this is interactive". */
+  --accent: #00D9F5;
+  --accent-hover: #00b8d1;
+  --accent-dim: rgba(0, 217, 245, 0.15);
+
+  /* Signal — status only. Never used to decorate a surface. */
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+
+  /* Attention (bell / activity). */
+  --bell: #F1A640;
+  --bell-glow: rgba(241, 166, 64, 0.25);
+  --bell-border: rgba(241, 166, 64, 0.6);
+
+  /* DEPRECATED ALIASES — do not use in new rules.
+     --bell-color and --activity-color are byte-identical third and
+     second copies of --bell (all three are #F1A640 in style.css
+     today). They are kept, at the same value, only because existing
+     rules reference them; deleting a name a live rule reads would
+     silently fall back to the property's initial value, which for
+     `color` is inherited black-on-dark — an invisible-text bug, not a
+     loud one. Migrate call sites to --bell, then delete these two.
+     Same story for --bg-tile, which has always equalled --bg-secondary. */
+  --bell-color: var(--bell);
+  --activity-color: var(--bell);
+  --bg-tile: var(--bg-secondary);
+  --bg-tile-hover: var(--bg-surface);
+
+  /* NOT DEFINED HERE, ON PURPOSE: --warning and --danger.
+     style.css reads both — e.g. var(--warning, #d29922) and
+     var(--danger, #f85149) in the compose bar, var(--danger, #c0392b)
+     in the follow-ups panel — but NEITHER is defined anywhere, so
+     every one of those call sites currently renders its inline
+     fallback. Two different reds ship today under the same name
+     (#c0392b vs #f85149) and nobody can see it, because the name that
+     would unify them does not exist.
+
+     Defining them here would silently repaint whichever call sites
+     disagree with the value chosen — a real pixel change, made by a
+     file whose whole contract is that it changes nothing. So this file
+     will not do it. The fix is: pick one red, edit the call sites to
+     var(--err), delete the fallbacks. That is a style.css change,
+     owned by another lane, and it must be verified in a browser.
+     Recorded as a residual in DONE.json. */
+}
+
+
+/* ----------------------------------------------------------------
+   2. SPACE
+   ----------------------------------------------------------------
+   NEW. This is the scale whose absence produced the "five separate
+   eyeballings" finding.
+
+   It is not invented. Counting every padding/margin/gap declaration in
+   style.css's 4,077 lines, six values already carry essentially all
+   the spacing in the app:
+
+       8px   ~75 uses      6px   ~59 uses      4px   ~45 uses
+      12px   ~24 uses     16px   ~22 uses      2px    ~11 uses
+
+   So the scale below is a description of the app, not a proposal for
+   it. Adopting it is mostly renaming numbers that were already right.
+
+   T-SHIRT NAMES, NOT NUMBERS. The branded system defined --space-1 ..
+   --space-16 where the digit meant px/4, so its --space-2 was 8px. A
+   numeric scale here would have collided with that name at a DIFFERENT
+   value — a silent 2x spacing error in any file that saw both. Naming
+   the steps kept spacing out of that trap.
+
+   It is worth being honest that this reasoning did NOT generalise, and
+   that is why muxplex-cnd happened. Spacing avoided the collision;
+   --text-*, --radius-* and the font stacks used identical names in
+   both files at different values, and nobody noticed until the two
+   files were diffed against each other. Distinct naming protects one
+   family at a time. Only having ONE file protects all of them, which
+   is the fix that actually shipped.
+
+   The scale is not a strict 4px multiple, because the app is not. 6px
+   is the second most common value in the entire stylesheet; a "pure"
+   4px grid would require either lying about that or churning ~59 call
+   sites for no reader-visible gain. The honest scale keeps 6px. */
+
+:root {
+  --space-2xs: 2px;   /* hairline nudge; optical alignment only        */
+  --space-xs:  4px;   /* inside a small control                        */
+  --space-sm:  6px;   /* gap between related items — the app's unit    */
+  --space-md:  8px;   /* gap between components; the grid gap          */
+  --space-lg:  12px;  /* padding inside a panel or section             */
+  --space-xl:  16px;  /* page margin; separation between regions       */
+  --space-2xl: 24px;  /* rare — only to separate unrelated regions     */
+}
+
+
+/* ----------------------------------------------------------------
+   3. RADIUS
+   ----------------------------------------------------------------
+   NEW, and near-unanimous already: of 83 border-radius declarations in
+   style.css, 52 (63%) are 4px. 8px and 12px are the only other values
+   with real usage (8 and 7 uses). Everything else — 2px, 3px, 6px, 7px,
+   10px, 14px, 20px — is a one-or-two-off.
+
+   DIVERGENCE FROM THE SUPERSEDED BRANDED SYSTEM: it defined --radius-md
+   as 6px and recommended it for "session tiles, cards, panels", and
+   --radius-lg as 8px. The shipped app renders tiles at 4px and has used
+   6px three times in total. The shipped values win: --radius-md is 8px
+   and --radius-lg is 12px here. Both names existed in both files at
+   different values, which is one of the nine collisions that got the
+   branded file deleted (muxplex-cnd). */
+
+:root {
+  --radius-sm: 4px;     /* default. Controls, tiles, cards, inputs.    */
+  --radius-md: 8px;     /* menus, popovers, dialogs                    */
+  --radius-lg: 12px;    /* sheets — the large mobile-anchored surfaces */
+  --radius-pill: 999px; /* badges and pills only                       */
+}
+
+
+/* ----------------------------------------------------------------
+   4. TYPE
+   ----------------------------------------------------------------
+   Font stacks restated from style.css unchanged.
+
+   DIVERGENCE FROM THE SUPERSEDED BRANDED SYSTEM: it specified
+   Urbanist / DM Sans / JetBrains Mono under the SAME names this file
+   uses (--font-ui, --font-mono). The app ships system-ui and SF Mono
+   and always has — no webfont is loaded by index.html. Naming fonts
+   here that the app does not load would make this file describe
+   something nobody can see.
+
+   Its --text-* scale also shared every name with this one at a
+   different value: --text-md 1rem (16px) against the 13px the app
+   actually renders, --text-lg 20px against 14px, --text-xs 12px
+   against 11px. Five of the nine value collisions behind muxplex-cnd
+   were in this one family.
+
+   The SIZE scale is new. Measured: of 125 font-size declarations,
+   13px (32), 12px (31) and 11px (20) account for 66% of the app. The
+   app's real base size is 13px, not the 14px the branded system
+   assumes.
+
+   PX, NOT REM — stated as a known limitation, not a preference. The
+   whole app, and the adopted deck responsive spec, reason in CSS px.
+   Switching to rem here would change rendered size for any user whose
+   root font size is not 16px — which is exactly the accessibility win
+   rem offers, and exactly why it cannot be smuggled in through a file
+   that promises to change nothing. Converting the app to rem is a real
+   improvement and a real, browser-verified change. Recorded as a
+   residual. */
+
+:root {
+  --font-ui: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', 'Menlo', monospace;
+
+  --text-2xs: 10px;  /* monospace tile preview; micro labels           */
+  --text-xs:  11px;  /* dense metadata, badges, timestamps             */
+  --text-sm:  12px;  /* secondary labels                               */
+  --text-md:  13px;  /* DEFAULT UI text                                */
+  --text-lg:  14px;  /* emphasis; terminal body                        */
+  --text-xl:  16px;  /* the largest size a dense tool should need      */
+}
+
+
+/* ----------------------------------------------------------------
+   5. ELEVATION
+   ----------------------------------------------------------------
+   NEW. muxplex is a flat interface: 4,077 lines of CSS contain nine
+   box-shadow declarations, and every one of them is on something that
+   overlaps other content. Nothing that sits IN the layout is shadowed —
+   tiles, the sidebar list, settings rows are all flat, separated by a
+   1px --border and nothing else.
+
+   That is the rule, and it is worth stating because it is the single
+   most visible thing the agent panel got wrong: elevation is EARNED BY
+   OVERLAP, never used to group or to decorate.
+
+   The nine shadows are really doing two jobs (a thing floating above
+   the page, and a full-height panel casting an edge shadow) at seven
+   different values. These four names cover all of them. Adopting one
+   at a call site whose current value differs slightly IS a pixel
+   change and must be verified in a browser like any other. */
+
+:root {
+  --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.5);   /* menus, flyouts */
+  --shadow-modal:   0 8px 32px rgba(0, 0, 0, 0.55);  /* dialogs        */
+
+  /* Directional — a full-height panel shadows only its inboard edge. */
+  --shadow-edge-left:  -4px 0 18px rgba(0, 0, 0, 0.45);  /* right-side */
+  --shadow-edge-right:  2px 0 16px rgba(0, 0, 0, 0.5);   /* left-side  */
+}
+
+
+/* ----------------------------------------------------------------
+   6. LAYER (z-index)
+   ----------------------------------------------------------------
+   NEW — and this is a MEASURED ladder, not a designed one. Every value
+   below is a z-index style.css already uses, given the name of the
+   thing that uses it:
+
+       1    .tile-device-tag                in-flow badge
+       10   .reconnect-overlay              overlay inside one view
+       50   .session-pill, expanding tile   floats over the page
+       100  .toast, .view-dropdown__menu    anchored to a control
+       200  .bottom-sheet, mobile sidebar   full-surface panel
+       299  .settings-backdrop              modal scrim
+       300  .settings-dialog, .flyout-menu  modal
+       310  flyout submenu                  modal, nested
+       500  .preview-popover                hover preview
+
+   TWO ANOMALIES, NAMED RATHER THAN QUIETLY FIXED:
+
+   (a) The agent panel is an island at 9000, with its confirmation gate
+       at 9500/9501 — roughly 18x the next-highest value in the app,
+       with nothing at all between 500 and 9000. There is no layering
+       problem it solves; it is simply a number picked without looking
+       at the others. By behaviour it is a --z-panel (it slides over the
+       page, the page stays visible and usable behind it) and its gate
+       is a --z-modal-backdrop / --z-modal.
+
+   (b) .preview-popover at 500 sits ABOVE the settings modal at 300.
+       That is probably wrong, but it ships today, and this file does
+       not silently reorder live stacking.
+
+   Both are real repaints. Both belong to whichever lane owns the
+   affected rules, and both need browser verification — a stacking
+   regression is invisible until two specific things are open at once,
+   which is precisely the class of bug the repo's proof bar exists for.
+   Recorded as residuals. */
+
+:root {
+  --z-raised: 1;            /* in-flow, above its own siblings         */
+  --z-view-overlay: 10;     /* covers one view, not the app            */
+  --z-float: 50;            /* floats over page content                */
+  --z-popover: 100;         /* menu or toast anchored to a control     */
+  --z-panel: 200;           /* full-surface panel; page still behind   */
+  --z-modal-backdrop: 299;
+  --z-modal: 300;
+  --z-modal-nested: 310;    /* submenu opened from within a modal      */
+  --z-hover-preview: 500;   /* see anomaly (b) above                   */
+}
+
+
+/* ----------------------------------------------------------------
+   7. CONTROL
+   ----------------------------------------------------------------
+   The metrics that make an interactive thing feel like the same
+   interactive thing everywhere.
+
+   --touch-min is ADOPTED AND NON-NEGOTIABLE. It comes from
+   deck/DESIGN_RESPONSIVE.md 2.1, which derived 48x48 CSS px as the one
+   floor that satisfies Apple HIG (44pt), Material (48dp), WCAG 2.2 AA
+   (24px) and WCAG 2.1 AAA (44px) simultaneously. It is already cited
+   by name inside style.css's own agent-panel mobile media query. It is
+   a floor, not a target — real tiles exceed it several times over.
+
+   --control-pad-x is 10px against a --space-* scale that has no 10.
+   That is deliberate and it is the ONE off-scale value in this file.
+   An interactive text control gets more horizontal than vertical inset
+   so that it reads as a control without needing a box drawn around it
+   — the exact treatment the .quick-link family arrived at over five
+   rounds (d9061ba, 290b71e). Naming it as a control token rather than
+   a spacing step is what stops it leaking back out into general
+   spacing as a sixth eyeballing. */
+
+:root {
+  --touch-min: 48px;        /* minimum hit target, any pointer         */
+  --header-height: 44px;    /* app header — visual height, not target  */
+
+  --control-pad-y: var(--space-xs);  /* 4px  */
+  --control-pad-x: 10px;             /* see note above                 */
+  --control-gap: var(--space-sm);    /* 6px — icon to label            */
+}
+
+
+/* ----------------------------------------------------------------
+   8. MOTION
+   ----------------------------------------------------------------
+   Restated from style.css unchanged. The existing names are good and
+   are already referenced across the file; renaming them would be
+   churn. Durations are short because this is a monitoring tool —
+   motion confirms a state change, it never performs.
+
+   style.css already honours prefers-reduced-motion in its own
+   "Reduced Motion" section. That is not restated here: overriding
+   these three tokens to 0ms from this file would be a second,
+   competing mechanism for the same job, and the two would drift. */
+
+:root {
+  --t-fast: 150ms ease;         /* hover, focus, colour change         */
+  --t-fade: 200ms ease;         /* appear / disappear                  */
+  --t-zoom: 250ms ease-in-out;  /* tile expand / collapse              */
+}
+
+
+/* ----------------------------------------------------------------
+   9. LAYOUT CONSTANTS
+   ----------------------------------------------------------------
+   Restated from style.css. These are not scale values — they are
+   specific measurements of specific things, and they belong with the
+   tokens only so there is one place to look. --tile-min-width is
+   overridden inside a media query in style.css; that override stays
+   where it is, next to the breakpoint that explains it. */
+
+:root {
+  --tile-height: 300px;
+  --tile-min-width: 360px;
+  --grid-gap: var(--space-md);      /* 8px  */
+  --grid-padding: var(--space-xl);  /* 16px */
+}

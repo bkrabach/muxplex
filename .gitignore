@@ -28,3 +28,5 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+DONE.json
+.amplifier/

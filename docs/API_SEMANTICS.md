@@ -698,6 +698,34 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   **`session_commands` is a sixth key in the same fence** (named session
   command pairs, below) -- extend the count wherever a client or test
   enumerates it.
+- **`input_allowed_sessions` now DEFAULTS to `["*"]` (every session), not `[]`.**
+  A client that reads this key off `GET /api/settings` and infers a security
+  posture from it must not treat "the operator never set this" as "input is
+  locked down" -- that inference was correct before this change and is wrong
+  now. **Why it changed:** the old `[]` default meant the two fences were
+  BOTH closed, so an operator who set `input_enabled: true` opened nothing --
+  they hit a second 403 naming the allowlist and had to enumerate session
+  names by hand. Three separate operators read that as a broken feature. The
+  fences are now asymmetric on purpose: `input_enabled` (still default
+  `false`) is the gate, and the allowlist is a narrowing tool the operator
+  reaches for only when they want less than everything.
+  - **Wire shape: BOTH the list `["*"]` (the default) and the bare string
+    `"*"` are valid on disk, but `GET /api/settings` always returns a LIST.**
+    `settings.load_settings()` normalizes a bare string into a one-element
+    list (`settings.normalize_input_allowed_sessions`) before any consumer
+    sees it, so a client can rely on `list[str]` and never needs to handle
+    the scalar form. The normalization exists because the fence itself
+    (`tmux_kit.keys.input_allowed_for_session`) requires a list and treats
+    any non-list as empty -- without it, the shorthand a human writes after
+    reading "the default is `*`" would silently mean deny-all. It does not split on commas and does
+    not reintroduce substring matching.
+  - **An empty list still means deny-everything.** `[]` and `"*"` are
+    opposites, not synonyms -- do not "helpfully" coerce one into the other.
+  - Unchanged, and load-bearing: both keys remain in `LOCAL_ONLY_KEYS`, so
+    `PATCH /api/settings` and federation sync still cannot set either one in
+    any direction. A client that PATCHes `input_allowed_sessions` gets a 200
+    and the *unchanged* value back -- now `["*"]` rather than `[]`. Treat
+    that as the fence holding, not as a write that succeeded.
 - **Named session command pairs** (`session_commands`, `GET
   /api/session-commands`, `POST /api/sessions`'s `command_id`, `DELETE
   /api/sessions/{name}`'s automatic pair-matching and `?force=true`).

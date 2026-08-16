@@ -7,12 +7,9 @@ let _fitAddon = null;
 let _ws = null;
 let _reconnectTimer = null;
 let _currentSession = null;
-let _vpHandler = null;
-let _vpScrollHandler = null;
-// rAF handle for the coalesced visualViewport refit (see _scheduleVpRefit
-// below) -- module-level (not local to initVisualViewport()) so closeTerminal()
-// can cancel a still-pending one, exactly like _vpHandler/_vpScrollHandler.
-let _vpRefitRafId = null;
+// Handle returned by _trackVisualViewportHeight() (see below) -- module-level
+// (not local to initVisualViewport()) so closeTerminal() can tear it down.
+let _vpTracker = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 let _searchAddon = null;
 let _resizeObserver = null;
@@ -504,9 +501,148 @@ function _termRefit() {
 window._refitTerminal = _termRefit;
 
 /**
+ * Generic core of muxplex's visualViewport-tracking mechanism: mirror
+ * `window.visualViewport.height` into a CSS custom property (`cssVarName`)
+ * on `el`, with two guards proven out here first for the terminal and now
+ * shared by every consumer:
+ *
+ * HEIGHT-UNCHANGED GUARD (mobile scroll corruption fix, v0.47.2): `scroll`
+ * fires far more often than the viewport genuinely changes height -- it
+ * also fires on ordinary content panning while the keyboard/browser
+ * toolbar is already settled (mobile-only; a desktop `resize` from a
+ * window drag has no such noisy sibling). Every one of those events used
+ * to still run an unconditional CSS write + refit, which -- via FitAddon's
+ * own fit() -> term.resize() -- could dispatch a PTY resize to the server
+ * on every single scroll tick during a touch-scroll gesture. See
+ * connectWebSocket()'s _sendResizeToServer/RESIZE_SEND_THROTTLE_MS comment
+ * for the full mechanism (tmux SIGWINCH-redraw races) and
+ * tests/test_terminal.mjs for the reproduction. Bailing out here when the
+ * height genuinely hasn't changed removes the large majority of that
+ * traffic at the source, for free -- it is a strict no-op in the case that
+ * matters (a real height change still applies immediately, exactly as
+ * before).
+ *
+ * PER-FRAME onChange COALESCING (mobile scroll SMOOTHNESS, v0.47.10): the
+ * height-unchanged guard above only filters out no-op events -- a real
+ * mobile toolbar-collapse/keyboard-open animation still fires several
+ * GENUINELY different heights in quick succession (one per animation
+ * tick). The CSS write itself stays immediate and unconditional on every
+ * genuine change (cheap; keeps whatever the property drives glued to the
+ * viewport in real time with zero added lag) -- only the caller-supplied
+ * `onChange` (the expensive part -- for the terminal, FitAddon.fit(),
+ * which forces a synchronous layout read right after the CSS write just
+ * invalidated it) is coalesced to at most once per rendered animation
+ * frame via `requestAnimationFrame`, using the same schedule-if-not-
+ * already-scheduled pattern as `initMobileTerminalScroll()`'s rAF-batched
+ * wheel dispatch further down this file. Any events that arrive before the
+ * queued frame runs are absorbed into that single call. Falls back to an
+ * immediate, synchronous call when `requestAnimationFrame` is unavailable
+ * -- the same fallback idiom already used in createTerminal() below --
+ * which keeps this byte-for-byte identical to the pre-fix behavior in the
+ * Node test environment (no rAF there), so the v0.47.2 corruption
+ * regression tests are unaffected.
+ *
+ * ORIGIN: both guards were originally inline in this file's own
+ * initVisualViewport() (below), written for its sole consumer at the time
+ * (#view-expanded / --app-viewport-height, refitting xterm.js). Extracted
+ * into this standalone, terminal-agnostic function once chat.js's agent
+ * panel became a second, independent consumer of the exact same technique
+ * (--agent-panel-visual-h on #chat-panel, with no refit-equivalent
+ * `onChange` needed -- see muxplex-m3n). Both now share this ONE
+ * implementation rather than each carrying its own copy of the same two
+ * guards -- exposed on `window` (like `_refitTerminal` above) so chat.js,
+ * a separate classic <script>, can call it directly.
+ *
+ * `el` may be null/absent at call time (e.g. the target element doesn't
+ * exist in the caller's view yet) -- listeners are still registered so a
+ * later genuine change is tracked correctly; until then the write step is
+ * simply a no-op, exactly like the pre-extraction inline handler's own
+ * `if (!expandedView) return;` guard.
+ *
+ * TOP-OFFSET CORRECTION: the written value is `visualViewport.height` MINUS
+ * `el`'s own current `getBoundingClientRect().top`, not the raw height.
+ * `#view-expanded` (this file's own consumer) happens to always sit at
+ * viewport y=0, so for it this is a no-op adjustment (top is always 0) --
+ * but a second consumer is not guaranteed that position. chat.js's
+ * `#chat-panel` does NOT start at y=0 (it is nested below the app's own
+ * page-level header), and setting its height to the RAW visualViewport
+ * height overshoots the visible region by exactly that header's rendered
+ * height -- a real, measured regression caught via simulated-keyboard
+ * browser verification while building the chat.js consumer (muxplex-m3n):
+ * the panel (and Send with it) extended past the actually-visible area by
+ * the header's height, in BOTH the no-keyboard and keyboard-open cases.
+ * Subtracting the element's own top makes the written value mean "space
+ * remaining below this element's current top edge, in the visible region"
+ * -- correct for a consumer anchored at y=0 (top=0, no change) and for one
+ * that is not (top>0, correctly shrunk). Guarded by a `typeof` check so
+ * environments where `el` has no `getBoundingClientRect` (this file's own
+ * unit-test mocks, tests/test_terminal.mjs) fall back to top=0 -- i.e. the
+ * exact pre-existing raw-height behavior, unchanged.
+ *
+ * Registers `resize`/`scroll` listeners immediately if
+ * `window.visualViewport` exists, and seeds the property once,
+ * synchronously, before returning -- callers never wait for the first
+ * event. Returns `null` (no listeners registered, nothing to tear down)
+ * when `window.visualViewport` is unavailable, so the caller's plain CSS
+ * `var(..., fallback)` governs untouched.
+ *
+ * @returns {{teardown: function(): void}|null}
+ */
+function _trackVisualViewportHeight(el, cssVarName, onChange) {
+  if (!window.visualViewport) return null;
+  var lastHeight = null;
+  var rafId = null;
+
+  function scheduleOnChange() {
+    if (!onChange) return;
+    if (typeof requestAnimationFrame === 'undefined') {
+      onChange();
+      return;
+    }
+    if (rafId !== null) return; // already queued for the next frame
+    rafId = requestAnimationFrame(function() {
+      rafId = null;
+      onChange();
+    });
+  }
+
+  function handler() {
+    if (!el) return;
+    var top = (typeof el.getBoundingClientRect === 'function')
+      ? el.getBoundingClientRect().top
+      : 0;
+    var h = Math.max(0, window.visualViewport.height - top);
+    if (h === lastHeight) return; // no genuine change -- true no-op, see docstring above
+    lastHeight = h;
+    el.style.setProperty(cssVarName, h + 'px');
+    scheduleOnChange();
+  }
+
+  window.visualViewport.addEventListener('resize', handler);
+  window.visualViewport.addEventListener('scroll', handler);
+  handler(); // seed the initial value immediately, don't wait for the first event
+
+  function teardown() {
+    window.visualViewport.removeEventListener('resize', handler);
+    window.visualViewport.removeEventListener('scroll', handler);
+    if (rafId !== null) {
+      if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    if (el) el.style.removeProperty(cssVarName);
+  }
+
+  return { teardown: teardown };
+}
+
+window._trackVisualViewportHeight = _trackVisualViewportHeight;
+
+/**
  * Track the visual viewport (the space actually visible above an on-screen
- * keyboard, search engines, etc.) via a CSS custom property rather than an
- * inline height on #terminal-container.
+ * keyboard, search engines, etc.) for the terminal view, via
+ * _trackVisualViewportHeight() above: mirrors its height into
+ * `--app-viewport-height` (consumed by `#view-expanded` in style.css) and
+ * refits xterm.js, coalesced to at most once per animation frame.
  *
  * REWORKED (was: `container.style.height = (vvh - headerHeight) + 'px'`).
  * That approach hardcoded a single subtracted height (the 44px header) and
@@ -517,109 +653,26 @@ window._refitTerminal = _termRefit;
  * mis-sized it again for the compose bar had this rework not happened.
  *
  * The fix moves the measurement one level UP: instead of computing the
- * terminal's own height, set `--app-viewport-height` (consumed by
- * `#view-expanded` in style.css) to the visual viewport's height. Flexbox
- * then does the subtraction for every sibling in the column
- * (.expanded-header, .terminal-search-bar, #terminal-container,
- * #compose-bar) automatically and correctly, no matter how many of them
- * are visible or how tall each one is. #terminal-container itself gets NO
- * inline height at all any more -- it is sized purely by its `flex: 1` rule
- * plus its siblings' actual rendered heights.
- *
- * Also listens for visualViewport's `scroll` event (fires on iOS Safari
- * when the page pans as the keyboard opens) and reapplies the same
- * handler, since a `scroll` can change `visualViewport.height` too on some
- * browsers without a corresponding `resize`.
- *
- * HEIGHT-UNCHANGED GUARD (mobile scroll corruption fix, v0.47.2): `scroll`
- * fires far more often than the viewport genuinely changes height -- it
- * also fires on ordinary content panning while the keyboard/browser
- * toolbar is already settled (mobile-only; a desktop `resize` from a
- * window drag has no such noisy sibling). Every one of those events used
- * to still run an unconditional CSS write + _termRefit() call, which --
- * via FitAddon's own fit() -> term.resize() -- could dispatch a PTY
- * resize to the server on every single scroll tick during a touch-scroll
- * gesture. See connectWebSocket()'s
- * _sendResizeToServer/RESIZE_SEND_THROTTLE_MS comment for the full
- * mechanism (tmux SIGWINCH-redraw races) and tests/test_terminal.mjs for
- * the reproduction. Bailing out here when the height genuinely hasn't
- * changed removes the large majority of that traffic at the source, for
- * free -- it is a strict no-op in the case that matters (a real height
- * change still refits, exactly as before).
- *
- * PER-FRAME REFIT COALESCING (mobile scroll SMOOTHNESS, this fix): the
- * height-unchanged guard above only filters out no-op events -- a real
- * mobile toolbar-collapse/keyboard-open animation still fires several
- * GENUINELY different heights in quick succession (one per animation
- * tick), and until now every single one still ran `_termRefit()`
- * (FitAddon.fit()) synchronously and immediately. `fit()` reads layout
- * (offsetWidth/offsetHeight) right after the CSS write above just
- * invalidated it -- a forced synchronous layout recalculation -- and may
- * also trigger xterm.js's own resize/render work. Desktop's `resize`
- * event essentially never fires during a scroll (the height-unchanged
- * guard makes it a no-op every time), so none of this cost is ever paid
- * there; mobile's `scroll`/`resize` genuinely re-fire with new heights
- * throughout the whole toolbar animation, so this cost is paid on every
- * single animation tick -- real main-thread work competing with the
- * browser's own scroll/toolbar compositing, i.e. exactly the reported
- * asymmetry ("very smooth on desktop", rough on mobile).
- *
- * Fix: coalesce `_termRefit()` to at most once per rendered animation
- * frame via `requestAnimationFrame`, using the same schedule-if-not-
- * already-scheduled pattern as `initMobileTerminalScroll()`'s rAF-batched
- * wheel dispatch further down this file. The CSS write stays immediate
- * and unconditional on every genuine change (cheap; keeps the container
- * glued to the viewport in real time with zero added lag) -- only the
- * comparatively expensive `fit()` call is batched, and any events that
- * arrive before the queued frame runs are absorbed into that single call
- * (FitAddon measures live layout, not a captured value, so the eventual
- * call always reflects the LATEST height). Falls back to an immediate,
- * synchronous call when `requestAnimationFrame` is unavailable -- the
- * same fallback idiom already used in createTerminal() below -- which
- * keeps this byte-for-byte identical to the pre-fix behavior in the
- * Node test environment (no rAF there), so the v0.47.2 corruption
- * regression tests are unaffected.
+ * terminal's own height, set `--app-viewport-height` to the visual
+ * viewport's height. Flexbox then does the subtraction for every sibling
+ * in the column (.expanded-header, .terminal-search-bar,
+ * #terminal-container, #compose-bar) automatically and correctly, no
+ * matter how many of them are visible or how tall each one is.
+ * #terminal-container itself gets NO inline height at all any more -- it
+ * is sized purely by its `flex: 1` rule plus its siblings' actual
+ * rendered heights.
  */
-function _scheduleVpRefit() {
-  if (typeof requestAnimationFrame === 'undefined') {
-    _termRefit();
-    return;
-  }
-  if (_vpRefitRafId !== null) return; // a refit is already queued for the next frame
-  _vpRefitRafId = requestAnimationFrame(function() {
-    _vpRefitRafId = null;
-    _termRefit();
-  });
-}
-
 function initVisualViewport() {
-  if (!window.visualViewport) return;
-  if (_vpHandler) window.visualViewport.removeEventListener('resize', _vpHandler);
-  if (_vpScrollHandler) window.visualViewport.removeEventListener('scroll', _vpScrollHandler);
-
+  // Tear down any tracker from a previous session before creating a new
+  // one -- mirrors the old implementation's own remove-then-recreate
+  // guard, now via the shared teardown() rather than manually managing
+  // individual listener/rAF handles.
+  if (_vpTracker) {
+    _vpTracker.teardown();
+    _vpTracker = null;
+  }
   var expandedView = document.getElementById('view-expanded');
-  var _lastVpHeight = null;
-
-  _vpHandler = function() {
-    if (!expandedView) return;
-    var h = window.visualViewport.height;
-    if (h === _lastVpHeight) return; // no genuine change -- true no-op, see docstring above
-    _lastVpHeight = h;
-    expandedView.style.setProperty('--app-viewport-height', h + 'px');
-    // Refit xterm.js -- coalesced to at most one per animation frame (see
-    // _scheduleVpRefit above and its docstring). The ResizeObserver in
-    // openTerminal() would also eventually catch this (debounced 50ms);
-    // per-frame rAF coalescing keeps the terminal tracking the animating
-    // viewport far more tightly than that while still bounding the cost
-    // per frame. (The server-bound PTY resize this can trigger is
-    // separately throttled -- see connectWebSocket()'s _sendResizeToServer.)
-    _scheduleVpRefit();
-  };
-  _vpScrollHandler = _vpHandler;
-
-  window.visualViewport.addEventListener('resize', _vpHandler);
-  window.visualViewport.addEventListener('scroll', _vpScrollHandler);
-  _vpHandler(); // set the initial value immediately, don't wait for the first resize
+  _vpTracker = _trackVisualViewportHeight(expandedView, '--app-viewport-height', _termRefit);
 }
 
 // ─── Terminal creation ────────────────────────────────────────────────────────
@@ -975,28 +1028,19 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
  * Close the current terminal session and clean up all resources.
  */
 function closeTerminal() {
-  if (_vpHandler) {
-    if (window.visualViewport) {
-      window.visualViewport.removeEventListener('resize', _vpHandler);
-      window.visualViewport.removeEventListener('scroll', _vpScrollHandler);
-    }
-    _vpHandler = null;
-    _vpScrollHandler = null;
+  // Tear down the visualViewport tracker (see _trackVisualViewportHeight):
+  // removes the resize/scroll listeners, cancels a still-pending coalesced
+  // refit so a stray callback from THIS session never fires an extra
+  // (harmless but wasted) fit() against whatever terminal/session comes
+  // next, and clears --app-viewport-height -- #view-expanded falls back to
+  // its CSS default (100dvh) the moment it's set again, but an explicit
+  // clear here means the overview view (which never reads this property,
+  // but shares no ambiguity either way) never inherits a stale pixel value
+  // from the last session's keyboard state.
+  if (_vpTracker) {
+    _vpTracker.teardown();
+    _vpTracker = null;
   }
-  // Cancel a still-pending coalesced refit (see _scheduleVpRefit) so a stray
-  // callback from THIS session never fires an extra (harmless but wasted)
-  // fit() against whatever terminal/session comes next.
-  if (_vpRefitRafId !== null) {
-    if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(_vpRefitRafId);
-    _vpRefitRafId = null;
-  }
-  // Clear the custom property this view was using -- #view-expanded falls
-  // back to its CSS default (100dvh) the moment it's set again, but an
-  // explicit clear here means the overview view (which never reads this
-  // property, but shares no ambiguity either way) never inherits a stale
-  // pixel value from the last session's keyboard state.
-  var expandedViewEl = document.getElementById('view-expanded');
-  if (expandedViewEl) expandedViewEl.style.removeProperty('--app-viewport-height');
 
   if (_reconnectTimer) {
     clearTimeout(_reconnectTimer);

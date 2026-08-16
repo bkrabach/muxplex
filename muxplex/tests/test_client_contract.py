@@ -128,8 +128,28 @@ def no_sessions(monkeypatch):
     monkeypatch.setattr(main_mod, "get_session_activity", dict)
 
 
+def _test_session_cookie() -> str:
+    """A real, verifiable `muxplex_session` cookie for the app's OWN
+    module-level `_auth_secret`/`_auth_ttl` -- signed with
+    `create_session_cookie`, so `AuthMiddleware` accepts it exactly like a
+    browser's post-login cookie would.
+
+    Used (rather than a Bearer federation key) because `AuthMiddleware`'s
+    Bearer branch reads its key fresh from `muxplex.settings.load_federation_key()`
+    (auth.py, "read fresh from disk on every request"), not from any
+    in-process variable -- monkeypatching `main._federation_key` (which only
+    backs the WS/rename-endpoint `bearer_only` classification) does not
+    reach it. A session cookie is verified directly against `_auth_secret`,
+    so it needs no settings-file plumbing to work in-process.
+    """
+    from muxplex.auth import create_session_cookie
+    from muxplex.main import _auth_secret, _auth_ttl
+
+    return create_session_cookie(_auth_secret, _auth_ttl)
+
+
 def _sync_asgi_client(
-    *, client_addr: tuple[str, int] = ("127.0.0.1", 12345)
+    *, client_addr: tuple[str, int] = ("203.0.113.5", 12345)
 ) -> httpx.Client:
     """Build a synchronous httpx.Client driving the real app in-process.
 
@@ -150,14 +170,20 @@ def _sync_asgi_client(
     is exactly the "no network, no port, no live host" shape this test
     needs -- confirmed against a minimal repro before landing this fixture.
 
-    `client_addr` sets the ASGI scope's client address; ("127.0.0.1", ...)
-    triggers `AuthMiddleware`'s localhost bypass (the default for every test
-    here except the explicit non-localhost 401 test below).
+    `client_addr` no longer carries any authentication meaning (the
+    localhost bypass it used to trigger is gone -- GHSA-7c6r-fvrh-9qp4); the
+    default is a non-localhost address on purpose so nothing here can be
+    mistaken for exercising that removed path. Authentication comes from the
+    `muxplex_session` cookie set via the `Cookie` header below (see
+    `_test_session_cookie`).
     """
     return ASGITestClient(
         app,
         base_url="http://testserver",
-        headers={"Accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "Cookie": f"muxplex_session={_test_session_cookie()}",
+        },
         follow_redirects=False,
         client=client_addr,
     )
@@ -193,7 +219,10 @@ async def async_client():
     raw = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
-        headers={"Accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "Cookie": f"muxplex_session={_test_session_cookie()}",
+        },
         follow_redirects=False,
     )
     client = AsyncMuxplexClient("http://testserver", client=raw)
@@ -738,12 +767,19 @@ def test_send_input_disabled_maps_to_input_forbidden_not_auth_error(sync_client)
 def test_no_credential_non_localhost_maps_to_auth_error():
     """A non-localhost caller with no credential must get 401 -> AuthError.
 
-    Every other test in this file uses a ("127.0.0.1", ...) client address,
-    which triggers `AuthMiddleware`'s localhost bypass (see
-    `_sync_asgi_client`). This test deliberately picks a non-localhost
-    address so the real auth-rejection path is exercised too.
+    Every other test in this file goes through `_sync_asgi_client`, which
+    always attaches a valid `muxplex_session` cookie (the localhost bypass
+    that once made a credential optional here is gone -- GHSA-7c6r-fvrh-9qp4).
+    This test builds a client with NO Authorization/Cookie header at all, so
+    the real auth-rejection path is exercised too.
     """
-    raw = _sync_asgi_client(client_addr=("203.0.113.5", 12345))
+    raw = ASGITestClient(
+        app,
+        base_url="http://testserver",
+        headers={"Accept": "application/json"},
+        follow_redirects=False,
+        client=("203.0.113.5", 12345),
+    )
     client = MuxplexClient("http://testserver", client=raw)
     try:
         with pytest.raises(AuthError):

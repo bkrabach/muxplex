@@ -3250,22 +3250,51 @@ def _wrap_with_client_host(wrapped_app, host: str):
     return _middleware
 
 
-def test_ws_localhost_no_cookie_bypasses_auth():
-    """WebSocket from 127.0.0.1 is accepted even without a session cookie."""
+def test_ws_localhost_no_cookie_is_rejected():
+    """WebSocket from 127.0.0.1 with no cookie/Bearer is rejected with 4001,
+    same as any other unauthenticated caller.
+
+    This is the fix for GHSA-7c6r-fvrh-9qp4: the terminal WebSocket carries
+    live scrollback and keystroke input, so an unauthenticated bypass here
+    is at least as dangerous as the HTTP one, and a re-originated proxy
+    connection (socat, `ssh -L`, a userspace container port-forward)
+    presents the identical 127.0.0.1 peer for a genuinely remote caller --
+    there is no socket-level signal to tell the two apart.
+    """
     from starlette.websockets import WebSocketDisconnect
 
-    # Force scope to look like localhost so auth check is bypassed
+    # Force scope to look like localhost -- must now be rejected same as
+    # any other unauthenticated peer.
+    localhost_app = _wrap_with_client_host(app, "127.0.0.1")
+
+    with TestClient(localhost_app) as c, pytest.raises(WebSocketDisconnect) as exc_info:
+        with c.websocket_connect("/terminal/ws") as _:
+            pass
+    assert exc_info.value.code == 4001
+
+
+def test_ws_localhost_with_valid_cookie_still_accepted():
+    """A loopback caller WITH a real credential (session cookie) is still
+    accepted -- the fix removes the free pass, not loopback access itself."""
+    from starlette.websockets import WebSocketDisconnect
+
+    from muxplex.auth import create_session_cookie
+    from muxplex.main import _auth_secret, _auth_ttl
+
+    cookie = create_session_cookie(_auth_secret, _auth_ttl)
     localhost_app = _wrap_with_client_host(app, "127.0.0.1")
 
     with TestClient(localhost_app) as c:
+        c.cookies["muxplex_session"] = cookie
         try:
             with c.websocket_connect("/terminal/ws") as _:
-                pass  # connection was accepted — auth bypassed for localhost
+                pass  # connection was accepted
         except WebSocketDisconnect as e:
-            # The websocket was accepted (auth bypassed); ttyd is not running so
-            # the proxy fails and closes with a non-4001 code.
+            # ttyd is not running in this unit test, so the proxy fails and
+            # closes with a non-4001 code once past the auth check.
             assert e.code != 4001, (
-                f"Localhost WebSocket should not be rejected; got close code {e.code}"
+                f"Cookie-authenticated localhost WebSocket should not be "
+                f"rejected as unauthorized; got close code {e.code}"
             )
 
 

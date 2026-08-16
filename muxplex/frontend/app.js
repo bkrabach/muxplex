@@ -6356,6 +6356,37 @@ function _updateNotificationUI(statusEl, reqBtn, permission) {
  * Sets _settingsOpen, calls dialog.showModal(), removes hidden from backdrop,
  * and loads current display settings into form controls.
  */
+/**
+ * Populate the Agent tab (muxplex-3lr) from the panel's own per-device
+ * preferences.
+ *
+ * These are browser-local values, NOT server settings: nothing here goes
+ * through patchServerSetting()/patchSettingsGuarded(), nothing here is
+ * federation-synced, and a phone and a desktop are expected to disagree.
+ *
+ * The values live in chat.js (window.muxplexAgentPrefs) rather than here, and
+ * that indirection is the point: chat.js's keydown handler branches on
+ * getSendMode() and its byline hint is written from the same call, so a copy
+ * of the storage key or the default in this file would be a second source of
+ * truth for a setting whose entire acceptance criterion is that the hint and
+ * the handler agree. If the panel script failed to load, the tab renders
+ * nothing rather than writing a key nobody reads.
+ */
+function _renderAgentSettingsTab() {
+  const prefs = window.muxplexAgentPrefs;
+  if (!prefs) {
+    console.warn('[settings] Agent tab: chat.js preferences unavailable -- ' +
+      'send/newline choice not rendered');
+    return;
+  }
+  const mode = prefs.getSendMode();
+  const newlineRadio = $('setting-agent-send-mode-newline');
+  const sendRadio = $('setting-agent-send-mode-send');
+  const sends = mode === prefs.SEND_MODE_SEND;
+  if (newlineRadio) newlineRadio.checked = !sends;
+  if (sendRadio) sendRadio.checked = sends;
+}
+
 function openSettings() {
   _settingsOpen = true;
   const dialog = $('settings-dialog');
@@ -6382,6 +6413,22 @@ function openSettings() {
   // Populate Sessions tab / bell sound from display settings
   const bellSoundEl = $('setting-bell-sound');
   if (bellSoundEl) bellSoundEl.checked = !!settings.bellSound;
+
+  // Populate Agent tab from the panel's per-device (localStorage) prefs.
+  // Synchronous on purpose -- these never involve the server, so they must
+  // not be inside the loadServerSettings() promise below.
+  _renderAgentSettingsTab();
+
+  // Agent provider credential status (docs/designs/agent-credentials.md) --
+  // owned by chat.js (window.muxplexAgentCredential), same "read from
+  // chat.js, don't reimplement here" discipline as the send-mode prefs
+  // above. bindForm() is idempotent-guarded internally by binding once
+  // per page load (via a module-level closure in chat.js), so calling it
+  // every time the dialog opens is safe.
+  if (window.muxplexAgentCredential) {
+    window.muxplexAgentCredential.bindForm();
+    window.muxplexAgentCredential.refreshStatus();
+  }
 
   // Update notification permission status text/button
   const statusEl = $('notification-status-text');
@@ -7866,6 +7913,22 @@ function bindStaticEventListeners() {
   });
   on($('setting-tmux-copy-mode-vi'), 'change', function() {
     if (this.checked) patchTmuxConfig({ copy_mode: 'vi' });
+  });
+
+  // Agent tab -- send/newline chord (muxplex-18f). Writes through
+  // window.muxplexAgentPrefs, which persists to localStorage AND immediately
+  // re-writes the composer's byline hint, aria-keyshortcuts and Send tooltip.
+  // Deliberately NOT patchServerSetting(): this is a per-device preference and
+  // must never reach the server or federation sync. Deliberately NOT a direct
+  // localStorage.setItem() either -- chat.js owns the key and the redraw, and
+  // a second writer here would let the hint and the handler disagree.
+  on($('setting-agent-send-mode-newline'), 'change', function() {
+    const prefs = window.muxplexAgentPrefs;
+    if (this.checked && prefs) prefs.setSendMode(prefs.SEND_MODE_NEWLINE);
+  });
+  on($('setting-agent-send-mode-send'), 'change', function() {
+    const prefs = window.muxplexAgentPrefs;
+    if (this.checked && prefs) prefs.setSendMode(prefs.SEND_MODE_SEND);
   });
 
   // Terminal tab -- "Show the generated config" disclosure. Collapsed by default
