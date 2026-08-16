@@ -140,96 +140,249 @@ function resetDom() {
   _refitCallCount = 0;
 }
 
+// --- server-settings persistence capture (v0.49.0) -----------------------
+//
+// The compose bar's on/off preference is no longer a per-device
+// localStorage value. It persists through settings.py's `composeBarOpen`
+// via GET/PATCH /api/settings -- the SAME mechanism as
+// sidebarOpen/agentPanelOpen. So "did the preference persist?" is asserted
+// here against the PATCH body this stub records, not against
+// localStorage. The old key survives in exactly one role, as a one-time
+// migration SOURCE; that role has its own tests below.
+//
+// patchServerSetting() is async and deliberately not awaited by
+// _composeSetPref() (the UI re-renders immediately off the in-memory
+// value). Tests that assert on the wire therefore await a macrotask tick
+// via settled(); tests that assert on resolution stay synchronous.
+let _patchedSettings = [];
+
+function installSettingsFetchStub() {
+  _patchedSettings = [];
+  globalThis.fetch = async (_path, opts) => {
+    if (opts && opts.method === 'PATCH' && opts.body) {
+      try { _patchedSettings.push(JSON.parse(opts.body)); } catch (_) { /* not our patch */ }
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+}
+
+/** Let the un-awaited patchServerSetting() promise chain settle. */
+function settled() {
+  return new Promise((r) => setTimeout(r, 0));
+}
+
+/**
+ * The most recently PATCHed value for `key`, or the sentinel NEVER if no
+ * PATCH ever carried it. A sentinel (not undefined) so "never sent" can
+ * never be confused with "sent as undefined".
+ */
+const NEVER = Symbol('never-patched');
+function lastPatched(key) {
+  for (let i = _patchedSettings.length - 1; i >= 0; i--) {
+    if (Object.prototype.hasOwnProperty.call(_patchedSettings[i], key)) {
+      return _patchedSettings[i][key];
+    }
+  }
+  return NEVER;
+}
+
 beforeEach(() => {
   resetDom();
   _localStorageStore = {};
   _localStorageThrowsOnGet = false;
   _localStorageThrowsOnSet = false;
   globalThis.window.innerWidth = 1024;
+  installSettingsFetchStub();
   app._setViewingSession(null);
   app._setDeviceId('dev-1');
-  app._composeSetPref('auto');
+  // Start every test from "server settings loaded, composeBarOpen never
+  // explicitly set" -- the real post-load state initComposePref() is
+  // written against. (This used to seed the retired string preference
+  // 'auto', which after the mechanism change silently persisted a truthy
+  // STRING into composeBarOpen and made several assertions below pass or
+  // fail for reasons unrelated to what they claimed to test.)
+  app._setServerSettings({});
   app._composeClearDraft();
 });
 
-// --- Preference resolution ---
+// --- Preference resolution (composeBarOpen tri-state) ---
+//
+// v0.49.0 replaced the retired per-device localStorage tri-state
+// ('auto'|'on'|'off', where 'auto' deferred to isMobile()) with a single
+// server-persisted composeBarOpen (null|true|false). The behavioural
+// change these tests now pin: a never-toggled preference resolves to
+// VISIBLE at EVERY width -- not visible-on-mobile-only. The old
+// width-dependent assertions are gone because the width dependency is
+// gone, not because they were inconvenient.
 
-test('compose pref defaults to auto with empty localStorage', () => {
-  app.initComposePref();
-  assert.strictEqual(app._composeEffectiveOn(), false); // desktop width
-});
-
-test('compose pref auto resolves on for mobile width', () => {
-  globalThis.window.innerWidth = 400;
+test('never toggled resolves to visible on desktop width', () => {
+  app._setServerSettings({});
   app.initComposePref();
   assert.strictEqual(app._composeEffectiveOn(), true);
 });
 
-test('compose pref auto resolves off for desktop width', () => {
-  globalThis.window.innerWidth = 1024;
+test('never toggled resolves to visible on mobile width too -- no width dependence', () => {
+  globalThis.window.innerWidth = 400;
+  app._setServerSettings({});
   app.initComposePref();
+  assert.strictEqual(app._composeEffectiveOn(), true);
+});
+
+test('an explicit false wins over the on-by-default, at any width', () => {
+  app._setServerSettings({ composeBarOpen: false });
+  app.initComposePref();
+  assert.strictEqual(app._composeEffectiveOn(), false);
+  globalThis.window.innerWidth = 400;
   assert.strictEqual(app._composeEffectiveOn(), false);
 });
 
-test('unknown stored value falls back to auto', () => {
-  _localStorageStore['muxplex-compose-bar'] = 'bogus';
+test('an explicit true stays on, at any width', () => {
+  app._setServerSettings({ composeBarOpen: true });
   app.initComposePref();
+  assert.strictEqual(app._composeEffectiveOn(), true);
   globalThis.window.innerWidth = 400;
-  assert.strictEqual(app._composeEffectiveOn(), true); // behaves as 'auto'
+  assert.strictEqual(app._composeEffectiveOn(), true);
 });
 
-test('throwing localStorage.getItem falls back to auto, does not throw', () => {
+test('initComposePref does not re-persist when the server already holds an explicit value', async () => {
+  app._setServerSettings({ composeBarOpen: false });
+  app.initComposePref();
+  await settled();
+  // Nothing to resolve -- an explicit value must not be rewritten, which
+  // would also stomp a concurrent change from another device.
+  assert.strictEqual(lastPatched('composeBarOpen'), NEVER);
+});
+
+test('initComposePref persists the resolved default so it stops being implicit', async () => {
+  app._setServerSettings({});
+  app.initComposePref();
+  await settled();
+  assert.strictEqual(lastPatched('composeBarOpen'), true);
+});
+
+test('blocked localStorage does not throw and falls back to the on-by-default', () => {
   _localStorageThrowsOnGet = true;
+  app._setServerSettings({});
   assert.doesNotThrow(() => app.initComposePref());
-  globalThis.window.innerWidth = 1024;
-  assert.strictEqual(app._composeEffectiveOn(), false); // 'auto' on desktop
-});
-
-test('throwing localStorage.setItem does not throw and pref still updates in-memory', () => {
-  _localStorageThrowsOnSet = true;
-  assert.doesNotThrow(() => app._composeSetPref('on'));
   assert.strictEqual(app._composeEffectiveOn(), true);
 });
 
-test('stored "on" forces effective-on regardless of width', () => {
-  _localStorageStore['muxplex-compose-bar'] = 'on';
-  app.initComposePref();
-  globalThis.window.innerWidth = 1024;
-  assert.strictEqual(app._composeEffectiveOn(), true);
-});
+// --- Legacy localStorage migration (one-time, v0.49.0) ---
+//
+// The retired key survives in exactly one role: a migration SOURCE, read
+// once, only when the server has never held an explicit value. This is the
+// part with real user-visible risk -- someone who deliberately hid the bar
+// must not have it silently reopened by the new on-by-default -- and it
+// had no coverage at all before this release.
 
-test('stored "off" forces effective-off regardless of width', () => {
+test('legacy "off" migrates to an explicit false instead of the new on-by-default', () => {
   _localStorageStore['muxplex-compose-bar'] = 'off';
+  app._setServerSettings({});
   app.initComposePref();
-  globalThis.window.innerWidth = 400;
+  // The whole point: the new default is ON, but this user already said off.
   assert.strictEqual(app._composeEffectiveOn(), false);
+});
+
+test('legacy "off" migration is persisted to the server, not just held in memory', async () => {
+  _localStorageStore['muxplex-compose-bar'] = 'off';
+  app._setServerSettings({});
+  app.initComposePref();
+  await settled();
+  assert.strictEqual(lastPatched('composeBarOpen'), false);
+});
+
+test('legacy "on" migrates to an explicit true', async () => {
+  _localStorageStore['muxplex-compose-bar'] = 'on';
+  app._setServerSettings({});
+  app.initComposePref();
+  await settled();
+  assert.strictEqual(app._composeEffectiveOn(), true);
+  assert.strictEqual(lastPatched('composeBarOpen'), true);
+});
+
+test('legacy "auto" carries no explicit intent and is not migrated', async () => {
+  _localStorageStore['muxplex-compose-bar'] = 'auto';
+  app._setServerSettings({});
+  app.initComposePref();
+  await settled();
+  // Falls through to the new default rather than being translated into a
+  // width guess -- 'auto' never was an explicit user choice.
+  assert.strictEqual(app._composeEffectiveOn(), true);
+  assert.strictEqual(lastPatched('composeBarOpen'), true);
+});
+
+test('an unrecognised legacy value is ignored and falls back to the default', () => {
+  _localStorageStore['muxplex-compose-bar'] = 'bogus';
+  app._setServerSettings({});
+  app.initComposePref();
+  assert.strictEqual(app._composeEffectiveOn(), true);
+});
+
+test('a legacy value never overrides an explicit server value', async () => {
+  // The server is authoritative once it holds a real choice: a stale
+  // per-device key from before the migration must not win over it.
+  _localStorageStore['muxplex-compose-bar'] = 'on';
+  app._setServerSettings({ composeBarOpen: false });
+  app.initComposePref();
+  await settled();
+  assert.strictEqual(app._composeEffectiveOn(), false);
+  assert.strictEqual(lastPatched('composeBarOpen'), NEVER);
+});
+
+test('migration runs once: a later toggle is not re-overridden by the legacy key', async () => {
+  _localStorageStore['muxplex-compose-bar'] = 'off';
+  const settings = {};
+  app._setServerSettings(settings);
+  app.initComposePref();          // migrates -> false
+  assert.strictEqual(app._composeEffectiveOn(), false);
+  app._composeToggle();           // user turns it back on -> true
+  assert.strictEqual(app._composeEffectiveOn(), true);
+  app.initComposePref();          // a later init must be a no-op now
+  assert.strictEqual(app._composeEffectiveOn(), true);
+  await settled();
 });
 
 // --- Toggle ---
 
-test('toggle from effective-on writes off', () => {
-  app._composeSetPref('on');
+test('toggle from effective-on persists false', async () => {
+  app._composeSetPref(true);
   app._composeToggle();
-  assert.strictEqual(_localStorageStore['muxplex-compose-bar'], 'off');
   assert.strictEqual(app._composeEffectiveOn(), false);
+  await settled();
+  assert.strictEqual(lastPatched('composeBarOpen'), false);
 });
 
-test('toggle from effective-off writes on', () => {
-  app._composeSetPref('off');
+test('toggle from effective-off persists true', async () => {
+  app._composeSetPref(false);
   app._composeToggle();
-  assert.strictEqual(_localStorageStore['muxplex-compose-bar'], 'on');
   assert.strictEqual(app._composeEffectiveOn(), true);
+  await settled();
+  assert.strictEqual(lastPatched('composeBarOpen'), true);
 });
 
-test('toggle never writes auto', () => {
-  app._composeSetPref('on');
-  app._composeToggle(); // -> off
-  app._composeToggle(); // -> on
-  assert.notStrictEqual(_localStorageStore['muxplex-compose-bar'], 'auto');
+test('toggle persists a real boolean, never a legacy string', async () => {
+  app._composeSetPref(true);
+  app._composeToggle(); // -> false
+  app._composeToggle(); // -> true
+  await settled();
+  const sent = lastPatched('composeBarOpen');
+  assert.strictEqual(typeof sent, 'boolean');
+  assert.strictEqual(sent, true);
+});
+
+test('toggle persists via PATCH /api/settings -- the sidebarOpen mechanism, not localStorage', async () => {
+  app._composeSetPref(true);
+  app._composeToggle();
+  await settled();
+  assert.strictEqual(lastPatched('composeBarOpen'), false);
+  // The retired key must not be written any more -- it is a migration
+  // source only. A second, parallel persistence scheme is exactly what
+  // this change removed.
+  assert.strictEqual(_localStorageStore['muxplex-compose-bar'], undefined);
 });
 
 test('toggle updates aria-pressed and header-btn--active together', () => {
-  app._composeSetPref('off');
+  app._composeSetPref(false);
   app._composeToggle();
   const btn = elements['compose-toggle-btn'];
   assert.strictEqual(btn.getAttribute('aria-pressed'), 'true');
@@ -465,7 +618,7 @@ test('a second send while one is pending is ignored', async () => {
 
 test('input_enabled=true enables the textarea and send button, hides the notice', async () => {
   app._setViewingSession('s1');
-  app._composeSetPref('on');
+  app._composeSetPref(true);
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ input_enabled: true }) });
   await app.loadServerSettings();
@@ -479,7 +632,7 @@ test('input_enabled=true enables the textarea and send button, hides the notice'
 
 test('input_enabled=false (default) disables controls and shows the notice naming both settings keys', async () => {
   app._setViewingSession('s1');
-  app._composeSetPref('on');
+  app._composeSetPref(true);
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ input_enabled: false, input_allowed_sessions: [] }) });
   await app.loadServerSettings();
@@ -493,7 +646,7 @@ test('input_enabled=false (default) disables controls and shows the notice namin
 
 test('bar itself still renders (not hidden) even when input is disabled -- discoverable, not a dead button', async () => {
   app._setViewingSession('s1');
-  app._composeSetPref('on');
+  app._composeSetPref(true);
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ input_enabled: false }) });
   await app.loadServerSettings();
@@ -506,19 +659,19 @@ test('bar itself still renders (not hidden) even when input is disabled -- disco
 
 test('bar hides when no session is open', () => {
   app._setViewingSession(null);
-  app._composeSetPref('on');
+  app._composeSetPref(true);
   assert.strictEqual(elements['compose-bar'].classList.contains('hidden'), true);
 });
 
 test('bar hides when preference is off even with a session open', () => {
   app._setViewingSession('s1');
-  app._composeSetPref('off');
+  app._composeSetPref(false);
   assert.strictEqual(elements['compose-bar'].classList.contains('hidden'), true);
 });
 
 test('bar shows when a session is open and preference is on', () => {
   app._setViewingSession('s1');
-  app._composeSetPref('on');
+  app._composeSetPref(true);
   assert.strictEqual(elements['compose-bar'].classList.contains('hidden'), false);
 });
 
@@ -530,7 +683,7 @@ test('_composeOnSessionOpen clears any stale draft from a previous session', () 
 
 test('_composeOnSessionClose hides the bar and clears the draft', () => {
   app._setViewingSession('s1');
-  app._composeSetPref('on');
+  app._composeSetPref(true);
   elements['compose-input'].value = 'draft';
   app._setViewingSession(null); // mirrors closeSession()'s ordering
   app._composeOnSessionClose();
@@ -541,11 +694,11 @@ test('_composeOnSessionClose hides the bar and clears the draft', () => {
 test('refit is called on show, on hide, and on auto-grow', () => {
   app._setViewingSession('s1');
   _refitCallCount = 0;
-  app._composeSetPref('on'); // show
+  app._composeSetPref(true); // show
   assert.ok(_refitCallCount > 0, 'expected a refit on show');
 
   _refitCallCount = 0;
-  app._composeSetPref('off'); // hide
+  app._composeSetPref(false); // hide
   assert.ok(_refitCallCount > 0, 'expected a refit on hide');
 
   _refitCallCount = 0;

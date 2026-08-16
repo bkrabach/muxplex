@@ -174,15 +174,75 @@ the failure mode the guard above now makes impossible inside
 `muxplex upgrade` -- a command that cannot silently retarget is one
 fewer way for a fleet to drift.
 
+### Test-suite coverage (no user-facing change)
+
+**This repo has two suites, and only one of them was in anybody's loop.**
+That gap is the most useful thing this release found, and fixing the
+mechanism matters more than the individual test failures it caused.
+
+The Python suite was run in the DTU, went green (2,483 passing), and the
+release was pushed on that evidence. CI then failed with **31 frontend
+failures** in `test (frontend, node:test)` -- against a release whose
+single largest surface was frontend JavaScript. The failures were real
+and were caused by this release's own changes; they had simply never
+been run. `make test` invoked `pytest` and nothing else, so the frontend
+suite was effectively opt-in, and nobody opted in.
+
+- **`make test` now runs BOTH suites.** New `test-frontend` and
+  `test-python` targets, with `test` depending on both and a shared
+  `dtu-sync` step so they run against the *same* snapshot (two syncs
+  could otherwise report a combined green that never existed as one
+  commit). Frontend runs first -- ~15s versus pytest's ~100s. If `node`
+  is missing in the DTU the target **fails loudly**; it is never a
+  silent skip, because CI will run that suite regardless.
+
+- **The chat-panel harness can no longer silently lag `init()`'s
+  contract.** 23 of the 31 failures were one root cause: `init()` gained
+  six required elements (the gate and the chrome it hides) and the
+  harness's `REQUIRED_IDS` list -- a hand-maintained second copy of that
+  contract -- was not updated, so every test in the file died at load.
+  A new drift guard reads chat.js's own `__missing.push("...")` calls and
+  fails if the two lists disagree **in either direction**. The
+  duplication is now self-checking rather than a standing invitation to
+  repeat this.
+
+- **The 7 compose-bar failures were tests asserting a contract this
+  release deliberately retired** (the localStorage `auto`/`on`/`off`
+  tri-state and its mobile-only default). They now assert the
+  `composeBarOpen` contract instead: server-persisted, on by default at
+  every width, PATCHed through `/api/settings`. No assertion was
+  weakened -- the suite grew from 990 to 998 tests, and the added
+  coverage is the **legacy migration**, which had none. That is the path
+  with the most user-visible risk in this release (someone who
+  deliberately hid the bar must not have it silently reopened), and it
+  was the one part with no test at all.
+
+- **The 1 remaining failure was a source-text tripwire**, not a
+  behavioural one: `initComposePref()` had to move below
+  `await loadServerSettings()` (it reads a value that does not exist
+  until then), pushing `updatePageTitle` past the byte window
+  `test_app.mjs` scans. The window was widened and documented, exactly as
+  the four prior widenings recorded in that test's own comments. Both of
+  its assertions are unchanged.
+
+**A note on `init()` hard-failing.** The fix was to update the harness,
+not to relax the contract. If the gate elements are absent the panel
+comes up with a working-looking composer and no gate -- which is
+precisely the "submit a turn to find out it's broken" failure this
+release exists to fix. Degrading there would silently restore the bug.
+The loud `chat panel BROKEN -- missing DOM element(s)` failure is the
+app's own pre-existing convention; this release added elements to a check
+that already existed.
+
 ### Testing
 
-2,483 passing, 10 skipped, 52 deselected, 0 failing -- run in the
-`muxplex-test` DTU on a clean extraction into a fresh directory (never a
-tarball overlay onto an existing tree, which produced a false failure
-earlier in this project). The frontend changes in this release are not
-covered by the Python suite; `v0.48.3`'s own `node --test` frontend
-suite (990 passing) is unaffected by this release and was not re-run
-here.
+- **Python: 2,483 passing, 10 skipped, 52 deselected, 0 failing** -- run
+  in the `muxplex-test` DTU on a clean extraction into a fresh directory
+  (never a tarball overlay onto an existing tree, which produced a false
+  failure earlier in this project).
+- **Frontend: 998 passing, 0 failing** (`node --test tests/*.mjs`), up
+  from 990 at v0.48.3 -- 8 net new tests: 7 covering the compose-bar
+  migration (which had none) and 1 harness drift guard.
 
 `tmux-kit` is untouched by this release, and the four-leg pin agreement
 was re-verified rather than assumed: `[project.dependencies]`

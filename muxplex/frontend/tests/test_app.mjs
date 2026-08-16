@@ -3958,7 +3958,15 @@ test('DOMContentLoaded sets page title via updatePageTitle after loadServerSetti
   // _composeRenderToggle(), pushing updatePageTitle further in again --
   // window widened to 2600. Behavior is unchanged; only the byte offset
   // moved (same source-text-tripwire class, per AGENTS.md).
-  const domBlock = source.substring(domIdx, domIdx + 2600);
+  // Updated in v0.49.0: composeBarOpen moved the compose preference onto
+  // _serverSettings, so initComposePref() had to move BELOW
+  // `await loadServerSettings()` (it reads a value that does not exist
+  // until then) and gained the comment explaining why it cannot defer to
+  // first-session-open the way initSidebar() does. updatePageTitle sits at
+  // ~2916 chars in; window widened to 3100. Behavior is unchanged and BOTH
+  // assertions below are unchanged -- only the byte offset moved, same
+  // source-text-tripwire class as every widening above.
+  const domBlock = source.substring(domIdx, domIdx + 3100);
   // The old direct assignment is replaced by updatePageTitle()
   assert.ok(
     !domBlock.includes("document.title = _serverSettings.device_name || 'muxplex'"),

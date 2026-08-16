@@ -215,9 +215,24 @@ function makeLocalStorageStub() {
   };
 }
 
+// Every id chat.js's init() treats as REQUIRED -- i.e. every id it pushes
+// onto its `__missing` list and then throws over. This array must stay in
+// lockstep with that check: `test_init_required_ids_match_chat_js` below
+// reads chat.js's source and fails if the two ever drift, so a future
+// required element cannot silently become "optional" here by omission.
+//
+// v0.49.0 added the six gate/chrome ids: init() now hard-fails without the
+// unconfigured-Agent gate, deliberately. If those elements are absent the
+// panel would come up with a working-looking composer and no gate --
+// exactly the "submit a turn to find out it's broken" failure the gate
+// exists to prevent. The harness supplies them rather than the contract
+// relaxing to tolerate their absence.
 const REQUIRED_IDS = [
   'chat-panel', 'chat-messages', 'chat-input', 'chat-send-btn', 'chat-new-btn',
-  'chat-open-btn', 'chat-export-btn', 'chat-confirm-backdrop',
+  'chat-open-btn', 'chat-export-btn',
+  'chat-panel-header', 'chat-composer', 'chat-byline',
+  'chat-gate', 'chat-gate-text', 'chat-gate-settings-btn',
+  'chat-confirm-backdrop',
   'chat-confirm-session', 'chat-confirm-text', 'chat-confirm-keys',
   'chat-confirm-cancel-btn', 'chat-confirm-send-btn',
 ];
@@ -804,4 +819,62 @@ test('2qs: a user toggle that lands before the init-time GET resolves is not clo
   // reverted to the stale false the GET was carrying.
   assert.strictEqual(panel.els['chat-open-btn'].getAttribute('aria-pressed'), 'true');
   assert.strictEqual(panel.els['chat-panel'].classList.contains('hidden'), false);
+});
+
+// ---------------------------------------------------------------------
+// Harness/contract drift guard
+// ---------------------------------------------------------------------
+//
+// WHY THIS EXISTS: v0.49.0 added six required elements to chat.js's init()
+// (the unconfigured-Agent gate and the chrome it hides). REQUIRED_IDS above
+// was not updated in the same change, so every test in this file died at
+// load with "chat panel BROKEN -- missing DOM element(s)" -- 23 failures
+// that named the real cause but were only caught by CI, after the Python
+// suite had gone green and the release looked ready to tag.
+//
+// The lesson is not "remember to update the fixture." It is that the
+// fixture encoded init()'s required-element list a SECOND time, by hand,
+// with nothing checking the copy against the original. This test makes the
+// duplication self-checking: it reads chat.js's own `__missing.push("...")`
+// calls -- the single source of truth -- and fails if REQUIRED_IDS drifts
+// from them in either direction.
+//
+// Deliberately parses source text rather than importing a list: init()'s
+// checks are inline `if (!el) __missing.push("id")` statements, and
+// exporting a list purely for tests would be a second copy again -- the
+// exact thing this guards against. A source-text tripwire per AGENTS.md.
+test('REQUIRED_IDS matches every id chat.js init() actually requires', () => {
+  const declared = [...chatJsSource.matchAll(/__missing\.push\("([^"]+)"\)/g)]
+    .map((m) => m[1]);
+
+  assert.ok(
+    declared.length > 0,
+    'could not find any __missing.push("id") calls in chat.js -- this guard ' +
+    'has been silently disarmed by a refactor of init()\'s required-element ' +
+    'check; re-point it at the new shape rather than deleting it'
+  );
+
+  const fromSource = new Set(declared);
+  // chat-confirm-dialog is required by init() but is deliberately NOT in
+  // REQUIRED_IDS: it needs showModal()/close()/open, so loadChatPanel()
+  // builds it from env.makeDialog() instead of the plain StubNode loop.
+  // It is still provided by the harness, so it belongs in this comparison
+  // -- listed explicitly rather than by relaxing the check, so a genuinely
+  // missing element can never hide behind a loosened guard.
+  const fromHarness = new Set([...REQUIRED_IDS, 'chat-confirm-dialog']);
+
+  const missingFromHarness = [...fromSource].filter((id) => !fromHarness.has(id));
+  const staleInHarness = [...fromHarness].filter((id) => !fromSource.has(id));
+
+  assert.deepStrictEqual(
+    missingFromHarness, [],
+    'chat.js init() requires element(s) the harness never creates, so every ' +
+    'test in this file would fail at load: ' + missingFromHarness.join(', ')
+  );
+  assert.deepStrictEqual(
+    staleInHarness, [],
+    'the harness creates element(s) init() no longer requires -- stale ' +
+    'fixture entries hide the fact that the contract shrank: ' +
+    staleInHarness.join(', ')
+  );
 });

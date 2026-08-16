@@ -9,10 +9,48 @@ DTU      ?= muxplex-test
 PROFILE  ?= ../.amplifier/digital-twin-universe/profiles/muxplex-test.yaml
 TARBALL  ?= ../.amplifier/digital-twin-universe/profiles/muxplex-src.tar.gz
 
-.PHONY: test test-host check fmt check-container-drift
+.PHONY: test test-python test-frontend test-host check fmt check-container-drift
 
-## Run the full suite inside the DTU (the safe, default path).
-test:
+## Run BOTH suites inside the DTU (the safe, default path).
+##
+## THIS REPO HAS TWO SUITES. `make test` used to run only the Python one,
+## and that gap shipped a red release candidate at v0.49.0: five commits
+## whose largest surface was frontend JavaScript were verified against
+## pytest alone, went green, and were pushed -- CI then failed with 31
+## frontend failures (a stale test fixture and a set of tests still
+## asserting a retired localStorage contract). Nothing was wrong with
+## either suite. The gap was that only one of them was in anybody's loop,
+## so the frontend suite was effectively opt-in and nobody opted in.
+##
+## Both now run here, and `test` depends on both, so the default local
+## command covers the same ground CI does. Ordered frontend-first: it is
+## ~15s against pytest's ~100s, so the fast suite reports before the slow
+## one starts.
+test: test-frontend test-python
+
+## Frontend unit suite (node:test). Zero package dependencies, node:
+## builtins only -- no install step, matching CI's own job. Runs in the DTU
+## against the SAME git-archive snapshot as the Python suite, so both test
+## the artifact you would push rather than your working tree.
+test-frontend: dtu-sync
+	@echo "==> frontend suite (node --test)"
+	@amplifier-digital-twin exec $(DTU) -- bash -lc 'command -v node >/dev/null 2>&1 || { \
+	  echo "node not found in the DTU -- the frontend suite CANNOT run."; \
+	  echo "This is a FAILURE, not a skip: CI runs this suite and will fail"; \
+	  echo "on what was never checked here. Install node in the DTU image."; \
+	  exit 1; }; cd /opt/muxplex/muxplex/frontend && node --test tests/*.mjs'
+
+## Python suite.
+test-python: dtu-sync
+	@echo "==> python suite (pytest)"
+	@amplifier-digital-twin exec $(DTU) -- bash -lc 'cd /opt/muxplex && .venv/bin/pytest -q'
+
+## Push HEAD into the DTU. Factored out so `make test` syncs ONCE and both
+## suites run against the identical snapshot -- two separate syncs could
+## otherwise test two different trees and report a green that never
+## existed as one commit.
+.PHONY: dtu-sync
+dtu-sync:
 	@command -v amplifier-digital-twin >/dev/null 2>&1 || { \
 	  echo "amplifier-digital-twin not found."; \
 	  echo "Install: uv tool install git+https://github.com/microsoft/amplifier-bundle-digital-twin-universe"; \
@@ -23,7 +61,6 @@ test:
 	@amplifier-digital-twin status $(DTU) >/dev/null 2>&1 || amplifier-digital-twin launch "$(PROFILE)" --name $(DTU)
 	@amplifier-digital-twin file-push $(DTU) "$(TARBALL)" /root/muxplex-src.tar.gz >/dev/null
 	@amplifier-digital-twin update $(DTU) >/dev/null
-	@amplifier-digital-twin exec $(DTU) -- bash -lc 'cd /opt/muxplex && .venv/bin/pytest -q'
 
 ## Escape hatch: run on this host. Refuses if a live muxplex is serving.
 test-host:
