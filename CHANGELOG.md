@@ -1,3 +1,36 @@
+## v0.48.3 (2026-08-16)
+
+**The "Follow this server's view" header button showed no visual change
+while you were actually following** -- the common case. The static link
+glyph never told you which state you were in; only the title tooltip (on
+hover) did, and even `aria-pressed` was inverted: `true` meant
+independent, not following.
+
+`renderSyncGroupControls()` toggled `.header-btn--active` on `independent`
+instead of `following` -- backwards from what the link icon implies. The
+class itself has rendered correctly since v0.31.5 (which fixed the
+earlier "class has no CSS rule at all" bug); nobody had verified the
+boolean feeding it was correct, and it wasn't, since the feature's
+original commit (`33eaf80f`).
+
+### Fixed
+
+- `renderSyncGroupControls()` (`app.js`) now keys `header-btn--active`,
+  `aria-pressed`, and the button's icon on `following`
+  (`_syncGroup === 'global'`) instead of `independent`. The button is now
+  visually active exactly when it is actually following.
+- The button's icon now differs per state instead of a static glyph:
+  linked chain while following, broken chain while independent -- so the
+  state reads without hovering for the title tooltip.
+
+### Proof
+
+- `node --test tests/*.mjs` (`muxplex/frontend`): 990 pass, 0 fail
+  (988 baseline + 2 new). The 2 new tests were confirmed to catch the
+  exact regression: reverting `renderSyncGroupControls()` to the pre-fix
+  boolean fails both with the expected inverted assertions (`git stash`
+  round-trip against `app.js` only).
+
 ## v0.48.2 (2026-08-16)
 
 **If you run muxplex on macOS and had the agent sidecar configured,
