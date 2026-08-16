@@ -1661,6 +1661,43 @@ def _install_cmd_preserves_kit_override(
     return has_override
 
 
+def _install_cmd_targets_install_target(
+    install_cmd: list[str], install_target: str
+) -> bool:
+    """Defense-in-depth for MUXPLEX'S OWN target (companion check to
+    `_install_cmd_preserves_kit_override`, which guards tmux-kit's pairing):
+    confirm the constructed install command actually installs
+    `install_target` verbatim, never a substituted bare package name or any
+    other string.
+
+    This is the mechanical check that would have caught the v0.48.3
+    incident: `upgrade()`'s uv-managed branch used to decide whether to
+    install the bare "muxplex" shortcut or the explicit `install_target`
+    by checking tmux-kit's recorded source (`info_kit["source"]`) instead
+    of muxplex's own (`info["source"]`). Whenever muxplex was git-sourced
+    but tmux-kit happened not to be, that branch silently built
+    `["uv", "tool", "install", "--reinstall", "--refresh", "--force",
+    "muxplex"]` -- a git install reinstalled from PyPI with no trace of the
+    git URL anywhere in the command. `install_target` itself was computed
+    correctly by `_upgrade_target` and validated by `_target_matches_source`
+    the whole time; the defect was that a *later* branch discarded it in
+    favor of a hardcoded literal. `_target_matches_source` cannot catch
+    this class of bug because it only checks the intermediate
+    `install_target` string, never the actually-constructed `install_cmd`
+    -- exactly the gap this function closes, mirroring
+    `_install_cmd_preserves_kit_override`'s role for the tmux-kit pairing.
+
+    The invariant is intentionally the simplest one that is universally
+    true across every branch that builds `install_cmd` (uv-managed bare-name
+    shortcut, uv-managed explicit target, non-managed uv, and the pip
+    fallback): `install_target` must appear in the command verbatim. For a
+    PyPI source, `install_target` IS the bare string `"muxplex"` (per
+    `_upgrade_target`), so this reduces to the same check in that case --
+    there is no separate literal to keep in sync.
+    """
+    return install_target in install_cmd
+
+
 def _verify_install_shape_preserved(
     before_mux_source: str, before_kit_source: str
 ) -> tuple[bool, str]:
@@ -1898,51 +1935,71 @@ def upgrade(*, force: bool = False) -> None:
                 else:
                     kit_with_args = ["--with", f"tmux-kit @ git+{kit_url}@{kit_ref}"]
 
-        # Bug 3: dispatch — uv-tool-managed gets --reinstall; plain uv/pip otherwise
+        # Bug 3 / v0.48.3 incident: dispatch -- uv-tool-managed gets a
+        # --reinstall bare-name shortcut ONLY when MUXPLEX ITSELF is
+        # PyPI-sourced; every other muxplex install (git, local-dir,
+        # archive, ...) always installs EXPLICITLY via install_target.
+        #
+        # CORRECTED 2026-08-16 (v0.48.3 incident): this branch used to key
+        # off `info_kit["source"]` (tmux-kit's own source) to decide
+        # whether muxplex's OWN install used the bare "muxplex" shortcut or
+        # the explicit `install_target`. That conflated two independent
+        # questions -- "does tmux-kit need a --with override?" (answered by
+        # info_kit["source"], already computed above into kit_with_args)
+        # and "what should muxplex itself install as?" (must be answered by
+        # info["source"] alone). Whenever muxplex was git-sourced but
+        # tmux-kit happened NOT to be git-sourced -- true of every git
+        # install made before v0.45.1 added tmux-kit's own git pin, and
+        # reachable again any time tmux-kit's install drifts independently
+        # of muxplex's -- the old code took the `else` branch and hardcoded
+        # bare "muxplex", silently reinstalling a git-sourced host from
+        # PyPI. This is the exact "upgrade silently switches install
+        # method" defect the owner has now hit twice, just one layer
+        # deeper than the git+git `--with` conflict v0.47.12 already fixed.
+        # Reproduced in isolation (mux=git, tmux-kit=pypi, uv-managed):
+        # the old code emitted `uv tool install --reinstall --refresh
+        # --force muxplex` -- no git URL anywhere in the command.
+        #
+        # `install_target` is used literally in BOTH branches below (never
+        # a separate hardcoded "muxplex" string) specifically so the two
+        # can't diverge again: for a pypi source, `_upgrade_target` already
+        # returns the bare string "muxplex", so using `install_target`
+        # there is byte-identical to the old hardcode and changes nothing
+        # for the common PyPI case; for every other source it is the
+        # explicit target that must be preserved.
         if not _install_failed and uv_path:
-            if _is_uv_managed:
-                if info_kit["source"] == "git":
-                    # §2.5 step 3: the bare-name shortcut is FORBIDDEN whenever
-                    # tmux-kit is git-sourced -- "muxplex" (unpinned, latest)
-                    # drops the --with override, silently re-pointing tmux-kit
-                    # at an index a managed device may not be able to reach.
-                    # Use the full target (unchanged from _upgrade_target)
-                    # plus the override instead of the bare package name.
-                    install_cmd = [
-                        uv_path,
-                        "tool",
-                        "install",
-                        "--force",
-                        "--refresh",
-                        install_target,
-                        *kit_with_args,
-                    ]
-                else:
-                    # uv-tool install: always reinstall the package by name
-                    # --refresh is load-bearing, not belt-and-braces. The target is
-                    # unpinned ("muxplex" = latest), so uv answers it from its cached
-                    # PyPI index. A cache that predates the release resolves "latest"
-                    # to the version already installed, reinstalls it, and exits 0 --
-                    # a perfectly successful no-op upgrade. Observed on a real Mac:
-                    # three consecutive upgrades reported success while the venv
-                    # never left 0.31.2.
-                    install_cmd = [
-                        uv_path,
-                        "tool",
-                        "install",
-                        "--reinstall",
-                        "--refresh",
-                        "--force",
-                        "muxplex",
-                    ]
-            else:
+            if _is_uv_managed and info["source"] == "pypi":
+                # uv-tool install: always reinstall the package by name
+                # --refresh is load-bearing, not belt-and-braces. The target is
+                # unpinned ("muxplex" = latest), so uv answers it from its cached
+                # PyPI index. A cache that predates the release resolves "latest"
+                # to the version already installed, reinstalls it, and exits 0 --
+                # a perfectly successful no-op upgrade. Observed on a real Mac:
+                # three consecutive upgrades reported success while the venv
+                # never left 0.31.2.
                 install_cmd = [
                     uv_path,
                     "tool",
                     "install",
-                    install_target,
+                    "--reinstall",
                     "--refresh",
                     "--force",
+                    install_target,
+                    *kit_with_args,
+                ]
+            else:
+                # Non-PyPI muxplex source (git today; local-dir/archive are
+                # the other recognized shapes) -- OR not uv-managed at all.
+                # Either way install EXACTLY install_target; the bare-name
+                # shortcut above is a PyPI-only optimization and must never
+                # apply here.
+                install_cmd = [
+                    uv_path,
+                    "tool",
+                    "install",
+                    "--force",
+                    "--refresh",
+                    install_target,
                     *kit_with_args,
                 ]
 
@@ -1959,6 +2016,23 @@ def upgrade(*, force: bool = False) -> None:
                     " git install.\n"
                     f"    Recorded tmux-kit source: git ({info_kit.get('url') or 'n/a'})\n"
                     f"    Computed command        : {install_cmd}\n"
+                )
+                _install_failed = True
+            # Mechanical safety net for muxplex's OWN target (mirrors the
+            # kit-pair check just above, but for muxplex itself): whatever
+            # branch just ran, the constructed command must literally
+            # install `install_target` -- never a substituted bare name.
+            # This is the check that would have caught the v0.48.3 defect
+            # documented above by construction, independent of which branch
+            # produced install_cmd, and it stays correct even if a future
+            # edit adds more branches here.
+            elif not _install_cmd_targets_install_target(install_cmd, install_target):
+                print(
+                    "\n  REFUSING: the constructed install command does not"
+                    " target the recorded install source.\n"
+                    f"    Recorded source : {info['source']} ({info.get('url') or 'n/a'})\n"
+                    f"    Expected target : {install_target}\n"
+                    f"    Computed command: {install_cmd}\n"
                 )
                 _install_failed = True
             else:

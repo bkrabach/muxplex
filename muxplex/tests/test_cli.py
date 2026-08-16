@@ -7127,6 +7127,226 @@ def test_upgrade_pypi_kit_unaffected_still_uses_bare_name_shortcut(monkeypatch, 
     assert "--with" not in install_cmd
 
 
+def test_upgrade_git_mux_pypi_kit_never_switches_to_bare_pypi_name(monkeypatch, capsys):
+    """The v0.48.3 regression guard: a uv-tool-managed, GIT-sourced muxplex
+    install must install the explicit git target even when tmux-kit (a
+    wholly separate package) happens to be PyPI-sourced rather than git.
+
+    This is the combination none of the pre-existing tests covered --
+    `test_upgrade_preserves_git_kit_override_forbids_bare_name` pins
+    tmux-kit=git, and `test_upgrade_pypi_kit_unaffected_still_uses_bare_name_shortcut`
+    pins muxplex=pypi. Every git install made before v0.45.1 added
+    tmux-kit's own git pin is exactly this combination, and it recurs any
+    time tmux-kit's install drifts independently of muxplex's own.
+
+    Before the fix, `upgrade()`'s uv-managed branch decided whether to use
+    the bare "muxplex" shortcut by checking `info_kit["source"]` (tmux-kit)
+    instead of `info["source"]` (muxplex itself) -- so a git-sourced
+    muxplex install with non-git tmux-kit fell into the bare-name branch
+    and silently reinstalled from PyPI, with no git URL anywhere in the
+    constructed command. That is the "upgrade silently switches install
+    method" defect the owner has now hit twice.
+    """
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+    monkeypatch.setattr(
+        cli_mod,
+        "_verify_install_shape_preserved",
+        lambda before_mux, before_kit: (True, ""),
+    )
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    uv_tools_fake = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    fake_muxplex_resolved = f"{uv_tools_fake}/muxplex/bin/muxplex"
+    fake_uv_path = str(Path.home() / ".local" / "bin" / "uv")
+
+    def fake_which(name):
+        if name == "uv":
+            return fake_uv_path
+        if name == "muxplex":
+            return fake_muxplex_resolved
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            # tmux-kit is PyPI-sourced -- the pairing every pre-v0.45.1 git
+            # install has, and the one no prior test exercised alongside a
+            # git-sourced muxplex.
+            return {
+                "source": "pypi",
+                "version": "0.4.0",
+                "commit": None,
+                "url": None,
+                "ref": None,
+            }
+        return {
+            "source": "git",
+            "version": "0.44.0",
+            "commit": "bbbb2222",
+            "url": "https://github.com/bkrabach/muxplex",
+            "ref": "v0.44.0",
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.44.0 \u2192 v0.45.0)"),
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_upgrade_target",
+        lambda info: ("git+https://github.com/bkrabach/muxplex@v0.45.0", None),
+    )
+    monkeypatch.setattr(cli_mod, "_target_matches_source", lambda info, target: True)
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    uv_install_calls = [
+        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+    ]
+    assert len(uv_install_calls) == 1
+    install_cmd = uv_install_calls[0]
+
+    # The git target must be present verbatim -- the exact defect this
+    # closes silently dropped it.
+    assert "git+https://github.com/bkrabach/muxplex@v0.45.0" in install_cmd, (
+        f"install_cmd silently dropped the git target! Got: {install_cmd}"
+    )
+    # The bare PyPI package name must never appear -- that IS the silent
+    # method switch.
+    assert not any(arg == "muxplex" for arg in install_cmd), (
+        f"install_cmd silently switched to the bare PyPI name! Got: {install_cmd}"
+    )
+    # tmux-kit is PyPI-sourced, so no --with override is needed here either.
+    assert "--with" not in install_cmd
+
+
+def test_upgrade_pypi_mux_git_kit_gets_reinstall_and_with_together(monkeypatch, capsys):
+    """The mirror combination: muxplex is PyPI-sourced but tmux-kit is
+    git-sourced. Both the bare-name --reinstall shortcut (muxplex's own
+    source decides this) AND the tmux-kit --with override (tmux-kit's own
+    source decides this) must be present together -- the two decisions are
+    independent and must compose, not compete.
+    """
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
+    monkeypatch.setattr(
+        cli_mod,
+        "_verify_install_shape_preserved",
+        lambda before_mux, before_kit: (True, ""),
+    )
+
+    calls: list = []
+
+    def mock_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    uv_tools_fake = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    fake_muxplex_resolved = f"{uv_tools_fake}/muxplex/bin/muxplex"
+    fake_uv_path = str(Path.home() / ".local" / "bin" / "uv")
+
+    def fake_which(name):
+        if name == "uv":
+            return fake_uv_path
+        if name == "muxplex":
+            return fake_muxplex_resolved
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    def fake_get_install_info(dist_name="muxplex"):
+        if dist_name == "tmux-kit":
+            return {
+                "source": "git",
+                "version": "0.3.9",
+                "commit": "cccc3333",
+                "url": "https://github.com/bkrabach/tmux-kit",
+                "ref": "v0.3.9",
+            }
+        return {
+            "source": "pypi",
+            "version": "0.44.0",
+            "commit": None,
+            "url": None,
+            "ref": None,
+        }
+
+    monkeypatch.setattr(cli_mod, "_get_install_info", fake_get_install_info)
+    monkeypatch.setattr(
+        cli_mod,
+        "_check_for_update",
+        lambda info: (True, "update available (v0.44.0 \u2192 v0.45.0)"),
+    )
+    monkeypatch.setattr(cli_mod, "_upgrade_target", lambda info: ("muxplex", None))
+    monkeypatch.setattr(cli_mod, "_target_matches_source", lambda info, target: True)
+    monkeypatch.setattr(
+        cli_mod,
+        "_resolve_upgrade_kit_ref",
+        lambda info_mux, mux_target, info_kit: ("v0.4.0", None),
+    )
+
+    with patch("muxplex.service.service_install", lambda: None):
+        cli_mod.upgrade()
+
+    uv_install_calls = [
+        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+    ]
+    assert len(uv_install_calls) == 1
+    install_cmd = uv_install_calls[0]
+
+    assert "--reinstall" in install_cmd, (
+        f"muxplex is PyPI-sourced -- the stale-index --reinstall protection"
+        f" must still apply. Got: {install_cmd}"
+    )
+    assert "muxplex" in install_cmd
+    assert not any(
+        str(arg).startswith("git+") for arg in install_cmd if arg != "--with"
+    )
+    assert "--with" in install_cmd
+    assert any(
+        arg == "tmux-kit @ git+https://github.com/bkrabach/tmux-kit@v0.4.0"
+        for arg in install_cmd
+    ), f"expected the re-derived git tmux-kit override. Got: {install_cmd}"
+
+
+def test_install_cmd_targets_install_target_true_when_present():
+    from muxplex.cli import _install_cmd_targets_install_target
+
+    cmd = ["uv", "tool", "install", "--force", "--refresh", "git+https://x@v1"]
+    assert _install_cmd_targets_install_target(cmd, "git+https://x@v1")
+
+
+def test_install_cmd_targets_install_target_false_when_substituted():
+    """The exact shape of the v0.48.3 defect: install_target computed as a
+    git URL, but the constructed command only contains the bare name."""
+    from muxplex.cli import _install_cmd_targets_install_target
+
+    cmd = ["uv", "tool", "install", "--reinstall", "--refresh", "--force", "muxplex"]
+    assert not _install_cmd_targets_install_target(cmd, "git+https://x@v1")
+
+
 def test_upgrade_refuses_when_kit_git_but_uv_absent(monkeypatch, capsys):
     """pip has no equivalent of --with -- refusing loudly beats silently
     dropping a git-sourced tmux-kit override."""
