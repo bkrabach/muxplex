@@ -3403,6 +3403,39 @@ body {
   white-space: nowrap;
 }
 
+/* Step 6 (design doc §9.5): "Elsewhere in your federation" -- same list
+   shape as .decks-registered-list/.decks-device-row above, but every row
+   is informational only (no name input -- nothing here is editable or
+   selectable from this server). */
+.decks-federated-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.decks-federated-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.decks-federated-label {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.decks-federated-row--unreachable .decks-federated-label {
+  color: var(--text-muted);
+}
+
+.decks-federated-action {
+  white-space: nowrap;
+}
+
 /* ============================================================
    Header + button inline name input (new-session-btn)
    ============================================================ */

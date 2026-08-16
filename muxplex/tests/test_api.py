@@ -54,14 +54,18 @@ def reset_federation_cache():
     The module-level _federation_cache persists across tests in the same process,
     causing cross-test contamination: a test that populates the cache for remoteId=0
     causes a later test (also using remoteId=0) to get stale cached data instead of
-    the expected unreachable status.
+    the expected unreachable status. _federation_devices_cache (Step 6's
+    GET /api/federation/devices) is a separate module-level dict with the
+    exact same cross-test-contamination risk, so it is cleared alongside.
     """
     import muxplex.main as main_mod
 
     main_mod._federation_cache.clear()
+    main_mod._federation_devices_cache.clear()
     main_mod._federation_breaker.reset()
     yield
     main_mod._federation_cache.clear()
+    main_mod._federation_devices_cache.clear()
     main_mod._federation_breaker.reset()
 
 
@@ -8336,6 +8340,575 @@ def test_federation_sessions_device_version_unknown_when_remote_lacks_it(
         f"deviceVersion must be None when the remote's instance-info is unreachable, "
         f"got: {remote_sessions[0].get('deviceVersion')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/federation/devices (Step 6, design doc §8.1 #11)
+# ---------------------------------------------------------------------------
+
+
+def test_federation_devices_empty_when_no_remote_instances(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/devices returns [] (not an error) when remote_instances
+
+    is absent/empty -- a non-federated server behaves exactly as today.
+    """
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"remote_instances": []}))
+
+    response = client.get("/api/federation/devices")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_federation_devices_absent_remote_instances_key(client, monkeypatch, tmp_path):
+    """Same as above, but remote_instances is entirely absent from settings.json
+
+    (not merely an empty list) -- settings.get() default must also yield [].
+    """
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"device_name": "local-host"}))
+
+    response = client.get("/api/federation/devices")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_federation_devices_returns_projection_for_one_peer(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/devices returns a filtered projection per device:
+
+    device_id, display_name, last_heartbeat_at, sync_group, homeDeviceId,
+    homeDeviceName -- and NEVER the full device record (no controlled_by,
+    no view_mode, no viewing_session, no kind).
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "device_name": "local-host",
+                "remote_instances": [
+                    {
+                        "url": "http://alienware:8088",
+                        "key": "abc123",
+                        "name": "alienware",
+                        "device_id": "peer-alienware",
+                    }
+                ],
+            }
+        )
+    )
+
+    async def mock_get(url, **kwargs):
+        assert url == "http://alienware:8088/api/state"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.json = lambda: {
+            "devices": {
+                "d-deck-alien": {
+                    "label": "Stream Deck",
+                    "display_name": None,
+                    "kind": "deck",  # a peer MIGHT send this; must be filtered out
+                    "view_mode": "grid",
+                    "viewing_session": "work",
+                    "controlled_by": None,
+                    "sync_group": "global",
+                    "last_heartbeat_at": 1234567890.0,
+                }
+            }
+        }
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert len(data) == 1, f"Expected 1 device entry, got: {data}"
+    entry = data[0]
+    assert entry["device_id"] == "d-deck-alien"
+    assert entry["display_name"] == "Stream Deck", (
+        "must fall back to label when display_name is None"
+    )
+    assert entry["last_heartbeat_at"] == 1234567890.0
+    assert entry["sync_group"] == "global"
+    assert entry["homeDeviceId"] == "peer-alienware"
+    assert entry["homeDeviceName"] == "alienware"
+    assert "status" not in entry
+
+    # Never the full device record.
+    for leaked_field in (
+        "kind",
+        "view_mode",
+        "viewing_session",
+        "controlled_by",
+        "label",
+    ):
+        assert leaked_field not in entry, (
+            f"{leaked_field!r} must not leak into the federated devices projection, got: {entry}"
+        )
+
+
+def test_federation_devices_display_name_wins_over_label(client, monkeypatch, tmp_path):
+    """When a peer device has BOTH label and display_name set, display_name
+
+    (the human override) wins -- same precedence as app.js's deviceDisplayLabel.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {"url": "http://alienware:8088", "key": "k", "name": "alienware"}
+                ],
+            }
+        )
+    )
+
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.json = lambda: {
+            "devices": {
+                "d-1": {
+                    "label": "Chrome on alienware",
+                    "display_name": "My iPad",
+                    "sync_group": "global",
+                    "last_heartbeat_at": 1.0,
+                }
+            }
+        }
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    assert response.json()[0]["display_name"] == "My iPad"
+
+
+def test_federation_devices_includes_unreachable_status(client, monkeypatch, tmp_path):
+    """GET /api/federation/devices includes a status entry (not silence) when
+
+    a peer cannot be reached -- same 'unreachable' vocabulary
+    GET /api/federation/sessions already uses, tagged with homeDeviceId/
+    homeDeviceName instead of deviceId/remoteId/deviceName.
+    """
+    import json
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://alienware-r13:8088",
+                        "key": "k",
+                        "name": "alienware-r13",
+                    }
+                ],
+            }
+        )
+    )
+
+    async def mock_get(url, **kwargs):
+        raise httpx.ConnectError("refused")
+
+    from unittest.mock import MagicMock
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["status"] == "unreachable"
+    assert data[0]["homeDeviceName"] == "alienware-r13"
+    assert "device_id" not in data[0]
+
+
+def test_federation_devices_includes_auth_failed_status(client, monkeypatch, tmp_path):
+    """GET /api/federation/devices: a 401/403 from a peer yields status='auth_failed',
+
+    not 'unreachable' and not a raised error.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://spark-2:8088",
+                        "key": "wrong-key",
+                        "name": "spark-2",
+                    }
+                ],
+            }
+        )
+    )
+
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["status"] == "auth_failed"
+    assert data[0]["homeDeviceName"] == "spark-2"
+
+
+def test_federation_devices_empty_peer_registry_shows_status(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/devices: a REACHABLE peer with zero registered devices
+
+    gets a status='empty' entry, reusing the same vocabulary
+    GET /api/federation/sessions uses for a device with zero sessions --
+    never silently absent.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {"url": "http://macbook:8088", "key": "k", "name": "macbook"}
+                ],
+            }
+        )
+    )
+
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.json = lambda: {"devices": {}}
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["status"] == "empty"
+    assert data[0]["homeDeviceName"] == "macbook"
+
+
+def test_federation_devices_multiple_peers_mixed_outcomes(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/devices with multiple peers: a reachable peer's
+
+    devices and an unreachable peer's status entry both appear in the same
+    response -- one peer's failure never suppresses another peer's data.
+    """
+    import json
+
+    import httpx
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://spark-2:8088",
+                        "key": "k1",
+                        "name": "spark-2",
+                        "device_id": "peer-spark-2",
+                    },
+                    {
+                        "url": "http://spark-3:8088",
+                        "key": "k2",
+                        "name": "spark-3",
+                        "device_id": "peer-spark-3",
+                    },
+                ],
+            }
+        )
+    )
+
+    from unittest.mock import MagicMock
+
+    async def mock_get(url, **kwargs):
+        if "spark-2" in url:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.raise_for_status = lambda: None
+            mock_resp.json = lambda: {
+                "devices": {
+                    "d-x": {
+                        "label": "Soft Deck",
+                        "display_name": None,
+                        "sync_group": "global",
+                        "last_heartbeat_at": 2.0,
+                    }
+                }
+            }
+            return mock_resp
+        raise httpx.ConnectError("refused")
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    data = response.json()
+
+    device_entries = [d for d in data if "device_id" in d]
+    status_entries = [d for d in data if "status" in d]
+    assert len(device_entries) == 1
+    assert device_entries[0]["homeDeviceId"] == "peer-spark-2"
+    assert len(status_entries) == 1
+    assert status_entries[0]["status"] == "unreachable"
+    assert status_entries[0]["homeDeviceId"] == "peer-spark-3"
+
+
+def test_federation_devices_caches_across_transient_failures(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/devices: a transient failure after a successful poll
+
+    returns the CACHED device list (not 'unreachable') until
+    _FEDERATION_GRACE_FAILURES consecutive failures are reached -- same grace
+    window GET /api/federation/sessions already proves.
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import httpx
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {"url": "http://spark-2:8088", "key": "k", "name": "spark-2"}
+                ],
+            }
+        )
+    )
+
+    call_count = {"n": 0}
+
+    async def mock_get(url, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.raise_for_status = lambda: None
+            mock_resp.json = lambda: {
+                "devices": {
+                    "d-cached": {
+                        "label": "Cached Deck",
+                        "sync_group": "global",
+                        "last_heartbeat_at": 5.0,
+                    }
+                }
+            }
+            return mock_resp
+        raise httpx.ConnectError("refused")
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    first = client.get("/api/federation/devices").json()
+    assert first[0]["device_id"] == "d-cached"
+
+    # Break the breaker's URL-keyed memory isolation from the earlier
+    # success by ensuring should_attempt still allows this call (only 1
+    # failure so far, threshold is 3).
+    second = client.get("/api/federation/devices").json()
+    assert second[0]["device_id"] == "d-cached", (
+        f"Expected cached device list on first transient failure, got: {second}"
+    )
+    assert "status" not in second[0]
+
+    # Sanity: breaker/cache state is real, not a mock -- reference module.
+    assert main_mod._federation_devices_cache.get("0") is not None
+
+
+def test_federation_devices_reuses_shared_circuit_breaker(
+    client, monkeypatch, tmp_path
+):
+    """GET /api/federation/devices shares _federation_breaker with
+
+    GET /api/federation/sessions (keyed by URL) -- a remote already tripped
+    open by a prior /sessions poll is skipped here too (no network call),
+    per the docstring's stated design.
+    """
+    import json
+
+    import muxplex.main as main_mod
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {"url": "http://dead-host:8088", "key": "k", "name": "dead-host"}
+                ],
+            }
+        )
+    )
+
+    # Manually trip the breaker open, as federation_sessions()'s fan-out would.
+    for _ in range(3):
+        main_mod._federation_breaker.record_failure("http://dead-host:8088")
+    assert main_mod._federation_breaker.is_open("http://dead-host:8088")
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("should never call out to a breaker-open remote")
+
+    from unittest.mock import MagicMock
+
+    mock_client = MagicMock()
+    mock_client.get = _explode
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    data = response.json()
+    assert data == [
+        {"status": "unreachable", "homeDeviceId": "0", "homeDeviceName": "dead-host"}
+    ]
+
+
+def test_federation_devices_multi_location_composite_key_data_shape(
+    client, monkeypatch, tmp_path
+):
+    """A device re-pointed between servers shows up once PER PEER in this
+
+    endpoint's raw output (§6.2.8's <home>:<id> de-duplication is a
+    client-side rendering rule, not a server concern -- this test pins that
+    the server does NOT attempt to de-duplicate, so the same device_id from
+    two different homeDeviceId peers both appear, giving the client the raw
+    material it needs to key `<home_server_device_id>:<client_device_id>`).
+    """
+    import json
+    from unittest.mock import MagicMock
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://spark-1:8088",
+                        "key": "k1",
+                        "name": "spark-1",
+                        "device_id": "peer-spark-1",
+                    },
+                    {
+                        "url": "http://alienware:8088",
+                        "key": "k2",
+                        "name": "alienware",
+                        "device_id": "peer-alienware",
+                    },
+                ],
+            }
+        )
+    )
+
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = lambda: None
+        # SAME device_id ("d-moved-deck") registered on BOTH peers -- the
+        # mid-move overlap window described in §6.2.8.
+        mock_resp.json = lambda: {
+            "devices": {
+                "d-moved-deck": {
+                    "label": "Stream Deck (alienware)",
+                    "sync_group": "global",
+                    "last_heartbeat_at": 9.0,
+                }
+            }
+        }
+        return mock_resp
+
+    mock_client = MagicMock()
+    mock_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_client)
+
+    response = client.get("/api/federation/devices")
+    data = response.json()
+
+    matching = [d for d in data if d.get("device_id") == "d-moved-deck"]
+    assert len(matching) == 2, (
+        f"Expected the same device_id from both peers (server does not "
+        f"de-duplicate -- that's the client's job), got: {matching}"
+    )
+    homes = {d["homeDeviceId"] for d in matching}
+    assert homes == {"peer-spark-1", "peer-alienware"}
 
 
 def test_federation_connect_device_id_not_found(client, monkeypatch, tmp_path):

@@ -453,7 +453,7 @@ test('buildFollowsMenu: excludes the browser\'s own device_id from the registere
   assert.deepStrictEqual(menu.registered.map((r) => r.targetId), ['d-other']);
 });
 
-test('buildFollowsMenu: no federated/"Elsewhere" section exists on the returned menu at all (\u00a710 Step 6 is out of scope)', () => {
+test('buildFollowsMenu: no federated/"Elsewhere" section exists on the returned menu itself -- Step 6 (§10) layers it on separately, in renderSyncGroupControls(), via buildFederatedDevicesSection(), so this ported-verbatim-from-deck.js function stays unchanged and shareable', () => {
   const menu = app.buildFollowsMenu({
     devices: {},
     ownDeviceId: 'd-self',
@@ -743,6 +743,261 @@ test('renderControlledByChip: hides the chip when this device is not being follo
   assert.ok(chip.classList.added.includes('hidden'));
   globalThis.document.getElementById = origGetById;
   app._setDevicesRegistryForTests({});
+});
+
+// --- Federated device discovery (Step 6: §6.2.7-§6.2.10, §8.1 #11/#12) ---
+// buildFederatedDevicesSection is a pure data-shaping function over a raw
+// GET /api/federation/devices response -- no DOM, no fetch.
+
+test('buildFederatedDevicesSection: a device entry is keyed `<homeDeviceId>:<deviceId>` and labeled "<name> \u2014 via <home>" (§6.2.8)', () => {
+  const rows = app.buildFederatedDevicesSection([
+    { device_id: 'd-deck-alien', display_name: 'Stream Deck (studio)', last_heartbeat_at: 1, sync_group: 'global', homeDeviceId: 'peer-macbook', homeDeviceName: 'macbook' },
+  ]);
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].key, 'peer-macbook:d-deck-alien');
+  assert.strictEqual(rows[0].kind, 'device');
+  assert.strictEqual(rows[0].label, 'Stream Deck (studio) \u2014 via macbook');
+  assert.strictEqual(rows[0].reachable, true);
+  assert.strictEqual(rows[0].deviceId, 'd-deck-alien');
+});
+
+test('buildFederatedDevicesSection: falls back to the bare device_id when display_name is absent', () => {
+  const rows = app.buildFederatedDevicesSection([
+    { device_id: 'd-x', display_name: null, homeDeviceId: 'peer-1', homeDeviceName: 'alienware' },
+  ]);
+  assert.strictEqual(rows[0].label, 'd-x \u2014 via alienware');
+});
+
+test('buildFederatedDevicesSection: an unreachable/auth_failed peer becomes a single un-clickable status row (§6.2.10 -- shown, not omitted)', () => {
+  const rows = app.buildFederatedDevicesSection([
+    { status: 'unreachable', homeDeviceId: 'peer-2', homeDeviceName: 'alienware-r13' },
+  ]);
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].kind, 'status');
+  assert.strictEqual(rows[0].reachable, false);
+  assert.strictEqual(rows[0].label, "Couldn't reach alienware-r13");
+  assert.strictEqual(rows[0].key, 'status:peer-2');
+});
+
+test('buildFederatedDevicesSection: auth_failed uses the same status-row shape as unreachable (reuses the existing vocabulary, no new UI branch)', () => {
+  const rows = app.buildFederatedDevicesSection([
+    { status: 'auth_failed', homeDeviceId: 'peer-3', homeDeviceName: 'spark-2' },
+  ]);
+  assert.strictEqual(rows[0].kind, 'status');
+  assert.strictEqual(rows[0].label, "Couldn't reach spark-2");
+});
+
+test('buildFederatedDevicesSection: a reachable peer with status=empty produces NO row (not a failure, nothing to show)', () => {
+  const rows = app.buildFederatedDevicesSection([
+    { status: 'empty', homeDeviceId: 'peer-4', homeDeviceName: 'macbook' },
+  ]);
+  assert.deepStrictEqual(rows, []);
+});
+
+test('buildFederatedDevicesSection: empty/absent raw entries produce an empty section -- a non-federated server behaves exactly as today', () => {
+  assert.deepStrictEqual(app.buildFederatedDevicesSection([]), []);
+  assert.deepStrictEqual(app.buildFederatedDevicesSection(null), []);
+  assert.deepStrictEqual(app.buildFederatedDevicesSection(undefined), []);
+});
+
+test('buildFederatedDevicesSection: the SAME device_id from TWO different peers (mid-move overlap, §6.2.8) renders as two distinct rows, not one collapsed/clobbered row', () => {
+  const rows = app.buildFederatedDevicesSection([
+    { device_id: 'd-moved', display_name: 'Stream Deck', homeDeviceId: 'peer-spark-1', homeDeviceName: 'spark-1' },
+    { device_id: 'd-moved', display_name: 'Stream Deck', homeDeviceId: 'peer-alienware', homeDeviceName: 'alienware' },
+  ]);
+  assert.strictEqual(rows.length, 2, 'both locations must be shown -- one logical device, two locations, per §6.2.8');
+  assert.deepStrictEqual(rows.map((r) => r.key).sort(), ['peer-alienware:d-moved', 'peer-spark-1:d-moved']);
+  assert.deepStrictEqual(rows.map((r) => r.label).sort(), ['Stream Deck \u2014 via alienware', 'Stream Deck \u2014 via spark-1']);
+});
+
+test('buildFederatedDevicesSection: malformed entries (no device_id, no status) are ignored defensively rather than throwing', () => {
+  assert.deepStrictEqual(app.buildFederatedDevicesSection([{}, { foo: 'bar' }, null]), []);
+});
+
+test('resolveFederatedPeerUrl: resolves via the configured device_id when present', () => {
+  app._setServerSettingsForTests({ remote_instances: [
+    { url: 'http://alienware:8088', name: 'alienware', device_id: 'peer-alienware' },
+    { url: 'http://macbook:8088', name: 'macbook', device_id: 'peer-macbook' },
+  ] });
+  assert.strictEqual(app.resolveFederatedPeerUrl('peer-macbook'), 'http://macbook:8088');
+  app._setServerSettingsForTests({});
+});
+
+test("resolveFederatedPeerUrl: falls back to list-position string index when device_id is absent, mirroring the server's own str(i) convention", () => {
+  app._setServerSettingsForTests({ remote_instances: [
+    { url: 'http://spark-2:8088', name: 'spark-2' },
+    { url: 'http://spark-3:8088', name: 'spark-3' },
+  ] });
+  assert.strictEqual(app.resolveFederatedPeerUrl('0'), 'http://spark-2:8088');
+  assert.strictEqual(app.resolveFederatedPeerUrl('1'), 'http://spark-3:8088');
+  app._setServerSettingsForTests({});
+});
+
+test('resolveFederatedPeerUrl: returns null for an unresolvable homeDeviceId (no remote_instances loaded yet, or no match)', () => {
+  app._setServerSettingsForTests({ remote_instances: [] });
+  assert.strictEqual(app.resolveFederatedPeerUrl('peer-unknown'), null);
+  app._setServerSettingsForTests({});
+});
+
+test('openFederatedPeer: opens the resolved URL in a new tab via window.open', () => {
+  app._setServerSettingsForTests({ remote_instances: [{ url: 'http://alienware:8088', name: 'alienware', device_id: 'peer-alienware' }] });
+  const calls = [];
+  const origOpen = globalThis.window.open;
+  globalThis.window.open = (...args) => calls.push(args);
+  app.openFederatedPeer('peer-alienware');
+  assert.deepStrictEqual(calls, [['http://alienware:8088', '_blank', 'noopener']]);
+  globalThis.window.open = origOpen;
+  app._setServerSettingsForTests({});
+});
+
+test("openFederatedPeer: never opens/navigates (and never throws) when the peer URL can't be resolved", () => {
+  // showToast() reads the real 'toast' DOM element internally (module-scope
+  // call, not dispatched through the exports object -- reassigning
+  // app.showToast has no effect on this internal call, same as every other
+  // app.js function that calls it directly). What IS observable and
+  // load-bearing here: no navigation happens, and the call never throws.
+  app._setServerSettingsForTests({ remote_instances: [] });
+  const origOpen = globalThis.window.open;
+  let opened = false;
+  globalThis.window.open = () => { opened = true; };
+  assert.doesNotThrow(() => app.openFederatedPeer('peer-unknown'));
+  assert.strictEqual(opened, false);
+  globalThis.window.open = origOpen;
+  app._setServerSettingsForTests({});
+});
+
+test('handleFollowsSelectChange: a `federated-open:` value opens the peer and reverts the <select> without changing the persisted follow target (never selectable, §9.1)', async () => {
+  app._setServerSettingsForTests({ remote_instances: [{ url: 'http://alienware:8088', name: 'alienware', device_id: 'peer-alienware' }] });
+  app._setFollowTargetForTests(null);
+  app._setSyncGroupMode('global');
+  const origOpen = globalThis.window.open;
+  const opens = [];
+  globalThis.window.open = (...args) => opens.push(args);
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  app.handleFollowsSelectChange('federated-open:peer-alienware');
+  assert.deepStrictEqual(opens, [['http://alienware:8088', '_blank', 'noopener']]);
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'global', targetId: null, targetLabel: null }, 'a federated-open pick must never become the persisted follow target');
+  globalThis.window.open = origOpen;
+  globalThis.document.getElementById = origGetById;
+  app._setServerSettingsForTests({});
+});
+
+test('handleFollowsSelectChange: a `federated-retry:` value re-fetches federated devices without changing the persisted follow target', async () => {
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).indexOf('/api/federation/devices') !== -1) {
+      fetchCalls++;
+      return { ok: true, json: async () => [] };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+  app._setFollowTargetForTests(null);
+  app._setSyncGroupMode('global');
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  app.handleFollowsSelectChange('federated-retry:peer-2');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.strictEqual(fetchCalls, 1);
+  assert.deepStrictEqual(app.currentFollows(), { mode: 'global', targetId: null, targetLabel: null });
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+});
+
+test('fetchFederatedDevices: populates _federatedDevicesRaw from GET /api/federation/devices and re-renders', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.ok(String(url).indexOf('/api/federation/devices') !== -1);
+    return { ok: true, json: async () => [{ device_id: 'd-1', display_name: 'Deck', homeDeviceId: 'peer-1', homeDeviceName: 'alienware' }] };
+  };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  app._setFederatedDevicesRawForTests([]);
+  await assert.doesNotReject(app.fetchFederatedDevices());
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  app._setFederatedDevicesRawForTests([]);
+});
+
+test('fetchFederatedDevices: a failed fetch is best-effort -- does not throw, leaves prior state in place', async () => {
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('network down'); };
+  const origGetById = globalThis.document.getElementById;
+  globalThis.document.getElementById = () => null;
+  app._setFederatedDevicesRawForTests([{ device_id: 'd-prior', display_name: 'Prior Deck', homeDeviceId: 'peer-1', homeDeviceName: 'alienware' }]);
+  await assert.doesNotReject(app.fetchFederatedDevices());
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  app._setFederatedDevicesRawForTests([]);
+});
+
+test('renderSyncGroupControls: the header <select> renders a third, non-selectable "Elsewhere in your federation" optgroup from _federatedDevicesRaw, and never blocks on it being empty (§6.2.7/§9.1)', () => {
+  app._setFederatedDevicesRawForTests([
+    { device_id: 'd-1', display_name: 'Stream Deck (studio)', homeDeviceId: 'peer-mac', homeDeviceName: 'macbook' },
+    { status: 'unreachable', homeDeviceId: 'peer-alien', homeDeviceName: 'alienware-r13' },
+  ]);
+  app._setDeviceId('d-self');
+  app._setServerNameForTests('spark-1');
+  const optgroups = [];
+  const sel = {
+    innerHTML: '',
+    value: '',
+    title: '',
+    appendChild(node) {
+      if (node.tagName === 'optgroup') optgroups.push(node);
+    },
+  };
+  function makeEl(tag) {
+    if (tag === 'optgroup') {
+      return { tagName: 'optgroup', label: '', children: [], appendChild(o) { this.children.push(o); } };
+    }
+    return { tagName: tag, value: '', textContent: '' };
+  }
+  const origGetById = globalThis.document.getElementById;
+  const origCreateElement = globalThis.document.createElement;
+  globalThis.document.getElementById = (id) => (id === 'sync-group-select' ? sel : null);
+  globalThis.document.createElement = makeEl;
+  app.renderSyncGroupControls();
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.createElement = origCreateElement;
+
+  const federatedGroup = optgroups.find((g) => g.label === 'Elsewhere in your federation');
+  assert.ok(federatedGroup, 'expected a federated optgroup to be appended');
+  assert.strictEqual(federatedGroup.children.length, 2);
+  const deviceOpt = federatedGroup.children.find((o) => o.value.indexOf('federated-open:') === 0);
+  const statusOpt = federatedGroup.children.find((o) => o.value.indexOf('federated-retry:') === 0);
+  assert.strictEqual(deviceOpt.value, 'federated-open:peer-mac');
+  assert.strictEqual(deviceOpt.textContent, 'Stream Deck (studio) \u2014 via macbook');
+  assert.strictEqual(statusOpt.value, 'federated-retry:peer-alien');
+  assert.strictEqual(statusOpt.textContent, "\u26a0 Couldn't reach alienware-r13");
+
+  app._setFederatedDevicesRawForTests([]);
+  app._setDeviceId('');
+  app._setServerNameForTests('');
+});
+
+test('renderSyncGroupControls: no federated optgroup is appended when _federatedDevicesRaw is empty (local-first render, nothing to fill in yet)', () => {
+  app._setFederatedDevicesRawForTests([]);
+  app._setDeviceId('d-self');
+  const optgroups = [];
+  const sel = {
+    innerHTML: '', value: '', title: '',
+    appendChild(node) { if (node.tagName === 'optgroup') optgroups.push(node); },
+  };
+  function makeEl(tag) {
+    if (tag === 'optgroup') return { tagName: 'optgroup', label: '', children: [], appendChild(o) { this.children.push(o); } };
+    return { tagName: tag, value: '', textContent: '' };
+  }
+  const origGetById = globalThis.document.getElementById;
+  const origCreateElement = globalThis.document.createElement;
+  globalThis.document.getElementById = (id) => (id === 'sync-group-select' ? sel : null);
+  globalThis.document.createElement = makeEl;
+  app.renderSyncGroupControls();
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.createElement = origCreateElement;
+  assert.strictEqual(optgroups.find((g) => g.label === 'Elsewhere in your federation'), undefined);
+  app._setDeviceId('');
 });
 
 // --- Decks settings tab (§9.5) ---

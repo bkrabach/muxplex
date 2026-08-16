@@ -5196,6 +5196,217 @@ async def federation_sessions(request: Request) -> list[dict]:
     return annotate_view_membership(all_sessions, settings)
 
 
+# Module-level cache: remote_device_id -> {"devices": [...], "fail_count": int}
+# Same shape/purpose as _federation_cache above, kept separate because it
+# caches a different payload (device registry entries, not sessions) --
+# see federation_devices()'s docstring. Deliberately reuses
+# _federation_breaker (keyed by remote URL, not by which endpoint is
+# calling): a remote that is down for /api/federation/sessions is down for
+# /api/federation/devices too, so sharing the breaker means this fan-out
+# never pays a second timeout for a peer already known unreachable.
+_federation_devices_cache: dict[str, dict] = {}
+
+
+@app.get("/api/federation/devices")
+async def federation_devices(request: Request) -> list[dict]:
+    """Fetch each federation peer's device registry (Step 6, design doc
+
+    docs/plans/2026-08-16-deck-control-target-design.md \u00a78.1 #11).
+
+    Read-only, server-side fan-out modeled directly on
+    GET /api/federation/sessions (\u00a78.5's mechanism decision): same
+    asyncio.gather, same app.state.federation_client, same Bearer-per-remote
+    auth, same _FEDERATION_GRACE_FAILURES/cache/circuit-breaker pattern, same
+    per-peer status vocabulary ('unreachable' | 'auth_failed' | 'empty' --
+    \u00a72.6/\u00a78.5, reused verbatim, never a new status string).
+
+    Unlike /api/federation/sessions, this endpoint carries ONLY remote/peer
+    devices -- a server's own devices{} registry is already exposed via
+    GET /api/state and rendered as this server's own "Registered with X"
+    section (\u00a79.1/\u00a79.5); there is nothing to add here for the local case.
+    So an empty/absent remote_instances list returns an empty list, not an
+    error -- a non-federated server behaves exactly as it does today (\u00a78.1
+    #11's "local-only" note).
+
+    Each device entry is a FILTERED PROJECTION of a peer's devices{} entry
+    (never the full device record): device_id, display_name (display_name
+    if the human set one, else the client's self-reported label -- same
+    precedence as app.js's deviceDisplayLabel, minus the final device_id
+    fallback since the client can always fall back to that itself),
+    last_heartbeat_at, sync_group, plus homeDeviceId/homeDeviceName naming
+    WHICH peer server this device is registered with (the same
+    remote_device_id/remote_name convention /api/federation/sessions uses
+    for remoteId/deviceName).
+
+    `kind` is deliberately NOT included: the server-side devices{} registry
+    has no such field yet (Steps 1-5 never added one -- see
+    HeartbeatPayload/empty_device in state.py); inventing one here would
+    describe a schema that does not exist. If a later step adds it
+    server-side, add it to this projection then.
+
+    Client-side keying note (\u00a76.2.8/\u00a78.1 #12): this endpoint does NOT
+    de-duplicate a device that appears in more than one peer's registry
+    (e.g. mid-move between servers within the 300s GC window) -- that is a
+    client-side rendering rule (composite key
+    `<home_server_device_id>:<client_device_id>`), not a server concern.
+    """
+    settings = load_settings()
+    remote_instances: list[dict] = settings.get("remote_instances", [])
+
+    if not remote_instances:
+        return []
+
+    http_client: httpx.AsyncClient = request.app.state.federation_client
+
+    async def fetch_remote_devices(i: int, remote: dict) -> list[dict]:
+        """Fetch GET /api/state from a remote instance, returning its
+
+        devices{} registry as tagged projections, or a status entry.
+
+        Same success/failure shape as federation_sessions()'s fetch_remote:
+        on success, cache the result and return tagged devices (or
+        {status: 'empty'} if the peer's registry is empty); on transient
+        failure, return cached devices for up to _FEDERATION_GRACE_FAILURES
+        consecutive failures before promoting to {status: 'unreachable'}.
+        """
+        url: str = remote.get("url", "")
+        key: str = remote.get("key", "")
+        remote_name: str = remote.get("name", url)
+        remote_device_id: str = remote.get("device_id", str(i))
+
+        if not _federation_breaker.should_attempt(url):
+            # Circuit open: remote is known-unreachable; skip the network
+            # call entirely, same as federation_sessions().
+            return [
+                {
+                    "status": "unreachable",
+                    "homeDeviceId": remote_device_id,
+                    "homeDeviceName": remote_name,
+                }
+            ]
+
+        try:
+            resp = await http_client.get(
+                f"{url.rstrip('/')}/api/state",
+                headers={"Authorization": f"Bearer {key}"} if key else {},
+                timeout=_FEDERATION_POLL_TIMEOUT,
+            )
+            # Any HTTP response means the remote is reachable -- reset the
+            # breaker (auth/HTTP errors are honest states, not connection
+            # failures).
+            if _federation_breaker.record_success(url):
+                _log.info(
+                    "federation remote %s reachable again; resuming (devices)",
+                    remote_name,
+                )
+            if resp.status_code in (401, 403):
+                # Auth failure -- clear cache so stale data is not served.
+                _federation_devices_cache.pop(remote_device_id, None)
+                return [
+                    {
+                        "status": "auth_failed",
+                        "homeDeviceId": remote_device_id,
+                        "homeDeviceName": remote_name,
+                    }
+                ]
+            resp.raise_for_status()
+            remote_state = resp.json()
+            remote_devices: dict = (
+                remote_state.get("devices", {})
+                if isinstance(remote_state, dict)
+                else {}
+            )
+            tagged = [
+                {
+                    "device_id": device_id,
+                    "display_name": device.get("display_name") or device.get("label"),
+                    "last_heartbeat_at": device.get("last_heartbeat_at"),
+                    "sync_group": device.get("sync_group", GLOBAL_GROUP),
+                    "homeDeviceId": remote_device_id,
+                    "homeDeviceName": remote_name,
+                }
+                for device_id, device in remote_devices.items()
+            ]
+            # Update cache on every successful poll (even empty)
+            _federation_devices_cache[remote_device_id] = {
+                "devices": tagged,
+                "fail_count": 0,
+            }
+            if not tagged:
+                # Reachable, but no devices registered there -- show a
+                # status tile rather than making the peer invisible.
+                return [
+                    {
+                        "status": "empty",
+                        "homeDeviceId": remote_device_id,
+                        "homeDeviceName": remote_name,
+                    }
+                ]
+            return tagged
+        except httpx.HTTPStatusError:
+            # The remote responded (reachable) with an HTTP error -- honest
+            # error state, NOT a connection failure: never circuit-break it.
+            cached = _federation_devices_cache.get(remote_device_id)
+            if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
+                cached["fail_count"] += 1
+                return cached["devices"]
+            return [
+                {
+                    "status": "unreachable",
+                    "homeDeviceId": remote_device_id,
+                    "homeDeviceName": remote_name,
+                }
+            ]
+        except httpx.TransportError as exc:
+            # Connection-level failure: the remote is unreachable. Count it
+            # toward the (shared) circuit breaker.
+            if _federation_breaker.record_failure(url):
+                _log.warning(
+                    "federation remote %s unreachable; skipping for %.0fs (devices)",
+                    remote_name,
+                    _federation_breaker.cooldown,
+                )
+            else:
+                _log.debug(
+                    "federation remote %s connection failed (devices): %s",
+                    remote_name,
+                    exc,
+                )
+            cached = _federation_devices_cache.get(remote_device_id)
+            if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
+                cached["fail_count"] += 1
+                return cached["devices"]
+            return [
+                {
+                    "status": "unreachable",
+                    "homeDeviceId": remote_device_id,
+                    "homeDeviceName": remote_name,
+                }
+            ]
+        except Exception as exc:
+            _log.warning("Unexpected error fetching remote %s devices: %s", url, exc)
+            cached = _federation_devices_cache.get(remote_device_id)
+            if cached and cached["fail_count"] < _FEDERATION_GRACE_FAILURES:
+                cached["fail_count"] += 1
+                return cached["devices"]
+            return [
+                {
+                    "status": "unreachable",
+                    "homeDeviceId": remote_device_id,
+                    "homeDeviceName": remote_name,
+                }
+            ]
+
+    remote_results: list[list[dict]] = await asyncio.gather(
+        *(fetch_remote_devices(i, remote) for i, remote in enumerate(remote_instances))
+    )
+
+    all_devices: list[dict] = []
+    for result in remote_results:
+        all_devices.extend(result)
+    return all_devices
+
+
 @app.post("/api/federation/generate-key")
 async def federation_generate_key() -> dict:
     """Generate a new federation key, write it to FEDERATION_KEY_PATH, and return it.
