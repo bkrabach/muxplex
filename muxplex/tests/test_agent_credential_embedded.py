@@ -4,13 +4,13 @@
 # CI/DTU environment installs it (embedded mode is the default), but a
 # host running `python_check` without the extra cannot resolve these
 # imports. Same suppression convention as runner.py/credentials.py.
-"""Tests for the EMBEDDED agent provider credential path (Settings -> Agent).
+"""Tests for the agent provider credential path (Settings -> Agent).
 
-Companion to test_agent_credential.py (the SIDECAR-oriented suite, which
-pins `is_embedded_mode() -> False` for every one of its tests). This file
-pins the opposite: `MUXPLEX_AGENT_MODE` defaults to embedded, and every
-test here exercises `muxplex.agent_embedded.credentials` and the embedded
-branches of `GET`/`POST /api/agent/provider-credential` directly.
+The embedded path is THE path -- the sidecar (a separate
+`amplifier-agent serve chat-completions` OS process) was removed once the
+embedded path was proven durable across a restart with a real browser.
+Every test here exercises `muxplex.agent_embedded.credentials` and the
+`GET`/`POST /api/agent/provider-credential` endpoints directly, in-process.
 
 Three resolution branches, mirroring the owner's explicit acceptance
 criteria ("I'd prefer to read env first, do it right"):
@@ -21,6 +21,12 @@ criteria ("I'd prefer to read env first, do it right"):
      proof at the unit level -- the DTU proof additionally restarts the
      whole muxplex process and re-checks).
   3. No env var, a bad key submitted -> rejected, nothing persisted.
+
+Also pins the invariants that hold regardless of transport (SS7.3/SS9 of
+docs/designs/agent-credentials.md, the design doc written for the
+sidecar's credential flow but whose invariants -- no `endpoint` field, a
+closed provider allowlist, validate-before-persist -- apply unchanged
+here): the request schema shape and the provider allowlist.
 
 Every test isolates `AMPLIFIER_AGENT_HOME` to a per-test tmp_path and
 clears the provider env vars by default, so no test can ever read or
@@ -37,7 +43,13 @@ from fastapi.testclient import TestClient
 from muxplex.agent_embedded import credentials as agent_embedded_credentials
 from muxplex.agent_embedded import runner as agent_embedded_runner
 from muxplex.auth import create_session_cookie
-from muxplex.main import _auth_secret, _auth_ttl, app
+from muxplex.main import (
+    _AGENT_CREDENTIAL_ALLOWED_PROVIDERS,
+    ProviderCredentialRequest,
+    _auth_secret,
+    _auth_ttl,
+    app,
+)
 
 
 def _authed_client() -> TestClient:
@@ -86,6 +98,82 @@ def _assume_library_available(monkeypatch):
         return None
 
     monkeypatch.setattr(agent_embedded_runner, "library_unavailable_reason", _available)
+
+
+# ---------------------------------------------------------------------------
+# Schema / allowlist invariants (docs/designs/agent-credentials.md
+# SS7.3/SS9) -- these hold regardless of transport, and held for the
+# sidecar path too before it was removed.
+# ---------------------------------------------------------------------------
+
+
+def test_request_model_has_no_endpoint_field():
+    """The request schema must not carry an `endpoint` field -- not
+    ignored, not validated, ABSENT. Adding one later for Azure support
+    means designing an endpoint allowlist first; this test makes that a
+    deliberate, visible act instead of an accidental one."""
+    fields = ProviderCredentialRequest.model_fields
+    assert "endpoint" not in fields
+    assert set(fields) == {"provider", "api_key"}
+
+
+def test_allowlist_is_exactly_anthropic_and_openai():
+    """azure-openai and ollama carry a caller-controlled endpoint/host the
+    resolver would feed straight to the provider; github-copilot is
+    environment-only. Also pins that `agent_embedded.credentials`'s own
+    copy of this set (duplicated so that module has no import dependency
+    on main.py -- see its docstring) never drifts from this one."""
+    assert _AGENT_CREDENTIAL_ALLOWED_PROVIDERS == frozenset({"anthropic", "openai"})
+    assert (
+        agent_embedded_credentials.ALLOWED_PROVIDERS
+        == _AGENT_CREDENTIAL_ALLOWED_PROVIDERS
+    )
+
+
+@pytest.mark.parametrize(
+    "provider", ["azure-openai", "ollama", "github-copilot", "made-up-provider"]
+)
+def test_post_rejects_non_allowlisted_providers(provider, monkeypatch):
+    """A disallowed provider is refused with 400 BEFORE any validation is
+    attempted -- validation/persistence must never even be attempted."""
+    called = {"validate": False}
+
+    async def _fail_if_called(*_a, **_kw):
+        called["validate"] = True
+        raise AssertionError("must not validate a disallowed provider")
+
+    monkeypatch.setattr(agent_embedded_credentials, "validate_key", _fail_if_called)
+
+    client = _authed_client()
+    resp = client.post(
+        "/api/agent/provider-credential",
+        json={"provider": provider, "api_key": "sk-whatever"},
+    )
+    assert resp.status_code == 400
+    assert not called["validate"]
+    # No key material echoed back in the error body either.
+    assert "sk-whatever" not in resp.text
+
+
+def test_post_endpoint_field_is_silently_dropped_not_an_error(monkeypatch):
+    """Sending an `endpoint` field in the body is simply not part of the
+    schema -- FastAPI/pydantic drops unknown fields by default, so it must
+    never reach the resolver. This pins that no code path forwards it."""
+    _patch_provider_loading(
+        monkeypatch,
+        provider_instance=_FakeProvider(models=[_FakeModel("claude-sonnet-5")]),
+    )
+    client = _authed_client()
+    resp = client.post(
+        "/api/agent/provider-credential",
+        json={
+            "provider": "anthropic",
+            "api_key": "sk-real-key-for-endpoint-test",
+            "endpoint": "https://evil.example.com",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
 
 
 # ---------------------------------------------------------------------------
