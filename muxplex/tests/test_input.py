@@ -60,7 +60,14 @@ def patch_startup_and_state(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(monkeypatch):
-    """TestClient with a valid session cookie (bypasses AuthMiddleware)."""
+    """TestClient with a valid session cookie (bypasses AuthMiddleware).
+
+    NOTE: a valid cookie makes this an OPERATOR caller, never ``bearer_only``
+    (see main._bearer_only_caller). Since input_enabled/input_allowed_sessions
+    became settings.OPERATOR_SETTABLE_LOCAL_KEYS, this client CAN set them via
+    PATCH /api/settings. To exercise the fence that still blocks a federation
+    Bearer holder, use the ``bearer_client`` fixture below instead.
+    """
     monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
     with TestClient(app) as c:
         from muxplex.auth import create_session_cookie
@@ -69,6 +76,39 @@ def client(monkeypatch):
         cookie = create_session_cookie(_auth_secret, _auth_ttl)
         c.cookies.set("muxplex_session", cookie)
         yield c
+
+
+@pytest.fixture
+def bearer_client(tmp_path, monkeypatch):
+    """TestClient whose ONLY credential is a real federation Bearer key.
+
+    Yields ``(client, headers)``. Stubs nothing on the auth path -- neither
+    AuthMiddleware nor ``main._bearer_only_caller`` -- so a request carrying
+    *headers* is authorized by the real middleware and classified
+    ``bearer_only`` by the real classifier. Two real readers, two real
+    sources:
+
+      1. AuthMiddleware's Bearer branch calls ``settings.load_federation_key()``
+         FRESH FROM DISK per request (auth.py), honoring the
+         ``MUXPLEX_FEDERATION_KEY_FILE`` env override -- that is what makes
+         the real middleware ACCEPT the header (without it: 401).
+      2. ``main._bearer_only_caller()`` compares the header against the
+         module-global ``main._federation_key`` -- the same mechanism
+         ``test_ws_proxy.py::test_ws_bearer_auth_accepted`` uses.
+
+    No cookie is ever set, so this is the real self-authorization attacker
+    the input fence exists to contain.
+    """
+    import muxplex.main as main_mod
+
+    fed_key = "test-federation-key-input-fence"
+    key_file = tmp_path / "federation_key"
+    key_file.write_text(fed_key)
+    monkeypatch.setenv("MUXPLEX_FEDERATION_KEY_FILE", str(key_file))
+    monkeypatch.setattr(main_mod, "_federation_key", fed_key)
+    monkeypatch.setenv("MUXPLEX_PASSWORD", "test-password")
+    with TestClient(app) as c:
+        yield c, {"Authorization": f"Bearer {fed_key}"}
 
 
 def _settings(**overrides) -> dict:
@@ -781,60 +821,67 @@ def test_local_only_keys_are_exactly_the_input_fences():
     assert LOCAL_ONLY_KEYS.isdisjoint(SYNCABLE_KEYS)
 
 
-def test_patch_settings_ignores_input_enabled(client, settings_file, caplog):
-    """PATCH input_enabled=true is ignored (and warned); co-submitted key applies."""
-    with caplog.at_level(logging.WARNING, logger="muxplex.settings"):
-        resp = client.patch(
-            "/api/settings", json={"input_enabled": True, "fontSize": 18}
-        )
+def test_patch_settings_operator_enables_input_cosubmitted_key_applies(
+    client, settings_file
+):
+    """An OPERATOR (cookie caller) PATCHing input_enabled=true DOES enable it;
+    a co-submitted ordinary key applies in the same PATCH.
+
+    Contract change: input_enabled joined settings.OPERATOR_SETTABLE_LOCAL_KEYS,
+    so an operator-credentialed PATCH may set it (this is the whole point --
+    flipping the gate from the browser instead of hand-editing settings.json
+    over SSH on every host). It remains in LOCAL_ONLY_KEYS and is still
+    dropped for a bearer_only caller -- see
+    test_bearer_only_patch_cannot_widen_input_fence_end_to_end below.
+    """
+    resp = client.patch("/api/settings", json={"input_enabled": True, "fontSize": 18})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["input_enabled"] is False  # fence unchanged
+    assert body["input_enabled"] is True  # operator CAN flip the gate
     assert body["fontSize"] == 18  # unrelated key in same PATCH still applied
     # On disk too, not just the response.
     from muxplex.settings import load_settings
 
     on_disk = load_settings()
-    assert on_disk["input_enabled"] is False
+    assert on_disk["input_enabled"] is True
     assert on_disk["fontSize"] == 18
-    assert any(
-        "local-only" in r.getMessage() and "input_enabled" in r.getMessage()
-        for r in caplog.records
-    )
 
 
-def test_patch_settings_ignores_input_allowed_sessions(client, settings_file):
-    """PATCH input_allowed_sessions=[...] is ignored — the file value stands.
+def test_patch_settings_operator_can_steer_input_allowed_sessions(
+    client, settings_file
+):
+    """An OPERATOR may steer the allowlist in BOTH directions -- widen it to a
+    specific family, and narrow it (including all the way to deny-all).
 
-    The default is now "*" (normalized to ["*"] on load), so "unchanged"
-    is no longer the same as "empty". What matters is that the value the
-    CALLER supplied never lands: a Bearer-key holder must not be able to
-    steer the allowlist at all -- neither widen it nor NARROW it (narrowing
-    is equally an attack: it could silently cut a legitimate operator's
-    own automation out of the sessions they enabled).
+    Contract change: input_allowed_sessions joined
+    settings.OPERATOR_SETTABLE_LOCAL_KEYS. Narrowing matters as much as
+    widening: an operator scoping typing down to `agent-*` is the documented
+    way to keep their own working panes un-typeable, and that has to be
+    reachable from the UI too. A bearer_only caller still cannot steer it in
+    either direction -- see the bearer test below.
     """
-    resp = client.patch(
-        "/api/settings", json={"input_allowed_sessions": ["victim-shell"]}
-    )
-    assert resp.status_code == 200
-    assert resp.json()["input_allowed_sessions"] == ["*"]
     from muxplex.settings import load_settings
 
-    assert load_settings()["input_allowed_sessions"] == ["*"]
+    resp = client.patch("/api/settings", json={"input_allowed_sessions": ["agent-*"]})
+    assert resp.status_code == 200
+    assert resp.json()["input_allowed_sessions"] == ["agent-*"]
+    assert load_settings()["input_allowed_sessions"] == ["agent-*"]
 
-    # And a NARROWING patch is refused just as hard as a widening one.
+    # Narrowing all the way to deny-all is equally an operator's call.
     resp = client.patch("/api/settings", json={"input_allowed_sessions": []})
     assert resp.status_code == 200
-    assert load_settings()["input_allowed_sessions"] == ["*"]
+    assert load_settings()["input_allowed_sessions"] == []
 
 
-def test_patch_cannot_widen_input_fence_end_to_end(
+def test_operator_patch_widens_input_fence_end_to_end(
     client, settings_file, monkeypatch, tmux_calls
 ):
-    """The self-authorization attack: PATCH both fence keys, then call /input.
+    """The FEATURE, end to end: an operator PATCHes both fence keys, then
+    /input works -- no settings mocking, real load_settings via the
+    redirected file.
 
-    The PATCH must be ignored, so /input still 403s and nothing reaches tmux.
-    Uses the REAL load_settings (redirected file) — no settings mocking.
+    This is the counterpart to the bearer test below: same two PATCHes, same
+    /input call, opposite outcome, and the ONLY difference is the credential.
     """
     monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
     patch_resp = client.patch(
@@ -842,7 +889,51 @@ def test_patch_cannot_widen_input_fence_end_to_end(
         json={"input_enabled": True, "input_allowed_sessions": ["alpha"]},
     )
     assert patch_resp.status_code == 200
+    assert patch_resp.json()["input_enabled"] is True
+
     resp = client.post("/api/sessions/alpha/input", json={"text": "hi"})
+    assert resp.status_code == 200
+    # The keystrokes really did reach (mocked) tmux.
+    assert any("send-keys" in call for call in tmux_calls), (
+        f"expected a send-keys argv after an operator widened the fence, got: {tmux_calls}"
+    )
+
+
+def test_bearer_only_patch_cannot_widen_input_fence_end_to_end(
+    bearer_client, settings_file, monkeypatch, tmux_calls
+):
+    """The self-authorization attack, with the REAL attacker credential:
+    a federation-Bearer-only caller PATCHes both fence keys, then calls /input.
+
+    This is the security property the original cookie-based version of this
+    test was reaching for but could not actually express -- a cookie caller
+    is an operator, never the Bearer-key holder the fence exists to contain.
+    Nothing on the auth path is stubbed (see the bearer_client fixture): the
+    real AuthMiddleware authorizes the request and the real
+    main._bearer_only_caller classifies it.
+
+    The PATCH must be silently ignored for BOTH fence keys, so /input still
+    403s and nothing reaches tmux.
+    """
+    from muxplex.settings import load_settings
+
+    c, headers = bearer_client
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: ["alpha"])
+
+    patch_resp = c.patch(
+        "/api/settings",
+        json={"input_enabled": True, "input_allowed_sessions": ["alpha"]},
+        headers=headers,
+    )
+    # Authorized (not 401) -- the Bearer key satisfies the shared auth...
+    assert patch_resp.status_code == 200
+    # ...but neither fence key moved, on the wire or on disk.
+    assert patch_resp.json()["input_enabled"] is False
+    on_disk = load_settings()
+    assert on_disk["input_enabled"] is False
+    assert on_disk["input_allowed_sessions"] == ["*"]  # untouched default
+
+    resp = c.post("/api/sessions/alpha/input", json={"text": "hi"}, headers=headers)
     assert resp.status_code == 403
     assert tmux_calls == []
 
@@ -1085,14 +1176,22 @@ def test_narrowing_to_empty_list_still_denies_everything(settings_file):
 
 
 def test_widened_default_did_not_move_either_key_out_of_local_only(settings_file):
-    """AC4: the local-file-only partition still holds for BOTH keys.
+    """AC4: the LOCAL_ONLY_KEYS partition still holds for BOTH keys.
 
     Guards the one thing that would turn this convenience change into a
     real vulnerability: the federation Bearer key IS the agent credential,
-    so if either key became PATCHable the agent could self-authorize
-    typing into the human's own panes -- and with the allowlist now
-    defaulting open, `input_enabled` is the ONLY thing left standing
-    between a Bearer-key holder and RCE on every session.
+    so if either key became settable by THAT credential the agent could
+    self-authorize typing into the human's own panes -- and with the
+    allowlist now defaulting open, `input_enabled` is the ONLY thing left
+    standing between a Bearer-key holder and RCE on every session.
+
+    Scope note: both keys later joined settings.OPERATOR_SETTABLE_LOCAL_KEYS,
+    so an OPERATOR-credentialed `PATCH /api/settings` may now set them (see
+    test_patch_settings_operator_enables_input_cosubmitted_key_applies).
+    That carve-out is opt-in per call and lives entirely in the HTTP layer:
+    `patch_settings()` called bare -- as below, and as the CLI calls it --
+    still drops both keys, and federation sync still never carries them.
+    Those two properties are exactly what this test pins.
     """
     import json
 
