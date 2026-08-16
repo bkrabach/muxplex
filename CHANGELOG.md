@@ -37,26 +37,52 @@ module for its siblings is what turned one fix into two releases.
   three modules gate unrelated units and none needs a cross-module
   dependency for a one-line `shutil.which`.
 
-### What we could not verify
+### What macOS CI proved, and what is still unverified
 
-**The macOS fix has not been run on macOS.** There was no macOS machine
-available to reproduce the original crash or confirm the corrected
-behaviour. It was established by reading the reported traceback against
-the code path, and by confirming that the guard precedes the spawn at
-both call sites.
+This entry originally claimed the opposite of what turned out to be
+true, and the correction is worth more than the original claim.
 
-CI's `test (macOS, arm64)` job does run the full suite on a real macOS
-runner, and it passes -- but that is not verification of this fix.
-No test exercises `_agent_service_env_shadow_vars()` at all, and every
-test that touches `_restart_agent_sidecar_and_wait()` monkeypatches the
-whole function away. A green macOS job proves the module imports and
-the suite passes there; it does not execute either repaired path.
+**What was written first:** that no test exercised
+`_agent_service_env_shadow_vars()` at all, and that a green macOS job
+therefore proved only that the module imports. That was written from a
+grep for the function's name, which found no direct callers in the test
+suite.
 
-That gap is stated rather than glossed because v0.48.0 shipped its
-headline feature dead on arrival for exactly this reason -- it was
-verified only in the environment that happened to be at hand. If you
-run muxplex on macOS with the agent sidecar configured, this release is
-the one to report back on.
+**CI disproved it.** The first release attempt went red on the
+`test (macOS, arm64)` job -- one failure, in
+`test_get_status_detects_systemd_environment_file_shadow`, which
+reaches `_agent_service_env_shadow_vars()` indirectly through
+`GET /api/agent/provider-credential`. The grep missed it because the
+test never names the function.
+
+That failure is stronger evidence for this fix than the original entry
+claimed to have. It proves, on a real macOS/arm64 host, that
+`_have_systemctl()` returns False there and that the guard
+short-circuits **before** the spawn -- the test failed precisely
+*because* the repaired path executed and correctly returned "no shadow
+vars" on a host with no systemd. The mechanism of the fix is verified
+on the platform it was written for. The test itself was asserting a
+systemd premise it never stated; it now stubs `_have_systemctl` True to
+say so explicitly (see CI hygiene below).
+
+**What remains unverified, narrowly:**
+
+- **End-to-end UI behaviour on a *configured* macOS box.** No macOS
+  machine was available to open `Settings -> Agent` against a real
+  configured sidecar and confirm the panel renders credential status
+  rather than a traceback. The guard's mechanism is proven; the
+  user-visible outcome is inferred from it.
+- **`_restart_agent_sidecar_and_wait()`'s repaired path.** All three
+  tests touching it monkeypatch the entire function away, so no test
+  ran the real body on any platform. Its guard is identical in shape to
+  the one macOS CI did prove, and it now has direct unit coverage for
+  both branches -- but it has never executed on macOS.
+
+Stated this precisely because v0.48.0 shipped its headline feature dead
+on arrival for exactly this reason: it was verified only in the
+environment that happened to be at hand. If you run muxplex on macOS
+with the agent sidecar configured, this release is still the one to
+report back on.
 
 ### CI hygiene (no user-facing change)
 

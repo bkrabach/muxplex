@@ -841,6 +841,43 @@ Instead:
 - After any scratch run, VERIFY the live server is still up
   (`GET :8088/api/instance-info` → 200) as the last step.
 
+## Push `main` first, tag only once CI is green — a release-time rule
+
+**Publishing is irreversible. A version number, once on PyPI, can never be
+reused.** `.github/workflows/publish.yml` triggers on `v*` tags, so the tag
+IS the publish. Sequence a release so the tag is the last thing that
+happens, and so it happens only against evidence:
+
+1. `git push origin main:main` — explicit refspec, no `--tags`, no
+   `--follow-tags`, no `--all`.
+2. **Wait for CI to go fully green on that exact commit.** Every job, not
+   just the ones that usually matter.
+3. Only then `git tag -a vX.Y.Z` and `git push origin refs/tags/vX.Y.Z`.
+
+**Never push `main` and the tag in one command.** Doing so starts CI and
+Publish simultaneously, which means publish cannot be gated on CI: by the
+time the suite reports, the wheel is already on PyPI and the version is
+burned.
+
+**Why this is written down (v0.48.1 and v0.48.2, both ways):** at v0.48.1
+both refs went up in a single command. CI was already red at the time, so
+the ordering changed nothing that release — but the *sequencing had made
+the decision, not the evidence*, and that is only safe by luck.
+
+At v0.48.2 the split was used for the first time, and it immediately paid
+for itself. The Linux suite was green (2,472 passing), the DTU run was
+green, and every local check passed — but the `test (macOS, arm64)` job
+failed on the pushed commit, on a test the release's own fix had
+invalidated. Under the old single-command sequencing, `0.48.2` would have
+been published from a red tree and the number permanently spent. Under the
+split, the fix was a normal follow-up commit on `main` with nothing to
+undo: no tag existed, so no publish had fired.
+
+The cost of the split is a few minutes of CI wait. The cost of skipping it
+is a version number you cannot get back. **If CI is red, stop and report —
+do not tag.** Shipping tomorrow is strictly cheaper than burning a version
+today.
+
 ## tmux-kit pin/tag agreement — a release-time rule, checked twice
 
 `pyproject.toml` carries the `tmux-kit` dependency in TWO places that must

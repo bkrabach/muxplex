@@ -20,11 +20,14 @@ from muxplex.main import (
     _AGENT_CREDENTIAL_ALLOWED_PROVIDERS,
     AgentSidecarNotInstalled,
     ProviderCredentialRequest,
+    _agent_service_env_shadow_vars,
     _agent_sidecar_install_gap,
     _auth_secret,
     _auth_ttl,
+    _have_systemctl,
     _parse_agent_auth_list,
     _parse_agent_auth_status,
+    _restart_agent_sidecar_and_wait,
     _run_agent_cli,
     app,
 )
@@ -393,6 +396,17 @@ def test_get_status_detects_systemd_environment_file_shadow(monkeypatch, tmp_pat
     monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
     monkeypatch.setattr("muxplex.main._agent_provider_served", _fake_served)
     monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_systemctl_show)
+    # This test's premise is a SYSTEMD host: an EnvironmentFile shadow can
+    # only exist where there is a systemd unit to carry it. Say so, rather
+    # than inheriting it from whatever platform the suite happens to run
+    # on. Without this, `_agent_service_env_shadow_vars()` short-circuits
+    # on its `_have_systemctl()` precondition and returns an empty set
+    # before ever reaching the mocked `create_subprocess_exec` above --
+    # the test then fails with `source == "not_set"` on any non-systemd
+    # host, which is CORRECT behaviour being reported as a broken test.
+    # That is exactly what happened on the macOS runner during the v0.48.2
+    # release (CI run 31944963673); see that entry in CHANGELOG.md.
+    monkeypatch.setattr("muxplex.main._have_systemctl", lambda: True)
 
     client = _authed_client()
     resp = client.get("/api/agent/provider-credential")
@@ -402,6 +416,197 @@ def test_get_status_detects_systemd_environment_file_shadow(monkeypatch, tmp_pat
     assert body["state"] == "configured_shadowed"
     # The shadow's VALUE must never appear anywhere in the response.
     assert "sk-shadowed-value" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# v0.48.2: `systemctl` is a checked precondition, not an assumed binary.
+#
+# Both direct `systemctl` callers in main.py used to spawn unconditionally.
+# macOS has no systemd, so `create_subprocess_exec("systemctl", ...)` raised
+# an unhandled `FileNotFoundError` and -- with no exception handler on the
+# app -- `GET /api/agent/provider-credential` returned a raw traceback to
+# the user on a configured macOS box. Same class as muxplex-at9 (raw
+# subprocess errors reaching the UI) in the functions that fix missed.
+#
+# These tests pin BOTH branches of the guard. The absent-branch tests assert
+# that no subprocess is spawned AT ALL -- the fix is a precondition checked
+# before spawning, not a swallowed exception, and a test that only checked
+# the return value could not tell those two apart. The present-branch tests
+# exist so the guard cannot be silently inverted or dropped: without them,
+# "always return the non-systemd answer" would pass just as well.
+#
+# Written because the guard originally shipped with ZERO direct coverage,
+# which is the same failure shape as the bug it fixes: a code path that
+# only ever ran in the environment we happened to have.
+# ---------------------------------------------------------------------------
+
+
+def test_have_systemctl_true_when_on_path(monkeypatch):
+    """The present branch: `shutil.which` finds systemctl -> True."""
+    monkeypatch.setattr(
+        "muxplex.main.shutil.which",
+        lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
+    )
+    assert _have_systemctl() is True
+
+
+def test_have_systemctl_false_when_absent(monkeypatch):
+    """The absent branch (macOS): `shutil.which` finds nothing -> False."""
+    monkeypatch.setattr("muxplex.main.shutil.which", lambda _name: None)
+    assert _have_systemctl() is False
+
+
+async def test_shadow_vars_returns_empty_without_spawning_when_no_systemctl(
+    monkeypatch,
+):
+    """On a non-systemd host `_agent_service_env_shadow_vars()` must answer
+    "no shadow vars" WITHOUT spawning anything. There is no systemd unit to
+    introspect, so the empty set is the correct answer rather than a
+    degraded fallback -- and the guard must run BEFORE the spawn, which is
+    what the fail-if-spawned stub pins."""
+    monkeypatch.setattr("muxplex.main._have_systemctl", lambda: False)
+
+    async def _fail_if_spawned(*_a, **_kw):
+        raise AssertionError(
+            "must not spawn a subprocess when systemctl is unavailable"
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fail_if_spawned)
+
+    assert await _agent_service_env_shadow_vars() == set()
+
+
+async def test_shadow_vars_still_reads_systemd_environment_when_present(
+    monkeypatch, tmp_path
+):
+    """The other half of the guard: where systemd IS present the function
+    must still spawn `systemctl show` and parse it. Without this, inverting
+    the guard (or hard-coding the empty set) would go unnoticed."""
+    env_file = tmp_path / "aasvc.env"
+    env_file.write_text("ANTHROPIC_API_KEY=sk-shadowed-value\n")
+    spawned: list[tuple] = []
+
+    async def _fake_systemctl_show(*args, **_kw):
+        spawned.append(args)
+
+        class _P:
+            returncode = 0
+
+            async def communicate(self):
+                return (
+                    f"Environment=\nEnvironmentFiles={env_file} (ignore_errors=no)\n".encode(),
+                    b"",
+                )
+
+        return _P()
+
+    monkeypatch.setattr("muxplex.main._have_systemctl", lambda: True)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_systemctl_show)
+
+    assert await _agent_service_env_shadow_vars() == {"ANTHROPIC_API_KEY"}
+    assert spawned, "must spawn `systemctl show` on a systemd host"
+    assert spawned[0][0] == "systemctl"
+    assert spawned[0][1] == "show"
+
+
+async def test_restart_sidecar_refuses_without_spawning_when_no_systemctl(
+    monkeypatch,
+):
+    """Restarting a systemd unit is impossible on a host with no systemd.
+    That must be reported as a plain precondition failure -- again without
+    spawning, and in language that names the real constraint rather than
+    leaking a `FileNotFoundError`."""
+    monkeypatch.setattr("muxplex.main._have_systemctl", lambda: False)
+
+    async def _fail_if_spawned(*_a, **_kw):
+        raise AssertionError(
+            "must not spawn a subprocess when systemctl is unavailable"
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fail_if_spawned)
+
+    ok, detail = await _restart_agent_sidecar_and_wait()
+    assert ok is False
+    assert "systemctl" in detail
+    # A precondition stated in plain language -- never a raw exception.
+    assert "FileNotFoundError" not in detail
+    assert "Traceback" not in detail
+
+
+async def test_restart_sidecar_spawns_systemctl_when_present(monkeypatch):
+    """The present branch: where systemd exists the restart must actually be
+    attempted. A non-zero return is used so the function reports the failure
+    immediately instead of entering its readiness poll -- what is being
+    pinned here is that the spawn HAPPENS, not what it returns."""
+    spawned: list[tuple] = []
+
+    async def _fake_restart(*args, **_kw):
+        spawned.append(args)
+
+        class _P:
+            returncode = 1
+
+            async def communicate(self):
+                return (b"", b"Failed to restart amplifier-agent-http.service")
+
+        return _P()
+
+    monkeypatch.setattr("muxplex.main._have_systemctl", lambda: True)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_restart)
+
+    ok, detail = await _restart_agent_sidecar_and_wait()
+    assert ok is False
+    assert spawned, "must spawn `systemctl restart` on a systemd host"
+    assert spawned[0][0] == "systemctl"
+    assert spawned[0][1] == "restart"
+    assert "Failed to restart" in detail
+
+
+def test_credential_endpoint_survives_a_host_with_no_systemctl(monkeypatch):
+    """The end-to-end regression, in the shape the user actually reported.
+
+    `create_subprocess_exec` here raises `FileNotFoundError` exactly as it
+    does on real macOS. No exception handler is registered on the app, so
+    a 200 here means the spawn genuinely never happened.
+
+    Confirmed to catch the regression rather than merely assumed to:
+    re-running this test against a copy of main.py with the
+    `_agent_service_env_shadow_vars` guard removed (the pre-v0.48.2 shape)
+    fails with `FileNotFoundError: [Errno 2] ... 'systemctl'`. That is the
+    unhandled error a real macOS user met -- surfaced here as a
+    propagated exception because TestClient re-raises server exceptions,
+    and as a 500 in production under uvicorn."""
+
+    async def _fake_run(args, **_kwargs):
+        if args[:1] == ["status"]:
+            return (
+                0,
+                (
+                    "Credentials file: /home/aa-svc/.amplifier-agent/credentials.json\n"
+                    "  exists: False\n\n"
+                    "Per-provider resolution (env wins if both are set):\n"
+                    "  anthropic       NOT SET (export ANTHROPIC_API_KEY or run `auth set anthropic ...`)\n"
+                    "  openai          NOT SET (export OPENAI_API_KEY or run `auth set openai ...`)\n"
+                ),
+                "",
+            )
+        return (0, "Credentials file: (not present)\n", "")
+
+    async def _no_systemd_spawn(*_a, **_kw):
+        raise FileNotFoundError(2, "No such file or directory: 'systemctl'")
+
+    monkeypatch.setattr("muxplex.main._run_agent_cli", _fake_run)
+    monkeypatch.setattr("muxplex.main._agent_sidecar_install_gap", lambda: None)
+    monkeypatch.setattr("muxplex.main.shutil.which", lambda _name: None)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _no_systemd_spawn)
+
+    client = _authed_client()
+    resp = client.get("/api/agent/provider-credential")
+
+    assert resp.status_code == 200
+    assert "systemctl" not in resp.text
+    assert "FileNotFoundError" not in resp.text
+    assert "Traceback" not in resp.text
 
 
 # ---------------------------------------------------------------------------
