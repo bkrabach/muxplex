@@ -1,3 +1,60 @@
+## v0.52.0 (2026-08-16)
+
+**Devices can now follow each other, not just the shared server state.**
+This is the server + PWA half of a larger design
+(`docs/plans/2026-08-16-deck-control-target-design.md`) for choosing what
+a browser tab, the Soft Deck, or a physical Stream Deck (`bkrabach/muxplex-deck`,
+released separately) controls or follows.
+
+### Added
+
+- **`muxplex_client`**: new `heartbeat()` method; `device_id` parameter added
+  to `state()`/`view()`/`connect()`/`set_active_view()`; `ServerState` gains
+  `sync_group`, `controlled_by`, and `active_remote_id`; two new error types,
+  `TargetGoneError` and `TargetNotSelfOwningError`.
+- **Server**: `POST /api/heartbeat`'s `sync_group` now also accepts pairing to
+  another known device (`"device:<other id>"`), not just self-claim or
+  `"global"` — subject to a cycle guard (a device already being followed
+  cannot itself start following someone else; rejected with `400
+  target_not_self_owning`, naming the follower). A device record now exposes
+  `controlled_by` (who is following it). A heartbeat naming a target that no
+  longer exists gets `409 target_gone`, never a silent fallback or a 500. New
+  `PATCH /api/devices/{device_id}` sets a human `display_name` that a
+  heartbeat's self-reported label never overwrites. New read-only
+  `GET /api/federation/devices` fans out to federated peer servers (same
+  pattern as the existing `/api/federation/sessions`) so a device registered
+  elsewhere in your federation can be seen (not controlled — that stays
+  local to each device's own server) from any tab.
+- **PWA**: the old binary "Independent view" toggle is replaced by a
+  "Follows" dropdown — "Server (shared)", "Nothing — just me", every device
+  registered with this server, and (new) an informational "Elsewhere in your
+  federation" section for devices registered with a different federated
+  peer (not selectable — links out to that peer instead). A persistent
+  "Controlled by: ..." chip appears when something else is following this
+  tab. A new **Decks** settings tab lists registered devices with an
+  inline-editable name, a link to open the Soft Deck, and a link to the
+  `muxplex-deck` project for physical hardware. (The existing "Multi-Device"
+  settings tab is unrelated — that one is federation setup — and is
+  unchanged.)
+- **Soft Deck** (`/deck/`): the same "Follows" dropdown, including the
+  federated section.
+
+### Compatibility
+
+- Fully additive. A client that never sends `device_id`/`sync_group`/`kind`
+  sees byte-identical behavior to before this release (verified by dedicated
+  regression tests at every step of this design's build).
+- An old `muxplex-deck` (pre-0.16.0) or any other client with no device
+  identity continues to operate in the shared/global group exactly as
+  always — nothing about this release requires upgrading a deck to keep
+  working.
+
+### Also in this release
+
+- CI fix: the `agent` extra is now actually installed for the jobs that need
+  it, so the agent-credential test suite (23 tests) runs for real instead of
+  silently `ModuleNotFoundError`-ing past coverage it was supposed to have.
+
 ## v0.51.0 (2026-08-16)
 
 **The agent is now part of the muxplex install — there is no separate daemon.**
