@@ -7128,7 +7128,7 @@ def test_upgrade_pypi_kit_unaffected_still_uses_bare_name_shortcut(monkeypatch, 
 
 
 def test_upgrade_git_mux_pypi_kit_never_switches_to_bare_pypi_name(monkeypatch, capsys):
-    """The v0.48.3 regression guard: a uv-tool-managed, GIT-sourced muxplex
+    """The v0.49.0 regression guard: a uv-tool-managed, GIT-sourced muxplex
     install must install the explicit git target even when tmux-kit (a
     wholly separate package) happens to be PyPI-sourced rather than git.
 
@@ -7339,7 +7339,7 @@ def test_install_cmd_targets_install_target_true_when_present():
 
 
 def test_install_cmd_targets_install_target_false_when_substituted():
-    """The exact shape of the v0.48.3 defect: install_target computed as a
+    """The exact shape of the v0.49.0 defect: install_target computed as a
     git URL, but the constructed command only contains the bare name."""
     from muxplex.cli import _install_cmd_targets_install_target
 

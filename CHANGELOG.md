@@ -1,3 +1,195 @@
+## v0.49.0 (2026-08-16)
+
+**If you installed muxplex from git rather than PyPI, `muxplex upgrade`
+could silently move you onto PyPI -- and never say so.** On any host
+where muxplex itself was git-sourced but `tmux-kit` happened not to be,
+`upgrade()` built `uv tool install --reinstall --refresh --force
+muxplex`: the bare PyPI name, with the git URL absent from the command
+entirely. The upgrade reported success. Nothing errored. The install
+method had changed underneath you, and the only way to notice was to
+read `direct_url.json` afterwards.
+
+That matters beyond tidiness. Some machines **cannot** take their
+dependencies from PyPI at all; for those hosts a silent switch to a
+PyPI-sourced install is not a cosmetic difference, it is a broken
+machine that still reports a successful upgrade. This is the third time
+a variant of "upgrade silently switches install method" has been
+found -- v0.47.11 and v0.47.12 fixed the `--with tmux-kit` half of it.
+This release fixes the half underneath, and adds a mechanical guard so
+the next variant fails loudly instead of quietly.
+
+### Fixed
+
+- **`muxplex upgrade` now decides muxplex's own install target from
+  muxplex's own recorded source.** The uv-managed branch was keyed off
+  `info_kit["source"]` -- *tmux-kit's* source -- to choose between the
+  bare `"muxplex"` PyPI shortcut and the explicit `install_target`. That
+  conflated two independent questions: "does tmux-kit need a `--with`
+  override?" (correctly answered by `info_kit["source"]`, already
+  computed into `kit_with_args`) and "what should muxplex install
+  itself as?" (answerable only by `info["source"]`). `_upgrade_target()`
+  and `_target_matches_source()` had already computed and validated the
+  correct git target; a later, unrelated branch threw it away. The
+  branch now keys on `info["source"] == "pypi"`, and **both** branches
+  use `install_target` literally rather than a separate hardcoded
+  `"muxplex"` string, so the two can no longer drift apart. For a PyPI
+  install `_upgrade_target()` already returns the bare string
+  `"muxplex"`, so this is byte-identical to the old behaviour in the
+  common case -- nothing changes for PyPI users.
+
+  Reachable on **every** git install made before v0.45.1 added
+  tmux-kit's own git pin, and reachable again any time tmux-kit's
+  install source drifts independently of muxplex's.
+
+- **A new mechanical guard, `_install_cmd_targets_install_target()`,
+  checks the constructed command against the intended target before
+  every install attempt.** `_target_matches_source()` could never catch
+  this class of defect: it validates the intermediate `install_target`
+  string, never the `install_cmd` actually built from it -- and the bug
+  lived entirely in the gap between those two. The new check closes that
+  gap by asserting `install_target` appears in the command verbatim,
+  whichever branch produced it, and it stays correct if future edits add
+  more branches. It mirrors `_install_cmd_preserves_kit_override()`'s
+  existing role for the tmux-kit pairing. A regression that reintroduces
+  a hardcoded literal now refuses to install and says why, instead of
+  succeeding at the wrong thing.
+
+### Changed
+
+- **The agent chat panel no longer renders a working-looking chat UI
+  when the Agent has never been configured.** Opening the panel on a
+  fresh install used to show a composer that accepted your message and
+  only then failed -- "I shouldn't have to submit a chat to find out
+  it's broken." A pre-flight gate (`checkAgentGate`/`setGateState` in
+  `chat.js`) now checks `GET /api/agent/provider-credential` on every
+  panel open and, for `not_installed`/`not_configured`, blanks the panel
+  to a notice linking straight into Settings with the Agent tab already
+  selected -- the same `openSettings()` + `switchSettingsTab()` pair
+  app.js's "manage views" action already uses. It **fails open** on a
+  status-check error or timeout, and never resets to "checking" once a
+  real answer is known, so the panel cannot flash a broken- or
+  working-looking state that turns out to be wrong. The byline's
+  "Ctrl+Enter to send" hint hides with the rest of the panel chrome
+  while the gate is up, rather than describing a control that is not on
+  screen.
+
+- **New syncable setting `composeBarOpen`; the terminal compose bar now
+  defaults to visible on every device width.** The compose bar's on/off
+  preference was a per-device, localStorage-only value
+  (`muxplex-compose-bar`, tri-state `auto`/`on`/`off`) that defaulted to
+  visible on mobile widths and hidden on desktop -- easy to miss
+  entirely. It now persists through `settings.py` via the **same**
+  `sidebarOpen`/`agentPanelOpen` mechanism (`GET`/`PATCH /api/settings`,
+  `composeBarOpen` added to `DEFAULT_SETTINGS` and `SYNCABLE_KEYS`)
+  rather than a second parallel persistence scheme. Tri-state on one
+  value: `null` means "never toggled" and resolves to **visible on every
+  width**; an explicit `true`/`false` always wins, on any width.
+
+  **Migration:** an explicit `on`/`off` in the old localStorage key is
+  migrated into the new setting exactly once, and only when the server
+  has never held an explicit value of its own -- so if you deliberately
+  hid the compose bar, the new on-by-default does not silently reopen it
+  out from under you. A legacy `auto` carried no explicit intent and is
+  not migrated.
+
+  Per this repo's API contract (AGENTS.md, "The API is a public control
+  surface"), `SYNCABLE_KEYS` is consumed by muxplex-deck, federation
+  peers, and headless clients. The addition is additive; clients that do
+  not know the key are unaffected.
+
+- **Settings -> Agent: New/Export are now right-aligned icon buttons**
+  (`header-btn`, matching every other icon control in this app's header
+  rows), reversing the earlier text-link treatment now that they carry
+  icons rather than text labels. A tiny Amplifier mark precedes the
+  "Amplifier Agent" byline link, and "Powered by" is coloured to match
+  the send-chord hint so the link stays the one emphasised element.
+
+### Fixed (agent chat first-run polish)
+
+All from an owner walkthrough on a fresh install, treated as spec.
+
+- **A rejected credential save was doubled and un-collapsible.** The
+  client rendered `"Rejected: " + data.detail` while the server's own
+  400 detail *already* began "Rejected: ...", producing one long line
+  reading `Rejected: Rejected: the provider reported this key as invalid
+  (# openai: list_models() failed: AuthenticationError: ...)` with the
+  raw vendor error, masked key, and a support URL inline. The client now
+  owns a short summary keyed off the HTTP status (400 rejected, 502
+  connectivity, 429 rate-limited, 503 not installed, else a generic
+  `Save failed (HTTP n)`) and puts the server's full detail behind the
+  existing collapsed "technical detail" disclosure -- the same
+  `.agent-msg-tool`/`-summary`/`-raw` pattern `appendToolError()`
+  already uses. Investigation confirmed neither client nor server ever
+  gated Save on key *shape*; any non-empty key is submitted and the
+  server's real connectivity check is the only gate. That was already
+  correct and is unchanged -- only the legibility of a rejection.
+
+- **The error icon is inline with the headline** instead of orphaned
+  above it (`.agent-msg-error` is now a flex row with the text wrapped
+  in `.agent-msg-error-body`, mirroring `.agent-status`'s own icon+text
+  row).
+
+- **Doc paths removed from user-facing strings.** The "Agent isn't set
+  up" remedy is one short sentence and no longer points at
+  `docs/AGENT_CHAT_SETUP.md`; a sibling string in the Settings
+  credential notice that had been missed was fixed too. Most installs
+  arrive via `uv tool install` and never see `docs/` or `README.md`, and
+  Settings -> Agent is reachable from inside the app itself.
+
+### Why this is a minor, not a patch
+
+Everything here is corrective in intent, which argued for a patch --
+and the code comments written during development said `v0.48.3`
+outright. Both are wrong, for separate reasons.
+
+On the number itself, this repo's precedent decides it. v0.47.0 took a
+minor for *retiring* one key from `DEFAULT_SETTINGS`/`SYNCABLE_KEYS`
+plus a migration preserving an existing explicit choice; this release
+*adds* one, plus a migration preserving an existing explicit choice --
+the same change in the mirror direction, on the same public contract.
+v0.46.0 and v0.48.0 each took a minor for growing real surface area.
+Every v0.47.x and v0.48.x patch, by contrast, was corrective with no new
+key and no visible behaviour change; this release has both.
+
+On the in-code references: `v0.48.3` shipped separately while this work
+was being prepared, and it contains **none** of it -- it is the
+sync-group toggle fix, and nothing else. Six comments and docstrings in
+`cli.py` and `test_cli.py` attributed the upgrade incident to `v0.48.3`;
+left alone they would have pointed a future reader at a release that
+does not contain the fix they describe. They now read `v0.49.0`. All six
+are prose; none is asserted on by any test.
+
+### A live illustration, from outside this repo
+
+While this release was being cut, a fleet host was rebooted and its
+supervisor's `bootstrap()` ran `uv tool install --force muxplex` with no
+version pin -- silently moving that host from 0.48.2 to 0.48.3, a
+release it had never been tested against. **That is an ops-side bug,
+fixed separately, and it is not the defect this release repairs** (it is
+a different program taking a different code path; `muxplex upgrade` was
+not involved). It is recorded here because it is the same shape: an
+unattended install path that chooses its own target, with no operator
+present to notice it chose differently than last time. That is precisely
+the failure mode the guard above now makes impossible inside
+`muxplex upgrade` -- a command that cannot silently retarget is one
+fewer way for a fleet to drift.
+
+### Testing
+
+2,483 passing, 10 skipped, 52 deselected, 0 failing -- run in the
+`muxplex-test` DTU on a clean extraction into a fresh directory (never a
+tarball overlay onto an existing tree, which produced a false failure
+earlier in this project). The frontend changes in this release are not
+covered by the Python suite; `v0.48.3`'s own `node --test` frontend
+suite (990 passing) is unaffected by this release and was not re-run
+here.
+
+`tmux-kit` is untouched by this release, and the four-leg pin agreement
+was re-verified rather than assumed: `[project.dependencies]`
+`tmux-kit==0.4.0`, `[tool.uv.sources]` `tag = "v0.4.0"`, `uv.lock`
+`?tag=v0.4.0#148c15d9ff7d660ff001888f13ef82873bcbca8d`, and upstream's
+annotated `v0.4.0` peeling (`^{}`) to that same `148c15d9` commit.
+
 ## v0.48.3 (2026-08-16)
 
 **The "Follow this server's view" header button showed no visual change

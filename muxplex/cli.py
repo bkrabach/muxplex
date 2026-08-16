@@ -1670,7 +1670,7 @@ def _install_cmd_targets_install_target(
     `install_target` verbatim, never a substituted bare package name or any
     other string.
 
-    This is the mechanical check that would have caught the v0.48.3
+    This is the mechanical check that would have caught the v0.49.0
     incident: `upgrade()`'s uv-managed branch used to decide whether to
     install the bare "muxplex" shortcut or the explicit `install_target`
     by checking tmux-kit's recorded source (`info_kit["source"]`) instead
@@ -1935,12 +1935,12 @@ def upgrade(*, force: bool = False) -> None:
                 else:
                     kit_with_args = ["--with", f"tmux-kit @ git+{kit_url}@{kit_ref}"]
 
-        # Bug 3 / v0.48.3 incident: dispatch -- uv-tool-managed gets a
+        # Bug 3 / v0.49.0 incident: dispatch -- uv-tool-managed gets a
         # --reinstall bare-name shortcut ONLY when MUXPLEX ITSELF is
         # PyPI-sourced; every other muxplex install (git, local-dir,
         # archive, ...) always installs EXPLICITLY via install_target.
         #
-        # CORRECTED 2026-08-16 (v0.48.3 incident): this branch used to key
+        # CORRECTED 2026-08-16 (v0.49.0 incident): this branch used to key
         # off `info_kit["source"]` (tmux-kit's own source) to decide
         # whether muxplex's OWN install used the bare "muxplex" shortcut or
         # the explicit `install_target`. That conflated two independent
@@ -2022,7 +2022,7 @@ def upgrade(*, force: bool = False) -> None:
             # kit-pair check just above, but for muxplex itself): whatever
             # branch just ran, the constructed command must literally
             # install `install_target` -- never a substituted bare name.
-            # This is the check that would have caught the v0.48.3 defect
+            # This is the check that would have caught the v0.49.0 defect
             # documented above by construction, independent of which branch
             # produced install_cmd, and it stays correct even if a future
             # edit adds more branches here.
