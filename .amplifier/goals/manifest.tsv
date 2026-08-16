@@ -1,7 +1,0 @@
-# lane	worktree	branch	tmux	goal	log	session_id	pid
-# batch=mxp2 launched_at=1786822482 wall_s=18000 max_turns=250
-panel	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp2-panel	mxp2/panel	gb__mxp2__panel	.amplifier/goals/panel.md	/tmp/gb-mxp2-panel.log	3c08d602-1754-4215-9e1b-7e47acebad5b	3703603
-server	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp2-server	mxp2/server	gb__mxp2__server	.amplifier/goals/server.md	/tmp/gb-mxp2-server.log	5ca4e97c-e782-4172-9a25-f2429b368e61	3705466
-tokens	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp2-tokens	mxp2/tokens	gb__mxp2__tokens	.amplifier/goals/tokens.md	/tmp/gb-mxp2-tokens.log	f424c612-6525-4387-96fc-6ba257a5f6c4	3705838
-upstream	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp2-upstream	mxp2/upstream	gb__mxp2__upstream	.amplifier/goals/upstream.md	/tmp/gb-mxp2-upstream.log	f43e7dc1-2386-48d3-984a-104ca537eb5d	3706485
-setup	/home/bkrabach/dev/muxplex-agent-team-ci/.worktrees/mxp2-setup	mxp2/setup	gb__mxp2__setup	.amplifier/goals/setup.md	/tmp/gb-mxp2-setup.log	8c0bebc7-e98e-4747-a86c-e658854493e9	3707014
