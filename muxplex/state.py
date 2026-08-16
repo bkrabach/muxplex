@@ -25,6 +25,10 @@ State schema (all values are plain JSON-serialisable dicts):
                 "last_interaction_at": float,
                 "last_heartbeat_at": float,
                 "sync_group": str,  # "global" | "device:<device_id>"
+                "controlled_by": str | None,  # device_id following me, or None
+                "display_name": str | None,  # human-set label; never clobbered
+                                              # by a heartbeat (see #7 in
+                                              # docs/plans/2026-08-16-deck-control-target-design.md)
             }
         },
 
@@ -189,6 +193,8 @@ def empty_device(device_id: str, label: str) -> dict:
         "last_interaction_at": now,
         "last_heartbeat_at": now,
         "sync_group": GLOBAL_GROUP,
+        "controlled_by": None,
+        "display_name": None,
     }
 
 
@@ -209,6 +215,30 @@ def empty_group() -> dict:
 def device_group_id(device_id: str) -> str:
     """Return the canonical private-group id for *device_id*."""
     return f"device:{device_id}"
+
+
+_DEVICE_GROUP_PREFIX = "device:"
+
+
+def group_target_device_id(group: str) -> str | None:
+    """Return the device_id embedded in a ``"device:<id>"`` group string.
+
+    Returns None for GLOBAL_GROUP and for any string that doesn't match the
+    ``device:`` prefix convention (including an empty suffix, e.g. the bare
+    string ``"device:"``) -- callers use None to mean "not a
+    device-targeting group at all", which covers both GLOBAL_GROUP and any
+    malformed value.
+
+    This is the inverse of device_group_id(): ``group_target_device_id(
+    device_group_id(x)) == x`` for any non-empty *x*.
+    """
+    if group == GLOBAL_GROUP:
+        return None
+    if group.startswith(_DEVICE_GROUP_PREFIX) and len(group) > len(
+        _DEVICE_GROUP_PREFIX
+    ):
+        return group[len(_DEVICE_GROUP_PREFIX) :]
+    return None
 
 
 def resolve_group(state: dict, device_id: str | None) -> str:
@@ -333,9 +363,11 @@ def normalize_state(state: dict) -> dict:
     """Fill absent schema keys (schema-upgrade of a pre-groups state.json).
 
     Filled only when absent:
-        sync_groups            -> {}
-        devices[*].sync_group  -> GLOBAL_GROUP
-        terminal_group         -> GLOBAL_GROUP
+        sync_groups              -> {}
+        devices[*].sync_group    -> GLOBAL_GROUP
+        devices[*].controlled_by -> None
+        devices[*].display_name  -> None
+        terminal_group           -> GLOBAL_GROUP
         terminal_session       -> the current active_session value (before
                                    groups, ttyd was always attached to
                                    active_session; this restates that
@@ -362,6 +394,8 @@ def normalize_state(state: dict) -> dict:
 
     for device in state.get("devices", {}).values():
         device.setdefault("sync_group", GLOBAL_GROUP)
+        device.setdefault("controlled_by", None)
+        device.setdefault("display_name", None)
 
     if "terminal_session" not in state:
         state["terminal_session"] = state.get("active_session")
@@ -401,7 +435,21 @@ def register_device(
                 so the group exists (seeded from global).
 
     Does NOT validate the group id — validation is a boundary concern and
-    lives at the endpoint (main.py's heartbeat()).
+    lives at the endpoint (main.py's heartbeat()). This includes the
+    self-owning/cycle guard
+    (docs/plans/2026-08-16-deck-control-target-design.md §6.2.5/§7.0(b)/§8.1
+    #8) and the target_gone check (§8.1 #5) — by the time *sync_group*
+    reaches this function, the caller has already decided it is allowed.
+
+    `controlled_by` bookkeeping (§8.1 #2): when *sync_group* names a FOREIGN
+    device (i.e. resolves via group_target_device_id() to some device id
+    other than *device_id* itself), that other device's `controlled_by` is
+    set to *device_id*. If *device_id* was previously following a different
+    foreign device, that device's `controlled_by` is cleared (but only if
+    it still names *device_id* — defensive, in case it was already
+    reassigned elsewhere). A self-claim (`device:<own id>`) or `"global"`
+    is never a foreign target and never touches anyone else's
+    `controlled_by`.
     """
     if device_id not in state["devices"]:
         state["devices"][device_id] = empty_device(device_id, label)
@@ -414,14 +462,37 @@ def register_device(
     device["last_heartbeat_at"] = time.time()
 
     if sync_group is not None:
+        old_group = device["sync_group"]
         device["sync_group"] = sync_group
         ensure_group(state, sync_group)
+
+        old_target = group_target_device_id(old_group)
+        if old_target == device_id:
+            old_target = None  # a self-claim is never "following" anyone
+        new_target = group_target_device_id(sync_group)
+        if new_target == device_id:
+            new_target = None
+
+        if old_target != new_target:
+            if old_target is not None:
+                old_dev = state["devices"].get(old_target)
+                if old_dev is not None and old_dev.get("controlled_by") == device_id:
+                    old_dev["controlled_by"] = None
+            if new_target is not None:
+                new_dev = state["devices"].get(new_target)
+                if new_dev is not None:
+                    new_dev["controlled_by"] = device_id
 
 
 def prune_devices(state: dict, ttl_seconds: float = 300.0) -> list[str]:
     """Remove devices whose last_heartbeat_at is older than ttl_seconds.
 
     Returns the list of removed device IDs.
+
+    Also clears `controlled_by` on any surviving device that named a
+    just-pruned device as its follower (§8.1 #2's "cleared ... when A is
+    pruned" case) — a follower that no longer exists must not leave the
+    followed device looking permanently claimed.
     """
     cutoff = time.time() - ttl_seconds
     stale = [
@@ -431,6 +502,13 @@ def prune_devices(state: dict, ttl_seconds: float = 300.0) -> list[str]:
     ]
     for device_id in stale:
         del state["devices"][device_id]
+
+    if stale:
+        stale_set = set(stale)
+        for device in state["devices"].values():
+            if device.get("controlled_by") in stale_set:
+                device["controlled_by"] = None
+
     return stale
 
 
