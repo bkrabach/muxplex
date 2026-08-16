@@ -229,6 +229,30 @@ let _deviceId = '';
 // stranding a stale 'device:<oldId>' that would 400 on every heartbeat.
 const SYNC_GROUP_STORAGE_KEY = 'muxplex-sync-group';
 let _syncGroup = 'global';
+
+// ── Follows: registered-device pairing (Step 4) ──────────────────────────
+// New capability layered ON TOP OF the two escape hatches above: this
+// browser can additionally FOLLOW A SPECIFIC OTHER REGISTERED DEVICE (a
+// Stream Deck or Soft Deck), not just pick global vs. its own independent
+// group. Ported from frontend/deck/deck.js's prototyped "Follows" model
+// (design doc §9.3) -- same functions, same wording, same sticky-and-
+// degraded policy (§7.2/§9.1), not reinvented here. See buildFollowsMenu(),
+// computeFollowsDegraded(), etc. below.
+//
+// _syncGroup ('global'/'device') above still governs the two escape
+// hatches with byte-identical wire behavior to pre-Step-4; _followTarget
+// is null unless the user has picked a THIRD-SECTION (registered device)
+// entry, in which case it takes priority for what the heartbeat sends
+// (see resolveSyncGroupForWire()). currentFollows() is the one place the
+// two state models meet.
+const FOLLOW_TARGET_STORAGE_KEY = 'muxplex-follow-target';
+let _followTarget = null;        // {targetId: string, targetLabel: ?string} | null
+let _lastHeartbeatGoneId = null; // wire-level fallback marker, mirrors deck.js
+let _devicesRegistry = {};       // last-known GET /api/state `devices` map
+let _lastDevicesSnapshot = '';   // JSON snapshot of _devicesRegistry, for pollActiveState's change-detection guard (no re-render churn on an unchanged poll)
+let _serverName = '';            // GET /api/instance-info's `name`
+let _lastFollowsMenu = null;     // most recent buildFollowsMenu() result (for followsCandidateFromValue's raw-label recovery)
+
 let _currentSessions = [];
 let _viewingSession = null;
 let _viewingRemoteId = '';
@@ -565,37 +589,564 @@ async function setSyncGroup(mode) {
   await pollActiveState();  // adopt the new group's selection on the next read
 }
 
+// ── Follows: ported deck.js "Follows" model (Step 4) ─────────────────────
+// Every function in this section is a direct port of the equivalent one in
+// frontend/deck/deck.js (design doc §9.3: "prototype the UX here first,
+// port the proven model"). Logic and wording are unchanged; only the
+// escape-hatch VALUE SPACE ('global'/'none') is shared with deck.js while
+// this browser's own internal escape-hatch state stays _syncGroup
+// ('global'/'device') for backward compatibility -- currentFollows() below
+// is the one place the two meet.
+
 /**
- * Keep every sync-group UI widget (header button x2, settings checkbox) in
- * sync with _syncGroup — same pattern as syncSortOrderControls(). Missing
- * elements (e.g. Settings dialog not yet opened) are skipped silently.
+ * Human label for a device record -- display_name (human override) wins,
+ * then label (client self-report), then the bare device_id.
+ * Ported verbatim from frontend/deck/deck.js's deviceDisplayLabel.
+ * @param {?object} deviceRecord
+ * @param {?string} fallbackId
+ * @returns {string}
+ */
+function deviceDisplayLabel(deviceRecord, fallbackId) {
+  if (deviceRecord) {
+    if (deviceRecord.display_name) return deviceRecord.display_name;
+    if (deviceRecord.label) return deviceRecord.label;
+  }
+  return fallbackId || 'device';
+}
+
+/**
+ * Append the closed-widget degraded suffix (§6.2.10/§9.1: "state that
+ * requires a hover to discover is not state the user has" -- the suffix
+ * must be part of the OPTION TEXT itself, since that's what a native
+ * `<select>` shows while collapsed). Ported verbatim from deck.js.
+ * @param {string} label
+ * @returns {string}
+ */
+function degradedOptionLabel(label) {
+  return label + ' \u2014 offline';
+}
+
+/**
+ * Whether *targetId* (a registered-device follow pick) should render/behave
+ * as degraded ("sticky and loud", §7.2/§9.1): no longer present in the live
+ * registry (GC pruned it after its TTL), or the most recent heartbeat
+ * attempt against it was rejected (409 target_gone / 400
+ * target_not_self_owning). Adapted from deck.js's computeFollowsDegraded --
+ * takes a bare targetId rather than a full follows object, since this
+ * browser only ever calls it for an actual device pick (the two escape
+ * hatches can never be degraded).
+ * @param {?string} targetId
+ * @param {object} devices - last-known GET /api/state `devices{}` map
+ * @param {?string} lastHeartbeatGoneId - targetId of the most recent
+ *   409/400-rejected heartbeat attempt, or null
+ * @returns {boolean}
+ */
+function computeFollowsDegraded(targetId, devices, lastHeartbeatGoneId) {
+  if (!targetId) return false;
+  var stillLive = !!(devices && Object.prototype.hasOwnProperty.call(devices, targetId));
+  var confirmedGone = lastHeartbeatGoneId === targetId;
+  return confirmedGone || !stillLive;
+}
+
+/**
+ * Build the data for the browser's "Follows" `<select>` -- two escape
+ * hatches (always first, never alphabetized, §9.1) plus every OTHER device
+ * registered with THIS server. No federated/"Elsewhere" section (§10 Step
+ * 6 -- not built here at all, not even as a stub). Ported verbatim from
+ * frontend/deck/deck.js's buildFollowsMenu.
+ *
+ * If the CURRENTLY-selected device target is degraded, its entry's label
+ * gets the offline suffix (degradedOptionLabel). If that target has been
+ * pruned from `devices` entirely (the common case), a synthetic placeholder
+ * entry is appended so the `<select>`'s value still resolves to something
+ * selected -- never silently reverting the visible pick to "<server>
+ * (shared)" (§7.2's sticky-and-loud policy; the exact anti-pattern the
+ * v0.48.3 icon bug already taught this codebase not to repeat).
+ * @param {{devices:?object, ownDeviceId:string, serverName:?string,
+ *          follows:{mode:string,targetId:?string,targetLabel:?string},
+ *          degraded:boolean}} params
+ * @returns {{escapeHatches:Array<{mode:string,value:string,label:string}>,
+ *            registeredHeader:string,
+ *            registered:Array<{mode:string,targetId:string,value:string,label:string,rawLabel:string,degraded:boolean}>,
+ *            selectedValue:string}}
+ */
+function buildFollowsMenu(params) {
+  var p = params || {};
+  var devices = p.devices || {};
+  var ownId = p.ownDeviceId;
+  var serverName = p.serverName || 'this server';
+  var follows = p.follows || { mode: 'global', targetId: null, targetLabel: null };
+  var degraded = !!p.degraded;
+
+  var escapeHatches = [
+    { mode: 'global', targetId: null, value: 'global', label: serverName + ' (shared)' },
+    { mode: 'none', targetId: null, value: 'none', label: 'Nothing \u2014 just me' },
+  ];
+
+  var registered = [];
+  for (var id in devices) {
+    if (!Object.prototype.hasOwnProperty.call(devices, id)) continue;
+    if (id === ownId) continue; // never offer following yourself
+    var label = deviceDisplayLabel(devices[id], id);
+    registered.push({
+      mode: 'device',
+      targetId: id,
+      value: 'device:' + id,
+      label: label,
+      rawLabel: label,
+      degraded: false,
+    });
+  }
+
+  var selectedValue = follows.mode === 'device' && follows.targetId ? 'device:' + follows.targetId : follows.mode;
+
+  if (follows.mode === 'device' && follows.targetId && degraded) {
+    var found = false;
+    for (var i = 0; i < registered.length; i++) {
+      if (registered[i].targetId === follows.targetId) {
+        registered[i].label = degradedOptionLabel(registered[i].rawLabel);
+        registered[i].degraded = true;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      // Gone from the live registry entirely (GC already pruned it) --
+      // synthesize a placeholder from the cached targetLabel so the
+      // dropdown still HAS an entry to point the sticky selection at.
+      var fallbackLabel = follows.targetLabel || follows.targetId;
+      registered.push({
+        mode: 'device',
+        targetId: follows.targetId,
+        value: 'device:' + follows.targetId,
+        label: degradedOptionLabel(fallbackLabel),
+        rawLabel: fallbackLabel,
+        degraded: true,
+      });
+    }
+  }
+
+  return {
+    escapeHatches: escapeHatches,
+    registeredHeader: 'Registered with ' + serverName,
+    registered: registered,
+    selectedValue: selectedValue,
+  };
+}
+
+/**
+ * Parse a `<select>`'s chosen `value` (as produced by buildFollowsMenu,
+ * 'global' | 'none' | 'device:<id>') back into a follows candidate,
+ * recovering the RAW (undecorated) label from the last-built menu's
+ * `registered` list so a fresh pick never persists an "\u2014 offline"
+ * suffix as if it were the device's real name. Ported verbatim from
+ * deck.js's followsCandidateFromValue.
+ * @param {string} value
+ * @param {Array<{targetId:string, rawLabel:string}>} registered - the
+ *   `registered` array from the most recent buildFollowsMenu() call
+ * @returns {{mode:string, targetId:?string, targetLabel:?string}}
+ */
+function followsCandidateFromValue(value, registered) {
+  if (value === 'none') return { mode: 'none', targetId: null, targetLabel: null };
+  if (typeof value === 'string' && value.indexOf('device:') === 0) {
+    var id = value.slice('device:'.length);
+    var rawLabel = null;
+    var list = registered || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].targetId === id) {
+        rawLabel = list[i].rawLabel;
+        break;
+      }
+    }
+    return { mode: 'device', targetId: id, targetLabel: rawLabel };
+  }
+  return { mode: 'global', targetId: null, targetLabel: null };
+}
+
+/**
+ * Render the explanation for a 400 target_not_self_owning rejection
+ * (§6.2.5/§7.0(b)/§8.1 #8 -- the cycle guard): naming WHO is already
+ * following this browser, from the error body's `controlled_by` device_id,
+ * resolved to a human label via the live registry when possible. Ported
+ * verbatim from deck.js's targetNotSelfOwningMessage.
+ * @param {{controlled_by:?string}|null|undefined} detail - the INNER
+ *   `detail` object from the 400 response body (err.body.detail)
+ * @param {object} devices - last-known GET /api/state `devices{}` map
+ * @returns {string}
+ */
+function targetNotSelfOwningMessage(detail, devices) {
+  var followerId = detail && detail.controlled_by;
+  if (!followerId) return "Can't follow another device while something is following you.";
+  var label = deviceDisplayLabel(devices && devices[followerId], followerId);
+  return "Can't follow \u2014 " + label + ' is already following you';
+}
+
+/**
+ * Compose this browser's current "follows" preference as the same
+ * {mode, targetId, targetLabel} shape frontend/deck/deck.js uses
+ * internally (§9.3), from the pre-existing _syncGroup toggle (escape
+ * hatches -- byte-identical wire behavior, unchanged) plus the new
+ * _followTarget layer (registered-device pairing, §9.1's third section).
+ * This is the ONLY place the two state models meet -- buildFollowsMenu()
+ * and everything else above operates purely on this shape.
+ * @returns {{mode:string, targetId:?string, targetLabel:?string}}
+ */
+function currentFollows() {
+  if (_followTarget && _followTarget.targetId) {
+    return { mode: 'device', targetId: _followTarget.targetId, targetLabel: _followTarget.targetLabel };
+  }
+  return { mode: _syncGroup === 'device' ? 'none' : 'global', targetId: null, targetLabel: null };
+}
+
+/**
+ * Validate/sanitize a possibly-partial, possibly-hostile persisted follow
+ * target -- same recovery posture as the rest of this file's settings
+ * loaders (drop an invalid value in favor of null rather than throwing).
+ * @param {*} raw
+ * @returns {?{targetId: string, targetLabel: ?string}}
+ */
+function sanitizeFollowTarget(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (typeof raw.targetId !== 'string' || raw.targetId.length === 0) return null;
+  return { targetId: raw.targetId, targetLabel: typeof raw.targetLabel === 'string' ? raw.targetLabel : null };
+}
+
+/**
+ * Persist (or clear) the current follow-target pick to localStorage.
+ * Best-effort -- localStorage may be blocked (Tracking Prevention, private
+ * browsing); an unpersisted pick still works for this session.
+ * @param {?{targetId: string, targetLabel: ?string}} candidate
+ */
+function persistFollowTarget(candidate) {
+  try {
+    if (candidate) localStorage.setItem(FOLLOW_TARGET_STORAGE_KEY, JSON.stringify(candidate));
+    else localStorage.removeItem(FOLLOW_TARGET_STORAGE_KEY);
+  } catch (_) { /* blocked — ok */ }
+}
+
+/**
+ * Restore a persisted follow-target pick from localStorage. Same try/catch
+ * shape as initSyncGroup(): localStorage may be blocked, in which case this
+ * returns null (no follow target for this session, escape hatches only).
+ * @returns {?{targetId: string, targetLabel: ?string}}
+ */
+function loadFollowTarget() {
+  try {
+    var raw = localStorage.getItem(FOLLOW_TARGET_STORAGE_KEY);
+    if (!raw) return null;
+    return sanitizeFollowTarget(JSON.parse(raw));
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Resolve the actual `sync_group` value to send on THIS heartbeat request.
+ * The registered-device follow (_followTarget) takes priority when present
+ * and not degraded; a degraded follow target falls back to 'global' at the
+ * wire level while the UI stays sticky (§6.2.4/§7.2 -- the same policy
+ * deck.js's resolveHeartbeatSyncGroup already proved; recovery is
+ * user-initiated via a fresh pick, not automatic -- see
+ * attemptFollowTarget()). When no follow target is set at all, this
+ * defers entirely to the pre-existing syncGroupId() -- byte-identical to
+ * pre-Step-4 behavior for every existing client.
+ * @returns {string}
+ */
+function resolveSyncGroupForWire() {
+  if (_followTarget && _followTarget.targetId) {
+    var degraded = computeFollowsDegraded(_followTarget.targetId, _devicesRegistry, _lastHeartbeatGoneId);
+    if (!degraded) return 'device:' + _followTarget.targetId;
+    return 'global';
+  }
+  return syncGroupId();
+}
+
+/**
+ * Attempt to switch this browser's follow preference to *candidate* (a
+ * registered device pick from the dropdown's third section), asserting it
+ * against the server immediately -- ported 3-outcome policy from deck.js's
+ * attemptFollowsChange (§9.3):
+ *   - success: candidate becomes the persisted _followTarget.
+ *   - 409 target_gone: candidate is adopted anyway (sticky), marked
+ *     degraded -- §7.2/§9.1's policy applies even to a selection made the
+ *     instant the target vanished (a render race), not only to a target
+ *     that goes stale later.
+ *   - 400 target_not_self_owning: candidate is REJECTED outright -- the
+ *     persisted follow target is left unchanged, the `<select>` reverts to
+ *     it on the next renderSyncGroupControls(), and the naming message is
+ *     shown via toast (§6.2.5's cycle guard).
+ * @param {{targetId:string, targetLabel:?string}} candidate
+ * @returns {Promise<void>}
+ */
+async function attemptFollowTarget(candidate) {
+  var payload = buildHeartbeatPayload(_deviceId, _viewingSession, _viewMode, _lastInteractionAt, 'device:' + candidate.targetId);
+  try {
+    await api('POST', '/api/heartbeat', payload);
+    _followTarget = candidate;
+    _lastHeartbeatGoneId = null;
+    persistFollowTarget(candidate);
+    renderSyncGroupControls();
+    await pollActiveState(); // adopt the new group's selection on the next read
+  } catch (err) {
+    if (err && err.status === 409) {
+      _followTarget = candidate;
+      _lastHeartbeatGoneId = candidate.targetId;
+      persistFollowTarget(candidate);
+      renderSyncGroupControls();
+      return;
+    }
+    if (err && err.status === 400 && err.body && err.body.detail && err.body.detail.target_not_self_owning) {
+      renderSyncGroupControls(); // reverts the <select> to the still-current pick
+      showToast(targetNotSelfOwningMessage(err.body.detail, _devicesRegistry));
+      return;
+    }
+    renderSyncGroupControls();
+    showToast('Couldn\'t reach the server \u2014 try again.');
+  }
+}
+
+/**
+ * Handle a `change` event on either Follows `<select>` (overview + expanded
+ * headers share one preference). The two escape hatches route through the
+ * pre-existing setSyncGroup() (byte-identical wire behavior); a registered-
+ * device pick routes through attemptFollowTarget(). Picking an escape hatch
+ * while a foreign device is being followed clears that follow target.
+ * @param {string} value - the selected `<option>`'s value
+ */
+function handleFollowsSelectChange(value) {
+  if (value === 'global' || value === 'none') {
+    if (_followTarget) {
+      _followTarget = null;
+      _lastHeartbeatGoneId = null;
+      persistFollowTarget(null);
+    }
+    setSyncGroup(value === 'none' ? 'device' : 'global');
+    return;
+  }
+  var candidate = followsCandidateFromValue(value, (_lastFollowsMenu && _lastFollowsMenu.registered) || []);
+  if (candidate.mode === 'device' && candidate.targetId) {
+    attemptFollowTarget({ targetId: candidate.targetId, targetLabel: candidate.targetLabel });
+  }
+}
+
+/**
+ * Update the persistent, un-dismissable "Controlled by" chip (§7.3): shown
+ * whenever this browser's OWN devices{} entry has a non-null controlled_by
+ * (i.e. some other registered device is following this tab). Not a button;
+ * no click action -- purely informational, the flip side of the sync-group
+ * picker (without it, a user on the browser doesn't know a deck has
+ * claimed their selection).
+ */
+function renderControlledByChip() {
+  var ownRecord = _devicesRegistry && _devicesRegistry[_deviceId];
+  var followerId = ownRecord ? ownRecord.controlled_by : null;
+  ['controlled-by-chip', 'controlled-by-chip-expanded'].forEach(function(id) {
+    var chip = $(id);
+    if (!chip) return;
+    if (followerId) {
+      chip.textContent = 'Controlled by: ' + deviceDisplayLabel(_devicesRegistry[followerId], followerId);
+      chip.classList.remove('hidden');
+    } else {
+      chip.textContent = '';
+      chip.classList.add('hidden');
+    }
+  });
+}
+
+/**
+ * Keep every sync-group UI widget (header `<select>` x2, controlled-by chip
+ * x2, Settings checkbox, Decks tab list) in sync with the current follows
+ * state — same pattern as syncSortOrderControls(). Missing elements (e.g.
+ * Settings dialog not yet opened) are skipped silently.
+ *
+ * Step 4 (design doc §9.4) rewrite: the link/broken-link icon toggle button
+ * fixed in v0.48.3 is replaced by a native `<select>` (buildFollowsMenu's
+ * two escape hatches plus the registered-device section) — same function
+ * name/call sites as before, new implementation. See
+ * tests/test_app.mjs's "Follows select" coverage (successor to the retired
+ * "sync-group toggle button" coverage this replaces) and
+ * tests/test_css_class_definitions.mjs (cross-checks every class this
+ * function applies against style.css).
  */
 function renderSyncGroupControls() {
-  var independent = _syncGroup === 'device';
-  var following = !independent;
+  var follows = currentFollows();
+  var degraded = follows.mode === 'device'
+    ? computeFollowsDegraded(follows.targetId, _devicesRegistry, _lastHeartbeatGoneId)
+    : false;
+  var menu = buildFollowsMenu({
+    devices: _devicesRegistry,
+    ownDeviceId: _deviceId,
+    serverName: _serverName,
+    follows: follows,
+    degraded: degraded,
+  });
+  _lastFollowsMenu = menu;
 
-  // Bug fix (2026-08-16): this used to toggle .header-btn--active on
-  // `independent`, so the button rendered "selected" only when NOT
-  // following -- backwards from what the static link glyph implies, and
-  // the common (following) state showed no active styling at all. Active
-  // styling and the icon now both key off `following` instead. See
-  // tests/test_app.mjs's "sync-group toggle button" coverage.
-  ['sync-group-btn', 'sync-group-btn-expanded'].forEach(function(id) {
-    var btn = $(id);
-    if (!btn) return;
-    btn.setAttribute('aria-pressed', following ? 'true' : 'false');
-    btn.classList.toggle('header-btn--active', following);
-    // Distinct icon per state, not just a color change: linked chain when
-    // following, broken chain when independent -- so the state reads
-    // without needing to hover for the title tooltip.
-    btn.innerHTML = following ? '&#128279;' : '&#9939;&#65039;&#8205;&#128165;';
-    btn.title = following
-      ? 'Following this server\'s view'
-      : 'Independent — not following this server\'s view';
+  var title = follows.mode === 'global'
+    ? 'Following this server\'s view'
+    : follows.mode === 'none'
+      ? 'Independent — not following this server\'s view'
+      : (degraded
+        ? 'Follow target is offline — fell back to global'
+        : 'Following ' + (menu.registered.filter(function(r) { return r.targetId === follows.targetId; })[0] || {}).rawLabel);
+
+  ['sync-group-select', 'sync-group-select-expanded'].forEach(function(id) {
+    var sel = $(id);
+    if (!sel) return;
+    sel.innerHTML = '';
+    menu.escapeHatches.forEach(function(opt) {
+      var o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.label;
+      sel.appendChild(o);
+    });
+    if (menu.registered.length > 0) {
+      var group = document.createElement('optgroup');
+      group.label = menu.registeredHeader;
+      menu.registered.forEach(function(opt) {
+        var o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        group.appendChild(o);
+      });
+      sel.appendChild(group);
+    }
+    sel.value = menu.selectedValue;
+    sel.title = title;
   });
 
+  // The pre-existing Multi-Device settings checkbox still reflects the
+  // _syncGroup escape hatch only (unchanged pre-existing behavior) --
+  // following a registered device is a distinct, additional state it was
+  // never designed to represent.
   var checkbox = $('setting-independent-view');
-  if (checkbox) checkbox.checked = independent;
+  if (checkbox) checkbox.checked = (_syncGroup === 'device') && !_followTarget;
+
+  renderControlledByChip();
+  renderDecksSettingsTab();
+}
+
+/**
+ * Describe a device's own `sync_group` in the same human terms the
+ * dropdown uses ("<server> (shared)", "Nothing — just me", or a resolved
+ * device label) — for the Decks tab's registered-device list (§9.5).
+ * @param {object} device
+ * @param {string} deviceId
+ * @returns {string}
+ */
+function _describeDeviceFollows(device, deviceId) {
+  var group = device && device.sync_group;
+  if (!group || group === 'global') return (_serverName || 'this server') + ' (shared)';
+  if (group.indexOf('device:') === 0) {
+    var targetId = group.slice('device:'.length);
+    if (targetId === deviceId) return 'Nothing \u2014 just me'; // self-claim
+    return deviceDisplayLabel(_devicesRegistry[targetId], targetId);
+  }
+  return group;
+}
+
+/**
+ * Build one row of the Decks tab's registered-device list (§9.5): an
+ * inline-editable display_name (PATCH /api/devices/{id} on blur/Enter,
+ * §8.1 #3/#7 -- ported handling, see _patchDeviceDisplayName), what it
+ * Follows (rendered in the same human terms as the header dropdown), and
+ * last-seen (relative, via the existing formatTimestamp() helper).
+ * @param {string} deviceId
+ * @param {object} device
+ * @returns {Element}
+ */
+function _buildDecksDeviceRow(deviceId, device) {
+  var row = document.createElement('div');
+  row.className = 'decks-device-row';
+
+  var nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'decks-device-name settings-input';
+  nameInput.value = deviceDisplayLabel(device, deviceId);
+  nameInput.setAttribute('aria-label', 'Device name');
+  nameInput.setAttribute('data-device-id', deviceId);
+  _suppressAutofill(nameInput);
+  row.appendChild(nameInput);
+
+  var followsSpan = document.createElement('span');
+  followsSpan.className = 'decks-device-follows';
+  followsSpan.textContent = _describeDeviceFollows(device, deviceId);
+  row.appendChild(followsSpan);
+
+  var lastSeenSpan = document.createElement('span');
+  lastSeenSpan.className = 'decks-device-last-seen';
+  lastSeenSpan.textContent = (device && device.last_heartbeat_at != null)
+    ? formatTimestamp(device.last_heartbeat_at)
+    : 'never';
+  row.appendChild(lastSeenSpan);
+
+  return row;
+}
+
+/**
+ * Populate (or repopulate) the Settings > Decks tab's registered-device
+ * list (§9.5) from the current _devicesRegistry/_serverName. Renders every
+ * OTHER device registered with this server (excluding this browser's own
+ * entry, which manages its own name via Display > Device Name instead).
+ * No-op if the tab's DOM isn't present. Skips the rebuild entirely while a
+ * rename is in progress (focus is inside a .decks-device-name input) so a
+ * ~1s poll tick can never clobber an in-flight edit -- the next tick after
+ * the input blurs picks up any registry changes.
+ */
+function renderDecksSettingsTab() {
+  var listEl = $('decks-registered-list');
+  var emptyEl = $('decks-registered-empty');
+  var headingEl = $('decks-registered-heading');
+  if (!listEl) return;
+
+  var active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (active && active.classList && active.classList.contains('decks-device-name')) return;
+
+  if (headingEl) headingEl.textContent = 'Registered with ' + (_serverName || 'this server');
+
+  var entries = [];
+  for (var id in _devicesRegistry) {
+    if (!Object.prototype.hasOwnProperty.call(_devicesRegistry, id)) continue;
+    if (id === _deviceId) continue; // this device -- not offered in the manage-others list
+    entries.push({ id: id, device: _devicesRegistry[id] });
+  }
+
+  listEl.innerHTML = '';
+  if (entries.length === 0) {
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    return;
+  }
+  if (emptyEl) emptyEl.classList.add('hidden');
+
+  entries.forEach(function(entry) {
+    listEl.appendChild(_buildDecksDeviceRow(entry.id, entry.device));
+  });
+}
+
+/**
+ * Save a Decks-tab device-name-input's current value as that device's
+ * display_name via PATCH /api/devices/{id} (§8.1 #3/#7) -- an empty string
+ * clears display_name back to null (falls back to the device's own
+ * self-reported label). Optimistically updates the local registry cache so
+ * the next render reflects the saved value even before the following poll
+ * tick's GET /api/state confirms it.
+ * @param {Element} input
+ * @returns {Promise<void>}
+ */
+async function _patchDeviceDisplayName(input) {
+  var deviceId = input.getAttribute('data-device-id');
+  if (!deviceId) return;
+  var value = input.value.trim();
+  try {
+    const res = await api('PATCH', '/api/devices/' + encodeURIComponent(deviceId), { display_name: value === '' ? null : value });
+    const result = await res.json();
+    if (_devicesRegistry[deviceId]) _devicesRegistry[deviceId].display_name = result.display_name;
+    showToast('Device renamed');
+    renderSyncGroupControls();
+  } catch (err) {
+    console.warn('[_patchDeviceDisplayName] rename failed:', err);
+    showToast('Could not rename device \u2014 try again.');
+  }
 }
 
 // ─── Interaction tracking ─────────────────────────────────────────────────────
@@ -935,6 +1486,24 @@ async function pollActiveState() {
     followRemoteActiveSession(state);
     followRemoteActiveView(state);
     followRemoteViewDefinitions(state);
+    // Step 4: piggyback on this ALREADY-polled snapshot for the Follows
+    // dropdown/controlled-by chip/Decks tab registry -- same "don't add a
+    // second poll" discipline main.py's own settings_updated_at comment
+    // documents. `devices` is present unconditionally on every REAL
+    // /api/state response (state.py's empty_bootstrap) -- guarded on its
+    // PRESENCE here (not just truthiness) so a minimal test mock that
+    // omits it entirely is a true no-op, preserving "no re-render churn on
+    // an unchanged poll" (tests/test_app.mjs). Change-detected via a cheap
+    // JSON snapshot so a genuinely unchanged REAL registry is ALSO a
+    // no-op -- only an actual change touches the DOM.
+    if (Object.prototype.hasOwnProperty.call(state, 'devices')) {
+      var devicesSnapshot = JSON.stringify(state.devices || {});
+      if (devicesSnapshot !== _lastDevicesSnapshot) {
+        _lastDevicesSnapshot = devicesSnapshot;
+        _devicesRegistry = state.devices || {};
+        renderSyncGroupControls();
+      }
+    }
   } catch (err) {
     if (err && err.status === 404) {
       // Device aged out of the registry (e.g. laptop slept past the prune
@@ -4032,9 +4601,22 @@ async function sendHeartbeat() {
     var effectiveSession = (typeof document !== 'undefined' && document.hidden)
       ? null
       : _viewingSession;
-    const payload = buildHeartbeatPayload(_deviceId, effectiveSession, _viewMode, _lastInteractionAt, syncGroupId());
+    // resolveSyncGroupForWire() defers to the pre-existing syncGroupId()
+    // whenever no registered-device follow target is set (_followTarget
+    // null) -- byte-identical to pre-Step-4 behavior for every existing
+    // client. It only diverges when a Step-4 follow target is active.
+    const payload = buildHeartbeatPayload(_deviceId, effectiveSession, _viewMode, _lastInteractionAt, resolveSyncGroupForWire());
     await api('POST', '/api/heartbeat', payload);
   } catch (err) {
+    // A background re-heartbeat for an active follow target that gets
+    // rejected (409 target_gone / 400 target_not_self_owning) marks it
+    // degraded -- same wire-level fallback deck.js's applyHeartbeatOutcome
+    // uses (§6.2.4): stop resending the foreign claim, stay sticky+degraded
+    // until the human acts (§7.2/§9.1), rather than throwing further.
+    if (_followTarget && err && (err.status === 409 || err.status === 400)) {
+      _lastHeartbeatGoneId = _followTarget.targetId;
+      renderSyncGroupControls();
+    }
     console.warn('[sendHeartbeat] heartbeat failed:', err);
   }
 }
@@ -4425,6 +5007,26 @@ function _setSyncGroupMode(mode) {
 /** Test-only helper: set _deviceId directly, bypassing initDeviceId(). */
 function _setDeviceId(id) {
   _deviceId = id;
+}
+
+/** Test-only helper: set _followTarget directly, bypassing localStorage/heartbeat. */
+function _setFollowTargetForTests(target) {
+  _followTarget = target;
+}
+
+/** Test-only helper: set _devicesRegistry directly, bypassing a real /api/state poll. */
+function _setDevicesRegistryForTests(devices) {
+  _devicesRegistry = devices || {};
+}
+
+/** Test-only helper: set _serverName directly, bypassing a real /api/instance-info fetch. */
+function _setServerNameForTests(name) {
+  _serverName = name || '';
+}
+
+/** Test-only helper: set _lastHeartbeatGoneId directly. */
+function _setLastHeartbeatGoneIdForTests(id) {
+  _lastHeartbeatGoneId = id;
 }
 
 // ─── Compose bar ─────────────────────────────────────────────────────────
@@ -8095,15 +8697,36 @@ function bindStaticEventListeners() {
     setSyncGroup(this.checked ? 'device' : 'global');
   });
 
-  // Header sync-group toggle buttons (overview + expanded header). Both call
-  // setSyncGroup(); renderSyncGroupControls() keeps every widget in sync —
-  // same pattern as the three sort selects (syncSortOrderControls()).
-  on($('sync-group-btn'), 'click', function() {
-    setSyncGroup(_syncGroup === 'device' ? 'global' : 'device');
+  // Header "Follows" <select>s (overview + expanded header) -- Step 4
+  // replacement for the link/broken-link icon toggle buttons (§9.4).
+  // Both route through handleFollowsSelectChange(); renderSyncGroupControls()
+  // keeps every widget in sync -- same pattern as the three sort selects
+  // (syncSortOrderControls()).
+  on($('sync-group-select'), 'change', function() {
+    handleFollowsSelectChange(this.value);
   });
-  on($('sync-group-btn-expanded'), 'click', function() {
-    setSyncGroup(_syncGroup === 'device' ? 'global' : 'device');
+  on($('sync-group-select-expanded'), 'change', function() {
+    handleFollowsSelectChange(this.value);
   });
+
+  // Decks tab (§9.5): inline device-name rename, PATCH-on-blur/Enter.
+  // blur does not bubble, so this listener is registered in the capture
+  // phase on the static container (rebuilt via innerHTML on every render,
+  // so delegation here -- not per-input binding -- is required).
+  var decksListEl = $('decks-registered-list');
+  if (decksListEl) {
+    decksListEl.addEventListener('blur', function(e) {
+      var input = e.target;
+      if (input && input.classList && input.classList.contains('decks-device-name')) {
+        _patchDeviceDisplayName(input);
+      }
+    }, true);
+    decksListEl.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && e.target && e.target.classList && e.target.classList.contains('decks-device-name')) {
+        e.target.blur();
+      }
+    });
+  }
 
   // Compose bar -- toggle button, send button, textarea keydown/auto-grow.
   _bindComposeEventListeners();
@@ -8348,6 +8971,7 @@ releaseInheritedOrientationLock();
 document.addEventListener('DOMContentLoaded', async function() {
   initDeviceId();
   initSyncGroup();
+  _followTarget = loadFollowTarget();
   // Fire-and-forget: _sttInit() never throws (every failure inside it
   // resolves to "leave the mic button hidden"), so nothing here needs to
   // await or .catch() it.
@@ -8389,6 +9013,14 @@ document.addEventListener('DOMContentLoaded', async function() {
       _localVersion = info.version;
       var versionEl = $('setting-app-version');
       if (versionEl) versionEl.textContent = 'v' + info.version;
+    }
+    // §4.2/§9.1: this server's own display name, for the "<name> (shared)"
+    // escape hatch and the Decks tab's "Registered with <name>" heading.
+    // Best-effort: buildFollowsMenu/renderDecksSettingsTab already fall
+    // back to 'this server' when empty.
+    if (info && info.name) {
+      _serverName = info.name;
+      renderSyncGroupControls();
     }
   }).catch(function() { /* non-critical — local session key falls back to plain name */ });
 
@@ -8445,6 +9077,30 @@ if (typeof module !== 'undefined' && module.exports) {
     withDevice,
     setSyncGroup,
     renderSyncGroupControls,
+    // Follows: registered-device pairing (Step 4)
+    FOLLOW_TARGET_STORAGE_KEY,
+    deviceDisplayLabel,
+    degradedOptionLabel,
+    computeFollowsDegraded,
+    buildFollowsMenu,
+    followsCandidateFromValue,
+    targetNotSelfOwningMessage,
+    currentFollows,
+    sanitizeFollowTarget,
+    persistFollowTarget,
+    loadFollowTarget,
+    resolveSyncGroupForWire,
+    attemptFollowTarget,
+    handleFollowsSelectChange,
+    renderControlledByChip,
+    renderDecksSettingsTab,
+    _describeDeviceFollows,
+    _buildDecksDeviceRow,
+    _patchDeviceDisplayName,
+    _setFollowTargetForTests,
+    _setDevicesRegistryForTests,
+    _setServerNameForTests,
+    _setLastHeartbeatGoneIdForTests,
     // Compose bar
     COMPOSE_PREF_STORAGE_KEY,
     initComposePref,

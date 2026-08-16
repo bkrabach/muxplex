@@ -692,15 +692,16 @@ def test_html_settings_panels_use_data_tab() -> None:
     test_html_settings_tab_panel_data_tab_alignment separately proves the tabs and
     the panels correspond 1:1, so this number is not the only thing holding that
     invariant up. Bump it deliberately when you add a tab, and say which one:
-      Display, Sessions, Views, Commands, Multi-Device, Terminal, Agent
-      (Agent added by muxplex-3lr).
+      Display, Sessions, Views, Commands, Multi-Device, Decks, Terminal, Agent
+      (Agent added by muxplex-3lr; Decks added by Step 4, design doc §9.5 --
+      deliberately distinct from Multi-Device, which means federation).
     """
     soup = _SOUP
     dialog = soup.find(id="settings-dialog")
     assert dialog is not None, "Missing #settings-dialog"
     panels = dialog.find_all(class_="settings-panel")
-    assert len(panels) == 7, (
-        f"Expected 7 .settings-panel elements, found: {len(panels)}"
+    assert len(panels) == 8, (
+        f"Expected 8 .settings-panel elements, found: {len(panels)}"
     )
     for panel in panels:
         assert panel.get("data-tab") is not None, (
