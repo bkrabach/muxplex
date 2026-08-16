@@ -37,10 +37,26 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from amplifier_core import ToolResult
-from amplifier_core.models import HookResult
+# amplifier-agent (and its own amplifier_core dependency) is an OPTIONAL
+# extra -- see pyproject.toml's `agent` extra and cli.ensure_agent's module
+# docstring for why a bare `uv tool install muxplex` (PyPI OR git) never
+# gets it on its own. This module is imported at RUNNER.PY'S OWN module
+# level (`from .host_tool_glue import ...`), which is in turn imported at
+# MAIN.PY'S module level -- so an eager `from amplifier_core import
+# ToolResult` here broke `import muxplex.main` entirely (not merely the
+# embedded-agent feature) in any environment that hasn't installed the
+# extra, e.g. a plain `uv sync --extra dev` (CI's own recipe, and every
+# fresh PyPI/git install before `ensure_agent()` has run). Every use below
+# is therefore either type-checking-only (`ToolResult`, via TYPE_CHECKING
+# -- never evaluated at runtime thanks to `from __future__ import
+# annotations` above) or imported lazily inside the one function that
+# actually constructs it (`HookResult`, in `mount_host_tool_hook`) --
+# mirroring runner.py's own documented lazy-import convention for the same
+# reason.
+if TYPE_CHECKING:
+    from amplifier_core import ToolResult
 
 logger = logging.getLogger("muxplex.agent_embedded.host_tool_glue")
 
@@ -120,6 +136,10 @@ async def mount_host_tool_hook(
     ``config["yield_state"]``: dict written to on yield -- keys ``yielded``
     (bool), ``tool_name`` (str), ``tool_call_id`` (str).
     """
+    # Lazy: see module note above -- this is the one place in this file that
+    # actually constructs a HookResult at runtime.
+    from amplifier_core.models import HookResult
+
     config = config or {}
     host_tools = frozenset(config.get("host_tools") or [])
     yield_state = config.get("yield_state")

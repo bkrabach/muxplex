@@ -7029,8 +7029,20 @@ def test_upgrade_preserves_git_kit_override_forbids_bare_name(monkeypatch, capsy
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
 
+    # ensure_agent() (called unconditionally after a successful upgrade --
+    # see cli.upgrade's "Ensuring amplifier-agent is current" step) issues
+    # its OWN separate `uv tool install ... --with amplifier-agent @ ...`
+    # call whenever amplifier_agent_lib isn't importable in the test process
+    # (always true here, since it's never mocked/installed) -- excluded so
+    # these assertions stay about muxplex's/tmux-kit's own install command,
+    # not ensure_agent's independent one.
     uv_install_calls = [
-        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+        c
+        for c in calls
+        if isinstance(c, list)
+        and "tool" in c
+        and "install" in c
+        and not any("amplifier-agent" in str(a) for a in c)
     ]
     assert len(uv_install_calls) == 1
     install_cmd = uv_install_calls[0]
@@ -7117,8 +7129,20 @@ def test_upgrade_pypi_kit_unaffected_still_uses_bare_name_shortcut(monkeypatch, 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
 
+    # ensure_agent() (called unconditionally after a successful upgrade --
+    # see cli.upgrade's "Ensuring amplifier-agent is current" step) issues
+    # its OWN separate `uv tool install ... --with amplifier-agent @ ...`
+    # call whenever amplifier_agent_lib isn't importable in the test process
+    # (always true here, since it's never mocked/installed) -- excluded so
+    # these assertions stay about muxplex's/tmux-kit's own install command,
+    # not ensure_agent's independent one.
     uv_install_calls = [
-        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+        c
+        for c in calls
+        if isinstance(c, list)
+        and "tool" in c
+        and "install" in c
+        and not any("amplifier-agent" in str(a) for a in c)
     ]
     assert len(uv_install_calls) == 1
     install_cmd = uv_install_calls[0]
@@ -7216,8 +7240,20 @@ def test_upgrade_git_mux_pypi_kit_never_switches_to_bare_pypi_name(monkeypatch, 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
 
+    # ensure_agent() (called unconditionally after a successful upgrade --
+    # see cli.upgrade's "Ensuring amplifier-agent is current" step) issues
+    # its OWN separate `uv tool install ... --with amplifier-agent @ ...`
+    # call whenever amplifier_agent_lib isn't importable in the test process
+    # (always true here, since it's never mocked/installed) -- excluded so
+    # these assertions stay about muxplex's/tmux-kit's own install command,
+    # not ensure_agent's independent one.
     uv_install_calls = [
-        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+        c
+        for c in calls
+        if isinstance(c, list)
+        and "tool" in c
+        and "install" in c
+        and not any("amplifier-agent" in str(a) for a in c)
     ]
     assert len(uv_install_calls) == 1
     install_cmd = uv_install_calls[0]
@@ -7310,8 +7346,20 @@ def test_upgrade_pypi_mux_git_kit_gets_reinstall_and_with_together(monkeypatch, 
     with patch("muxplex.service.service_install", lambda: None):
         cli_mod.upgrade()
 
+    # ensure_agent() (called unconditionally after a successful upgrade --
+    # see cli.upgrade's "Ensuring amplifier-agent is current" step) issues
+    # its OWN separate `uv tool install ... --with amplifier-agent @ ...`
+    # call whenever amplifier_agent_lib isn't importable in the test process
+    # (always true here, since it's never mocked/installed) -- excluded so
+    # these assertions stay about muxplex's/tmux-kit's own install command,
+    # not ensure_agent's independent one.
     uv_install_calls = [
-        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+        c
+        for c in calls
+        if isinstance(c, list)
+        and "tool" in c
+        and "install" in c
+        and not any("amplifier-agent" in str(a) for a in c)
     ]
     assert len(uv_install_calls) == 1
     install_cmd = uv_install_calls[0]
@@ -7478,8 +7526,20 @@ def test_upgrade_refuses_when_kit_git_ref_unresolvable(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "no ref could be determined" in out
+    # ensure_agent() (called unconditionally after a successful upgrade --
+    # see cli.upgrade's "Ensuring amplifier-agent is current" step) issues
+    # its OWN separate `uv tool install ... --with amplifier-agent @ ...`
+    # call whenever amplifier_agent_lib isn't importable in the test process
+    # (always true here, since it's never mocked/installed) -- excluded so
+    # these assertions stay about muxplex's/tmux-kit's own install command,
+    # not ensure_agent's independent one.
     uv_install_calls = [
-        c for c in calls if isinstance(c, list) and "tool" in c and "install" in c
+        c
+        for c in calls
+        if isinstance(c, list)
+        and "tool" in c
+        and "install" in c
+        and not any("amplifier-agent" in str(a) for a in c)
     ]
     assert len(uv_install_calls) == 0
 
