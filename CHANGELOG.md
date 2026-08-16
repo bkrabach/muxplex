@@ -1,45 +1,56 @@
 ## v0.50.0 (2026-08-16)
 
+> **Correction (same day):** this entry as originally published named APIs that
+> do not exist in the actual release (`device_name`/`device_kind` constructor
+> params, and error types `DeviceNotFoundError`/`DeviceAlreadyExistsError`/
+> `SyncGroupError`/`DeviceIdentityError`). The text below has been corrected to
+> match the real, shipped code; the corresponding GitHub/PyPI release notes for
+> this historical tag could not be rewritten (the tag is immutable) and still
+> carry the original inaccurate wording. **The actual published wheel's code
+> was always correct** — only this changelog's prose was wrong. See
+> `client/muxplex_client/{sync_client.py,async_client.py,models.py,errors.py}`
+> for ground truth.
+
 **Client library now exports device identity scaffolding** — the first slice of
 the deck control-target design (`docs/plans/2026-08-16-deck-control-target-design.md`).
 Additive only: the server is untouched, and all new client capabilities (`heartbeat()`,
-device identity parameters on the state model, new `ServerState` fields for group sync,
-and new error types for failure diagnosis) are structured to make no behavioral change
-for any existing caller.
+`device_id` parameters on existing methods, new `ServerState` fields for group sync,
+and two new error types) are structured to make no behavioral change for any
+existing caller.
 
 ### Added
 
-- **`heartbeat()` method**: New optional client capability for device liveness
-  signaling. Sends a device identifier to `POST /api/heartbeat` (server accepts
-  but does not yet act on the call). Clients that do not call it see no change in
-  behavior; calls from clients that do are silently accepted by a v0.49.x server
-  for forward compatibility.
-- **Device identity parameters on `AsyncClient` and `SyncClient`**: `device_id`
-  (UUID), `device_name` (human-readable label), and `device_kind` (classification;
-  e.g. `"deck"`, `"pwa"`, `"agent"`). Clients pass these when constructing the
-  connection and they are carried on every `heartbeat()` call. Servers prior to
-  v0.50.0 ignore the fields.
-- **New `ServerState` fields**: `sync_group` (device group for eventual
-  federated sync), `controlled_by` (which device currently holds write authority
-  on this state), and `active_remote_id` (tracking for multi-device coordination).
-  All fields are optional and default to `None`; existing callers continue to work
-  unchanged.
-- **New error types** in `muxplex_client.errors`: `DeviceNotFoundError`,
-  `DeviceAlreadyExistsError`, `SyncGroupError`, and `DeviceIdentityError` for
-  richer error classification as device-coordination logic lands in the server.
-  Servers prior to v0.50.0 will not raise these; they are forward-compatible
-  containers for future server versions.
+- **`heartbeat()` method** on `SyncClient`/`AsyncClient`: `heartbeat(*, device_id,
+  label, viewing_session=None, view_mode="grid", last_interaction_at=0.0,
+  sync_group=None, kind=None)`. Sends device liveness + identity to
+  `POST /api/heartbeat` (the server already accepts `device_id`/`sync_group`
+  today via the pre-existing sync-groups feature; `kind` is new and currently
+  inert server-side). Returns a new `HeartbeatResult` (`device_id`, `status`,
+  `sync_group`).
+- **`device_id: str | None = None` parameter** added to `state()`, `view()`,
+  `connect()`, and `set_active_view()` on both clients — sent as `?device_id=`
+  only when provided; omitting it is byte-identical to today's wire shape
+  (verified by dedicated regression tests).
+- **New `ServerState` fields**: `sync_group`, `controlled_by`, and
+  `active_remote_id` — all parsed via `.get()`, so a server response that
+  doesn't include them (any server today) parses exactly as before.
+- **Two new error types** in `muxplex_client.errors`: `TargetGoneError`
+  (`ApiError` subclass, maps a future `409` with a `{"target_gone": true}`
+  detail) and `TargetNotSelfOwningError` (maps a future `400` with
+  `{"target_not_self_owning": true}`). Neither can be raised by any server
+  today — they're forward-compatible recognizers for Step 2 of the design,
+  not built yet.
+- `connect()`'s docstring corrected: no longer unconditionally asserts
+  "active_session is server-global" (Step 2+ will make that conditional).
 
 ### Testing & Proof
 
 - Full test suite: 105 tests pass (65 baseline on v0.49.1 + 40 new), including
-  new wire-shape verification that the device-identity scaffolding does NOT
-  alter the request/response shape for callers that do not use it.
+  dedicated byte-identical wire-shape tests (exact query string + JSON body)
+  for every existing method called with no `device_id`/`kind`.
 - All CI jobs green: test (Python 3.11/3.12/3.13), test-latest-deps,
   test-frontend, and all platform variants (Linux/macOS/arm64).
-- **Backward compatibility verified**: a v0.50.0 client talking to a v0.49.x
-  server sends the new fields but they are silently ignored; a v0.49.x client
-  talking to a v0.50.0 server sees no new fields in responses and continues to work.
+- `ruff format`, `ruff check`, `pyright` all clean on `client/`.
 
 ## v0.49.1 (2026-08-16)
 
