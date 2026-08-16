@@ -1,3 +1,101 @@
+## v0.51.0 (2026-08-16)
+
+**The agent is now part of the muxplex install — there is no separate daemon.**
+A chat turn that used to be proxied over HTTP to an `amplifier-agent serve
+chat-completions` sidecar on `127.0.0.1:9099` now runs **in-process**, as a
+library call inside the muxplex server itself (`muxplex/agent_embedded/`). The
+entire sidecar is deleted, not deprecated: the proxy path, the `sudo -u aa-svc`
+credential machinery, and the systemd/iptables fence that existed to contain it
+are all gone.
+
+What did **not** change is the part carrying the security weight: tools still
+execute **in the browser**, under the user's own cookie, and the
+write-confirmation gate still stands in front of every mutating tool call.
+Moving the model call in-process removed a process boundary, not a permission
+boundary. The SSE stream is wire-compatible with what the sidecar produced —
+`chat.js` cannot tell which one served a given turn.
+
+### Behavioural change worth knowing
+
+- **There is no sidecar to install and no fence to run.** If you followed the
+  old `AGENT_CHAT_SETUP.md` / `AGENT_CHAT_SIDECAR.md` procedure, none of it is
+  needed anymore — those documents and the `docs/agent-chat-sidecar/` unit and
+  fence tree are gone along with the code they described.
+- **Provider keys are set in Settings → Agent, or via an environment variable.**
+  Credentials resolve **env-first**, falling back to a durable
+  `~/.amplifier-agent/credentials.json` (mode `0600`). A key is **validated
+  before it is persisted**, so a bad key is rejected rather than written, and a
+  persisted key survives a server restart.
+- `GET`/`POST /api/agent/provider-credential` **survive** with their contract
+  intact, rebuilt on the embedded path. `GET` still returns status only, never a
+  key.
+
+### Added
+
+- **`muxplex/agent_embedded/`** — six modules: `runner.py` (per-turn session
+  construction, streaming, host-tool yield/continuation), `wire.py` (OpenAI Chat
+  Completions SSE chunk builders), `message_shape.py` (client → kernel message
+  translation), `host_tool_glue.py` (host-tool proxy and hook), `credentials.py`
+  (env-first resolution plus the durable fallback above), and `__init__.py`.
+- **`muxplex ensure-agent`** (`muxplex/cli.py`) — bootstraps `amplifier-agent`
+  into muxplex's own tool environment from git
+  (`github.com/microsoft/amplifier-agent@v0.12.0`) at **first run (service
+  install) and on update**. This exists because amplifier-agent is not published
+  on PyPI, so neither a PyPI nor a git install of muxplex can pull it as an
+  ordinary dependency. It reuses `_get_install_info`/`_upgrade_target` so it can
+  never switch muxplex's own install source, is idempotent (a fast no-op when
+  the agent is already present), and fails loud rather than leaving a
+  half-installed environment behind.
+- **An `agent` optional extra** plus its `[tool.uv.sources]` entry, pinning
+  `amplifier-agent==0.12.0` / `tag = "v0.12.0"`. It is **not** installed by
+  default: without it muxplex runs exactly as before, and the embedded path
+  fails with a clean, actionable error rather than an import traceback.
+
+### Removed
+
+- The sidecar in its entirety — the HTTP proxy path in `main.py`, the
+  `sudo -u aa-svc` credential machinery, `docs/agent-chat-sidecar/` (systemd
+  units, iptables fence, watchdog timer, env examples), `docs/AGENT_CHAT_SETUP.md`,
+  `docs/AGENT_CHAT_SIDECAR.md`, and `muxplex/tests/test_agent_fence.py`.
+  Net effect on `main.py`: 776 lines deleted.
+
+### Fixed
+
+- `host_tool_glue`'s `amplifier_core` import is now genuinely lazy, so importing
+  `muxplex.agent_embedded` no longer requires the `agent` extra to be installed.
+- The 503 credential-save headline is mode-agnostic — it no longer names a
+  sidecar that no longer exists.
+
+### Dependency pins
+
+- **`uv.lock` regenerated so the `agent` extra is actually recorded.**
+  `amplifier-agent` now locks to
+  `git+https://github.com/microsoft/amplifier-agent?tag=v0.12.0#421379ad…`, with
+  its transitive git dependency `amplifier-foundation` pinned to a commit, and
+  muxplex's own lock entry gains `provides-extras = ["dev", "agent"]`. Before
+  this, the lock had **no** `amplifier-agent` entry at all — and since a **git**
+  install of muxplex resolves from `uv.lock` rather than re-resolving
+  `pyproject.toml`, such an install would have re-resolved the agent live on
+  every run instead of getting the pinned one. Same class of silent
+  PyPI-vs-git drift the tmux-kit pin/tag agreement exists to prevent.
+- `tmux-kit` is untouched by this release and still agrees across all four legs:
+  pin `tmux-kit==0.4.0`, source `tag="v0.4.0"`, lock
+  `?tag=v0.4.0#148c15d9…`, and upstream `v0.4.0^{}` → `148c15d9…`.
+
+### Testing & Proof
+
+- Python suite: **2536 passed, 0 failed, 4 skipped** (52 integration tests
+  deselected — they need a real tmux binary). Up from 2504 on the pre-rebase
+  stack; the +32 is the deck-control work this release rebased onto, which added
+  a net 28 test functions across `test_sync_groups.py` / `test_sync_groups_api.py`
+  plus three new `parametrize` decorators expanding to the remaining cases.
+- Frontend suite: **1090 passed, 0 failed**. Up from 998; the +92 is exactly the
+  deck-control frontend tests rebased onto — net 52 `test()` cases from Steps 1–3
+  (`test_app.mjs` / `test_deck.mjs`) plus net 40 from Step 4's PWA dropdown work.
+- Both run in the `muxplex-test` DTU from a clean extraction into a fresh
+  directory, with `uv sync --extra dev --extra agent` (the embedded-agent tests
+  need the `agent` extra; the Makefile default installs `--extra dev` only).
+
 ## v0.50.0 (2026-08-16)
 
 > **Correction (same day):** this entry as originally published named APIs that
