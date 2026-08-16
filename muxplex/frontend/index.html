@@ -719,26 +719,27 @@
          focus-return-to-opener on close load-bearing rather than a nicety:
          a keyboard user who closes the panel must land back on the control
          that reopens it. See setPanelOpen() in chat.js. -->
-    <div class="agent-panel-header">
-      <!-- muxplex-5bn: New and Export are .quick-link -- the SAME shared
-           component the header/sidebar view and sort controls use. They
-           deliberately carry NO other class. That is the whole lesson of
-           style.css's "Quick link" incident: three of the original four
-           controls still wear a legacy base class, which is why that rule
-           has to be ID-qualified to win. These two have nothing to fight,
-           so the bare .quick-link selector governs them outright and can
-           never be silently out-cascaded on a single property the way
-           .view-dropdown__trigger's leftover :hover background was.
-           They used to be .header-btn: a 32x32 bordered icon SQUARE, which
-           is the wrong register for a text label and is what the owner was
-           looking at when he said "the new and export buttons are gross." -->
-      <button id="chat-new-btn" class="quick-link" title="Start a new conversation">New</button>
+    <div id="chat-panel-header" class="agent-panel-header">
+      <!-- muxplex-fx1: icon buttons, aligned to the far edge (the owner's
+           explicit ask -- "New and Export -> icon buttons, aligned right,
+           instead of text links on the left"). This reverses the earlier
+           .quick-link text-link call (muxplex-5bn) -- that earlier critique
+           ("the new and export buttons are gross") was about TEXT sitting
+           inside a bordered 32px icon square, the wrong register for a
+           label. An ICON alone in that same square is exactly what every
+           other control in this app's header rows already is (Settings
+           gear, sync-group link, view-mode, the compose-bar toggle) --
+           .header-btn is the correct, established component for that, not
+           a second one. .agent-panel-header's flex row gets
+           justify-content:flex-end (style.css) to push both to the right
+           edge; nothing else lives in this row to push against. -->
+      <button id="chat-new-btn" class="header-btn" aria-label="New conversation" title="Start a new conversation">+</button>
       <!-- muxplex-4kl: exports a structured debug record (transcript, tool
            calls, raw tool results, timings, the SSE stream, console/network
            errors, app state) of this conversation to a local .json file --
            see exportCaptureRecord() in chat.js. Never sends anything over
            the network; local file only, on explicit click. -->
-      <button id="chat-export-btn" class="quick-link" title="Download this conversation as a markdown file — transcript, tool calls with their arguments and results, exact HTTP failures, timings and correlation ids. Written locally; nothing is sent anywhere.">Export</button>
+      <button id="chat-export-btn" class="header-btn" aria-label="Export conversation" title="Download this conversation as a markdown file — transcript, tool calls with their arguments and results, exact HTTP failures, timings and correlation ids. Written locally; nothing is sent anywhere.">&#10515;</button>
     </div>
     <!-- muxplex-46p, WCAG 4.1.3. role="log" is the right role for a running
          transcript, but its IMPLICIT aria-live is "polite" -- which on a
@@ -756,7 +757,29 @@
          reader hears sentences, not tokens. aria-atomic="true" because each
          write is a complete thought that should be read as one. -->
     <div id="chat-live" class="agent-panel-live" aria-live="polite" aria-atomic="true"></div>
-    <div class="agent-panel-composer">
+
+    <!-- muxplex-fx1: "I shouldn't have to submit a chat to find out it's
+         broken." Hidden until chat.js's checkAgentGate() (run every time
+         the panel opens) determines the Agent has never been configured on
+         this server -- at which point THIS replaces the messages/composer
+         entirely instead of a working-looking composer that only reveals
+         it is inert once you send a turn and wait for a 503. The same
+         element also carries the brief "checking" text while that lookup
+         is in flight, so the panel never flashes the fully-broken notice
+         (or a working composer) before the answer is actually known. -->
+    <div id="chat-gate" class="agent-panel-gate hidden">
+      <p id="chat-gate-text" class="agent-panel-gate-text"></p>
+      <!-- Pops open Settings already switched to the Agent tab (the SAME
+           openSettings()+switchSettingsTab('agent') app.js already uses for
+           "manage views" from a dropdown) -- never a docs/ reference: most
+           installs are via `uv tool install` and never see docs/ or
+           README.md at all. .quick-link is the shared link-styled button
+           component New/Export used to wear; reused here rather than a
+           third link treatment. -->
+      <button id="chat-gate-settings-btn" class="quick-link agent-panel-gate-link hidden" type="button">Open Settings -&gt; Agent</button>
+    </div>
+
+    <div id="chat-composer" class="agent-panel-composer">
       <!-- muxplex-8qp: rows="1" is the FLOOR, not the size. chat.js's
            autoGrowInput() sets the height from scrollHeight on every input
            event, bounded at a stated maximum, after which the textarea
@@ -802,8 +825,15 @@
          that describe the chord, one place that decides it.
          muxplex-d8f: "Amplifier Agent" is a real link to the upstream repo,
          in the site accent (var(--accent), from tokens.css -- never a hex),
-         using the app's existing external-link convention. -->
-    <p class="agent-panel-byline"><span class="agent-panel-hint" id="chat-key-hint"></span> &middot; Powered by <a class="agent-panel-byline-link" href="https://github.com/microsoft/amplifier-agent" target="_blank" rel="noopener noreferrer">Amplifier Agent</a></p>
+         using the app's existing external-link convention.
+         muxplex-fx1: a tiny Amplifier mark now sits in front of the link
+         text (same /amplifier-icon-32.png asset the header's Agent button
+         already uses, so there is one logo asset, not a second one), and
+         "Powered by" is its own span coloured to match .agent-panel-hint
+         (the "<keys> to send" text) rather than the byline's default dim
+         colour -- so the link itself stays the one emphasised element on
+         the line, per the owner's ask. -->
+    <p class="agent-panel-byline"><span class="agent-panel-hint" id="chat-key-hint"></span> &middot; <span class="agent-panel-byline-label">Powered by</span> <a class="agent-panel-byline-link" href="https://github.com/microsoft/amplifier-agent" target="_blank" rel="noopener noreferrer"><img src="/amplifier-icon-32.png" alt="" width="12" height="12" class="agent-panel-byline-logo" />Amplifier Agent</a></p>
   </div>
 
   <!-- muxplex-4kl: persistent download trigger for exportCaptureRecord() in

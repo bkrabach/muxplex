@@ -244,6 +244,9 @@
   var messages = []; // OpenAI-style chat messages for the CURRENT conversation
 
   var panelEl, messagesEl, inputEl, sendBtn, newBtn, openBtn, exportBtn, exportLinkEl;
+  // muxplex-fx1: the "Agent isn't set up" gate -- see checkAgentGate()/
+  // setGateState() near init() and #chat-gate's comment in index.html.
+  var gateEl, gateTextEl, gateSettingsBtn, headerEl, composerEl;
 
   // Confirmation-gate elements (send_muxplex_session_input only -- see
   // requestInputConfirmation()/resolveConfirm() below).
@@ -1598,12 +1601,24 @@
     // runTurn() (name === "__request__"), never the SSE error-frame path,
     // so it must not be scoped to name === "__stream__" the way the
     // sidecar-unreachable case above is.
+    //
+    // In normal use nobody should ever see this: checkAgentGate() (below)
+    // blanks the panel before a turn can even be attempted once the panel
+    // is known to be unconfigured. This stays as the humanised fallback for
+    // the rare race (gate check said "configured" a moment ago, sidecar
+    // credential removed since) or a gate-check failure that fails open.
+    //
+    // Kept deliberately short -- one clause, no doc path. Most installs are
+    // via `uv tool install`, which never sees README.md or docs/, so a
+    // docs/AGENT_CHAT_SETUP.md reference here is dead text for nearly every
+    // reader; Settings -> Agent is reachable from inside the app itself.
+    // Anything more than this belongs behind a disclosure, the same way
+    // the raw response text already sits behind "technical detail" below --
+    // not stacked into a second visible paragraph.
     if (m5xx && /not configured on this server/i.test(msg)) {
       return {
         headline: "The Agent isn't set up on this server yet.",
-        remedy: "This is the normal starting state, not a fault -- there is nothing to " +
-          "retry. Whoever runs this muxplex server can set it up from Settings -> Agent " +
-          "(docs/AGENT_CHAT_SETUP.md covers installing the sidecar as its own step).",
+        remedy: "Set it up from Settings -> Agent.",
       };
     }
     if (m5xx) {
@@ -1633,16 +1648,28 @@
     div.setAttribute("role", "alert");
     div.appendChild(roleLabel("Error"));
 
+    // muxplex-fx1: everything readable lives in ONE wrapper, separate from
+    // the icon. .agent-msg-error's own ::before glyph used to precede the
+    // headline DIRECTLY -- a block-level div right after an inline glyph,
+    // which forces the glyph onto a line by itself with the headline text
+    // starting fresh underneath it ("the '!' icon is on a line of its own
+    // before the text"). Wrapping headline+remedy+details in one flex
+    // sibling next to the icon (see .agent-msg-error's flex rule in
+    // style.css) puts the icon and the first line of text on the same row,
+    // the same way .agent-status already does for its own ::before glyph.
+    var body = document.createElement("div");
+    body.className = "agent-msg-error-body";
+
     var head = document.createElement("div");
     head.className = "agent-msg-error-headline";
     head.textContent = h.headline;
-    div.appendChild(head);
+    body.appendChild(head);
 
     if (h.remedy) {
       var rem = document.createElement("div");
       rem.className = "agent-msg-error-remedy";
       rem.textContent = h.remedy;
-      div.appendChild(rem);
+      body.appendChild(rem);
     }
 
     // Raw detail, collapsed. Never the primary reading surface, never gone.
@@ -1664,7 +1691,9 @@
     pre.textContent = (err && err.userDetail) || message;
     det.appendChild(sum);
     det.appendChild(pre);
-    div.appendChild(det);
+    body.appendChild(det);
+
+    div.appendChild(body);
 
     messagesEl.appendChild(div);
     if (statusEl) messagesEl.appendChild(statusEl);
@@ -2361,6 +2390,82 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // The "Agent isn't set up" gate (muxplex-fx1)
+  // ---------------------------------------------------------------------
+  // "I shouldn't have to submit a chat to find out it's broken." Checked
+  // every time the panel opens (applyPanelVisualState()'s open branch,
+  // below) against the SAME /api/agent/provider-credential endpoint the
+  // Settings -> Agent tab already polls (see _fetchAgentCredentialStatus()
+  // further down this file) -- one status contract, read from two places,
+  // never reimplemented.
+  //
+  // "not_installed" and "not_configured" both mean the same thing to
+  // someone typing a message here: there is nothing to talk to yet.
+  // "error" (the status check itself failed) and "configured"/
+  // "configured_shadowed" all mean "let the panel behave normally" --
+  // failing OPEN on a status-check error, not closed, because blocking the
+  // whole panel over a transient check failure would recreate the exact
+  // false "looks broken" impression this gate exists to prevent, just for
+  // the opposite case. A genuine Agent failure still surfaces normally the
+  // moment a real turn is attempted -- humaniseToolError() handles that;
+  // this gate only ever pre-empts the KNOWN-inert case.
+  var AGENT_GATE_UNCONFIGURED_STATES = ["not_installed", "not_configured"];
+  var _gateState = null; // null (never resolved yet) | "configured" | "unconfigured"
+
+  /** Show either the gate or the normal chat UI (header, messages,
+   * composer) for one of three states: "checking" (status lookup in
+   * flight -- see checkAgentGate for when this is actually shown),
+   * "unconfigured", or "configured". */
+  function setGateState(state) {
+    _gateState = state;
+    var unconfigured = state === "unconfigured";
+    var checking = state === "checking";
+    var gated = unconfigured || checking;
+    gateTextEl.textContent = checking
+      ? "Checking whether the Agent is set up..."
+      : "The Agent isn't set up on this server yet.";
+    gateSettingsBtn.classList.toggle("hidden", !unconfigured);
+    gateEl.classList.toggle("hidden", !gated);
+    headerEl.classList.toggle("hidden", gated);
+    messagesEl.classList.toggle("hidden", gated);
+    composerEl.classList.toggle("hidden", gated);
+  }
+
+  /** Ask muxplex whether the Agent has ever been configured on this
+   * install. Called every time the panel opens (never cached across
+   * opens, so a key just added in Settings -> Agent takes effect the
+   * moment the panel is reopened -- no reload required).
+   *
+   * Deliberately does NOT reset to "checking" on repeat opens: once a real
+   * answer is known, that answer stays on screen while this quietly
+   * re-validates in the background, so reopening the panel never flashes
+   * a neutral placeholder over a state that was already correct. Only the
+   * very first check of the session (there is no answer yet at all) shows
+   * "checking" -- see setGateState's callers below and in init(). */
+  async function checkAgentGate() {
+    if (_gateState === null) setGateState("checking");
+    var data;
+    try {
+      var resp = await fetch("/api/agent/provider-credential", {
+        headers: { Accept: "application/json" },
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      data = await resp.json();
+    } catch (err) {
+      // Fails OPEN, loudly: the status check itself failing is not
+      // evidence the Agent is unconfigured. Never a silent catch -- logged
+      // so a real outage is still discoverable in devtools, even though
+      // the panel does not block on it.
+      console.error("[agent-gate] could not check whether the Agent is " +
+        "configured -- failing open (panel behaves as if configured):", err);
+      setGateState("configured");
+      return;
+    }
+    var unconfigured = AGENT_GATE_UNCONFIGURED_STATES.indexOf(data.state) !== -1;
+    setGateState(unconfigured ? "unconfigured" : "configured");
+  }
+
   function init() {
     panelEl = $("chat-panel");
     messagesEl = $("chat-messages");
@@ -2370,6 +2475,11 @@
     openBtn = $("chat-open-btn");
     exportBtn = $("chat-export-btn");
     exportLinkEl = $("chat-export-link");
+    headerEl = $("chat-panel-header");
+    composerEl = $("chat-composer");
+    gateEl = $("chat-gate");
+    gateTextEl = $("chat-gate-text");
+    gateSettingsBtn = $("chat-gate-settings-btn");
     // Deliberately NOT in the fatal __missing check below: a missing live
     // region degrades accessibility, it does not break the panel. But it is
     // never silent -- a missing one would otherwise look exactly like a
@@ -2396,6 +2506,18 @@
     if (!newBtn) __missing.push("chat-new-btn");
     if (!openBtn) __missing.push("chat-open-btn");
     if (!exportBtn) __missing.push("chat-export-btn");
+    // The "Agent isn't set up" gate is required for init, not optional, for
+    // the same reason the confirmation gate below is: if it is missing,
+    // checkAgentGate() has nothing to render into, and the panel would
+    // fall back to always showing a working-looking composer -- silently
+    // reintroducing the exact "submit a turn to find out it's broken"
+    // failure this gate exists to prevent. Fail loud and don't come up,
+    // same as every other required element here.
+    if (!headerEl) __missing.push("chat-panel-header");
+    if (!composerEl) __missing.push("chat-composer");
+    if (!gateEl) __missing.push("chat-gate");
+    if (!gateTextEl) __missing.push("chat-gate-text");
+    if (!gateSettingsBtn) __missing.push("chat-gate-settings-btn");
     // The confirmation gate is required for init, not optional: if any part
     // of it is missing, the panel must not come up at all -- the dangerous
     // tool must never be reachable without its gate. Failing loud here
@@ -2623,6 +2745,12 @@
         // see syncPanelToVisualViewport()'s docstring for why this cannot
         // happen once at init() time instead.
         syncPanelToVisualViewport();
+        // muxplex-fx1: re-check every real open (interactive toggle AND
+        // the persisted-restore-on-load path below both funnel through
+        // here) -- see checkAgentGate()'s own docstring for why this is
+        // cheap to repeat and never flashes a placeholder over a state
+        // that was already known.
+        checkAgentGate();
       }
     }
 
@@ -2741,6 +2869,20 @@
     newBtn.addEventListener("click", newConversation);
     exportBtn.addEventListener("click", exportCaptureRecord);
     sendBtn.addEventListener("click", handleSend);
+
+    // muxplex-fx1: pops open Settings already switched to the Agent tab --
+    // the SAME openSettings()+switchSettingsTab('agent') pair app.js's own
+    // "manage views" dropdown action already calls (bindStaticEventListeners()
+    // there); reused rather than a second way to open a settings tab. Both
+    // live in app.js as plain (non-module) top-level functions, so they are
+    // real globals -- see this file's own window._trackVisualViewportHeight
+    // read above for the same cross-file-global convention. Guarded rather
+    // than assumed: this file must not throw if app.js's shape ever changes,
+    // the same defensiveness _trackVisualViewportHeight gets.
+    gateSettingsBtn.addEventListener("click", function () {
+      if (typeof window.openSettings === "function") window.openSettings();
+      if (typeof window.switchSettingsTab === "function") window.switchSettingsTab("agent");
+    });
 
     // ------------------------------------------------------------------
     // Composer keys (muxplex-8qp)

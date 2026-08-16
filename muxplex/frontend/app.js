@@ -4367,64 +4367,94 @@ function _setDeviceId(id) {
 // settings keys and that they live in settings.json on the host) without
 // presenting a button that looks live but always fails.
 //
-// Preference is per-device, in localStorage, deliberately NOT a settings
-// key and NOT federated -- same precedent as SYNC_GROUP_STORAGE_KEY above
-// and the soft deck's own local-only settings. Three states: 'auto' (on
-// for mobile-width devices, off for desktop -- isMobile()'s existing
-// MOBILE_THRESHOLD), 'on', 'off'. An explicit on/off is never silently
-// overridden by a user-agent/width guess, which would get tablets wrong.
-
-const COMPOSE_PREF_STORAGE_KEY = 'muxplex-compose-bar';
-let _composePref = 'auto'; // 'auto' | 'on' | 'off' -- the STORED preference
+// muxplex-fx1: preference now persists through settings.py's
+// composeBarOpen -- the SAME sidebarOpen/agentPanelOpen mechanism
+// (GET/PATCH /api/settings via patchServerSetting), not a second,
+// parallel localStorage scheme. "make sure the toggle state ... [is]
+// remembered across visits ... follow [the sidebarOpen/agentPanelOpen
+// pattern] exactly -- do not invent a second persistence mechanism."
+//
+// Tri-state on ONE persisted value (null | true | false), same shape as
+// sidebarOpen:
+//   null  -- never explicitly toggled. Resolves to VISIBLE on every
+//            device width (see _composeEffectiveOn). This is a change
+//            from the prior 'auto' behaviour (mobile-only default,
+//            hidden on desktop) -- the owner's ask was "make the compose
+//            bar on by default so that it's more discoverable", which
+//            reads as discoverable everywhere, not only on phones.
+//   true / false -- an explicit choice. Always wins over the default
+//            above, on any device width -- a remembered preference beats
+//            a new default, so nobody who deliberately hid the bar gets
+//            it silently reopened out from under them.
+//
+// LEGACY MIGRATION: a prior build stored this per-device in localStorage
+// under COMPOSE_PREF_STORAGE_KEY ('auto'|'on'|'off'). initComposePref()
+// migrates an explicit legacy 'on'/'off' into the new server setting
+// exactly once -- only when the server has never had an explicit value
+// of its own -- so that earlier explicit choice survives the mechanism
+// change instead of being silently reset to the new on-by-default.
+// ('auto' carried no explicit intent and is not migrated.) The old key is
+// left in place afterward, unread from now on -- harmless, not worth a
+// second write path just to clear it.
+const COMPOSE_PREF_STORAGE_KEY = 'muxplex-compose-bar'; // legacy key, migration-only -- see initComposePref
 let _composeSendInFlight = false;
 
 /**
- * Restore the compose-bar preference from localStorage. Same defensive
- * shape as initSyncGroup()/initDeviceId(): localStorage may be blocked
- * (Tracking Prevention, private browsing) or hold a value from a future/
- * unknown version -- either case falls back to 'auto' for the session,
- * never throws.
- */
-function initComposePref() {
-  try {
-    var stored = localStorage.getItem(COMPOSE_PREF_STORAGE_KEY);
-    if (stored === 'auto' || stored === 'on' || stored === 'off') {
-      _composePref = stored;
-    }
-  } catch (_) {
-    // localStorage blocked -- stay 'auto' for this session, no persistence
-  }
-}
-
-/**
- * Resolve the stored preference to an effective boolean: 'on'/'off' are
- * absolute; 'auto' defers to isMobile() (mirrors the toggle's own
- * MOBILE_THRESHOLD-based judgment, not a separate width check).
+ * Resolve the effective on/off state from the loaded server setting.
+ * `_serverSettings.composeBarOpen` missing/null ("never toggled") resolves
+ * to true (on by default, every width). An explicit true/false always wins.
  * @returns {boolean}
  */
 function _composeEffectiveOn() {
-  if (_composePref === 'on') return true;
-  if (_composePref === 'off') return false;
-  return isMobile();
+  var stored = _serverSettings ? _serverSettings.composeBarOpen : null;
+  if (stored === null || stored === undefined) return true;
+  return !!stored;
+}
+
+/**
+ * One-time migration + initial resolve+persist, mirroring initSidebar()'s
+ * own "read the setting; if it was never set, resolve a default and
+ * persist it" shape. Must run AFTER loadServerSettings() has populated
+ * _serverSettings (see the DOMContentLoaded handler below) -- unlike
+ * sidebarOpen (re-derived at session-open time, well after load),
+ * composeBarOpen's toggle button is rendered once at page load, so this
+ * cannot defer the same way.
+ */
+function initComposePref() {
+  var stored = _serverSettings ? _serverSettings.composeBarOpen : null;
+  if (stored !== null && stored !== undefined) return; // already explicit -- nothing to resolve
+
+  // Never explicitly set on the server. Check for a pre-migration,
+  // per-device localStorage choice before falling back to the new
+  // on-by-default -- see the block comment above.
+  var legacy = null;
+  try {
+    var raw = localStorage.getItem(COMPOSE_PREF_STORAGE_KEY);
+    if (raw === 'on' || raw === 'off') legacy = raw === 'on';
+  } catch (_) {
+    // localStorage blocked -- nothing to migrate, fall through to the default
+  }
+
+  var resolved = legacy !== null ? legacy : true;
+  if (_serverSettings) _serverSettings.composeBarOpen = resolved;
+  patchServerSetting('composeBarOpen', resolved);
 }
 
 /**
  * Set and persist the compose preference, then re-render every dependent
- * widget. Only ever called with 'on' or 'off' (the toggle button never
- * writes 'auto' -- there is no UI path back to "let width decide" once a
- * user has made an explicit choice; that is the point of the three states).
- * @param {'on'|'off'} mode
+ * widget.
+ * @param {boolean} on
  */
-function _composeSetPref(mode) {
-  _composePref = mode;
-  try { localStorage.setItem(COMPOSE_PREF_STORAGE_KEY, mode); } catch (_) { /* blocked -- ok */ }
+function _composeSetPref(on) {
+  if (_serverSettings) _serverSettings.composeBarOpen = on;
+  patchServerSetting('composeBarOpen', on);
   _composeRenderToggle();
   _composeRender();
 }
 
 /** Flip the effective on/off state and persist the explicit choice. */
 function _composeToggle() {
-  _composeSetPref(_composeEffectiveOn() ? 'off' : 'on');
+  _composeSetPref(!_composeEffectiveOn());
 }
 
 /**
@@ -8221,8 +8251,6 @@ releaseInheritedOrientationLock();
 document.addEventListener('DOMContentLoaded', async function() {
   initDeviceId();
   initSyncGroup();
-  initComposePref();
-  _composeRenderToggle();
   // Fire-and-forget: _sttInit() never throws (every failure inside it
   // resolves to "leave the mic button hidden"), so nothing here needs to
   // await or .catch() it.
@@ -8230,6 +8258,15 @@ document.addEventListener('DOMContentLoaded', async function() {
 
   // Load ALL settings (now includes display + sidebar) before first render
   await loadServerSettings();
+
+  // muxplex-fx1: composeBarOpen (like sidebarOpen) lives in _serverSettings,
+  // so its resolve-a-default-and-migrate-legacy-localStorage step must run
+  // AFTER loadServerSettings() above, not before it -- unlike sidebarOpen,
+  // whose equivalent step (initSidebar()) runs later still, at first
+  // session-open, the compose toggle button is rendered right here at page
+  // load, so this cannot be deferred the same way.
+  initComposePref();
+  _composeRenderToggle();
   // Resolved session command pairs -- not polled (pairs change only when the
   // operator edits settings.json). A failed fetch degrades to the one-pair
   // create UI (today's behavior), never blocks session creation.

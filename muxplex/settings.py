@@ -182,6 +182,15 @@ DEFAULT_SETTINGS: dict = {
     # width -- the panel has no equivalent width heuristic since it is an
     # opt-in secondary tool, not primary navigation).
     "agentPanelOpen": None,
+    # Terminal compose bar (typed input into a tmux session) open/closed
+    # state -- syncs the SAME way sidebarOpen/agentPanelOpen do. None means
+    # "never toggled": unlike the old localStorage-only muxplex-compose-bar
+    # preference this replaces (which defaulted to visible on mobile widths
+    # only, hidden on desktop), a never-set value now resolves to VISIBLE
+    # on every width -- the compose bar was easy to miss, and "on" is more
+    # discoverable. An explicit True/False (the user has toggled it at
+    # least once) always wins over that default, on any device width.
+    "composeBarOpen": None,
     "settings_updated_at": 0.0,
     # Timestamp of the last change to `views` or `hidden_sessions` SPECIFICALLY.
     # Metadata, like settings_updated_at -- not itself a "setting" a client
@@ -404,6 +413,7 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
         "gridViewMode",
         "sidebarOpen",
         "agentPanelOpen",
+        "composeBarOpen",
         # Session behavior
         "sort_order",
         "hidden_sessions",
