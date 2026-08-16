@@ -3082,6 +3082,50 @@
     }
   }
 
+  // The owner's design call (Settings -> Agent Save button): we cannot know
+  // the shape of every provider's API key, and providers change formats
+  // over time, so the form never guesses at shape. ANY non-empty key is
+  // submitted; the server's real connectivity check (auth set + models
+  // list against a scratch home -- see main.py's _validate_agent_credential)
+  // is the only gate. This function renders that check's outcome legibly
+  // when it says no: a short, honest one-line summary plus the server's
+  // full detail collapsed underneath.
+  //
+  // Reuses the SAME ".agent-msg-tool" collapsed-<details> disclosure the
+  // chat panel's appendToolError() already uses for raw tool-error text --
+  // not a second "raw text, collapsed" pattern invented for this one form.
+  // Before this, the summary line was built as "Rejected: " + data.detail,
+  // and the server's own detail text for the 400 case already starts with
+  // "Rejected: ..." -- so a bad key rendered as "Rejected: Rejected: the
+  // provider reported this key as invalid (...)", with the full raw
+  // provider error (masked key, JSON body, URL) crammed into one
+  // un-collapsible line. Owning the summary wording here instead removes
+  // the double prefix structurally (no second "Rejected:" is ever
+  // concatenated onto the server's own), and the disclosure keeps the raw
+  // text available without forcing it into the primary reading line.
+  function _renderCredentialFailure(resultEl, status, detail) {
+    resultEl.textContent = "";
+    var headline;
+    if (status === 400) headline = "Rejected by the provider.";
+    else if (status === 502) headline = "Could not verify the key (connectivity problem, not necessarily a bad key).";
+    else if (status === 429) headline = "Saved, but the restart is rate-limited -- try again shortly.";
+    else if (status === 503) headline = "The Agent sidecar isn't installed on this server yet.";
+    else headline = "Save failed (HTTP " + status + ").";
+    resultEl.appendChild(document.createTextNode(headline + " "));
+
+    var det = document.createElement("details");
+    det.className = "agent-msg-tool";
+    var sum = document.createElement("summary");
+    sum.className = "agent-msg-tool-summary";
+    sum.textContent = "technical detail";
+    var pre = document.createElement("pre");
+    pre.className = "agent-msg-tool-raw";
+    pre.textContent = detail;
+    det.appendChild(sum);
+    det.appendChild(pre);
+    resultEl.appendChild(det);
+  }
+
   function _bindAgentCredentialForm() {
     const form = document.getElementById("agent-credential-form");
     const keyInput = document.getElementById("agent-credential-key");
@@ -3107,7 +3151,7 @@
         });
         const data = await resp.json().catch(function () { return {}; });
         if (!resp.ok) {
-          resultEl.textContent = "Rejected: " + (data.detail || ("HTTP " + resp.status));
+          _renderCredentialFailure(resultEl, resp.status, data.detail || ("HTTP " + resp.status));
           return;
         }
         keyInput.value = ""; // never leave the typed key sitting in the form

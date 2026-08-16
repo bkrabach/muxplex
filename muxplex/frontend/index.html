@@ -634,7 +634,11 @@
                 This may restart the Agent service. Any conversation in progress will be interrupted.
               </div>
               <button id="agent-credential-submit-btn" type="submit" class="settings-action-btn">Save key</button>
-              <span id="agent-credential-result" class="settings-helper" role="status" aria-live="polite"></span>
+              <!-- div, not span: a rejected save renders a collapsed <details>
+                   "technical detail" block in here (chat.js _renderCredentialFailure),
+                   same disclosure appendToolError() uses in the chat panel -- a
+                   block element belongs in a block container. -->
+              <div id="agent-credential-result" class="settings-helper" role="status" aria-live="polite"></div>
             </form>
           </div>
           <!-- muxplex-enr: disclosure, not policy. The owner has ACCEPTED
