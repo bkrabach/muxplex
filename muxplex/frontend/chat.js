@@ -246,7 +246,7 @@
   var panelEl, messagesEl, inputEl, sendBtn, newBtn, openBtn, exportBtn, exportLinkEl;
   // muxplex-fx1: the "Agent isn't set up" gate -- see checkAgentGate()/
   // setGateState() near init() and #chat-gate's comment in index.html.
-  var gateEl, gateTextEl, gateSettingsBtn, headerEl, composerEl;
+  var gateEl, gateTextEl, gateSettingsBtn, headerEl, composerEl, bylineEl;
 
   // Confirmation-gate elements (send_muxplex_session_input only -- see
   // requestInputConfirmation()/resolveConfirm() below).
@@ -2430,6 +2430,11 @@
     headerEl.classList.toggle("hidden", gated);
     messagesEl.classList.toggle("hidden", gated);
     composerEl.classList.toggle("hidden", gated);
+    // The byline's send-chord hint ("Ctrl+Enter to send") describes a
+    // composer that isn't on screen while gated -- hide it along with the
+    // rest of the chrome rather than leave a hint for a control that
+    // isn't there.
+    bylineEl.classList.toggle("hidden", gated);
   }
 
   /** Ask muxplex whether the Agent has ever been configured on this
@@ -2477,6 +2482,7 @@
     exportLinkEl = $("chat-export-link");
     headerEl = $("chat-panel-header");
     composerEl = $("chat-composer");
+    bylineEl = $("chat-byline");
     gateEl = $("chat-gate");
     gateTextEl = $("chat-gate-text");
     gateSettingsBtn = $("chat-gate-settings-btn");
@@ -2515,6 +2521,7 @@
     // same as every other required element here.
     if (!headerEl) __missing.push("chat-panel-header");
     if (!composerEl) __missing.push("chat-composer");
+    if (!bylineEl) __missing.push("chat-byline");
     if (!gateEl) __missing.push("chat-gate");
     if (!gateTextEl) __missing.push("chat-gate-text");
     if (!gateSettingsBtn) __missing.push("chat-gate-settings-btn");
