@@ -71,7 +71,13 @@
              (global/none, never alphabetized) plus a selectable "Registered
              with <server>" section for following a paired device. Populated
              and kept in sync by renderSyncGroupControls() -- same function
-             name/call sites as before, new implementation (§9.4). -->
+             name/call sites as before, new implementation (§9.4).
+             A visible text label precedes it now -- aria-label alone meant a
+             sighted user had no way to know what this control was without
+             hovering for the title tooltip, the exact "state that requires a
+             hover to discover is not state the user has" lesson from the
+             v0.48.3 bug, repeated with a different widget. -->
+        <label class="follows-label" for="sync-group-select">Follows:</label>
         <select id="sync-group-select" class="settings-select follows-select"
                 aria-label="Follows"
                 title="Following this server's view"></select>
@@ -122,15 +128,20 @@
       <button id="back-btn" class="back-btn" aria-label="Back">&#8592;</button>
       <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" aria-label="Toggle session list">&#9776;</button>
       <span id="expanded-session-name" class="expanded-session-name"></span>
-      <button id="compose-toggle-btn" class="header-btn"
-              aria-pressed="false" aria-label="Toggle compose bar"
-              title="Show compose bar">&#9998;</button>
-      <!-- Same replacement as the overview header's #sync-group-select --
-           see the comment there (§9.1/§9.4). -->
+      <!-- Moved before #compose-toggle-btn per owner request: "Follows" is a
+           global, always-relevant control (what does THIS device follow),
+           where compose is a per-session, opt-in affordance -- reads better
+           leading the group of controls rather than sitting in the middle
+           of them. Same replacement as the overview header's
+           #sync-group-select -- see the comment there (§9.1/§9.4). -->
+      <label class="follows-label" for="sync-group-select-expanded">Follows:</label>
       <select id="sync-group-select-expanded" class="settings-select follows-select"
               aria-label="Follows"
               title="Following this server's view"></select>
       <span id="controlled-by-chip-expanded" class="controlled-by-chip hidden"></span>
+      <button id="compose-toggle-btn" class="header-btn"
+              aria-pressed="false" aria-label="Toggle compose bar"
+              title="Show compose bar">&#9998;</button>
       <button id="settings-btn-expanded" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge-expanded" class="error-count-badge hidden"></span></button>
       <!-- Same Muxplex Agent entry point as the overview header (#chat-open-btn),
            mirrored here following this file's own established convention for
