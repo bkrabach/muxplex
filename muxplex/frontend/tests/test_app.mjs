@@ -2475,6 +2475,60 @@ test('openSession bails early when name is whitespace only', async () => {
   globalThis.setTimeout = origSetTimeout;
 });
 
+// --- getFocusedSessionName (muxplex-h2f) ---
+//
+// The chat panel's focus awareness (chat.js) reads THIS function, not
+// _activeView -- see getFocusedSessionName()'s own docstring in app.js for
+// why: _activeView is the dashboard's grid VIEW FILTER ('all'/'hidden'/a
+// named view) and is independent of whether a single session is actually
+// open. Confirmed against a live instance: GET /api/state can report
+// active_session:"some-session" alongside active_view:"all" at the same
+// moment, so treating 'all' as "nothing is focused" would be wrong exactly
+// when a session genuinely is.
+
+test('getFocusedSessionName is exported', () => {
+  assert.strictEqual(typeof app.getFocusedSessionName, 'function');
+});
+
+test('getFocusedSessionName returns null when no session is open (grid overview)', () => {
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  assert.strictEqual(app.getFocusedSessionName(), null);
+});
+
+test('getFocusedSessionName returns the open session name (local session)', () => {
+  app._setViewingSession('sort-check');
+  app._setViewingRemoteId('');
+  assert.strictEqual(app.getFocusedSessionName(), 'sort-check');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+});
+
+test('getFocusedSessionName returns null for a REMOTE (federated) session -- local-only, matching list_muxplex_sessions', () => {
+  app._setViewingSession('remote-session');
+  app._setViewingRemoteId('fed-device-123');
+  assert.strictEqual(
+    app.getFocusedSessionName(), null,
+    'a session opened from a federation peer is not one of THIS instance\'s own sessions'
+  );
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+});
+
+test('getFocusedSessionName is independent of _activeView -- a session can be focused while the view filter is "all"', () => {
+  app._setActiveView('all');
+  app._setViewingSession('sort-check');
+  app._setViewingRemoteId('');
+  assert.strictEqual(app._getActiveView(), 'all');
+  assert.strictEqual(
+    app.getFocusedSessionName(), 'sort-check',
+    'a focused session must be reported even while the grid view filter is "all"'
+  );
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  app._setActiveView('all');
+});
+
 // --- closeSession ---
 
 test('closeSession is exported', () => {

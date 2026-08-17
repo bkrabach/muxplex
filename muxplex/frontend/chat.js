@@ -1822,13 +1822,27 @@
         throw new Error("GET /api/sessions failed: HTTP " + resp.status);
       }
       var sessions = resp.json || [];
+      // muxplex-h2f: read live, at the moment this tool actually runs, not a
+      // snapshot taken when the panel opened -- the user may have switched
+      // sessions since. See getFocusedSessionName()'s own docstring (app.js)
+      // for why this is _viewingSession, not _activeView. Guarded the same
+      // defensive way this file already reads every other app.js global.
+      var focusedName = (typeof window.getFocusedSessionName === "function")
+        ? window.getFocusedSessionName()
+        : null;
       var summary = sessions.map(function (s) {
-        return {
+        var entry = {
           name: s.name,
           last_activity_at: s.last_activity_at,
           created_at: s.created_at,
           cwd: s.cwd,
         };
+        // Purely additive: only the entry matching the browser's own
+        // current focus gets this key at all, so a model or test reading
+        // the existing name/last_activity_at/created_at/cwd shape is never
+        // affected by a session that isn't focused.
+        if (focusedName && s.name === focusedName) entry.focused = true;
+        return entry;
       });
       return JSON.stringify(summary);
     }
@@ -2070,6 +2084,30 @@
     throw new Error("chat panel: unknown tool requested by model: " + name);
   }
 
+  /** muxplex-h2f: one line telling the model which session (if any) is
+   * currently open/zoomed-in in THIS browser, so it can answer a question
+   * like "what about the one in focus?" without the user having to name a
+   * session. Built fresh on every call -- see runTurn()'s call site, which
+   * reads this at the top of EVERY request in a turn (including tool-call
+   * continuations), never once at panel-open time -- so a view switched
+   * mid-conversation is reflected on the very next request, not the next
+   * time the panel happens to reopen.
+   *
+   * Honest by construction: if app.js's getFocusedSessionName() isn't
+   * available at all (older frontend build, or chat.js loaded standalone),
+   * this omits the line entirely rather than asserting either state --
+   * silence, not a fabricated "nothing is focused". */
+  function focusContextLine() {
+    if (typeof window.getFocusedSessionName !== "function") return null;
+    var name = window.getFocusedSessionName();
+    if (name) {
+      return "Currently in focus: the dashboard has session \"" + name +
+        "\" open/expanded right now.";
+    }
+    return "Currently in focus: no single session -- the user is on the " +
+      "all-sessions dashboard overview (nothing is expanded/zoomed in).";
+  }
+
   /** Run one turn of the conversation against /api/agent/chat/completions,
    * streaming the SSE response into the panel. If the model calls one or
    * more tools, executes EACH of them in the browser (in call order) and
@@ -2083,10 +2121,15 @@
     var requestStartedAt = performance.now();
     setStatus("wait", "Thinking about what to do next...");
     armStallWatch("waiting for the agent to respond");
+    // muxplex-h2f: read live, right before this specific request is built --
+    // not cached from an earlier point in the turn -- so a view switched
+    // between tool-call round trips is never stale by more than one request.
+    var focusLine = focusContextLine();
+    var systemPromptForRequest = focusLine ? SYSTEM_PROMPT + "\n\n" + focusLine : SYSTEM_PROMPT;
     var body = {
       model: MODEL,
       stream: true,
-      messages: [{ role: "system", content: SYSTEM_PROMPT }].concat(messages),
+      messages: [{ role: "system", content: systemPromptForRequest }].concat(messages),
       tools: TOOLS,
     };
 

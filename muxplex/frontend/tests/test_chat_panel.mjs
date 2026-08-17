@@ -295,6 +295,11 @@ function loadChatPanel({ fetchImpl, includeCloseBtn = false } = {}) {
   return {
     els,
     document: context.document,
+    // The sandboxed `window` object itself -- e.g. so a test can stub
+    // window.getFocusedSessionName (muxplex-h2f) the same way app.js would
+    // define it for real, without this file needing a second sandbox shape
+    // just for that one function.
+    window: context.window,
     storage,
     fetchCalls,
     prefs: context.window.muxplexAgentPrefs,
@@ -1032,4 +1037,171 @@ test('fx1: window.muxplexAgentCredential.recheckGate is the real checkAgentGate 
 
   await panel.credential.recheckGate();
   assert.strictEqual(panel.els['chat-composer'].classList.contains('hidden'), true, 'repeat calls do not flip state on their own');
+});
+
+// =======================================================================
+// GROUP 7 (muxplex-h2f) -- the chat panel's focus awareness: the browser's
+// own currently-open/zoomed session (app.js's getFocusedSessionName(),
+// NOT _activeView -- see that function's docstring for why) is surfaced
+// to the model two ways: (a) annotated onto list_muxplex_sessions' own
+// result, (b) a per-turn context line built fresh on every request. Owner's
+// report: "I don't actually have a way to see which session is currently
+// focused/active in your dashboard."
+// =======================================================================
+
+/** Fetch stub for a full list_muxplex_sessions turn: the completions call
+ * requests the tool, GET /api/sessions answers with two sessions, and the
+ * continuation completions call captures whatever was actually POSTed
+ * (both the tool's own {role:"tool"} result AND the system message) so the
+ * test can inspect both muxplex-h2f mechanisms in one real turn. */
+function makeListSessionsFetch(sessionsPayload) {
+  const completionsRequests = [];
+  let completionsCalls = 0;
+  return {
+    completionsRequests,
+    fetchImpl: async (url, opts) => {
+      if (url === '/api/agent/chat/completions') {
+        completionsCalls++;
+        if (opts && opts.body) completionsRequests.push(JSON.parse(opts.body));
+        if (completionsCalls === 1) {
+          return sseChunksResponse(toolCallTurnChunks('list_muxplex_sessions', {}, 'call_1'));
+        }
+        return sseChunksResponse(finalAnswerChunks('Done.'));
+      }
+      if (url === '/api/sessions') {
+        // list_muxplex_sessions goes through apiFetch(), which reads
+        // `.text()` (not `.json()`) -- see apiFetch()'s own docstring.
+        return { ok: true, status: 200, text: async () => JSON.stringify(sessionsPayload) };
+      }
+      throw new Error('unexpected fetch url in test: ' + url);
+    },
+  };
+}
+
+test('h2f: list_muxplex_sessions marks the browser-focused session with focused:true', async () => {
+  const sessions = [
+    { name: 'alpha', last_activity_at: 1, created_at: 1, cwd: '/a' },
+    { name: 'beta', last_activity_at: 2, created_at: 2, cwd: '/b' },
+  ];
+  const { completionsRequests, fetchImpl } = makeListSessionsFetch(sessions);
+  const panel = loadChatPanel({ fetchImpl });
+  // Simulate the browser having "beta" open/zoomed in -- app.js's own
+  // function, stubbed here exactly the way it is really defined for real
+  // (a plain function on window), matching chat.js's guarded
+  // `typeof window.getFocusedSessionName === "function"` read.
+  panel.window.getFocusedSessionName = () => 'beta';
+
+  panel.els['chat-input'].value = 'what sessions do I have?';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+
+  // Second completions request is the continuation carrying the tool
+  // result -- find the {role:"tool"} message and parse its JSON body.
+  const continuation = completionsRequests[1];
+  assert.ok(continuation, 'expected a continuation request after the tool call');
+  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
+  assert.ok(toolMsg, 'expected a {role:"tool"} message in the continuation');
+  const parsed = JSON.parse(toolMsg.content);
+  const betaEntry = parsed.find((s) => s.name === 'beta');
+  const alphaEntry = parsed.find((s) => s.name === 'alpha');
+  assert.strictEqual(betaEntry.focused, true, 'the focused session must carry focused:true');
+  assert.strictEqual(alphaEntry.focused, undefined, 'a non-focused session must not carry a focused key at all');
+  // Purely additive: the pre-existing fields must be completely unchanged.
+  assert.strictEqual(betaEntry.last_activity_at, 2);
+  assert.strictEqual(betaEntry.cwd, '/b');
+});
+
+test('h2f: list_muxplex_sessions marks no entry as focused when nothing is open (all-sessions dashboard)', async () => {
+  const sessions = [
+    { name: 'alpha', last_activity_at: 1, created_at: 1, cwd: '/a' },
+    { name: 'beta', last_activity_at: 2, created_at: 2, cwd: '/b' },
+  ];
+  const { completionsRequests, fetchImpl } = makeListSessionsFetch(sessions);
+  const panel = loadChatPanel({ fetchImpl });
+  panel.window.getFocusedSessionName = () => null; // grid overview, nothing zoomed in
+
+  panel.els['chat-input'].value = 'what sessions do I have?';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+
+  const continuation = completionsRequests[1];
+  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
+  const parsed = JSON.parse(toolMsg.content);
+  assert.ok(parsed.every((s) => s.focused === undefined), 'no entry should be marked focused');
+});
+
+test('h2f: the per-turn system prompt names the focused session', async () => {
+  const { completionsRequests, fetchImpl } = makeListSessionsFetch([]);
+  const panel = loadChatPanel({ fetchImpl });
+  panel.window.getFocusedSessionName = () => 'sort-check';
+
+  panel.els['chat-input'].value = 'what about the one in focus?';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+
+  const first = completionsRequests[0];
+  const systemMsg = first.messages.find((m) => m.role === 'system');
+  assert.match(systemMsg.content, /"sort-check"/, 'system prompt must name the focused session');
+  assert.match(systemMsg.content, /open\/expanded/i);
+});
+
+test('h2f: the per-turn system prompt honestly reports no single focus on the all-sessions dashboard', async () => {
+  const { completionsRequests, fetchImpl } = makeListSessionsFetch([]);
+  const panel = loadChatPanel({ fetchImpl });
+  panel.window.getFocusedSessionName = () => null;
+
+  panel.els['chat-input'].value = 'what about the one in focus?';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+
+  const first = completionsRequests[0];
+  const systemMsg = first.messages.find((m) => m.role === 'system');
+  assert.match(systemMsg.content, /no single session/i);
+  assert.match(systemMsg.content, /all-sessions dashboard/i);
+});
+
+test('h2f: a second request within the SAME turn re-reads focus live (tool-call round trip)', async () => {
+  // Regression guard for "read live, not a stale snapshot" -- the focus
+  // line is computed once per HTTP request (runTurn() is called again for
+  // the continuation), so a focus change mid-turn is reflected on the very
+  // next request rather than carried over from the first.
+  let focused = 'alpha';
+  const { completionsRequests, fetchImpl } = makeListSessionsFetch([
+    { name: 'alpha', last_activity_at: 1, created_at: 1, cwd: '/a' },
+  ]);
+  const panel = loadChatPanel({
+    fetchImpl: async (url, opts) => {
+      if (url === '/api/agent/chat/completions' && opts && opts.body) {
+        // Flip focus after the FIRST request is sent, before the second is
+        // built -- simulates the user switching sessions mid-turn.
+        if (JSON.parse(opts.body).messages.some((m) => m.role === 'user')) focused = 'beta';
+      }
+      return fetchImpl(url, opts);
+    },
+  });
+  panel.window.getFocusedSessionName = () => focused;
+
+  panel.els['chat-input'].value = 'hello';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+
+  const firstSystem = completionsRequests[0].messages.find((m) => m.role === 'system').content;
+  const secondSystem = completionsRequests[1].messages.find((m) => m.role === 'system').content;
+  assert.match(firstSystem, /"alpha"/);
+  assert.match(secondSystem, /"beta"/);
+});
+
+test('h2f: focus context line is omitted entirely when getFocusedSessionName is unavailable', async () => {
+  // Older frontend build / chat.js loaded standalone -- must not fabricate
+  // either "focused" or "not focused"; the line is simply absent.
+  const { completionsRequests, fetchImpl } = makeListSessionsFetch([]);
+  const panel = loadChatPanel({ fetchImpl });
+  // Deliberately do NOT set panel.window.getFocusedSessionName.
+
+  panel.els['chat-input'].value = 'hello';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+
+  const systemMsg = completionsRequests[0].messages.find((m) => m.role === 'system').content;
+  assert.doesNotMatch(systemMsg, /Currently in focus/);
 });

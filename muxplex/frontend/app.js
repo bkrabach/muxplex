@@ -5234,6 +5234,36 @@ function showTerminalConflictDialog(name, body) {
   }
 }
 
+/**
+ * Name of the session currently open/zoomed-in in this browser (the one
+ * `view-expanded` is showing full-screen), or null when the user is on the
+ * grid overview with nothing open -- i.e. this browser's own notion of
+ * "focus" (muxplex-h2f). Read live: `_viewingSession` is only ever set by
+ * openSession() and cleared by closeSession(), so a caller that reads this
+ * right before use always gets the current state, never a stale snapshot.
+ *
+ * Deliberately NOT `_activeView` (the dashboard's grid VIEW FILTER --
+ * 'all'/'hidden'/a named view; see its own declaration a few hundred lines
+ * up). The two are independent: `_activeView` can sit on 'all' while a
+ * single session is genuinely open (confirmed empirically against a live
+ * instance -- GET /api/state returned `active_session:"sort-check"` next to
+ * `active_view:"all"` at the same moment), so treating 'all' as "nothing is
+ * focused" would be plain wrong whenever that's true. This is why the chat
+ * panel's focus-awareness (chat.js) reads THIS function, not `_activeView`.
+ *
+ * Scoped to a LOCAL session on purpose: a session opened from a federation
+ * peer (`_viewingRemoteId` non-empty) is not one of this instance's own
+ * sessions, and `list_muxplex_sessions` (the chat panel's session-listing
+ * tool) is local-only -- so a remote focus is reported here as "no local
+ * focus" rather than naming a session that tool's own result would not
+ * contain.
+ * @returns {string|null}
+ */
+function getFocusedSessionName() {
+  if (_viewingRemoteId) return null;
+  return _viewingSession;
+}
+
 /** Test-only helper: set _viewingSession directly. */
 function _setViewingSession(name) {
   _viewingSession = name;
@@ -9876,6 +9906,7 @@ if (typeof module !== 'undefined' && module.exports) {
     updatePillBell,
     openSession,
     closeSession,
+    getFocusedSessionName,
     _setViewingSession,
     _setViewingRemoteId,
     _setPendingLocalSwitches,
