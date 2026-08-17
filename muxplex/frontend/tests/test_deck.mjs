@@ -86,6 +86,14 @@ test('deck.js exports all pure functions', () => {
     'generateDeckDeviceId',
     'loadOrCreateDeckDeviceId',
     'deckHeartbeatLabel',
+    // v2 federation-aware deck rendering
+    // (docs/plans/2026-08-16-deck-control-target-design.md §4.5)
+    'pairKey',
+    'partitionFederationSessions',
+    'remoteSessionsForView',
+    'isEntryActive',
+    'buildFederatedSessionList',
+    'connectEndpointFor',
   ];
   for (const fn of expected) {
     assert.ok(fn in deck, `deck.js should export "${fn}"`);
@@ -2820,4 +2828,348 @@ test('regression: importSettingsJSON on a pre-Step-3 export blob (no "follows" k
   const result = deck.importSettingsJSON(oldBlob, deck.defaultDeckSettings());
   assert.strictEqual(result.error, null);
   assert.deepEqual(result.settings.follows, { mode: 'global', targetId: null, targetLabel: null });
+});
+
+// ─── v2 federation-aware deck rendering ────────────────────────────────────
+// (docs/plans/2026-08-16-deck-control-target-design.md §4.5 -- "Full
+// federation-aware deck rendering", the Soft Deck half.)
+
+// ── pairKey ──
+
+test('pairKey: a local session (no remoteId) keys by its bare name', () => {
+  assert.strictEqual(deck.pairKey('sess1', null), 'sess1');
+  assert.strictEqual(deck.pairKey('sess1', undefined), 'sess1');
+  assert.strictEqual(deck.pairKey('sess1', ''), 'sess1');
+});
+
+test('pairKey: a remote session keys by "remoteId:name"', () => {
+  assert.strictEqual(deck.pairKey('sess1', 'device-b'), 'device-b:sess1');
+});
+
+test('pairKey: the collision case -- same name, two different remoteIds (or local vs remote) never produce the same key', () => {
+  const local = deck.pairKey('sess1', null);
+  const remoteA = deck.pairKey('sess1', 'device-a');
+  const remoteB = deck.pairKey('sess1', 'device-b');
+  assert.notStrictEqual(local, remoteA);
+  assert.notStrictEqual(local, remoteB);
+  assert.notStrictEqual(remoteA, remoteB);
+});
+
+// ── partitionFederationSessions ──
+
+test('partitionFederationSessions: splits local (remoteId null), remote (remoteId set), and status entries', () => {
+  const raw = [
+    { name: 'sess1', remoteId: null, deviceId: 'local-dev', sessionKey: 'local-dev:sess1', snapshot: 'a' },
+    { name: 'sess1', remoteId: 'macbook-dev', deviceId: 'macbook-dev', deviceName: 'macbook', sessionKey: 'macbook-dev:sess1', snapshot: 'b' },
+    { status: 'unreachable', remoteId: 'alien-dev', deviceId: 'alien-dev', deviceName: 'alienware', deviceVersion: null },
+  ];
+  const { local, remote, statuses } = deck.partitionFederationSessions(raw);
+  assert.strictEqual(local.length, 1);
+  assert.strictEqual(local[0].name, 'sess1');
+  assert.strictEqual(remote.length, 1);
+  assert.strictEqual(remote[0].deviceName, 'macbook');
+  assert.strictEqual(statuses.length, 1);
+  assert.strictEqual(statuses[0].status, 'unreachable');
+});
+
+test('partitionFederationSessions: an unreachable/auth_failed peer degrades VISIBLY -- kept in statuses, never silently dropped', () => {
+  const raw = [
+    { status: 'unreachable', remoteId: 'alien-dev', deviceName: 'alienware', deviceVersion: null },
+    { status: 'auth_failed', remoteId: 'other-dev', deviceName: 'other', deviceVersion: '0.53.0' },
+  ];
+  const { statuses } = deck.partitionFederationSessions(raw);
+  assert.strictEqual(statuses.length, 2);
+  assert.deepEqual(statuses.map((s) => s.status).sort(), ['auth_failed', 'unreachable']);
+});
+
+test('partitionFederationSessions: a reachable-but-empty peer (status: "empty") is dropped entirely -- matches main.py/app.js convention', () => {
+  const raw = [{ status: 'empty', remoteId: 'quiet-dev', deviceName: 'quiet', deviceVersion: '0.53.0' }];
+  const { local, remote, statuses } = deck.partitionFederationSessions(raw);
+  assert.strictEqual(local.length, 0);
+  assert.strictEqual(remote.length, 0);
+  assert.strictEqual(statuses.length, 0);
+});
+
+test('partitionFederationSessions: empty/absent input never throws', () => {
+  assert.deepEqual(deck.partitionFederationSessions([]), { local: [], remote: [], statuses: [] });
+  assert.deepEqual(deck.partitionFederationSessions(undefined), { local: [], remote: [], statuses: [] });
+});
+
+test('partitionFederationSessions: a never-federated server (no remote entries at all) partitions to local-only -- byte-identical content case', () => {
+  const raw = [
+    { name: 'sess1', remoteId: null, sessionKey: 'dev:sess1', snapshot: 'x' },
+    { name: 'sess2', remoteId: null, sessionKey: 'dev:sess2', snapshot: 'y' },
+  ];
+  const { local, remote, statuses } = deck.partitionFederationSessions(raw);
+  assert.strictEqual(local.length, 2);
+  assert.strictEqual(remote.length, 0);
+  assert.strictEqual(statuses.length, 0);
+});
+
+// ── remoteSessionsForView ──
+
+test('remoteSessionsForView: "all" passes every remote session through unfiltered', () => {
+  const remote = [
+    { name: 'a', views: [] },
+    { name: 'b', views: ['work'] },
+  ];
+  assert.strictEqual(deck.remoteSessionsForView(remote, 'all').length, 2);
+});
+
+test('remoteSessionsForView: "hidden" never shows a remote session (no hidden signal available for remotes)', () => {
+  const remote = [{ name: 'a', views: [] }];
+  assert.deepEqual(deck.remoteSessionsForView(remote, 'hidden'), []);
+});
+
+test('remoteSessionsForView: a user view name keeps only entries whose server-computed `views` field already includes it', () => {
+  const remote = [
+    { name: 'a', views: ['work'] },
+    { name: 'b', views: ['personal'] },
+    { name: 'c', views: ['work', 'personal'] },
+  ];
+  const result = deck.remoteSessionsForView(remote, 'work');
+  assert.deepEqual(result.map((s) => s.name).sort(), ['a', 'c']);
+});
+
+test('remoteSessionsForView: empty/absent remote entries never throw', () => {
+  assert.deepEqual(deck.remoteSessionsForView([], 'all'), []);
+  assert.deepEqual(deck.remoteSessionsForView(undefined, 'all'), []);
+});
+
+// ── isEntryActive ──
+
+test('isEntryActive: a local session is active only when its name matches and activeRemoteId is null', () => {
+  assert.strictEqual(deck.isEntryActive('sess1', null, 'sess1', null), true);
+  assert.strictEqual(deck.isEntryActive('sess1', null, 'sess2', null), false);
+});
+
+test('isEntryActive: the mis-highlight guard -- a local session with the SAME NAME as the true active remote session is NOT active', () => {
+  // design doc §4.5's single riskiest unknown: without this guard, a
+  // same-named local entry would light up alongside (or instead of) the
+  // real active remote one.
+  assert.strictEqual(deck.isEntryActive('sess1', null, 'sess1', 'macbook-dev'), false);
+});
+
+test('isEntryActive: the true remote session (matching name AND remoteId) is active', () => {
+  assert.strictEqual(deck.isEntryActive('sess1', 'macbook-dev', 'sess1', 'macbook-dev'), true);
+});
+
+test('isEntryActive: a DIFFERENT remote session with the same name (wrong remoteId) is not active', () => {
+  assert.strictEqual(deck.isEntryActive('sess1', 'alien-dev', 'sess1', 'macbook-dev'), false);
+});
+
+test('isEntryActive: no active session at all (activeSessionName null) -- nothing is active', () => {
+  assert.strictEqual(deck.isEntryActive('sess1', null, null, null), false);
+  assert.strictEqual(deck.isEntryActive('sess1', 'macbook-dev', null, null), false);
+});
+
+// ── buildFederatedSessionList ──
+
+test('buildFederatedSessionList: local sessions keep GET /api/view fields and gain sessionKey/remoteId/deviceName', () => {
+  const localView = [
+    { name: 'sess1', bell: { unseen_count: 0 }, last_activity_at: 100, needs_attention: false },
+  ];
+  const localFed = [{ name: 'sess1', sessionKey: 'dev-a:sess1', remoteId: null, deviceId: 'dev-a' }];
+  const result = deck.buildFederatedSessionList(localView, localFed, [], [], 'all', null, null);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].sessionKey, 'dev-a:sess1');
+  assert.strictEqual(result[0].remoteId, null);
+  assert.strictEqual(result[0].deviceName, '');
+});
+
+test('buildFederatedSessionList: remote sessions are appended AFTER local ones, tagged distinguishably', () => {
+  const localView = [{ name: 'local1', bell: {}, last_activity_at: 1, needs_attention: false }];
+  const localFed = [{ name: 'local1', sessionKey: 'dev-a:local1', remoteId: null }];
+  const remote = [
+    { name: 'remote1', sessionKey: 'dev-b:remote1', remoteId: 'dev-b', deviceName: 'macbook', bell: {}, last_activity_at: 2, views: [] },
+  ];
+  const result = deck.buildFederatedSessionList(localView, localFed, remote, [], 'all', null, null);
+  assert.strictEqual(result.length, 2);
+  assert.strictEqual(result[0].name, 'local1');
+  assert.strictEqual(result[0].remoteId, null);
+  assert.strictEqual(result[1].name, 'remote1');
+  assert.strictEqual(result[1].remoteId, 'dev-b');
+  assert.strictEqual(result[1].deviceName, 'macbook');
+});
+
+test('buildFederatedSessionList: the collision case -- a local and a remote session sharing the SAME bare name both appear, distinctly keyed', () => {
+  const localView = [{ name: 'sess1', bell: {}, last_activity_at: 1, needs_attention: false }];
+  const localFed = [{ name: 'sess1', sessionKey: 'dev-a:sess1', remoteId: null }];
+  const remote = [{ name: 'sess1', sessionKey: 'dev-b:sess1', remoteId: 'dev-b', deviceName: 'macbook', bell: {}, views: [] }];
+  const result = deck.buildFederatedSessionList(localView, localFed, remote, [], 'all', null, null);
+  assert.strictEqual(result.length, 2, 'both same-named sessions must appear -- never merged');
+  assert.strictEqual(result[0].name, 'sess1');
+  assert.strictEqual(result[1].name, 'sess1');
+  assert.notStrictEqual(result[0].sessionKey, result[1].sessionKey);
+  assert.strictEqual(result[0].remoteId, null);
+  assert.strictEqual(result[1].remoteId, 'dev-b');
+});
+
+test('buildFederatedSessionList: remote sessions are filtered to the current view via remoteSessionsForView (not re-derived)', () => {
+  const localView = [];
+  const remote = [
+    { name: 'work-sess', sessionKey: 'dev-b:work-sess', remoteId: 'dev-b', deviceName: 'macbook', bell: {}, views: ['work'] },
+    { name: 'personal-sess', sessionKey: 'dev-b:personal-sess', remoteId: 'dev-b', deviceName: 'macbook', bell: {}, views: ['personal'] },
+  ];
+  const result = deck.buildFederatedSessionList(localView, [], remote, [], 'work', null, null);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].name, 'work-sess');
+});
+
+test('buildFederatedSessionList: status entries are appended last, carrying `status` for computeKeyPlan to render as non-interactive', () => {
+  const statuses = [{ status: 'unreachable', remoteId: 'alien-dev', deviceName: 'alienware', deviceVersion: null }];
+  const result = deck.buildFederatedSessionList([], [], [], statuses, 'all', null, null);
+  assert.strictEqual(result.length, 1);
+  assert.strictEqual(result[0].status, 'unreachable');
+  assert.strictEqual(result[0].deviceName, 'alienware');
+});
+
+test('buildFederatedSessionList: a status entry with no deviceName falls back to the raw remoteId label -- never blank', () => {
+  const statuses = [{ status: 'auth_failed', remoteId: 'dev-x', deviceName: '', deviceVersion: null }];
+  const result = deck.buildFederatedSessionList([], [], [], statuses, 'all', null, null);
+  assert.strictEqual(result[0].name, 'dev-x');
+  assert.strictEqual(result[0].deviceName, 'dev-x');
+});
+
+test('buildFederatedSessionList: the mis-highlight guard applied end-to-end -- local session with active_remote_id set is NOT active, the true remote one is', () => {
+  const localView = [{ name: 'sess1', bell: {}, last_activity_at: 1, needs_attention: false, active: true }];
+  const localFed = [{ name: 'sess1', sessionKey: 'dev-a:sess1', remoteId: null }];
+  const remote = [{ name: 'sess1', sessionKey: 'dev-b:sess1', remoteId: 'dev-b', deviceName: 'macbook', bell: {}, views: [] }];
+  // GET /api/state says the TRUE active session is the remote one, even
+  // though GET /api/view's own (untrusted) `active: true` says otherwise.
+  const result = deck.buildFederatedSessionList(localView, localFed, remote, [], 'all', 'sess1', 'dev-b');
+  const localEntry = result.find((s) => s.remoteId === null);
+  const remoteEntry = result.find((s) => s.remoteId === 'dev-b');
+  assert.strictEqual(localEntry.active, false, 'local same-named entry must not mis-highlight');
+  assert.strictEqual(remoteEntry.active, true, 'the true remote active entry must highlight');
+});
+
+test('buildFederatedSessionList: a never-federated poll (no remote entries, no statuses) produces a list identical in shape to the local-only list', () => {
+  const localView = [
+    { name: 'sess1', bell: {}, last_activity_at: 1, needs_attention: false, active: true },
+    { name: 'sess2', bell: {}, last_activity_at: 2, needs_attention: false, active: false },
+  ];
+  const localFed = [
+    { name: 'sess1', sessionKey: 'dev-a:sess1', remoteId: null },
+    { name: 'sess2', sessionKey: 'dev-a:sess2', remoteId: null },
+  ];
+  const result = deck.buildFederatedSessionList(localView, localFed, [], [], 'all', 'sess1', null);
+  assert.strictEqual(result.length, 2);
+  assert.strictEqual(result.every((s) => s.remoteId === null), true);
+  assert.strictEqual(result[0].active, true);
+  assert.strictEqual(result[1].active, false);
+});
+
+// ── connectEndpointFor -- "connect routing choosing local vs. federation-proxy correctly" ──
+
+test('connectEndpointFor: a local session (no remoteId) routes to the local per-session connect endpoint', () => {
+  assert.strictEqual(deck.connectEndpointFor('sess1', null), '/api/sessions/sess1/connect');
+  assert.strictEqual(deck.connectEndpointFor('sess1', undefined), '/api/sessions/sess1/connect');
+});
+
+test('connectEndpointFor: a remote session routes through the federation proxy with the correct deviceId', () => {
+  assert.strictEqual(
+    deck.connectEndpointFor('sess1', 'macbook-dev'),
+    '/api/federation/macbook-dev/connect/sess1'
+  );
+});
+
+test('connectEndpointFor: both name and remoteId are URL-encoded', () => {
+  assert.strictEqual(
+    deck.connectEndpointFor('my session', 'dev/with slash'),
+    '/api/federation/dev%2Fwith%20slash/connect/my%20session'
+  );
+  assert.strictEqual(deck.connectEndpointFor('my session', null), '/api/sessions/my%20session/connect');
+});
+
+// ── computeKeyPlan integration: status role + remote body marker ──
+
+test('computeKeyPlan: a status entry renders as a non-interactive "status" role tile, never "session"', () => {
+  const grid = { rows: 2, cols: 2 };
+  const reserved = { mode: 'degenerate', view: null, prev: null, next: null };
+  const sessions = [{ status: 'unreachable', name: 'alienware', deviceName: 'alienware', remoteId: 'alien-dev' }];
+  const result = deck.computeKeyPlan({
+    grid, reserved, mode: 'grid', sessions, viewName: 'all', viewsList: ['all'],
+    page: 0, pickerPage: 0, nowMs: 1000,
+  });
+  const face = result.plan.find((f) => f.role === 'status');
+  assert.ok(face, 'expected a status-role face');
+  assert.strictEqual(face.name, 'alienware');
+  assert.strictEqual(face.body, 'Offline');
+  assert.strictEqual(face.target, null, 'status tiles must not be connectable');
+  assert.strictEqual(face.remoteId, 'alien-dev');
+});
+
+test('computeKeyPlan: an auth_failed status entry is labeled distinctly from unreachable', () => {
+  const grid = { rows: 2, cols: 2 };
+  const reserved = { mode: 'degenerate', view: null, prev: null, next: null };
+  const sessions = [{ status: 'auth_failed', name: 'other', deviceName: 'other', remoteId: 'other-dev' }];
+  const result = deck.computeKeyPlan({
+    grid, reserved, mode: 'grid', sessions, viewName: 'all', viewsList: ['all'],
+    page: 0, pickerPage: 0, nowMs: 1000,
+  });
+  const face = result.plan.find((f) => f.role === 'status');
+  assert.strictEqual(face.body, 'Auth');
+});
+
+test('computeKeyPlan: a remote session tile carries the origin device name in BODY; a local session tile has an empty BODY (byte-identical)', () => {
+  const grid = { rows: 2, cols: 2 };
+  const reserved = { mode: 'degenerate', view: null, prev: null, next: null };
+  const sessions = [
+    { name: 'local1', active: false, needs_attention: false, last_activity_at: 1 },
+    { name: 'remote1', remoteId: 'macbook-dev', deviceName: 'macbook', active: false, needs_attention: false, last_activity_at: 2 },
+  ];
+  const result = deck.computeKeyPlan({
+    grid, reserved, mode: 'grid', sessions, viewName: 'all', viewsList: ['all'],
+    page: 0, pickerPage: 0, nowMs: 1000,
+  });
+  const localFace = result.plan.find((f) => f.role === 'session' && f.name === 'local1');
+  const remoteFace = result.plan.find((f) => f.role === 'session' && f.name === 'remote1');
+  assert.strictEqual(localFace.body, '');
+  assert.strictEqual(localFace.remoteId, null);
+  assert.strictEqual(remoteFace.body, 'macbook');
+  assert.strictEqual(remoteFace.remoteId, 'macbook-dev');
+});
+
+test('computeKeyPlan: the collision case -- two same-named sessions (one local, one remote) render as two distinct tiles with independent pending/failed state', () => {
+  const grid = { rows: 2, cols: 2 };
+  const reserved = { mode: 'degenerate', view: null, prev: null, next: null };
+  const sessions = [
+    { name: 'sess1', remoteId: null, active: false, needs_attention: false, last_activity_at: 1 },
+    { name: 'sess1', remoteId: 'macbook-dev', deviceName: 'macbook', active: false, needs_attention: false, last_activity_at: 2 },
+  ];
+  // A tap is in flight against the REMOTE sess1 only.
+  const result = deck.computeKeyPlan({
+    grid, reserved, mode: 'grid', sessions, viewName: 'all', viewsList: ['all'],
+    page: 0, pickerPage: 0, nowMs: 1000,
+    pendingName: deck.pairKey('sess1', 'macbook-dev'),
+  });
+  const faces = result.plan.filter((f) => f.role === 'session' && f.name === 'sess1');
+  assert.strictEqual(faces.length, 2);
+  const localFace = faces.find((f) => f.remoteId === null);
+  const remoteFace = faces.find((f) => f.remoteId === 'macbook-dev');
+  assert.strictEqual(localFace.flags.pending, false, 'the LOCAL sess1 must not appear pending');
+  assert.strictEqual(remoteFace.flags.pending, true, 'the REMOTE sess1 is the one actually pending');
+});
+
+test('computeKeyPlan: snapshot preview is looked up by sessionKey (collision-safe), falling back to bare name for pre-federation callers', () => {
+  const grid = { rows: 1, cols: 1 };
+  const reserved = { mode: 'degenerate', view: null, prev: null, next: null };
+  const sessions = [{ name: 'sess1', sessionKey: 'dev-a:sess1', remoteId: null, active: false, needs_attention: false, last_activity_at: 1 }];
+  const bySessionKey = deck.computeKeyPlan({
+    grid, reserved, mode: 'grid', sessions, viewName: 'all', viewsList: ['all'],
+    page: 0, pickerPage: 0, nowMs: 1000,
+    snapshots: { 'dev-a:sess1': 'hello from sessionKey' },
+  });
+  assert.ok(bySessionKey.plan[0].preview.indexOf('hello from sessionKey') !== -1);
+
+  // Pre-federation caller: no sessionKey field on the fixture, snapshots
+  // keyed by bare name -- byte-identical to this file's original contract.
+  const legacySessions = [{ name: 'sess1', active: false, needs_attention: false, last_activity_at: 1 }];
+  const byName = deck.computeKeyPlan({
+    grid, reserved, mode: 'grid', sessions: legacySessions, viewName: 'all', viewsList: ['all'],
+    page: 0, pickerPage: 0, nowMs: 1000,
+    snapshots: { sess1: 'hello from bare name' },
+  });
+  assert.ok(byName.plan[0].preview.indexOf('hello from bare name') !== -1);
 });

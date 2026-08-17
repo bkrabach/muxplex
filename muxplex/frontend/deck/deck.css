@@ -358,6 +358,53 @@ html, body {
   background: linear-gradient(to left, #0A0A0A 55%, transparent);
 }
 
+/* Federation-remote session tile (v2 federation-aware deck rendering,
+   design doc docs/plans/2026-08-16-deck-control-target-design.md \u00a74.5):
+   the ONLY visual difference from a local session tile is the origin
+   device's name in the BODY band -- reserved-but-empty on every OTHER
+   session tile (see the ".is-session .key-body { display: none }" rule
+   above), un-hidden and given a small, muted corner treatment here -- the
+   same "reserved but previously always empty" slot muxplex-deck's own v2
+   rewrite exploits for its own origin_label (its STATE band there; this
+   file's STATE band already carries the last-activity/FAILED text, so
+   BODY is this codebase's equivalent unused slot). NAME/PREVIEW/STATE are
+   completely untouched -- a local session's truncation/fit behavior never
+   changes because of this rule existing. */
+.deck-key.is-session.is-remote .key-body {
+  display: block;
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: auto;
+  width: auto;
+  max-width: 70%;
+  text-align: left;
+  font-size: var(--secondary);
+  font-weight: 400;
+  color: #8888AA;
+  padding: 2px 24px 2px calc(var(--m));
+  background: linear-gradient(to right, #0A0A0A 55%, transparent);
+}
+
+/* Federation peer status tile (unreachable/auth_failed --
+   partitionFederationSessions): a real, visible, non-interactive tile --
+   never a silent shrink of the grid. Muted/dashed, distinct from both
+   .is-session (connectable) and .is-failed (a failed TAP, which still
+   recovers next poll) -- this tile has no tap outcome at all. */
+.deck-key.is-status {
+  background: #14100A;
+  border: 1px dashed #3A3020;
+  cursor: default;
+}
+.deck-key.is-status .key-name {
+  color: #C9A66B;
+}
+.deck-key.is-status .key-body {
+  color: #8A7A5A;
+  font-size: var(--secondary);
+  font-weight: 600;
+}
+
 /* Picker option: NAME stays reserved-but-empty (every option is the same
    category -- KEY_DESIGN_SYSTEM.md \u00a76.3); ring cyan if this is the current
    view. */
