@@ -1,3 +1,53 @@
+## v0.55.0 (2026-08-16)
+
+**The Soft Deck now sees the whole federation, not just its own server.**
+The browser-tab deck at `/deck/` polled `GET /api/sessions` -- local sessions
+only. A session on a federated peer, plainly visible in the PWA, simply did not
+exist as far as the deck was concerned. It now polls
+`GET /api/federation/sessions`, the same endpoint the PWA uses.
+
+### Added
+
+- **Federation-aware Soft Deck** (`frontend/deck/`). Sessions from every
+  reachable peer are listed alongside local ones, each remote tile marked with
+  its origin device. Clicking a remote session connects through the federation
+  proxy (`POST /api/federation/{remoteId}/connect/{name}`); local sessions still
+  use `POST /api/sessions/{name}/connect`, unchanged.
+- **Collision-safe identity.** Sessions key by `sessionKey`
+  (`{device_id}:{name}`) rather than bare name, so two peers each running a
+  session called `main` are never conflated.
+- **Unreachable peers stay visible.** A peer reporting `unreachable` or
+  `auth_failed` renders as a degraded tile instead of vanishing from the list --
+  the list never silently shrinks and leaves you guessing where a session went.
+- 33 new tests in `frontend/tests/test_deck.mjs`, written against the real
+  `/api/federation/sessions` response shape.
+
+### Documented (shipped in v0.54.0, recorded here)
+
+`muxplex_client` gained federation support in commit 88d4d39, which landed
+before the v0.54.0 release and is therefore already published in
+`muxplex-client` 0.54.0 -- it went out undocumented, and is recorded here for
+the record rather than being claimed as new:
+
+- `federation_sessions()` (sync and async), returning `FederationSessions`
+  (`sessions` + `statuses`).
+- `Session` gained `device_id`, `device_name`, `device_version`, `remote_id`,
+  and `session_key` (camelCase on the wire: `deviceId`/`deviceName`/
+  `deviceVersion`/`remoteId`/`sessionKey`). All default to `None`, so a
+  pre-federation server parses exactly as before.
+- `RemoteStatus`, carrying a peer's `unreachable`/`auth_failed`/`empty` status.
+- `connect(remote_id=...)`, routing through the federation connect-proxy.
+- `RemoteNotFoundError`, `RemoteUnreachableError`, and `RemoteError`.
+
+### Notes
+
+- The physical `muxplex-deck` project has a matching federation update **coming
+  in its own separate release**; it is not in muxplex-deck v0.16.0, which was
+  device identity and target pairing.
+- `muxplex-deck` does **not** need this release to unpin its client dependency:
+  `muxplex-client` 0.54.0 on PyPI already contains the federation API, so its
+  `[tool.uv.sources]` git pin can be replaced with `muxplex-client>=0.54.0` now.
+
 ## v0.54.0 (2026-08-16)
 
 **The embedded chat panel now notices when you've configured it, and knows which session you're looking at.**
