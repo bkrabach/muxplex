@@ -1,11 +1,45 @@
 // muxplex soft deck -- deck.js
 //
 // Vanilla JS, no build step, no framework, no dependency on app.js. Consumes
-// GET /api/view + GET /api/sessions, POST /api/sessions/{name}/connect, and
+// GET /api/view + GET /api/federation/sessions + GET /api/state,
+// POST /api/sessions/{name}/connect (local) or
+// POST /api/federation/{deviceId}/connect/{name} (remote), and
 // PATCH /api/state -- the same server-resolved semantics the PWA and
 // muxplex-deck sidecar use (AGENTS.md: "clients must not re-derive view
 // membership, the bell predicate, or sort order"). This file never
-// recomputes needs_attention or view filtering itself.
+// recomputes needs_attention or view filtering itself for LOCAL sessions.
+//
+// v2 federation-aware deck rendering (design doc
+// docs/plans/2026-08-16-deck-control-target-design.md \u00a74.5, parked as
+// "Full federation-aware deck rendering" -- built here): the poll now merges
+// three sources -- GET /api/view (local view-filtered/sorted/active-flagged
+// sessions, UNCHANGED, still never re-derived), GET /api/federation/sessions
+// (the local+remote+status merge the PWA already polls -- see
+// partitionFederationSessions), and GET /api/state (active_remote_id, so a
+// remote-active session is never mis-highlighted on a same-named local
+// tile -- see isEntryActive). Remote sessions are appended after the local
+// view's own sessions (buildFederatedSessionList), tagged with
+// sessionKey/remoteId/deviceName so they render distinguishably (the STATE
+// band gains the origin device's name -- computeKeyPlan -- the exact
+// convention muxplex-deck's own v2 rewrite uses for its STATE band, and the
+// same field app.js's device-badge/tile-device-tag already shows), key by
+// sessionKey/remoteId rather than bare name (the same-named-session-on-two-
+// servers collision hazard -- pairKey), and connect through
+// POST /api/federation/{deviceId}/connect/{name} instead of the local
+// endpoint (connectEndpointFor). A federation peer that is unreachable or
+// rejected auth is never silently dropped: it renders as a real, non-
+// interactive 'status' tile in the same grid (partitionFederationSessions
+// keeps 'auth_failed'/'unreachable' status entries; only the reachable-but-
+// empty 'empty' status is dropped, matching main.py's and app.js's own
+// convention). Known, deliberate scope boundary for this pass: a remote
+// session's needs_attention is always false (the bell predicate is NOT
+// re-derived client-side for it -- AGENTS.md -- so a remote session with an
+// unread bell will not amber-flare the way a local one does), and the
+// 'hidden' pseudo-view never shows remote sessions (no hidden_sessions
+// membership signal exists for a remote entry today). A deck whose server
+// has no federation peers configured sees byte-identical grid CONTENT to
+// before this feature existed (GET /api/federation/sessions returns exactly
+// the local session list in that case -- verified against main.py).
 //
 // DESIGN_SOFTDECK.md is the governing spec: a phone is a deck with
 // dial_count=0, is_touch=false, and an R x C grid derived purely from its
@@ -1943,6 +1977,231 @@ function fitLabel(text, maxWidthPx, measureWidth) {
   return t + '\u2026';
 }
 
+// ─── Federation-aware session merge (v2 federation-aware deck rendering) ───
+//
+// GET /api/federation/sessions returns one flat array mixing three shapes
+// (see main.py's federation_sessions() docstring): local sessions
+// (remoteId: null), remote sessions (remoteId: a peer's device_id), and
+// per-peer status entries (a truthy `status`: 'unreachable' | 'auth_failed'
+// | 'empty'). The functions below turn that flat array -- plus the
+// existing GET /api/view (local view-filtered/sorted/active/needs_attention,
+// UNCHANGED) and GET /api/state (active_remote_id) -- into the single
+// ordered list computeKeyPlan consumes as `p.sessions`. Pure, DOM-free, and
+// exported for node --test, matching every other function in this file.
+
+/**
+ * The composite key this file uses for UI-optimism bookkeeping (a tap in
+ * flight, a just-failed tile, "the previously-active session" for
+ * toggle_last) -- deliberately NOT the server's `sessionKey`
+ * (`deviceId:name`, used only for the snapshot-text lookup below). A local
+ * session (remoteId null/absent) keys by its bare name, byte-identical to
+ * this file's pre-federation behavior; a remote session keys by
+ * `remoteId:name`, so the exact "same name on two servers" collision this
+ * whole feature exists to guard against can never merge two different
+ * sessions' pending/failed/active state. tmux forbids ':' in a session
+ * name (views.py's own validate_view_rules R4), so a bare name can never
+ * collide with a `remoteId:name` composite.
+ * @param {string} name
+ * @param {string|null} [remoteId]
+ * @returns {string}
+ */
+function pairKey(name, remoteId) {
+  return remoteId ? remoteId + ':' + name : name;
+}
+
+/**
+ * Split a raw GET /api/federation/sessions response into its three shapes.
+ *
+ * `status: 'empty'` entries (a reachable peer with zero live sessions) are
+ * DROPPED entirely here, matching main.py's and app.js's own convention:
+ * "reachable, nothing to show" is not a failure and earns no tile
+ * (app.js's renderGrid: "if (entry.status === 'empty') return;"). Only
+ * 'unreachable'/'auth_failed' are kept as status entries -- a degraded
+ * peer is never silently absorbed into a shorter list.
+ * @param {Array<object>} rawEntries
+ * @returns {{local: object[], remote: object[], statuses: object[]}}
+ */
+function partitionFederationSessions(rawEntries) {
+  var local = [];
+  var remote = [];
+  var statuses = [];
+  var entries = rawEntries || [];
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (e && e.status) {
+      if (e.status !== 'empty') statuses.push(e);
+      continue;
+    }
+    if (e && e.remoteId != null) remote.push(e);
+    else local.push(e);
+  }
+  return { local: local, remote: remote, statuses: statuses };
+}
+
+/**
+ * Which remote sessions belong on the CURRENT view, using the `views` field
+ * GET /api/federation/sessions already computed server-side (views.py's
+ * annotate_view_membership runs on the merged local+remote list, so a
+ * remote entry's `views` reflects THIS device's own view definitions --
+ * see main.py's federation_sessions() docstring) -- never re-derived here.
+ *
+ * 'all' passes every remote session through (the same "all live sessions"
+ * contract views.py's filter_visible gives 'all' locally). 'hidden' passes
+ * NONE through: a remote session carries no hidden_sessions membership
+ * signal today (hidden_sessions is a local-only setting), so the honest
+ * choice is "never shown in Hidden" rather than guessing. Any other value
+ * is a user view name: kept only if it appears in the entry's own `views`.
+ * @param {Array<object>} remoteEntries
+ * @param {string} viewName
+ * @returns {object[]}
+ */
+function remoteSessionsForView(remoteEntries, viewName) {
+  var entries = remoteEntries || [];
+  if (viewName === 'all') return entries.slice();
+  if (viewName === 'hidden') return [];
+  return entries.filter(function (e) {
+    return (e.views || []).indexOf(viewName) !== -1;
+  });
+}
+
+/**
+ * The federation mis-highlight guard (design doc §4.5, the single riskiest
+ * unknown this whole feature named): a session is the TRUE active one only
+ * if both its name AND its remoteId match GET /api/state's
+ * active_session/active_remote_id pair -- never name alone. Before this
+ * device was federation-aware, `remoteId` was always null/absent for every
+ * entry it ever saw, so this reduces to the original by-name comparison
+ * GET /api/view already performed (byte-identical when unused). Once a
+ * remote session can appear on the same grid as a same-named local one,
+ * by-name-alone would make BOTH light up as active, or make the wrong one
+ * light up -- exactly the hazard the physical deck's Step 5 v1 and the PWA's
+ * Step 4 already guard against; this is that same guard, ported here.
+ * @param {string} name
+ * @param {string|null} remoteId
+ * @param {string|null} activeSessionName
+ * @param {string|null} activeRemoteId
+ * @returns {boolean}
+ */
+function isEntryActive(name, remoteId, activeSessionName, activeRemoteId) {
+  if (activeSessionName == null) return false;
+  return name === activeSessionName && (remoteId || null) === (activeRemoteId || null);
+}
+
+/**
+ * Merge GET /api/view's local session list with GET /api/federation/sessions'
+ * remote + status entries into the single ordered array computeKeyPlan
+ * consumes as `p.sessions`. Local sessions keep every field GET /api/view
+ * already resolved (bell, last_activity_at, needs_attention, and now a
+ * re-derived `active` -- see isEntryActive's docstring for why that one
+ * field is recomputed rather than trusted as-is); this function never
+ * re-derives view membership, sort order, or the bell predicate for LOCAL
+ * sessions (AGENTS.md).
+ *
+ * `localFedEntries` (the `local` partition of the SAME federation response,
+ * fetched on the SAME poll tick) is used ONLY to backfill `sessionKey` onto
+ * each local view session by name -- GET /api/view does not carry
+ * sessionKey (it predates federation) but GET /api/federation/sessions
+ * always does for local entries.
+ *
+ * Remote sessions are filtered to the current view (remoteSessionsForView)
+ * and appended AFTER the local ones, in the order GET /api/federation/sessions
+ * already returned them (settings.remote_instances order) -- never
+ * interleaved with or re-sorted against the local list, since there is no
+ * shared sort key between "this device's bell-recency order" and "a peer's
+ * own session order." Known, deliberate gap: a remote session's
+ * `needs_attention` is always `false` here -- the bell predicate
+ * (bells.needs_attention) is a real computation this file does not
+ * re-derive client-side for entries the server didn't already resolve it
+ * for (AGENTS.md); GET /api/federation/sessions gives remote entries a raw
+ * `bell` but not a resolved `needs_attention`.
+ *
+ * Status entries (already filtered to 'auth_failed'/'unreachable' by
+ * partitionFederationSessions) are appended last, each carrying `status`
+ * so computeKeyPlan renders them as a non-interactive 'status' tile rather
+ * than a connectable session.
+ * @param {Array<object>} localViewSessions - GET /api/view's sessions[]
+ * @param {Array<object>} localFedEntries - the `local` partition (for sessionKey backfill only)
+ * @param {Array<object>} remoteEntries - the `remote` partition
+ * @param {Array<object>} statusEntries - the `statuses` partition
+ * @param {string} viewName
+ * @param {string|null} activeSessionName - GET /api/state's active_session
+ * @param {string|null} activeRemoteId - GET /api/state's active_remote_id
+ * @returns {object[]}
+ */
+function buildFederatedSessionList(
+  localViewSessions,
+  localFedEntries,
+  remoteEntries,
+  statusEntries,
+  viewName,
+  activeSessionName,
+  activeRemoteId
+) {
+  var keyByName = {};
+  var lfe = localFedEntries || [];
+  for (var i = 0; i < lfe.length; i++) {
+    keyByName[lfe[i].name] = lfe[i].sessionKey || lfe[i].name;
+  }
+
+  var local = (localViewSessions || []).map(function (s) {
+    return {
+      name: s.name,
+      sessionKey: keyByName[s.name] || s.name,
+      remoteId: null,
+      deviceName: '',
+      bell: s.bell,
+      last_activity_at: s.last_activity_at,
+      needs_attention: !!s.needs_attention,
+      active: isEntryActive(s.name, null, activeSessionName, activeRemoteId),
+    };
+  });
+
+  var remote = remoteSessionsForView(remoteEntries, viewName).map(function (s) {
+    return {
+      name: s.name,
+      sessionKey: s.sessionKey || pairKey(s.name, s.remoteId),
+      remoteId: s.remoteId,
+      deviceName: s.deviceName || s.remoteId || '',
+      bell: s.bell,
+      last_activity_at: s.last_activity_at,
+      needs_attention: false, // known gap -- see this function's docstring
+      active: isEntryActive(s.name, s.remoteId, activeSessionName, activeRemoteId),
+    };
+  });
+
+  var statuses = (statusEntries || []).map(function (s) {
+    var label = s.deviceName || s.remoteId || '';
+    return {
+      status: s.status,
+      name: label,
+      sessionKey: 'status:' + (s.remoteId || label),
+      remoteId: s.remoteId != null ? s.remoteId : null,
+      deviceName: label,
+      deviceVersion: s.deviceVersion != null ? s.deviceVersion : null,
+    };
+  });
+
+  return local.concat(remote, statuses);
+}
+
+/**
+ * Which endpoint a tap-to-connect routes through: the local per-session
+ * endpoint for a local session (remoteId null/absent, byte-identical to
+ * this file's pre-federation behavior), or the same-origin federation
+ * proxy for a remote one -- the identical routing rule app.js's
+ * openSession() already uses (`'/api/federation/' + deviceId + '/connect/'
+ * + name`).
+ * @param {string} name
+ * @param {string|null} [remoteId]
+ * @returns {string}
+ */
+function connectEndpointFor(name, remoteId) {
+  if (remoteId) {
+    return '/api/federation/' + encodeURIComponent(remoteId) + '/connect/' + encodeURIComponent(name);
+  }
+  return '/api/sessions/' + encodeURIComponent(name) + '/connect';
+}
+
 // ─── KeyPlan: state → KeyPlan[] → painter (DECK_PARITY_ARCHITECTURE.md §6.3) ─
 //
 // The blank-control-key bug (nine tests green on `controlKeyContent`, zero
@@ -1970,9 +2229,10 @@ function fitLabel(text, maxWidthPx, measureWidth) {
  * @typedef {{active: boolean, pending: boolean, failed: boolean,
  *            needsAttention: boolean, currentView: boolean}} KeyFaceFlags
  * @typedef {{index: number,
- *            role: 'session'|'view'|'prev'|'next'|'back'|'settings'|'view-option'|'bound'|'empty',
+ *            role: 'session'|'status'|'view'|'prev'|'next'|'back'|'settings'|'view-option'|'bound'|'empty',
  *            name: string, body: string, state: string, preview: string,
- *            target: string|null, flags: KeyFaceFlags}} KeyFace
+ *            target: string|null, remoteId: string|null,
+ *            flags: KeyFaceFlags}} KeyFace
  */
 
 function _emptyFlags() {
@@ -1981,7 +2241,7 @@ function _emptyFlags() {
 
 /** A blank key face -- the only shape that ever renders as empty. */
 function _emptyFace(index) {
-  return { index: index, role: 'empty', name: '', body: '', state: '', preview: '', target: null, flags: _emptyFlags() };
+  return { index: index, role: 'empty', name: '', body: '', state: '', preview: '', target: null, remoteId: null, flags: _emptyFlags() };
 }
 
 function _clampToCount(value, count) {
@@ -1999,6 +2259,10 @@ function _clampToCount(value, count) {
 function faceClassName(role) {
   if (role === 'empty') return 'is-empty';
   if (role === 'session') return 'is-session';
+  // A non-interactive federation peer status tile (unreachable/auth_failed
+  // -- see partitionFederationSessions). Distinct from 'is-session' so it
+  // never picks up tap affordances or the session preview/STATE layout.
+  if (role === 'status') return 'is-status';
   if (role === 'view-option') return 'is-picker-option';
   if (role === 'bound') return 'is-bound';
   return 'is-control'; // view | prev | next | back
@@ -2012,17 +2276,22 @@ function faceClassName(role) {
  * @param {{rows:number, cols:number}} p.grid
  * @param {{mode:string, view:?number, prev:?number, next:?number}} p.reserved
  * @param {'grid'|'picker'} p.mode
- * @param {Array<{name:string,active:boolean,needs_attention:boolean,last_activity_at:?number}>} p.sessions
- *   current view's sessions, server order (grid mode)
+ * @param {Array<{name:string,active:boolean,needs_attention:boolean,last_activity_at:?number,sessionKey?:string,remoteId?:(string|null),deviceName?:string,status?:string,deviceVersion?:(string|null)}>} p.sessions
+ *   current view's sessions, server order (grid mode) -- see
+ *   buildFederatedSessionList for how this array is assembled from
+ *   GET /api/view + GET /api/federation/sessions. An entry with a truthy
+ *   `status` renders as a non-interactive 'status' tile instead of a
+ *   session; `remoteId` (null for local) drives the STATE-band origin
+ *   marker and the tap-to-connect routing (see connectEndpointFor).
  * @param {string} p.viewName - current active_view name
  * @param {string[]} p.viewsList - browsable view names (picker mode, pickerKind='view')
  * @param {'view'|'page'} [p.pickerKind] - which generic-picker flavor is showing (default 'view')
  * @param {number} p.page - current session grid page
  * @param {number} p.pickerPage - current view/page-picker page
  * @param {Object<string, number>} [p.viewCounts] - picker STATE enrichment
- * @param {string|null} [p.pendingName]
- * @param {Object<string, number>} [p.failedByName] - name -> expiry epoch ms
- * @param {Object<string, string>} [p.snapshots] - name -> pane text
+ * @param {string|null} [p.pendingName] - pairKey() of the tap currently in flight
+ * @param {Object<string, number>} [p.failedByName] - pairKey() -> expiry epoch ms
+ * @param {Object<string, string>} [p.snapshots] - sessionKey (falls back to name) -> pane text
  * @param {number} [p.previewLinesMax]
  * @param {Object<number,string>} [p.boundKeys] - index -> action, from keyBindingsFromConfig
  * @param {number} p.nowMs
@@ -2066,6 +2335,7 @@ function computeKeyPlan(p) {
       state: boundContent.state,
       preview: '',
       target: action,
+      remoteId: null,
       flags: _emptyFlags(),
     };
   }
@@ -2142,6 +2412,7 @@ function computeKeyPlan(p) {
         state: content.state,
         preview: '',
         target: target,
+        remoteId: null,
         flags: _mergeFlags({ currentView: isCurrentItem }),
       };
     }
@@ -2177,21 +2448,62 @@ function computeKeyPlan(p) {
   for (var si = 0; si < slots.length; si++) {
     var s = pageSessions[si];
     if (!s) continue;
+
+    // A federation peer status entry (unreachable/auth_failed --
+    // partitionFederationSessions) is never a connectable session: a
+    // distinct, non-interactive role, never merged into the tap-to-connect
+    // 'session' path (onKeyTap only dispatches 'session'/'bound'/control
+    // roles; 'status' falls through as a silent no-op, same as 'empty').
+    if (s.status) {
+      plan[slots[si]] = {
+        index: slots[si],
+        role: 'status',
+        name: s.deviceName || s.remoteId || '',
+        body: s.status === 'auth_failed' ? 'Auth' : 'Offline',
+        state: '',
+        preview: '',
+        target: null,
+        remoteId: s.remoteId != null ? s.remoteId : null,
+        flags: _emptyFlags(),
+      };
+      continue;
+    }
+
+    // pairKey (not the server's sessionKey) is this file's own UI-optimism
+    // bookkeeping key -- see pairKey's docstring. For a local session
+    // (s.remoteId null/absent, true for every fixture predating this
+    // feature) it reduces to the bare name, so p.pendingName/p.failedByName
+    // keyed by bare name still match unchanged.
+    var tileKey = pairKey(s.name, s.remoteId || null);
     var visual = tileVisualState({
       serverActive: !!s.active,
       pendingName: p.pendingName != null ? p.pendingName : null,
-      tileName: s.name,
-      failedUntil: failedByName[s.name] || null,
+      tileName: tileKey,
+      failedUntil: failedByName[tileKey] || null,
       nowMs: p.nowMs,
     });
+    // Snapshot text is looked up by sessionKey (deviceId:name -- collision-
+    // safe across servers) with a bare-name fallback for any caller that
+    // hasn't started attaching sessionKey yet -- see buildFederatedSessionList.
+    var snapshotKey = s.sessionKey || s.name;
+    // STATE-band origin marker: empty for a local session (byte-identical
+    // to before this feature existed), else the remote's device name --
+    // the exact convention muxplex-deck's own v2 rewrite uses for this same
+    // reserved-but-previously-empty band (rendering.render_session_key's
+    // `origin_label`, main.py's `_session_origin_label`), falling back to
+    // the raw remoteId if deviceName is ever missing so a remote session
+    // never renders with a blank origin (which would silently reintroduce
+    // the same-name collision hazard this whole feature exists to fix).
+    var body = s.remoteId != null ? (s.deviceName || s.remoteId || '') : '';
     plan[slots[si]] = {
       index: slots[si],
       role: 'session',
       name: s.name,
-      body: '',
+      body: body,
       state: visual === 'failed' ? 'FAILED' : formatLastActivity(s.last_activity_at, p.nowMs),
-      preview: previewLines(snapshots[s.name] || '', previewMax),
+      preview: previewLines(snapshots[snapshotKey] || snapshots[s.name] || '', previewMax),
       target: s.name,
+      remoteId: s.remoteId != null ? s.remoteId : null,
       flags: _mergeFlags({
         active: visual === 'active',
         pending: visual === 'pending',
@@ -2221,6 +2533,7 @@ function _setControlFace(plan, index, role, content) {
     state: content.state,
     preview: '',
     target: null,
+    remoteId: null,
     flags: _emptyFlags(),
   };
 }
@@ -2285,16 +2598,22 @@ if (typeof document !== 'undefined') {
     var PREVIEW_LINES_MAX = 20; // generous; CSS clips to the actual box
 
     // ── State ──
-    var sessions = []; // last-known GET /api/view sessions[] for the CURRENT view, server order
-    var allSessionNames = []; // last-known GET /api/sessions names (all local sessions)
-    var snapshots = {}; // name -> pane text, from GET /api/sessions
+    var sessions = []; // last-known merged local+remote+status list for the CURRENT view, server/federation order -- see buildFederatedSessionList
+    var allSessionNames = []; // last-known LOCAL session names (the `local` partition of GET /api/federation/sessions -- see partitionFederationSessions)
+    var snapshots = {}; // sessionKey (falls back to name) -> pane text, from GET /api/federation/sessions (local + remote)
     var viewName = 'all';
     var viewsList = ['all'];
     var activeName = null;
+    // remoteId of the entry `activeName` refers to (null for local) -- kept
+    // paired with activeName always, mirroring muxplex-deck's own
+    // active_session/active_remote_id pairing (v2 federation-aware
+    // rendering): a bare name is ambiguous the moment a remote session can
+    // share it, so nothing should ever read one without the other.
+    var activeRemoteId = null;
     var lastPollOkAt = null; // epoch ms of last successful poll
     var lastPollFailed = false;
-    var pendingName = null; // optimistic tap in flight
-    var failedByName = {}; // name -> epoch ms the FAILED marker expires
+    var pendingName = null; // pairKey() of the optimistic tap in flight (see pairKey's docstring)
+    var failedByName = {}; // pairKey() -> epoch ms the FAILED marker expires
     var pollTimer = null;
     var wakeSentinel = null;
     var renderTimer = null;
@@ -2304,13 +2623,14 @@ if (typeof document !== 'undefined') {
     var page = 0; // current session grid page
     var pickerPage = 0; // current view/page-picker page
     var grid = null; // last computeGrid()/computeEffectiveGrid() result
-    var allSessionsAnnotated = []; // last-known GET /api/sessions payload (full objects, with `views`)
+    var allSessionsAnnotated = []; // last-known LOCAL federation-tagged payload (full objects, with `views`) -- used only for picker view/hidden counts
     var reserved = null; // last reservedControlKeys() result
     var tokens = null; // last deriveTokens() result -- feeds the label-measure font/box
     var keyEls = []; // R*C key <button> elements, index-addressed
     var currentShape = null; // 'RxC' string, to detect when a rebuild is needed
     var viewCounts = {}; // best-effort enrichment, see loadViewCounts()
     var lastActiveName = null; // previously-active session, for the toggle_last action
+    var lastActiveRemoteId = null; // remoteId paired with lastActiveName (see activeRemoteId's own comment)
 
     // ── Settings menu state (BACKLOG.md item 2) -- see the deck.js pure-logic
     // section for why this is local (localStorage), not server-synced. ──
@@ -2828,35 +3148,82 @@ if (typeof document !== 'undefined') {
       // client preference, same as muxplex-deck's own `sort` field).
       var sortParam = deckSettings.sort === 'server' ? '' : '?sort=attention';
       var viewReq = getJSON('/api/view' + sortParam);
-      var sessReq = getJSON('/api/sessions');
-      return Promise.all([viewReq, sessReq])
+      // v2 federation-aware deck rendering (design doc \u00a74.5): the local-only
+      // GET /api/sessions is replaced by GET /api/federation/sessions, the
+      // same aggregated local+remote+status merge app.js's pollSessions()
+      // already polls -- see partitionFederationSessions/buildFederatedSessionList.
+      // A server with no federation peers configured returns exactly the
+      // local session list here (verified against main.py's
+      // federation_sessions()), so this fetch is byte-identical CONTENT for
+      // a never-federated deck, just routed through one endpoint instead of
+      // two.
+      var fedReq = getJSON('/api/federation/sessions');
+      // GET /api/state (unqualified, same "global" group /api/view targets)
+      // supplies active_remote_id -- the ONLY thing GET /api/view cannot
+      // report (it is local-only by design; see its own docstring), and the
+      // ingredient isEntryActive needs to avoid mis-highlighting a local
+      // session when the TRUE active one is remote (design doc \u00a74.5's
+      // single riskiest unknown). Fetched every poll tick, in parallel,
+      // exactly like the two requests above -- this file already reads
+      // GET /api/state elsewhere (refreshDevicesRegistry) at a slower
+      // cadence for a different reason (the devices registry); this is a
+      // separate, cheap, no-snapshot-payload read.
+      var stateReq = getJSON('/api/state');
+      return Promise.all([viewReq, fedReq, stateReq])
         .then(function (results) {
           var viewData = results[0];
-          var sessData = results[1];
+          var fedData = results[1];
+          var stateData = results[2];
           lastPollOkAt = Date.now();
           lastPollFailed = false;
 
           viewName = viewData.view;
           viewsList = viewData.views || ['all'];
 
+          var partitioned = partitionFederationSessions(fedData);
+          var stateActiveSession = stateData && stateData.active_session != null ? stateData.active_session : null;
+          var stateActiveRemoteId = stateData && stateData.active_remote_id != null ? stateData.active_remote_id : null;
+
+          sessions = buildFederatedSessionList(
+            viewData.sessions,
+            partitioned.local,
+            partitioned.remote,
+            partitioned.statuses,
+            viewName,
+            stateActiveSession,
+            stateActiveRemoteId
+          );
+
           var newActive = null;
-          for (var i = 0; i < viewData.sessions.length; i++) {
-            if (viewData.sessions[i].active) {
-              newActive = viewData.sessions[i].name;
+          var newActiveRemoteId = null;
+          for (var i = 0; i < sessions.length; i++) {
+            if (sessions[i].active) {
+              newActive = sessions[i].name;
+              newActiveRemoteId = sessions[i].remoteId || null;
               break;
             }
           }
           // Track the previously-active session for the toggle_last action
           // -- only when it's a real change to a different, non-null prior
           // value, so the very first poll (activeName still null) doesn't
-          // record a bogus "previous" session.
-          if (newActive !== activeName && activeName != null) {
+          // record a bogus "previous" session. A remoteId-only change
+          // (same name, different server) still counts as a real change --
+          // see isEntryActive's docstring for why name alone is never
+          // enough to identify a session.
+          if ((newActive !== activeName || newActiveRemoteId !== activeRemoteId) && activeName != null) {
             lastActiveName = activeName;
+            lastActiveRemoteId = activeRemoteId;
           }
           activeName = newActive;
-          sessions = viewData.sessions;
+          activeRemoteId = newActiveRemoteId;
 
-          allSessionNames = sessData.map(function (s) {
+          // allSessionNames/allSessionsAnnotated stay LOCAL-only (the
+          // `local` partition), exactly matching this file's pre-federation
+          // GET /api/sessions semantics -- loadViewCounts()'s picker
+          // view/hidden counts have never included remote sessions and
+          // still don't (a real, documented scope boundary -- see
+          // remoteSessionsForView's docstring on the 'hidden' pseudo-view).
+          allSessionNames = partitioned.local.map(function (s) {
             return s.name;
           });
           // Keep the full annotated payload too (docs/plans/2026-08-04-auto-views-plan.md §9.4) --
@@ -2865,14 +3232,21 @@ if (typeof document !== 'undefined') {
           // this for user-view counts instead of re-deriving membership by
           // suffix match, which cannot see rule-matched sessions (they are
           // never written into view.sessions).
-          allSessionsAnnotated = sessData;
+          allSessionsAnnotated = partitioned.local;
           snapshots = {};
-          for (var j = 0; j < sessData.length; j++) {
-            snapshots[sessData[j].name] = sessData[j].snapshot || '';
+          for (var j = 0; j < partitioned.local.length; j++) {
+            var ls = partitioned.local[j];
+            snapshots[ls.sessionKey || ls.name] = ls.snapshot || '';
+          }
+          for (var k = 0; k < partitioned.remote.length; k++) {
+            var rs = partitioned.remote[k];
+            snapshots[rs.sessionKey || pairKey(rs.name, rs.remoteId)] = rs.snapshot || '';
           }
 
           // A confirmed active flips a pending marker into a settled ring.
-          if (pendingName != null && pendingName === activeName) {
+          // Compared by pairKey (not bare name) -- see pendingName's own
+          // state-variable comment.
+          if (pendingName != null && pendingName === pairKey(activeName, activeRemoteId)) {
             pendingName = null;
           }
 
@@ -3219,6 +3593,12 @@ if (typeof document !== 'undefined') {
       if (face.flags.failed) el.classList.add('is-failed');
       if (face.flags.needsAttention) el.classList.add('needs-attention');
       if (face.flags.currentView) el.classList.add('is-active');
+      // Federation origin marker (v2 federation-aware deck rendering,
+      // design doc §4.5): scopes the BODY-band device-name treatment
+      // (deck.css) to a real remote entry only -- a local session/status
+      // tile never picks this class up, so nothing changes visually for a
+      // never-federated install.
+      if (face.remoteId) el.classList.add('is-remote');
 
       var nameText = face.name;
       var bodyText = face.body;
@@ -3226,7 +3606,14 @@ if (typeof document !== 'undefined') {
         // Truncation is scoped to exactly the bands that carry a
         // user-controlled, unbounded-length string -- see fitLabel's
         // doc comment for why this can't happen in computeKeyPlan.
-        if (face.role === 'session') nameText = fitLabel(nameText, measure.maxWidth, measure.width);
+        if (face.role === 'session') {
+          nameText = fitLabel(nameText, measure.maxWidth, measure.width);
+          // A remote session's BODY now carries the origin device name
+          // (computeKeyPlan) -- truncate it the same way NAME already is.
+          // A no-op for every local session (empty body) and every
+          // pre-federation fixture.
+          bodyText = fitLabel(bodyText, measure.maxWidth, measure.width);
+        }
         if (face.role === 'view' || face.role === 'view-option') {
           bodyText = fitLabel(bodyText, measure.maxWidth, measure.width);
         }
@@ -3238,6 +3625,11 @@ if (typeof document !== 'undefined') {
       el.querySelector('.key-state').textContent = face.state;
       el.dataset.role = face.role;
       el.dataset.name = face.target || '';
+      // Read back by onKeyTap -> connectTo (routes local vs. federation
+      // proxy) -- '' (never left unset) so a stale value from a
+      // previously-painted remote face can never leak onto a face that is
+      // now local.
+      el.dataset.remoteId = face.remoteId || '';
 
       // Explicit accessible name for the settings entry point (a11y fix,
       // BACKLOG.md item 2 / the 2026-07 incident): TalkBack et al. would
@@ -3392,7 +3784,7 @@ if (typeof document !== 'undefined') {
       if (!role || role === 'empty') return;
 
       if (role === 'session') {
-        connectTo(el.dataset.name);
+        connectTo(el.dataset.name, el.dataset.remoteId || null);
       } else if (role === 'bound') {
         dispatchAction(el.dataset.name);
       } else if (role === 'view') {
@@ -3550,7 +3942,7 @@ if (typeof document !== 'undefined') {
           poll();
           return;
         case 'toggle_last':
-          if (lastActiveName) connectTo(lastActiveName);
+          if (lastActiveName) connectTo(lastActiveName, lastActiveRemoteId);
           return;
         case 'brightness_up':
           setBrightness(deckSettings.brightness + 10);
@@ -4025,10 +4417,19 @@ if (typeof document !== 'undefined') {
 
     // ── Tap-to-connect (optimistic, three layers) ──
 
-    function connectTo(name) {
+    /**
+     * @param {string} name
+     * @param {string|null} [remoteId] - federation device_id if this is a
+     *   remote session (from the tapped tile's dataset.remoteId, or
+     *   lastActiveRemoteId for the toggle_last action); null/omitted for a
+     *   local session, byte-identical to this function's pre-federation
+     *   behavior.
+     */
+    function connectTo(name, remoteId) {
       if (!name) return;
-      var previousPending = pendingName;
-      pendingName = name;
+      var key = pairKey(name, remoteId || null);
+      var previousPendingKey = pendingName;
+      pendingName = key;
       render();
 
       var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -4036,7 +4437,7 @@ if (typeof document !== 'undefined') {
         if (controller) controller.abort();
       }, PENDING_TIMEOUT_MS);
 
-      postJSON('/api/sessions/' + encodeURIComponent(name) + '/connect', {}, controller ? controller.signal : undefined)
+      postJSON(connectEndpointFor(name, remoteId), {}, controller ? controller.signal : undefined)
         .then(function () {
           clearTimeout(timeoutId);
           // Do not locally mark this tile "active" -- that would make the
@@ -4047,14 +4448,15 @@ if (typeof document !== 'undefined') {
         })
         .catch(function () {
           clearTimeout(timeoutId);
-          if (pendingName === name) {
-            pendingName = previousPending;
+          if (pendingName === key) {
+            pendingName = previousPendingKey;
           }
           // A failed tap stays visible: the tile itself turns FAILED (ring +
           // STATE label) for FAILED_MIN_VISIBLE_MS -- no separate toast/
           // banner chrome, matching the hardware's no-affordance-beyond-the-
-          // face rule.
-          failedByName[name] = Date.now() + FAILED_MIN_VISIBLE_MS;
+          // face rule. Keyed by pairKey, not bare name -- see pairKey's
+          // docstring for the same-name-on-two-servers collision hazard.
+          failedByName[key] = Date.now() + FAILED_MIN_VISIBLE_MS;
           render();
         });
     }
@@ -4824,5 +5226,15 @@ if (typeof module !== 'undefined' && module.exports) {
     // environment for them to have ever been defined against).
     buildFederatedDevicesSection: buildFederatedDevicesSection,
     resolveFederatedPeerUrl: resolveFederatedPeerUrl,
+    // v2 federation-aware deck rendering (design doc
+    // docs/plans/2026-08-16-deck-control-target-design.md \u00a74.5) --
+    // GET /api/federation/sessions merge, distinguishable remote tiles,
+    // sessionKey/remoteId keying, and federation-proxy connect routing.
+    pairKey: pairKey,
+    partitionFederationSessions: partitionFederationSessions,
+    remoteSessionsForView: remoteSessionsForView,
+    isEntryActive: isEntryActive,
+    buildFederatedSessionList: buildFederatedSessionList,
+    connectEndpointFor: connectEndpointFor,
   };
 }
