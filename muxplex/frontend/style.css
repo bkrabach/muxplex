@@ -1850,9 +1850,23 @@ body {
   max-width: 160px;
 }
 
+/* Visible caption preceding .follows-select -- aria-label alone left sighted
+   users with no way to know what the control was without hovering for the
+   title tooltip. Small/muted so it doesn't compete with the select itself,
+   matches this header's existing icon-button sizing rhythm. */
+.follows-label {
+  font-size: 0.8em;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+}
+
 @media (max-width: 599px) {
   .follows-select {
     max-width: 110px;
+  }
+
+  .follows-label {
+    display: none;
   }
 }
 
