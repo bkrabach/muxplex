@@ -19,6 +19,7 @@ from .errors import ApiError, CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
+    FederationSessions,
     FocusResult,
     FollowupItem,
     FollowupQueue,
@@ -120,6 +121,29 @@ class MuxplexClient:
     def sessions(self) -> list[Session]:
         """GET /api/sessions -- the shared, ~2s-cycle poll cache."""
         return protocol.parse_sessions(self._request("GET", "/api/sessions"))
+
+    def federation_sessions(self) -> FederationSessions:
+        """GET /api/federation/sessions -- the federation-aware analogue
+        of `sessions()`: aggregates local sessions with every reachable
+        federation peer's sessions into one result.
+
+        A SEPARATE method rather than a parameter on `sessions()` --
+        `sessions()` callers must see zero behavior change, and this is a
+        genuinely different endpoint with a genuinely different response
+        shape (peer status tiles alongside sessions; see
+        `FederationSessions`'s docstring), not a variant of the same one.
+
+        Each returned `Session.remote_id` is `None` for a local session,
+        non-`None` for one living on a peer -- pass it straight through
+        to `connect(remote_id=...)` without inspecting any other field;
+        that method routes to the right endpoint (local vs. federation
+        connect-proxy) for you. Peers that contributed no sessions this
+        poll (unreachable, auth-rejected, or online with zero sessions)
+        surface in `FederationSessions.statuses`, never silently dropped.
+        """
+        return protocol.parse_federation_sessions(
+            self._request("GET", "/api/federation/sessions")
+        )
 
     def session(self, name: str, *, lines: int | None = None) -> SessionSnapshot:
         """GET /api/sessions/{name} -- one fresh capture-pane at a chosen depth."""
@@ -262,8 +286,16 @@ class MuxplexClient:
                 return False
             time.sleep(interval)
 
-    def connect(self, name: str, *, device_id: str | None = None) -> ConnectResult:
-        """POST /api/sessions/{name}/connect.
+    def connect(
+        self,
+        name: str,
+        *,
+        device_id: str | None = None,
+        remote_id: str | None = None,
+    ) -> ConnectResult:
+        """POST /api/sessions/{name}/connect -- or, when `remote_id` is
+        given, POST /api/federation/{remote_id}/connect/{name}, proxied
+        by this server to whichever federation peer owns that id.
 
         WARNING: without `device_id`, active_session is server-global --
         this moves every tab watching the shared "global" group, and (as
@@ -274,7 +306,29 @@ class MuxplexClient:
         the shared "global" group untouched. Omitted (the default) is
         byte-identical to a pre-pairing request -- see main.py's
         `connect_session()` docstring and §8.3.
+
+        `remote_id` (optional): pass a `Session.remote_id` straight
+        through -- `None` (the default, and every local session's value)
+        hits the local endpoint exactly as before this parameter existed;
+        a remote session's non-`None` value routes through the
+        federation connect-proxy instead, so a caller iterating
+        `federation_sessions()` results never has to construct either
+        URL itself (see that method's docstring). Mutually exclusive
+        with `device_id`: raises `ValueError` if both are given, rather
+        than silently dropping one -- `federation_connect()` on the
+        server accepts no `device_id`/query parameters at all (see its
+        docstring in main.py), so there is no honest way to honor both.
+        Omitting `remote_id` (the default) is byte-identical to a
+        pre-federation-aware request.
         """
+        if remote_id is not None:
+            if device_id is not None:
+                raise ValueError(
+                    "connect(): device_id and remote_id are mutually exclusive -- "
+                    "the federation connect-proxy accepts no device_id parameter "
+                    "(see main.py's federation_connect() docstring)"
+                )
+            return self._connect_remote(remote_id, name)
         params = {"device_id": device_id} if device_id is not None else None
         return protocol.parse_connect_result(
             self._request(
@@ -284,6 +338,37 @@ class MuxplexClient:
                 session_name=name,
             )
         )
+
+    def _connect_remote(self, remote_id: str, name: str) -> ConnectResult:
+        """POST /api/federation/{remote_id}/connect/{name} -- the
+        federation connect-proxy. See main.py's `federation_connect()`
+        docstring for the exact contract: 404 when `remote_id` doesn't
+        match a configured peer, 502 when the peer responds with its own
+        HTTP error, 503 when the peer is unreachable. Mapped via
+        `protocol.map_federation_connect_error()` to
+        `RemoteNotFoundError`/`RemoteError`/`RemoteUnreachableError`
+        respectively -- never the generic `SessionNotFound`/`ApiError` a
+        same-status LOCAL failure would raise, because the failure
+        describes the PROXY hop, not this session on this server.
+
+        Deliberately does not go through the shared `_request()` helper
+        (which applies `map_status_error()`): that would either give this
+        proxy call the wrong exception types or require changing
+        `_request()`'s own contract for every other caller. Small,
+        self-contained duplication of `_request()`'s transport shape,
+        same judgment `_protocol.py`'s own docstring already applies to
+        `sync_client.py`/`async_client.py` splitting.
+        """
+        path = f"/api/federation/{remote_id}/connect/{name}"
+        try:
+            response = self._client.request("POST", path)
+        except httpx.HTTPError as exc:
+            raise UnreachableError(f"POST {path} failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise protocol.map_federation_connect_error(
+                response.status_code, remote_id, _extract_detail(response)
+            )
+        return protocol.parse_connect_result(response.json())
 
     def set_active_view(self, view: str, *, device_id: str | None = None) -> None:
         """PATCH /api/state {"active_view": view}.

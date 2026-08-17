@@ -463,6 +463,280 @@ def test_parse_session_missing_cwd_defaults_none() -> None:
     assert session.cwd is None
 
 
+# ---------------------------------------------------------------------------
+# Session federation-aware fields (deviceId/deviceName/deviceVersion/
+# remoteId/sessionKey) -- present only on GET /api/federation/sessions
+# entries; GET /api/sessions never sends these keys.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_session_federation_fields_absent_defaults_none() -> None:
+    """A plain GET /api/sessions entry (or any pre-federation-aware
+    server) never carries these keys -- all five must default to None,
+    never raise, exactly the same tolerance every other additive field
+    on this model gets."""
+    session = protocol.parse_session({"name": "a", "snapshot": "", "bell": {}})
+    assert session.device_id is None
+    assert session.device_name is None
+    assert session.device_version is None
+    assert session.remote_id is None
+    assert session.session_key is None
+
+
+def test_parse_session_local_federation_entry() -> None:
+    """A LOCAL entry within GET /api/federation/sessions's merged list:
+    deviceId/deviceName/deviceVersion/sessionKey are populated but
+    remoteId is explicitly None -- see main.py's federation_sessions()."""
+    session = protocol.parse_session(
+        {
+            "name": "work",
+            "snapshot": "",
+            "bell": {},
+            "deviceId": "d-local-abc",
+            "deviceName": "my-workstation",
+            "deviceVersion": "0.53.0",
+            "remoteId": None,
+            "sessionKey": "d-local-abc:work",
+        }
+    )
+    assert session.device_id == "d-local-abc"
+    assert session.device_name == "my-workstation"
+    assert session.device_version == "0.53.0"
+    assert session.remote_id is None
+    assert session.session_key == "d-local-abc:work"
+
+
+def test_parse_session_remote_federation_entry() -> None:
+    """A REMOTE entry: deviceId and remoteId share the same value (the
+    peer's device_id / index) -- see main.py's federation_sessions()
+    fetch_remote()'s tagging."""
+    session = protocol.parse_session(
+        {
+            "name": "dev",
+            "snapshot": "pane text",
+            "bell": {},
+            "deviceId": "0",
+            "deviceName": "spark-2",
+            "deviceVersion": "0.52.0",
+            "remoteId": "0",
+            "sessionKey": "0:dev",
+        }
+    )
+    assert session.device_id == "0"
+    assert session.remote_id == "0"
+    assert session.device_name == "spark-2"
+    assert session.device_version == "0.52.0"
+    assert session.session_key == "0:dev"
+
+
+def test_parse_session_remote_entry_device_version_unknown() -> None:
+    """deviceVersion is None (never guessed) when the peer couldn't be
+    version-probed -- see RemoteStatus's docstring for the same rule."""
+    session = protocol.parse_session(
+        {
+            "name": "dev",
+            "snapshot": "",
+            "bell": {},
+            "deviceId": "0",
+            "deviceName": "spark-2",
+            "deviceVersion": None,
+            "remoteId": "0",
+            "sessionKey": "0:dev",
+        }
+    )
+    assert session.device_version is None
+
+
+# ---------------------------------------------------------------------------
+# parse_remote_status / parse_federation_sessions
+# ---------------------------------------------------------------------------
+
+
+def test_parse_remote_status_unreachable() -> None:
+    status = protocol.parse_remote_status(
+        {
+            "status": "unreachable",
+            "deviceId": "0",
+            "remoteId": "0",
+            "deviceName": "spark-2",
+            "deviceVersion": None,
+        }
+    )
+    assert status.status == "unreachable"
+    assert status.device_id == "0"
+    assert status.remote_id == "0"
+    assert status.device_name == "spark-2"
+    assert status.device_version is None
+
+
+def test_parse_remote_status_auth_failed_with_known_version() -> None:
+    """auth_failed still carries deviceVersion when known -- /api/instance-info
+    is unauthenticated so the version probe can succeed even when
+    /api/sessions itself was auth-rejected (see main.py's fetch_remote())."""
+    status = protocol.parse_remote_status(
+        {
+            "status": "auth_failed",
+            "deviceId": "1",
+            "remoteId": "1",
+            "deviceName": "alienware-r13",
+            "deviceVersion": "0.52.0",
+        }
+    )
+    assert status.status == "auth_failed"
+    assert status.device_version == "0.52.0"
+
+
+def test_parse_remote_status_empty() -> None:
+    status = protocol.parse_remote_status(
+        {
+            "status": "empty",
+            "deviceId": "2",
+            "remoteId": "2",
+            "deviceName": "spark-1",
+            "deviceVersion": "0.53.0",
+        }
+    )
+    assert status.status == "empty"
+
+
+def test_parse_federation_sessions_local_and_remote_mixed() -> None:
+    """The real merged-list shape: local sessions (remoteId=None) and
+    remote sessions (remoteId set) interleaved in one list -- must split
+    cleanly into FederationSessions.sessions with each Session.remote_id
+    intact, never merged/confused."""
+    raw = [
+        {
+            "name": "local-work",
+            "snapshot": "",
+            "bell": {},
+            "deviceId": "d-local",
+            "deviceName": "my-machine",
+            "deviceVersion": "0.53.0",
+            "remoteId": None,
+            "sessionKey": "d-local:local-work",
+        },
+        {
+            "name": "work",
+            "snapshot": "",
+            "bell": {},
+            "deviceId": "0",
+            "deviceName": "spark-2",
+            "deviceVersion": "0.52.0",
+            "remoteId": "0",
+            "sessionKey": "0:work",
+        },
+        {
+            "name": "dev",
+            "snapshot": "",
+            "bell": {},
+            "deviceId": "0",
+            "deviceName": "spark-2",
+            "deviceVersion": "0.52.0",
+            "remoteId": "0",
+            "sessionKey": "0:dev",
+        },
+    ]
+    result = protocol.parse_federation_sessions(raw)
+    assert len(result.sessions) == 3
+    assert result.statuses == ()
+    local = next(s for s in result.sessions if s.name == "local-work")
+    assert local.remote_id is None
+    remote_names = {s.name for s in result.sessions if s.remote_id == "0"}
+    assert remote_names == {"work", "dev"}
+
+
+def test_parse_federation_sessions_splits_status_entries() -> None:
+    """A status tile (unreachable/auth_failed/empty) has no `name` and
+    must land in `.statuses`, never be mistaken for a connectable
+    session -- see main.py's federation_sessions() status-entry shapes."""
+    raw = [
+        {
+            "name": "local-work",
+            "snapshot": "",
+            "bell": {},
+            "deviceId": "d-local",
+            "deviceName": "my-machine",
+            "deviceVersion": "0.53.0",
+            "remoteId": None,
+            "sessionKey": "d-local:local-work",
+        },
+        {
+            "status": "unreachable",
+            "deviceId": "0",
+            "remoteId": "0",
+            "deviceName": "spark-2",
+            "deviceVersion": None,
+        },
+        {
+            "status": "auth_failed",
+            "deviceId": "1",
+            "remoteId": "1",
+            "deviceName": "alienware-r13",
+            "deviceVersion": "0.52.0",
+        },
+    ]
+    result = protocol.parse_federation_sessions(raw)
+    assert len(result.sessions) == 1
+    assert result.sessions[0].name == "local-work"
+    assert len(result.statuses) == 2
+    statuses_by_id = {s.device_id: s for s in result.statuses}
+    assert statuses_by_id["0"].status == "unreachable"
+    assert statuses_by_id["1"].status == "auth_failed"
+
+
+def test_parse_federation_sessions_empty_list() -> None:
+    """No remote_instances configured and zero local sessions -- must
+    parse to two empty tuples, never raise."""
+    result = protocol.parse_federation_sessions([])
+    assert result.sessions == ()
+    assert result.statuses == ()
+
+
+# ---------------------------------------------------------------------------
+# map_federation_connect_error -- federation connect-proxy status mapping
+# ---------------------------------------------------------------------------
+
+
+def test_map_federation_connect_error_404_is_remote_not_found() -> None:
+    from muxplex_client.errors import RemoteNotFoundError
+
+    err = protocol.map_federation_connect_error(
+        404, "unknown-device", "Remote instance 'unknown-device' not found"
+    )
+    assert isinstance(err, RemoteNotFoundError)
+    assert err.status == 404
+    assert err.device_id == "unknown-device"
+
+
+def test_map_federation_connect_error_502_is_remote_error() -> None:
+    from muxplex_client.errors import RemoteError
+
+    err = protocol.map_federation_connect_error(502, "0", "Remote returned 500")
+    assert isinstance(err, RemoteError)
+    assert err.status == 502
+
+
+def test_map_federation_connect_error_503_is_remote_unreachable() -> None:
+    from muxplex_client.errors import RemoteUnreachableError
+
+    err = protocol.map_federation_connect_error(
+        503, "0", "Remote unreachable: http://spark-2:8088 (ConnectError: ...)"
+    )
+    assert isinstance(err, RemoteUnreachableError)
+    assert err.status == 503
+
+
+def test_map_federation_connect_error_unrecognized_status_falls_back_to_api_error() -> (
+    None
+):
+    """Anything other than 404/502/503 (unexpected, but must not be
+    swallowed or misrepresented) -- same honest fallback map_status_error()
+    uses for a status it doesn't specifically recognize."""
+    err = protocol.map_federation_connect_error(500, "0", "unexpected")
+    assert type(err) is ApiError
+    assert err.status == 500
+
+
 def test_parse_session_snapshot_pre_c_server_all_four_new_fields_default() -> None:
     """A server predating item C (cwd/followups/views/created_at parity on
     GET /api/sessions/{name}) omits all four -- every one must default,
