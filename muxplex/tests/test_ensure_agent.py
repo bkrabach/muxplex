@@ -3,7 +3,10 @@
 See `ensure_agent`'s own module docstring in cli.py for the full design
 rationale (why neither a PyPI nor a plain git `uv tool install` of muxplex
 gets amplifier-agent on its own, and why --with is safe to add
-unconditionally here unlike tmux-kit's override).
+unconditionally here unlike tmux-kit's override), and the "muxplex-fx2 gap"
+comment above `_AGENT_PANEL_PROVIDERS` for why `amplifier_agent_lib` being
+importable was never sufficient proof a turn could actually run -- the
+incident this test file's newer tests exist to guard against.
 """
 
 from __future__ import annotations
@@ -27,6 +30,23 @@ def agent_not_yet_installed(monkeypatch):
         "_agent_import_probe",
         lambda: (None, "No module named 'amplifier_agent_lib'"),
     )
+    return cli_mod
+
+
+@pytest.fixture
+def providers_ready(monkeypatch):
+    """Stub `_agent_providers_importable()` (True) and `_run_agent_post_install()`
+    (success, no-op) so tests focused on the amplifier-agent LIBRARY install
+    path don't also need to fake a real bundle-prepare subprocess run. Tests
+    that specifically exercise the provider-preparation step override these
+    themselves.
+    """
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod, "_agent_providers_importable", lambda providers=(): (True, "")
+    )
+    monkeypatch.setattr(cli_mod, "_run_agent_post_install", lambda uv_path: (True, ""))
     return cli_mod
 
 
@@ -55,31 +75,99 @@ def _git_info(url="https://github.com/bkrabach/muxplex", ref: str | None = "v0.5
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_agent_fast_noop_when_already_at_pin(monkeypatch, capsys):
+def test_ensure_agent_fast_noop_when_already_at_pin_and_providers_ready(
+    monkeypatch, capsys
+):
+    """The ONLY truly free fast path: lib at pin AND every panel provider
+    already importable. Neither `_get_install_info`, `_find_uv`,
+    `subprocess.run`, nor `_run_agent_post_install` may be touched."""
     import muxplex.cli as cli_mod
 
     monkeypatch.setattr(
         cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "0.12.0"
     )
     monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: ("0.12.0", None))
+    monkeypatch.setattr(
+        cli_mod, "_agent_providers_importable", lambda providers=(): (True, "")
+    )
 
     def fail(*a, **k):
-        raise AssertionError("must not shell out when already at the pinned version")
+        raise AssertionError("must not shell out when already fully ready")
 
     monkeypatch.setattr(subprocess, "run", fail)
     monkeypatch.setattr(cli_mod, "_get_install_info", fail)
     monkeypatch.setattr(cli_mod, "_find_uv", fail)
+    monkeypatch.setattr(cli_mod, "_run_agent_post_install", fail)
 
     assert cli_mod.ensure_agent() is True
     out = capsys.readouterr().out
     assert "0.12.0" in out
-    assert "already installed" in out
+    assert "installed" in out
+    assert "providers ready" in out
 
 
-def test_ensure_agent_reinstalls_on_version_mismatch(monkeypatch, capsys):
+def test_ensure_agent_skips_full_reinstall_when_only_providers_missing(
+    monkeypatch, capsys
+):
+    """This is the exact gap that shipped the bug: lib import matches the
+    pin, but the provider modules were never installed. Must NOT reinstall
+    amplifier-agent itself (no `_upgrade_target`/install `uv tool install`
+    subprocess) -- only run the bundle-prepare step."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "0.12.0"
+    )
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: ("0.12.0", None))
+    probes = iter(
+        [
+            (False, "anthropic (amplifier_module_provider_anthropic): missing"),
+            (True, ""),
+        ]
+    )
+    monkeypatch.setattr(
+        cli_mod, "_agent_providers_importable", lambda providers=(): next(probes)
+    )
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+
+    def fail_upgrade_target(*a, **k):
+        raise AssertionError(
+            "must not compute a reinstall target when lib is already ok"
+        )
+
+    monkeypatch.setattr(cli_mod, "_upgrade_target", fail_upgrade_target)
+
+    def fail_run(*a, **k):
+        raise AssertionError(
+            "must not shell out to `uv tool install` for providers-only gap"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    post_install_calls = []
+
+    def fake_post_install(uv_path):
+        post_install_calls.append(uv_path)
+        return True, ""
+
+    monkeypatch.setattr(cli_mod, "_run_agent_post_install", fake_post_install)
+
+    assert cli_mod.ensure_agent() is True
+    assert post_install_calls == ["/usr/bin/uv"]
+    out = capsys.readouterr().out
+    assert "provider" in out.lower()
+    assert "preparing bundle" in out.lower()
+
+
+def test_ensure_agent_reinstalls_on_version_mismatch(
+    providers_ready, monkeypatch, capsys
+):
     """Installed at the WRONG version (not merely absent) must still trigger
     a real reinstall, not be treated as a no-op."""
-    import muxplex.cli as cli_mod
+    cli_mod = providers_ready
 
     monkeypatch.setattr(
         cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "0.13.0"
@@ -112,7 +200,7 @@ def test_ensure_agent_reinstalls_on_version_mismatch(monkeypatch, capsys):
 
 
 def test_ensure_agent_uses_bare_name_for_pypi_target(
-    agent_not_yet_installed, monkeypatch, capsys
+    agent_not_yet_installed, providers_ready, monkeypatch, capsys
 ):
     cli_mod = agent_not_yet_installed
     monkeypatch.setattr(
@@ -145,11 +233,13 @@ def test_ensure_agent_uses_bare_name_for_pypi_target(
     )
 
 
-def test_ensure_agent_preserves_git_target_never_switches_to_pypi(monkeypatch, capsys):
+def test_ensure_agent_preserves_git_target_never_switches_to_pypi(
+    providers_ready, monkeypatch, capsys
+):
     """The exact regression class this task calls out: never switch
     muxplex's OWN install source from git to PyPI (or vice versa) while
     ensuring amplifier-agent."""
-    import muxplex.cli as cli_mod
+    cli_mod = providers_ready
 
     monkeypatch.setattr(
         cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "9.9.9"
@@ -307,6 +397,261 @@ def test_ensure_agent_fails_loud_when_still_not_importable_after_install(
     out = capsys.readouterr().out
     assert "ERROR" in out
     assert "still not importable" in out
+
+
+# ---------------------------------------------------------------------------
+# Provider (bundle) preparation -- the muxplex-fx2 gap this fix closes.
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_agent_runs_post_install_after_fresh_install(
+    agent_not_yet_installed, monkeypatch, capsys
+):
+    """After a fresh amplifier-agent install, the bundle-prepare step must
+    run before ensure_agent() reports success -- lib-importable alone is
+    exactly the insufficient signal that shipped this bug."""
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    probes = iter([(None, "not installed"), ("9.9.9", None)])
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
+
+    post_install_calls = []
+
+    def fake_post_install(uv_path):
+        post_install_calls.append(uv_path)
+        return True, ""
+
+    monkeypatch.setattr(cli_mod, "_run_agent_post_install", fake_post_install)
+    monkeypatch.setattr(
+        cli_mod, "_agent_providers_importable", lambda providers=(): (True, "")
+    )
+
+    assert cli_mod.ensure_agent() is True
+    assert post_install_calls == ["/usr/bin/uv"]
+    out = capsys.readouterr().out
+    assert "providers ready" in out
+
+
+def test_ensure_agent_fails_loud_when_post_install_itself_fails(
+    agent_not_yet_installed, monkeypatch, capsys
+):
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    probes = iter([(None, "not installed"), ("9.9.9", None)])
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
+    monkeypatch.setattr(
+        cli_mod,
+        "_run_agent_post_install",
+        lambda uv_path: (False, "bundle preparation exited 1: boom"),
+    )
+
+    assert cli_mod.ensure_agent() is False
+    out = capsys.readouterr().out
+    assert "ERROR" in out
+    assert "bundle preparation exited 1: boom" in out
+
+
+def test_ensure_agent_fails_loud_when_providers_still_missing_after_post_install(
+    agent_not_yet_installed, monkeypatch, capsys
+):
+    """A 0 exit from bundle preparation is NOT proof every module actually
+    installed (activate_all() swallows per-module failures unless strict --
+    see _run_agent_post_install's docstring) -- ensure_agent() must never
+    trust that exit code alone and must re-verify the providers are
+    actually importable, even after exhausting its one retry."""
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    probes = iter([(None, "not installed"), ("9.9.9", None)])
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
+    # bundle preparation "succeeds" (exit 0) on every attempt but the
+    # provider module is still never actually present -- persistently
+    # broken, not merely flaky, so the retry must not paper over it.
+    monkeypatch.setattr(cli_mod, "_run_agent_post_install", lambda uv_path: (True, ""))
+    monkeypatch.setattr(
+        cli_mod,
+        "_agent_providers_importable",
+        lambda providers=(): (
+            False,
+            "anthropic (amplifier_module_provider_anthropic): No module named 'anthropic'",
+        ),
+    )
+
+    assert cli_mod.ensure_agent() is False
+    out = capsys.readouterr().out
+    assert "ERROR" in out
+    assert "still not importable" in out
+    assert "amplifier_module_provider_anthropic" in out
+    assert "retrying" in out  # the retry was genuinely attempted
+
+
+def test_ensure_agent_retries_once_on_transient_provider_flake(
+    agent_not_yet_installed, monkeypatch, capsys
+):
+    """Real-world observed behavior (2026-08-17 spike): bundle preparation
+    activates ~20 modules concurrently, and a transient per-module failure
+    (network blip, resource contention) can leave a provider module not yet
+    importable after the first attempt even though nothing in the code
+    differs between runs. A second attempt succeeding must be reported as
+    SUCCESS, not a hard failure -- a retry exists precisely for this."""
+    cli_mod = agent_not_yet_installed
+    monkeypatch.setattr(
+        cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
+    )
+    monkeypatch.setattr(cli_mod, "_find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    probes = iter([(None, "not installed"), ("9.9.9", None)])
+    monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: next(probes))
+
+    post_install_calls = []
+    monkeypatch.setattr(
+        cli_mod,
+        "_run_agent_post_install",
+        lambda uv_path: post_install_calls.append(uv_path) or (True, ""),
+    )
+
+    provider_results = iter(
+        [
+            (False, "anthropic (amplifier_module_provider_anthropic): transient"),
+            (True, ""),
+        ]
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_agent_providers_importable",
+        lambda providers=(): next(provider_results),
+    )
+
+    assert cli_mod.ensure_agent() is True
+    assert len(post_install_calls) == 2  # the retry actually ran
+    out = capsys.readouterr().out
+    assert "retrying" in out
+    assert "providers ready" in out
+
+
+def test_provider_module_import_name_matches_bundle_convention():
+    import muxplex.cli as cli_mod
+
+    assert (
+        cli_mod._provider_module_import_name("anthropic")
+        == "amplifier_module_provider_anthropic"
+    )
+    assert (
+        cli_mod._provider_module_import_name("openai")
+        == "amplifier_module_provider_openai"
+    )
+
+
+def test_agent_providers_importable_detects_a_genuinely_missing_module():
+    """A REAL (unmocked) exercise of the check that would have caught the
+    shipped bug: a provider name whose module can never exist reports
+    False with a detail naming exactly what's missing, never a bare
+    unexplained False and never a silent True."""
+    import muxplex.cli as cli_mod
+
+    ok, detail = cli_mod._agent_providers_importable(
+        providers=("definitely-not-a-real-provider-xyz",)
+    )
+    assert ok is False
+    assert "definitely-not-a-real-provider-xyz" in detail
+    assert "amplifier_module_provider_definitely_not_a_real_provider_xyz" in detail
+
+
+def test_agent_providers_importable_all_present_returns_true_with_empty_detail():
+    """Sanity check on the positive branch using modules guaranteed
+    importable in any test environment (this test file's own package)."""
+    import muxplex.cli as cli_mod
+
+    ok, detail = cli_mod._agent_providers_importable(providers=())
+    assert ok is True
+    assert detail == ""
+
+
+def test_run_agent_post_install_calls_loader_via_sys_executable(monkeypatch):
+    """Must invoke `sys.executable -c <snippet calling load_and_prepare_bundle
+    directly>` -- NOT the `amplifier-agent-post-install` CLI script (see the
+    module-level comment above `_AGENT_PANEL_PROVIDERS` for why that script's
+    own cache short-circuit makes it unsafe: it silently no-ops for every
+    venv other than the first one that ever primed the shared cache)."""
+    import sys
+
+    import muxplex.cli as cli_mod
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="prepared ok")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    ok, detail = cli_mod._run_agent_post_install("/opt/uvbin/uv")
+    assert ok is True
+    assert detail == "prepared ok"
+    cmd = captured["cmd"]
+    assert cmd[0] == sys.executable
+    assert cmd[1] == "-c"
+    assert "load_and_prepare_bundle" in cmd[2]
+    assert "install_deps=True" in cmd[2]
+    assert "amplifier-agent-post-install" not in " ".join(cmd)
+    assert captured["env"]["PATH"].startswith("/opt/uvbin")
+
+
+def test_run_agent_post_install_reports_nonzero_exit(monkeypatch):
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **k: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="boom: disk full"
+        ),
+    )
+
+    ok, detail = cli_mod._run_agent_post_install("/usr/bin/uv")
+    assert ok is False
+    assert "boom: disk full" in detail
+
+
+def test_run_agent_post_install_reports_subprocess_launch_failure(monkeypatch):
+    import muxplex.cli as cli_mod
+
+    def fail(*a, **k):
+        raise OSError("no such file or directory")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    ok, detail = cli_mod._run_agent_post_install("/usr/bin/uv")
+    assert ok is False
+    assert "no such file or directory" in detail
 
 
 # ---------------------------------------------------------------------------

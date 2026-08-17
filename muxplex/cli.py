@@ -8,6 +8,7 @@ import secrets as _secrets
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from muxplex.auth import (
@@ -812,16 +813,245 @@ def _agent_import_probe() -> tuple[str | None, str | None]:
     return version, None
 
 
+# ---------------------------------------------------------------------------
+# amplifier-agent PROVIDER bootstrap ("the muxplex-fx2 gap")
+# ---------------------------------------------------------------------------
+#
+# 2026-08 incident: `ensure_agent()` above reported success fleet-wide (every
+# device had `amplifier_agent_lib` importable at the pinned version) while the
+# embedded chat panel was completely dead on every one of them -- every real
+# turn failed with "No module named 'anthropic'". Root cause: `uv tool install
+# muxplex --with 'amplifier-agent @ git+...@vX'` resolves amplifier-agent's OWN
+# pyproject dependencies (amplifier-core, amplifier-foundation) -- it does NOT
+# touch anything declared in amplifier-agent's *bundle* (bundle.md's
+# `providers:`/`session.orchestrator`/`session.context`/`tools:`/`hooks:`
+# blocks), because those are installed by a SEPARATE, bundle-managed step
+# (`amplifier_foundation.bundle.Bundle.prepare(install_deps=True)`), normally
+# triggered by amplifier-agent's own `amplifier-agent-post-install` entry
+# point or a session's first cold-prepare -- and `--with` never runs either.
+# So `amplifier_agent_lib` importing proved only that the LIBRARY was present,
+# never that a turn could actually run.
+#
+# Verified empirically (2026-08-17, this fix's own load-bearing spike, in a
+# fully isolated `UV_TOOL_DIR`/`UV_TOOL_BIN_DIR` on a clean box):
+#
+#   1. Reproduced the bug: `uv tool install <muxplex-target> --with
+#      'amplifier-agent @ git+...@v0.12.0'` alone leaves
+#      `amplifier_module_provider_anthropic` (and the `anthropic` SDK itself)
+#      genuinely `ModuleNotFoundError` in that exact venv.
+#   2. Calling amplifier-agent's own bundle loader
+#      (`amplifier_agent_lib.bundle.loader.load_and_prepare_bundle(
+#      install_deps=True)`) from that venv's own interpreter makes every
+#      bundle module a REAL, pip-registered editable install (verified via
+#      `importlib.metadata` dist-info, not just a `sys.path` shim) in that
+#      SAME venv: all 5 provider modules (anthropic, openai, azure-openai,
+#      ollama, github-copilot), the `loop-streaming` orchestrator, the
+#      `context-simple` context module, and every declared tool/hook.
+#   3. A full real streamed turn against the live Anthropic API (through
+#      `muxplex.agent_embedded.runner.stream_embedded_chat_completion`,
+#      the exact code path a real chat message takes) then completes
+#      end-to-end from that same venv.
+#
+# IMPORTANT CORRECTION to an earlier version of this fix (same 2026-08-17
+# spike, second round): the documented CLI entry point for this,
+# `amplifier-agent-post-install`, looked like the "canonical" way to trigger
+# step 2 -- but its own `main()` (post_install.py) short-circuits the INSTANT
+# a `manifest.json` exists under
+# `~/.amplifier-agent/cache/prepared/<aaa_version>/<bundle_sha256_prefix>/`,
+# printing "cache already prepared" and returning 0 WITHOUT EVER PREPARING
+# ANYTHING -- and that cache key is (amplifier-agent version, bundle.md
+# content hash) ONLY, with NO scoping to which venv is asking. Reproduced
+# directly: with that manifest already on disk from an earlier venv's real
+# prepare, running `amplifier-agent-post-install` from a brand-new,
+# never-prepared second venv (sharing the same $HOME) reported success while
+# installing nothing at all into it -- a SILENT no-op for the modules this
+# fix exists to guarantee. `uv tool install --reinstall --force` (exactly
+# what `ensure_agent()` runs on every reinstall) recreates the venv fresh
+# each time, so this isn't a corner case -- it's the common case on any
+# machine that has ever prepared this bundle once before. Calling
+# `load_and_prepare_bundle()` directly (below) bypasses that shared,
+# version+hash-keyed cache layer entirely; the per-module install it performs
+# has its OWN, CORRECTLY-scoped idempotency instead
+# (`ModuleActivator._distribution_installed()` re-checks THIS interpreter's
+# actual site-packages before deciding a module needs installing, not a
+# cache note some other venv left behind).
+#
+# This is why the fix below calls amplifier-agent's bundle loader directly,
+# not "hand-list provider modules in a second `--with` flag" and not "shell
+# out to amplifier-agent-post-install": it installs precisely and only what
+# THAT PINNED VERSION's bundle.md declares, so muxplex never needs a second,
+# independently-drifting provider pin of its own -- whichever amplifier-agent
+# version `_agent_target_pin()` resolves is the version whose OWN bundle
+# decides what gets installed, and the two can never disagree. A live network
+# reachability check per provider was considered and rejected: `ensure_agent()`
+# runs before any credential is ever configured (during install/upgrade, well
+# before a user opens Settings -> Agent), so a live API call would
+# deterministically fail on "no key" and would make every install/upgrade
+# depend on the provider's own uptime for no real signal -- an import check
+# answers exactly the question that matters here ("is the module on disk"),
+# which is a packaging concern, not a credential-validation one.
+
+#: Provider short-names the embedded chat panel can actually offer a user
+#: (mirrors `agent_embedded.credentials.ALLOWED_PROVIDERS` -- duplicated,
+#: not imported: `agent_embedded` is muxplex's OWN optional package, and
+#: this module must keep working via `muxplex ensure-agent` even before
+#: that package's own dependencies exist. Both lists are the same two
+#: providers on purpose; nothing here special-cases which one is "the
+#: default" -- `runner.active_provider()` can mount either one a user
+#: picks, so both must be ready.)
+_AGENT_PANEL_PROVIDERS: tuple[str, ...] = ("anthropic", "openai")
+
+
+def _provider_module_import_name(provider: str) -> str:
+    """Python import name for a provider's amplifier-module package.
+
+    Mirrors amplifier-agent's own bundle.md naming convention (``module:
+    provider-<name>`` installs a package importable as
+    ``amplifier_module_provider_<name>``) -- verified against the actual
+    installed packages for both ``anthropic`` and ``openai`` in the
+    2026-08-17 spike referenced above.
+    """
+    return f"amplifier_module_provider_{provider.replace('-', '_')}"
+
+
+def _agent_providers_importable(
+    providers: tuple[str, ...] = _AGENT_PANEL_PROVIDERS,
+) -> tuple[bool, str]:
+    """Return (all_importable, detail) for *providers*' amplifier-module packages.
+
+    THIS is the check that actually answers "can the embedded runner
+    complete a turn?" -- `_agent_import_probe()` (import amplifier_agent_lib)
+    answers a narrower, insufficient one: see the module-level comment above
+    for why amplifier_agent_lib being importable proved nothing about the
+    provider modules a turn actually needs.
+
+    Checks every provider the Settings -> Agent panel can offer
+    (`_AGENT_PANEL_PROVIDERS` above), not just the bundle's own
+    ``default_provider`` -- `runner.active_provider()` mounts whichever
+    provider a resolved credential names, and a user who picks the
+    non-default one must not hit this bug either.
+
+    Returns ``(True, "")`` if every provider imports cleanly, else
+    ``(False, detail)`` where *detail* names every provider that failed and
+    why -- never a bare ``False`` with no explanation.
+    """
+    import importlib
+
+    importlib.invalidate_caches()
+    missing: list[str] = []
+    for provider in providers:
+        module_name = _provider_module_import_name(provider)
+        try:
+            importlib.import_module(module_name)
+        except ImportError as exc:
+            missing.append(f"{provider} ({module_name}): {exc}")
+    if missing:
+        return False, "; ".join(missing)
+    return True, ""
+
+
+#: The exact snippet run (via the target venv's OWN interpreter) to prepare
+#: amplifier-agent's bundle. Calls the loader FUNCTION directly rather than
+#: the `amplifier-agent-post-install` CLI script -- see the module-level
+#: comment above `_AGENT_PANEL_PROVIDERS` for why that script's own
+#: cache-existence short-circuit makes it unsafe to rely on here.
+_AGENT_BUNDLE_PREPARE_SNIPPET = (
+    "import asyncio\n"
+    "from amplifier_agent_lib.bundle.loader import load_and_prepare_bundle\n"
+    "asyncio.run(load_and_prepare_bundle(install_deps=True))\n"
+)
+
+
+def _run_agent_post_install(uv_path: str) -> tuple[bool, str]:
+    """Prepare amplifier-agent's bundle -- every provider, the orchestrator,
+    the context module, every tool, every hook it declares
+    (``amplifier_agent_lib/bundle/bundle.md``) -- as REAL editable installs
+    (``uv pip install -e``) into THIS venv, not merely a git-clone cache.
+
+    Calls amplifier-agent's own bundle loader FUNCTION directly
+    (``amplifier_agent_lib.bundle.loader.load_and_prepare_bundle(
+    install_deps=True)``) via ``sys.executable`` -- the SAME venv
+    `ensure_agent()` just verified/installed muxplex + amplifier-agent into
+    (``sys.executable`` reports the tool venv's own ``bin/python`` path
+    directly; verified empirically, 2026-08-17 spike). See the module-level
+    comment above `_AGENT_PANEL_PROVIDERS` for why this does NOT shell out to
+    the documented ``amplifier-agent-post-install`` CLI entry point instead:
+    that script's own cache-existence short-circuit is a silent no-op for
+    any venv other than the first one that ever primed it on a given
+    machine -- exactly the case on every reinstall, since `ensure_agent()`
+    recreates the venv fresh each time.
+
+    The underlying per-module dependency installer shells out to a bare
+    ``"uv"`` (no PATH-independent lookup, unlike this file's `_find_uv()`)
+    -- so *uv_path*'s directory is prepended to the subprocess's PATH here,
+    defending against the exact stripped-PATH failure mode `_find_uv()`'s
+    own docstring describes for systemd/launchd contexts.
+
+    Unlike ``amplifier-agent-post-install`` (which always exits 0 by
+    design, swallowing every failure), this subprocess propagates a genuine
+    module-activation failure as a non-zero exit -- but the caller's own
+    follow-up call to `_agent_providers_importable()` remains the
+    AUTHORITATIVE gate either way; never trust a 0 exit alone as proof of a
+    working install.
+
+    Returns (ok, detail) -- detail is the subprocess's stderr (progress /
+    error text) either way.
+    """
+    env = dict(os.environ)
+    uv_dir = str(Path(uv_path).parent)
+    env["PATH"] = f"{uv_dir}{os.pathsep}{env.get('PATH', '')}"
+
+    print(
+        "  Preparing amplifier-agent bundle (providers, orchestrator, tools, hooks)..."
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _AGENT_BUNDLE_PREPARE_SNIPPET],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "bundle preparation timed out after 600s"
+    except Exception as exc:
+        return False, f"could not run bundle preparation: {exc}"
+
+    if result.returncode != 0:
+        return (
+            False,
+            f"bundle preparation exited {result.returncode}: {result.stderr.strip()[-2000:]}",
+        )
+    return True, result.stderr.strip()
+
+
 def ensure_agent(*, force: bool = False) -> bool:
-    """Idempotently ensure amplifier-agent is installed into muxplex's OWN
+    """Idempotently ensure amplifier-agent -- AND every provider its
+    embedded chat panel can offer -- is installed into muxplex's OWN
     uv-tool environment -- regardless of whether THIS muxplex came from
     PyPI or git (see the module note above for why neither source gets it
     any other way).
 
-    Fast path (the common case on every call after the first): if
-    amplifier_agent_lib already imports at the pin muxplex declares, this
-    is a single import-and-compare check -- no subprocess, no network.
-    Mirrors tower's own bootstrap no-op.
+    Two things must both be true for a turn to actually work, checked and
+    (re)installed independently:
+      1. ``amplifier_agent_lib`` importable at the pin muxplex declares
+         (`_agent_import_probe()` / `_agent_target_pin()`).
+      2. Every panel-selectable provider module actually importable
+         (`_agent_providers_importable()`) -- see the "muxplex-fx2 gap"
+         comment above `_AGENT_PANEL_PROVIDERS` for why (1) alone shipped
+         a fleet-wide dead chat panel: `--with amplifier-agent@vX` resolves
+         (1) but never touches (2), which is a separate, bundle-managed
+         install step (`amplifier-agent-post-install`).
+
+    Fast path (the common case on every call after the first): if BOTH are
+    already true, this is a handful of import-and-compare checks -- no
+    subprocess, no network. If only (1) needs work, the full
+    `uv tool install` reinstall runs and (2) is prepared straight
+    afterward. If (1) is already fine but (2) isn't (e.g. a device that
+    ran the OLD version of this function before this fix shipped), the
+    `uv tool install` reinstall is skipped entirely -- only the bundle
+    (provider) preparation step runs, since amplifier-agent itself doesn't
+    need touching.
 
     Called from two places, both AFTER muxplex itself is already on disk at
     the version whose pin matters:
@@ -843,51 +1073,48 @@ def ensure_agent(*, force: bool = False) -> bool:
     `muxplex serve` (no service) flow, and `doctor()` surfaces the gap
     loudly if nobody ran it.
 
-    Returns True if amplifier-agent is (now) importable at the target pin,
-    False otherwise -- NEVER raises and NEVER reports success on faith
-    (every exit prints exactly what happened before returning False).
-    Callers decide whether False is fatal: `muxplex ensure-agent` exits 1;
-    `service_install()`/`upgrade()` print the failure loudly but continue
-    (amplifier-agent is an optional capability -- losing it must not brick
-    muxplex's own service install or update).
+    Returns True if amplifier-agent AND every panel provider module are
+    (now) importable, False otherwise -- NEVER raises and NEVER reports
+    success on faith (every exit prints exactly what happened before
+    returning False). Callers decide whether False is fatal: `muxplex
+    ensure-agent` exits 1; `service_install()`/`upgrade()` print the
+    failure loudly but continue (amplifier-agent is an optional capability
+    -- losing it must not brick muxplex's own service install or update).
     """
     import importlib
 
     importlib.invalidate_caches()
     target_pin = _agent_target_pin()
 
-    if not force:
-        version, err = _agent_import_probe()
-        if version == target_pin:
-            print(f"  \u2713 amplifier-agent {version} already installed")
-            return True
-        if version is not None:
+    lib_version, lib_err = _agent_import_probe()
+    lib_ok = not force and lib_version == target_pin
+
+    if lib_ok:
+        providers_ok, providers_detail = _agent_providers_importable()
+        if providers_ok:
             print(
-                f"  amplifier-agent {version} installed but muxplex pins"
+                f"  \u2713 amplifier-agent {lib_version} installed"
+                f" (providers ready: {', '.join(_AGENT_PANEL_PROVIDERS)})"
+            )
+            return True
+        print(
+            f"  amplifier-agent {lib_version} installed but provider"
+            f" module(s) not ready ({providers_detail}) -- preparing bundle..."
+        )
+    elif not force:
+        if lib_version is not None:
+            print(
+                f"  amplifier-agent {lib_version} installed but muxplex pins"
                 f" {target_pin} -- reinstalling to match"
             )
         else:
-            print(f"  amplifier-agent not installed ({err}) -- installing...")
+            print(f"  amplifier-agent not installed ({lib_err}) -- installing...")
 
     info = _get_install_info()
     if info["source"] == "editable":
         print(
             "  amplifier-agent: skipping -- muxplex is an editable checkout."
             " Install it yourself: uv sync --extra agent"
-        )
-        return False
-
-    install_target, refuse_reason = _upgrade_target(info)
-    if install_target is None:
-        print(f"  ERROR: cannot ensure amplifier-agent -- {refuse_reason}")
-        return False
-    if not _target_matches_source(info, install_target):
-        # Same defense-in-depth as upgrade()'s own check -- never hand the
-        # installer a target that doesn't match the recorded source.
-        print(
-            "  ERROR: cannot ensure amplifier-agent -- computed install"
-            f" target does not match muxplex's recorded install source"
-            f" ({info['source']}): {install_target!r}"
         )
         return False
 
@@ -901,50 +1128,135 @@ def ensure_agent(*, force: bool = False) -> bool:
         )
         return False
 
-    agent_with = f"{_AGENT_DIST_NAME} @ git+{_AGENT_REPO_URL}@v{target_pin}"
-    install_cmd = [
-        uv_path,
-        "tool",
-        "install",
-        "--reinstall",
-        "--refresh",
-        "--force",
-        install_target,
-        "--with",
-        agent_with,
-    ]
-    print(f"  Installing amplifier-agent v{target_pin} (git, pinned)...")
-    result = subprocess.run(install_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    # Only reinstall amplifier-agent itself (a whole separate `uv tool
+    # install`) when the library is actually missing or at the wrong pin --
+    # if it's only the bundle/providers that need preparing, skip straight
+    # to `_run_agent_post_install` below.
+    if force or not lib_ok:
+        install_target, refuse_reason = _upgrade_target(info)
+        if install_target is None:
+            print(f"  ERROR: cannot ensure amplifier-agent -- {refuse_reason}")
+            return False
+        if not _target_matches_source(info, install_target):
+            # Same defense-in-depth as upgrade()'s own check -- never hand the
+            # installer a target that doesn't match the recorded source.
+            print(
+                "  ERROR: cannot ensure amplifier-agent -- computed install"
+                f" target does not match muxplex's recorded install source"
+                f" ({info['source']}): {install_target!r}"
+            )
+            return False
+
+        agent_with = f"{_AGENT_DIST_NAME} @ git+{_AGENT_REPO_URL}@v{target_pin}"
+        install_cmd = [
+            uv_path,
+            "tool",
+            "install",
+            "--reinstall",
+            "--refresh",
+            "--force",
+            install_target,
+            "--with",
+            agent_with,
+        ]
+        print(f"  Installing amplifier-agent v{target_pin} (git, pinned)...")
+        result = subprocess.run(install_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(
+                "  ERROR: failed to install amplifier-agent -- git fetch or uv"
+                f" resolution failed:\n{result.stderr}"
+            )
+            return False
+
+        # Defense-in-depth: muxplex's own install source must not have changed
+        # shape as a side effect of this reinstall (mirrors
+        # _verify_install_shape_preserved's role in `upgrade()`).
+        importlib.invalidate_caches()
+        after_info = _get_install_info()
+        if after_info["source"] != info["source"]:
+            print(
+                "  ERROR: muxplex's install source changed shape while ensuring"
+                f" amplifier-agent: {info['source']} -> {after_info['source']}"
+            )
+            return False
+
+        # Never report success on faith -- prove it imports at the pin we asked for.
+        lib_version, lib_err = _agent_import_probe()
+        if lib_version != target_pin:
+            print(
+                "  ERROR: amplifier-agent install command succeeded but the"
+                f" library is still not importable at v{target_pin}"
+                f" (got: {lib_version or lib_err})"
+            )
+            return False
+
+    # amplifier_agent_lib is now confirmed importable at the pinned version
+    # -- but that alone never proved a turn could run (see the module-level
+    # comment above `_AGENT_PANEL_PROVIDERS`). Prepare the bundle (every
+    # provider, the orchestrator, context, tools, hooks) for real.
+    #
+    # Bundle preparation activates ~20 modules concurrently
+    # (amplifier_foundation's ModuleActivator.activate_all runs one
+    # `uv pip install -e` per module via asyncio.gather); a transient
+    # per-module failure (network blip, resource contention on a busy
+    # host, or -- observed directly, 2026-08-17 spike, on a container
+    # filesystem -- a brief lag between a grandchild `uv pip install -e`
+    # process writing dist-info and this process's own import check seeing
+    # it) is swallowed internally by activate_all() (it only raises in
+    # strict mode, which bundle.prepare() doesn't request), so a 0 exit
+    # here is NOT proof every module actually installed OR immediately
+    # importable. Observed repeatedly in that spike: an identical fresh
+    # venv succeeded outright on one attempt within THIS process and needed
+    # a moment to become visible on another -- with no code difference
+    # between runs, and a brand-new, wholly separate `muxplex ensure-agent`
+    # invocation moments later always found the SAME modules already
+    # correctly installed (confirming the install itself lands; only
+    # visibility from within the original process's retry loop can lag).
+    # Retrying is safe and cheap: a module already installed is skipped
+    # (`ModuleActivator`'s own `_distribution_installed()` check), so a
+    # retry only redoes whatever didn't land the first time. Bounded --
+    # not an unbounded loop -- with a short pause between attempts to give
+    # any filesystem-visibility lag a moment to clear.
+    providers_ok = False
+    providers_detail = ""
+    _RETRY_PAUSE_SECONDS = 2.0
+    _MAX_ATTEMPTS = 3
+    for attempt in range(_MAX_ATTEMPTS):
+        post_install_ok, post_install_detail = _run_agent_post_install(uv_path)
+        if not post_install_ok:
+            print(
+                f"  ERROR: amplifier-agent {lib_version} installed but preparing"
+                f" its bundle (providers, orchestrator, tools) failed --"
+                f" {post_install_detail}"
+            )
+            return False
+
+        # A 0 exit only means the subprocess ran to completion -- never
+        # proof every module installed or is yet visible (see comment
+        # above). This re-check is the actual gate.
+        providers_ok, providers_detail = _agent_providers_importable()
+        if providers_ok:
+            break
+        if attempt < _MAX_ATTEMPTS - 1:
+            print(
+                f"  amplifier-agent bundle prepared but provider module(s)"
+                f" not yet importable ({providers_detail}) -- retrying"
+                f" (attempt {attempt + 2}/{_MAX_ATTEMPTS})..."
+            )
+            time.sleep(_RETRY_PAUSE_SECONDS)
+
+    if not providers_ok:
         print(
-            "  ERROR: failed to install amplifier-agent -- git fetch or uv"
-            f" resolution failed:\n{result.stderr}"
+            f"  ERROR: amplifier-agent {lib_version} bundle prepare completed"
+            f" but provider module(s) still not importable after"
+            f" {_MAX_ATTEMPTS} attempts ({providers_detail})"
         )
         return False
 
-    # Defense-in-depth: muxplex's own install source must not have changed
-    # shape as a side effect of this reinstall (mirrors
-    # _verify_install_shape_preserved's role in `upgrade()`).
-    importlib.invalidate_caches()
-    after_info = _get_install_info()
-    if after_info["source"] != info["source"]:
-        print(
-            "  ERROR: muxplex's install source changed shape while ensuring"
-            f" amplifier-agent: {info['source']} -> {after_info['source']}"
-        )
-        return False
-
-    # Never report success on faith -- prove it imports at the pin we asked for.
-    version, err = _agent_import_probe()
-    if version != target_pin:
-        print(
-            "  ERROR: amplifier-agent install command succeeded but the"
-            f" library is still not importable at v{target_pin}"
-            f" (got: {version or err})"
-        )
-        return False
-
-    print(f"  \u2713 amplifier-agent {version} installed")
+    print(
+        f"  \u2713 amplifier-agent {lib_version} installed"
+        f" (providers ready: {', '.join(_AGENT_PANEL_PROVIDERS)})"
+    )
     return True
 
 
@@ -1094,7 +1406,7 @@ def _instance_is_this_host(data: dict | None) -> bool | None:
     if not remote_id:
         return None
     try:
-        from muxplex.identity import load_device_id  # noqa: PLC0415
+        from muxplex.identity import load_device_id
 
         return str(remote_id) == load_device_id()
     except Exception:
@@ -1631,7 +1943,7 @@ def doctor() -> None:
                     # service is down. Observed: a job stuck in exactly that state
                     # (no pid, last exit 1, 15 MB of stderr) reported as a green
                     # "launchd agent running" for hours. Ask launchd for the pid.
-                    from muxplex.settings import load_settings  # noqa: PLC0415
+                    from muxplex.settings import load_settings
 
                     _cfg = load_settings()
                     _port = _cfg.get("port", 8088)
@@ -2980,7 +3292,7 @@ def commands_remove(cmd_id: str) -> None:
 
 def tmux_status() -> None:
     """Show whether muxplex's tmux config is installed and actually loading."""
-    from muxplex import tmux_config as tcfg  # noqa: PLC0415
+    from muxplex import tmux_config as tcfg
 
     st = tcfg.status()
     ver = (
@@ -3020,8 +3332,8 @@ def tmux_status() -> None:
 
 def tmux_install(dry_run: bool = False, allow_symlink: bool = False) -> None:
     """Install muxplex's tmux config. Safe, verified, reversible."""
-    from muxplex import tmux_config as tcfg  # noqa: PLC0415
-    from muxplex.settings import load_settings  # noqa: PLC0415
+    from muxplex import tmux_config as tcfg
+    from muxplex.settings import load_settings
 
     theme = str(load_settings().get("tmux_theme") or "brand")
     copy_mode = str(load_settings().get("tmux_copy_mode") or "desktop")
@@ -3067,7 +3379,7 @@ def tmux_install(dry_run: bool = False, allow_symlink: bool = False) -> None:
 
 def tmux_uninstall(allow_symlink: bool = False) -> None:
     """Remove the managed block. Everything else is left exactly as it was."""
-    from muxplex import tmux_config as tcfg  # noqa: PLC0415
+    from muxplex import tmux_config as tcfg
 
     try:
         r = tcfg.uninstall(allow_symlink=allow_symlink)
