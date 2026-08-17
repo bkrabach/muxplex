@@ -21,6 +21,9 @@ from .errors import (
     AuthError,
     InputForbidden,
     MuxplexError,
+    RemoteError,
+    RemoteNotFoundError,
+    RemoteUnreachableError,
     SessionNotFound,
     TargetGoneError,
     TargetNotSelfOwningError,
@@ -28,6 +31,7 @@ from .errors import (
 from .models import (
     Bell,
     ConnectResult,
+    FederationSessions,
     FocusResult,
     FollowupItem,
     FollowupQueue,
@@ -35,6 +39,7 @@ from .models import (
     HeartbeatResult,
     InputResult,
     InstanceInfo,
+    RemoteStatus,
     RenameResult,
     ServerState,
     Session,
@@ -49,9 +54,11 @@ from .models import (
 
 __all__ = [
     "build_followup_items_body",
+    "map_federation_connect_error",
     "map_status_error",
     "parse_bell",
     "parse_connect_result",
+    "parse_federation_sessions",
     "parse_focus_result",
     "parse_followup_item",
     "parse_followup_queue",
@@ -59,6 +66,7 @@ __all__ = [
     "parse_heartbeat_result",
     "parse_input_result",
     "parse_instance_info",
+    "parse_remote_status",
     "parse_rename_result",
     "parse_server_state",
     "parse_session",
@@ -116,11 +124,51 @@ def parse_session(raw: Mapping[str, Any]) -> Session:
         created_at=raw.get("created_at"),
         followups=parse_followups(raw.get("followups")),
         cwd=raw.get("cwd"),
+        # Federation-aware additions -- present only on GET /api/federation/sessions
+        # entries (main.py's federation_sessions()); GET /api/sessions never sends
+        # these keys, so .get() parses every existing caller's response to None
+        # exactly as before. See Session's docstring for the full field-by-field
+        # rationale. Wire names are camelCase -- that is the real shape sent,
+        # not a naming choice made here.
+        device_id=raw.get("deviceId"),
+        device_name=raw.get("deviceName"),
+        device_version=raw.get("deviceVersion"),
+        remote_id=raw.get("remoteId"),
+        session_key=raw.get("sessionKey"),
     )
 
 
 def parse_sessions(raw: Sequence[Mapping[str, Any]]) -> list[Session]:
     return [parse_session(item) for item in raw]
+
+
+def parse_remote_status(raw: Mapping[str, Any]) -> RemoteStatus:
+    return RemoteStatus(
+        device_id=raw.get("deviceId", ""),
+        remote_id=raw.get("remoteId", ""),
+        device_name=raw.get("deviceName", ""),
+        status=raw.get("status", ""),
+        device_version=raw.get("deviceVersion"),
+    )
+
+
+def parse_federation_sessions(raw: Sequence[Mapping[str, Any]]) -> FederationSessions:
+    """Parse GET /api/federation/sessions's merged local+remote list.
+
+    Splits entries into connectable `Session`s and per-peer `RemoteStatus`
+    tiles by the presence of a `status` key -- a real session entry never
+    carries one (see main.py's `federation_sessions()`: only the
+    synthetic unreachable/auth_failed/empty tiles do), so this is an
+    unambiguous, non-guessing discriminator rather than an inferred one.
+    """
+    sessions: list[Session] = []
+    statuses: list[RemoteStatus] = []
+    for item in raw:
+        if "status" in item:
+            statuses.append(parse_remote_status(item))
+        else:
+            sessions.append(parse_session(item))
+    return FederationSessions(sessions=tuple(sessions), statuses=tuple(statuses))
 
 
 def parse_session_snapshot(raw: Mapping[str, Any]) -> SessionSnapshot:
@@ -347,6 +395,41 @@ def map_status_error(
         return AuthError(detail)
     if status == 404:
         return SessionNotFound(session_name or "", detail)
+    return ApiError(status, detail)
+
+
+def map_federation_connect_error(
+    status: int, device_id: str, detail: str
+) -> MuxplexError:
+    """Map an HTTP error status from the federation connect-proxy
+    (`POST /api/federation/{device_id}/connect/{session_name}`) to the
+    matching MuxplexError subclass.
+
+    Deliberately a SEPARATE function from `map_status_error()`, not an
+    extra branch in it: a status here describes the PROXY hop (the local
+    server reaching a federation peer on the caller's behalf), not a
+    property of the caller's own request to this server, so the same
+    numeric status means something different here than it would for a
+    direct (non-federation) endpoint. Keeping it separate means this
+    change touches zero existing `map_status_error()` call sites/behavior.
+    See main.py's `federation_connect()` docstring for the authoritative
+    404/502/503 contract this mirrors exactly:
+
+      - 404 -> RemoteNotFoundError (`device_id` matches no configured
+        `remote_instances` entry on the server that received this call).
+      - 502 -> RemoteError (the remote peer is reachable but responded
+        with its own HTTP error status).
+      - 503 -> RemoteUnreachableError (the remote peer could not be
+        reached at all -- connection refused, timeout, DNS).
+      - Anything else -> ApiError(status, detail), the same honest
+        fallback `map_status_error()` uses for an unrecognized status.
+    """
+    if status == 404:
+        return RemoteNotFoundError(device_id, detail)
+    if status == 502:
+        return RemoteError(detail)
+    if status == 503:
+        return RemoteUnreachableError(detail)
     return ApiError(status, detail)
 
 

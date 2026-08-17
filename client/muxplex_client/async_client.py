@@ -24,6 +24,7 @@ from .errors import ApiError, CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
+    FederationSessions,
     FocusResult,
     FollowupItem,
     FollowupQueue,
@@ -121,6 +122,16 @@ class AsyncMuxplexClient:
     async def sessions(self) -> list[Session]:
         return protocol.parse_sessions(await self._request("GET", "/api/sessions"))
 
+    async def federation_sessions(self) -> FederationSessions:
+        """GET /api/federation/sessions -- see
+        `sync_client.MuxplexClient.federation_sessions` for the full
+        rationale (why this is a separate method/type from `sessions()`)
+        -- identical here, `await`-shaped.
+        """
+        return protocol.parse_federation_sessions(
+            await self._request("GET", "/api/federation/sessions")
+        )
+
     async def session(self, name: str, *, lines: int | None = None) -> SessionSnapshot:
         params = {"lines": lines} if lines is not None else None
         return protocol.parse_session_snapshot(
@@ -216,14 +227,29 @@ class AsyncMuxplexClient:
             await asyncio.sleep(interval)
 
     async def connect(
-        self, name: str, *, device_id: str | None = None
+        self,
+        name: str,
+        *,
+        device_id: str | None = None,
+        remote_id: str | None = None,
     ) -> ConnectResult:
-        """POST /api/sessions/{name}/connect.
+        """POST /api/sessions/{name}/connect -- or, when `remote_id` is
+        given, POST /api/federation/{remote_id}/connect/{name}.
 
         See `sync_client.MuxplexClient.connect` for the full `device_id`
         rationale (including why "active_session is server-global" is no
-        longer unconditionally true) -- identical here, `await`-shaped.
+        longer unconditionally true) and the full `remote_id` rationale
+        (federation connect-proxy routing, mutual exclusivity with
+        `device_id`) -- identical here, `await`-shaped.
         """
+        if remote_id is not None:
+            if device_id is not None:
+                raise ValueError(
+                    "connect(): device_id and remote_id are mutually exclusive -- "
+                    "the federation connect-proxy accepts no device_id parameter "
+                    "(see main.py's federation_connect() docstring)"
+                )
+            return await self._connect_remote(remote_id, name)
         params = {"device_id": device_id} if device_id is not None else None
         return protocol.parse_connect_result(
             await self._request(
@@ -233,6 +259,24 @@ class AsyncMuxplexClient:
                 session_name=name,
             )
         )
+
+    async def _connect_remote(self, remote_id: str, name: str) -> ConnectResult:
+        """POST /api/federation/{remote_id}/connect/{name} -- the
+        federation connect-proxy. See
+        `sync_client.MuxplexClient._connect_remote` for the full
+        rationale (exact error contract, why this bypasses `_request()`)
+        -- identical here, `await`-shaped.
+        """
+        path = f"/api/federation/{remote_id}/connect/{name}"
+        try:
+            response = await self._client.request("POST", path)
+        except httpx.HTTPError as exc:
+            raise UnreachableError(f"POST {path} failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise protocol.map_federation_connect_error(
+                response.status_code, remote_id, _extract_detail(response)
+            )
+        return protocol.parse_connect_result(response.json())
 
     async def set_active_view(self, view: str, *, device_id: str | None = None) -> None:
         """See `sync_client.MuxplexClient.set_active_view` for the full

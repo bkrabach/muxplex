@@ -11,14 +11,16 @@ from typing import Any
 
 import httpx
 import pytest
-
 from muxplex_client.async_client import AsyncMuxplexClient
 from muxplex_client.errors import (
     ApiError,
+    RemoteError,
+    RemoteNotFoundError,
+    RemoteUnreachableError,
     TargetGoneError,
     TargetNotSelfOwningError,
 )
-from muxplex_client.models import HeartbeatResult
+from muxplex_client.models import FederationSessions, HeartbeatResult, Session
 
 pytestmark = pytest.mark.anyio
 
@@ -289,3 +291,190 @@ class TestByteIdenticalWithoutDeviceId:
         await client.set_active_view("work")
         assert captured["query_string"] == b""
         assert captured["body"] == {"active_view": "work"}
+
+
+# ---------------------------------------------------------------------------
+# federation_sessions()
+# ---------------------------------------------------------------------------
+
+
+async def test_federation_sessions_sends_correct_path() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return _json_response(200, [])
+
+    client = _client(handler)
+    await client.federation_sessions()
+    assert captured["path"] == "/api/federation/sessions"
+
+
+async def test_federation_sessions_parses_mixed_local_remote_and_status() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            200,
+            [
+                {
+                    "name": "local-work",
+                    "snapshot": "",
+                    "bell": {},
+                    "deviceId": "d-local",
+                    "deviceName": "my-machine",
+                    "deviceVersion": "0.53.0",
+                    "remoteId": None,
+                    "sessionKey": "d-local:local-work",
+                },
+                {
+                    "name": "dev",
+                    "snapshot": "",
+                    "bell": {},
+                    "deviceId": "0",
+                    "deviceName": "spark-2",
+                    "deviceVersion": "0.52.0",
+                    "remoteId": "0",
+                    "sessionKey": "0:dev",
+                },
+                {
+                    "status": "unreachable",
+                    "deviceId": "1",
+                    "remoteId": "1",
+                    "deviceName": "alienware-r13",
+                    "deviceVersion": None,
+                },
+            ],
+        )
+
+    client = _client(handler)
+    result = await client.federation_sessions()
+
+    assert isinstance(result, FederationSessions)
+    assert len(result.sessions) == 2
+    assert len(result.statuses) == 1
+    local = next(s for s in result.sessions if s.name == "local-work")
+    assert local.remote_id is None
+    remote = next(s for s in result.sessions if s.name == "dev")
+    assert remote.remote_id == "0"
+    assert result.statuses[0].status == "unreachable"
+
+
+async def test_federation_sessions_empty_remote_instances() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response(200, [])
+
+    client = _client(handler)
+    result = await client.federation_sessions()
+    assert result == FederationSessions(sessions=(), statuses=())
+
+
+# ---------------------------------------------------------------------------
+# connect(remote_id=...) -- federation connect-proxy routing
+# ---------------------------------------------------------------------------
+
+
+async def test_connect_with_remote_id_routes_to_federation_proxy_url() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["query_string"] = request.url.query
+        return _json_response(200, {"active_session": "work", "ttyd_port": 7682})
+
+    client = _client(handler)
+    result = await client.connect("work", remote_id="0")
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/federation/0/connect/work"
+    assert captured["query_string"] == b""
+    assert result.active_session == "work"
+    assert result.ttyd_port == 7682
+
+
+async def test_connect_without_remote_id_still_hits_local_endpoint() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return _json_response(200, {"active_session": "a", "ttyd_port": 7682})
+
+    client = _client(handler)
+    await client.connect("a")
+    assert captured["path"] == "/api/sessions/a/connect"
+
+
+async def test_connect_with_both_device_id_and_remote_id_raises_value_error() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not send a request when both are given")
+
+    client = _client(handler)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        await client.connect("work", device_id="d-1", remote_id="0")
+
+
+async def test_connect_remote_404_raises_remote_not_found_error() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "Remote instance '9' not found"})
+
+    client = _client(handler)
+    with pytest.raises(RemoteNotFoundError) as exc_info:
+        await client.connect("work", remote_id="9")
+    assert exc_info.value.status == 404
+    assert exc_info.value.device_id == "9"
+
+
+async def test_connect_remote_502_raises_remote_error() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, json={"detail": "Remote returned 500"})
+
+    client = _client(handler)
+    with pytest.raises(RemoteError) as exc_info:
+        await client.connect("work", remote_id="0")
+    assert exc_info.value.status == 502
+
+
+async def test_connect_remote_503_raises_remote_unreachable_error() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503, json={"detail": "Remote unreachable: http://spark-2:8088"}
+        )
+
+    client = _client(handler)
+    with pytest.raises(RemoteUnreachableError) as exc_info:
+        await client.connect("work", remote_id="0")
+    assert exc_info.value.status == 503
+
+
+async def test_session_from_federation_sessions_can_be_passed_straight_to_connect() -> (
+    None
+):
+    captured: dict[str, Any] = {}
+
+    async def sessions_handler(request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            200,
+            [
+                {
+                    "name": "dev",
+                    "snapshot": "",
+                    "bell": {},
+                    "deviceId": "0",
+                    "deviceName": "spark-2",
+                    "deviceVersion": "0.52.0",
+                    "remoteId": "0",
+                    "sessionKey": "0:dev",
+                }
+            ],
+        )
+
+    client = _client(sessions_handler)
+    result = await client.federation_sessions()
+    remote_session: Session = result.sessions[0]
+
+    async def connect_handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return _json_response(200, {"active_session": "dev", "ttyd_port": 7683})
+
+    client2 = _client(connect_handler)
+    await client2.connect(remote_session.name, remote_id=remote_session.remote_id)
+    assert captured["path"] == "/api/federation/0/connect/dev"

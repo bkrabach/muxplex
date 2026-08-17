@@ -106,6 +106,43 @@ class Session:
     `cwd`: the session's working directory (tmux's own
     `#{session_path}`), or `None` on a pre-this-field server or when tmux
     reported nothing parseable.
+
+    `device_id`/`device_name`/`device_version`/`remote_id`/`session_key`:
+    federation-aware additions, present only on entries returned by
+    GET /api/federation/sessions (main.py's `federation_sessions()`) --
+    `sessions()`/GET /api/sessions never tags these keys at all, so every
+    field here defaults to `None` and a pre-federation-aware server (or
+    the plain local endpoint) parses exactly as before. Wire field names
+    are camelCase (`deviceId`/`deviceName`/`deviceVersion`/`remoteId`/
+    `sessionKey`) -- deliberately NOT renamed to match every other
+    snake_case field on this model, because that IS the real wire shape
+    `federation_sessions()` sends (see that route's docstring and
+    `parse_session()`).
+
+    `remote_id`: `None` for a local session (both a session from
+    `sessions()`, and a LOCAL entry within `federation_sessions()`'s
+    merged list -- the server tags those with `remoteId: null`
+    explicitly). Non-`None` marks this session as living on a federation
+    peer, and is exactly the value `connect()`'s `remote_id` parameter
+    expects -- pass a `Session` straight through without inspecting any
+    other field to route the connect correctly.
+
+    `device_id`: populated for BOTH local and remote entries when the
+    session came from `federation_sessions()` (the local device's own id,
+    or the peer's `device_id`); `None` when the session came from
+    `sessions()` (that endpoint never tags it). Note this is NOT the same
+    concept as `remote_id`: `device_id` identifies *whose* session this
+    is, `remote_id` identifies *whether -- and where -- to proxy a
+    connect* (the two happen to share a value for remote sessions, but
+    `device_id` is also set, to a different value, for LOCAL sessions
+    within a `federation_sessions()` response, where `remote_id` stays
+    `None`).
+
+    `session_key`: `f\"{device_id}:{name}\"`, globally unique across a
+    federation where two different servers may each have a same-named
+    session -- prefer this over `name` for de-duplication/identity when
+    working with `federation_sessions()` results (mirrors the PWA's own
+    `s.sessionKey || s.name` convention in frontend/app.js).
     """
 
     name: str
@@ -116,6 +153,64 @@ class Session:
     created_at: float | None = None
     followups: Followups = Followups()
     cwd: str | None = None
+    device_id: str | None = None
+    device_name: str | None = None
+    device_version: str | None = None
+    remote_id: str | None = None
+    session_key: str | None = None
+
+
+@dataclass(frozen=True)
+class RemoteStatus:
+    """One federation peer's non-session status entry from
+    GET /api/federation/sessions.
+
+    Emitted by main.py's `federation_sessions()` INSTEAD OF session
+    entries for a given peer when that peer contributed no sessions to
+    this poll: `\"unreachable\"` (connection failure), `\"auth_failed\"`
+    (401/403 from the peer -- its federation key is stale/wrong),
+    `\"empty\"` (peer reachable, zero tmux sessions there). These three
+    strings are the entire closed set the server sends today (never a new
+    status string per that route's docstring) -- surfaced here rather
+    than silently dropped, so a caller can render e.g. an offline tile
+    exactly as the PWA does.
+
+    `device_version` is `None` when unknown (unreachable peer, or a peer
+    too old to serve `/api/instance-info`) -- never defaulted to a real
+    version string, same non-guessing rule as the server's own
+    `deviceVersion` field.
+    """
+
+    device_id: str
+    remote_id: str
+    device_name: str
+    status: str
+    device_version: str | None = None
+
+
+@dataclass(frozen=True)
+class FederationSessions:
+    """GET /api/federation/sessions -- the federation-aware analogue of
+    `sessions()`.
+
+    `sessions`: every connectable session, local and remote alike (each
+    `Session.remote_id` is `None` for local, non-`None` for a session
+    living on a peer -- see `Session`'s docstring). `statuses`: one
+    `RemoteStatus` entry per peer that contributed no sessions this poll
+    (unreachable/auth_failed/empty) -- kept separate from `sessions`
+    rather than merged into it, since a status entry has no `name` to
+    connect to.
+
+    A brand-new type rather than reusing `list[Session]` as `sessions()`
+    does: `sessions()`'s wire response never carries peer-status entries
+    at all, so overloading its return shape would either lose that
+    information or make every existing `sessions()` caller handle a
+    shape it never sees in practice. Kept as a SEPARATE method/type for
+    exactly that reason -- see `MuxplexClient.federation_sessions()`.
+    """
+
+    sessions: tuple[Session, ...]
+    statuses: tuple[RemoteStatus, ...]
 
 
 @dataclass(frozen=True)

@@ -106,6 +106,49 @@ class TargetNotSelfOwningError(ApiError):
         super().__init__(400, detail)
 
 
+class RemoteNotFoundError(ApiError):
+    """404 from a federation connect-proxy call (`connect(remote_id=...)`).
+
+    Distinct from `SessionNotFound`: this means `remote_id` itself does
+    not match any `remote_instances` entry configured on the LOCAL server
+    that received the call -- not a missing session on a known peer. See
+    `_protocol.map_federation_connect_error()` and main.py's
+    `federation_connect()` docstring.
+    """
+
+    def __init__(self, device_id: str, detail: str) -> None:
+        self.device_id = device_id
+        super().__init__(404, detail)
+
+
+class RemoteUnreachableError(ApiError):
+    """503 from a federation connect-proxy call: the remote peer itself
+    could not be reached.
+
+    Distinct from `UnreachableError` (this client's own transport failure
+    talking to the LOCAL server): this means the local server reached out
+    to the remote peer on the caller's behalf and THAT outbound call
+    failed (connection refused, timeout, DNS). See
+    `_protocol.map_federation_connect_error()` and main.py's
+    `federation_connect()` docstring.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(503, detail)
+
+
+class RemoteError(ApiError):
+    """502 from a federation connect-proxy call: the remote peer is
+    reachable but responded with its own HTTP error status.
+
+    See `_protocol.map_federation_connect_error()` and main.py's
+    `federation_connect()` docstring.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(502, detail)
+
+
 class CommandTimeout(MuxplexError):
     """`run_shell_command()` did not observe the completion sentinel in time."""
 
