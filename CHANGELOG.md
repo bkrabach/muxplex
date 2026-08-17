@@ -1,3 +1,48 @@
+## v0.53.0 (2026-08-16)
+
+**You can turn on agent/federation typing from the UI now — no more hand-editing settings.json on every host.**
+Letting a remote or federated caller type into this host's sessions used to mean
+opening `~/.config/muxplex/settings.json` by hand and flipping two keys, on every
+box in the fleet. The failure mode when you hadn't was the quiet one: attach to a
+peer's session, watch it render fine, and silently not be able to type. Those two
+keys are now settable from the Multi-Device settings tab — but only by a real
+operator at a browser, never by the federation Bearer key itself.
+
+### Added
+
+- **Operator-settable terminal input.** `input_enabled` and
+  `input_allowed_sessions` can now be set via `PATCH /api/settings` when the
+  request is authenticated by a **session cookie or HTTP Basic** (a real
+  operator) — they were previously `LOCAL_ONLY_KEYS`, editable only on disk. A
+  `bearer_only` caller (the federation Bearer key as the sole credential — the
+  same one handed to headless agents) is still refused: `update_settings` computes
+  `_bearer_only_caller(request)` and only passes the new
+  `OPERATOR_SETTABLE_LOCAL_KEYS` carve-out into
+  `patch_settings(allow_local_keys=...)` when the caller is not bearer-only. Both
+  keys stay out of `SYNCABLE_KEYS`, so federation sync can never carry them.
+  Defaults are unchanged (`input_enabled=false`, `input_allowed_sessions=["*"]`).
+- **"Agent Terminal Input" settings sub-form** (Multi-Device tab): a toggle for
+  `input_enabled` and a proper add/remove **glob list editor** for
+  `input_allowed_sessions`, replacing the single-line hand-edit. The agent compose
+  bar re-enables without a page reload the moment input is turned on.
+- **One-click "Enable typing for this fleet"** next to the Federation Key block:
+  sets `input_enabled=true`, and `["*"]` only if the allow-list is empty (it never
+  clobbers a list you've narrowed).
+- **First-run welcome** offering to enable typing or jump to federation settings,
+  shown once per browser.
+
+### Security
+
+- The boundary "a Bearer/federation/agent caller cannot enable terminal input"
+  is enforced server-side and proven by tests that send a real
+  `Authorization: Bearer <federation key>` through the real auth middleware — no
+  stubbed auth — and were mutation-checked (they fail against a deliberately
+  broken gate, pass against the real one). A forged cookie presented alongside a
+  valid Bearer cannot downgrade the caller to operator. The other seven
+  `LOCAL_ONLY_KEYS` (`new_session_template`, `delete_session_template`,
+  `session_commands`, `tmux_socket_dir`, `tls_cert`, `tls_key`, `focus_app`)
+  remain disk-edit-only.
+
 ## v0.52.0 (2026-08-16)
 
 **Devices can now follow each other, not just the shared server state.**
