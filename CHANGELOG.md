@@ -1,3 +1,50 @@
+## v0.55.1 (2026-08-17)
+
+**The embedded agent panel was dead on every device, and the health check said it was fine.**
+Any chat turn in the embedded panel failed with
+`provider module not installed for 'anthropic': No module named 'anthropic'`.
+The panel looked fully configured -- a credential was on disk, the gate was
+open, the agent library imported -- and then every real turn failed the moment a
+provider was mounted. This affected the entire fleet, and had been shipping
+broken since the v0.53 rollout.
+
+### Fixed
+
+- **`ensure_agent()` now installs the provider modules, not just the agent
+  library.** It installed `amplifier-agent` with
+  `uv tool install ... --with 'amplifier-agent @ git+...@v0.12.0'`, which
+  resolves that package's own `pyproject.toml` dependencies (`amplifier-core`,
+  `amplifier-foundation`) and stops there. The providers, orchestrator, context
+  module, and tools are **not** ordinary dependencies -- they are git-only
+  packages declared in amplifier-agent's *bundle*, installed by a separate
+  bundle-prepare step that `--with` never runs. So `amplifier_agent_lib`
+  imported fine while the `anthropic` SDK itself was never installed anywhere on
+  the machine. `ensure_agent()` now runs that bundle-prepare step
+  (`amplifier_agent_lib.bundle.loader.load_and_prepare_bundle(install_deps=True)`)
+  through the target venv's own interpreter, installing exactly what the pinned
+  amplifier-agent version's own `bundle.md` declares -- so muxplex never carries
+  a second provider pin that could drift from the agent pin.
+- **The health check that let this ship is closed.** The old check was
+  `import amplifier_agent_lib` and nothing else -- it passed on every broken
+  device, which is precisely why the bug survived the whole v0.53/v0.54 rollout
+  without a single failure signal. `ensure_agent()` now also verifies that every
+  panel-selectable provider module actually imports before reporting success,
+  and when only the providers are missing it skips straight to bundle
+  preparation instead of reinstalling the agent -- the exact state a device left
+  by the old code is in. A test exercising a genuinely missing provider now
+  covers the check that would have caught this.
+
+### Notes
+
+- **Bundle preparation is intermittently flaky on a heavily-loaded host, and
+  recovers by re-running.** The step installs roughly 20 modules concurrently;
+  under heavy load it can fail on first invocation. It is safe: it **fails
+  loud** -- it never reports success it did not achieve, which is the specific
+  weakness this release exists to fix -- and it is self-healing. Re-run
+  `muxplex ensure-agent`; the second pass takes the fast path over whatever
+  already landed and completes. If you see this fail once during a fleet
+  update, re-run it rather than treating the device as broken.
+
 ## v0.55.0 (2026-08-16)
 
 **The Soft Deck now sees the whole federation, not just its own server.**
