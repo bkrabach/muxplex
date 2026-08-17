@@ -950,6 +950,99 @@ def _agent_providers_importable(
     return True, ""
 
 
+def _agent_providers_importable_subprocess(
+    providers: tuple[str, ...] = _AGENT_PANEL_PROVIDERS,
+) -> tuple[bool, str]:
+    """Same question as `_agent_providers_importable()` -- can every
+    *provider*'s amplifier-module package actually be imported -- but
+    answered by spawning a FRESH subprocess of THIS venv's own interpreter
+    (``sys.executable``) rather than importing in the process that is
+    already running.
+
+    THIS is the authoritative check to run immediately after
+    `_run_agent_post_install()`, and ONLY there -- see the call site in
+    `ensure_agent()` for why its OTHER call (the pre-install fast-path
+    check) deliberately keeps using the cheaper in-process
+    `_agent_providers_importable()` instead.
+
+    Diagnosed empirically during a fleet rollout (2026-08-17): the
+    in-process check -- `_agent_providers_importable()`, its own
+    `importlib.invalidate_caches()` included -- is a reproducible FALSE
+    NEGATIVE the instant it follows an install that just happened, in this
+    same process, via `_run_agent_post_install()`'s subprocess. It failed
+    on the very first `ensure_agent()` invocation on 6 of 6 fleet hosts,
+    burning every retry, while a brand-new process (a second `muxplex
+    ensure-agent` invocation, or a bare `python -c "import ..."`) run
+    moments later -- against the identical, already-installed venv --
+    always succeeded instantly. `importlib.invalidate_caches()` only
+    invalidates path-finder DIRECTORY caches: it forces a rescan of
+    `sys.path` entries that are already registered finders, but it does
+    NOT re-run the interpreter's `site` startup -- so an editable install's
+    `.pth`-based import hook, written to site-packages *after* this
+    interpreter already processed every `.pth` file at startup, stays
+    invisible no matter how many times caches are invalidated. A freshly
+    spawned interpreter of the SAME venv reprocesses every `.pth` file in
+    site-packages from scratch, which is the only mechanism actually proven
+    (this diagnosis) to reliably observe a just-completed install --
+    exactly why this function exists instead of a second
+    `invalidate_caches()` call.
+
+    Returns ``(True, "")`` if every provider imports cleanly in the fresh
+    subprocess, else ``(False, detail)`` naming every provider that failed
+    and why -- never a bare ``False`` with no explanation, and a subprocess
+    launch failure or malformed output is reported as a failure too, never
+    silently treated as success.
+    """
+    if not providers:
+        return True, ""
+
+    script_lines = ["missing = []"]
+    for provider in providers:
+        module_name = _provider_module_import_name(provider)
+        script_lines.append("try:")
+        script_lines.append(f"    import {module_name}")
+        script_lines.append("except ImportError as exc:")
+        script_lines.append(
+            f"    missing.append({provider!r} + ' (' + {module_name!r} + '): ' + str(exc))"
+        )
+    script_lines.append("import json, sys")
+    script_lines.append("sys.stdout.write(json.dumps(missing))")
+    script = "\n".join(script_lines)
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "provider import probe (fresh subprocess) timed out after 60s"
+    except Exception as exc:
+        return False, f"could not run provider import probe (fresh subprocess): {exc}"
+
+    if result.returncode != 0:
+        stderr_detail = result.stderr.strip()[-2000:]
+        return False, (
+            f"provider import probe (fresh subprocess) exited {result.returncode}"
+            + (f": {stderr_detail}" if stderr_detail else "")
+        )
+
+    import json
+
+    try:
+        missing = json.loads(result.stdout.strip() or "[]")
+    except ValueError:
+        return False, (
+            "provider import probe (fresh subprocess) produced unparseable"
+            f" output: {result.stdout.strip()[-2000:]}"
+        )
+
+    if missing:
+        return False, "; ".join(missing)
+    return True, ""
+
+
 #: The exact snippet run (via the target venv's OWN interpreter) to prepare
 #: amplifier-agent's bundle. Calls the loader FUNCTION directly rather than
 #: the `amplifier-agent-post-install` CLI script -- see the module-level
@@ -990,9 +1083,10 @@ def _run_agent_post_install(uv_path: str) -> tuple[bool, str]:
     Unlike ``amplifier-agent-post-install`` (which always exits 0 by
     design, swallowing every failure), this subprocess propagates a genuine
     module-activation failure as a non-zero exit -- but the caller's own
-    follow-up call to `_agent_providers_importable()` remains the
-    AUTHORITATIVE gate either way; never trust a 0 exit alone as proof of a
-    working install.
+    follow-up call to `_agent_providers_importable_subprocess()` (a FRESH
+    interpreter, not this same process -- see that function's docstring
+    for why) remains the AUTHORITATIVE gate either way; never trust a 0
+    exit alone as proof of a working install.
 
     Returns (ok, detail) -- detail is the subprocess's stderr (progress /
     error text) either way.
@@ -1036,12 +1130,18 @@ def ensure_agent(*, force: bool = False) -> bool:
     (re)installed independently:
       1. ``amplifier_agent_lib`` importable at the pin muxplex declares
          (`_agent_import_probe()` / `_agent_target_pin()`).
-      2. Every panel-selectable provider module actually importable
-         (`_agent_providers_importable()`) -- see the "muxplex-fx2 gap"
-         comment above `_AGENT_PANEL_PROVIDERS` for why (1) alone shipped
-         a fleet-wide dead chat panel: `--with amplifier-agent@vX` resolves
-         (1) but never touches (2), which is a separate, bundle-managed
-         install step (`amplifier-agent-post-install`).
+      2. Every panel-selectable provider module actually importable --
+         checked with `_agent_providers_importable()` (in-process) BEFORE
+         any install runs, but re-checked with
+         `_agent_providers_importable_subprocess()` (fresh interpreter)
+         immediately AFTER `_run_agent_post_install()` runs, since that
+         second check is racing an install that just happened in this
+         same process -- see each function's own docstring, and the
+         "muxplex-fx2 gap" comment above `_AGENT_PANEL_PROVIDERS`, for why
+         (1) alone shipped a fleet-wide dead chat panel: `--with
+         amplifier-agent@vX` resolves (1) but never touches (2), which is
+         a separate, bundle-managed install step
+         (`amplifier-agent-post-install`).
 
     Fast path (the common case on every call after the first): if BOTH are
     already true, this is a handful of import-and-compare checks -- no
@@ -1233,8 +1333,13 @@ def ensure_agent(*, force: bool = False) -> bool:
 
         # A 0 exit only means the subprocess ran to completion -- never
         # proof every module installed or is yet visible (see comment
-        # above). This re-check is the actual gate.
-        providers_ok, providers_detail = _agent_providers_importable()
+        # above). This re-check is the actual gate -- run in a FRESH
+        # subprocess (`_agent_providers_importable_subprocess`), not
+        # in-process: this check immediately follows an install that just
+        # happened IN THIS SAME PROCESS, which is exactly the case the
+        # in-process `_agent_providers_importable()` gets wrong (see that
+        # function's docstring for the fleet-diagnosed false-negative).
+        providers_ok, providers_detail = _agent_providers_importable_subprocess()
         if providers_ok:
             break
         if attempt < _MAX_ATTEMPTS - 1:

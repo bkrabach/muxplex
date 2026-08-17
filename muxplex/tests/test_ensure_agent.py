@@ -35,9 +35,11 @@ def agent_not_yet_installed(monkeypatch):
 
 @pytest.fixture
 def providers_ready(monkeypatch):
-    """Stub `_agent_providers_importable()` (True) and `_run_agent_post_install()`
-    (success, no-op) so tests focused on the amplifier-agent LIBRARY install
-    path don't also need to fake a real bundle-prepare subprocess run. Tests
+    """Stub `_agent_providers_importable()` (True, the pre-install fast-path
+    check), `_agent_providers_importable_subprocess()` (True, the
+    post-install verification), and `_run_agent_post_install()` (success,
+    no-op) so tests focused on the amplifier-agent LIBRARY install path
+    don't also need to fake a real bundle-prepare subprocess run. Tests
     that specifically exercise the provider-preparation step override these
     themselves.
     """
@@ -45,6 +47,11 @@ def providers_ready(monkeypatch):
 
     monkeypatch.setattr(
         cli_mod, "_agent_providers_importable", lambda providers=(): (True, "")
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "_agent_providers_importable_subprocess",
+        lambda providers=(): (True, ""),
     )
     monkeypatch.setattr(cli_mod, "_run_agent_post_install", lambda uv_path: (True, ""))
     return cli_mod
@@ -119,14 +126,21 @@ def test_ensure_agent_skips_full_reinstall_when_only_providers_missing(
         cli_mod, "_declared_dependency_pin", lambda dep, dist_name="muxplex": "0.12.0"
     )
     monkeypatch.setattr(cli_mod, "_agent_import_probe", lambda: ("0.12.0", None))
-    probes = iter(
-        [
-            (False, "anthropic (amplifier_module_provider_anthropic): missing"),
-            (True, ""),
-        ]
+    # Pre-install fast-path check (in-process): misses once, forcing the
+    # bundle-prepare path below. Post-install verification (fresh
+    # subprocess) is a SEPARATE function/call site -- stub it separately.
+    monkeypatch.setattr(
+        cli_mod,
+        "_agent_providers_importable",
+        lambda providers=(): (
+            False,
+            "anthropic (amplifier_module_provider_anthropic): missing",
+        ),
     )
     monkeypatch.setattr(
-        cli_mod, "_agent_providers_importable", lambda providers=(): next(probes)
+        cli_mod,
+        "_agent_providers_importable_subprocess",
+        lambda providers=(): (True, ""),
     )
     monkeypatch.setattr(
         cli_mod, "_get_install_info", lambda dist_name="muxplex": _pypi_info()
@@ -431,7 +445,9 @@ def test_ensure_agent_runs_post_install_after_fresh_install(
 
     monkeypatch.setattr(cli_mod, "_run_agent_post_install", fake_post_install)
     monkeypatch.setattr(
-        cli_mod, "_agent_providers_importable", lambda providers=(): (True, "")
+        cli_mod,
+        "_agent_providers_importable_subprocess",
+        lambda providers=(): (True, ""),
     )
 
     assert cli_mod.ensure_agent() is True
@@ -493,7 +509,7 @@ def test_ensure_agent_fails_loud_when_providers_still_missing_after_post_install
     monkeypatch.setattr(cli_mod, "_run_agent_post_install", lambda uv_path: (True, ""))
     monkeypatch.setattr(
         cli_mod,
-        "_agent_providers_importable",
+        "_agent_providers_importable_subprocess",
         lambda providers=(): (
             False,
             "anthropic (amplifier_module_provider_anthropic): No module named 'anthropic'",
@@ -545,7 +561,7 @@ def test_ensure_agent_retries_once_on_transient_provider_flake(
     )
     monkeypatch.setattr(
         cli_mod,
-        "_agent_providers_importable",
+        "_agent_providers_importable_subprocess",
         lambda providers=(): next(provider_results),
     )
 
@@ -592,6 +608,91 @@ def test_agent_providers_importable_all_present_returns_true_with_empty_detail()
     ok, detail = cli_mod._agent_providers_importable(providers=())
     assert ok is True
     assert detail == ""
+
+
+# ---------------------------------------------------------------------------
+# `_agent_providers_importable_subprocess` -- the false-negative fix itself.
+#
+# See that function's docstring in cli.py for the full diagnosis: the
+# in-process check above is a reproducible false negative immediately after
+# an install that just happened in the SAME process, because
+# `importlib.invalidate_caches()` never reprocesses a `.pth` file written to
+# site-packages after this interpreter's own `site` startup already ran. The
+# test below reproduces exactly that shape -- a module that exists on disk
+# but was never on the CURRENT process's `sys.path` -- without needing a
+# real `uv`/`pip` install, and proves the in-process/subprocess checks give
+# the two different answers this fix depends on.
+# ---------------------------------------------------------------------------
+
+
+def test_agent_providers_importable_subprocess_detects_a_genuinely_missing_module():
+    """A REAL (unmocked) exercise of the fresh-subprocess check: a provider
+    name whose module can never exist reports False with a detail naming
+    exactly what's missing -- the subprocess path must fail loud exactly
+    like the in-process one, never silently report success for a module
+    that plain doesn't exist anywhere."""
+    import muxplex.cli as cli_mod
+
+    ok, detail = cli_mod._agent_providers_importable_subprocess(
+        providers=("definitely-not-a-real-provider-xyz",)
+    )
+    assert ok is False
+    assert "definitely-not-a-real-provider-xyz" in detail
+    assert "amplifier_module_provider_definitely_not_a_real_provider_xyz" in detail
+
+
+def test_agent_providers_importable_subprocess_all_present_returns_true_with_empty_detail():
+    """Sanity check on the positive (trivial, no providers requested)
+    branch -- must never shell out at all when there's nothing to check."""
+    import muxplex.cli as cli_mod
+
+    ok, detail = cli_mod._agent_providers_importable_subprocess(providers=())
+    assert ok is True
+    assert detail == ""
+
+
+def test_agent_providers_importable_subprocess_sees_module_just_installed_after_process_start(
+    monkeypatch, tmp_path
+):
+    """THE regression test for the shipped false-negative: a provider
+    module that exists on disk but was never on THIS (the pytest worker's
+    own) process's `sys.path` -- exactly the shape of a module `uv pip
+    install -e` just wrote into site-packages after `ensure_agent()`'s
+    process already started -- must be INVISIBLE to the in-process check
+    and VISIBLE to the fresh-subprocess check. If a future change makes
+    `_agent_providers_importable_subprocess` import in-process again (or
+    otherwise stops spawning a genuinely fresh interpreter), this test
+    fails, because the in-process assertion below would then also pass for
+    the subprocess call and the two would stop disagreeing.
+    """
+    import muxplex.cli as cli_mod
+
+    provider = "muxfx3testprovider"
+    module_name = cli_mod._provider_module_import_name(provider)
+    pkg_dir = tmp_path / module_name
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("VALUE = 1\n")
+
+    # Sanity/control: NOT importable in the current process -- this
+    # directory was never added to this pytest worker's own `sys.path`,
+    # mirroring a package written to a venv's site-packages after this
+    # interpreter's own `site` startup already ran.
+    in_process_ok, in_process_detail = cli_mod._agent_providers_importable(
+        providers=(provider,)
+    )
+    assert in_process_ok is False
+    assert module_name in in_process_detail
+
+    # The fresh-subprocess probe spawns a brand-new interpreter that
+    # inherits PYTHONPATH from this process's environment -- so it DOES
+    # see the module, exactly as a real fresh interpreter sees a
+    # just-completed `uv pip install -e` that this process cannot.
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    subprocess_ok, subprocess_detail = cli_mod._agent_providers_importable_subprocess(
+        providers=(provider,)
+    )
+    assert subprocess_ok is True
+    assert subprocess_detail == ""
 
 
 def test_run_agent_post_install_calls_loader_via_sys_executable(monkeypatch):
