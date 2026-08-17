@@ -298,6 +298,90 @@ function loadChatPanel({ fetchImpl, includeCloseBtn = false } = {}) {
     storage,
     fetchCalls,
     prefs: context.window.muxplexAgentPrefs,
+    // muxplex-fx1: chat.js's second exposed global (see window.muxplexAgentCredential
+    // in chat.js) -- refreshStatus/bindForm/recheckGate, the same
+    // "chat.js owns the implementation, app.js calls the exposed name" shape
+    // muxplexAgentPrefs above already has.
+    credential: context.window.muxplexAgentCredential,
+  };
+}
+
+/** Register the Settings -> Agent credential form's five elements
+ * (agent-credential-form/-key/-provider/-result/-submit-btn) into a loaded
+ * panel's DOM -- NOT part of REQUIRED_IDS/OPTIONAL_IDS (chat.js's init()
+ * does not require them; only _bindAgentCredentialForm() looks them up),
+ * so tests that exercise the credential form build them explicitly here
+ * rather than growing the shared fixture for a form only some tests use. */
+function addAgentCredentialFormEls(panel) {
+  const form = panel.document.createElement('form');
+  form.id = 'agent-credential-form';
+  const keyInput = panel.document.createElement('input');
+  keyInput.id = 'agent-credential-key';
+  const providerSelect = panel.document.createElement('select');
+  providerSelect.id = 'agent-credential-provider';
+  providerSelect.value = 'anthropic';
+  const resultEl = panel.document.createElement('div');
+  resultEl.id = 'agent-credential-result';
+  const submitBtn = panel.document.createElement('button');
+  submitBtn.id = 'agent-credential-submit-btn';
+  return { form, keyInput, providerSelect, resultEl, submitBtn };
+}
+
+/** Fetch stub for the Settings -> Agent credential form AND the chat
+ * panel's own gate (muxplex-fx1) -- both read the SAME
+ * GET /api/agent/provider-credential contract (checkAgentGate() reads only
+ * `state`; the form additionally reads `providers`/`sidecar`). `initialState`
+ * seeds what GET returns; a successful (non-no_op) POST flips the in-memory
+ * state to "configured" for every GET after that, mirroring the real
+ * server persisting the key before the next status check. Submitting the
+ * literal key "bad-key" simulates the provider rejecting it (400); any
+ * other non-empty key simulates acceptance. Also answers GET/PATCH
+ * /api/settings (agentPanelOpen) so the harness's own init-time restore
+ * always has something to talk to, exactly like settingsFetch() above. */
+function agentCredentialFetch(initialState) {
+  var state = initialState; // "not_configured" | "configured"
+  var settings = { agentPanelOpen: false };
+  return async (url, opts) => {
+    var method = (opts && opts.method) || 'GET';
+    if (url === '/api/agent/provider-credential') {
+      if (method === 'GET') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ state: state, providers: {}, sidecar: 'running' }),
+        };
+      }
+      if (method === 'POST') {
+        var body = JSON.parse(opts.body);
+        if (body.api_key === 'bad-key') {
+          return {
+            ok: false,
+            status: 400,
+            json: async () => ({ detail: 'Rejected: the provider reported this key as invalid (test).' }),
+          };
+        }
+        state = 'configured';
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            provider: body.provider,
+            no_op: false,
+            restarted: false,
+            detail: 'Takes effect on the next turn -- no restart needed (embedded mode runs in-process).',
+          }),
+        };
+      }
+    }
+    if (url === '/api/settings') {
+      if (method === 'GET') return { ok: true, status: 200, text: async () => JSON.stringify(settings) };
+      if (method === 'PATCH') {
+        Object.assign(settings, JSON.parse(opts.body));
+        return { ok: true, status: 200, text: async () => JSON.stringify(settings) };
+      }
+    }
+    throw new Error('unexpected fetch url/method in test: ' + method + ' ' + url);
   };
 }
 
@@ -877,4 +961,75 @@ test('REQUIRED_IDS matches every id chat.js init() actually requires', () => {
     'fixture entries hide the fact that the contract shrank: ' +
     staleInHarness.join(', ')
   );
+});
+
+// =======================================================================
+// GROUP 6 (muxplex-fx1 stale-gate fix) -- a successful credential save (or
+// a settings-dialog close) must re-validate the chat panel's OWN "Agent
+// isn't set up" gate immediately, without requiring the user to close and
+// reopen the panel. Owner's report: "once I added a key and closed
+// settings, it still said it needed to be configured in the panel."
+// =======================================================================
+
+test('fx1: a successful credential save immediately clears the chat panel gate (no reopen)', async () => {
+  const panel = loadChatPanel({ fetchImpl: agentCredentialFetch('not_configured') });
+  await new Promise((r) => setTimeout(r, 10)); // let the init-time /api/settings GET settle
+
+  const formEls = addAgentCredentialFormEls(panel);
+  panel.credential.bindForm();
+
+  // Put the panel into the SAME gated state a real open-while-unconfigured
+  // would (checkAgentGate() is exposed as recheckGate() -- see chat.js's
+  // window.muxplexAgentCredential). This is the harness's stand-in for
+  // "the user opened the panel once before adding a key."
+  await panel.credential.recheckGate();
+  assert.strictEqual(panel.els['chat-composer'].classList.contains('hidden'), true, 'composer must start hidden (gated)');
+  assert.strictEqual(panel.els['chat-gate'].classList.contains('hidden'), false, 'gate must start visible');
+
+  // Submit a valid key -- entirely through the real form-submit handler,
+  // never by calling recheckGate() ourselves again. If the fix regresses,
+  // this is the only thing that would leave the gate stuck.
+  formEls.keyInput.value = 'a-valid-looking-key';
+  formEls.form._fire('submit', { preventDefault: () => {} });
+  await waitUntil(() => formEls.submitBtn.disabled === false, { label: 'credential submit to finish' });
+
+  assert.strictEqual(panel.els['chat-composer'].classList.contains('hidden'), false, 'composer must be visible immediately after a successful save -- no reopen required');
+  assert.strictEqual(panel.els['chat-gate'].classList.contains('hidden'), true, 'gate must be hidden immediately after a successful save');
+  assert.match(fullText(formEls.resultEl), /Key saved/);
+});
+
+test('fx1: a rejected (bad) key leaves the chat panel gate exactly as it was', async () => {
+  const panel = loadChatPanel({ fetchImpl: agentCredentialFetch('not_configured') });
+  await new Promise((r) => setTimeout(r, 10));
+
+  const formEls = addAgentCredentialFormEls(panel);
+  panel.credential.bindForm();
+  await panel.credential.recheckGate();
+  assert.strictEqual(panel.els['chat-composer'].classList.contains('hidden'), true);
+
+  formEls.keyInput.value = 'bad-key';
+  formEls.form._fire('submit', { preventDefault: () => {} });
+  await waitUntil(() => formEls.submitBtn.disabled === false, { label: 'credential submit to finish' });
+
+  assert.match(fullText(formEls.resultEl), /Rejected/);
+  // The gate must NOT have been cleared -- a rejected key changes nothing
+  // about whether the Agent is actually configured.
+  assert.strictEqual(panel.els['chat-composer'].classList.contains('hidden'), true, 'composer must stay hidden after a rejected key');
+  assert.strictEqual(panel.els['chat-gate'].classList.contains('hidden'), false, 'gate must stay visible after a rejected key');
+});
+
+test('fx1: window.muxplexAgentCredential.recheckGate is the real checkAgentGate (settings-close seam)', async () => {
+  // app.js's closeSettings() calls window.muxplexAgentCredential.recheckGate()
+  // as a belt-and-suspenders re-check. This pins that the exposed function
+  // really does drive the SAME gate checkAgentGate()/setGateState() owns --
+  // not a inert stand-in -- by exercising it with no form involved at all.
+  const panel = loadChatPanel({ fetchImpl: agentCredentialFetch('not_configured') });
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.strictEqual(typeof panel.credential.recheckGate, 'function');
+  await panel.credential.recheckGate();
+  assert.strictEqual(panel.els['chat-composer'].classList.contains('hidden'), true, 'unconfigured -> gated');
+
+  await panel.credential.recheckGate();
+  assert.strictEqual(panel.els['chat-composer'].classList.contains('hidden'), true, 'repeat calls do not flip state on their own');
 });

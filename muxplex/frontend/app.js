@@ -8148,6 +8148,22 @@ function closeSettings() {
   if (dialog) dialog.close();
   const backdrop = $('settings-backdrop');
   if (backdrop) backdrop.classList.add('hidden');
+
+  // muxplex-fx1 stale-gate fix: belt-and-suspenders re-check of the chat
+  // panel's own "Agent isn't set up" gate. _bindAgentCredentialForm() (in
+  // chat.js) already re-checks the gate the moment a credential save
+  // succeeds, which is the tightest correct trigger -- this call covers
+  // every other way the Agent tab's status could have changed while
+  // Settings was open (e.g. an operator setting a provider env var out of
+  // band) without requiring the user to close and reopen the chat panel.
+  // Guarded and reached only through chat.js's own exposed global, the same
+  // "chat.js owns the implementation, app.js calls the exposed name" shape
+  // this file already uses for muxplexAgentPrefs and (just above, in
+  // openSettings()) window.muxplexAgentCredential itself -- never reaches
+  // into chat.js's private checkAgentGate()/setGateState() directly.
+  if (window.muxplexAgentCredential && typeof window.muxplexAgentCredential.recheckGate === 'function') {
+    window.muxplexAgentCredential.recheckGate();
+  }
 }
 
 /**

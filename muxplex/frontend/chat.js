@@ -3170,6 +3170,15 @@
         if (data.no_op) {
           resultEl.textContent = "Not saved: " + (data.detail || "the environment variable takes precedence.");
           await _refreshAgentCredentialStatus();
+          // muxplex-fx1 stale-gate fix: a no-op save still means the env var
+          // (not this form) may already provide a working credential -- the
+          // status could legitimately have gone from unconfigured to
+          // configured without this form ever writing anything. Re-validate
+          // the chat panel's own gate the same way a real save does, so it
+          // never lags behind ground truth. checkAgentGate() is cheap
+          // (one status fetch) and, per its own docstring, never flashes a
+          // placeholder over an already-known state.
+          checkAgentGate();
           return;
         }
         keyInput.value = ""; // never leave the typed key sitting in the form
@@ -3177,6 +3186,18 @@
           ? "Key saved. Agent service restarted (" + data.detail + ")."
           : "Key saved. Takes effect on the next turn -- no restart needed.";
         await _refreshAgentCredentialStatus();
+        // muxplex-fx1 stale-gate fix: the panel's "Agent isn't set up" gate
+        // (checkAgentGate()/setGateState() above) used to be re-checked ONLY
+        // when the panel itself opens -- so a key saved here, in Settings ->
+        // Agent, left the panel showing the stale gate until the user closed
+        // and reopened it. A *successful* save is the tightest, most
+        // immediate signal that the gate may now be wrong: re-check right
+        // here, synchronously with this form's own success path, rather than
+        // waiting for the settings dialog to close (see closeSettings() in
+        // app.js for the belt-and-suspenders re-check on that path too).
+        // Deliberately NOT called from the failure branch above -- a
+        // rejected key must keep the gate exactly as it was.
+        checkAgentGate();
       } catch (err) {
         resultEl.textContent = "Request failed: " + err;
       } finally {
@@ -3188,6 +3209,13 @@
   window.muxplexAgentCredential = {
     refreshStatus: _refreshAgentCredentialStatus,
     bindForm: _bindAgentCredentialForm,
+    // muxplex-fx1 stale-gate fix: lets app.js's closeSettings() ask the chat
+    // panel to re-validate its own "Agent isn't set up" gate as a
+    // belt-and-suspenders check when Settings closes -- same cross-file
+    // shape as this object's other two entries (chat.js owns the
+    // implementation, app.js calls the exposed name, never reaches into
+    // chat.js internals directly).
+    recheckGate: checkAgentGate,
   };
 
   if (document.readyState === "loading") {
