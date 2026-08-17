@@ -1,3 +1,62 @@
+## v0.54.0 (2026-08-16)
+
+**The embedded chat panel now notices when you've configured it, and knows which session you're looking at.**
+Two owner-reported gaps in the agent chat panel, both of the same family: the
+panel knew less about the browser it lives in than it easily could. The first was
+a stale gate -- you added a provider key and the panel went on insisting the
+agent wasn't set up. The second was a blind spot -- ask the agent about "the one
+currently in focus" and it answered, correctly but uselessly, that it had no way
+to see which session you were looking at.
+
+### Fixed
+
+- **The "The Agent isn't set up on this server yet" gate no longer goes stale
+  after you save a provider key.** `checkAgentGate()` (`chat.js`) was only ever
+  invoked from `applyPanelVisualState()`'s open branch, so a panel that was
+  already open never learned that a key had landed -- the owner had to close and
+  reopen it to clear a message that was no longer true. The credential form's
+  submit handler now re-runs the gate check immediately on a **successful** save,
+  covering both the real "key persisted" path and the `no_op` "an env var already
+  provides it" path, since either can change the underlying status. It
+  deliberately does **not** re-check on the failure branch: a rejected key must
+  leave the gate exactly as it was. `closeSettings()` (`app.js`) re-checks as
+  well, as belt-and-suspenders for any other way the Agent tab's status could
+  have changed while Settings was open (an operator setting a provider env var
+  out of band, say). That path goes through `chat.js`'s own exposed
+  `window.muxplexAgentCredential.recheckGate` -- the same "chat.js owns the
+  implementation, app.js calls the exposed name" shape that object's other
+  entries already use -- rather than reaching into `chat.js` internals.
+
+### Added
+
+- **The agent can see which session you actually have open.** A new exported
+  `getFocusedSessionName()` (`app.js`) surfaces this browser's own zoomed-in
+  session, and the chat panel hands it to the model two ways: the
+  `list_muxplex_sessions` result now marks the matching entry `focused: true`
+  (purely additive -- no other entry or field changes, so anything reading the
+  existing `name`/`last_activity_at`/`created_at`/`cwd` shape is unaffected), and
+  every request in a turn carries a fresh context line naming the focused
+  session, or stating plainly that the user is on the all-sessions dashboard with
+  nothing expanded. Both are read **live**, at the moment the request is built
+  rather than cached at panel-open, so a session switched mid-conversation --
+  even between tool-call round trips inside a single turn -- is reflected on the
+  very next request. If `getFocusedSessionName()` isn't available at all (an
+  older frontend build, or `chat.js` loaded standalone), the line is omitted
+  entirely rather than asserting either state: silence, not a fabricated
+  "nothing is focused".
+
+  **The signal is `_viewingSession`, not `_activeView`** -- worth recording,
+  because the plausible-looking choice is the wrong one. `_activeView` is the
+  dashboard's grid *view filter* (`'all'` / `'hidden'` / a named view), and it is
+  independent of what is actually open: verified against a live instance, `GET
+  /api/state` returned `active_session:"sort-check"` alongside
+  `active_view:"all"` at the same moment. Treating `_activeView == 'all'` as
+  "nothing is focused" would therefore have been actively wrong in exactly the
+  common case. Relatedly, a session opened from a federation peer reports as "no
+  local focus" on purpose: `list_muxplex_sessions` is local-only, so naming a
+  remote session would point the model at something that tool's own result never
+  contains.
+
 ## v0.53.0 (2026-08-16)
 
 **You can turn on agent/federation typing from the UI now — no more hand-editing settings.json on every host.**
