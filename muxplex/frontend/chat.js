@@ -42,8 +42,20 @@
       function: {
         name: "list_muxplex_sessions",
         description:
-          "List the tmux sessions currently visible in this muxplex instance " +
-          "(name, last activity, current working directory).",
+          "List tmux sessions across the WHOLE federation -- this device " +
+          "plus any configured peer devices reachable over the federation " +
+          "link, not just this one (name, last activity, current working " +
+          "directory). EVERY entry is tagged with deviceId/deviceName so " +
+          "you always know which physical machine a session is on -- a " +
+          "session never has to be assumed local. remoteId is null for a " +
+          "session on THIS device, and the peer's device id otherwise. A " +
+          "peer that's offline or misconfigured shows up as its own status " +
+          "entry (e.g. status: \"unreachable\"/\"auth_failed\") instead of " +
+          "session data -- report that plainly rather than treating it as a " +
+          "tool failure. This is the ONE tool for \"what sessions do I " +
+          "have\"/\"what's running\" style questions, local or fleet-wide -- " +
+          "always call this first, never assume there is a separate " +
+          "local-only listing to reach for.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     },
@@ -56,9 +68,17 @@
           "captured terminal output/scrollback) plus metadata (last activity, " +
           "created time, working directory, pending follow-ups). Use this " +
           "whenever the user asks what's happening/showing/printing/running " +
-          "INSIDE a named session, or wants to see its output or logs. If you " +
-          "don't already know the exact session name, call " +
-          "list_muxplex_sessions first to look it up -- don't guess it.",
+          "INSIDE a named session, or wants to see its output or logs -- " +
+          "works for a session on THIS device or on any federated peer " +
+          "device, transparently. If you don't already know the exact " +
+          "session name, call list_muxplex_sessions first to look it up -- " +
+          "don't guess it. You normally do NOT need to pass device_id: this " +
+          "tool finds the right device on its own. Only pass device_id " +
+          "(the deviceId tag list_muxplex_sessions showed you) when you " +
+          "already know the session lives on a specific peer, or after a " +
+          "prior call came back reporting the same session name exists on " +
+          "more than one device and asking you to disambiguate -- never " +
+          "guess between them.",
         parameters: {
           type: "object",
           properties: {
@@ -72,6 +92,15 @@
               description:
                 "How many lines of recent pane scrollback to return (1-2000). " +
                 "Omit to use the server's default window.",
+            },
+            device_id: {
+              type: "string",
+              description:
+                "Optional. The deviceId this session lives on, from " +
+                "list_muxplex_sessions' deviceId/remoteId tags. Omit for the " +
+                "common case -- the tool locates the session automatically. " +
+                "Only needed to disambiguate when the same session name " +
+                "exists on more than one federated device.",
             },
           },
           required: ["session_name"],
@@ -88,8 +117,14 @@
           "the user clicking that session's tile to open it (ensures a live " +
           "terminal exists for it, then makes it the focused/active " +
           "session). Use when the user asks to switch to, open, focus, or " +
-          "go to a named session. If you don't already know the exact " +
-          "session name, call list_muxplex_sessions first -- don't guess it.",
+          "go to a named session. LOCAL-ONLY: only works for a session on " +
+          "THIS device (unlike list_muxplex_sessions and " +
+          "get_muxplex_session_details, this does not proxy to federated " +
+          "peers yet) -- if list_muxplex_sessions showed the session on a " +
+          "different device (remoteId set), tell the user it must be opened " +
+          "from that device's own dashboard rather than calling this tool. " +
+          "If you don't already know the exact session name, call " +
+          "list_muxplex_sessions first -- don't guess it.",
         parameters: {
           type: "object",
           properties: {
@@ -190,36 +225,35 @@
         },
       },
     },
-    {
-      type: "function",
-      function: {
-        name: "list_muxplex_federated_sessions",
-        description:
-          "List tmux sessions across every federated muxplex device -- this " +
-          "device plus any configured peer devices reachable over the " +
-          "federation link -- not just the local one. Each entry is tagged " +
-          "with deviceId/deviceName so you can tell which device it's on; a " +
-          "peer that's offline or misconfigured shows up as a status entry " +
-          "(e.g. status: \"unreachable\") instead of session data. Use when " +
-          "the user asks about sessions on another machine/device, or wants " +
-          "a fleet-wide view across devices -- this is something " +
-          "list_muxplex_sessions cannot see, since that tool is local-only.",
-        parameters: { type: "object", properties: {}, additionalProperties: false },
-      },
-    },
   ];
 
   var SYSTEM_PROMPT =
     "You are a small assistant embedded in a muxplex dashboard (a web UI for " +
     "tmux sessions). Every tool you call runs with the logged-in user's own " +
     "authority -- exactly what they could do by clicking around the UI " +
-    "themselves, never more. You have six tools:\n" +
-    "- list_muxplex_sessions: what sessions/panes/terminals exist locally, " +
-    "and their names/activity.\n" +
+    "themselves, never more. muxplex here is FEDERATED: sessions can live on " +
+    "this device or on any configured peer device, and your tools span the " +
+    "whole federation by default -- there is no separate \"ask about the " +
+    "fleet\" step, and you never need to be asked twice to look beyond this " +
+    "device. You have five tools:\n" +
+    "- list_muxplex_sessions: every session across this device AND every " +
+    "federated peer device, each one tagged with which device it's on " +
+    "(deviceId/deviceName/remoteId -- remoteId is null for a session on THIS " +
+    "device). This is your one starting point for \"what sessions do I " +
+    "have\"/\"what's running\" -- always name the device a session is on when " +
+    "you answer, don't just say a name exists. An unreachable/misconfigured " +
+    "peer shows up as its own status entry rather than session data -- " +
+    "report that plainly, it is not a tool failure.\n" +
     "- get_muxplex_session_details: what's happening inside a specific " +
-    "named session (its output/logs/scrollback).\n" +
+    "named session (its output/logs/scrollback) -- works the same whether " +
+    "that session is local or on a federated peer; you don't need to figure " +
+    "out which, the tool does. If a session name turns out to exist on more " +
+    "than one device, you'll be asked to disambiguate with the deviceId " +
+    "list_muxplex_sessions showed you -- never guess which one.\n" +
     "- switch_muxplex_session: make a named session the dashboard's active " +
-    "one.\n" +
+    "one. LOCAL-ONLY -- if list_muxplex_sessions showed the session on a " +
+    "different device, tell the user to open it from that device's own " +
+    "dashboard instead of calling this.\n" +
     "- switch_muxplex_view: change which view filter is active (\"all\", " +
     "\"hidden\", or a configured view name).\n" +
     "- send_muxplex_session_input: type text/keys into a session's terminal " +
@@ -233,12 +267,9 @@
     "ALSO pauses for a human confirmation click in the browser first, with " +
     "no way to skip or pre-approve it; if declined, tell the user rather " +
     "than retrying the same call.\n" +
-    "- list_muxplex_federated_sessions: sessions across ALL federated " +
-    "devices, not just this one -- use for cross-device/fleet questions " +
-    "that list_muxplex_sessions cannot answer.\n" +
     "If the user names a session you haven't seen yet, call " +
-    "list_muxplex_sessions first to confirm its exact name before acting on " +
-    "it. Keep answers short.";
+    "list_muxplex_sessions first to confirm its exact name (and which " +
+    "device it's on) before acting on it. Keep answers short.";
 
   var clientSessionId = null;
   var messages = []; // OpenAI-style chat messages for the CURRENT conversation
@@ -1408,10 +1439,7 @@
     args = args || {};
     var sess = args.session_name ? '"' + args.session_name + '"' : "a session";
     if (name === "list_muxplex_sessions") {
-      return { kind: "read", text: "Reading your list of sessions" };
-    }
-    if (name === "list_muxplex_federated_sessions") {
-      return { kind: "read", text: "Reading sessions across every connected device" };
+      return { kind: "read", text: "Reading your sessions across every connected device" };
     }
     if (name === "get_muxplex_session_details") {
       return { kind: "read", text: "Reading what " + sess + " is showing right now" };
@@ -1794,6 +1822,109 @@
     }
   }
 
+  /** Fetch a single session's details, routing to the local endpoint or the
+   * federation proxy transparently (muxplex-9wq: "the model shouldn't have
+   * to know the difference"). Three cases:
+   *
+   * 1. deviceId given: the caller (the model, echoing a deviceId/remoteId
+   *    tag it saw from list_muxplex_sessions) already knows exactly which
+   *    device this session lives on. Go straight to the federation proxy
+   *    for that device -- no local attempt, no guessing.
+   * 2. deviceId omitted, local hit: try the LOCAL endpoint first (the
+   *    common case, and the exact fast path that existed before this
+   *    change -- zero extra network cost). If it succeeds, return it.
+   * 3. deviceId omitted, local 404: the session isn't on THIS device, which
+   *    is exactly the owner's reported gap (a session that only exists on a
+   *    federated peer used to dead-end here as a bare 404). Fall back to a
+   *    fresh GET /api/federation/sessions and search for the name across
+   *    every peer. Exactly one match: proxy to that device. Zero matches:
+   *    an honest 404 naming that it was not found locally OR anywhere in
+   *    the federation. More than one match (the same session name exists on
+   *    multiple peers): refuse to guess -- fail with an error that names
+   *    every candidate device so the caller can retry with an explicit
+   *    deviceId, per get_muxplex_session_details' own tool description.
+   */
+  async function fetchSessionDetails(sessionName, lines, deviceId) {
+    var query = lines ? "?lines=" + encodeURIComponent(lines) : "";
+
+    if (deviceId) {
+      return await fetchRemoteSessionDetails(deviceId, sessionName, query);
+    }
+
+    var localUrl = "/api/sessions/" + encodeURIComponent(sessionName);
+    var localResp = await apiFetch("GET", localUrl + query);
+    if (localResp.ok) {
+      var detail = localResp.json;
+      return JSON.stringify({
+        name: detail.name,
+        snapshot: detail.snapshot,
+        lines: detail.lines,
+        last_activity_at: detail.last_activity_at,
+        created_at: detail.created_at,
+        cwd: detail.cwd,
+        followups: detail.followups,
+      });
+    }
+    if (localResp.status !== 404) {
+      // A non-404 local failure (403, 500, ...) is a real fault -- fail
+      // loud with the server's own error, exactly as before this change.
+      throw new Error(
+        "GET " + localUrl + " failed: HTTP " + localResp.status +
+        (localResp.text ? " -- " + localResp.text : "")
+      );
+    }
+
+    // Not local -- search the federation for it before giving up.
+    var fedResp = await apiFetch("GET", "/api/federation/sessions");
+    if (!fedResp.ok) {
+      throw new Error(
+        "GET /api/federation/sessions failed: HTTP " + fedResp.status +
+        (fedResp.text ? " -- " + fedResp.text : "")
+      );
+    }
+    var fedSessions = fedResp.json || [];
+    var matches = fedSessions.filter(function (s) {
+      return s.name === sessionName && s.remoteId != null;
+    });
+
+    if (matches.length === 0) {
+      throw new Error(
+        "Session '" + sessionName + "' not found on this device or on any " +
+        "reachable federated peer."
+      );
+    }
+    if (matches.length > 1) {
+      var candidates = matches.map(function (s) {
+        return s.deviceName + " (device_id=" + s.deviceId + ")";
+      }).join(", ");
+      throw new Error(
+        "Session '" + sessionName + "' exists on more than one federated " +
+        "device: " + candidates + ". Call get_muxplex_session_details again " +
+        "with the device_id of the one you mean -- do not guess."
+      );
+    }
+    return await fetchRemoteSessionDetails(matches[0].deviceId, sessionName, query);
+  }
+
+  /** Fetch a remote session's details via the federation proxy
+   * (GET /api/federation/{device_id}/sessions/{name}). The backend's own
+   * 'unreachable'/'auth_failed' status shapes are returned to the model
+   * as-is (200, not thrown) -- same "this is not a fault" contract as
+   * list_muxplex_sessions' status entries. A real 404 (session genuinely
+   * gone on an otherwise-reachable remote) still throws, matching the
+   * local path's own 404 behavior. */
+  async function fetchRemoteSessionDetails(deviceId, sessionName, query) {
+    var url = "/api/federation/" + encodeURIComponent(deviceId) +
+      "/sessions/" + encodeURIComponent(sessionName);
+    var resp = await apiFetch("GET", url + query);
+    if (!resp.ok) {
+      throw new Error(
+        "GET " + url + " failed: HTTP " + resp.status + (resp.text ? " -- " + resp.text : "")
+      );
+    }
+    return JSON.stringify(resp.json);
+  }
+
   /** Execute a single host-provided tool call. Two tools are implemented,
    * dispatched by name; anything else fails loudly rather than pretending to
    * succeed. Same-origin fetch: the browser's own muxplex_session cookie is
@@ -1817,9 +1948,21 @@
     }
 
     if (name === "list_muxplex_sessions") {
-      var resp = await apiFetch("GET", "/api/sessions");
+      // Federation-aware by default (muxplex-9wq): this used to hit the
+      // LOCAL-only GET /api/sessions, which is exactly the tool the model
+      // reached for first and the reason a fleet-wide question ("what's up
+      // with session X") silently came back empty until a human had to say
+      // "check federation" -- see list_muxplex_federated_sessions' own
+      // removal below. GET /api/federation/sessions is the merged endpoint
+      // (this device + every configured peer); when there are no peers
+      // configured it costs exactly what GET /api/sessions always did (the
+      // backend takes a zero-fan-out early return in that case -- see
+      // federation_sessions()'s own docstring), so there is no regression
+      // for the common unfederated case, only a real (bounded, cached,
+      // circuit-broken) fan-out cost when federation is actually configured.
+      var resp = await apiFetch("GET", "/api/federation/sessions");
       if (!resp.ok) {
-        throw new Error("GET /api/sessions failed: HTTP " + resp.status);
+        throw new Error("GET /api/federation/sessions failed: HTTP " + resp.status);
       }
       var sessions = resp.json || [];
       // muxplex-h2f: read live, at the moment this tool actually runs, not a
@@ -1836,12 +1979,28 @@
           last_activity_at: s.last_activity_at,
           created_at: s.created_at,
           cwd: s.cwd,
+          // Every entry, local or remote, carries these three -- this is
+          // the "which device is this on" answer the owner's report says
+          // was missing by default. remoteId is null for a session on THIS
+          // device (the exact convention GET /api/federation/sessions
+          // already uses), the peer's device id otherwise.
+          deviceId: s.deviceId,
+          deviceName: s.deviceName,
+          remoteId: s.remoteId,
         };
-        // Purely additive: only the entry matching the browser's own
-        // current focus gets this key at all, so a model or test reading
-        // the existing name/last_activity_at/created_at/cwd shape is never
-        // affected by a session that isn't focused.
-        if (focusedName && s.name === focusedName) entry.focused = true;
+        // A peer that's down/misconfigured arrives as a status-only entry
+        // (no `name`) rather than session data -- pass that through as-is
+        // so the model reports it plainly instead of inventing a session.
+        if (s.status) entry.status = s.status;
+        // getFocusedSessionName() is scoped to a LOCAL session on purpose
+        // (see its own docstring in app.js) -- so only ever mark the LOCAL
+        // entry (remoteId == null) with the same name as focused. Without
+        // this guard a same-named session on a federated peer could be
+        // mis-marked "focused" too, which would be a real lie: the browser
+        // has no such peer session open.
+        if (focusedName && s.remoteId == null && s.name === focusedName) {
+          entry.focused = true;
+        }
         return entry;
       });
       return JSON.stringify(summary);
@@ -1853,28 +2012,7 @@
           "chat panel: get_muxplex_session_details requires a session_name argument"
         );
       }
-      var url = "/api/sessions/" + encodeURIComponent(args.session_name);
-      if (args.lines) {
-        url += "?lines=" + encodeURIComponent(args.lines);
-      }
-      var resp2 = await apiFetch("GET", url);
-      if (!resp2.ok) {
-        // Fail loud with the real server error (e.g. muxplex's own 404 body
-        // "Session 'x' not found") -- no silent catch, no fake-empty result.
-        throw new Error(
-          "GET " + url + " failed: HTTP " + resp2.status + (resp2.text ? " -- " + resp2.text : "")
-        );
-      }
-      var detail = resp2.json;
-      return JSON.stringify({
-        name: detail.name,
-        snapshot: detail.snapshot,
-        lines: detail.lines,
-        last_activity_at: detail.last_activity_at,
-        created_at: detail.created_at,
-        cwd: detail.cwd,
-        followups: detail.followups,
-      });
+      return await fetchSessionDetails(args.session_name, args.lines, args.device_id);
     }
 
     if (name === "switch_muxplex_session") {
@@ -2056,29 +2194,6 @@
         session: inputResult.session,
         snapshot: inputResult.snapshot,
       });
-    }
-
-    if (name === "list_muxplex_federated_sessions") {
-      var fedResp = await apiFetch("GET", "/api/federation/sessions");
-      if (!fedResp.ok) {
-        throw new Error(
-          "GET /api/federation/sessions failed: HTTP " + fedResp.status +
-          (fedResp.text ? " -- " + fedResp.text : "")
-        );
-      }
-      var fedSessions = fedResp.json || [];
-      var fedSummary = fedSessions.map(function (s) {
-        return {
-          name: s.name,
-          deviceId: s.deviceId,
-          deviceName: s.deviceName,
-          remoteId: s.remoteId,
-          status: s.status,
-          last_activity_at: s.last_activity_at,
-          cwd: s.cwd,
-        };
-      });
-      return JSON.stringify(fedSummary);
     }
 
     throw new Error("chat panel: unknown tool requested by model: " + name);

@@ -1050,13 +1050,27 @@ test('fx1: window.muxplexAgentCredential.recheckGate is the real checkAgentGate 
 // =======================================================================
 
 /** Fetch stub for a full list_muxplex_sessions turn: the completions call
- * requests the tool, GET /api/sessions answers with two sessions, and the
+ * requests the tool, GET /api/federation/sessions answers with the given
+ * sessions (muxplex-9wq: list_muxplex_sessions is federation-aware by
+ * default now, so this is the endpoint it actually calls), and the
  * continuation completions call captures whatever was actually POSTed
  * (both the tool's own {role:"tool"} result AND the system message) so the
- * test can inspect both muxplex-h2f mechanisms in one real turn. */
+ * test can inspect both muxplex-h2f mechanisms in one real turn.
+ *
+ * `sessionsPayload` entries may omit deviceId/deviceName/remoteId -- callers
+ * that don't care about device tagging (most of GROUP 7, which predates
+ * federation-awareness) can keep using bare {name, last_activity_at,
+ * created_at, cwd} objects; this helper fills in a local-device default
+ * (remoteId: null) so those entries behave exactly like a local session. */
 function makeListSessionsFetch(sessionsPayload) {
   const completionsRequests = [];
   let completionsCalls = 0;
+  const tagged = sessionsPayload.map((s) => ({
+    deviceId: 'local-dev',
+    deviceName: 'this-device',
+    remoteId: null,
+    ...s,
+  }));
   return {
     completionsRequests,
     fetchImpl: async (url, opts) => {
@@ -1068,10 +1082,10 @@ function makeListSessionsFetch(sessionsPayload) {
         }
         return sseChunksResponse(finalAnswerChunks('Done.'));
       }
-      if (url === '/api/sessions') {
+      if (url === '/api/federation/sessions') {
         // list_muxplex_sessions goes through apiFetch(), which reads
         // `.text()` (not `.json()`) -- see apiFetch()'s own docstring.
-        return { ok: true, status: 200, text: async () => JSON.stringify(sessionsPayload) };
+        return { ok: true, status: 200, text: async () => JSON.stringify(tagged) };
       }
       throw new Error('unexpected fetch url in test: ' + url);
     },
@@ -1204,4 +1218,236 @@ test('h2f: focus context line is omitted entirely when getFocusedSessionName is 
 
   const systemMsg = completionsRequests[0].messages.find((m) => m.role === 'system').content;
   assert.doesNotMatch(systemMsg, /Currently in focus/);
+});
+
+// =======================================================================
+// GROUP 8 (muxplex-9wq) -- federation-aware agent tools. Owner's report:
+// the model listed only LOCAL sessions and said it couldn't see a session
+// that was actually on another device, then 404'd trying to read its
+// details ("GET /api/sessions/setup-llm -> HTTP 404") because that tool was
+// local-only. Covers: (a) list_muxplex_sessions is now the ONE listing
+// tool and always tags device info (the merge -- list_muxplex_federated_
+// sessions no longer exists as a separate tool), (b)
+// get_muxplex_session_details transparently routes to whichever device the
+// session actually lives on.
+// =======================================================================
+
+/** Generic fetch stub: one completions turn requesting `toolName(argsObj)`,
+ * then a fixed map of exact URL -> response (or response-producing
+ * function) for every other fetch this tool call makes. Unlike
+ * makeListSessionsFetch (which only ever stubs ONE endpoint),
+ * get_muxplex_session_details' local-vs-remote routing can hit up to
+ * three different URLs in a single tool call (local, federation list,
+ * federation proxy), so this helper is keyed by URL instead. */
+function makeToolCallFetch(toolName, argsObj, routes) {
+  const completionsRequests = [];
+  const fetchedUrls = [];
+  let completionsCalls = 0;
+  return {
+    completionsRequests,
+    fetchedUrls,
+    fetchImpl: async (url, opts) => {
+      if (url === '/api/agent/chat/completions') {
+        completionsCalls++;
+        if (opts && opts.body) completionsRequests.push(JSON.parse(opts.body));
+        if (completionsCalls === 1) {
+          return sseChunksResponse(toolCallTurnChunks(toolName, argsObj, 'call_1'));
+        }
+        return sseChunksResponse(finalAnswerChunks('Done.'));
+      }
+      // init()'s own restorePersistedPanelState() fires a GET /api/settings
+      // independent of any tool call (see that function's own comment in
+      // chat.js) -- answer it benignly and keep it OUT of fetchedUrls so
+      // tests asserting the exact tool-routing sequence aren't coupled to
+      // this unrelated, incidental startup fetch.
+      if (url === '/api/settings') {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ agentPanelOpen: null }) };
+      }
+      fetchedUrls.push(url);
+      const route = routes[url];
+      if (!route) throw new Error('unexpected fetch url in test: ' + url);
+      return typeof route === 'function' ? route() : route;
+    },
+  };
+}
+
+function jsonResponse(status, body) {
+  return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) };
+}
+
+/** Run one full turn for the given panel and return the tool result parsed
+ * from the continuation's {role:"tool"} message. */
+async function runToolTurn(panel, completionsRequests, userText) {
+  panel.els['chat-input'].value = userText;
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+  const continuation = completionsRequests[1];
+  assert.ok(continuation, 'expected a continuation request after the tool call');
+  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
+  assert.ok(toolMsg, 'expected a {role:"tool"} message in the continuation');
+  return JSON.parse(toolMsg.content);
+}
+
+test('9wq: list_muxplex_sessions tags every entry with deviceId/deviceName/remoteId', async () => {
+  const fedSessions = [
+    { name: 'local-one', last_activity_at: 1, cwd: '/a', deviceId: 'this-dev', deviceName: 'laptop', remoteId: null },
+    { name: 'setup-llm', last_activity_at: 2, cwd: '/b', deviceId: 'alienware-r11', deviceName: 'alienware-r11', remoteId: 'alienware-r11' },
+  ];
+  const { completionsRequests, fetchImpl } = makeToolCallFetch('list_muxplex_sessions', {}, {
+    '/api/federation/sessions': jsonResponse(200, fedSessions),
+  });
+  const panel = loadChatPanel({ fetchImpl });
+
+  const parsed = await runToolTurn(panel, completionsRequests, 'tell me about my sessions');
+  const local = parsed.find((s) => s.name === 'local-one');
+  const remote = parsed.find((s) => s.name === 'setup-llm');
+  assert.strictEqual(local.remoteId, null, 'local entry must carry remoteId: null');
+  assert.strictEqual(remote.remoteId, 'alienware-r11', 'remote entry must carry its device id');
+  assert.strictEqual(remote.deviceName, 'alienware-r11', 'remote entry must name its device -- this IS the owner-reported gap');
+});
+
+test('9wq: list_muxplex_sessions passes through an unreachable peer as a status entry, not a crash', async () => {
+  const fedSessions = [
+    { status: 'unreachable', deviceId: 'dead-dev', deviceName: 'dead-device', remoteId: 'dead-dev' },
+  ];
+  const { completionsRequests, fetchImpl } = makeToolCallFetch('list_muxplex_sessions', {}, {
+    '/api/federation/sessions': jsonResponse(200, fedSessions),
+  });
+  const panel = loadChatPanel({ fetchImpl });
+
+  const parsed = await runToolTurn(panel, completionsRequests, 'what sessions do I have?');
+  assert.strictEqual(parsed[0].status, 'unreachable');
+  assert.strictEqual(parsed[0].deviceName, 'dead-device');
+});
+
+test('9wq: list_muxplex_sessions never marks a same-named REMOTE entry as focused', async () => {
+  // Regression guard: getFocusedSessionName() is scoped to a local session
+  // on purpose (see its own docstring). A remote session sharing the same
+  // name as the one open locally must never be mis-marked focused too.
+  const fedSessions = [
+    { name: 'shared-name', last_activity_at: 1, deviceId: 'this-dev', deviceName: 'laptop', remoteId: null },
+    { name: 'shared-name', last_activity_at: 2, deviceId: 'peer-1', deviceName: 'peer', remoteId: 'peer-1' },
+  ];
+  const { completionsRequests, fetchImpl } = makeToolCallFetch('list_muxplex_sessions', {}, {
+    '/api/federation/sessions': jsonResponse(200, fedSessions),
+  });
+  const panel = loadChatPanel({ fetchImpl });
+  panel.window.getFocusedSessionName = () => 'shared-name';
+
+  const parsed = await runToolTurn(panel, completionsRequests, 'what sessions do I have?');
+  const localEntry = parsed.find((s) => s.remoteId === null);
+  const remoteEntry = parsed.find((s) => s.remoteId === 'peer-1');
+  assert.strictEqual(localEntry.focused, true);
+  assert.strictEqual(remoteEntry.focused, undefined, 'a remote session must never be marked focused');
+});
+
+test('9wq: get_muxplex_session_details fetches locally when the session exists on this device (unchanged fast path)', async () => {
+  const detail = { name: 'setup-llm', snapshot: 'local pane text', lines: 30, cwd: '/home/x' };
+  const { completionsRequests, fetchedUrls, fetchImpl } = makeToolCallFetch(
+    'get_muxplex_session_details', { session_name: 'setup-llm' },
+    { '/api/sessions/setup-llm': jsonResponse(200, detail) },
+  );
+  const panel = loadChatPanel({ fetchImpl });
+
+  const parsed = await runToolTurn(panel, completionsRequests, 'what is setup-llm showing?');
+  assert.strictEqual(parsed.snapshot, 'local pane text');
+  assert.deepStrictEqual(fetchedUrls, ['/api/sessions/setup-llm'], 'must not touch the federation at all for a local hit');
+});
+
+test('9wq: get_muxplex_session_details with an explicit device_id goes straight to the federation proxy, no local attempt', async () => {
+  const remoteDetail = { name: 'setup-llm', snapshot: 'remote pane text', deviceId: 'alienware-r11', deviceName: 'alienware-r11', remoteId: 'alienware-r11' };
+  const { completionsRequests, fetchedUrls, fetchImpl } = makeToolCallFetch(
+    'get_muxplex_session_details', { session_name: 'setup-llm', device_id: 'alienware-r11' },
+    { '/api/federation/alienware-r11/sessions/setup-llm': jsonResponse(200, remoteDetail) },
+  );
+  const panel = loadChatPanel({ fetchImpl });
+
+  const parsed = await runToolTurn(panel, completionsRequests, 'show me setup-llm on alienware-r11');
+  assert.strictEqual(parsed.snapshot, 'remote pane text');
+  assert.deepStrictEqual(fetchedUrls, ['/api/federation/alienware-r11/sessions/setup-llm']);
+});
+
+test('9wq: get_muxplex_session_details falls back to the federation when the session is not local -- the exact owner-reported 404', async () => {
+  const fedSessions = [
+    { name: 'setup-llm', last_activity_at: 1, deviceId: 'alienware-r11', deviceName: 'alienware-r11', remoteId: 'alienware-r11' },
+  ];
+  const remoteDetail = { name: 'setup-llm', snapshot: 'found it on the peer' };
+  const { completionsRequests, fetchedUrls, fetchImpl } = makeToolCallFetch(
+    'get_muxplex_session_details', { session_name: 'setup-llm' },
+    {
+      '/api/sessions/setup-llm': jsonResponse(404, { detail: "Session 'setup-llm' not found" }),
+      '/api/federation/sessions': jsonResponse(200, fedSessions),
+      '/api/federation/alienware-r11/sessions/setup-llm': jsonResponse(200, remoteDetail),
+    },
+  );
+  const panel = loadChatPanel({ fetchImpl });
+
+  const parsed = await runToolTurn(panel, completionsRequests, "what's up with setup-llm?");
+  assert.strictEqual(parsed.snapshot, 'found it on the peer');
+  assert.deepStrictEqual(fetchedUrls, [
+    '/api/sessions/setup-llm',
+    '/api/federation/sessions',
+    '/api/federation/alienware-r11/sessions/setup-llm',
+  ], 'must try local first, then the federation list, then the specific peer -- in that order');
+});
+
+test('9wq: get_muxplex_session_details reports an honest error when the session exists nowhere', async () => {
+  const { completionsRequests, fetchImpl } = makeToolCallFetch(
+    'get_muxplex_session_details', { session_name: 'ghost-session' },
+    {
+      '/api/sessions/ghost-session': jsonResponse(404, { detail: "Session 'ghost-session' not found" }),
+      '/api/federation/sessions': jsonResponse(200, []),
+    },
+  );
+  const panel = loadChatPanel({ fetchImpl });
+
+  panel.els['chat-input'].value = 'what is ghost-session showing?';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+  // The tool call throws -- chat.js surfaces this as a {role:"tool"} error
+  // result fed back to the model, not a silent empty success.
+  const continuation = completionsRequests[1];
+  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
+  assert.match(toolMsg.content, /not found on this device or on any reachable federated peer/);
+});
+
+test('9wq: get_muxplex_session_details refuses to guess when the same name exists on more than one device', async () => {
+  const fedSessions = [
+    { name: 'dup', last_activity_at: 1, deviceId: 'peer-a', deviceName: 'peer-a-name', remoteId: 'peer-a' },
+    { name: 'dup', last_activity_at: 2, deviceId: 'peer-b', deviceName: 'peer-b-name', remoteId: 'peer-b' },
+  ];
+  const { completionsRequests, fetchImpl } = makeToolCallFetch(
+    'get_muxplex_session_details', { session_name: 'dup' },
+    {
+      '/api/sessions/dup': jsonResponse(404, { detail: "Session 'dup' not found" }),
+      '/api/federation/sessions': jsonResponse(200, fedSessions),
+    },
+  );
+  const panel = loadChatPanel({ fetchImpl });
+
+  panel.els['chat-input'].value = 'what is dup showing?';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+  const continuation = completionsRequests[1];
+  const toolMsg = continuation.messages.find((m) => m.role === 'tool');
+  assert.match(toolMsg.content, /more than one federated device/);
+  assert.match(toolMsg.content, /peer-a-name/);
+  assert.match(toolMsg.content, /peer-b-name/);
+  assert.match(toolMsg.content, /do not guess/i);
+});
+
+test('9wq: get_muxplex_session_details surfaces a remote "unreachable" status as data, not a thrown error', async () => {
+  // The backend proxy's whole point is returning this as a 200 body -- the
+  // frontend must pass it through as the tool result, not treat a
+  // status:"unreachable" payload as a fetch failure.
+  const statusBody = { status: 'unreachable', name: 'setup-llm', deviceId: 'alienware-r11', deviceName: 'alienware-r11' };
+  const { completionsRequests, fetchImpl } = makeToolCallFetch(
+    'get_muxplex_session_details', { session_name: 'setup-llm', device_id: 'alienware-r11' },
+    { '/api/federation/alienware-r11/sessions/setup-llm': jsonResponse(200, statusBody) },
+  );
+  const panel = loadChatPanel({ fetchImpl });
+
+  const parsed = await runToolTurn(panel, completionsRequests, 'show me setup-llm on alienware-r11');
+  assert.strictEqual(parsed.status, 'unreachable');
+  assert.strictEqual(parsed.deviceName, 'alienware-r11');
 });

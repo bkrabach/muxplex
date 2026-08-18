@@ -5253,10 +5253,15 @@ function showTerminalConflictDialog(name, body) {
  *
  * Scoped to a LOCAL session on purpose: a session opened from a federation
  * peer (`_viewingRemoteId` non-empty) is not one of this instance's own
- * sessions, and `list_muxplex_sessions` (the chat panel's session-listing
- * tool) is local-only -- so a remote focus is reported here as "no local
- * focus" rather than naming a session that tool's own result would not
- * contain.
+ * sessions, so it is reported here as "no local focus". This is now a
+ * DELIBERATE scoping decision, not a tooling limitation -- as of muxplex-9wq
+ * `list_muxplex_sessions` (the chat panel's session-listing tool) spans the
+ * whole federation and its result WOULD contain a remote session by that
+ * name, but "focused" is a statement about a live LOCAL browser affordance
+ * (this dashboard's own zoomed-in terminal pane) that a proxied remote
+ * terminal view does not carry the same guarantees for. Extending
+ * "focused" to remote sessions is a possible future enhancement, not
+ * something this function claims today.
  * @returns {string|null}
  */
 function getFocusedSessionName() {
