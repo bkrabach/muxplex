@@ -1,3 +1,45 @@
+## v0.56.2 (2026-08-18)
+
+**A slow agent turn no longer looks like a broken one.** When the embedded chat
+panel went quiet for 15 seconds -- which is entirely normal during extended model
+reasoning or a silent multi-step tool plan -- the status row turned red and said
+"No response for 15s while waiting for the agent to respond. It may still finish,
+or the connection may have dropped." Nothing was actually wrong: the turn was
+healthy and still streaming, but the panel was reporting it as a probable
+failure, and at least one person read it that way. A second bug compounded it --
+the watchdog captured a fresh start time on every re-arm, so a turn that had been
+working for two minutes kept repeating "No response for **15s**" instead of
+counting up. The row now stays in its neutral "working" treatment and gives an
+honest, cumulative progress update -- "Still working (45s) -- ..." -- whose
+wording softens as the wait grows but whose color and urgency never change. A
+genuine dropped stream or provider error is unaffected: it still surfaces as a
+real error through the separate, unchanged tool-error path.
+
+### Fixed
+
+- **A normal long turn framed as a failure** -- `armStallWatch()` in `chat.js` no
+  longer flips the status row to the red `stalled` treatment. It re-arms with
+  calm progress text from a new `stallMessage()` helper on the existing neutral
+  `wait` status kind, escalating in wording only across three tiers (<45s, <120s,
+  >=120s) -- never in color or urgency. The 15s check-in interval itself is
+  unchanged; only what it says and how it looks.
+- **Repeated check-ins stuck at "15s"** -- `armStallWatch(what, since)` now
+  carries the ORIGINAL start time through every recursive re-arm, so successive
+  check-ins report cumulative elapsed time (15s, 30s, 45s, ...) instead of each
+  restarting the clock at ~15s.
+
+### Notes
+
+- The `stalled` status kind and its red `.agent-status--stalled` CSS are removed
+  as dead code -- `setStatus()`'s `kind` is now only `read` | `write` | `wait`.
+  Error reporting is untouched: a thrown fetch, a non-ok response, or an SSE
+  error frame goes through `appendToolError()`, a separate code path this change
+  does not modify.
+- Frontend-only (`chat.js`, `style.css`, and the panel's test suite). No Python
+  changed. Browsers cache the panel assets; the server's `?v=<version>`
+  cache-bust advances on this release, but an already-open dashboard tab should
+  be hard-refreshed once to pick up the new wording.
+
 ## v0.56.1 (2026-08-18)
 
 **Ctrl+A no longer leaves a phantom character in inner-CLI prompts that use a
