@@ -243,7 +243,7 @@ const OPTIONAL_IDS = ['chat-live', 'chat-key-hint', 'chat-export-link'];
  * chat.js's module state (messages, clientSessionId, statusEl, the
  * confirmation gate...) is closed over per-load, so this is the only way
  * to get real per-test isolation. */
-function loadChatPanel({ fetchImpl, includeCloseBtn = false } = {}) {
+function loadChatPanel({ fetchImpl, includeCloseBtn = false, sandboxOverrides = {} } = {}) {
   const env = createDomEnvironment();
   const els = {};
 
@@ -287,6 +287,12 @@ function loadChatPanel({ fetchImpl, includeCloseBtn = false } = {}) {
     clearTimeout,
     TextEncoder,
     TextDecoder,
+    // Overridable so a test can inject manually-fireable timers and/or a
+    // controllable clock (see makeManualTimers()/FakeClockDate below) --
+    // needed to exercise the stall check-in's cumulative-elapsed-time
+    // behavior without a real multi-second sleep. Every OTHER test gets
+    // real timers/Date, unaffected, since sandboxOverrides defaults to {}.
+    ...sandboxOverrides,
   };
 
   const context = vm.createContext(sandbox);
@@ -526,6 +532,70 @@ function makeGate() {
   var resolve;
   var promise = new Promise((r) => { resolve = r; });
   return { promise, resolve };
+}
+
+/** A fetch stub whose SSE stream opens (the completions POST resolves) but
+ * then never delivers a single byte -- read() returns a promise that never
+ * settles. Models the exact silent gap the stall check-in exists for:
+ * the model is genuinely still working (or the sidecar is genuinely still
+ * thinking), nothing has failed, and no content/tool_call delta has
+ * arrived yet. Used to test armStallWatch/stallMessage without needing a
+ * real turn to actually finish. */
+function hangingSseFetch() {
+  return async (url) => {
+    if (url === '/api/agent/chat/completions') {
+      return {
+        ok: true,
+        status: 200,
+        body: { getReader: () => ({ read: () => new Promise(() => {}) }) },
+      };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+/** Manually-fireable replacement for setTimeout/clearTimeout: schedule()
+ * calls are recorded, never fire on their own. fireLatest() invokes the
+ * most recently scheduled still-pending callback (armStallWatch always
+ * clears its previous timer before scheduling the next one, so exactly
+ * one is ever pending) -- this is how the test simulates STATUS_STALL_MS
+ * elapsing without an actual multi-second sleep. */
+function makeManualTimers() {
+  let seq = 0;
+  const pending = new Map();
+  return {
+    setTimeout(fn) {
+      const id = ++seq;
+      pending.set(id, fn);
+      return id;
+    },
+    clearTimeout(id) {
+      pending.delete(id);
+    },
+    fireLatest() {
+      const ids = Array.from(pending.keys());
+      if (!ids.length) throw new Error('fireLatest: no pending timer to fire');
+      const id = ids[ids.length - 1];
+      const fn = pending.get(id);
+      pending.delete(id);
+      fn();
+    },
+    pendingCount() { return pending.size; },
+  };
+}
+
+/** A `Date` whose `.now()` is entirely test-controlled (starts at `startMs`,
+ * moves only via `advance(ms)`) -- real Date otherwise (via subclassing),
+ * so any incidental `new Date()` elsewhere in chat.js still works. Passed
+ * as a sandboxOverrides.Date so armStallWatch's `Date.now() - startedAt`
+ * arithmetic is deterministic instead of depending on real wall-clock time
+ * between scheduling a fake timer and the test choosing to fire it. */
+function makeFakeClock(startMs) {
+  let current = startMs;
+  class FakeDate extends Date {
+    static now() { return current; }
+  }
+  return { Date: FakeDate, advance(ms) { current += ms; } };
 }
 
 /** Drive a full user turn through the real DOM: type text, click Send,
@@ -1450,4 +1520,121 @@ test('9wq: get_muxplex_session_details surfaces a remote "unreachable" status as
   const parsed = await runToolTurn(panel, completionsRequests, 'show me setup-llm on alienware-r11');
   assert.strictEqual(parsed.status, 'unreachable');
   assert.strictEqual(parsed.deviceName, 'alienware-r11');
+});
+
+// ---------------------------------------------------------------------
+// GROUP 9 (muxplex-l2y stall reframe) -- the owner-reported "no response
+// for 15s" alarm. Two claims to prove, both about the SAME status row:
+//
+//   1. The instant a turn is sent, a status row appears -- before the
+//      network call resolves at all -- and it keeps naming what's
+//      happening as tool-call phases change (existing behavior; this
+//      group's first test is a regression guard for it, not new
+//      behavior).
+//   2. A turn that goes quiet for STATUS_STALL_MS is NOT a failure. The
+//      row must never read as "no response" / "may have dropped" for a
+//      turn that's simply thinking -- and repeated check-ins must report
+//      CUMULATIVE elapsed time (15s, 30s, ...), not restart the count
+//      every cycle. A real failure (a thrown fetch, a non-ok response, an
+//      SSE error frame) is a completely different code path
+//      (appendToolError) and is untouched by any of this -- covered
+//      separately by the existing 403/404/5xx tests above.
+// ---------------------------------------------------------------------
+
+test('l2y: the status row appears immediately on send, before the fetch resolves, and updates through a tool-call phase', async () => {
+  const gate = makeGate();
+  const { completionsRequests, fetchImpl } = makeToolCallFetch(
+    'list_muxplex_sessions', {},
+    { '/api/sessions': jsonResponse(200, []) },
+  );
+  // Delay the FIRST completions response so there's a real window where
+  // the send has happened but nothing has come back yet -- exactly the
+  // window the immediate indicator exists for.
+  let firstCall = true;
+  const gatedFetch = async (url, opts, n) => {
+    if (url === '/api/agent/chat/completions' && firstCall) {
+      firstCall = false;
+      await gate.promise;
+    }
+    return fetchImpl(url, opts, n);
+  };
+  const panel = loadChatPanel({ fetchImpl: gatedFetch });
+
+  panel.els['chat-input'].value = 'what sessions do I have?';
+  panel.els['chat-send-btn']._fire('click');
+
+  // Still before the gate opens: the row must already be there.
+  await waitUntil(
+    () => fullText(panel.els['chat-messages']).includes('Thinking about what to do next'),
+    { label: 'immediate status row before first response' }
+  );
+  assert.strictEqual(panel.els['chat-send-btn'].disabled, true);
+
+  gate.resolve();
+  await waitUntil(() => panel.els['chat-send-btn'].disabled === false, { label: 'turn to finish' });
+  assert.strictEqual(completionsRequests.length, 2);
+});
+
+test('l2y: a turn that goes quiet reads as calm progress, never "no response" / "may have dropped"', async () => {
+  const clock = makeFakeClock(1_000_000);
+  const timers = makeManualTimers();
+  const panel = loadChatPanel({
+    fetchImpl: hangingSseFetch(),
+    sandboxOverrides: { Date: clock.Date, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+  });
+
+  panel.els['chat-input'].value = 'do something that takes a while';
+  panel.els['chat-send-btn']._fire('click');
+  // Let the synchronous portion of runTurn() run up to its hanging await.
+  await new Promise((r) => setTimeout(r, 0));
+
+  const statusText = () => fullText(panel.els['chat-messages']);
+
+  assert.match(statusText(), /Thinking about what to do next/);
+
+  // Simulate STATUS_STALL_MS elapsing once.
+  clock.advance(15000);
+  timers.fireLatest();
+  assert.match(statusText(), /Still working \(15s\)/);
+  assert.doesNotMatch(statusText(), /No response/i);
+  assert.doesNotMatch(statusText(), /connection may have dropped/i);
+
+  // The row itself must stay in the neutral "wait" register, not a
+  // separate alarmed one -- there is no more "stalled" kind at all.
+  const rows = panel.els['chat-messages']._children.filter((c) => /agent-status/.test(c.className || ''));
+  assert.ok(rows.length >= 1, 'expected a status row');
+  const lastStatusRow = rows[rows.length - 1];
+  assert.match(lastStatusRow.className, /agent-status--wait/);
+  assert.doesNotMatch(lastStatusRow.className, /stalled/);
+
+  // Simulate a SECOND STATUS_STALL_MS elapsing -- elapsed time must be
+  // CUMULATIVE (30s), not reset back down to ~15s each cycle.
+  clock.advance(15000);
+  timers.fireLatest();
+  assert.match(statusText(), /Still working \(30s\)/);
+  assert.doesNotMatch(statusText(), /Still working \(15s\)/);
+});
+
+test('l2y: a genuinely very long wait still reads as progress, only the wording gently escalates', async () => {
+  const clock = makeFakeClock(2_000_000);
+  const timers = makeManualTimers();
+  const panel = loadChatPanel({
+    fetchImpl: hangingSseFetch(),
+    sandboxOverrides: { Date: clock.Date, setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout },
+  });
+
+  panel.els['chat-input'].value = 'a very long-running request';
+  panel.els['chat-send-btn']._fire('click');
+  await new Promise((r) => setTimeout(r, 0));
+
+  // Fire enough cycles to cross into the "long wait" tier (>=120s).
+  for (let i = 0; i < 9; i++) {
+    clock.advance(15000);
+    timers.fireLatest();
+  }
+  const statusText = fullText(panel.els['chat-messages']);
+  assert.match(statusText, /Still working \(135s\)/);
+  assert.doesNotMatch(statusText, /No response/i);
+  const rows = panel.els['chat-messages']._children.filter((c) => /agent-status/.test(c.className || ''));
+  assert.match(rows[rows.length - 1].className, /agent-status--wait/);
 });

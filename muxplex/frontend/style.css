@@ -2486,9 +2486,11 @@ body {
    family, the same vocabulary every destructive control in muxplex already
    uses) and a heavier rule, so the row that means "something is about to
    land in your terminal" cannot be mistaken at a glance for the row that
-   means "reading a list". A stalled turn gets a third treatment, because
-   "appears to still be working" is the specific lie this row exists to
-   avoid telling. */
+   means "reading a list". A long-running turn stays in the neutral --wait
+   treatment even once chat.js's stall check-in kicks in (see armStallWatch/
+   stallMessage there): a turn that's simply taking a while is still
+   "working", not a different, alarmed state -- there is no separate
+   "stalled" visual treatment to reach for here, on purpose. */
 .agent-status {
   margin: 6px 0;
   padding: 5px 8px;
@@ -2526,17 +2528,6 @@ body {
 
 .agent-status--write::before {
   content: "\26A0\FE0E";
-}
-
-/* Stalled: unambiguous, never mistakable for "still working normally". */
-.agent-status--stalled {
-  color: var(--err);
-  border-left: 3px solid var(--err);
-  background: rgba(248, 81, 73, 0.10);
-}
-
-.agent-status--stalled::before {
-  content: "\21AF\FE0E";
 }
 
 /* Humanised tool failures (muxplex-oi2). The headline is the sentence that

@@ -1468,7 +1468,7 @@
   }
 
   /** Show (or replace) the single status row at the foot of the transcript.
-   * kind: "read" | "write" | "wait" | "stalled". */
+   * kind: "read" | "write" | "wait". */
   function setStatus(kind, text) {
     clearStatusWatchdog();
     if (!statusEl) {
@@ -1494,18 +1494,50 @@
     if (statusWatchdog) { clearTimeout(statusWatchdog); statusWatchdog = null; }
   }
 
-  /** Arm the stall detector. If nothing arrives for STATUS_STALL_MS the row
-   * stops claiming to be working and says so instead -- "appears to still be
-   * working" is precisely the failure this guards against. */
-  function armStallWatch(what) {
+  /** Compose the long-wait check-in line. A turn that's gone quiet for a
+   * while is NOT evidence of a failure -- extended thinking, a big
+   * multi-step tool plan, or just a busy model can all produce a real,
+   * silent gap on the wire (the SSE transport is still sending keepalive
+   * comments the whole time; there is nothing here to be a "connection
+   * dropped" symptom). This function exists so that fact is what the user
+   * reads, framed as ongoing progress, not as something broken.
+   *
+   * `secs` is the TOTAL elapsed time since this phase started waiting (see
+   * armStallWatch's carried `since`), so it grows -- 15, 30, 45, ... --
+   * across repeated check-ins instead of resetting to ~15 every cycle.
+   * Escalation is WORDING ONLY, never urgency/color: a genuine failure
+   * (a dropped stream, a provider error) surfaces through a completely
+   * different path -- the SSE error frame / appendToolError -- so this
+   * message never needs to hedge about whether something broke. */
+  function stallMessage(what, secs) {
+    var base = "Still working (" + secs + "s) \u2014 " + what + ".";
+    if (secs < 45) {
+      return base + " Longer turns are normal when the model is reasoning " +
+        "through several steps.";
+    }
+    if (secs < 120) {
+      return base + " This one is taking a while, but it's still in " +
+        "progress -- no action needed.";
+    }
+    return base + " This is a long wait. It may still finish; if you'd " +
+      "rather not wait, you're free to send a new message.";
+  }
+
+  /** Arm the check-in timer. If nothing arrives for STATUS_STALL_MS the row
+   * stops going quiet and gives an honest progress update instead --
+   * "appears to have stopped" is precisely the impression this guards
+   * against, WITHOUT overcorrecting into "appears to be broken" (see
+   * stallMessage's docstring). Re-arms itself, carrying the ORIGINAL
+   * `since` forward through every recursive call, so repeated check-ins
+   * report cumulative elapsed time rather than each restarting the clock. */
+  function armStallWatch(what, since) {
     clearStatusWatchdog();
-    var startedAt = Date.now();
+    var startedAt = since || Date.now();
     statusWatchdog = setTimeout(function () {
       if (!statusEl) return;
       var secs = Math.round((Date.now() - startedAt) / 1000);
-      setStatus("stalled", "No response for " + secs + "s while " +
-        what + ". It may still finish, or the connection may have dropped.");
-      armStallWatch(what); // keep counting rather than going quiet again
+      setStatus("wait", stallMessage(what, secs));
+      armStallWatch(what, startedAt); // keep counting -- cumulative, not reset
     }, STATUS_STALL_MS);
   }
 
