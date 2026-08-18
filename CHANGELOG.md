@@ -1,3 +1,83 @@
+## v0.56.0 (2026-08-17)
+
+**Ask the chat panel about a session on another machine and it just answers.**
+Previously the embedded agent could only see this device's own sessions: asked
+about a session running on a peer, it listed the local sessions, said it didn't
+see it, and only looked across the federation when you explicitly told it to
+"check federation". Even once it had learned which device the session was on, it
+still couldn't read it -- `get_muxplex_session_details` was local-only and
+returned a bare 404. The agent now lists every session across the whole
+federation by default, tells you which machine each one is on, and can open a
+remote session's details and scrollback on the first try without being prompted.
+
+### Added
+
+- **`GET /api/federation/{device_id}/sessions/{session_name}`** -- a proxy route
+  that fetches a single session's details and scrollback from the device that
+  owns it. It mirrors the rest of the `/api/federation/{device_id}/sessions`
+  family for device lookup, Bearer auth, and 404-on-unknown-device, but follows
+  `GET /api/federation/sessions`' own reachability convention rather than the
+  write proxies' 502/503-on-any-failure: it reuses the shared
+  `_federation_breaker` (keyed by remote URL, so a peer already known dead to the
+  sessions/devices fan-out costs this route nothing extra) and returns the same
+  legible `{"status": "unreachable"}` / `{"status": "auth_failed"}` shapes as a
+  **200** body instead of throwing. A session genuinely absent on a *reachable*
+  peer stays an honest 404, mirroring `GET /api/sessions/{name}`.
+- **`get_muxplex_session_details` resolves local-vs-remote transparently.** It
+  tries the local endpoint first (unchanged fast path, zero extra cost for the
+  common case); on a local 404 it falls back to a fresh federation lookup and
+  proxies to the owning device. A new optional `device_id` parameter lets a
+  caller that already knows the device skip the local attempt entirely. If the
+  same session name exists on more than one federated device, it refuses to
+  guess and reports every candidate device so the caller can retry with an
+  explicit `device_id`.
+
+### Changed
+
+- **The two session-listing tools are merged into one.**
+  `list_muxplex_sessions` now always lists across the entire federation and tags
+  every entry with `deviceId`/`deviceName`/`remoteId` (`null` for a session on
+  *this* device); `list_muxplex_federated_sessions` is gone. This was chosen over
+  biasing two similarly-named tools' descriptions and hoping the model reaches
+  for the right one -- there is no longer a wrong tool to reach for. There is no
+  cost regression for an unfederated install: the backend takes a zero-fan-out
+  early return when no peers are configured, so this costs exactly what the old
+  local-only call did, and the bounded/cached/circuit-broken fan-out cost applies
+  only when federation is actually configured.
+- **Tool descriptions and the system prompt no longer claim details are
+  "local-only".** That text was accurate before this release and actively
+  misleading after it. `switch_muxplex_session` *is* still local-only (wiring it
+  to the existing federation connect-proxy is out of scope here), and now says so
+  explicitly, so the model tells you to switch from that device's own dashboard
+  rather than silently failing or claiming the session doesn't exist.
+
+### Fixed
+
+- **Field-parity gap in `GET /api/federation/sessions`.** The endpoint's *local*
+  branch was missing `created_at`, which was already present in `GET
+  /api/sessions` and in every remote entry (forwarded verbatim). Harmless while
+  the endpoint had separate consumers; it matters now that a single tool is this
+  endpoint's only consumer for both local and remote listing.
+
+### Notes
+
+- `focused: true` is still applied only to the local entry matching this
+  browser's own open/zoomed session, and is now explicitly guarded so a
+  same-named *remote* session is never mis-marked. `getFocusedSessionName()`
+  staying local-scoped is now a deliberate decision rather than a tooling
+  limitation -- "focused" describes a live local browser affordance that a
+  proxied remote terminal view doesn't carry the same guarantees for.
+- 18 new tests: 9 backend (`muxplex/tests/test_api.py`) covering success +
+  tagging, lines validation, unknown device, remote 404, `auth_failed`,
+  transport-error unreachable + breaker recording, breaker-already-open with no
+  network call, and 502 on an unexpected remote HTTP error; 9 frontend
+  (`frontend/tests/test_chat_panel.mjs`) covering device tagging, unreachable-peer
+  passthrough, focus non-leakage to remote entries, the local fast path making
+  client-observably zero federation calls, explicit `device_id` routing,
+  local-miss federation fallback with exact call order, not-found-anywhere,
+  multi-device disambiguation refusal, and remote unreachable/`auth_failed`
+  passthrough as data.
+
 ## v0.55.2 (2026-08-17)
 
 **v0.55.1's provider install worked. Its verification of that install did not, and
