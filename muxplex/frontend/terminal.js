@@ -710,6 +710,25 @@ function createTerminal(fontSize) {
     allowProposedApi: true,
   });
 
+  // Unicode 11 width tables — MUST be loaded before any data is written so the
+  // cell grid measures wide glyphs correctly from the first byte.
+  //
+  // Why this matters: xterm.js's built-in provider is UnicodeV6, whose width
+  // table predates modern emoji. It scores most Plane-1 pictographs (e.g. the
+  // pushpin U+1F4CC used in the Amplifier CLI prompt badge `[📌 provider]`) as
+  // 1 column, while the inner app's line editor (prompt_toolkit + wcwidth)
+  // treats them as 2. That 1-column disagreement makes the terminal's cursor
+  // drift one cell behind the app's model, so an absolute reposition like
+  // Ctrl+A (move-to-start-of-line) lands one column too far right — on the 2nd
+  // character — and leaves a stale, un-erased glyph in the true first cell.
+  // Activating the Unicode 11 provider makes xterm score these glyphs as 2,
+  // matching the app and eliminating the drift. Requires allowProposedApi.
+  var Unicode11Addon = window.Unicode11Addon && window.Unicode11Addon.Unicode11Addon;
+  if (Unicode11Addon) {
+    _term.loadAddon(new Unicode11Addon());
+    _term.unicode.activeVersion = '11';
+  }
+
   _fitAddon = new window.FitAddon.FitAddon();
   _term.loadAddon(_fitAddon);
 
