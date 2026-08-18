@@ -5007,6 +5007,7 @@ async def federation_sessions(request: Request) -> list[dict]:
     names = get_session_list()
     snapshots = get_snapshots()
     activity = get_session_activity()
+    created_times = get_session_created_times()
     cwds = get_session_cwds()
     state = await read_state()
     local_sessions: list[dict] = []
@@ -5019,6 +5020,15 @@ async def federation_sessions(request: Request) -> list[dict]:
                 "snapshot": snapshots.get(name, ""),
                 "bell": bell,
                 "last_activity_at": activity.get(name),
+                # Same field GET /api/sessions carries (\u00a71502) -- included so
+                # a peer's remote entries (spread with **s below, which already
+                # forward the remote's own created_at verbatim) are never the
+                # richer half of a merged fleet view; this was the one field
+                # this endpoint's local branch had NOT been carrying, a real
+                # parity gap once a single tool (the chat-panel's
+                # list_muxplex_sessions) became this endpoint's only consumer
+                # for BOTH local and remote listing.
+                "created_at": created_times.get(name),
                 "followups": followups.summary(state, name),
                 # Same cwd observation GET /api/sessions carries (see that
                 # route's docstring) -- included so a peer's remote entries
@@ -5770,6 +5780,170 @@ async def federation_create_session(
             status_code=503,
             detail=f"Remote unreachable: {remote_url} ({type(exc).__name__}: {exc})",
         )
+
+
+@app.get("/api/federation/{device_id}/sessions/{session_name}")
+async def federation_session_details(
+    device_id: str,
+    session_name: str,
+    request: Request,
+    lines: int = DEFAULT_CAPTURE_LINES,
+    before: int | None = None,
+) -> dict:
+    """Proxy a session-details GET to a remote instance.
+
+    The read-side counterpart to GET /api/sessions/{name} (\u00a71535), for a
+    session that lives on a federation peer rather than this instance. Until
+    this route existed, nothing could fetch a remote session's pane content
+    at all: a caller that discovered a session via GET /api/federation/sessions
+    (tagged with its real deviceId/remoteId) had no way to read it, only the
+    LOCAL-only GET /api/sessions/{name} -- which 404s for any name this
+    instance doesn't itself have a tmux session for.
+
+    Looks up the remote by device_id via ``_lookup_remote_by_device_id`` and
+    shapes its URL consistently with the rest of the
+    ``/api/federation/{device_id}/sessions...`` family (federation_create_session's
+    POST .../sessions, federation_delete_session's DELETE .../sessions/{name}) --
+    same 404 (\"Remote instance '{device_id}' not found\") when device_id
+    doesn't match a configured remote.
+
+    Reachability, however, follows GET /api/federation/sessions' OWN
+    convention rather than the write proxies' (federation_connect,
+    federation_bell_clear, federation_create_session, federation_delete_session
+    all turn any failure into a 502/503 HTTPException): this route reuses the
+    SHARED ``_federation_breaker`` (keyed by remote URL -- \u00a78.5's mechanism
+    decision, see federation_devices()'s docstring: a remote already known-dead
+    to the sessions/devices fan-out costs this route nothing extra) and returns
+    the SAME legible status vocabulary ('unreachable' | 'auth_failed', reused
+    verbatim, never a new status string) as a 200 body -- never a 500 for \"the
+    remote is merely unreachable\", which is the one thing this route's callers
+    (an agent tool foremost among them) need to be able to render sanely rather
+    than treat as a fault. A session genuinely absent on a REACHABLE remote is
+    a different, honest case: it surfaces as a real 404, mirroring GET
+    /api/sessions/{name}'s own 404 for that exact condition.
+
+    `lines` is validated locally first, exactly like GET /api/sessions/{name}
+    (\u00a71611) -- out of [1, MAX_CAPTURE_LINES] is a 400 here, before ever
+    making a network call. `before`'s valid range depends on the REMOTE's
+    live scrollback depth, which this proxy does not know without a second
+    round trip; it is forwarded as-is and an out-of-range value surfaces as
+    this route's 502 (the remote's own 400, wrapped the same way any other
+    unexpected remote HTTP error is below).
+
+    Successful responses are the remote's own detail dict (name, snapshot,
+    lines, bell, last_activity_at, created_at, followups, cwd, and the
+    scrollback-paging fields), tagged with deviceId/deviceName/remoteId --
+    the same self-describing shape GET /api/federation/sessions already
+    gives each of its entries -- so a caller reaching this route directly
+    still learns which device the content came from without a second
+    lookup. Status (non-2xx-success) responses carry the same three tags
+    plus `name` (the session that was asked for), so a caller can render
+    \"session X on device Y is unreachable\" without having cached anything
+    from the list call that led it here.
+    """
+    if not (1 <= lines <= MAX_CAPTURE_LINES):
+        raise HTTPException(
+            status_code=400,
+            detail=f"lines must be between 1 and {MAX_CAPTURE_LINES} (got {lines})",
+        )
+
+    remote = _lookup_remote_by_device_id(device_id)
+    if remote is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Remote instance '{device_id}' not found",
+        )
+
+    remote_url: str = remote.get("url", "").rstrip("/")
+    remote_key: str = remote.get("key", "")
+    remote_name: str = remote.get("name", remote_url)
+
+    def _status_entry(status: str) -> dict:
+        return {
+            "status": status,
+            "name": session_name,
+            "deviceId": device_id,
+            "remoteId": device_id,
+            "deviceName": remote_name,
+        }
+
+    if not _federation_breaker.should_attempt(remote_url):
+        # Circuit open: remote is known-unreachable; skip the network call
+        # entirely, same as federation_sessions()/federation_devices().
+        return _status_entry("unreachable")
+
+    url = f"{remote_url}/api/sessions/{session_name}"
+    params: dict[str, int] = {"lines": lines}
+    if before is not None:
+        params["before"] = before
+
+    http_client: httpx.AsyncClient = request.app.state.federation_client
+    try:
+        resp = await http_client.get(
+            url,
+            headers={"Authorization": f"Bearer {remote_key}"} if remote_key else {},
+            params=params,
+        )
+        # Any HTTP response means the remote is reachable -- reset the
+        # breaker (auth/HTTP errors are honest states, not connection
+        # failures), same as federation_sessions()'s fetch_remote.
+        if _federation_breaker.record_success(remote_url):
+            _log.info(
+                "federation remote %s reachable again; resuming (session details)",
+                remote_name,
+            )
+        if resp.status_code == 404:
+            # The remote is reachable and says the session doesn't exist
+            # there -- an honest 404, not "unreachable" (mirrors GET
+            # /api/sessions/{name}'s own 404 for this exact condition).
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{session_name}' not found on remote '{remote_name}'",
+            )
+        if resp.status_code in (401, 403):
+            # Auth failure -- same status vocabulary as
+            # federation_sessions()'s fetch_remote for this case.
+            return _status_entry("auth_failed")
+        resp.raise_for_status()
+        detail: dict = resp.json()
+        return {
+            **detail,
+            "deviceId": device_id,
+            "deviceName": remote_name,
+            "remoteId": device_id,
+        }
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        # The remote responded (reachable) with an HTTP error -- honest
+        # error state, NOT a connection failure: never circuit-break it.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Remote returned {exc.response.status_code}",
+        )
+    except httpx.TransportError as exc:
+        # Connection-level failure: the remote is unreachable. Count it
+        # toward the shared circuit breaker, same as federation_sessions().
+        if _federation_breaker.record_failure(remote_url):
+            _log.warning(
+                "federation remote %s unreachable; skipping for %.0fs (session details)",
+                remote_name,
+                _federation_breaker.cooldown,
+            )
+        else:
+            _log.debug(
+                "federation remote %s connection failed (session details): %s",
+                remote_name,
+                exc,
+            )
+        return _status_entry("unreachable")
+    except Exception as exc:
+        _log.warning(
+            "federation_session_details: unexpected error fetching remote %s: %s",
+            remote_url,
+            exc,
+        )
+        return _status_entry("unreachable")
 
 
 @app.delete("/api/federation/{device_id}/sessions/{session_name}")

@@ -6610,6 +6610,297 @@ def test_federation_connect_returns_404_for_negative_remote_id(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/federation/{device_id}/sessions/{session_name} -- remote session
+# details/scrollback proxy (the read-side counterpart to GET /api/sessions/{name})
+# ---------------------------------------------------------------------------
+
+
+def _write_one_remote(monkeypatch, tmp_path):
+    """Shared setup: one remote instance configured, settings redirected to tmp_path."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "remote_instances": [
+                    {
+                        "url": "http://remote-host:8088",
+                        "key": "secret-key-123",
+                        "name": "remote-host",
+                        "device_id": "dev1",
+                    }
+                ],
+            }
+        )
+    )
+
+
+def test_federation_session_details_proxies_to_remote(client, monkeypatch, tmp_path):
+    """GET /api/federation/{device_id}/sessions/{name} proxies to the remote's
+    GET /api/sessions/{name}, with Bearer auth and the `lines` query param,
+    and tags the remote's response with deviceId/deviceName/remoteId."""
+    from unittest.mock import MagicMock
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    get_calls = []
+
+    async def mock_get(url, **kwargs):
+        get_calls.append({"url": url, "kwargs": kwargs})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "name": "setup-llm",
+            "snapshot": "some pane text\n",
+            "lines": 30,
+            "last_activity_at": 123.0,
+            "created_at": 100.0,
+            "cwd": "/home/user/project",
+            "followups": {"pending": 0},
+        }
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/setup-llm")
+    assert response.status_code == 200
+
+    assert len(get_calls) == 1
+    call = get_calls[0]
+    assert call["url"] == "http://remote-host:8088/api/sessions/setup-llm"
+    assert (
+        call["kwargs"].get("headers", {}).get("Authorization")
+        == "Bearer secret-key-123"
+    )
+    assert call["kwargs"].get("params", {}).get("lines") == 30  # DEFAULT_CAPTURE_LINES
+
+    data = response.json()
+    assert data["name"] == "setup-llm"
+    assert data["snapshot"] == "some pane text\n"
+    assert data["cwd"] == "/home/user/project"
+    assert data["deviceId"] == "dev1"
+    assert data["remoteId"] == "dev1"
+    assert data["deviceName"] == "remote-host"
+
+
+def test_federation_session_details_forwards_lines_and_before(
+    client, monkeypatch, tmp_path
+):
+    """`lines` and `before` query params are forwarded to the remote's own
+    GET /api/sessions/{name} call."""
+    from unittest.mock import MagicMock
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    get_calls = []
+
+    async def mock_get(url, **kwargs):
+        get_calls.append({"url": url, "kwargs": kwargs})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"name": "setup-llm", "snapshot": "x"}
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/setup-llm?lines=50&before=200")
+    assert response.status_code == 200
+    params = get_calls[0]["kwargs"].get("params", {})
+    assert params.get("lines") == 50
+    assert params.get("before") == 200
+
+
+def test_federation_session_details_400_for_lines_out_of_range(
+    client, monkeypatch, tmp_path
+):
+    """`lines` out of [1, MAX_CAPTURE_LINES] is a 400 -- validated locally,
+    before any network call is made, exactly like GET /api/sessions/{name}."""
+    from unittest.mock import MagicMock
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    mock_fed_client = MagicMock()
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/setup-llm?lines=5000")
+    assert response.status_code == 400
+    mock_fed_client.get.assert_not_called()
+
+
+def test_federation_session_details_404_for_unknown_device(
+    client, monkeypatch, tmp_path
+):
+    """Unknown device_id returns 404, same message shape as the other
+    routes in the /api/federation/{device_id}/... family."""
+    import json
+
+    import muxplex.settings as settings_mod
+
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_path)
+    settings_path.write_text(json.dumps({"remote_instances": []}))
+
+    response = client.get("/api/federation/no-such-device/sessions/setup-llm")
+    assert response.status_code == 404
+
+
+def test_federation_session_details_404_when_session_missing_on_remote(
+    client, monkeypatch, tmp_path
+):
+    """The remote is reachable but has no such session: an honest 404 (the
+    remote's own not-found), NOT the 'unreachable' status shape."""
+    from unittest.mock import MagicMock
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/no-such-session")
+    assert response.status_code == 404
+    assert "no-such-session" in response.json()["detail"]
+    assert "remote-host" in response.json()["detail"]
+
+
+def test_federation_session_details_auth_failed_status(client, monkeypatch, tmp_path):
+    """A 401/403 from the remote surfaces as a 200 body with
+    status='auth_failed' -- the same status vocabulary
+    GET /api/federation/sessions' fetch_remote() uses, not an exception."""
+    from unittest.mock import MagicMock
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    async def mock_get(url, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/setup-llm")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "auth_failed"
+    assert data["deviceId"] == "dev1"
+    assert data["deviceName"] == "remote-host"
+    assert data["name"] == "setup-llm"
+
+
+def test_federation_session_details_unreachable_on_transport_error(
+    client, monkeypatch, tmp_path
+):
+    """A connection-level failure (refused/timeout) surfaces as a 200 body
+    with status='unreachable', not a 500/503 -- the whole point being that
+    an agent tool (or any caller) never has to treat 'remote is down' as a
+    fault. Also records the failure on the shared _federation_breaker."""
+    from unittest.mock import MagicMock
+
+    import httpx as httpx_mod
+
+    import muxplex.main as main_mod
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    async def mock_get(url, **kwargs):
+        raise httpx_mod.ConnectError("Connection refused")
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/setup-llm")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "unreachable"
+    assert data["deviceId"] == "dev1"
+    assert data["deviceName"] == "remote-host"
+    assert data["name"] == "setup-llm"
+
+    # Same shared breaker federation_sessions()/federation_devices() use --
+    # one failure here counts toward it, keyed by the remote's URL.
+    assert main_mod._federation_breaker.is_open("http://remote-host:8088") is False
+    # (below threshold after a single failure -- see the open-circuit test)
+
+
+def test_federation_session_details_skips_network_call_when_breaker_open(
+    client, monkeypatch, tmp_path
+):
+    """When the shared circuit breaker already has this remote's URL open
+    (e.g. from a prior GET /api/federation/sessions poll), this route must
+    skip the network call entirely and return the unreachable shape --
+    never pay a fresh timeout for a remote already known dead."""
+    from unittest.mock import MagicMock
+
+    import muxplex.main as main_mod
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    # Force the shared breaker open for this remote's URL.
+    for _ in range(main_mod._FEDERATION_GRACE_FAILURES):
+        main_mod._federation_breaker.record_failure("http://remote-host:8088")
+    assert main_mod._federation_breaker.is_open("http://remote-host:8088") is True
+
+    mock_fed_client = MagicMock()
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/setup-llm")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "unreachable"
+    mock_fed_client.get.assert_not_called()
+
+
+def test_federation_session_details_502_on_unexpected_remote_http_error(
+    client, monkeypatch, tmp_path
+):
+    """A remote HTTP error other than 404/401/403 (e.g. 500) is an honest,
+    reachable-but-erroring state -- wrapped as 502, matching the write
+    proxies' (federation_connect etc.) convention for this case, and never
+    counted against the circuit breaker (the remote IS reachable)."""
+    from unittest.mock import MagicMock
+
+    import httpx as httpx_mod
+
+    import muxplex.main as main_mod
+
+    _write_one_remote(monkeypatch, tmp_path)
+
+    async def mock_get(url, **kwargs):
+        mock_response = MagicMock(spec=httpx_mod.Response)
+        mock_response.status_code = 500
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.raise_for_status.side_effect = httpx_mod.HTTPStatusError(
+            "Internal Server Error", request=MagicMock(), response=mock_response
+        )
+        return mock_resp
+
+    mock_fed_client = MagicMock()
+    mock_fed_client.get = mock_get
+    monkeypatch.setattr(client.app.state, "federation_client", mock_fed_client)
+
+    response = client.get("/api/federation/dev1/sessions/setup-llm")
+    assert response.status_code == 502
+    assert main_mod._federation_breaker.is_open("http://remote-host:8088") is False
+
+
+# ---------------------------------------------------------------------------
 # POST /api/federation/generate-key (task-13)
 # ---------------------------------------------------------------------------
 
