@@ -1,3 +1,61 @@
+## v0.55.2 (2026-08-17)
+
+**v0.55.1's provider install worked. Its verification of that install did not, and
+every host was told the opposite.** The first `muxplex ensure-agent` (or fleet
+update) on a device installed the provider modules correctly -- and then reported
+`providers not importable`, burned all 3 retries, and exited `rc=1`. On `tower`
+the supervisor escalated that false failure into a log line warning that **the
+embedded agent panel will be UNAVAILABLE**, which was untrue at the moment it was
+printed. Running `muxplex ensure-agent` a second time passed instantly via the
+fast path, because the providers had been installed correctly all along. If you
+saw this during the v0.55.1 rollout: **your providers were genuinely installed and
+your panel was fine** -- what failed was the check, and the report.
+
+### Fixed
+
+- **The post-install provider check now runs in a fresh subprocess, not in the
+  interpreter that just did the install.** `ensure_agent()` verified the
+  just-installed provider modules by importing them *in its own already-running
+  process* -- an interpreter that started **before** those modules existed in its
+  venv's site-packages. `importlib.invalidate_caches()` does not rescue this: it
+  invalidates path-finder *directory* caches, but never re-runs the interpreter's
+  `site` startup, so an editable install's `.pth`-based import hook written to
+  site-packages after this interpreter already processed every `.pth` file at
+  startup stays invisible no matter how many times caches are invalidated. That
+  made the check a **reproducible false negative** -- it failed on the first
+  `ensure_agent()` invocation on 6 of 6 fleet hosts, while a brand-new interpreter
+  against the identical, already-installed venv imported the exact same modules
+  successfully moments later. `_agent_providers_importable_subprocess()` asks the
+  same question via `sys.executable` in a genuinely fresh subprocess, which
+  reprocesses every `.pth` file in site-packages from scratch and so reliably
+  observes a just-completed install.
+- **The in-process fast path is deliberately unchanged.** The *pre*-install check
+  (`_agent_providers_importable()`) still runs in-process, and correctly so: it
+  runs before any install happens in this call, so nothing under it has changed
+  what it can see, and it stays cheap -- no subprocess, no network -- for the
+  common already-ready case. Only the post-install verification call site inside
+  `ensure_agent()`'s retry loop, the one racing an install that just completed in
+  this same process, switched to the subprocess check.
+- **Fail-loud is preserved.** A genuinely missing or broken provider -- an install
+  that actually failed -- still fails loud with the real detail after exhausting
+  retries. A subprocess that cannot launch, times out, or returns unparseable
+  output is reported as a failure too, never silently treated as success. This
+  release only stops reporting failure when the install actually succeeded.
+
+### Notes
+
+- **This is purely corrective -- there is no functional change to what gets
+  installed.** v0.55.1 installed the providers correctly; upgrading to v0.55.2
+  changes only whether muxplex tells you the truth about it. The v0.55.1 note
+  advising a re-run after an apparent bundle-preparation failure described this
+  false negative: with this release, the first invocation reports accurately and
+  the re-run is no longer needed to get a correct answer.
+- 3 new tests in `muxplex/tests/test_ensure_agent.py`, including a real (unmocked)
+  regression test that reproduces the exact false-negative shape -- a module
+  present on disk but never on the running process's `sys.path` -- and proves the
+  in-process and fresh-subprocess checks give the different answers this fix
+  depends on.
+
 ## v0.55.1 (2026-08-17)
 
 **The embedded agent panel was dead on every device, and the health check said it was fine.**
