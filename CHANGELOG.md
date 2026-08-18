@@ -1,3 +1,33 @@
+## v0.56.1 (2026-08-18)
+
+**Ctrl+A no longer leaves a phantom character in inner-CLI prompts that use a
+wide emoji.** When an app running inside a muxplex pane showed a prompt
+containing a wide emoji -- e.g. Amplifier's pinned-provider badge
+`[📌 provider]>` -- pressing Ctrl+A (move-to-start-of-line) sometimes parked the
+cursor on the second character and left a stale glyph in the first cell. It was
+render-only (the buffer was correct and the phantom character was never
+submitted), but it was confusing. Root cause: xterm.js's built-in UnicodeV6
+width table predates modern emoji and measured the pushpin U+1F4CC as 1 column,
+while the inner app's line editor (prompt_toolkit + wcwidth) measured it as 2 --
+a one-column disagreement that drifted the terminal's cursor behind the app's
+model. muxplex now loads xterm's Unicode 11 width provider, so wide emoji
+measure as 2 cells and the cursor stays in sync.
+
+### Fixed
+
+- **Wide-emoji cursor drift in inner CLIs** -- load `xterm-addon-unicode11` and
+  set `term.unicode.activeVersion = '11'` in `createTerminal()` so wide glyphs
+  (emoji, CJK) are measured at their modern cell width, matching what apps like
+  prompt_toolkit assume. Fixes the Ctrl+A off-by-one / phantom-first-character
+  artifact. Measured app<->terminal width disagreement across the emoji blocks
+  drops from 71% to 9%.
+
+### Notes
+
+- Browsers cache the vendored xterm bundle. The server's `?v=<version>`
+  cache-bust advances on this release, but an already-open dashboard tab should
+  be hard-refreshed once to pick up the new width provider.
+
 ## v0.56.0 (2026-08-17)
 
 **Ask the chat panel about a session on another machine and it just answers.**
