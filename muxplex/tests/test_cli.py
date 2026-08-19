@@ -3208,57 +3208,15 @@ def test_serve_calls_kill_stale_port_holder(tmp_path, monkeypatch):
         "serve() must call _kill_stale_port_holder with the resolved port before uvicorn.run"
     )
 
-
-def test_upgrade_uses_service_module_install(monkeypatch, capsys):
-    """upgrade() must call muxplex.service.service_install."""
-    import subprocess
-
-    import muxplex.cli as cli_mod
-
-    # These tests drive upgrade() with a mocked installer, which by
-    # construction cannot change the installed version. Stub the
-    # version-moved gate so they keep testing what they are about --
-    # which install command gets dispatched -- not whether it landed.
-    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
-
-    calls = []
-
-    def mock_run(cmd, **kwargs):
-        calls.append(cmd)
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
-    # This test is about the service_install() call, not install source -- pin
-    # a pypi source explicitly rather than depending on whatever
-    # _get_install_info() happens to report on the test machine.
-    monkeypatch.setattr(
-        cli_mod,
-        "_get_install_info",
-        lambda dist_name="muxplex": {
-            "source": "pypi",
-            "version": "0.1.0",
-            "commit": None,
-            "url": None,
-            "ref": None,
-        },
-    )
-    monkeypatch.setattr(
-        cli_mod,
-        "_check_for_update",
-        lambda info: (True, "update available (abc12345 \u2192 def67890)"),
-    )
-
-    service_install_calls = []
-    with patch(
-        "muxplex.service.service_install", lambda: service_install_calls.append(True)
-    ):
-        cli_mod.upgrade()
-
-    assert len(service_install_calls) > 0, (
-        "upgrade() must call muxplex.service.service_install() to regenerate the service file"
-    )
+    # NOTE: `test_upgrade_uses_service_module_install` used to live here,
+    # asserting that upgrade() itself calls muxplex.service.service_install().
+    # muxplex-lf6 moved that call into the CHILD process (_finish_upgrade(),
+    # invoked via the `_finish-upgrade` handoff) -- it is now covered by
+    # test_finish_upgrade_runs_ensure_agent_then_regen_then_restart (asserts
+    # service_install() runs inside _finish_upgrade()) together with
+    # test_upgrade_does_not_run_post_install_in_process (asserts upgrade()
+    # itself never calls it directly). Removed as a pure duplicate rather
+    # than re-pointed. See tests/test_finish_upgrade.py.
 
 
 # ---------------------------------------------------------------------------
@@ -4422,58 +4380,17 @@ def test_upgrade_no_systemctl_prints_skip_note(monkeypatch, capsys):
         or "not detected" in out_lower
     ), f"upgrade() must indicate the step was skipped; got: {out!r}"
 
-
-def test_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
-    """upgrade() must tell the user to restart muxplex manually when systemd is absent."""
-    import subprocess
-
-    import muxplex.cli as cli_mod
-
-    # These tests drive upgrade() with a mocked installer, which by
-    # construction cannot change the installed version. Stub the
-    # version-moved gate so they keep testing what they are about --
-    # which install command gets dispatched -- not whether it landed.
-    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
-
-    def mock_run(cmd, **kwargs):
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-
-    def fake_which_no_systemctl(name):
-        if name == "systemctl":
-            return None
-        return f"/usr/bin/{name}"
-
-    monkeypatch.setattr(shutil, "which", fake_which_no_systemctl)
-    monkeypatch.setattr(subprocess, "run", mock_run)
-    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
-    # This test is about the manual-restart advisory, not install source -- pin
-    # a pypi source explicitly rather than depending on whatever
-    # _get_install_info() happens to report on the test machine.
-    monkeypatch.setattr(
-        cli_mod,
-        "_get_install_info",
-        lambda dist_name="muxplex": {
-            "source": "pypi",
-            "version": "0.1.0",
-            "commit": None,
-            "url": None,
-            "ref": None,
-        },
-    )
-    monkeypatch.setattr(
-        cli_mod,
-        "_check_for_update",
-        lambda info: (True, "update available (v0.6.0 → v0.6.1)"),
-    )
-    monkeypatch.setattr("sys.platform", "linux")
-
-    cli_mod.upgrade()
-
-    out = capsys.readouterr().out
-    out_lower = out.lower()
-    assert "restart" in out_lower or "manually" in out_lower, (
-        f"upgrade() must advise manual restart when systemd is absent; got: {out!r}"
-    )
+    # NOTE: `test_upgrade_no_systemctl_prints_manual_restart_note` used to
+    # live here, asserting that upgrade() itself prints a manual-restart
+    # advisory when no service manager is present. muxplex-lf6 moved that
+    # advisory into the CHILD process (_finish_upgrade()) -- when the
+    # fresh-interpreter handoff succeeds, upgrade()'s OWN restart/advisory
+    # logic in its `finally` block is skipped entirely (see
+    # `_finish_handed_off`), so the message can no longer be observed from
+    # upgrade() in this scenario. Relocated to
+    # test_finish_upgrade_no_systemctl_prints_manual_restart_note in
+    # tests/test_finish_upgrade.py, which now targets `_finish_upgrade()`
+    # directly.
 
 
 def test_upgrade_with_systemctl_runs_systemd_commands(monkeypatch, capsys):
@@ -5409,134 +5326,34 @@ def test_verify_service_started_returns_false_when_inactive(monkeypatch):
     assert cli_mod._verify_service_started() is False
 
 
-def test_upgrade_exits_1_if_service_fails_to_restart(monkeypatch, capsys):
-    """upgrade() exits 1 when install succeeds but the service never becomes active."""
-    import subprocess
+# NOTE: `test_upgrade_exits_1_if_service_fails_to_restart` used to live
+# here, driving upgrade() end-to-end (systemctl is-enabled True,
+# _verify_service_started stubbed False) and asserting SystemExit(1) plus
+# an "error"/"not running" message. muxplex-lf6 moved the restart-and-
+# verify logic into the CHILD process (_finish_upgrade()) -- with the
+# fresh-interpreter handoff mocked to "succeed" (a mocked subprocess.run
+# always returns 0), upgrade() itself never re-observes
+# _verify_service_started's stub at all, so the scenario can no longer be
+# exercised through upgrade(). The parent-level contract ("child exit !=
+# 0 -> upgrade() exits 1, no double restart") is already covered by
+# test_upgrade_exits_1_when_finish_upgrade_child_fails in
+# tests/test_finish_upgrade.py. The child-level scenario itself (and now
+# its message-text assertion too) is covered by
+# test_finish_upgrade_returns_1_when_service_not_confirmed in the same
+# file, extended with a capsys check for the "error"/"not running" text.
 
-    import muxplex.cli as cli_mod
-
-    # This asserts the LINUX/systemd dispatch (the spark-1 dead-service
-    # scenario): _have_systemctl=True / _have_launchctl=False below is only
-    # sufficient to route into that branch when sys.platform is also not
-    # "darwin". Left to the ambient platform, this passes on the Linux
-    # matrix and silently no-ops on macOS -- there upgrade() takes the
-    # darwin branch, sees _have_launchctl() False, prints "skipping service
-    # management step", and never reaches (or fails) the restart-verification
-    # that raises SystemExit(1), so the test's own intended scenario never
-    # runs. Same shape as the nine tests fixed by e6133c5 -- pin the
-    # platform this test is actually about.
-    monkeypatch.setattr("sys.platform", "linux")
-
-    calls = []
-
-    def mock_run(cmd, **kwargs):
-        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
-        return type("R", (), {"returncode": 0, "stdout": "enabled\n", "stderr": ""})()
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # This test is about the service-never-becomes-active failure, not
-    # install source -- pin a pypi source explicitly rather than depending
-    # on whatever _get_install_info() happens to report on the test machine.
-    monkeypatch.setattr(
-        cli_mod,
-        "_get_install_info",
-        lambda dist_name="muxplex": {
-            "source": "pypi",
-            "version": "0.1.0",
-            "commit": None,
-            "url": None,
-            "ref": None,
-        },
-    )
-    monkeypatch.setattr(
-        cli_mod, "_check_for_update", lambda info: (True, "update available")
-    )
-    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
-    monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
-    # Service never becomes active (simulates the spark-1 dead-service scenario)
-    monkeypatch.setattr(cli_mod, "_verify_service_started", lambda timeout_s=10: False)
-
-    with patch("muxplex.service.service_install", lambda: None):
-        with pytest.raises(SystemExit) as exc_info:
-            cli_mod.upgrade()
-
-    assert exc_info.value.code == 1, (
-        f"upgrade() must exit 1 when service fails to restart; got {exc_info.value.code}"
-    )
-    out = capsys.readouterr().out
-    assert "error" in out.lower() or "not running" in out.lower(), (
-        f"upgrade() must print an error about the failed restart; got: {out!r}"
-    )
-
-
-def test_upgrade_calls_daemon_reload_before_start(monkeypatch, capsys):
-    """upgrade() calls systemctl daemon-reload before start (stale unit-file fix)."""
-    # systemctl is Linux-only; on macOS upgrade drives launchctl and no
-    # daemon-reload is ever issued. Pin the platform this test is about.
-    monkeypatch.setattr("sys.platform", "linux")
-
-    import subprocess
-
-    import muxplex.cli as cli_mod
-
-    # These tests drive upgrade() with a mocked installer, which by
-    # construction cannot change the installed version. Stub the
-    # version-moved gate so they keep testing what they are about --
-    # which install command gets dispatched -- not whether it landed.
-    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
-
-    calls: list = []
-
-    def mock_run(cmd, **kwargs):
-        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
-        return type("R", (), {"returncode": 0, "stdout": "enabled\n", "stderr": ""})()
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # This test is about daemon-reload ordering, not install source -- pin a
-    # pypi source explicitly rather than depending on whatever
-    # _get_install_info() happens to report on the test machine.
-    monkeypatch.setattr(
-        cli_mod,
-        "_get_install_info",
-        lambda dist_name="muxplex": {
-            "source": "pypi",
-            "version": "0.1.0",
-            "commit": None,
-            "url": None,
-            "ref": None,
-        },
-    )
-    monkeypatch.setattr(
-        cli_mod, "_check_for_update", lambda info: (True, "update available")
-    )
-    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
-    monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
-    monkeypatch.setattr(cli_mod, "_verify_service_started", lambda timeout_s=10: True)
-    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
-
-    with patch("muxplex.service.service_install", lambda: None):
-        cli_mod.upgrade()
-
-    systemctl_calls = [c for c in calls if isinstance(c, list) and "systemctl" in c]
-    reload_idx = next(
-        (i for i, c in enumerate(systemctl_calls) if "daemon-reload" in c), None
-    )
-    start_idx = next(
-        (i for i, c in enumerate(systemctl_calls) if "start" in c and "muxplex" in c),
-        None,
-    )
-
-    assert reload_idx is not None, (
-        "systemctl daemon-reload must be called during upgrade"
-    )
-    assert start_idx is not None, (
-        "systemctl start muxplex must be called during upgrade"
-    )
-    assert reload_idx < start_idx, (
-        "daemon-reload must be called BEFORE start to pick up the regenerated unit file"
-    )
+# NOTE: `test_upgrade_calls_daemon_reload_before_start` used to live here
+# too, driving upgrade() end-to-end and asserting that
+# "systemctl --user daemon-reload" runs before "systemctl --user start
+# muxplex". muxplex-lf6 moved that ordering into the CHILD process
+# (_finish_upgrade()) -- with the handoff mocked to succeed, upgrade()
+# itself never issues either systemctl call anymore (see
+# test_upgrade_no_double_restart_when_handoff_succeeds in
+# tests/test_finish_upgrade.py, which already asserts upgrade() issues NO
+# is-enabled/daemon-reload/start/reset-failed calls once the handoff
+# succeeds). The ordering assertion itself was relocated to
+# test_finish_upgrade_calls_daemon_reload_before_start in the same file,
+# targeting `_finish_upgrade()` directly.
 
 
 # ---------------------------------------------------------------------------
@@ -5644,161 +5461,21 @@ def test_wait_for_service_ready_times_out_when_never_ready(monkeypatch):
     assert cli_mod._wait_for_service_ready(8088, timeout_s=0.2) is False
 
 
-@pytest.mark.allow_real_service_ready_wait
-def test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
-    monkeypatch, tmp_path, capsys
-):
-    """Reproduces the real bug: `muxplex update` restarts a systemd service,
-    then immediately verifies -- if the just-restarted server hasn't
-    finished binding its port yet, doctor()'s "Running:" check races it and
-    reports a false "not serving" warning for a server that is actually
-    healthy moments later. With the service becoming ready after a short
-    delay, the real doctor() must show clean, not the false warning.
-    """
-    import subprocess
-    from importlib.metadata import version as pkg_version
-
-    import muxplex.cli as cli_mod
-
-    # These tests drive upgrade() with a mocked installer, which by
-    # construction cannot change the installed version. Stub the
-    # version-moved gate so they keep testing what they are about --
-    # which install command gets dispatched -- not whether it landed.
-    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
-    import muxplex.settings as settings_mod
-
-    settings_file = tmp_path / "settings.json"
-    settings_file.write_text("{}")
-    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
-
-    def mock_run(cmd, **kwargs):
-        return type("R", (), {"returncode": 0, "stdout": "active\n", "stderr": ""})()
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # This test is about the readiness-wait race, not install source -- pin a
-    # pypi source explicitly rather than depending on whatever
-    # _get_install_info() happens to report on the test machine.
-    monkeypatch.setattr(
-        cli_mod,
-        "_get_install_info",
-        lambda dist_name="muxplex": {
-            "source": "pypi",
-            "version": "0.1.0",
-            "commit": None,
-            "url": None,
-            "ref": None,
-        },
-    )
-    monkeypatch.setattr(
-        cli_mod, "_check_for_update", lambda info: (True, "update available")
-    )
-    monkeypatch.setattr("sys.platform", "linux")
-    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
-    monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
-
-    installed_version = pkg_version("muxplex")
-    calls = {"n": 0}
-
-    def fake_fetch(port, timeout=2.0):
-        calls["n"] += 1
-        # Service is not yet accepting connections for the first couple of
-        # polls after restart -- the exact race from the bug report.
-        if calls["n"] < 3:
-            return None
-        return {"device_id": "abc", "version": installed_version}
-
-    monkeypatch.setattr(cli_mod, "_fetch_local_instance_info", fake_fetch)
-    # The device_id is no longer arbitrary filler: doctor's "Running:" check
-    # (c8ae4e1) now verifies the answering server is OURS before trusting its
-    # version, because a port-forward can make another machine's muxplex
-    # answer here. A local server reports our own device_id, so the stub
-    # must too -- same pattern as test_doctor_shows_running_version_match.
-    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
-
-    with patch("muxplex.service.service_install", lambda: None):
-        cli_mod.upgrade()
-
-    out = capsys.readouterr().out
-    # 3 polls from the readiness wait + 1 from doctor()'s own "Running:" check.
-    assert calls["n"] == 4, (
-        f"expected the verify step to poll for readiness before calling doctor(); "
-        f"got {calls['n']} probe(s)"
-    )
-    assert "not serving" not in out.lower(), (
-        f"doctor() must not report the false 'not serving' warning once the "
-        f"service becomes ready before the ceiling; got: {out!r}"
-    )
-    assert "matches installed" in out
-
-
-def test_upgrade_reports_honest_timeout_and_still_runs_doctor(
-    monkeypatch, tmp_path, capsys
-):
-    """If the service genuinely never becomes ready within the ceiling,
-    upgrade() must say so plainly AND still run doctor() -- never suppress
-    or downgrade the real warning, never skip verification, never assume
-    success."""
-    import subprocess
-
-    import muxplex.cli as cli_mod
-
-    # These tests drive upgrade() with a mocked installer, which by
-    # construction cannot change the installed version. Stub the
-    # version-moved gate so they keep testing what they are about --
-    # which install command gets dispatched -- not whether it landed.
-    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "99.9.9")
-    import muxplex.settings as settings_mod
-
-    settings_file = tmp_path / "settings.json"
-    settings_file.write_text("{}")
-    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
-
-    def mock_run(cmd, **kwargs):
-        return type("R", (), {"returncode": 0, "stdout": "active\n", "stderr": ""})()
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # This test is about the genuine-timeout path, not install source -- pin
-    # a pypi source explicitly rather than depending on whatever
-    # _get_install_info() happens to report on the test machine.
-    monkeypatch.setattr(
-        cli_mod,
-        "_get_install_info",
-        lambda dist_name="muxplex": {
-            "source": "pypi",
-            "version": "0.1.0",
-            "commit": None,
-            "url": None,
-            "ref": None,
-        },
-    )
-    monkeypatch.setattr(
-        cli_mod, "_check_for_update", lambda info: (True, "update available")
-    )
-    monkeypatch.setattr("sys.platform", "linux")
-    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
-    monkeypatch.setattr(cli_mod, "_have_launchctl", lambda: False)
-
-    doctor_calls = []
-    monkeypatch.setattr(cli_mod, "doctor", lambda: doctor_calls.append(True))
-    # The service never becomes ready -- the genuine-failure path. Overrides
-    # the autouse default (which stubs this to always-True) with an explicit
-    # False, so we don't need the real poll loop's timing for this test.
-    monkeypatch.setattr(
-        cli_mod, "_wait_for_service_ready", lambda port, timeout_s=10.0: False
-    )
-
-    with patch("muxplex.service.service_install", lambda: None):
-        cli_mod.upgrade()
-
-    out = capsys.readouterr().out
-    assert len(doctor_calls) == 1, (
-        "doctor() must still run even when the readiness wait times out"
-    )
-    assert "timeout" in out.lower() or "did not respond" in out.lower(), (
-        f"upgrade() must plainly report that the service never became ready; got: {out!r}"
-    )
+# NOTE: `test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning`
+# and `test_upgrade_reports_honest_timeout_and_still_runs_doctor` used to
+# live here, driving upgrade() end-to-end with the REAL
+# `_wait_for_service_ready`/`doctor()` to prove (a) the readiness poll runs
+# before doctor() so a slow-starting service doesn't get a false "not
+# serving" warning, and (b) doctor() still runs even when the readiness
+# wait genuinely times out. muxplex-lf6 moved this whole step -- "wait for
+# readiness, then run doctor()" -- into the CHILD process
+# (_finish_upgrade(), step 4 of its own docstring); upgrade() itself no
+# longer calls `_wait_for_service_ready` or `doctor()` at all once the
+# handoff succeeds (see the "Nothing left to do" comment at the end of
+# `upgrade()` in cli.py). Both scenarios were relocated, unchanged in
+# substance, to test_finish_upgrade_waits_for_readiness_before_doctor_avoids_false_warning
+# and test_finish_upgrade_reports_honest_timeout_and_still_runs_doctor in
+# tests/test_finish_upgrade.py, now targeting `_finish_upgrade()` directly.
 
 
 # ---------------------------------------------------------------------------

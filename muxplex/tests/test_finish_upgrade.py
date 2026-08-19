@@ -251,7 +251,11 @@ def test_service_import_chain_resolves_ensure_agent_on_a_fresh_module_load(
 # ---------------------------------------------------------------------------
 
 
-def test_finish_upgrade_returns_1_when_service_not_confirmed(monkeypatch):
+def test_finish_upgrade_returns_1_when_service_not_confirmed(monkeypatch, capsys):
+    """Also guards the message text that test_cli.py's
+    `test_upgrade_exits_1_if_service_fails_to_restart` used to assert
+    against `upgrade()` itself, before the restart-verification logic (and
+    its error print) moved into this function (muxplex-lf6)."""
     import muxplex.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "ensure_agent", lambda: True)
@@ -266,6 +270,11 @@ def test_finish_upgrade_returns_1_when_service_not_confirmed(monkeypatch):
     monkeypatch.setattr(cli_mod, "_verify_service_started", lambda: False)
 
     assert cli_mod._finish_upgrade() == 1
+
+    out = capsys.readouterr().out
+    assert "error" in out.lower() or "not running" in out.lower(), (
+        f"_finish_upgrade() must print an error about the failed restart; got: {out!r}"
+    )
 
 
 def test_finish_upgrade_restarts_even_if_service_install_raises(monkeypatch):
@@ -318,6 +327,206 @@ def test_finish_upgrade_never_calls_upgrade_itself():
     # references while still catching a genuine `upgrade()` call added to
     # the function body (which would never be backtick-quoted).
     assert re.search(r"(?<!`)\bupgrade\(", source) is None
+
+
+# ---------------------------------------------------------------------------
+# D2. Scenarios relocated from test_cli.py -- these used to drive
+# `upgrade()` end-to-end to exercise post-install behavior (no-systemctl
+# advisory, daemon-reload/start ordering, the readiness-before-doctor
+# race, and the honest-timeout path). muxplex-lf6 moved all of that
+# behavior into `_finish_upgrade()`, and once the fresh-interpreter
+# handoff succeeds, `upgrade()` itself no longer performs any of these
+# steps (or observes their mocks) at all -- see `_finish_handed_off` and
+# the "Nothing left to do" comment at the end of `upgrade()` in cli.py.
+# So each scenario now targets `_finish_upgrade()` directly.
+# ---------------------------------------------------------------------------
+
+
+def test_finish_upgrade_no_systemctl_prints_manual_restart_note(monkeypatch, capsys):
+    """Relocated from test_cli.py's
+    `test_upgrade_no_systemctl_prints_manual_restart_note`. When no service
+    manager (systemd/launchd) is detected, `_finish_upgrade()` must tell
+    the user to restart muxplex manually to pick up the new version."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "ensure_agent", lambda: True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: False)
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_mod, "_wait_for_service_ready", lambda port: True)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("muxplex.settings.load_settings", lambda: {"port": 8088})
+
+    assert cli_mod._finish_upgrade() == 0
+
+    out = capsys.readouterr().out
+    out_lower = out.lower()
+    assert "restart" in out_lower or "manually" in out_lower, (
+        f"_finish_upgrade() must advise manual restart when no service manager"
+        f" is detected; got: {out!r}"
+    )
+
+
+def test_finish_upgrade_calls_daemon_reload_before_start(monkeypatch):
+    """Relocated from test_cli.py's
+    `test_upgrade_calls_daemon_reload_before_start`. `systemctl
+    daemon-reload` must run before `systemctl start` so the regenerated
+    unit file is picked up (stale unit-file fix)."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "ensure_agent", lambda: True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
+    monkeypatch.setattr("muxplex.service.service_install", lambda: None)
+
+    calls: list = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="enabled\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_mod, "_verify_service_started", lambda: True)
+    monkeypatch.setattr(cli_mod, "_wait_for_service_ready", lambda port: True)
+    monkeypatch.setattr(cli_mod, "doctor", lambda: None)
+    monkeypatch.setattr("muxplex.settings.load_settings", lambda: {"port": 8088})
+
+    assert cli_mod._finish_upgrade() == 0
+
+    systemctl_calls = [c for c in calls if isinstance(c, list) and "systemctl" in c]
+    reload_idx = next(
+        (i for i, c in enumerate(systemctl_calls) if "daemon-reload" in c), None
+    )
+    start_idx = next(
+        (i for i, c in enumerate(systemctl_calls) if "start" in c and "muxplex" in c),
+        None,
+    )
+
+    assert reload_idx is not None, (
+        "systemctl daemon-reload must be called during _finish_upgrade"
+    )
+    assert start_idx is not None, (
+        "systemctl start muxplex must be called during _finish_upgrade"
+    )
+    assert reload_idx < start_idx, (
+        "daemon-reload must be called BEFORE start to pick up the regenerated unit file"
+    )
+
+
+@pytest.mark.allow_real_service_ready_wait
+def test_finish_upgrade_waits_for_readiness_before_doctor_avoids_false_warning(
+    monkeypatch, tmp_path, capsys
+):
+    """Relocated from test_cli.py's
+    `test_upgrade_waits_for_readiness_before_doctor_avoids_false_warning`.
+    Reproduces the real bug: a restart of a systemd service immediately
+    followed by verification -- if the just-restarted server hasn't
+    finished binding its port yet, doctor()'s "Running:" check races it and
+    reports a false "not serving" warning for a server that is actually
+    healthy moments later. With the service becoming ready after a short
+    delay, the real doctor() must show clean, not the false warning."""
+    import subprocess
+    from importlib.metadata import version as pkg_version
+
+    import muxplex.cli as cli_mod
+    import muxplex.settings as settings_mod
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text("{}")
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", settings_file)
+
+    monkeypatch.setattr(cli_mod, "ensure_agent", lambda: True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
+    monkeypatch.setattr("muxplex.service.service_install", lambda: None)
+
+    def mock_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "_verify_service_started", lambda: True)
+
+    installed_version = pkg_version("muxplex")
+    calls = {"n": 0}
+
+    def fake_fetch(port, timeout=2.0):
+        calls["n"] += 1
+        # Service is not yet accepting connections for the first couple of
+        # polls after restart -- the exact race from the bug report.
+        if calls["n"] < 3:
+            return None
+        return {"device_id": "abc", "version": installed_version}
+
+    monkeypatch.setattr(cli_mod, "_fetch_local_instance_info", fake_fetch)
+    # The device_id is no longer arbitrary filler: doctor's "Running:" check
+    # verifies the answering server is OURS before trusting its version,
+    # because a port-forward can make another machine's muxplex answer
+    # here. A local server reports our own device_id, so the stub must too.
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "abc")
+
+    assert cli_mod._finish_upgrade() == 0
+
+    out = capsys.readouterr().out
+    # 3 polls from the readiness wait + 1 from doctor()'s own "Running:" check.
+    assert calls["n"] == 4, (
+        f"expected the verify step to poll for readiness before calling doctor(); "
+        f"got {calls['n']} probe(s)"
+    )
+    assert "not serving" not in out.lower(), (
+        f"doctor() must not report the false 'not serving' warning once the "
+        f"service becomes ready before the ceiling; got: {out!r}"
+    )
+    assert "matches installed" in out
+
+
+def test_finish_upgrade_reports_honest_timeout_and_still_runs_doctor(
+    monkeypatch, capsys
+):
+    """Relocated from test_cli.py's
+    `test_upgrade_reports_honest_timeout_and_still_runs_doctor`. If the
+    service genuinely never becomes ready within the ceiling,
+    `_finish_upgrade()` must say so plainly AND still run doctor() -- never
+    suppress or downgrade the real warning, never skip verification, never
+    assume success."""
+    import subprocess
+
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "ensure_agent", lambda: True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
+    monkeypatch.setattr("muxplex.service.service_install", lambda: None)
+
+    def mock_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    monkeypatch.setattr(cli_mod, "_verify_service_started", lambda: True)
+
+    doctor_calls = []
+    monkeypatch.setattr(cli_mod, "doctor", lambda: doctor_calls.append(True))
+    # The service never becomes ready -- the genuine-failure path.
+    monkeypatch.setattr(cli_mod, "_wait_for_service_ready", lambda port: False)
+    monkeypatch.setattr("muxplex.settings.load_settings", lambda: {"port": 8088})
+
+    assert cli_mod._finish_upgrade() == 0
+
+    out = capsys.readouterr().out
+    assert len(doctor_calls) == 1, (
+        "doctor() must still run even when the readiness wait times out"
+    )
+    assert "timeout" in out.lower() or "did not respond" in out.lower(), (
+        f"_finish_upgrade() must plainly report that the service never became"
+        f" ready; got: {out!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
