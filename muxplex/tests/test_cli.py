@@ -969,8 +969,13 @@ def test_upgrade_calls_uv_tool_install(monkeypatch, capsys):
         lambda info: (True, "update available (abc12345 → def67890)"),
     )
 
-    with patch("muxplex.service.service_install", lambda: None):
-        cli_mod.upgrade()
+    # muxplex-lf6: post-install steps (which used to include a direct call
+    # to `muxplex.service.service_install`) now run in a fresh subprocess
+    # handed off via `_installed_muxplex_entrypoint()` -- that handoff is
+    # itself just another `subprocess.run` call, already captured by
+    # `mock_run` above, so the old `service_install` patch is dead and no
+    # longer needed here.
+    cli_mod.upgrade()
 
     # Should have called uv tool install
     uv_calls = [c for c in calls if isinstance(c, list) and "uv" in str(c)]

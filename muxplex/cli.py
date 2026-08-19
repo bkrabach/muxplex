@@ -783,6 +783,29 @@ _AGENT_REPO_URL = "https://github.com/microsoft/amplifier-agent"
 _AGENT_FALLBACK_PIN = "0.12.0"
 
 
+def _agent_python_supported() -> bool:
+    """Return True if THIS interpreter meets amplifier-agent's Python floor.
+
+    amplifier-agent requires Python >=3.12 at every released version
+    (v0.9.0 through v0.13.0) -- muxplex's own floor is only >=3.11
+    (`pyproject.toml`'s `requires-python`). The `agent` extra already
+    encodes this with a `python_version>='3.12'` marker
+    (`pyproject.toml`'s `agent` extra); this function must encode the
+    SAME constraint, not a second hand-maintained copy of it --
+    `test_amplifier_agent_pin_source_agreement.py` asserts the two never
+    drift apart, the same discipline as the existing pin-agreement check.
+
+    Every entry point that might invoke amplifier-agent tooling on an
+    unsupported interpreter -- `ensure_agent()` and `doctor()`'s agent
+    block -- consults this FIRST, so the uv resolver is never handed a
+    requirement (`amplifier-agent==X; python_version>='3.12'`) it cannot
+    possibly satisfy on Python 3.11. See `ensure_agent()`'s docstring for
+    why that matters: on 3.11 the resolver would otherwise dump a raw
+    "unsatisfiable" traceback instead of a clear explanation.
+    """
+    return sys.version_info >= (3, 12)
+
+
 def _agent_target_pin() -> str:
     """Return the amplifier-agent version THIS install of muxplex declares
     (via its own `agent` extra's `==` pin), falling back to
@@ -1217,6 +1240,29 @@ def ensure_agent(*, force: bool = False) -> bool:
             " Install it yourself: uv sync --extra agent"
         )
         return False
+
+    # Python floor guard (muxplex-x60 Phase 1): amplifier-agent requires
+    # Python >=3.12 at every released version, but muxplex itself only
+    # requires >=3.11 -- so on 3.11 the uv resolver would be handed a
+    # requirement it can NEVER satisfy, producing a raw "unsatisfiable"
+    # traceback instead of an explanation. Check this BEFORE `_find_uv()`
+    # and never construct/run the install command at all below the floor
+    # -- there is nothing for uv to attempt. This is a correctly-reported
+    # unsupported configuration, not a failure: return True (non-fatal)
+    # so `ensure_agent()`'s automatic call sites (`upgrade()`,
+    # `service_install()`) and a manual `muxplex ensure-agent` all treat
+    # it as a clean no-op rather than a scary-looking error the user can't
+    # do anything about.
+    if not _agent_python_supported():
+        print(
+            "  amplifier-agent (embedded agent panel) requires Python"
+            f" >=3.12; you are on {sys.version_info[0]}.{sys.version_info[1]}."
+            " muxplex itself is unaffected -- everything except the agent"
+            " panel works. To enable the panel, reinstall muxplex under a"
+            " 3.12+ interpreter, e.g.: uv tool install --python 3.12 --force"
+            " muxplex. Skipping."
+        )
+        return True
 
     uv_path = _find_uv()
     if not uv_path:
@@ -1844,11 +1890,25 @@ def doctor() -> None:
     # `muxplex ensure-agent` are the commands that do.
     agent_info = _get_install_info(_AGENT_DIST_NAME)
     if agent_info["source"] == "not-installed":
-        print(
-            f"  {warn_mark} amplifier-agent -- not installed (embedded agent"
-            " panel unavailable until installed)"
-        )
-        print("    Run: muxplex ensure-agent")
+        if _agent_python_supported():
+            print(
+                f"  {warn_mark} amplifier-agent -- not installed (embedded agent"
+                " panel unavailable until installed)"
+            )
+            print("    Run: muxplex ensure-agent")
+        else:
+            # Below the Python floor, recommending `muxplex ensure-agent`
+            # is the specific friction muxplex-x60 Phase 1 removes: that
+            # command cannot possibly succeed on this interpreter (see
+            # `_agent_python_supported`'s docstring), so `doctor` explains
+            # why instead of nagging a command that will only dump a
+            # resolver traceback.
+            print(
+                f"  {warn_mark} amplifier-agent -- not installed; requires"
+                f" Python >=3.12 (you are on {sys.version_info[0]}."
+                f"{sys.version_info[1]}). The embedded agent panel is"
+                " unavailable on this Python."
+            )
     else:
         print(f"  {ok_mark} amplifier-agent {agent_info['version']}")
         print(f"    \u21b3 from {_provenance_label(agent_info)}")
@@ -2408,6 +2468,232 @@ def _verify_install_shape_preserved(
     return True, ""
 
 
+# ---------------------------------------------------------------------------
+# muxplex-lf6: post-install steps run in a FRESH interpreter, never in-process
+# ---------------------------------------------------------------------------
+#
+# `upgrade()` overwrites muxplex's on-disk package files, then used to keep
+# executing its post-install steps (ensure_agent, service-file regeneration,
+# restart, verification) in the SAME process. That process already has the
+# OLD `muxplex.cli` / `muxplex.service` modules cached in `sys.modules`, so a
+# lazy cross-module import of a symbol that only exists in the NEW code (e.g.
+# `service.py`'s own `from muxplex.cli import ensure_agent`) can resolve
+# against the stale cached module instead of what was just written to disk --
+# this is the real incident: `ImportError: cannot import name 'ensure_agent'
+# from 'muxplex.cli'`, hit via `service_install()`.
+#
+# The fix: after a successful install, `upgrade()` hands off the post-install
+# steps to `_finish_upgrade()` -- but NOT by calling it directly. It launches
+# a genuinely NEW OS process (`subprocess.run([*entrypoint, "_finish-upgrade"])`)
+# via the just-installed muxplex's own entrypoint, so every import inside
+# `_finish_upgrade()` resolves against a fresh interpreter that has never
+# imported anything -- there is no stale cache to fall into.
+
+
+def _installed_muxplex_entrypoint() -> list[str] | None:
+    """Resolve the argv token list for launching a FRESH `muxplex` process.
+
+    Deliberately duplicates `service.py`'s own entrypoint-resolution
+    precedence (`_resolve_muxplex_bin_for_launchd`'s ordering) rather than
+    importing anything from `muxplex.service` -- this helper is used by
+    `upgrade()` specifically to launch a subprocess of the
+    freshly-installed muxplex; importing this process's own (about to be
+    stale) `muxplex.*` modules here would risk exactly the cached-module
+    problem this whole mechanism exists to avoid. Stdlib-only by design.
+
+    Precedence:
+      1. ``shutil.which("muxplex")`` -- PATH lookup; picks up whatever the
+         installer just wrote (uv tool install symlinks it into
+         ``~/.local/bin``, which is typically already on PATH).
+      2. ``~/.local/bin/muxplex`` if it exists and is executable -- the
+         stable uv-tool console-script symlink, checked directly in case
+         PATH doesn't include it in this process's own environment.
+      3. ``[sys.executable, "-m", "muxplex"]`` -- last resort; always
+         resolvable since `sys.executable` is this process's own
+         interpreter and `muxplex` is what is currently running.
+
+    Returns ``None`` only if no launchable entrypoint could be determined
+    at all (in practice unreachable, since step 3 always succeeds if
+    `sys.executable` is set) -- callers must not assume a non-``None``
+    result without checking; `upgrade()` treats ``None`` as F1 (entrypoint
+    missing/unlaunchable).
+    """
+    which = shutil.which("muxplex")
+    if which:
+        return [which]
+
+    local_bin = Path.home() / ".local" / "bin" / "muxplex"
+    if local_bin.exists() and os.access(str(local_bin), os.X_OK):
+        return [str(local_bin)]
+
+    if sys.executable:
+        return [sys.executable, "-m", "muxplex"]
+
+    return None
+
+
+def _finish_upgrade() -> int:
+    """Run `upgrade()`'s post-install steps -- called ONLY as a fresh
+    subprocess launched by `upgrade()` itself, via the hidden
+    ``muxplex _finish-upgrade`` subcommand. Never call this directly from
+    within an already-running muxplex process -- see the module-level
+    comment above `_installed_muxplex_entrypoint` for why: every import in
+    this function must resolve against a genuinely fresh interpreter that
+    has never cached an older `muxplex.cli` / `muxplex.service`.
+
+    Order (matches the sequence this replaces, previously run in-process
+    inside `upgrade()`):
+      1. `ensure_agent()` -- keep amplifier-agent current too. Best-effort:
+         a failure here is printed loudly by `ensure_agent()` itself but
+         must not skip the (mandatory) service restart below --
+         amplifier-agent is an optional capability.
+      2. Regenerate the service file (`service.service_install()`, only if
+         a service manager is present) -- picks up any changed
+         plist/unit-file content.
+      3. Restart the service -- ALWAYS attempted, in a `finally`, even if
+         step 1 or 2 raised or failed. This mirrors `upgrade()`'s own
+         original try/finally shape: a best-effort restart must run
+         whether or not everything before it succeeded.
+      4. Wait for the service to actually answer
+         (`_wait_for_service_ready`) and run `doctor()` -- this process's
+         stdio is inherited directly from `upgrade()` (no capture), so
+         this output appears to the user exactly as it did when it ran
+         in-process.
+
+    Returns 0 if the service was confirmed running afterward (or there is
+    no service manager to confirm against), 1 if a service manager IS
+    present but the service could not be confirmed running. `upgrade()`
+    treats a non-zero exit here as F2 (the handoff ran but failed) --
+    it does NOT re-run its own restart logic, since this function's own
+    `finally` block already attempted it.
+    """
+    try:
+        print("  Ensuring amplifier-agent is current...")
+        ensure_agent()
+
+        if sys.platform == "darwin" or _have_systemctl():
+            print("  Regenerating service file...")
+            from muxplex.service import service_install
+
+            service_install()
+        else:
+            print("  ! systemctl not found -- skipping service file regeneration")
+    finally:
+        # Restart ALWAYS runs, best-effort -- see this function's own
+        # docstring point 3.
+        label = "com.muxplex"
+        uid = os.getuid()
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        _service_restart_failed = False
+
+        if sys.platform == "darwin":
+            if _have_launchctl():
+                if plist.exists():
+                    print("  Starting launchd service...")
+                    result = subprocess.run(
+                        ["launchctl", "bootstrap", f"gui/{uid}", str(plist)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        # Fallback to legacy load for older macOS
+                        subprocess.run(
+                            ["launchctl", "load", str(plist)], capture_output=True
+                        )
+                    if _verify_service_started():
+                        print("  Service started")
+                    else:
+                        print(
+                            "  ERROR: launchd agent registered but the service is"
+                            " not responding after upgrade.\n"
+                            "  Check /tmp/muxplex.err for details."
+                        )
+                        _service_restart_failed = True
+                else:
+                    print("  Service file not found -- run: muxplex service install")
+            else:
+                print("  ! launchctl not found -- skipping service restart")
+        elif _have_systemctl():
+            result = subprocess.run(
+                ["systemctl", "--user", "is-enabled", "muxplex"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                print("  Restarting systemd service...")
+                # daemon-reload FIRST: picks up any regenerated unit file so
+                # the start command sees the correct ExecStart.
+                subprocess.run(
+                    ["systemctl", "--user", "daemon-reload"], capture_output=True
+                )
+                subprocess.run(
+                    ["systemctl", "--user", "start", "muxplex"], capture_output=True
+                )
+                if not _verify_service_started():
+                    # Unit may have landed in 'failed' state (e.g. port race
+                    # on first start). Reset the failure counter and retry once.
+                    subprocess.run(
+                        ["systemctl", "--user", "reset-failed", "muxplex"],
+                        capture_output=True,
+                    )
+                    subprocess.run(
+                        ["systemctl", "--user", "start", "muxplex"],
+                        capture_output=True,
+                    )
+                    if _verify_service_started():
+                        print("  Service started")
+                    else:
+                        print(
+                            "  ERROR: muxplex service is not active after upgrade.\n"
+                            "  Run: systemctl --user status muxplex"
+                        )
+                        _service_restart_failed = True
+                else:
+                    print("  Service started")
+            else:
+                print("  Service not enabled -- run: muxplex service install")
+        else:
+            # No service manager -- ask the user to restart manually
+            pid_hint = ""
+            try:
+                pid_result = subprocess.run(
+                    ["pgrep", "-f", "muxplex serve"],
+                    capture_output=True,
+                    text=True,
+                )
+                pid_str = pid_result.stdout.strip()
+                if pid_str:
+                    pid_hint = f" (running PID: {pid_str})"
+            except Exception:
+                pass
+            print(
+                "  ! systemd not detected -- restart muxplex manually to pick up"
+                " the new version" + pid_hint
+            )
+
+    if _service_restart_failed:
+        print(
+            "\n  ERROR: upgrade installed successfully but the service failed to"
+            " restart.\n"
+            "  The new version is installed but the service is NOT running.\n"
+            "  Run: muxplex service start\n"
+        )
+        return 1
+
+    from muxplex.settings import load_settings
+
+    _serve_cfg = load_settings()
+    print("\n  Verifying...")
+    if not _wait_for_service_ready(_serve_cfg["port"]):
+        print(
+            f"  ! Service did not respond on port {_serve_cfg['port']} within"
+            " the timeout -- it may still be starting, or may have failed to"
+            " come up. Checking anyway:"
+        )
+    doctor()
+    return 0
+
+
 def upgrade(*, force: bool = False) -> None:
     """Upgrade muxplex to the latest version and restart the service."""
     print("\nmuxplex upgrade\n")
@@ -2541,6 +2827,11 @@ def upgrade(*, force: bool = False) -> None:
     # Bug 1+2b: try/finally ensures the start step always runs — success OR failure.
     _install_failed = False
     _service_restart_failed = False
+    # muxplex-lf6: True once the fresh-interpreter handoff (_finish-upgrade)
+    # actually ran -- suppresses this function's OWN restart logic in
+    # `finally` below, since `_finish_upgrade()` already attempted its own
+    # restart in the child process. See `_finish_upgrade`'s docstring.
+    _finish_handed_off = False
     print("  Installing latest version...")
     try:
         # tmux-kit override construction (§2.5 step 3): whenever tmux-kit is
@@ -2759,28 +3050,65 @@ def upgrade(*, force: bool = False) -> None:
                     _install_failed = True
 
         if not _install_failed:
-            # 2.5. Ensure amplifier-agent stays current too -- unconditional
-            # (not gated on a service manager being present) so "muxplex
-            # upgrade" keeps the agent current on every host, per
-            # ensure_agent's own module docstring. Runs AFTER the reinstall
-            # above so it reads the pin the NEW muxplex version declares,
-            # not the one that was running before this upgrade started. A
-            # failure here is printed loudly by ensure_agent() itself but
-            # does not fail the upgrade -- amplifier-agent is optional.
-            print("  Ensuring amplifier-agent is current...")
-            ensure_agent()
-
-            # 3. Regenerate service file (picks up any plist/unit changes)
-            if sys.platform == "darwin" or _have_systemctl():
-                print("  Regenerating service file...")
-                from muxplex.service import service_install
-
-                service_install()
+            # muxplex-lf6: hand off the post-install steps (ensure_agent,
+            # service-file regeneration, restart, verification) to a FRESH
+            # interpreter of the muxplex version JUST installed above --
+            # never run them in THIS (now-stale) process. See the
+            # module-level comment above `_installed_muxplex_entrypoint`
+            # for the ImportError incident this avoids: this process still
+            # has the OLD `muxplex.cli` / `muxplex.service` cached in
+            # `sys.modules` even though the files on disk just changed.
+            entrypoint = _installed_muxplex_entrypoint()
+            if entrypoint is None:
+                # F1: no launchable entrypoint could be determined at all.
+                # The post-install steps never ran -- tell the user how to
+                # complete them by hand. The parent's OWN restart below
+                # still runs (best-effort; `_finish_handed_off` stays
+                # False), same as every other failure path here.
+                print(
+                    "  ERROR: could not determine how to relaunch the"
+                    " freshly-installed muxplex to finish the upgrade"
+                    " (ensure_agent, service regeneration). Run 'muxplex"
+                    " service install' to complete it manually."
+                )
+                _install_failed = True
             else:
-                print("  ! systemctl not found — skipping service file regeneration")
+                print("  Finishing upgrade in a fresh interpreter...")
+                try:
+                    finish_result = subprocess.run([*entrypoint, "_finish-upgrade"])
+                except OSError as exc:
+                    # F1: entrypoint resolved but could not actually be
+                    # launched (e.g. permission denied, binary missing).
+                    # Same handling as entrypoint is None above.
+                    print(
+                        "  ERROR: could not launch the freshly-installed"
+                        f" muxplex to finish the upgrade ({exc}). Run"
+                        " 'muxplex service install' to complete it manually."
+                    )
+                    _install_failed = True
+                else:
+                    # F2: the handoff genuinely ran -- `_finish_upgrade()`
+                    # (in the child) already attempted its own restart in
+                    # ITS OWN finally block, so the parent's finally below
+                    # must NOT restart again (no double-restart).
+                    _finish_handed_off = True
+                    if finish_result.returncode != 0:
+                        print(
+                            "  ERROR: finishing the upgrade failed (exit"
+                            f" {finish_result.returncode}). The new version"
+                            " is installed; see the output above for"
+                            " details."
+                        )
+                        _install_failed = True
     finally:
-        # 4. Restart service — ALWAYS runs after install, even on failure (best-effort).
-        if sys.platform == "darwin":
+        # 4. Restart service — ALWAYS runs after install, even on failure
+        # (best-effort) — UNLESS the fresh-interpreter handoff above
+        # actually ran: `_finish_upgrade()` already attempted its own
+        # restart in that case, and restarting again here would be a
+        # redundant double-restart racing the one that already happened.
+        if _finish_handed_off:
+            pass
+        elif sys.platform == "darwin":
             # Bug 2a: guard launchctl
             if _have_launchctl():
                 if plist.exists():
@@ -2881,24 +3209,11 @@ def upgrade(*, force: bool = False) -> None:
         )
         sys.exit(1)
 
-    # 5. Wait for the service to actually be ready before verifying. Systemd
-    # reports the unit "active" (the check above) the instant the process
-    # starts -- not once uvicorn has finished binding the configured
-    # host:port -- so calling doctor() immediately races a server that is
-    # actually healthy, just not listening yet, and its "Running:" check
-    # reports a false "not serving" warning that a manual `muxplex doctor`
-    # moments later would not show. See _wait_for_service_ready's docstring.
-    from muxplex.settings import load_settings
-
-    _serve_cfg = load_settings()
-    print("\n  Verifying...")
-    if not _wait_for_service_ready(_serve_cfg["port"]):
-        print(
-            f"  ! Service did not respond on port {_serve_cfg['port']} within"
-            " the timeout -- it may still be starting, or may have failed to"
-            " come up. Checking anyway:"
-        )
-    doctor()
+    # 5. Wait for the service to be ready + run doctor() to verify --
+    # muxplex-lf6: this step now happens INSIDE the fresh-interpreter
+    # handoff above (`_finish_upgrade()`, step 4 of its own docstring),
+    # with its stdio inherited directly by this process, so the user
+    # already saw that output before we reach here. Nothing left to do.
 
 
 def cmd_env() -> None:
@@ -3886,6 +4201,14 @@ def main() -> None:
         help="Force reinstall even if already up to date",
     )
 
+    # Hidden (no `help=`, so it never appears in `--help` output -- see
+    # argparse's own _SubParsersAction.add_parser: a subparser is only
+    # added to the printed choices list when `help` is passed). Internal
+    # only -- launched by `upgrade()` itself (muxplex-lf6) as a fresh
+    # subprocess to run post-install steps against the just-installed
+    # code. Never intended to be run by a human directly.
+    sub.add_parser("_finish-upgrade")
+
     setup_tls_parser = sub.add_parser(
         "setup-tls", help="Generate TLS certificate and configure HTTPS"
     )
@@ -4004,6 +4327,8 @@ def main() -> None:
         )
     elif args.command in ("upgrade", "update"):
         upgrade(force=getattr(args, "force", False))
+    elif args.command == "_finish-upgrade":
+        sys.exit(_finish_upgrade())
     elif args.command == "config":
         cmd = getattr(args, "config_command", None)
         if cmd == "get":

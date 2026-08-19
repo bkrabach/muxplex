@@ -269,6 +269,18 @@ def test_readme_tls_setup_tls_entry_with_method_flag():
     assert "--method" in README, "README must document the --method flag for setup-tls"
 
 
+def test_readme_documents_failed_upgrade_recovery():
+    """README must document the muxplex-lf6 incident and its recovery path
+    (the ImportError a stale-interpreter post-install step could raise,
+    and the `muxplex service install` command that fixes it)."""
+    assert "ImportError" in README, (
+        "README must mention the ImportError this recovery section explains"
+    )
+    assert "muxplex service install" in README, (
+        "README must document 'muxplex service install' as the recovery command"
+    )
+
+
 def test_readme_images_use_absolute_urls():
     import re
 

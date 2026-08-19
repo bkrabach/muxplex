@@ -205,6 +205,28 @@ muxplex config set host 0.0.0.0
 muxplex service restart
 ```
 
+### Recovering from a failed upgrade (v0.56.2 and earlier)
+
+On v0.56.2 and earlier, `muxplex upgrade` (and its `muxplex update` alias) could leave the service down after a *successful* install. The upgrade process replaced muxplex's on-disk package files, then kept running its post-install steps (ensure the embedded agent panel is current, regenerate the service file, restart it) in that *same*, already-running process — which still had the *old* version of `muxplex.cli` / `muxplex.service` loaded in memory. A lazy cross-module import of a name that only existed in the *new* code could then fail with:
+
+```
+ImportError: cannot import name 'ensure_agent' from 'muxplex.cli'
+```
+
+leaving the service stopped even though the new version installed correctly.
+
+muxplex v0.56.3+ fixes this at the root: `upgrade()` now hands the post-install steps off to a brand-new process of the just-installed version (an internal `muxplex _finish-upgrade` step), so those imports always resolve against the new code, never a stale cached module.
+
+If you hit this on an affected version and the service is down after an upgrade, recover with:
+
+```bash
+muxplex service install   # regenerates the service file and restarts it
+                          # from whatever version is actually installed on disk
+muxplex doctor            # confirm the service is running again
+```
+
+`muxplex service install` is safe to run any time — it rebuilds the service file from scratch and doesn't depend on any in-memory state left over from a failed upgrade.
+
 ### Examples
 
 ```bash
