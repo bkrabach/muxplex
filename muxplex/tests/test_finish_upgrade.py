@@ -621,10 +621,24 @@ def test_upgrade_restarts_via_parent_when_entrypoint_missing(
     upgrade_ready, monkeypatch
 ):
     """F1: no launchable entrypoint -- the parent's OWN restart logic
-    must still run (best-effort), and upgrade() must exit 1."""
+    must still run (best-effort), and upgrade() must exit 1.
+
+    The parent's `finally` restart branches on `sys.platform` (darwin ->
+    launchctl, else -> systemctl -- see `upgrade()`'s finally block in
+    cli.py). This test asserts the systemctl-shaped call specifically, so
+    it must pin BOTH `sys.platform` and `_have_systemctl` -- otherwise it
+    is only an accidental pass on a Linux CI runner and a real failure on
+    macOS (`assert 0 == 1`, since the darwin branch never calls systemctl
+    at all). Pinning here does not change what's being verified: the
+    parent's own restart logic ran, best-effort, when the handoff never
+    happened -- the mechanism (launchctl vs systemctl) is a platform
+    detail already covered by `_finish_upgrade()`'s own tests above.
+    """
     cli_mod = upgrade_ready
     monkeypatch.setattr(cli_mod, "_installed_muxplex_entrypoint", lambda: None)
     monkeypatch.setattr(cli_mod, "_verify_service_started", lambda: True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(cli_mod, "_have_systemctl", lambda: True)
 
     calls: list = []
 

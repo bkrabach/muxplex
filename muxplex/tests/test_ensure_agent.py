@@ -16,6 +16,30 @@ import subprocess
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _pin_above_agent_python_floor(monkeypatch):
+    """Pin `_agent_python_supported()` True for every test in this file.
+
+    This file exercises `ensure_agent()`'s install/fail-loud/retry
+    machinery, all of which lives behind the `_agent_python_supported()`
+    gate added for muxplex-x60: on an interpreter below the amplifier-agent
+    floor (real Python 3.11, itself a fully-supported muxplex interpreter --
+    see `pyproject.toml`'s `requires-python`), `ensure_agent()` prints the
+    upgrade-floor message and returns True *before* ever calling
+    `_get_install_info`/`_find_uv`/`subprocess.run` -- so on a bare 3.11
+    run every test below that expects those calls to happen sees an empty
+    command list or an unreached code path instead. That short-circuit is
+    correct runtime behavior and is already covered on its own terms by
+    `test_agent_python_floor.py`; it is simply not what THIS file is
+    testing. Pinning the predicate here makes every test in this file
+    deterministically exercise the above-floor path regardless of which
+    interpreter actually runs the suite.
+    """
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_agent_python_supported", lambda: True)
+
+
 @pytest.fixture
 def agent_not_yet_installed(monkeypatch):
     """Simulate a clean environment: amplifier-agent has never been
