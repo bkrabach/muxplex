@@ -1,3 +1,23 @@
+## v0.57.2 (2026-08-19)
+
+**The sidebar filter row lines up, and the filter is now a proper field with a clear button.**
+Follow-up fixes to the session filter from v0.57.1.
+
+### Fixed
+
+- The sidebar's **Filter** row no longer sits 8px right of the View/Sort rows:
+  a header-only spacing rule was leaking into the sidebar's vertical stack.
+  The Filter caption and the typed text now line up with View and Sort.
+
+### Changed
+
+- The filter input now reads as an actual field -- a visible surface and
+  border at rest (it used to be transparent), and no placeholder text -- so
+  it's obviously a place to click and type.
+- Added an **"x" clear button** at the right edge of the filter, shown only
+  when the filter has a value, on both the overview header and the sidebar.
+  Clicking it clears the filter and refocuses the field.
+
 ## v0.57.1 (2026-08-19)
 
 **The session filter matches partially, and the View / Sort / Filter controls line up.**
