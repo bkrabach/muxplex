@@ -1,3 +1,23 @@
+## v0.57.3 (2026-08-20)
+
+**Following a device now actually tracks its selection across devices.**
+Fixes cross-device selection sync for the per-device sync-group ("Follows") feature.
+
+### Fixed
+
+- A device that follows another (its sync group set to `device:<id>`) now sees the
+  followed device's session selection and active-view changes. Previously, a leader
+  that never self-claimed its own `device:<id>` group — notably the soft deck, which
+  has no self-claim control and stays in the shared `global` group — wrote its
+  selection only into `global`, so any follower watching `device:<id>` read a frozen
+  snapshot and never converged (and, symmetrically, the leader never saw the
+  follower's changes). Device-initiated selection/view writes are now mirrored into
+  the acting device's own `device:<id>` group when that group already exists, via a
+  new `write_group_state_mirrored` helper applied at the three device-initiated write
+  sites (`connect_session`, `delete_current_session`, `patch_state`). Local-only
+  state; no federation-sync or read-path behavior changes. Adds regression coverage
+  for follower convergence.
+
 ## v0.57.2 (2026-08-19)
 
 **The sidebar filter row lines up, and the filter is now a proper field with a clear button.**
