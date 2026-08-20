@@ -1,3 +1,25 @@
+## v0.58.0 (2026-08-20)
+
+**Preview font size and zoom are now adjustable — from Settings on the web UI and the soft deck, per deck.**
+New display controls for the small terminal-preview text and the overall preview scale. Defaults reproduce the previous appearance exactly.
+
+### Added
+
+- **Web UI (Settings → Display):** `previewFontSize` (8–24px, default 11) now sizes the
+  session-tile and sidebar preview text. Previously this text was hardcoded, and the
+  `--preview-font-size` CSS variable the code already set was consumed nowhere — that dead
+  wiring is now connected. `previewZoom` (50–200%, default 100) scales tile size. Both are
+  synced display preferences (`SYNCABLE_KEYS`), reachable via `PATCH /api/settings`.
+- **Soft deck (Settings):** per-deck, locally-stored `previewFontSize` (8–20px) sizing the
+  key preview texture, and `zoom` (0.75–1.5×) scaling the whole key face. Stored per device
+  (localStorage), so different decks can run different sizes.
+
+### Notes
+
+- Out-of-range or non-numeric values for the server keys are clamped/ignored at load rather
+  than rejected (forgiving, no 400s). At the defaults (`previewFontSize` 11, `previewZoom`
+  100, deck `zoom` 1.0) rendering is byte-identical to v0.57.3.
+
 ## v0.57.3 (2026-08-20)
 
 **Following a device now actually tracks its selection across devices.**
