@@ -1,3 +1,26 @@
+## v0.57.1 (2026-08-19)
+
+**The session filter matches partially, and the View / Sort / Filter controls line up.**
+Follow-up polish to the session filter added in v0.57.0.
+
+### Added
+
+- The session filter now matches **partially**: a plain pattern with no glob
+  metacharacters (`*`, `?`, `[`) matches as a case-insensitive substring, so
+  `mux` finds `muxplex` without needing `mux*`. A pattern that contains a glob
+  metacharacter keeps the anchored fnmatch behavior (`mux*` prefix, `*-test`
+  suffix).
+
+### Changed
+
+- Aligned the **View / Sort / Filter** controls in both the overview header and
+  the expanded-view sidebar: the filter input adopts the app UI font and the
+  controls' shared height, the sidebar captions share a fixed-width column so
+  the three controls line up on a common left edge, and the header groups them
+  into one left-aligned cluster. The filter input is now borderless at rest so
+  it reads as a peer of the View/Sort controls, revealing its surface and
+  outline on hover/focus.
+
 ## v0.57.0 (2026-08-19)
 
 **Filter the session list by name, and a self-upgrade that finishes cleanly.**
