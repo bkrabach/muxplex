@@ -138,6 +138,77 @@ test('Group B: filterByNamePattern excludes a session whose name is not a string
 });
 
 // ---------------------------------------------------------------------------
+// Group B2 -- partial (substring) matching for a bare pattern with no glob
+// metacharacters (*, ?, [): "mux" must find "muxplex" without requiring
+// "mux*". A pattern that DOES contain a glob metacharacter keeps the
+// existing anchored fnmatch behavior unchanged.
+// ---------------------------------------------------------------------------
+
+test('Group B2: filterByNamePattern substring-matches a bare prefix pattern (no glob metachars)', () => {
+  const sessions = [{ name: 'muxplex' }];
+  assert.deepStrictEqual(
+    app.filterByNamePattern(sessions, 'mux').map((s) => s.name),
+    ['muxplex'],
+    '"mux" (no metachars) must match "muxplex" as a substring, not require an anchored prefix'
+  );
+});
+
+test('Group B2: filterByNamePattern substring-matches a mid/suffix bare pattern', () => {
+  const sessions = [{ name: 'muxplex' }];
+  assert.deepStrictEqual(
+    app.filterByNamePattern(sessions, 'plex').map((s) => s.name),
+    ['muxplex'],
+    '"plex" must match "muxplex" -- substring mode is not anchored to the start'
+  );
+});
+
+test('Group B2: filterByNamePattern substring match is case-insensitive', () => {
+  const sessions = [{ name: 'muxplex' }];
+  assert.deepStrictEqual(
+    app.filterByNamePattern(sessions, 'MUX').map((s) => s.name),
+    ['muxplex'],
+    '"MUX" must match "muxplex" case-insensitively, same as the glob path'
+  );
+});
+
+test('Group B2: filterByNamePattern substring match excludes a non-matching bare pattern', () => {
+  const sessions = [{ name: 'muxplex' }];
+  assert.deepStrictEqual(
+    app.filterByNamePattern(sessions, 'nope'),
+    [],
+    '"nope" is not a substring of "muxplex" and must exclude it'
+  );
+});
+
+test('Group B2: a pattern containing a glob metacharacter stays anchored, not substring -- "mux*" matches "muxplex" but not "amuxplex"', () => {
+  const sessions = [{ name: 'muxplex' }, { name: 'amuxplex' }];
+  assert.deepStrictEqual(
+    app.filterByNamePattern(sessions, 'mux*').map((s) => s.name),
+    ['muxplex'],
+    '"mux*" is anchored (prefix match via fnmatch) -- "amuxplex" does not start with "mux" so must be excluded, ' +
+      'proving the metacharacter selects the anchored glob path rather than a substring/contains check'
+  );
+});
+
+test('Group B2: a pattern containing a glob metacharacter stays anchored -- "*plex" matches "muxplex" (suffix)', () => {
+  const sessions = [{ name: 'muxplex' }];
+  assert.deepStrictEqual(
+    app.filterByNamePattern(sessions, '*plex').map((s) => s.name),
+    ['muxplex']
+  );
+});
+
+test('Group B2: a pattern containing a glob metacharacter does NOT fall back to substring -- "a*" does not match "xa"', () => {
+  const sessions = [{ name: 'xa' }];
+  assert.deepStrictEqual(
+    app.filterByNamePattern(sessions, 'a*'),
+    [],
+    '"a*" is an anchored prefix match ("starts with a"); "xa" does not start with "a" so must be excluded -- ' +
+      'if this instead matched, it would mean metachar patterns silently fell back to a substring/contains check'
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Group C -- compose: getFilteredSessions = view filter \u2218 name filter;
 // grid and sidebar must produce IDENTICAL name sets (anti-drift); composes
 // with sort.
