@@ -37,6 +37,12 @@
   <div id="view-overview" class="view view--active">
     <header class="app-header">
       <h1 class="app-wordmark"><img src="/wordmark-on-dark.svg" alt="muxplex" height="24" /></h1>
+      <!-- Groups the View/Sort/Filter quick controls into one tidy cluster
+           immediately after the wordmark (see .header-controls in style.css) --
+           order and adjacency of the three children below are unchanged, so
+           the existing `#view-dropdown + .quick-sort-dropdown` /
+           `.quick-sort-dropdown + .quick-filter` margin selectors still apply. -->
+      <div class="header-controls">
       <div class="view-dropdown" id="view-dropdown">
         <button id="view-dropdown-trigger" class="view-dropdown__trigger quick-link" aria-haspopup="true" aria-expanded="false" aria-controls="view-dropdown-menu">
           <span id="view-dropdown-label">All Sessions</span>
@@ -81,6 +87,7 @@
                data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
                spellcheck="false" />
       </div>
+      </div>
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
         <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
@@ -108,14 +115,15 @@
         <button id="settings-btn" class="header-btn" aria-label="Settings">&#9881;<span id="settings-error-badge" class="error-count-badge hidden"></span></button>
         <!-- Muxplex Agent entry point (see /chat.js): Amplifier-powered chat panel.
              Grouped with the other header-actions controls rather than centered --
-             .app-header already spends its width on the wordmark + view/sort
-             dropdowns via justify-content:space-between, so true centering would
-             mean restructuring that layout; this instead joins the other
-             global-action icon buttons it belongs alongside (new session /
-             settings / sync), widened just enough to carry the logo + label the
-             owner asked for. Label collapses to icon-only at <=599px to match
-             how every sibling button in this row already behaves on narrow/
-             mobile widths (see .header-btn--agent in style.css). -->
+             .header-actions sits in its own right-aligned group (margin-left:auto,
+             see style.css), separate from the wordmark + .header-controls cluster
+             on the left, so true centering would mean restructuring that layout;
+             this instead joins the other global-action icon buttons it belongs
+             alongside (new session / settings / sync), widened just enough to
+             carry the logo + label the owner asked for. Label collapses to
+             icon-only at <=599px to match how every sibling button in this row
+             already behaves on narrow/mobile widths (see .header-btn--agent in
+             style.css). -->
         <button id="chat-open-btn" class="header-btn header-btn--agent" aria-label="Ask Muxplex Agent" title="Muxplex Agent -- powered by Amplifier Agent">
           <img src="/amplifier-icon-32.png" alt="" width="16" height="16" class="agent-btn-logo" />
           <span class="agent-btn-label">Agent</span>

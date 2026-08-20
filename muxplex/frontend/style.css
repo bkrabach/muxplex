@@ -145,8 +145,23 @@ body {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex-shrink: 0;
+}
+
+/* Groups the View/Sort/Filter quick controls into one tidy left-hand
+   cluster, immediately after the wordmark, instead of the previous
+   `justify-content: space-between` spreading all 5 direct children across
+   the full header width. Wraps #view-dropdown, .quick-sort-dropdown, and
+   .quick-filter in index.html -- their relative order and adjacency are
+   unchanged, so the existing `#view-dropdown + .quick-sort-dropdown` /
+   `.quick-sort-dropdown + .quick-filter` margin selectors (further down
+   this file) still apply unmodified. .header-actions's own margin-left:auto
+   (see "Header actions + settings buttons" section) is what pushes it to
+   the right edge now that space-between is gone. */
+.header-controls {
+  display: flex;
+  align-items: center;
+  margin-left: 16px;
 }
 
 /* ============================================================
@@ -554,6 +569,15 @@ body {
   letter-spacing: 0.06em;
   color: var(--text-muted);
   flex-shrink: 0;
+  /* Fixed to fit the longest caption ("Filter", 6 chars) so View/Sort's
+     shorter captions (4 chars) don't leave their own control sitting
+     left of Filter's -- all three quick-control rows share one left edge
+     for their trigger/input regardless of caption text length. Each
+     .sidebar-title is a flex item of its row (.sidebar-view-dropdown /
+     .quick-sort-dropdown / .quick-filter, all display:flex), so a flex
+     item's used display is blockified and min-width takes effect even
+     though the element is a <span>. */
+  min-width: 44px;
 }
 
 /* Sidebar view switcher dropdown -- now a flex row (caption + trigger). */
@@ -1795,6 +1819,11 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Pushes this group to the header's right edge now that .app-header no
+     longer uses `justify-content: space-between` (see .header-controls
+     above) -- the wordmark + quick controls stay left, this group claims
+     all remaining free space for itself. */
+  margin-left: auto;
 }
 
 .header-btn {
@@ -3953,6 +3982,18 @@ body {
   content: none;
 }
 
+/* Sidebar-only: caption-to-control gap. .sidebar-view-dropdown and
+   .sidebar-header-controls .quick-filter (below) both set `gap: 6px`
+   between their .sidebar-title caption and control, but the base
+   .quick-sort-dropdown rule (shared with the header instance, which has
+   no caption) sets none -- so the Sort row's caption sat tighter against
+   its control than the View/Filter rows. Scoped to the sidebar wrapper,
+   same as the ::after suppression just above, so the header instance is
+   unaffected. */
+.sidebar-header-controls .quick-sort-dropdown {
+  gap: 6px;
+}
+
 /* ============================================================
    Quick session-name filter -- header + sidebar (muxplex-4h9)
    ============================================================
@@ -3976,11 +4017,19 @@ body {
 
 .quick-filter__input {
   font-size: 13px;
+  font-family: var(--font-ui);
   color: var(--text);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: none;
   border-radius: 4px;
-  padding: 4px 8px;
+  /* Option A: borderless at rest, so this reads as a peer of .quick-link's
+     text-link controls (View/Sort) instead of a boxed input. Padding now
+     matches .quick-link's `4px 10px` exactly -- there's no border left to
+     absorb -- so the placeholder/typed text left-edge lines up with the
+     header's "All Sessions"/"Manual" button text and both render at
+     identical height. Affordance (surface + outline) shows on hover/focus
+     only, below. */
+  padding: 4px 10px;
   max-width: 140px;
   min-width: 0;
 }
@@ -3989,10 +4038,14 @@ body {
   color: var(--text-muted);
 }
 
+.quick-filter__input:hover {
+  background: var(--bg-surface);
+}
+
 .quick-filter__input:focus-visible {
+  background: var(--bg-surface);
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-color: var(--accent);
 }
 
 /* Sidebar row: caption + input, same gap as .sidebar-view-dropdown's own
@@ -4006,6 +4059,7 @@ body {
   flex: 1;
   min-width: 0;
   max-width: none;
+  padding: 4px 2px;
 }
 
 /* ============================================================

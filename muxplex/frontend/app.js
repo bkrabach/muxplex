@@ -2349,7 +2349,24 @@ function matchesNamePattern(name, pattern) {
 }
 
 /**
- * Filter sessions by a glob pattern matched against each session's `name`.
+ * Does `p` contain any fnmatch glob metacharacter (`*`, `?`, `[`)?
+ * Used by filterByNamePattern() to decide anchored-glob vs. substring mode.
+ * @param {string} p
+ * @returns {boolean}
+ */
+function _isGlobPattern(p) {
+  return /[*?[]/.test(p);
+}
+
+/**
+ * Filter sessions by a pattern matched against each session's `name`, in
+ * one of two modes depending on the pattern's shape:
+ *   - Pattern contains a glob metacharacter (`*`, `?`, `[`): anchored
+ *     fnmatch-style glob match via matchesNamePattern() (unchanged
+ *     behavior -- `mux*` is an anchored prefix, `*-test` a suffix, etc.).
+ *   - Otherwise (a bare pattern with no glob metacharacters): a
+ *     case-insensitive SUBSTRING match, so typing `mux` finds a session
+ *     named `muxplex` without requiring `mux*`.
  * A blank, whitespace-only, null, or undefined pattern means "no filter" and
  * returns `sessions` unchanged. Once a pattern is non-blank it is used
  * VERBATIM (untrimmed) -- only the blank check itself is whitespace-tolerant.
@@ -2359,7 +2376,11 @@ function matchesNamePattern(name, pattern) {
  */
 function filterByNamePattern(sessions, pattern) {
   if (!pattern || !pattern.trim()) return sessions;
-  return sessions.filter(function(s) { return matchesNamePattern(s.name, pattern); });
+  if (_isGlobPattern(pattern)) {
+    return sessions.filter(function(s) { return matchesNamePattern(s.name, pattern); });
+  }
+  var needle = pattern.toLowerCase();
+  return sessions.filter(function(s) { return typeof s.name === 'string' && s.name.toLowerCase().includes(needle); });
 }
 
 /**
