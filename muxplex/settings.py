@@ -158,6 +158,19 @@ DEFAULT_SETTINGS: dict = {
     "tls_cert": "",
     "tls_key": "",
     "fontSize": 14,
+    # Font size (px) of the tile/sidebar preview text -- independent of
+    # `fontSize` above, which only ever drove the live xterm.js terminal.
+    # Feeds --preview-font-size (frontend/app.js's applyDisplaySettings()),
+    # which frontend/style.css's `.tile-body pre` / `.sidebar-item-body pre`
+    # consume. Clamped to [8, 24] at the load_settings() boundary (see
+    # normalize_preview_font_size()) so a malformed value on disk can never
+    # reach the renderer -- there is no further validation downstream.
+    "previewFontSize": 11,
+    # Zoom/scale (%) of the tile preview grid -- scales tile size (and the
+    # grid's minimum column width) via --preview-zoom. 100 = today's exact
+    # sizing. Clamped to [50, 200] at the load_settings() boundary (see
+    # normalize_preview_zoom()), same rationale as previewFontSize above.
+    "previewZoom": 100,
     # Delay (ms) before the hover-preview popover appears on a session tile.
     # 0 = Off. This is now the SOLE control for the popover -- prior to
     # v0.47.0 there were TWO independent off-switches (this delay's "Off"
@@ -452,6 +465,54 @@ def normalize_input_allowed_sessions(value: object) -> object:
     return [stripped] if stripped else []
 
 
+def _coerce_clamped_int(value: object, low: int, high: int, default: int) -> int:
+    """Coerce *value* to ``int`` and clamp to ``[low, high]``.
+
+    Shared helper behind ``normalize_preview_font_size``/``normalize_preview_zoom``.
+    A ``bool`` is rejected (never coerced to 0/1) since neither setting has a
+    meaningful boolean reading, and a non-numeric value (wrong type, or a string
+    that doesn't parse) falls back to *default* rather than raising -- the same
+    "fail forgiving, never break rendering" posture ``load_settings()`` already
+    applies to every other field it normalizes. Accepts ``int``/``float``
+    (JSON may round-trip either) and numeric strings.
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        result = int(value)
+    else:
+        try:
+            result = int(float(str(value).strip()))
+        except (TypeError, ValueError):
+            return default
+    return max(low, min(high, result))
+
+
+def normalize_preview_font_size(value: object) -> int:
+    """Clamp/coerce ``previewFontSize`` into ``[8, 24]``.
+
+    Applied at the ``load_settings()`` boundary (mirrors
+    ``normalize_input_allowed_sessions``) so a malformed value on disk --
+    wrong type, out of range, hand-edited nonsense -- can never reach the
+    renderer: ``previewFontSize`` feeds the ``--preview-font-size`` CSS
+    custom property (frontend/app.js's ``applyDisplaySettings()``) directly,
+    with no further validation downstream. Non-numeric input falls back to
+    ``DEFAULT_SETTINGS["previewFontSize"]``.
+    """
+    return _coerce_clamped_int(value, 8, 24, DEFAULT_SETTINGS["previewFontSize"])
+
+
+def normalize_preview_zoom(value: object) -> int:
+    """Clamp/coerce ``previewZoom`` (a percentage) into ``[50, 200]``.
+
+    Same rationale and load-time boundary as ``normalize_preview_font_size``
+    -- feeds the ``--preview-zoom`` CSS custom property that scales tile size
+    on the desktop PWA grid. Non-numeric input falls back to
+    ``DEFAULT_SETTINGS["previewZoom"]``.
+    """
+    return _coerce_clamped_int(value, 50, 200, DEFAULT_SETTINGS["previewZoom"])
+
+
 # Closed vocabulary for the deviceLabelPlacement setting (see its
 # DEFAULT_SETTINGS comment and reconcile_device_label() below).
 DEVICE_LABEL_PLACEMENTS: frozenset[str] = frozenset({"titlebar", "corner", "off"})
@@ -480,6 +541,8 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
     {
         # Display preferences
         "fontSize",
+        "previewFontSize",
+        "previewZoom",
         "hoverPreviewDelay",
         "gridColumns",
         "bellSound",
@@ -655,6 +718,15 @@ def load_settings() -> dict:
     result["input_allowed_sessions"] = normalize_input_allowed_sessions(
         result["input_allowed_sessions"]
     )
+
+    # previewFontSize/previewZoom feed CSS custom properties directly (the
+    # desktop PWA's tile/sidebar preview font size and grid zoom) with no
+    # further validation downstream -- clamp/coerce here, at the same
+    # load-time boundary, so a malformed value on disk (wrong type, out of
+    # range, hand-edited nonsense) can never reach the renderer.
+    result["previewFontSize"] = normalize_preview_font_size(result["previewFontSize"])
+    result["previewZoom"] = normalize_preview_zoom(result["previewZoom"])
+
     # One-time migration: an existing settings.json predating deviceLabelPlacement
     # carries only showDeviceBadges. Derive the placement from it so the mirror
     # and its source never start out disagreeing. Idempotent: once

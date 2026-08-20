@@ -173,7 +173,11 @@ body {
   overflow-y: auto;
   padding: var(--grid-padding);
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--tile-min-width), 1fr));
+  /* --preview-zoom is a unitless factor (previewZoom% / 100, default 1) --
+     scales the minimum column width along with tile height below, so the
+     whole tile grows/shrinks together. Defaults to 1 (byte-identical to
+     pre-zoom sizing) when unset. */
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--tile-min-width) * var(--preview-zoom, 1)), 1fr));
   gap: var(--grid-gap);
   align-content: start;
 }
@@ -183,7 +187,9 @@ body {
    ============================================================ */
 
 .session-tile {
-  height: var(--tile-height);
+  /* --preview-zoom is unitless (previewZoom% / 100), default 1 -- byte-
+     identical to today's fixed --tile-height when unset/100%. */
+  height: calc(var(--tile-height) * var(--preview-zoom, 1));
   background: var(--bg-tile);
   border: 1px solid var(--border);
   border-left: 3px solid var(--border);  /* edge bar — always present, matches other 3 borders */
@@ -309,7 +315,7 @@ body {
   right: 0;
   padding: 6px 8px;
   font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--preview-font-size, 11px);
   line-height: 1.0;
   color: #c9d1d9;               /* match xterm.js foreground */
   white-space: pre;
@@ -898,7 +904,9 @@ body {
   left: 0;
   right: 0;
   font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
-  font-size: 10px;
+  /* Unified with .tile-body pre's --preview-font-size var (was a hardcoded
+     10px) -- the 11px fallback matches the setting's own default. */
+  font-size: var(--preview-font-size, 11px);
   line-height: 1.0;
   color: #c9d1d9;               /* match xterm.js foreground */
   white-space: pre;

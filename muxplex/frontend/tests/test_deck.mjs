@@ -468,9 +468,48 @@ test('deriveTokens: B has a 2px floor even at very small S', () => {
   assert.strictEqual(deck.deriveTokens(10).b, 2);
 });
 
-test('deriveTokens: TEXTURE never scales with S (fixed 11)', () => {
+test('deriveTokens: TEXTURE never scales with S (fixed 11 at default previewFontSize/zoom)', () => {
   assert.strictEqual(deck.deriveTokens(72).texture, 11);
   assert.strictEqual(deck.deriveTokens(160).texture, 11);
+});
+
+// --- previewFontSize / zoom (deck settings menu) ---
+
+test('deriveTokens: previewFontSize drives TEXTURE directly at zoom=1', () => {
+  assert.strictEqual(deck.deriveTokens(72, null, 16, 1).texture, 16);
+  assert.strictEqual(deck.deriveTokens(160, null, 8, 1).texture, 8);
+});
+
+test('deriveTokens: zoom scales primary/secondary/texture proportionally', () => {
+  const s = 97.71;
+  const base = deck.deriveTokens(s, 107.33, 11, 1);
+  const zoomed = deck.deriveTokens(s, 107.33, 11, 1.5);
+  // Expected values computed from the raw (pre-round) formula * zoom --
+  // NOT Math.round(base.X * zoom), which double-rounds and can drift by 1
+  // (e.g. secondary's raw 14.93 rounds to 15, but 15*1.5=22.5 rounds to 23
+  // while the raw 14.93*1.5=22.39 rounds to 22 -- the correct answer).
+  assert.strictEqual(zoomed.primary, Math.round(((2 * s) / 9) * 1.5));
+  assert.strictEqual(zoomed.secondary, Math.round(((11 * s) / 72) * 1.5));
+  assert.strictEqual(zoomed.texture, Math.round(11 * 1.5));
+  // Geometry tokens (b/m/nameH/stateH/bodyH) are NOT scaled by zoom.
+  assert.strictEqual(zoomed.b, base.b);
+  assert.strictEqual(zoomed.m, base.m);
+  assert.strictEqual(zoomed.nameH, base.nameH);
+  assert.strictEqual(zoomed.stateH, base.stateH);
+});
+
+test('deriveTokens: default previewFontSize=11/zoom=1 reproduce the exact pre-existing token table (S\u224897.71)', () => {
+  const t = deck.deriveTokens(97.71, 107.33);
+  assert.strictEqual(t.b, 3);
+  assert.strictEqual(t.m, 5);
+  assert.strictEqual(t.nameH, 27);
+  assert.strictEqual(t.stateH, 19);
+  assert.strictEqual(t.primary, 22);
+  assert.strictEqual(t.secondary, 15);
+  assert.strictEqual(t.texture, 11);
+  // Explicit defaults must be byte-identical to the omitted-args call above.
+  const explicit = deck.deriveTokens(97.71, 107.33, 11, 1);
+  assert.deepEqual(explicit, t);
 });
 
 // ─── reservedControlKeys -- port of muxplex-deck's layout.py ────────────────
@@ -1689,6 +1728,43 @@ test('mergeDeckSettings: out-of-range stripCount falls back to default', () => {
   assert.strictEqual(merged.stripCount, deck.defaultDeckSettings().stripCount);
 });
 
+test('defaultDeckSettings: includes previewFontSize=11 and zoom=1.0', () => {
+  const d = deck.defaultDeckSettings();
+  assert.strictEqual(d.previewFontSize, 11);
+  assert.strictEqual(d.zoom, 1.0);
+});
+
+test('mergeDeckSettings: valid previewFontSize is adopted', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), { previewFontSize: 16 });
+  assert.strictEqual(merged.previewFontSize, 16);
+});
+
+test('mergeDeckSettings: out-of-range previewFontSize falls back to default (11)', () => {
+  assert.strictEqual(
+    deck.mergeDeckSettings(deck.defaultDeckSettings(), { previewFontSize: 5 }).previewFontSize,
+    11
+  );
+  assert.strictEqual(
+    deck.mergeDeckSettings(deck.defaultDeckSettings(), { previewFontSize: 99 }).previewFontSize,
+    11
+  );
+  assert.strictEqual(
+    deck.mergeDeckSettings(deck.defaultDeckSettings(), { previewFontSize: 'nope' }).previewFontSize,
+    11
+  );
+});
+
+test('mergeDeckSettings: valid zoom is adopted', () => {
+  const merged = deck.mergeDeckSettings(deck.defaultDeckSettings(), { zoom: 1.25 });
+  assert.strictEqual(merged.zoom, 1.25);
+});
+
+test('mergeDeckSettings: out-of-range zoom falls back to default (1.0)', () => {
+  assert.strictEqual(deck.mergeDeckSettings(deck.defaultDeckSettings(), { zoom: 0.5 }).zoom, 1.0);
+  assert.strictEqual(deck.mergeDeckSettings(deck.defaultDeckSettings(), { zoom: 2.0 }).zoom, 1.0);
+  assert.strictEqual(deck.mergeDeckSettings(deck.defaultDeckSettings(), { zoom: 'nope' }).zoom, 1.0);
+});
+
 test('defaultDeckSettings: sane, valid-by-construction defaults', () => {
   const d = deck.defaultDeckSettings();
   assert.strictEqual(d.sort, 'attention');
@@ -2080,11 +2156,11 @@ test('sanitizeBindings (guard): still accepts key.20/dial.2.turn/strip.3.tap reg
 // structure rather than loosening it"): the behavior genuinely changed (a
 // new, intentional setting), so the assertion is updated to match, not
 // weakened.
-test('defaultDeckSettings (U9): unchanged shape aside from the Step-3 "follows" addition', () => {
+test('defaultDeckSettings (U9): unchanged shape aside from the Step-3 "follows" addition, plus previewFontSize/zoom', () => {
   const d = deck.defaultDeckSettings();
   assert.deepEqual(
     Object.keys(d).sort(),
-    ['bindings', 'brightness', 'dialCount', 'follows', 'gridOverride', 'pollIntervalMs', 'sort', 'stripCount', 'version']
+    ['bindings', 'brightness', 'dialCount', 'follows', 'gridOverride', 'pollIntervalMs', 'previewFontSize', 'sort', 'stripCount', 'version', 'zoom']
   );
   assert.deepEqual(d.bindings, {});
   assert.strictEqual(d.brightness, 100);
@@ -2094,6 +2170,8 @@ test('defaultDeckSettings (U9): unchanged shape aside from the Step-3 "follows" 
   assert.strictEqual(d.pollIntervalMs > 0, true);
   assert.strictEqual(d.version, 1);
   assert.deepEqual(d.follows, { mode: 'global', targetId: null, targetLabel: null });
+  assert.strictEqual(d.previewFontSize, 11);
+  assert.strictEqual(d.zoom, 1.0);
 });
 
 // U10: ACTION_CATALOG/STRIP_ACTION_CATALOG are untouched by this item --
@@ -2813,6 +2891,13 @@ test('regression: persistableDeckSettings still excludes only brightness -- "fol
   const persisted = deck.persistableDeckSettings(settings);
   assert.ok(!('brightness' in persisted), 'brightness must still be excluded');
   assert.deepEqual(persisted.follows, { mode: 'device', targetId: 'd-alien', targetLabel: 'Stream Deck (alienware)' });
+});
+
+test('persistableDeckSettings includes previewFontSize and zoom so they persist across reload', () => {
+  const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), { previewFontSize: 14, zoom: 1.25 });
+  const persisted = deck.persistableDeckSettings(settings);
+  assert.strictEqual(persisted.previewFontSize, 14);
+  assert.strictEqual(persisted.zoom, 1.25);
 });
 
 test('regression: importSettingsJSON on a pre-Step-3 export blob (no "follows" key at all) still succeeds and fills in the default -- an old exported backup must not be rejected', () => {

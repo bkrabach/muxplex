@@ -425,6 +425,8 @@ let _localDeviceId = null;
 let _localVersion = null;
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
+  previewFontSize: 11,           // px, tile/sidebar preview text -- independent of fontSize (the terminal font)
+  previewZoom: 100,               // %, tile size / grid min column width scale; 100 = today's exact sizing
   hoverPreviewDelay: 1500,
   gridColumns: 'auto',
   bellSound: false,
@@ -7600,9 +7602,12 @@ function cycleViewMode() {
  * @param {object} ds - display settings object
  */
 function applyDisplaySettings(ds) {
-  // Apply font size as CSS custom property (tile previews)
+  // Preview font size (tile/sidebar previews) -- NOT ds.fontSize, which
+  // drives only the live terminal below. Independent settings.
   if (document.documentElement) {
-    document.documentElement.style.setProperty('--preview-font-size', ds.fontSize + 'px');
+    document.documentElement.style.setProperty('--preview-font-size', ds.previewFontSize + 'px');
+    // Unitless zoom factor (previewZoom is a %, e.g. 100 -> 1); scales tiles.
+    document.documentElement.style.setProperty('--preview-zoom', (ds.previewZoom / 100));
   }
 
   // Apply font size to the live xterm.js terminal without reconnecting
@@ -7671,6 +7676,12 @@ function onDisplaySettingChange() {
   var fontSizeEl = document.getElementById('setting-font-size');
   if (fontSizeEl) ds.fontSize = parseInt(fontSizeEl.value, 10) || ds.fontSize;
 
+  var previewFontSizeEl = document.getElementById('setting-preview-font-size');
+  if (previewFontSizeEl) ds.previewFontSize = parseInt(previewFontSizeEl.value, 10) || ds.previewFontSize;
+
+  var previewZoomEl = document.getElementById('setting-preview-zoom');
+  if (previewZoomEl) ds.previewZoom = parseInt(previewZoomEl.value, 10) || ds.previewZoom;
+
   var hoverDelayEl = document.getElementById('setting-hover-delay');
   if (hoverDelayEl) ds.hoverPreviewDelay = parseInt(hoverDelayEl.value, 10);
 
@@ -7688,6 +7699,8 @@ function onDisplaySettingChange() {
 
   var patch = {
     fontSize: ds.fontSize,
+    previewFontSize: ds.previewFontSize,
+    previewZoom: ds.previewZoom,
     hoverPreviewDelay: ds.hoverPreviewDelay,
     gridColumns: ds.gridColumns,
     deviceLabelPlacement: ds.deviceLabelPlacement,
@@ -7789,6 +7802,10 @@ function openSettings() {
   const settings = getDisplaySettings();
   const fontSizeEl = $('setting-font-size');
   if (fontSizeEl) fontSizeEl.value = String(settings.fontSize);
+  const previewFontSizeEl = $('setting-preview-font-size');
+  if (previewFontSizeEl) previewFontSizeEl.value = String(settings.previewFontSize);
+  const previewZoomEl = $('setting-preview-zoom');
+  if (previewZoomEl) previewZoomEl.value = String(settings.previewZoom);
   const hoverDelayEl = $('setting-hover-delay');
   if (hoverDelayEl) hoverDelayEl.value = String(settings.hoverPreviewDelay);
   const gridColumnsEl = $('setting-grid-columns');
@@ -9435,6 +9452,8 @@ function bindStaticEventListeners() {
 
   // Display settings — bind change events for immediate apply
   on($('setting-font-size'), 'change', onDisplaySettingChange);
+  on($('setting-preview-font-size'), 'change', onDisplaySettingChange);
+  on($('setting-preview-zoom'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
   on($('setting-grid-columns'), 'change', onDisplaySettingChange);
   on($('setting-device-label-placement'), 'change', onDisplaySettingChange);

@@ -22,6 +22,8 @@ from muxplex.settings import (
     get_syncable_settings,
     load_federation_key,
     load_settings,
+    normalize_preview_font_size,
+    normalize_preview_zoom,
     patch_settings,
     resolve_session_commands,
     save_settings,
@@ -1133,6 +1135,108 @@ def test_defaults_include_display_settings():
     assert DEFAULT_SETTINGS["sidebarOpen"] is None, (
         f"sidebarOpen default must be None, got: {DEFAULT_SETTINGS['sidebarOpen']!r}"
     )
+
+
+def test_defaults_include_preview_font_size_and_zoom():
+    """DEFAULT_SETTINGS must include previewFontSize=11 and previewZoom=100."""
+    assert "previewFontSize" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'previewFontSize'"
+    )
+    assert DEFAULT_SETTINGS["previewFontSize"] == 11, (
+        f"previewFontSize default must be 11, got: {DEFAULT_SETTINGS['previewFontSize']!r}"
+    )
+    assert "previewZoom" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'previewZoom'"
+    )
+    assert DEFAULT_SETTINGS["previewZoom"] == 100, (
+        f"previewZoom default must be 100, got: {DEFAULT_SETTINGS['previewZoom']!r}"
+    )
+
+
+def test_preview_font_size_and_zoom_are_syncable():
+    """previewFontSize/previewZoom must be in SYNCABLE_KEYS (display prefs, not commands/paths)."""
+    assert "previewFontSize" in SYNCABLE_KEYS, (
+        "previewFontSize must be in SYNCABLE_KEYS"
+    )
+    assert "previewZoom" in SYNCABLE_KEYS, "previewZoom must be in SYNCABLE_KEYS"
+    assert "previewFontSize" not in LOCAL_ONLY_KEYS
+    assert "previewZoom" not in LOCAL_ONLY_KEYS
+
+
+def test_normalize_preview_font_size_clamps_range():
+    """normalize_preview_font_size() must clamp to [8, 24] and coerce numerics."""
+    assert normalize_preview_font_size(11) == 11
+    assert normalize_preview_font_size(8) == 8
+    assert normalize_preview_font_size(24) == 24
+    assert normalize_preview_font_size(1) == 8, "below range must clamp to the floor"
+    assert normalize_preview_font_size(999) == 24, (
+        "above range must clamp to the ceiling"
+    )
+    assert normalize_preview_font_size(-5) == 8
+    assert normalize_preview_font_size(12.0) == 12, "float must coerce to int"
+    assert normalize_preview_font_size("14") == 14, "numeric string must coerce to int"
+
+
+def test_normalize_preview_font_size_non_numeric_falls_back_to_default():
+    """normalize_preview_font_size() must fall back to the default for non-numeric input."""
+    assert normalize_preview_font_size("banana") == DEFAULT_SETTINGS["previewFontSize"]
+    assert normalize_preview_font_size(None) == DEFAULT_SETTINGS["previewFontSize"]
+    assert normalize_preview_font_size([1, 2]) == DEFAULT_SETTINGS["previewFontSize"]
+    assert normalize_preview_font_size(True) == DEFAULT_SETTINGS["previewFontSize"], (
+        "a bool must never be coerced to 0/1 -- fall back to the default instead"
+    )
+
+
+def test_normalize_preview_zoom_clamps_range():
+    """normalize_preview_zoom() must clamp to [50, 200] and coerce numerics."""
+    assert normalize_preview_zoom(100) == 100
+    assert normalize_preview_zoom(50) == 50
+    assert normalize_preview_zoom(200) == 200
+    assert normalize_preview_zoom(1) == 50, "below range must clamp to the floor"
+    assert normalize_preview_zoom(9999) == 200, "above range must clamp to the ceiling"
+    assert normalize_preview_zoom(125.0) == 125, "float must coerce to int"
+    assert normalize_preview_zoom("150") == 150, "numeric string must coerce to int"
+
+
+def test_normalize_preview_zoom_non_numeric_falls_back_to_default():
+    """normalize_preview_zoom() must fall back to the default for non-numeric input."""
+    assert normalize_preview_zoom("banana") == DEFAULT_SETTINGS["previewZoom"]
+    assert normalize_preview_zoom(None) == DEFAULT_SETTINGS["previewZoom"]
+    assert normalize_preview_zoom({}) == DEFAULT_SETTINGS["previewZoom"]
+    assert normalize_preview_zoom(False) == DEFAULT_SETTINGS["previewZoom"]
+
+
+def test_load_settings_clamps_out_of_range_preview_font_size(redirect_settings_path):
+    """load_settings() must clamp an out-of-range on-disk previewFontSize rather
+    than reject it -- a bad value on disk must never break rendering."""
+    redirect_settings_path.write_text(json.dumps({"previewFontSize": 500}))
+    loaded = load_settings()
+    assert loaded["previewFontSize"] == 24, (
+        f"out-of-range previewFontSize must clamp to 24, got: {loaded['previewFontSize']!r}"
+    )
+
+
+def test_load_settings_clamps_out_of_range_preview_zoom(redirect_settings_path):
+    """load_settings() must clamp an out-of-range on-disk previewZoom rather than
+    reject it -- a bad value on disk must never break rendering."""
+    redirect_settings_path.write_text(json.dumps({"previewZoom": 5}))
+    loaded = load_settings()
+    assert loaded["previewZoom"] == 50, (
+        f"out-of-range previewZoom must clamp to 50, got: {loaded['previewZoom']!r}"
+    )
+
+
+def test_load_settings_non_numeric_preview_keys_fall_back_to_default(
+    redirect_settings_path,
+):
+    """load_settings() must fall back to the default for a non-numeric on-disk value
+    rather than raise or propagate garbage to the renderer."""
+    redirect_settings_path.write_text(
+        json.dumps({"previewFontSize": "not-a-number", "previewZoom": None})
+    )
+    loaded = load_settings()
+    assert loaded["previewFontSize"] == DEFAULT_SETTINGS["previewFontSize"]
+    assert loaded["previewZoom"] == DEFAULT_SETTINGS["previewZoom"]
 
 
 def test_display_settings_round_trip_via_patch():

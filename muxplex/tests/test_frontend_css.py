@@ -682,7 +682,13 @@ def test_css_sidebar_item_body():
 
 
 def test_css_sidebar_item_body_pre():
-    """.sidebar-item-body pre must be anchored to bottom with 10px monospace font matching xterm.js."""
+    """.sidebar-item-body pre must be anchored to bottom with a configurable
+    monospace preview font size matching xterm.js.
+
+    Was a hardcoded 10px; unified with .tile-body pre's --preview-font-size
+    custom property (11px fallback matches the previewFontSize setting's own
+    default) so the desktop PWA's Preview Font Size control applies to both
+    the tile grid and the sidebar consistently."""
     css = read_css()
     assert ".sidebar-item-body pre" in css
     block = _extract_rule_block(css, ".sidebar-item-body pre {")
@@ -690,7 +696,10 @@ def test_css_sidebar_item_body_pre():
     assert "bottom: 0" in block
     assert "left: 0" in block
     assert "right: 0" in block
-    assert "font-size: 10px" in block
+    assert "font-size: var(--preview-font-size, 11px)" in block, (
+        "sidebar-item-body pre must use the --preview-font-size custom property "
+        "(11px fallback), not a hardcoded value"
+    )
     assert "line-height: 1.0" in block, (
         "sidebar-item-body pre must use line-height: 1.0 (xterm.js default)"
     )
@@ -766,8 +775,7 @@ def _extract_media_block(css: str, query: str, contains: str | None = None) -> s
             if contains is None:
                 raise ValueError(f"Could not find {query!r} in css") from None
             raise ValueError(
-                f"No @media block matching {query!r} has a body containing "
-                f"{contains!r}"
+                f"No @media block matching {query!r} has a body containing {contains!r}"
             ) from None
         open_brace = css.index("{", idx)
         depth = 0

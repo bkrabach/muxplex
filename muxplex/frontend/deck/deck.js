@@ -308,16 +308,26 @@ function computeGrid(contentW, contentH) {
  * deltas (thicker ring, weight becomes available).
  * @param {number} s - the grid's derived S scalar
  * @param {number} [cellH] - actual (possibly non-clamped) cell height, for BODY_H
+ * @param {number} [previewFontSize] - user-configurable preview (TEXTURE) font
+ *   size in px, from deckSettings.previewFontSize. Defaults to 11 -- the
+ *   value this face used unconditionally before it became configurable.
+ * @param {number} [zoom] - user-configurable zoom factor, from
+ *   deckSettings.zoom. Defaults to 1 (no scaling, byte-identical to before
+ *   zoom existed). Scales primary/secondary/texture proportionally; the
+ *   geometry tokens (b/m/nameH/stateH/bodyH) are NOT scaled here -- see
+ *   applyGridTokens() for the cell-size half of "the whole key face scales".
  * @returns {{b:number, m:number, nameH:number, stateH:number, bodyH:number,
  *            primary:number, secondary:number, texture:number}}
  */
-function deriveTokens(s, cellH) {
+function deriveTokens(s, cellH, previewFontSize, zoom) {
+  if (previewFontSize == null) previewFontSize = 11;
+  if (zoom == null) zoom = 1;
   var b = Math.max(2, Math.round(s / 30));
   var m = Math.round(s / 18);
   var nameH = Math.round(0.28 * s);
   var stateH = Math.round(0.19 * s);
-  var primary = Math.round((2 * s) / 9);
-  var secondary = Math.round((11 * s) / 72);
+  var primary = Math.round(((2 * s) / 9) * zoom);
+  var secondary = Math.round(((11 * s) / 72) * zoom);
   var bodyH = cellH != null ? Math.round(cellH - 2 * m - nameH - stateH) : null;
   return {
     b: b,
@@ -327,7 +337,7 @@ function deriveTokens(s, cellH) {
     bodyH: bodyH,
     primary: primary,
     secondary: secondary,
-    texture: 11,
+    texture: Math.round(previewFontSize * zoom),
   };
 }
 
@@ -1002,6 +1012,8 @@ function defaultDeckSettings() {
     gridOverride: null, // {rows, cols} | null (null = auto, computeGrid)
     dialCount: 0, // 0-4
     stripCount: 0, // 0-4 touch-strip zones (independent of dialCount)
+    previewFontSize: 11, // px, 8-20 -- drives --texture (the key-preview TEXTURE font)
+    zoom: 1.0, // 0.75-1.5 -- scales the whole key face (primary/secondary/texture + cell size)
     brightness: 100, // 10-100, session-local, never persisted -- see persistableDeckSettings
     bindings: {}, // address (key.N | dial.N.turn | dial.N.push | strip.N.tap | strip.N.drag | strip.swipe.left | strip.swipe.right) -> action
     // Pairing target (docs/plans/2026-08-16-deck-control-target-design.md
@@ -1058,6 +1070,16 @@ function mergeDeckSettings(defaults, incoming) {
   }
   if (Number.isInteger(incoming.stripCount) && incoming.stripCount >= 0 && incoming.stripCount <= STRIP_MAX_ZONES) {
     out.stripCount = incoming.stripCount;
+  }
+  if (
+    typeof incoming.previewFontSize === 'number' &&
+    incoming.previewFontSize >= 8 &&
+    incoming.previewFontSize <= 20
+  ) {
+    out.previewFontSize = incoming.previewFontSize;
+  }
+  if (typeof incoming.zoom === 'number' && incoming.zoom >= 0.75 && incoming.zoom <= 1.5) {
+    out.zoom = incoming.zoom;
   }
   out.bindings = sanitizeBindings(incoming.bindings);
   out.follows = sanitizeFollows(incoming.follows);
@@ -3309,10 +3331,16 @@ if (typeof document !== 'undefined') {
 
     function applyGridTokens(g, t) {
       var style = root.style;
+      // deckSettings.zoom scales the WHOLE key face proportionally --
+      // primary/secondary/texture are already zoomed inside `t` (see
+      // deriveTokens()); cell-w/cell-h are zoomed here, at the one other
+      // place geometry reaches the DOM. Defaults to 1 (byte-identical to
+      // before zoom existed) when unset.
+      var zoom = deckSettings.zoom || 1;
       style.setProperty('--cols', g.cols);
       style.setProperty('--rows', g.rows);
-      style.setProperty('--cell-w', g.cellW + 'px');
-      style.setProperty('--cell-h', g.cellH + 'px');
+      style.setProperty('--cell-w', (g.cellW * zoom) + 'px');
+      style.setProperty('--cell-h', (g.cellH * zoom) + 'px');
       style.setProperty('--gap', g.gap + 'px');
       style.setProperty('--b', t.b + 'px');
       style.setProperty('--m', t.m + 'px');
@@ -3518,7 +3546,7 @@ if (typeof document !== 'undefined') {
       var g = effectiveGridNow();
       grid = g;
       reserved = reservedControlKeys(g.rows, g.cols);
-      tokens = deriveTokens(g.s, g.cellH);
+      tokens = deriveTokens(g.s, g.cellH, deckSettings.previewFontSize, deckSettings.zoom);
       applyGridTokens(g, tokens);
       rebuildGridIfNeeded(g);
       root.classList.toggle('too-small', !!g.tooSmall);
@@ -4629,6 +4657,8 @@ if (typeof document !== 'undefined') {
       var autoBtn = settingsEl.querySelector('#settings-grid-auto');
       var dialInput = settingsEl.querySelector('#settings-dial-count');
       var stripInput = settingsEl.querySelector('#settings-strip-count');
+      var previewFontInput = settingsEl.querySelector('#settings-preview-font-size');
+      var zoomInput = settingsEl.querySelector('#settings-zoom');
       var brightInput = settingsEl.querySelector('#settings-brightness');
       var exportArea = settingsEl.querySelector('#settings-export');
 
@@ -4639,6 +4669,8 @@ if (typeof document !== 'undefined') {
       if (autoBtn) autoBtn.textContent = deckSettings.gridOverride ? 'Use Auto Grid' : 'Auto (current)';
       if (dialInput) dialInput.value = String(deckSettings.dialCount);
       if (stripInput) stripInput.value = String(deckSettings.stripCount);
+      if (previewFontInput) previewFontInput.value = String(deckSettings.previewFontSize);
+      if (zoomInput) zoomInput.value = String(deckSettings.zoom);
       if (brightInput) brightInput.value = String(deckSettings.brightness);
       if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
 
@@ -4952,6 +4984,45 @@ if (typeof document !== 'undefined') {
             populateSettingsForm();
           } else {
             stripInput.value = String(deckSettings.stripCount);
+          }
+        });
+      }
+
+      var previewFontInput = settingsEl.querySelector('#settings-preview-font-size');
+      if (previewFontInput) {
+        previewFontInput.addEventListener('change', function () {
+          var v = parseInt(previewFontInput.value, 10);
+          if (Number.isFinite(v) && v >= 8 && v <= 20) {
+            deckSettings.previewFontSize = v;
+            saveDeckSettings(storage, deckSettings);
+            // Live preview: re-derive tokens from the last-computed grid and
+            // re-apply immediately -- no shape change, so no full
+            // recomputeGrid()/DOM rebuild is needed (unlike gridOverride/
+            // dialCount/stripCount above, which defer to closeSettings()).
+            if (grid) {
+              tokens = deriveTokens(grid.s, grid.cellH, deckSettings.previewFontSize, deckSettings.zoom);
+              applyGridTokens(grid, tokens);
+            }
+          } else {
+            previewFontInput.value = String(deckSettings.previewFontSize);
+          }
+        });
+      }
+
+      var zoomInput = settingsEl.querySelector('#settings-zoom');
+      if (zoomInput) {
+        zoomInput.addEventListener('change', function () {
+          var v = parseFloat(zoomInput.value);
+          if (Number.isFinite(v) && v >= 0.75 && v <= 1.5) {
+            deckSettings.zoom = v;
+            saveDeckSettings(storage, deckSettings);
+            // Same live-preview path as previewFontSize above.
+            if (grid) {
+              tokens = deriveTokens(grid.s, grid.cellH, deckSettings.previewFontSize, deckSettings.zoom);
+              applyGridTokens(grid, tokens);
+            }
+          } else {
+            zoomInput.value = String(deckSettings.zoom);
           }
         });
       }
