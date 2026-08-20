@@ -126,7 +126,7 @@ from muxplex.state import (
     resolve_group,
     save_state,
     state_lock,
-    write_group_state,
+    write_group_state_mirrored,
 )
 from muxplex.terminal_input import (
     ALLOWED_KEYS,
@@ -1448,7 +1448,7 @@ async def patch_state(patch: StatePatch, device_id: str | None = None) -> dict:
             field: getattr(patch, field) for field in GROUP_FIELDS if field in changed
         }
         if group_updates:
-            write_group_state(state, group, group_updates)
+            write_group_state_mirrored(state, device_id, group, group_updates)
 
         save_state(state)
 
@@ -2140,7 +2140,7 @@ async def connect_session(
     _log.info("Connecting to session '%s'", name)
     async with state_lock:
         state = load_state()
-        write_group_state(state, group, {"active_session": name})
+        write_group_state_mirrored(state, device_id, group, {"active_session": name})
         state["terminal_session"] = name
         state["terminal_group"] = group
         save_state(state)
@@ -2673,7 +2673,7 @@ async def delete_current_session(device_id: str | None = None) -> dict:
         state = load_state()
         group = _resolve_group_or_404(state, device_id)
         mine = read_group_state(state, group)["active_session"]
-        write_group_state(state, group, {"active_session": None})
+        write_group_state_mirrored(state, device_id, group, {"active_session": None})
         save_state(state)
 
     released = False

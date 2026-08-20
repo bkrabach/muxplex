@@ -498,3 +498,77 @@ def test_heartbeat_without_sync_group_field_is_untouched_by_new_validation(clien
     )
     assert res.status_code == 200
     assert res.json()["sync_group"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# Write-through mirror: a followed device that never self-claims its own
+# device:<id> group (e.g. the soft deck, which has no self-claim UI and
+# stays in GLOBAL_GROUP) must still reach a follower whose sync_group is
+# device:<leader_id>. Before the fix, the leader's writes only ever landed
+# in its resolved group (typically "global"), and nothing ever wrote into
+# device:<leader_id> unless the leader ALSO self-claimed -- so a follower
+# read a snapshot frozen at the moment it started following. See
+# write_group_state_mirrored()'s docstring in state.py.
+# ---------------------------------------------------------------------------
+
+
+def test_followed_device_selection_reaches_follower(client):
+    """L never self-claims (stays in GLOBAL_GROUP, exactly like the Android
+    soft deck's "Nothing -- just me" no-op). F follows L. L connects a
+    session -- F must see it via its own (device:L) group, not a frozen
+    snapshot. Fails before the fix: L's connect only ever wrote to
+    GLOBAL_GROUP, never to device:L."""
+    _heartbeat(client, "L")  # registers L; sync_group defaults to "global"
+    _heartbeat(client, "F", "device:L")  # F follows L
+
+    res = client.post("/api/sessions/sessX/connect?device_id=L")
+    assert res.status_code == 200
+
+    follower_state = client.get("/api/state?device_id=F").json()
+    assert follower_state["active_session"] == "sessX"
+    assert follower_state["sync_group"] == "device:L"
+
+    # L's own (global) view also reflects the connect, unchanged behavior.
+    assert client.get("/api/state").json()["active_session"] == "sessX"
+
+
+def test_followed_device_active_view_change_reaches_follower(client):
+    """Companion case: a leader's active_view change via PATCH /api/state
+    must likewise reach a follower who never self-claimed its own group."""
+    _heartbeat(client, "L")
+    _heartbeat(client, "F", "device:L")
+
+    res = client.patch("/api/state?device_id=L", json={"active_view": "hidden"})
+    assert res.status_code == 200
+
+    follower_state = client.get("/api/state?device_id=F").json()
+    assert follower_state["active_view"] == "hidden"
+
+
+def test_followed_device_disconnect_reaches_follower(client):
+    """The DELETE /api/sessions/current write site must mirror too: once L
+    clears its own active_session, F (following L) must see it cleared."""
+    _heartbeat(client, "L")
+    _heartbeat(client, "F", "device:L")
+    client.post("/api/sessions/sessX/connect?device_id=L")
+    assert client.get("/api/state?device_id=F").json()["active_session"] == "sessX"
+
+    res = client.delete("/api/sessions/current?device_id=L")
+    assert res.status_code == 200
+
+    follower_state = client.get("/api/state?device_id=F").json()
+    assert follower_state["active_session"] is None
+
+
+def test_unfollowed_device_write_does_not_create_own_group(client):
+    """Guard: mirroring must never resurrect/create device:<id> for a
+    device nobody follows -- only ensure_group() (via heartbeat follow)
+    is allowed to create a sync group. A leader with no followers pays
+    for exactly one write, same as before the fix."""
+    _heartbeat(client, "L")  # registers L; nobody follows it
+
+    res = client.post("/api/sessions/sessX/connect?device_id=L")
+    assert res.status_code == 200
+
+    state = client.get("/api/state").json()
+    assert "device:L" not in state["sync_groups"]
