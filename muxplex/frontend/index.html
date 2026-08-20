@@ -81,11 +81,12 @@
            syncSessionFilterControls(). Mirrors AUTOFILL_SUPPRESSION_ATTRS in
            app.js (this is a name/pattern field, not prose). -->
       <div class="quick-filter">
-        <input id="session-filter-input" type="text" class="quick-filter__input" placeholder="Filter"
+        <input id="session-filter-input" type="text" class="quick-filter__input"
                aria-label="Filter sessions by name pattern"
                autocomplete="off" autocorrect="off" autocapitalize="off"
                data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
                spellcheck="false" />
+        <button id="session-filter-clear" class="quick-filter__clear" type="button" tabindex="-1" aria-label="Clear filter">&times;</button>
       </div>
       </div>
       <div class="header-actions">
@@ -236,11 +237,12 @@
                  .sidebar-title ("Filter"), matching the View/Sort rows above. -->
             <div class="quick-filter">
               <span class="sidebar-title">Filter</span>
-              <input id="sidebar-session-filter-input" type="text" class="quick-filter__input" placeholder="Filter"
+              <input id="sidebar-session-filter-input" type="text" class="quick-filter__input"
                      aria-label="Filter sessions by name pattern"
                      autocomplete="off" autocorrect="off" autocapitalize="off"
                      data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
                      spellcheck="false" />
+              <button id="sidebar-session-filter-clear" class="quick-filter__clear" type="button" tabindex="-1" aria-label="Clear filter">&times;</button>
             </div>
           </div>
         </div>

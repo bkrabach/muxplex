@@ -342,3 +342,58 @@ test('Group E: filterByQuery and renderFilterBar remain exported (regression gua
   assert.strictEqual(typeof app.filterByQuery, 'function', 'filterByQuery must remain exported');
   assert.strictEqual(typeof app.renderFilterBar, 'function', 'renderFilterBar must remain exported');
 });
+
+// ---------------------------------------------------------------------------
+// Group F -- clear-button affordance: syncSessionFilterControls() must keep
+// each input's .quick-filter wrapper's 'quick-filter--has-value' class in
+// lockstep with session_filter, so the overlaid "x" (style.css's
+// .quick-filter--has-value .quick-filter__clear rule) only shows when there
+// is something to clear.
+// ---------------------------------------------------------------------------
+
+function makeClassListStub() {
+  const classes = new Set();
+  return {
+    classes,
+    classList: {
+      add: (c) => classes.add(c),
+      remove: (c) => classes.delete(c),
+      toggle: (c, force) => {
+        if (force) classes.add(c);
+        else classes.delete(c);
+      },
+      contains: (c) => classes.has(c),
+    },
+  };
+}
+
+test('Group F: syncSessionFilterControls toggles quick-filter--has-value on both wrappers to match session_filter', () => {
+  const headerWrapper = makeClassListStub();
+  const sidebarWrapper = makeClassListStub();
+  const headerInput = { value: '', closest: (sel) => (sel === '.quick-filter' ? headerWrapper : null) };
+  const sidebarInput = { value: '', closest: (sel) => (sel === '.quick-filter' ? sidebarWrapper : null) };
+
+  const origGetById = globalThis.document.getElementById;
+  const origActiveElement = globalThis.document.activeElement;
+  globalThis.document.getElementById = (id) => {
+    if (id === 'session-filter-input') return headerInput;
+    if (id === 'sidebar-session-filter-input') return sidebarInput;
+    return null;
+  };
+  globalThis.document.activeElement = null;
+
+  try {
+    app._setServerSettingsForTests({ sort_order: 'manual', hidden_sessions: [], views: [], session_filter: 'foo' });
+    app.syncSessionFilterControls();
+    assert.strictEqual(headerWrapper.classList.contains('quick-filter--has-value'), true, 'header wrapper must gain quick-filter--has-value for a non-empty filter');
+    assert.strictEqual(sidebarWrapper.classList.contains('quick-filter--has-value'), true, 'sidebar wrapper must gain quick-filter--has-value for a non-empty filter');
+
+    app._setServerSettingsForTests({ sort_order: 'manual', hidden_sessions: [], views: [], session_filter: '' });
+    app.syncSessionFilterControls();
+    assert.strictEqual(headerWrapper.classList.contains('quick-filter--has-value'), false, 'header wrapper must lose quick-filter--has-value once the filter is cleared');
+    assert.strictEqual(sidebarWrapper.classList.contains('quick-filter--has-value'), false, 'sidebar wrapper must lose quick-filter--has-value once the filter is cleared');
+  } finally {
+    globalThis.document.getElementById = origGetById;
+    globalThis.document.activeElement = origActiveElement;
+  }
+});

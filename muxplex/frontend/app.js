@@ -3372,9 +3372,13 @@ function syncSessionFilterControls() {
 
   var input = $('session-filter-input');
   if (input && input !== active) input.value = value;
+  var wrap = input && input.closest('.quick-filter');
+  if (wrap) wrap.classList.toggle('quick-filter--has-value', !!value);
 
   var sidebarInput = $('sidebar-session-filter-input');
   if (sidebarInput && sidebarInput !== active) sidebarInput.value = value;
+  var sidebarWrap = sidebarInput && sidebarInput.closest('.quick-filter');
+  if (sidebarWrap) sidebarWrap.classList.toggle('quick-filter--has-value', !!value);
 }
 
 /**
@@ -9340,6 +9344,10 @@ function bindStaticEventListeners() {
   if (sidebarSessionFilterInput) {
     on(sidebarSessionFilterInput, 'input', function() { applySessionFilter(this.value); });
   }
+  var sfClear = $('session-filter-clear');
+  if (sfClear) on(sfClear, 'click', function() { applySessionFilter(''); var i = $('session-filter-input'); if (i) i.focus(); });
+  var sbSfClear = $('sidebar-session-filter-clear');
+  if (sbSfClear) on(sbSfClear, 'click', function() { applySessionFilter(''); var i = $('sidebar-session-filter-input'); if (i) i.focus(); });
 
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });

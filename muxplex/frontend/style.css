@@ -4009,9 +4009,10 @@ body {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  position: relative;
 }
 
-.quick-sort-dropdown + .quick-filter {
+.header-controls .quick-sort-dropdown + .quick-filter {
   margin-left: 8px;
 }
 
@@ -4019,33 +4020,27 @@ body {
   font-size: 13px;
   font-family: var(--font-ui);
   color: var(--text);
-  background: transparent;
-  border: none;
+  /* Owner feedback after Option A (borderless-at-rest) shipped: the filter
+     needs to CLEARLY read as a typable field, not a plain text-link, so it
+     now carries a real surface + border at rest. Right padding reserves
+     room for the .quick-filter__clear "x" button overlaid inside the
+     field (see below); left/top/bottom padding are unchanged from before. */
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  /* Option A: borderless at rest, so this reads as a peer of .quick-link's
-     text-link controls (View/Sort) instead of a boxed input. Padding now
-     matches .quick-link's `4px 10px` exactly -- there's no border left to
-     absorb -- so the placeholder/typed text left-edge lines up with the
-     header's "All Sessions"/"Manual" button text and both render at
-     identical height. Affordance (surface + outline) shows on hover/focus
-     only, below. */
-  padding: 4px 10px;
+  padding: 4px 24px 4px 10px;
   max-width: 140px;
   min-width: 0;
 }
 
-.quick-filter__input::placeholder {
-  color: var(--text-muted);
-}
-
 .quick-filter__input:hover {
-  background: var(--bg-surface);
+  border-color: var(--border-strong, var(--accent));
 }
 
 .quick-filter__input:focus-visible {
-  background: var(--bg-surface);
+  border-color: var(--accent);
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
 
 /* Sidebar row: caption + input, same gap as .sidebar-view-dropdown's own
@@ -4059,7 +4054,45 @@ body {
   flex: 1;
   min-width: 0;
   max-width: none;
-  padding: 4px 2px;
+  /* Left padding stays 2px so the typed text's left edge lines up with the
+     View/Sort buttons' text (see .header-controls .quick-sort-dropdown +
+     .quick-filter above -- that rule no longer leaks its 8px margin into
+     this column, which was the actual cause of the "Filter row is offset"
+     bug). Right padding grows to 22px to reserve room for the overlaid
+     .quick-filter__clear "x" button, same idea as the header's 24px. */
+  padding: 4px 22px 4px 2px;
+}
+
+/* "x" clear button, overlaid inside the field's right edge (both header and
+   sidebar instances). Hidden until the field actually has a value --
+   .quick-filter--has-value is toggled by syncSessionFilterControls() in
+   app.js in lockstep with each input's .value. */
+.quick-filter__clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.quick-filter__clear:hover {
+  color: var(--text);
+}
+
+.quick-filter--has-value .quick-filter__clear {
+  display: flex;
 }
 
 /* ============================================================
