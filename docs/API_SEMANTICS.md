@@ -470,6 +470,20 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   is safe to call on every keystroke (debounced client-side). Requires
   auth, same as `GET /api/views` -- which local sessions match a draft
   pattern is not for an unauthenticated caller.
+- **`settings.session_filter`** (muxplex-4h9) is a simpler, CLIENT-SIDE-ONLY
+  cousin of `match_names` above: a single fnmatch-style glob pattern, matched
+  case-insensitively against each session's bare `name`, that narrows the
+  grid/sidebar render. Unlike `match_names`, it has no server-side matcher,
+  no validation endpoint, and no `POST /api/views/preview` equivalent --
+  `frontend/app.js`'s `matchesNamePattern()`/`_globToRegExp()` are a
+  deliberate, self-contained glob-to-regex mirror (see the fixture-driven
+  cross-check in `frontend/tests/test_session_filter.mjs` /
+  `tests/test_session_filter_fixture.py`, which pin JS/Python matcher
+  agreement the same way `attention_sort_cases.json` pins sort agreement).
+  Composes with the active view rather than replacing it: `getFilteredSessions()`
+  filters the output of `getVisibleSessions()`, never the other way around, so
+  a session filtered out by name still counts toward the favicon badge, page
+  title, and mobile bottom sheet (only the grid/sidebar RENDER narrows).
 - **`GET /api/view`** is now the canonical server-side resolution of the
   above: view membership (via `filter_visible`), the needs-attention
   predicate (`bells.needs_attention`), and sort ordering (`?sort=attention`

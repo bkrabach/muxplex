@@ -62,6 +62,25 @@
         </button>
         <div id="sort-order-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Sort sessions"></div>
       </div>
+      <!-- Quick session-name filter (muxplex-4h9): fnmatch-style glob pattern that
+           narrows both the grid and sidebar to sessions whose name matches, on
+           every keystroke (see filterByNamePattern()/getFilteredSessions() in
+           app.js). Deliberately its OWN control, not a revival of #filter-bar --
+           renderGrid() wipes that container's innerHTML on every poll tick (see
+           #filter-bar's own history below in this file), which would destroy a
+           live input's focus/caret mid-typing -- and not filterByQuery() (a
+           substring matcher, the wrong semantics for this feature). session_filter
+           is a syncable server setting (same mechanism as sort_order); both this
+           input and the sidebar's twin are kept in sync by
+           syncSessionFilterControls(). Mirrors AUTOFILL_SUPPRESSION_ATTRS in
+           app.js (this is a name/pattern field, not prose). -->
+      <div class="quick-filter">
+        <input id="session-filter-input" type="text" class="quick-filter__input" placeholder="Filter"
+               aria-label="Filter sessions by name pattern"
+               autocomplete="off" autocorrect="off" autocapitalize="off"
+               data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
+               spellcheck="false" />
+      </div>
       <div class="header-actions">
         <button id="new-session-btn" class="header-btn" aria-label="New session">+</button>
         <button id="view-mode-btn" class="header-btn" aria-label="Toggle view mode" title="View: auto">&#9638;</button>
@@ -202,6 +221,18 @@
                 <span id="sidebar-sort-order-label">Manual</span>
               </button>
               <div id="sidebar-sort-order-menu" class="view-dropdown__menu hidden" role="menu" aria-label="Sort sessions"></div>
+            </div>
+            <!-- Sidebar twin of the header's #session-filter-input -- same
+                 session_filter server setting, kept in sync by
+                 syncSessionFilterControls() in app.js. Captioned with
+                 .sidebar-title ("Filter"), matching the View/Sort rows above. -->
+            <div class="quick-filter">
+              <span class="sidebar-title">Filter</span>
+              <input id="sidebar-session-filter-input" type="text" class="quick-filter__input" placeholder="Filter"
+                     aria-label="Filter sessions by name pattern"
+                     autocomplete="off" autocorrect="off" autocapitalize="off"
+                     data-1p-ignore="true" data-lpignore="true" data-bwignore="true" data-form-type="other"
+                     spellcheck="false" />
             </div>
           </div>
         </div>

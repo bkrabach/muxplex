@@ -847,6 +847,64 @@ def test_html_sidebar_has_quick_sort_select() -> None:
     assert menu.get("role") == "menu", "#sidebar-sort-order-menu must have role='menu'"
 
 
+def test_html_header_has_session_filter_input() -> None:
+    """muxplex-4h9: main view header must contain a #session-filter-input
+    text input, placed under .app-header (alongside the View/Sort quick
+    controls) -- NOT a revival of the old #filter-bar container, which
+    renderGrid() wipes on every poll tick (that would destroy a live
+    input's focus/caret mid-typing)."""
+    soup = _SOUP
+    header = soup.find("header", class_="app-header")
+    assert header is not None, "Missing header.app-header"
+
+    el = header.find(id="session-filter-input")
+    assert el is not None, "Missing #session-filter-input inside .app-header"
+    assert el.name == "input", (
+        f"#session-filter-input must be an <input>, got: {el.name}"
+    )
+
+    filter_bar = soup.find(id="filter-bar")
+    assert filter_bar is not None, "Missing #filter-bar (legacy container)"
+    assert filter_bar.find(id="session-filter-input") is None, (
+        "#session-filter-input must NOT live inside #filter-bar -- "
+        "renderGrid() wipes #filter-bar's innerHTML on every poll tick, "
+        "which would destroy a live input's focus/caret"
+    )
+
+
+def test_html_sidebar_has_session_filter_input() -> None:
+    """muxplex-4h9: sidebar must contain a #sidebar-session-filter-input text
+    input inside .sidebar-header-controls, captioned with a .sidebar-title
+    reading 'Filter' (matching the View/Sort rows' own caption convention)."""
+    soup = _SOUP
+    sidebar = soup.find(id="session-sidebar")
+    assert sidebar is not None, "Missing #session-sidebar"
+    sidebar_header = sidebar.find(class_="sidebar-header")
+    assert sidebar_header is not None, "Missing .sidebar-header"
+    controls = sidebar_header.find(class_="sidebar-header-controls")
+    assert controls is not None, "Missing .sidebar-header-controls"
+
+    el = controls.find(id="sidebar-session-filter-input")
+    assert el is not None, (
+        "Missing #sidebar-session-filter-input inside .sidebar-header-controls"
+    )
+    assert el.name == "input", (
+        f"#sidebar-session-filter-input must be an <input>, got: {el.name}"
+    )
+
+    filter_wrapper = el.find_parent(class_="quick-filter")
+    assert filter_wrapper is not None, (
+        "Missing .quick-filter wrapper around #sidebar-session-filter-input"
+    )
+    caption = filter_wrapper.find("span", class_="sidebar-title")
+    assert caption is not None, (
+        "Missing .sidebar-title caption inside the sidebar's .quick-filter"
+    )
+    assert caption.get_text(strip=True) == "Filter", (
+        f"Sidebar filter caption must read 'Filter', got: {caption.get_text(strip=True)!r}"
+    )
+
+
 def test_html_sessions_panel_has_window_size_largest_checkbox() -> None:
     """Sessions panel must contain a #setting-window-size-largest checkbox."""
     soup = _SOUP

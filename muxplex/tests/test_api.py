@@ -3383,6 +3383,19 @@ def test_get_settings_returns_saved_values(client, tmp_path, monkeypatch):
     assert data["sort_order"] == "alphabetical"
 
 
+def test_get_settings_default_session_filter_is_empty_string(
+    client, tmp_path, monkeypatch
+):
+    """GET /api/settings returns session_filter == "" by default (muxplex-4h9)."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.get("/api/settings")
+    assert response.status_code == 200
+    assert response.json()["session_filter"] == ""
+
+
 def test_get_settings_redacts_federation_key(client, tmp_path, monkeypatch):
     """GET /api/settings must NOT return the federation_key value — it must be empty string."""
     import json
@@ -3480,6 +3493,20 @@ def test_patch_settings_updates_field(client, tmp_path, monkeypatch):
     data = response.json()
     assert data["sort_order"] == "alphabetical"
     assert data["default_session"] is None
+
+
+def test_patch_settings_persists_session_filter(client, tmp_path, monkeypatch):
+    """PATCH /api/settings with {session_filter: 'foo-*'} returns 200, round-trips
+    in the response, and is written to disk (muxplex-4h9)."""
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    response = client.patch("/api/settings", json={"session_filter": "foo-*"})
+    assert response.status_code == 200
+    assert response.json()["session_filter"] == "foo-*"
+
+    assert settings_mod.load_settings()["session_filter"] == "foo-*"
 
 
 def test_patch_settings_ignores_unknown_keys(client, tmp_path, monkeypatch):
@@ -3669,6 +3696,45 @@ def test_patch_settings_forged_cookie_cannot_downgrade_real_bearer_caller(
         "A forged cookie must not downgrade a Bearer caller to operator status"
     )
     assert loaded["sort_order"] == "alphabetical"
+
+
+def test_patch_settings_real_bearer_caller_can_persist_session_filter(
+    tmp_path, monkeypatch
+):
+    """SECURITY-ADJACENT (genuine end-to-end), muxplex-4h9: session_filter is
+    syncable, NOT local-only -- a REAL federation-key Bearer-only caller (no
+    cookie, no stubbed classifier) must still be able to persist it, proving
+    it was not accidentally swept into the LOCAL_ONLY_KEYS fence alongside
+    the genuinely dangerous command/path keys.
+
+    Mirrors ``test_patch_settings_real_bearer_caller_cannot_enable_input``'s
+    real-credential setup, but asserts the OPPOSITE outcome for this key:
+    where that test proves ``input_enabled`` is dropped for a bearer_only
+    caller, this proves ``session_filter`` is NOT dropped.
+    """
+    import muxplex.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "SETTINGS_PATH", tmp_path / "settings.json")
+    fed_key = _arm_real_federation_bearer(tmp_path, monkeypatch)
+
+    with TestClient(app) as c:
+        response = c.patch(
+            "/api/settings",
+            json={"session_filter": "foo-*"},
+            headers={"Authorization": f"Bearer {fed_key}"},
+        )
+
+    assert response.status_code == 200, (
+        f"Real Bearer request must be authorized, got {response.status_code}"
+    )
+    data = response.json()
+    assert data["session_filter"] == "foo-*"
+
+    loaded = settings_mod.load_settings()
+    assert loaded["session_filter"] == "foo-*", (
+        "A bearer-only caller must be able to persist session_filter -- it is "
+        "syncable, not local-only"
+    )
 
 
 def test_patch_settings_operator_still_cannot_set_other_local_only_keys(

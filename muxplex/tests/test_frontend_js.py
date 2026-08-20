@@ -2198,7 +2198,7 @@ def test_get_visible_sessions_filters_hidden_sessions() -> None:
 
 
 def test_render_grid_filters_hidden_sessions() -> None:
-    """renderGrid() must filter out hidden sessions via getVisibleSessions()."""
+    """renderGrid() must filter out hidden sessions via getFilteredSessions() (which wraps getVisibleSessions())."""
     match = re.search(
         r"function renderGrid\s*\(\w+\)\s*\{(.*?)(?=\n(?:function|//|window\.))",
         _JS,
@@ -2206,8 +2206,8 @@ def test_render_grid_filters_hidden_sessions() -> None:
     )
     assert match, "renderGrid function not found in app.js"
     body = match.group(1)
-    assert "getVisibleSessions" in body, (
-        "renderGrid must call getVisibleSessions() to filter hidden sessions"
+    assert "getFilteredSessions" in body, (
+        "renderGrid must call getFilteredSessions() to filter hidden sessions (getFilteredSessions wraps getVisibleSessions)"
     )
 
 
@@ -2321,7 +2321,7 @@ def test_render_sidebar_delegates_sorting_to_apply_sort_order() -> None:
 
 
 def test_render_sidebar_filters_hidden_sessions() -> None:
-    """renderSidebar() must filter out hidden sessions via getVisibleSessions()."""
+    """renderSidebar() must filter out hidden sessions via getFilteredSessions() (which wraps getVisibleSessions())."""
     match = re.search(
         r"function renderSidebar\s*\(.*?\)\s*\{(.*?)(?=\nconst SIDEBAR_KEY|function |\n// ─)",
         _JS,
@@ -2329,8 +2329,8 @@ def test_render_sidebar_filters_hidden_sessions() -> None:
     )
     assert match, "renderSidebar function not found in app.js"
     body = match.group(1)
-    assert "getVisibleSessions" in body, (
-        "renderSidebar must call getVisibleSessions() to filter hidden sessions"
+    assert "getFilteredSessions" in body, (
+        "renderSidebar must call getFilteredSessions() to filter hidden sessions (getFilteredSessions wraps getVisibleSessions)"
     )
 
 

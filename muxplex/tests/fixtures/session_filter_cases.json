@@ -1,0 +1,161 @@
+{
+  "$schema_note": "Canonical cross-implementation fixture for the session-name filter's fnmatch-style glob matcher (muxplex-4h9). Consumed identically by frontend/app.js's matchesNamePattern()/_globToRegExp() and muxplex.views' matches_name_pattern() (docs/API_SEMANTICS.md's `settings.session_filter` entry -- both must move together). Each case is a single (name, pattern) -> expected boolean match. Deliberately does NOT cover blank/whitespace-only/null/undefined pattern behavior ('no filter, return everything unchanged') -- that is a property of filterByNamePattern()/filter_by_name_pattern() ONE LAYER UP from the raw matcher this fixture drives, and is tested directly in test_session_filter.mjs's Group B instead.",
+  "cases": [
+    {
+      "name": "alpha",
+      "pattern": "alpha",
+      "expected": true,
+      "why": "exact literal match"
+    },
+    {
+      "name": "alpha",
+      "pattern": "beta",
+      "expected": false,
+      "why": "exact literal, different string, no match"
+    },
+    {
+      "name": "alphabeta",
+      "pattern": "alpha",
+      "expected": false,
+      "why": "the pattern must match the ENTIRE name (anchored), not a substring -- this is what distinguishes glob matching from filterByQuery()'s substring semantics"
+    },
+    {
+      "name": "alpha-1",
+      "pattern": "alpha-*",
+      "expected": true,
+      "why": "trailing * matches any suffix, including non-empty"
+    },
+    {
+      "name": "build-log",
+      "pattern": "*-log",
+      "expected": true,
+      "why": "leading * matches any prefix"
+    },
+    {
+      "name": "foo-bar-baz",
+      "pattern": "foo-*-baz",
+      "expected": true,
+      "why": "* in the middle matches an interior segment"
+    },
+    {
+      "name": "anything-at-all",
+      "pattern": "*",
+      "expected": true,
+      "why": "a bare * matches every name, including one containing hyphens"
+    },
+    {
+      "name": "anything",
+      "pattern": "**",
+      "expected": true,
+      "why": "consecutive stars collapse into a single .* -- must not require two non-empty segments"
+    },
+    {
+      "name": "cat",
+      "pattern": "c?t",
+      "expected": true,
+      "why": "? matches exactly one character"
+    },
+    {
+      "name": "cats",
+      "pattern": "c?t",
+      "expected": false,
+      "why": "? matches exactly one character, not zero or many -- a longer name must not match"
+    },
+    {
+      "name": "v1",
+      "pattern": "v[0-9]",
+      "expected": true,
+      "why": "[0-9] is a standard character-class range, one digit"
+    },
+    {
+      "name": "va",
+      "pattern": "v[0-9]",
+      "expected": false,
+      "why": "'a' is not in the [0-9] class"
+    },
+    {
+      "name": "vx",
+      "pattern": "v[!0-9]",
+      "expected": true,
+      "why": "[!seq] is fnmatch negation (NOT [^seq]) -- 'x' is not a digit, so it matches the negated class"
+    },
+    {
+      "name": "v5",
+      "pattern": "v[!0-9]",
+      "expected": false,
+      "why": "'5' IS a digit, so it must NOT match the negated class [!0-9]"
+    },
+    {
+      "name": "a[b",
+      "pattern": "a[b",
+      "expected": true,
+      "why": "an unterminated [ (no closing ]) is treated as a literal '[' character, not a broken class"
+    },
+    {
+      "name": "ab",
+      "pattern": "a[b",
+      "expected": false,
+      "why": "since the unterminated [ is literal, 'a[b' does not match 'ab' (missing the literal bracket)"
+    },
+    {
+      "name": "^",
+      "pattern": "[^ab]",
+      "expected": true,
+      "why": "fnmatch negation is ONLY '!', never '^' -- a literal leading ^ inside a class body is an ordinary member of the class (escaped so it can't be misread as regex negation), so '^' itself matches [^ab]"
+    },
+    {
+      "name": "c",
+      "pattern": "[^ab]",
+      "expected": false,
+      "why": "the class [^ab] (literal ^, a, b members, NOT negated) does not include 'c'"
+    },
+    {
+      "name": "ALPHA",
+      "pattern": "alpha",
+      "expected": true,
+      "why": "matching is case-insensitive: uppercase name vs lowercase pattern"
+    },
+    {
+      "name": "alpha",
+      "pattern": "ALPHA",
+      "expected": true,
+      "why": "matching is case-insensitive: lowercase name vs uppercase pattern"
+    },
+    {
+      "name": "foo.bar",
+      "pattern": "foo.bar",
+      "expected": true,
+      "why": "a literal '.' in the pattern matches a literal '.' in the name"
+    },
+    {
+      "name": "fooXbar",
+      "pattern": "foo.bar",
+      "expected": false,
+      "why": "'.' is NOT a glob wildcard (only ? and * are) -- it must be escaped to a literal regex '.', so it does not match an arbitrary character here"
+    },
+    {
+      "name": "a+b",
+      "pattern": "a+b",
+      "expected": true,
+      "why": "a literal '+' in the pattern matches a literal '+' -- regex metacharacters in the pattern must be escaped, not interpreted"
+    },
+    {
+      "name": "ab",
+      "pattern": "a+b",
+      "expected": false,
+      "why": "'+' is escaped to a literal character, not a regex quantifier -- 'ab' (no plus) must not match"
+    },
+    {
+      "name": "session-01",
+      "pattern": "session-[0-9][0-9]",
+      "expected": true,
+      "why": "multiple character classes compose within a single pattern"
+    },
+    {
+      "name": "session-1",
+      "pattern": "session-[0-9][0-9]",
+      "expected": false,
+      "why": "only one digit present where the pattern requires exactly two"
+    }
+  ]
+}

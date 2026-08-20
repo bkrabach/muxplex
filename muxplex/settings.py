@@ -38,6 +38,15 @@ DEFAULT_SETTINGS: dict = {
     "session_ttl": 604800,
     "default_session": None,
     "sort_order": "manual",
+    # fnmatch-style glob pattern (case-insensitive), matched against each
+    # session's bare `name` -- never `sessionKey`, same rationale as `views`'
+    # `match_names` above. Empty string = no filter (every session passes).
+    # Narrows the grid/sidebar RENDER only -- getVisibleSessions() (favicon
+    # badge, page title, mobile bottom sheet) deliberately ignores this, so
+    # a filtered-out session's bell still surfaces there. Syncable, matching
+    # sort_order (both are display/session-behavior preferences a user would
+    # reasonably want to carry across their own devices).
+    "session_filter": "",
     "hidden_sessions": [],
     "views": [],
     "window_size_largest": False,
@@ -484,6 +493,7 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
         "composeBarOpen",
         # Session behavior
         "sort_order",
+        "session_filter",
         "hidden_sessions",
         "views",
         "default_session",
