@@ -1,3 +1,39 @@
+## v0.57.0 (2026-08-19)
+
+**Filter the session list by name, and a self-upgrade that finishes cleanly.**
+This release adds a free-text filter next to the existing View and Sort
+controls, and repairs a long-standing way `muxplex upgrade` could leave the
+service down after an otherwise-successful install.
+
+### Added
+
+- **Session filter** -- a free-text fnmatch/glob control alongside View and
+  Sort, in both the overview header and the expanded-view sidebar. Type a
+  pattern like `amplifier-*` to narrow the session list by name; it composes
+  with the active view and the current sort order, and matches
+  case-insensitively with the same semantics as a view's `match_names`.
+  Persisted via the new `session_filter` setting (syncable, like `sort_order`).
+
+### Fixed
+
+- **Self-upgrade no longer runs post-install steps in the stale interpreter.**
+  `upgrade()` replaced muxplex on disk and then kept running -- regenerating the
+  service file and refreshing the agent -- in the *old*, already-loaded process,
+  which could raise `ImportError: cannot import name 'ensure_agent' from
+  'muxplex.cli'` and leave the service down after an otherwise-successful
+  install. It now hands the post-install steps off to a brand-new process of the
+  just-installed version (an internal `muxplex _finish-upgrade` step), so those
+  imports always resolve against the new code.
+- **`muxplex ensure-agent` / `muxplex doctor` on Python 3.11** now explain that
+  the embedded agent panel requires Python >=3.12, instead of dumping a raw uv
+  resolver error; the agent bootstrap is skipped cleanly below that floor.
+
+### Notes
+
+- The self-upgrade fix is **forward-only** -- it protects upgrades *from*
+  v0.57.0 onward. If a prior upgrade left your service down, see "Recovering
+  from a failed upgrade" in the README (`muxplex service install`).
+
 ## v0.56.2 (2026-08-18)
 
 **A slow agent turn no longer looks like a broken one.** When the embedded chat

@@ -215,7 +215,7 @@ ImportError: cannot import name 'ensure_agent' from 'muxplex.cli'
 
 leaving the service stopped even though the new version installed correctly.
 
-muxplex v0.56.3+ fixes this at the root: `upgrade()` now hands the post-install steps off to a brand-new process of the just-installed version (an internal `muxplex _finish-upgrade` step), so those imports always resolve against the new code, never a stale cached module.
+muxplex v0.57.0+ fixes this at the root: `upgrade()` now hands the post-install steps off to a brand-new process of the just-installed version (an internal `muxplex _finish-upgrade` step), so those imports always resolve against the new code, never a stale cached module.
 
 If you hit this on an affected version and the service is down after an upgrade, recover with:
 
