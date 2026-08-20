@@ -240,6 +240,33 @@ its runtime-measured evidence. Summary of the parts a client re-implements:
   single-session endpoint exists precisely to sidestep that (same rationale
   already documented for `lines` -- `get_session_snapshot()`'s docstring).
 
+## Preview font size / zoom: `previewFontSize` / `previewZoom` (SYNCABLE display prefs)
+
+Two additive `SYNCABLE_KEYS` display preferences, clamped at the
+`load_settings()` boundary (`settings.normalize_preview_font_size` /
+`normalize_preview_zoom`) so a malformed on-disk or synced value can never
+reach the renderer -- same posture as every other numeric field this file
+documents:
+
+- **`previewFontSize`** -- px, default `11`, clamped to `[8, 24]`. Feeds
+  `--preview-font-size` (`frontend/app.js`'s `applyDisplaySettings()`),
+  consumed by `.tile-body pre` / `.sidebar-item-body pre` (`frontend/style.css`).
+  Deliberately independent of `fontSize`, which drives only the live
+  xterm.js terminal.
+- **`previewZoom`** -- a percentage, default `100`, clamped to `[50, 200]`.
+  Feeds `--preview-zoom` (a unitless factor, `previewZoom / 100`), which
+  scales session tile height and the grid's minimum column width together.
+  `100` reproduces the pre-zoom exact sizing.
+
+Both are ordinary display prefs (not commands or filesystem paths), so
+neither is in `LOCAL_ONLY_KEYS` -- they sync across federation like
+`fontSize`/`gridColumns`. The soft deck (`muxplex-deck` repo) has its own,
+separately-scoped, per-device `previewFontSize`/`zoom` in its local
+`deckSettings` (localStorage) -- **not** the same setting, not synced here,
+by the same "grid position has no stable cross-device meaning" rationale
+`deck.js`'s own settings-menu section documents for its other per-device
+fields.
+
 ## Semantics external clients re-implement today (change with care)
 
 These rules are currently ported into clients; silently changing them breaks

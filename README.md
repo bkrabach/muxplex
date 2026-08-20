@@ -361,7 +361,9 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `multi_device_enabled` | `false` | Enable multi-instance federation |
 | `tls_cert` † | `""` | Path to TLS certificate file (empty = HTTP) |
 | `tls_key` † | `""` | Path to TLS private key file (empty = HTTP) |
-| `fontSize` | `14` | Terminal and tile preview font size (px) |
+| `fontSize` | `14` | Terminal font size (px) |
+| `previewFontSize` | `11` | Tile/sidebar preview text font size (px), `8`-`24`. Independent of `fontSize`, which drives only the live terminal. |
+| `previewZoom` | `100` | Tile size / grid minimum column width scale (%), `50`-`200`. `100` reproduces the default sizing. |
 | `hoverPreviewDelay` | `1500` | Hover preview popup delay (ms). `0` = Off. The sole control for the popover (as of v0.47.0; folds in the retired `showHoverPreview` checkbox -- see below) |
 | `gridColumns` | `"auto"` | Number of grid columns (`"auto"` or integer) |
 | `bellSound` | `false` | Play audio sound on terminal bell |

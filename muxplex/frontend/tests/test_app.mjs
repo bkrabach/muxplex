@@ -6540,7 +6540,7 @@ test('DISPLAY_DEFAULTS includes gridViewMode with default flat', () => {
   );
 });
 
-test('DISPLAY_DEFAULTS has exactly 10 keys', () => {
+test('DISPLAY_DEFAULTS has exactly 11 keys', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
   assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
@@ -6548,7 +6548,17 @@ test('DISPLAY_DEFAULTS has exactly 10 keys', () => {
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
   const keyMatches = defaultsBody.match(/^\s+\w+:/gm);
   assert.ok(keyMatches, 'DISPLAY_DEFAULTS must have keys');
-  assert.strictEqual(keyMatches.length, 9, `DISPLAY_DEFAULTS must have exactly 9 keys (showHoverPreview retired in v0.47.0), got ${keyMatches.length}`);
+  assert.strictEqual(keyMatches.length, 11, `DISPLAY_DEFAULTS must have exactly 11 keys (previewFontSize/previewZoom added), got ${keyMatches.length}`);
+});
+
+test('DISPLAY_DEFAULTS includes previewFontSize: 11 and previewZoom: 100', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
+  assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
+  const defaultsEnd = source.indexOf('};', defaultsStart);
+  const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
+  assert.ok(defaultsBody.includes('previewFontSize: 11'), 'DISPLAY_DEFAULTS must include previewFontSize: 11');
+  assert.ok(defaultsBody.includes('previewZoom: 100'), 'DISPLAY_DEFAULTS must include previewZoom: 100');
 });
 
 test('getDisplaySettings is exported from app.js', () => {
@@ -6576,6 +6586,8 @@ test('getDisplaySettings returns DISPLAY_DEFAULTS when _serverSettings is null',
   assert.ok(!('showHoverPreview' in ds), 'getDisplaySettings must NOT include the retired showHoverPreview key');
   assert.strictEqual(ds.activityIndicator, 'both', 'getDisplaySettings must return default activityIndicator');
   assert.strictEqual(ds.gridViewMode, 'flat', 'getDisplaySettings must return default gridViewMode');
+  assert.strictEqual(ds.previewFontSize, 11, 'getDisplaySettings must return default previewFontSize');
+  assert.strictEqual(ds.previewZoom, 100, 'getDisplaySettings must return default previewZoom');
 });
 
 test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DEFAULTS fallback', () => {
@@ -6585,8 +6597,67 @@ test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DE
   assert.strictEqual(ds.viewMode, 'fit', 'getDisplaySettings must use viewMode from _serverSettings');
   assert.strictEqual(ds.hoverPreviewDelay, 1500, 'getDisplaySettings must fall back to default hoverPreviewDelay');
   assert.strictEqual(ds.gridViewMode, 'flat', 'getDisplaySettings must fall back to default gridViewMode');
+  assert.strictEqual(ds.previewFontSize, 11, 'getDisplaySettings must fall back to default previewFontSize');
+  assert.strictEqual(ds.previewZoom, 100, 'getDisplaySettings must fall back to default previewZoom');
   assert.ok(!('unknownKey' in ds), 'getDisplaySettings must not include keys not in DISPLAY_DEFAULTS');
   app._setServerSettings(null);
+});
+
+test('getDisplaySettings reads previewFontSize/previewZoom from _serverSettings when present', () => {
+  app._setServerSettings({ previewFontSize: 18, previewZoom: 150 });
+  const ds = app.getDisplaySettings();
+  assert.strictEqual(ds.previewFontSize, 18, 'getDisplaySettings must use previewFontSize from _serverSettings');
+  assert.strictEqual(ds.previewZoom, 150, 'getDisplaySettings must use previewZoom from _serverSettings');
+  app._setServerSettings(null);
+});
+
+// ---------------------------------------------------------------------------
+// previewFontSize / previewZoom (applyDisplaySettings)
+// ---------------------------------------------------------------------------
+
+test('applyDisplaySettings sets --preview-font-size from ds.previewFontSize, not ds.fontSize', () => {
+  const setProperties = {};
+  const savedDocumentElement = globalThis.document.documentElement;
+  globalThis.document.documentElement = {
+    style: { setProperty: (name, value) => { setProperties[name] = value; } },
+  };
+  try {
+    app.applyDisplaySettings({ fontSize: 14, previewFontSize: 18, previewZoom: 100, viewMode: 'auto', gridColumns: 'auto' });
+    assert.strictEqual(setProperties['--preview-font-size'], '18px',
+      'applyDisplaySettings must set --preview-font-size from ds.previewFontSize (18px), not ds.fontSize (14px)');
+  } finally {
+    globalThis.document.documentElement = savedDocumentElement;
+  }
+});
+
+test('applyDisplaySettings sets --preview-zoom as a unitless factor (previewZoom% / 100)', () => {
+  const setProperties = {};
+  const savedDocumentElement = globalThis.document.documentElement;
+  globalThis.document.documentElement = {
+    style: { setProperty: (name, value) => { setProperties[name] = value; } },
+  };
+  try {
+    app.applyDisplaySettings({ fontSize: 14, previewFontSize: 11, previewZoom: 150, viewMode: 'auto', gridColumns: 'auto' });
+    assert.strictEqual(setProperties['--preview-zoom'], 1.5,
+      'applyDisplaySettings must set --preview-zoom to previewZoom/100 (1.5 for 150%)');
+  } finally {
+    globalThis.document.documentElement = savedDocumentElement;
+  }
+});
+
+test('applyDisplaySettings default previewFontSize=11/previewZoom=100 reproduce todays exact sizing', () => {
+  const setProperties = {};
+  const savedDocumentElement = globalThis.document.documentElement;
+  globalThis.document.documentElement = {
+    style: { setProperty: (name, value) => { setProperties[name] = value; } },
+  };
+  try {
+    app.applyDisplaySettings({ fontSize: 14, previewFontSize: 11, previewZoom: 100, viewMode: 'auto', gridColumns: 'auto' });
+    assert.strictEqual(setProperties['--preview-font-size'], '11px', 'default previewFontSize must produce 11px (unchanged from before previewFontSize existed)');
+    assert.strictEqual(setProperties['--preview-zoom'], 1, 'default previewZoom (100) must produce a zoom factor of 1 (no scaling)');
+  } finally {
+    globalThis.document.documentElement = savedDocumentElement;
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -291,7 +291,8 @@ html, body {
   justify-content: flex-end;
   padding: 0 var(--m) var(--state-h);
   font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
-  font-size: var(--texture); /* TEXTURE: fixed 11px, never scales with S */
+  font-size: var(--texture); /* TEXTURE: never scales with S -- user-configurable via
+     deckSettings.previewFontSize (default 11px) and deckSettings.zoom (see deriveTokens()) */
   line-height: 1.3;
   color: #7A7A7A; /* least important thing on the face; not the highest-contrast */
   white-space: pre;
