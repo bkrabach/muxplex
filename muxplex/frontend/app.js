@@ -400,6 +400,11 @@ function _buildFlyoutMenuItems() {
 // ─── Settings state ───────────────────────────────────────────────────────────
 let _settingsOpen = false;
 let _serverSettings = null;
+// Debounce handle for the session_filter PATCH -- see applySessionFilter().
+// The RE-RENDER on every keystroke is synchronous (that's the feature); only
+// the network write is debounced, same trade-off as the remote-instance
+// name/URL fields' _remoteDebounceTimer.
+let _sessionFilterPatchTimer = null;
 // Last response from GET/PATCH /api/tmux-config (Settings > Terminal tab).
 // null until that endpoint has been fetched at least once.
 let _tmuxConfig = null;
@@ -2246,6 +2251,132 @@ function getVisibleSessions(sessions) {
   return filterVisible(sessions, _serverSettings, _activeView);
 }
 
+// ---------------------------------------------------------------------------
+// Session-name filter (muxplex-4h9): fnmatch-style glob matching against
+// each session's bare `name` (never `sessionKey` -- see settings.py's
+// `views`/`match_names` comment for the identical rationale: the
+// device-qualified key is a UUID nobody would type). Mirrors the SAME glob
+// semantics muxplex.views uses server-side (docs/API_SEMANTICS.md), so a
+// pattern behaves identically whether matched here or via
+// GET /api/preview-view-rule -- but this is a client-side-only mirror; it
+// is never sent to the server for validation (unlike view rules).
+// ---------------------------------------------------------------------------
+
+/** Single-entry memo cache for _globToRegExp() -- filterByNamePattern calls
+ * matchesNamePattern() once per session, all sharing one pattern per
+ * render, so recompiling the same RegExp per session would be wasted work. */
+let _globToRegExpCache = null;
+
+/**
+ * Translate an fnmatch-style glob pattern into an anchored RegExp, mirroring
+ * the core of CPython's fnmatch.translate(): `*` becomes `.*` (consecutive
+ * stars collapse into one), `?` becomes `.`, `[seq]`/`[!seq]` become regex
+ * character classes (`!` is the fnmatch negation marker, translated to `^`),
+ * an unterminated `[` (no closing `]`) is treated as a literal `[` rather
+ * than a broken class, a literal `^` as the first character INSIDE a class
+ * body is escaped so it can never be mistaken for the class's own negation
+ * marker, and every other character is regex-escaped. The whole pattern is
+ * anchored (`^(?:...)$`) with the `s` flag so `.` (from `?`) matches
+ * newlines too, matching fnmatch's own any-character semantics.
+ * @param {string} pattern
+ * @returns {RegExp}
+ */
+function _globToRegExp(pattern) {
+  if (_globToRegExpCache && _globToRegExpCache.pattern === pattern) {
+    return _globToRegExpCache.regex;
+  }
+
+  var i = 0;
+  var n = pattern.length;
+  var out = '';
+
+  while (i < n) {
+    var c = pattern[i];
+    i += 1;
+
+    if (c === '*') {
+      // Collapse consecutive `*` into a single `.*`.
+      while (i < n && pattern[i] === '*') i += 1;
+      out += '.*';
+    } else if (c === '?') {
+      out += '.';
+    } else if (c === '[') {
+      var j = i;
+      var negate = false;
+      if (j < n && pattern[j] === '!') {
+        negate = true;
+        j += 1;
+      }
+      // A `]` immediately after `[` or `[!` is a literal member, not the
+      // closing bracket -- skip it before scanning for the real close.
+      if (j < n && pattern[j] === ']') j += 1;
+      while (j < n && pattern[j] !== ']') j += 1;
+
+      if (j >= n) {
+        // Unterminated `[` -- no closing `]` found. Treat as a literal
+        // bracket character rather than a malformed class.
+        out += '\\[';
+      } else {
+        var stuff = pattern.slice(negate ? i + 1 : i, j).replace(/\\/g, '\\\\');
+        i = j + 1;
+        // A literal `^` at the start of the class body would otherwise be
+        // read as this regex class's OWN negation marker -- escape it.
+        if (stuff.charAt(0) === '^') stuff = '\\' + stuff;
+        out += (negate ? '[^' : '[') + stuff + ']';
+      }
+    } else {
+      out += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+
+  var regex = new RegExp('^(?:' + out + ')$', 's');
+  _globToRegExpCache = { pattern: pattern, regex: regex };
+  return regex;
+}
+
+/**
+ * Case-insensitive fnmatch-style glob match of a session name against a
+ * pattern. Non-string `name` or `pattern` never match (defensive -- a
+ * session missing `name`, or a caller passing something other than a
+ * string pattern, is simply "does not match" rather than throwing).
+ * @param {string} name
+ * @param {string} pattern
+ * @returns {boolean}
+ */
+function matchesNamePattern(name, pattern) {
+  if (typeof name !== 'string' || typeof pattern !== 'string') return false;
+  return _globToRegExp(pattern.toLowerCase()).test(name.toLowerCase());
+}
+
+/**
+ * Filter sessions by a glob pattern matched against each session's `name`.
+ * A blank, whitespace-only, null, or undefined pattern means "no filter" and
+ * returns `sessions` unchanged. Once a pattern is non-blank it is used
+ * VERBATIM (untrimmed) -- only the blank check itself is whitespace-tolerant.
+ * @param {object[]} sessions
+ * @param {string|null|undefined} pattern
+ * @returns {object[]}
+ */
+function filterByNamePattern(sessions, pattern) {
+  if (!pattern || !pattern.trim()) return sessions;
+  return sessions.filter(function(s) { return matchesNamePattern(s.name, pattern); });
+}
+
+/**
+ * Sessions visible in the active view AND matching the current
+ * `session_filter` server setting. Composes with getVisibleSessions()
+ * rather than folding into it: getVisibleSessions() also feeds the favicon
+ * badge, page title, and mobile bottom sheet, which must keep counting/
+ * showing every visible session regardless of the name filter -- only the
+ * grid/sidebar RENDER should narrow. renderGrid()/renderSidebar() call
+ * this, never getVisibleSessions() directly.
+ * @param {object[]} sessions
+ * @returns {object[]}
+ */
+function getFilteredSessions(sessions) {
+  return filterByNamePattern(getVisibleSessions(sessions), _serverSettings && _serverSettings.session_filter);
+}
+
 // =============================================================================
 // Operation layer (Phase 2)
 //
@@ -2414,10 +2545,13 @@ function renderSidebar(sessions, currentSession, currentRemoteId) {
   const list = $('sidebar-list');
   if (!list) return;
 
-  const visible = getVisibleSessions(sessions);
+  const visible = getFilteredSessions(sessions);
 
   if (visible.length === 0) {
-    list.innerHTML = '<div class="sidebar-empty">No sessions</div>';
+    const filterActive = !!(_serverSettings && _serverSettings.session_filter && _serverSettings.session_filter.trim());
+    list.innerHTML = filterActive
+      ? '<div class="sidebar-empty">No sessions match this filter</div>'
+      : '<div class="sidebar-empty">No sessions</div>';
     return;
   }
 
@@ -3182,6 +3316,47 @@ function selectSortOrder(value) {
 }
 
 /**
+ * Apply a new session_filter value (from either filter input's 'input'
+ * event, firing on every keystroke): update local state, sync both filter
+ * inputs, and SYNCHRONOUSLY re-render the grid + sidebar -- narrowing the
+ * list per keystroke is the entire feature. Persisting to the server is
+ * debounced (400ms via _sessionFilterPatchTimer), not per-keystroke, since
+ * only the network write is expensive -- the render is not.
+ * @param {string} value
+ */
+function applySessionFilter(value) {
+  if (_serverSettings) _serverSettings.session_filter = value;
+  syncSessionFilterControls();
+  renderGrid(_currentSessions || []);
+  renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
+
+  clearTimeout(_sessionFilterPatchTimer);
+  _sessionFilterPatchTimer = setTimeout(function() {
+    patchServerSetting('session_filter', value);
+  }, 400);
+}
+
+/**
+ * Set both session-filter inputs' value from _serverSettings.session_filter
+ * -- mirrors syncSortOrderControls() (same "single place keeps every
+ * surface backed by one server setting in agreement" role), with one
+ * addition: a filter input can be the CURRENTLY FOCUSED element mid-typing,
+ * and overwriting `.value` on a focused input clobbers its caret position.
+ * Whichever of the two inputs currently has focus is left untouched; only
+ * the other (unfocused) one is synced.
+ */
+function syncSessionFilterControls() {
+  var value = (_serverSettings && _serverSettings.session_filter) || '';
+  var active = document.activeElement;
+
+  var input = $('session-filter-input');
+  if (input && input !== active) input.value = value;
+
+  var sidebarInput = $('sidebar-session-filter-input');
+  if (sidebarInput && sidebarInput !== active) sidebarInput.value = value;
+}
+
+/**
  * Save updated views array via PATCH /api/settings, update _serverSettings,
  * re-render the views settings tab, and re-render the view dropdown.
  * @param {Array} updatedViews - New views array to save.
@@ -3477,7 +3652,7 @@ function renderGrid(sessions) {
     }
   }
 
-  var visible = getVisibleSessions(sessions);
+  var visible = getFilteredSessions(sessions);
 
   if (visible.length === 0) {
     // Build status tiles for auth_failed/unreachable sessions even when no regular sessions exist.
@@ -3491,8 +3666,13 @@ function renderGrid(sessions) {
     if (grid) grid.innerHTML = statusTilesHtml;
     // Only show empty-state when there are truly no tiles at all
     if (emptyState) {
-      if (statusTilesHtml) emptyState.classList.add('hidden');
-      else emptyState.classList.remove('hidden');
+      if (statusTilesHtml) {
+        emptyState.classList.add('hidden');
+      } else {
+        var filterActive = !!(_serverSettings && _serverSettings.session_filter && _serverSettings.session_filter.trim());
+        emptyState.textContent = filterActive ? 'No sessions match this filter' : 'No active tmux sessions';
+        emptyState.classList.remove('hidden');
+      }
     }
     if (filterBar) filterBar.innerHTML = '';
     return;
@@ -6904,6 +7084,7 @@ function _rerenderViewDependentUI() {
   renderGrid(_currentSessions || []);
   renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
   syncSortOrderControls();
+  syncSessionFilterControls();
   if (_settingsOpen) renderViewsSettingsTab();
   var manageViewPanel = $('manage-view-panel');
   if (manageViewPanel && !manageViewPanel.classList.contains('hidden')) {
@@ -9127,6 +9308,18 @@ function bindStaticEventListeners() {
     if (!sidebarDropdown.contains(e.target)) closeSidebarSortDropdown();
   });
 
+  // Session-name filter (muxplex-4h9) -- 'input' (not 'keyup') so paste and
+  // IME composition also narrow the list; no Enter/Escape handling, the
+  // filter applies live on every keystroke.
+  var sessionFilterInput = $('session-filter-input');
+  if (sessionFilterInput) {
+    on(sessionFilterInput, 'input', function() { applySessionFilter(this.value); });
+  }
+  var sidebarSessionFilterInput = $('sidebar-session-filter-input');
+  if (sidebarSessionFilterInput) {
+    on(sidebarSessionFilterInput, 'input', function() { applySessionFilter(this.value); });
+  }
+
   var newSessionBtn = $('new-session-btn');
   if (newSessionBtn) on(newSessionBtn, 'click', function() { showNewSessionInput(newSessionBtn); });
   var sidebarNewSessionBtn = $('sidebar-new-session-btn');
@@ -9689,6 +9882,8 @@ document.addEventListener('DOMContentLoaded', async function() {
   _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || 0;
   // Initialize the header/sidebar quick-sort selects from the loaded setting.
   syncSortOrderControls();
+  // Initialize both session-filter inputs from the loaded setting.
+  syncSessionFilterControls();
 
   // Cache local device_id + version from /api/instance-info. device_id feeds
   // session key construction; version populates the read-only Settings >
@@ -9767,6 +9962,12 @@ if (typeof module !== 'undefined' && module.exports) {
     sortByAttention,
     applySortOrder,
     filterByQuery,
+    // Session-name filter (muxplex-4h9)
+    matchesNamePattern,
+    filterByNamePattern,
+    getFilteredSessions,
+    applySessionFilter,
+    syncSessionFilterControls,
     detectBellTransitions,
     generateDeviceId,
     buildHeartbeatPayload,

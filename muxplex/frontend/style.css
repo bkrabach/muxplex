@@ -3954,6 +3954,61 @@ body {
 }
 
 /* ============================================================
+   Quick session-name filter -- header + sidebar (muxplex-4h9)
+   ============================================================
+   #session-filter-input / #sidebar-session-filter-input are plain text
+   inputs, not buttons -- there's no popup menu, so this doesn't touch the
+   "Quick dropdown controller" mechanism app.js's sort/view controls use.
+   The header instance gets a fixed max-width (so a long pattern can't push
+   the settings/agent buttons in .header-actions off the row); the sidebar
+   instance instead grows to fill its row, matching how the sidebar's other
+   quick controls (.quick-link) already stretch via
+   .sidebar-header-controls's own flex rules. */
+.quick-filter {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.quick-sort-dropdown + .quick-filter {
+  margin-left: 8px;
+}
+
+.quick-filter__input {
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  max-width: 140px;
+  min-width: 0;
+}
+
+.quick-filter__input::placeholder {
+  color: var(--text-muted);
+}
+
+.quick-filter__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+
+/* Sidebar row: caption + input, same gap as .sidebar-view-dropdown's own
+   caption-to-control spacing; the input grows to fill the row instead of
+   the header's fixed max-width. */
+.sidebar-header-controls .quick-filter {
+  gap: 6px;
+}
+
+.sidebar-header-controls .quick-filter__input {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+}
+
+/* ============================================================
    Device badge, group header, filter bar, sidebar device header
    ============================================================ */
 
