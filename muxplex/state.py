@@ -291,6 +291,49 @@ def write_group_state(state: dict, group: str, updates: dict[str, object]) -> No
         target[key] = value
 
 
+def write_group_state_mirrored(
+    state: dict, device_id: str | None, group: str, updates: dict[str, object]
+) -> None:
+    """write_group_state(), then mirror *updates* into device_id's OWN
+    ``device:<id>`` group -- but only if that group already exists.
+
+    This is the write-through fix for a real cross-device sync bug: a
+    "leader" device that never self-claims (e.g. a client with no
+    self-claim UI, sitting in GLOBAL_GROUP by default) writes its selection
+    to *group* (typically GLOBAL_GROUP). A "follower" device that sets its
+    own ``sync_group`` to ``device:<leader_id>`` (via ``POST
+    /api/heartbeat``, which calls ``ensure_group()`` and so creates that
+    group) reads from ``device:<leader_id>`` -- a slot the leader's own
+    write above never touches. The follower is left reading a frozen
+    snapshot from whenever it first followed, forever.
+
+    Mirroring the SAME device-initiated update into the device's own
+    private group closes that gap, but must not resurrect a group nobody
+    is watching: this NEVER creates ``device:<device_id>`` (that stays
+    ``ensure_group()``'s job, invoked only when a follower opts in) --
+    it only writes into it when it is already present in
+    ``state["sync_groups"]``. A device nobody follows therefore pays for
+    exactly one write, identical to calling ``write_group_state`` directly.
+
+    Deliberately narrow: only the three device-initiated write sites
+    (``POST /api/sessions/{name}/connect``, ``DELETE
+    /api/sessions/current``, ``PATCH /api/state``) call this. Federation
+    sync, the poll cycle, and device/group pruning are untouched --
+    sync_groups are local-instance-only state, never replicated to
+    federation peers (see docs/API_SEMANTICS.md's "Sync groups" entry), so
+    mirroring here carries no cross-instance loop risk.
+    """
+    write_group_state(state, group, updates)
+
+    if device_id is None:
+        return
+    own = device_group_id(device_id)
+    if own == group:
+        return  # already written above; avoid a redundant duplicate write
+    if own in state["sync_groups"]:
+        write_group_state(state, own, updates)
+
+
 def ensure_group(state: dict, group: str) -> bool:
     """Create *group* in ``state["sync_groups"]`` if absent, seeded from global.
 
