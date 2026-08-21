@@ -1,3 +1,23 @@
+## v0.58.1 (2026-08-21)
+
+**Fixed: wide terminal lines no longer reflow and re-wrap when you click-drag to select text.**
+Selecting inside wide or "fenced" output could suddenly introduce line wraps where everything had fit a moment earlier. The cause was an unconditional second fit at terminal open that could compute a different column count for the same settled layout, briefly desyncing the client's width from tmux's pane width; the redraw a drag triggers (entering tmux copy-mode) then reflowed the wide lines.
+
+### Fixed
+
+- **Terminal (`frontend/terminal.js`):** the 500ms open-time fallback `FitAddon.fit()` now
+  only re-fits when the first fit produced a degenerate `cols <= 2` (the slow-mobile "0px
+  width" case it was written for). The previous unconditional re-fit could hand tmux a
+  second, different column count for an already-correct layout, which reflowed wide lines on
+  the next server repaint. (#61)
+
+### Added
+
+- **Terminal diagnostics (opt-in):** load the page with `?debugResize=1` (or set
+  `localStorage['muxplex.debugResize'] = '1'`) to log every `fit()` and every PTY resize
+  dispatched to the server with the resulting cols/rows, for correlating the client's column
+  count against tmux `#{pane_width}`. Off by default. (#61)
+
 ## v0.58.0 (2026-08-20)
 
 **Preview font size and zoom are now adjustable — from Settings on the web UI and the soft deck, per deck.**
