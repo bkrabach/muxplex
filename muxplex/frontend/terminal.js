@@ -176,6 +176,7 @@ function connectWebSocket(name, remoteId, ownDeviceId) {
       }
     });
     _term.onResize(function(size) {
+      _resizeDebugLog('onResize->server', size.cols, size.rows);
       clearTimeout(_pendingResizeSend);
       if (Date.now() - _lastResizeSendAt >= RESIZE_SEND_THROTTLE_MS) {
         _sendResizeToServer(size.cols, size.rows);
@@ -501,6 +502,46 @@ function _termRefit() {
 window._refitTerminal = _termRefit;
 
 /**
+ * Resize/reflow diagnostics (opt-in, OFF by default).
+ *
+ * Enable by loading the page with `?debugResize=1`, or by setting
+ * localStorage['muxplex.debugResize'] = '1' and reopening a session. When on,
+ * every FitAddon.fit() (wrapped in createTerminal) and every PTY resize
+ * dispatched to the server (onResize handler) logs a timestamped line with the
+ * resulting cols/rows.
+ *
+ * Purpose: correlate the client's column count against tmux's pane width
+ * (`tmux display -p '#{pane_width}'`) during a click-drag, to catch the
+ * client/server width desync that reflows wide ("fenced") lines the moment a
+ * selection begins. Gated so it ships clean and toggles live without a rebuild.
+ */
+function _resizeDebugEnabled() {
+  try {
+    if (typeof location !== 'undefined' && location.search &&
+        /[?&]debugResize=1(?:&|$)/.test(location.search)) {
+      return true;
+    }
+    if (typeof localStorage !== 'undefined' &&
+        localStorage.getItem('muxplex.debugResize') === '1') {
+      return true;
+    }
+  } catch (_) { /* private-mode / SSR / node test env -> treat as disabled */ }
+  return false;
+}
+
+function _resizeDebugLog(where, cols, rows) {
+  if (!_resizeDebugEnabled()) return;
+  try {
+    console.log(
+      '[muxplex-resize] ' + where +
+      ' t=' + Date.now() +
+      ' cols=' + cols +
+      ' rows=' + rows
+    );
+  } catch (_) { /* never let logging break the terminal */ }
+}
+
+/**
  * Generic core of muxplex's visualViewport-tracking mechanism: mirror
  * `window.visualViewport.height` into a CSS custom property (`cssVarName`)
  * on `el`, with two guards proven out here first for the terminal and now
@@ -731,6 +772,20 @@ function createTerminal(fontSize) {
 
   _fitAddon = new window.FitAddon.FitAddon();
   _term.loadAddon(_fitAddon);
+
+  // Diagnostics (opt-in): log every fit() with the cols/rows it produced, so a
+  // reflow-on-selection can be correlated with tmux's pane width. No-op and
+  // completely unwrapped unless _resizeDebugEnabled() is on (see that helper for
+  // the opt-in flags). Reads no font/display settings of its own.
+  if (_resizeDebugEnabled()) {
+    var _fitForDebug = _fitAddon;
+    var _origFit = _fitForDebug.fit.bind(_fitForDebug);
+    _fitForDebug.fit = function () {
+      var r = _origFit();
+      _resizeDebugLog('fit', _term && _term.cols, _term && _term.rows);
+      return r;
+    };
+  }
 
   // Clickable URLs — Ctrl+Click (Windows/Linux) or Cmd+Click (macOS) opens in new tab.
   // xterm-addon-web-links auto-detects URLs and adds hover underlines.
@@ -978,9 +1033,25 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
     const raf = typeof requestAnimationFrame !== 'undefined' ? requestAnimationFrame : (fn) => fn();
     raf(function() {
       try { fitAddonRef.fit(); } catch (_) {}
-      // 500ms fallback for slow mobile layout engines (e.g. first paint on low-end devices)
+      // 500ms fallback for slow mobile layout engines (e.g. first paint on low-end
+      // devices) where the rAF fit above measured a not-yet-settled 0px-width
+      // container and produced a degenerate ~2-column terminal. ONLY re-fit when
+      // that actually happened (cols <= 2).
+      //
+      // An UNCONDITIONAL second fit computes a second, possibly-different `cols`
+      // for the SAME already-correct layout once it finishes settling. That
+      // briefly desyncs the client's xterm width from tmux's pane width, and the
+      // next server-side repaint (e.g. the redraw a mouse-drag triggers when it
+      // enters tmux copy-mode) reflows wide ("fenced") lines that had fit fine a
+      // moment earlier. Guarding on cols <= 2 keeps the mobile 0px recovery while
+      // removing that race. See the resize-dispatch throttle note near the top of
+      // this file for the desync mechanism.
       setTimeout(function() {
-        try { if (_fitAddon) _fitAddon.fit(); } catch (_) {}
+        try {
+          if (_fitAddon && _term && _term.cols <= 2) {
+            _fitAddon.fit();
+          }
+        } catch (_) {}
       }, 500);
     });
   }
