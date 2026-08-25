@@ -186,14 +186,38 @@ def verify_session_cookie(secret: str, cookie: str, ttl_seconds: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def pam_available() -> bool:
-    """Check whether the python-pam module is importable."""
+def pam_probe() -> tuple[bool, str | None]:
+    """Import python-pam and report whether it is usable.
+
+    Returns ``(available, error)``: ``(True, None)`` when ``import pam``
+    succeeds; ``(False, msg)`` when it raises, where ``msg`` is the
+    ImportError's message. The message matters because python-pam has an
+    UNDECLARED transitive dependency on ``six`` (declared on muxplex's side at
+    ``pyproject.toml``'s ``six>=1.16.0``); a stale or partial install can
+    still leave ``six`` absent, and ``import pam`` then fails with
+    ``No module named 'six'``. The old ``pam_available()``-only bool return
+    silently swallowed that, making ``muxplex doctor`` misreport a broken PAM
+    as a benign "no PAM -- will auto-generate a password" fallback. Surfacing
+    the cause here lets doctor distinguish "PAM genuinely not installed" from
+    "PAM installed but its import failed."
+    """
     try:
         import pam  # noqa: F401
 
-        return True
-    except ImportError:
-        return False
+        return True, None
+    except ImportError as exc:
+        return False, str(exc)
+
+
+def pam_available() -> bool:
+    """Check whether the python-pam module is importable.
+
+    Thin bool wrapper over :func:`pam_probe` for the call sites that only need
+    the yes/no (main.py's auth fallback, ``show-password``). Callers that need
+    the WHY (``doctor`` when PAM is the configured mode but unusable) call
+    ``pam_probe`` directly.
+    """
+    return pam_probe()[0]
 
 
 def authenticate_pam(username: str, password: str) -> bool:
