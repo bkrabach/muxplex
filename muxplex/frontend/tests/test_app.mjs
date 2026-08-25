@@ -6540,7 +6540,7 @@ test('DISPLAY_DEFAULTS includes gridViewMode with default flat', () => {
   );
 });
 
-test('DISPLAY_DEFAULTS has exactly 11 keys', () => {
+test('DISPLAY_DEFAULTS has exactly 12 keys', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
   assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
@@ -6548,7 +6548,7 @@ test('DISPLAY_DEFAULTS has exactly 11 keys', () => {
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
   const keyMatches = defaultsBody.match(/^\s+\w+:/gm);
   assert.ok(keyMatches, 'DISPLAY_DEFAULTS must have keys');
-  assert.strictEqual(keyMatches.length, 11, `DISPLAY_DEFAULTS must have exactly 11 keys (previewFontSize/previewZoom added), got ${keyMatches.length}`);
+  assert.strictEqual(keyMatches.length, 12, `DISPLAY_DEFAULTS must have exactly 12 keys (fontFamily added), got ${keyMatches.length}`);
 });
 
 test('DISPLAY_DEFAULTS includes previewFontSize: 11 and previewZoom: 100', () => {

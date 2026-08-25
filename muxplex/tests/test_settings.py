@@ -12,6 +12,7 @@ import muxplex.settings as settings_mod
 from muxplex.settings import (
     DEFAULT_SETTINGS,
     DEVICE_LABEL_PLACEMENTS,
+    FONT_FAMILIES,
     LOCAL_ONLY_KEYS,
     RESERVED_COMMAND_ID,
     SYNCABLE_KEYS,
@@ -22,6 +23,7 @@ from muxplex.settings import (
     get_syncable_settings,
     load_federation_key,
     load_settings,
+    normalize_font_family,
     normalize_preview_font_size,
     normalize_preview_zoom,
     patch_settings,
@@ -1129,6 +1131,13 @@ def test_defaults_include_display_settings():
         f"gridViewMode default must be 'flat', got: {DEFAULT_SETTINGS['gridViewMode']!r}"
     )
 
+    assert "fontFamily" in DEFAULT_SETTINGS, (
+        "DEFAULT_SETTINGS must include 'fontFamily'"
+    )
+    assert DEFAULT_SETTINGS["fontFamily"] == "FiraCode", (
+        f"fontFamily default must be 'FiraCode', got: {DEFAULT_SETTINGS['fontFamily']!r}"
+    )
+
     assert "sidebarOpen" in DEFAULT_SETTINGS, (
         "DEFAULT_SETTINGS must include 'sidebarOpen'"
     )
@@ -1161,6 +1170,26 @@ def test_preview_font_size_and_zoom_are_syncable():
     assert "previewZoom" in SYNCABLE_KEYS, "previewZoom must be in SYNCABLE_KEYS"
     assert "previewFontSize" not in LOCAL_ONLY_KEYS
     assert "previewZoom" not in LOCAL_ONLY_KEYS
+
+
+def test_font_family_setting_is_syncable_closed_vocab():
+    """fontFamily must be a syncable display pref backed by a closed vocabulary."""
+    assert "fontFamily" in SYNCABLE_KEYS, "fontFamily must be in SYNCABLE_KEYS"
+    assert "fontFamily" not in LOCAL_ONLY_KEYS
+    # default is itself a member of the vocabulary (revert-to-system-mono path)
+    assert DEFAULT_SETTINGS["fontFamily"] in FONT_FAMILIES
+
+
+def test_normalize_font_family_coerces_to_vocab():
+    """normalize_font_family() passes known names through and falls back for anything else."""
+    for name in FONT_FAMILIES:
+        assert normalize_font_family(name) == name
+    assert normalize_font_family("ComicSans") == DEFAULT_SETTINGS["fontFamily"], (
+        "unknown name must fall back to the default"
+    )
+    assert normalize_font_family("") == DEFAULT_SETTINGS["fontFamily"]
+    assert normalize_font_family(None) == DEFAULT_SETTINGS["fontFamily"]
+    assert normalize_font_family(123) == DEFAULT_SETTINGS["fontFamily"]
 
 
 def test_normalize_preview_font_size_clamps_range():

@@ -425,6 +425,7 @@ let _localDeviceId = null;
 let _localVersion = null;
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
+  fontFamily: 'FiraCode',        // terminal font selector (closed vocab); mapped to a CSS stack in terminal.js NERD_FONT_STACKS
   previewFontSize: 11,           // px, tile/sidebar preview text -- independent of fontSize (the terminal font)
   previewZoom: 100,               // %, tile size / grid min column width scale; 100 = today's exact sizing
   hoverPreviewDelay: 1500,
@@ -7615,6 +7616,11 @@ function applyDisplaySettings(ds) {
     window._setTerminalFontSize(ds.fontSize);
   }
 
+  // Apply terminal font family to the live xterm.js terminal without reconnecting
+  if (window._setTerminalFontFamily) {
+    window._setTerminalFontFamily(ds.fontFamily);
+  }
+
   // Apply view mode to grid
   var grid = document.getElementById('session-grid');
   if (!grid) return;
@@ -7676,6 +7682,9 @@ function onDisplaySettingChange() {
   var fontSizeEl = document.getElementById('setting-font-size');
   if (fontSizeEl) ds.fontSize = parseInt(fontSizeEl.value, 10) || ds.fontSize;
 
+  var fontFamilyEl = document.getElementById('setting-font-family');
+  if (fontFamilyEl) ds.fontFamily = fontFamilyEl.value || ds.fontFamily;
+
   var previewFontSizeEl = document.getElementById('setting-preview-font-size');
   if (previewFontSizeEl) ds.previewFontSize = parseInt(previewFontSizeEl.value, 10) || ds.previewFontSize;
 
@@ -7699,6 +7708,7 @@ function onDisplaySettingChange() {
 
   var patch = {
     fontSize: ds.fontSize,
+    fontFamily: ds.fontFamily,
     previewFontSize: ds.previewFontSize,
     previewZoom: ds.previewZoom,
     hoverPreviewDelay: ds.hoverPreviewDelay,
@@ -7802,6 +7812,8 @@ function openSettings() {
   const settings = getDisplaySettings();
   const fontSizeEl = $('setting-font-size');
   if (fontSizeEl) fontSizeEl.value = String(settings.fontSize);
+  const fontFamilyEl = $('setting-font-family');
+  if (fontFamilyEl) fontFamilyEl.value = settings.fontFamily || 'FiraCode';
   const previewFontSizeEl = $('setting-preview-font-size');
   if (previewFontSizeEl) previewFontSizeEl.value = String(settings.previewFontSize);
   const previewZoomEl = $('setting-preview-zoom');
@@ -9452,6 +9464,7 @@ function bindStaticEventListeners() {
 
   // Display settings — bind change events for immediate apply
   on($('setting-font-size'), 'change', onDisplaySettingChange);
+  on($('setting-font-family'), 'change', onDisplaySettingChange);
   on($('setting-preview-font-size'), 'change', onDisplaySettingChange);
   on($('setting-preview-zoom'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
