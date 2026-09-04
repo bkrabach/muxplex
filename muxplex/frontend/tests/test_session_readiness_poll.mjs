@@ -354,3 +354,95 @@ test('the poll matches in the key-space the active endpoint returns', () => {
   assert.ok(!/var expectedKey = deviceId \? \(deviceId \+ ':' \+ sessionName\) : sessionName;/.test(body),
     'the single-key-space expectedKey is the bug -- it must be gone');
 });
+
+// ─── Timer teardown (muxplex-2pv) ────────────────────────────────────────────
+//
+// A poll tick that throws is a leak, not just a lost tick: setInterval's
+// callback here is async, so the throw rejects a promise nobody awaits (it is
+// invisible) AND it kills the tick before its own clearInterval, leaving a
+// timer rescheduling itself every 2s for the life of the page. The tests below
+// therefore assert on the TIMERS, not only on the toast sequence.
+
+/** Run fn with console.error silenced -- the backstop path reports there. */
+async function quietly(fn) {
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.error = origError;
+  }
+}
+
+test('a non-array session list does not throw out of the poll tick', async () => {
+  // pollSessions() assigns `await res.json()` straight to _currentSessions with
+  // no shape check, so a 200 carrying an object rather than a list lands there
+  // intact -- and `_currentSessions && _currentSessions.find(...)` accepted it
+  // as truthy, then called a method it does not have.
+  const r = await quietly(() => runCreate({
+    name: 'objsession',
+    remoteId: '',
+    multiDevice: true,
+    sessionsAt: () => ({ detail: 'not a list' }),
+    ticks: 15,
+  }));
+
+  assert.deepEqual(r.errors, [],
+    'a non-array session list must not throw out of the readiness poll');
+  assert.ok(has(r.toasts, 'still starting'),
+    'a non-array list means "not found", so the poll must reach its ordinary give-up branch');
+  assert.ok(r.timers[0].cleared,
+    'the poll interval must still be cleared on the give-up path');
+});
+
+test('neither timer survives a session list that is never an array', async () => {
+  const r = await quietly(() => runCreate({
+    name: 'objsession',
+    remoteId: '',
+    multiDevice: true,
+    sessionsAt: () => ({}),
+    ticks: 15 + 24 + 1,
+  }));
+
+  assert.equal(r.timers.length, 2,
+    'giving up must still hand off to the late-arrival watcher');
+  assert.ok(r.timers.every((t) => t.cleared),
+    'no timer may be left rescheduling itself once both windows have closed');
+  assert.ok(has(r.toasts, 'may have failed'),
+    'both windows expiring must still tell the user what happened');
+});
+
+test('a tick that throws for any other reason still stops its own timer', async () => {
+  // The type guard fixes the ONE known throw; this pins the structural half --
+  // teardown must not depend on the tick body reaching a clearInterval. A
+  // session entry whose `name` getter throws blows up isCreatedSession itself,
+  // from inside .find on a perfectly well-formed array.
+  const poisoned = { get name() { throw new Error('poisoned session entry'); } };
+
+  const r = await quietly(() => runCreate({
+    name: 'boom',
+    remoteId: '',
+    multiDevice: true,
+    sessionsAt: () => [poisoned],
+    ticks: 5,
+  }));
+
+  assert.deepEqual(r.errors, [],
+    'the tick must contain its own failure rather than reject into the void');
+  assert.ok(r.timers[0].cleared,
+    'a tick that throws must still stop its timer');
+  assert.ok(has(r.toasts, 'status is unknown'),
+    'a poll that cannot finish must say so rather than strand a "Creating..." tile');
+});
+
+test('the readiness poll no longer reads .find off an unchecked _currentSessions', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function createNewSession(');
+  assert.ok(start !== -1, 'createNewSession must exist');
+  const body = source.slice(start, source.indexOf('\nfunction killSession', start));
+
+  assert.ok(!body.includes('_currentSessions && _currentSessions.find'),
+    'the truthiness-only guard is the bug -- a non-array is truthy and has no .find');
+  assert.ok(body.includes('Array.isArray(_currentSessions)'),
+    'the poll must check the shape of what it is about to call .find on');
+});
