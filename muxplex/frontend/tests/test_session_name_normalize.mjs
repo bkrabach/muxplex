@@ -400,9 +400,19 @@ test('the separator rule is written down exactly once', () => {
 });
 
 test('no length cap is hardcoded in the input factory', () => {
-  // The real number is muxplex-1vz's job, after the cap lanes (muxplex-27o,
-  // muxplex-t4k) land so all three agree. The seam is the named constant.
-  assert.strictEqual(app.SESSION_NAME_MAX_LENGTH, null, 'SESSION_NAME_MAX_LENGTH is a seam, left unset here');
+  // This lane (muxplex-pfp) left SESSION_NAME_MAX_LENGTH as a deliberately
+  // unset seam because the real number had to be agreed across three repos
+  // first. muxplex-1vz filled it in at 255 once muxplex-27o
+  // (amplifier-workspace, was 32) and muxplex-i1r (tmux-kit, was 64) had both
+  // landed on the same number. What this test still guards is the shape, not
+  // the value: the cap lives in ONE named constant and the factory reads it,
+  // rather than a literal buried in the handler. The number itself and the
+  // bytes-vs-characters reasoning behind it are covered by
+  // test_session_name_length_cap.mjs.
+  assert.strictEqual(
+    typeof app.SESSION_NAME_MAX_LENGTH, 'number',
+    'SESSION_NAME_MAX_LENGTH is the seam the cap is set through',
+  );
   const start = SOURCE.indexOf('function _createSessionInput(');
   const body = SOURCE.substring(start, start + 600);
   assert.ok(

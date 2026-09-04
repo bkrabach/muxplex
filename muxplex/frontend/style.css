@@ -3675,6 +3675,31 @@ body {
   color: var(--text-dim);
 }
 
+/* Live length counter beside the new-session input (muxplex-1vz).
+   Hidden entirely until the name approaches the 255-byte filesystem limit --
+   a counter on every ordinary session name would be noise, and noise is what
+   gets ignored when it finally matters. */
+.new-session-length-hint {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Over the BYTE limit -- reachable only with non-ASCII characters, where
+   maxlength (UTF-16 code units) and NAME_MAX (UTF-8 bytes) diverge. */
+.new-session-length-hint--over {
+  color: var(--err);
+}
+
+.fab-input-overlay .new-session-length-hint {
+  display: block;
+  margin: 4px 0 0;
+}
+
 .new-session-device-select,
 .new-session-command-select {
   background: var(--bg);
