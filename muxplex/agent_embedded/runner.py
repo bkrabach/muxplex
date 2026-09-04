@@ -49,7 +49,12 @@ from typing import Any
 
 from . import wire
 from .host_tool_glue import HostToolProxy, mount_host_tool_hook
-from .message_shape import extract_host_tools, split_history_and_prompt
+from .message_shape import (
+    extract_host_tools,
+    images_lost_reason,
+    split_history_and_prompt,
+    unsupported_image_reason,
+)
 
 logger = logging.getLogger("muxplex.agent_embedded.runner")
 
@@ -231,6 +236,20 @@ async def stream_embedded_chat_completion(
         return
 
     messages = body.get("messages") or []
+
+    # muxplex-1i9: refuse an image the provider cannot carry BEFORE any
+    # session exists. The Anthropic provider's user-message loop discards
+    # an unrecognised content-block with no error and no log line (see
+    # message_shape.normalize_image_part), so an unsupported attachment
+    # that got this far would produce a confident answer about an image
+    # the model never saw. Checked on the RAW client messages, ahead of
+    # normalization, because normalization is what drops them.
+    unsupported = unsupported_image_reason(messages)
+    if unsupported:
+        logger.warning("embedded runner: %s", unsupported)
+        yield wire.sse_error(unsupported).encode()
+        return
+
     history, prompt = split_history_and_prompt(messages)
     host_tool_specs = extract_host_tools(body.get("tools"))
 
@@ -291,7 +310,21 @@ async def stream_embedded_chat_completion(
 
     if history:
         context_module = session.coordinator.get("context")
-        if context_module is not None and hasattr(context_module, "set_messages"):
+        can_seed = context_module is not None and hasattr(
+            context_module, "set_messages"
+        )
+        # muxplex-1i9: history seeding is the ONLY path an attachment can
+        # travel (session.execute() takes a str -- see message_shape's
+        # split_history_and_prompt). If it is unavailable AND this turn
+        # carries images, refuse out loud instead of running a turn whose
+        # answer would be about an image the model was never shown. With
+        # no images this stays exactly as tolerant as it always was.
+        refusal = images_lost_reason(history, can_seed=can_seed)
+        if refusal:
+            logger.error("embedded runner: %s", refusal)
+            yield wire.sse_error(refusal).encode()
+            return
+        if can_seed:
             await context_module.set_messages(history)
         else:
             logger.warning(
