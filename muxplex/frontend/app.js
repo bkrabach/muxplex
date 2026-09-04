@@ -7239,6 +7239,42 @@ function onSortOrderChange() {
   selectSortOrder(value);
 }
 
+// ─── Settings CAS retry policy ──────────────────────────────────────────
+// Total PATCH attempts for a stale-baseline 409 (1 initial + 4 retries).
+// Sized for CONTENTION, not for an outage: every retry re-fetches server
+// truth and rebuilds the patch, so the only thing that keeps failing is a
+// writer that keeps beating us. Five attempts covers a burst of concurrent
+// creates; beyond that the honest answer is to tell the user, not to keep
+// trying.
+const SETTINGS_CAS_MAX_ATTEMPTS = 5;
+const SETTINGS_CAS_BASE_BACKOFF_MS = 25;
+const SETTINGS_CAS_MAX_BACKOFF_MS = 1000;
+
+/**
+ * Jittered exponential backoff before CAS retry `attempt` (0-based).
+ *
+ * The jitter is the point, not decoration: two tabs that just collided are
+ * running the same code and would otherwise wake on the same schedule and
+ * collide again. Spreading them is what makes the second attempt likely to
+ * land at all.
+ * @param {number} attempt - 0-based index of the retry about to be made.
+ * @returns {number} milliseconds to wait.
+ */
+function _settingsCasBackoffMs(attempt) {
+  var base = SETTINGS_CAS_BASE_BACKOFF_MS * Math.pow(2, attempt);
+  return Math.min(SETTINGS_CAS_MAX_BACKOFF_MS, Math.round(base / 2 + Math.random() * base));
+}
+
+/**
+ * Promise-returning sleep. Named separately from setTimeout so the retry
+ * path reads as a policy decision rather than an incidental timer.
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function _delay(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
 /**
  * PATCH /api/settings with optimistic-concurrency protection against the
  * settings-clobber bug: a tab holding a STALE `_serverSettings` snapshot
@@ -7275,27 +7311,50 @@ function onSortOrderChange() {
  * resend the same destructive payload, so this case never retries: it
  * reloads server truth, re-renders, and logs a warning instead.
  *
+ * A stale-baseline 409 is retried up to SETTINGS_CAS_MAX_ATTEMPTS times
+ * with jittered backoff (see _settingsCasBackoffMs). One retry is not
+ * enough: the CAS timestamp moves on EVERY settings write, so any
+ * concurrent writer -- a second browser tab, the ~15s federated settings
+ * sync, or simply two sessions being created moments apart -- costs an
+ * attempt. Two consecutive conflicts are ordinary, not exotic, and losing
+ * the write after them silently dropped whatever the user had just asked
+ * for. The budget is bounded so a server that will never accept the write
+ * still terminates rather than spinning.
+ *
  * @param {function(object): object} mutateFn - Given a deep copy of the
  *   CURRENT `_serverSettings` (freshly re-fetched when the resulting patch
  *   touches views/hidden_sessions; see above), returns the PATCH BODY to
- *   send, e.g. `{ views: [...] }`. May be called up to three times: once to
- *   detect intent, once (only if that intent touches views/hidden_sessions)
- *   against a freshly re-fetched snapshot, and -- only on exactly one
- *   stale-baseline 409 -- once more with an even-fresher snapshot.
+ *   send, e.g. `{ views: [...] }`. Called once to detect intent, once (only
+ *   if that intent touches views/hidden_sessions) against a freshly
+ *   re-fetched snapshot, and once more per stale-baseline 409 retry, each
+ *   time with an even-fresher snapshot. It must therefore be idempotent
+ *   with respect to the snapshot it is handed -- every existing call site
+ *   already is, since each rebuilds its patch from `fresh` rather than
+ *   accumulating into a captured array.
  * @param {object} [opts]
- * @param {boolean} [opts.retry=true] - Internal: false on the retry attempt
- *   itself, so a second consecutive 409 does not loop.
+ * @param {number} [opts.attempt=0] - Internal: 0-based retry counter.
+ * @param {boolean} [opts.retry] - Internal/back-compat: `false` means "this
+ *   is already the last attempt", equivalent to exhausting the budget.
  * @returns {Promise<object>} the parsed PATCH response body (redacted
  *   settings, same shape GET /api/settings returns).
+ * @throws the underlying error. A 409 that exhausted the retry budget is
+ *   tagged `err.casExhausted = true` so a caller can phrase a terminal
+ *   message for the user instead of guessing why it failed.
  */
 async function patchSettingsGuarded(mutateFn, opts) {
-  var retry = !opts || opts.retry !== false;
-  // The retry attempt (opts.retry === false) already has a guaranteed-fresh
+  var attempt = (opts && typeof opts.attempt === 'number') ? opts.attempt : 0;
+  // Back-compat: an external caller passing the old {retry: false} means
+  // "do not retry again", i.e. treat this as the final attempt.
+  if (opts && opts.retry === false && !(typeof opts.attempt === 'number')) {
+    attempt = SETTINGS_CAS_MAX_ATTEMPTS - 1;
+  }
+  var retry = attempt + 1 < SETTINGS_CAS_MAX_ATTEMPTS;
+  // A retry attempt (attempt > 0) already has a guaranteed-fresh
   // baseline -- the 409 handler below just re-fetched it moments ago
   // specifically so the retry could rebuild against server truth. Skip the
   // detection re-fetch in that case; doing it anyway would just be a
   // redundant extra round-trip against data that hasn't changed.
-  var isRetryAttempt = !!(opts && opts.retry === false);
+  var isRetryAttempt = attempt > 0;
   var baseline = _serverSettings ? JSON.parse(JSON.stringify(_serverSettings)) : {};
   var patch = mutateFn(baseline);
 
@@ -7334,23 +7393,29 @@ async function patchSettingsGuarded(mutateFn, opts) {
       throw err;
     }
     if (err.status === 409 && retry) {
-      // Stale baseline: re-fetch server truth, re-apply the SAME intent to
-      // the FRESH copy, and retry exactly once (retry:false below means a
-      // second consecutive 409 falls to the else-branch, not another retry).
+      // Stale baseline: back off (so two clients that just collided do not
+      // immediately collide again on the same schedule), THEN re-fetch
+      // server truth -- in that order, so the baseline we rebuild from is as
+      // fresh as possible at the moment we send -- and re-apply the SAME
+      // intent to the fresh copy.
+      await _delay(_settingsCasBackoffMs(attempt));
       await loadServerSettings();
       _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
-      return patchSettingsGuarded(mutateFn, { retry: false });
+      return patchSettingsGuarded(mutateFn, { attempt: attempt + 1 });
     }
     if (err.status === 409) {
-      // Second consecutive 409: don't loop. Re-render from server truth and
-      // surface a brief non-blocking notice (no dedicated toast text here --
-      // this is an edge case a normal user is unlikely to hit twice in a
-      // row -- console.warn is the existing fallback pattern used elsewhere
-      // in this file, e.g. loadServerSettings()'s own catch).
+      // Budget exhausted: don't loop. Re-render from server truth so the UI
+      // stops showing a change that never landed, and tag the error so the
+      // CALLER can tell the user what they lost -- a bare console.warn here
+      // is invisible to the person whose request was just dropped.
       await loadServerSettings();
       _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
       _rerenderViewDependentUI();
-      console.warn('[patchSettingsGuarded] conflict persisted after retry; reloaded from server');
+      console.warn(
+        '[patchSettingsGuarded] conflict persisted after ' + (attempt + 1) +
+        ' attempts; reloaded from server',
+      );
+      err.casExhausted = true;
     }
     throw err;
   }
@@ -9301,6 +9366,132 @@ function showFabSessionInput() {
 }
 
 /**
+ * Build the device-qualified session key the server stores in view
+ * definitions and reports back as `sessionKey`: `"<device_id>:<name>"`, or
+ * the bare name when no device id is known.
+ *
+ * ONE constructor, deliberately: createNewSession pins a session into a view
+ * under this key and then polls for the session to appear under the same
+ * key. Those two halves disagreeing is precisely how a created session goes
+ * missing, so they share this function rather than each spelling out the
+ * concatenation.
+ * @param {string} deviceId - device id, or '' / null when unknown.
+ * @param {string} sessionName
+ * @returns {string}
+ */
+function buildSessionKey(deviceId, sessionName) {
+  return deviceId ? (deviceId + ':' + sessionName) : sessionName;
+}
+
+/**
+ * True when a "device id" is really a federation array INDEX.
+ *
+ * The device select falls back to `String(i)` when a peer reports no
+ * device_id (see _createCommandSelect). Real device ids are never all
+ * digits -- a server's is a UUID (identity.py) and a browser's is
+ * `d-xxxxxxxx` (generateDeviceId) -- so this discriminates cleanly. A pin
+ * built on an index can never match the server's `"<device_id>:<name>"`
+ * key, so writing one is strictly worse than writing nothing: it silently
+ * lodges an entry in the view definition that will match nothing, forever.
+ * @param {string} deviceId
+ * @returns {boolean}
+ */
+function _isIndexLikeDeviceId(deviceId) {
+  return /^\d+$/.test(String(deviceId));
+}
+
+/**
+ * Resolve this instance's own device_id, fetching /api/instance-info if the
+ * load-time fetch (see init) has not landed yet.
+ *
+ * The load-time fetch is fire-and-forget, so a session created in the first
+ * moments after a page load used to be pinned under a BARE name. That only
+ * ever worked because the server normalizes such keys after the fact
+ * (normalize_session_keys) and resolves them by dual lookup -- robustness
+ * we should not be spending on an avoidable race.
+ * @returns {Promise<string>} the device id, or '' if it cannot be resolved.
+ */
+async function _ensureLocalDeviceId() {
+  if (_localDeviceId) return _localDeviceId;
+  try {
+    const res = await api('GET', '/api/instance-info');
+    const info = await res.json();
+    if (info && info.device_id) _localDeviceId = info.device_id;
+  } catch (err) {
+    // Fall through to '' -- a bare-name pin still self-heals server-side.
+    console.warn('[_ensureLocalDeviceId] could not resolve local device_id:', err);
+  }
+  return _localDeviceId || '';
+}
+
+/**
+ * Pin a freshly created session into the view it was created from.
+ *
+ * Fire-and-forget by design -- it must never delay the create UX -- but
+ * never SILENT. The user created this session while looking at a particular
+ * view; a session that does not appear there directly contradicts what they
+ * just asked for, and they have no other way to find out. Every terminal
+ * outcome (a CAS that never lands, a destructive-write backstop rejection, a
+ * peer that reports no device id, a view deleted mid-flight) tells them.
+ *
+ * @param {string} sessionName - name the server actually created.
+ * @param {string} remoteId - federation device id, or '' for local.
+ * @param {string} viewName - view to pin into, captured at create time (the
+ *   user may switch views while the PATCH is in flight).
+ * @returns {Promise<void>} always resolves; failures surface as a toast.
+ */
+async function _autoAddSessionToView(sessionName, remoteId, viewName) {
+  function notAdded(detail) {
+    showToast(
+      'Session \'' + sessionName + '\' created, but not added to view \'' +
+      viewName + '\' — ' + detail,
+    );
+  }
+  if (remoteId && _isIndexLikeDeviceId(remoteId)) {
+    console.warn(
+      '[createNewSession] peer reported no device_id (fell back to array index "' +
+      remoteId + '"); refusing to write a pin that could never match',
+    );
+    notAdded('that device reports no device id');
+    return;
+  }
+  try {
+    var deviceId = remoteId || await _ensureLocalDeviceId();
+    var newSessionKey = buildSessionKey(deviceId, sessionName);
+    var viewStillExists = false;
+    var body = await patchSettingsGuarded(function (fresh) {
+      var freshViews = JSON.parse(JSON.stringify((fresh && fresh.views) || []));
+      var freshIdx = -1;
+      for (var fi = 0; fi < freshViews.length; fi++) {
+        if (freshViews[fi].name === viewName) { freshIdx = fi; break; }
+      }
+      // Recomputed on every call, not latched: mutateFn runs again per retry
+      // against a fresher snapshot, and the view could have been deleted in
+      // between.
+      viewStillExists = freshIdx >= 0;
+      if (viewStillExists && !freshViews[freshIdx].sessions.includes(newSessionKey)) {
+        freshViews[freshIdx].sessions.push(newSessionKey);
+      }
+      return { views: freshViews };
+    });
+    if (_serverSettings) _serverSettings.views = body.views;
+    if (!viewStillExists) {
+      // The PATCH succeeded, but against server truth in which the view no
+      // longer exists -- a success that did not do what was asked.
+      console.warn('[createNewSession] view \'' + viewName + '\' no longer exists; pin not written');
+      notAdded('that view no longer exists');
+    }
+  } catch (err) {
+    console.warn('[createNewSession] auto-add to view failed:', err);
+    notAdded(
+      err && err.casExhausted
+        ? 'the settings kept changing underneath — add it from the session menu'
+        : 'add it from the session menu',
+    );
+  }
+}
+
+/**
  * Create a new tmux session via POST /api/sessions.
  * Shows a toast, then polls _currentSessions until the session name appears
  * (or times out after 30s) before calling openSession — this handles commands
@@ -9324,39 +9515,31 @@ async function createNewSession(name, remoteId, commandId) {
     const data = await res.json();
     const sessionName = data.name || name;
 
-    // Auto-add to active user view (not 'all' or 'hidden')
+    showToast('Creating session \'' + sessionName + '\'…');
+
+    // Auto-add to active user view (not 'all' or 'hidden'). Deliberately NOT
+    // awaited -- the create UX must not wait on a settings write -- but
+    // _autoAddSessionToView surfaces every failure to the user rather than
+    // dropping it into the console.
+    //
+    // Ordered AFTER the toast above on purpose: the refusal path (a peer
+    // with no device_id) has no await before its notice, so starting this
+    // first would show the notice and then immediately overwrite it with
+    // 'Creating session…' in the same tick.
     if (_activeView !== 'all' && _activeView !== 'hidden') {
+      // Capture the view NAME now. The PATCH resolves later and the user may
+      // have switched views by then; re-reading _activeView inside the
+      // callback would pin the session into whatever view they moved to.
+      var targetView = _activeView;
       var views = (_serverSettings && _serverSettings.views) || [];
       var viewIdx = -1;
       for (var vi = 0; vi < views.length; vi++) {
-        if (views[vi].name === _activeView) { viewIdx = vi; break; }
+        if (views[vi].name === targetView) { viewIdx = vi; break; }
       }
       if (viewIdx >= 0) {
-        var newSessionKey = remoteId ? (remoteId + ':' + sessionName) : sessionName;
-        if (!remoteId && _localDeviceId) {
-          newSessionKey = _localDeviceId + ':' + sessionName;
-        }
-        patchSettingsGuarded(function(fresh) {
-          var freshViews = JSON.parse(JSON.stringify((fresh && fresh.views) || []));
-          var freshIdx = -1;
-          for (var fi = 0; fi < freshViews.length; fi++) {
-            if (freshViews[fi].name === _activeView) { freshIdx = fi; break; }
-          }
-          if (freshIdx >= 0 && !freshViews[freshIdx].sessions.includes(newSessionKey)) {
-            freshViews[freshIdx].sessions.push(newSessionKey);
-          }
-          return { views: freshViews };
-        })
-          .then(function(body) {
-            if (_serverSettings) _serverSettings.views = body.views;
-          })
-          .catch(function(err) {
-            console.warn('[createNewSession] auto-add to view failed:', err);
-          });
+        _autoAddSessionToView(sessionName, remoteId, targetView);
       }
     }
-
-    showToast('Creating session \'' + sessionName + '\'…');
 
     // Inject a loading placeholder tile so the user sees feedback immediately
     var loadingTile = null;
@@ -10611,6 +10794,14 @@ if (typeof module !== 'undefined' && module.exports) {
     _attachSessionNameNormalization,
     _createSessionInput,
     createNewSession,
+    // Session-key construction + auto-add-to-view (muxplex-htg)
+    buildSessionKey,
+    _isIndexLikeDeviceId,
+    _ensureLocalDeviceId,
+    _autoAddSessionToView,
+    // Settings CAS retry policy
+    SETTINGS_CAS_MAX_ATTEMPTS,
+    _settingsCasBackoffMs,
     renderCommandPairsSettings,
     _buildCommandPairRow,
     _shellQuote,
