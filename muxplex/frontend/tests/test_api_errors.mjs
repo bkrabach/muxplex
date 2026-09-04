@@ -356,7 +356,16 @@ test('the message derivation lives in api(), not hand-rolled in the createNewSes
 
   const createStart = appSource.indexOf('async function createNewSession(');
   assert.notStrictEqual(createStart, -1, 'createNewSession() must exist');
-  const createBody = appSource.slice(createStart, createStart + 5200);
+  // Bound the slice by the NEXT top-level function declaration rather than a
+  // fixed character offset. A magic window silently stops covering the function
+  // the moment a sibling change grows it -- which is exactly what happened when
+  // muxplex-9zp's poll rewrite pushed the catch past a hardcoded 5200.
+  const afterCreate = appSource.slice(createStart + 'async function createNewSession('.length);
+  const nextFn = afterCreate.search(/\n(?:async )?function [A-Za-z_]/);
+  const createBody = appSource.slice(
+    createStart,
+    nextFn === -1 ? appSource.length : createStart + 'async function createNewSession('.length + nextFn,
+  );
   const catchIdx = createBody.lastIndexOf('} catch (err) {');
   assert.notStrictEqual(catchIdx, -1, 'createNewSession must still have its catch');
   const catchBody = createBody.slice(catchIdx);
