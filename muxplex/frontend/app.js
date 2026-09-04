@@ -491,6 +491,65 @@ function isMobile() {
 }
 
 // ─── Fetch wrapper ────────────────────────────────────────────────────────────
+/**
+ * Pull the human-readable sentence out of a failed response's parsed JSON body.
+ *
+ * The server already explains itself; this is the one place that decision is
+ * made, so every api() caller shows the explanation instead of each catch
+ * hand-rolling its own extraction (or, as before, showing none at all).
+ *
+ * Four real shapes come back from main.py:
+ *   {"detail": "a sentence"}                          -- plain HTTPException
+ *   {"detail": {"detail": "...", "suggested": "..."}} -- structured (rename)
+ *   {"detail": [{"loc": [...], "msg": "..."}]}        -- FastAPI 422 validation
+ *   {"detail": "...", "invalid_view_rule": true}      -- flat JSONResponse
+ *
+ * A structured detail carrying only flags has no sentence to show: return ''
+ * so the caller falls back to the status line rather than printing
+ * "[object Object]" at a user.
+ *
+ * @param {*} body - The parsed JSON body, or undefined if there wasn't one.
+ * @returns {string} The server's explanation, or '' if it sent none.
+ */
+function serverErrorText(body) {
+  if (!body || typeof body !== 'object') return '';
+  const detail = body.detail;
+  if (typeof detail === 'string') return detail.trim();
+  if (Array.isArray(detail)) {
+    // FastAPI request-validation errors: one entry per offending field.
+    return detail
+      .map((d) => (typeof d === 'string' ? d : (d && typeof d.msg === 'string' ? d.msg : '')))
+      .filter(Boolean)
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    // Structured detail -- the sentence sits one level in, next to the flags.
+    const inner = detail.detail || detail.message || detail.msg;
+    return typeof inner === 'string' ? inner.trim() : '';
+  }
+  // A body with no `detail` key at all still occasionally carries prose.
+  if (typeof body.message === 'string') return body.message.trim();
+  if (typeof body.error === 'string') return body.error.trim();
+  return '';
+}
+
+/**
+ * Pull the server's fix-it suggestion (a corrected name) out of a failed
+ * response body, if it computed one. The rename endpoint returns `suggested`
+ * inside its structured detail; a flat body could carry it at the top level.
+ *
+ * @param {*} body - The parsed JSON body, or undefined if there wasn't one.
+ * @returns {string} The suggested replacement, or '' if the server sent none.
+ */
+function serverErrorSuggestion(body) {
+  if (!body || typeof body !== 'object') return '';
+  const detail = body.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail) && typeof detail.suggested === 'string') {
+    return detail.suggested;
+  }
+  return typeof body.suggested === 'string' ? body.suggested : '';
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
@@ -511,6 +570,21 @@ async function api(method, path, body) {
     } catch (parseErr) {
       // no-op: no usable JSON body on this error response
     }
+    // Prefer the server's own explanation over the opaque status line. This is
+    // deliberately done HERE rather than in each catch: every caller that shows
+    // err.message now shows what is actually wrong ("Invalid session name.
+    // Allowed characters: ...") instead of "HTTP 400: Bad Request". The status
+    // line stays as err.httpMessage, and remains err.message whenever the body
+    // carried nothing human-readable.
+    const serverText = serverErrorText(err.body);
+    if (serverText) {
+      err.httpMessage = err.message;
+      err.message = serverText;
+    }
+    // A server-computed correction (rename's `suggested`) -- surfaced so a
+    // caller can offer it as a one-click fix instead of discarding it.
+    const suggested = serverErrorSuggestion(err.body);
+    if (suggested) err.suggested = suggested;
     throw err;
   }
   return res;
@@ -9168,7 +9242,22 @@ async function createNewSession(name, remoteId, commandId) {
       }
     }, 2000);
   } catch (err) {
-    showToast(err.message || 'Failed to create session');
+    // err.message is already the server's own explanation when it sent one --
+    // api() derives it, so there is nothing to re-parse here.
+    var msg = (err && err.message) || 'Failed to create session';
+    // err.suggested is a name the server says WOULD be accepted. Offer it as a
+    // one-click correction rather than making the user guess at the rule.
+    var suggested = (err && err.suggested) || '';
+    if (suggested && suggested !== name) {
+      var canAsk = typeof window !== 'undefined' && typeof window.confirm === 'function';
+      if (canAsk && window.confirm(msg + '\n\nCreate \'' + suggested + '\' instead?')) {
+        return createNewSession(suggested, remoteId, commandId);
+      }
+      // Declined (or no prompt available) -- still show the correction.
+      showToast(msg + ' Try \'' + suggested + '\'.');
+      return;
+    }
+    showToast(msg);
   }
 }
 
