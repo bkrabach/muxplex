@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import socket
+import stat
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -697,13 +699,36 @@ def load_settings() -> dict:
     result = copy.deepcopy(DEFAULT_SETTINGS)
     data: dict = {}
     try:
-        text = SETTINGS_PATH.read_text()
-        data = json.loads(text)
-        for key in DEFAULT_SETTINGS:
-            if key in data:
-                result[key] = data[key]
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+        text: str | None = SETTINGS_PATH.read_text()
+    except FileNotFoundError:
+        # First run, or the file was just quarantined by a previous call. Not
+        # an incident -- defaults ARE the answer here.
+        text = None
+    if text is not None:
+        # An unreadable file is NOT silently discarded: falling straight
+        # through to defaults means the next save_settings() persists those
+        # defaults over the user's real configuration, which is the only copy
+        # of it. Move it aside under a named path first (see
+        # _quarantine_unreadable_settings) so recovery stays possible.
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            _quarantine_unreadable_settings(f"invalid JSON: {exc}")
+        else:
+            if isinstance(parsed, dict):
+                data = parsed
+                for key in DEFAULT_SETTINGS:
+                    if key in data:
+                        result[key] = data[key]
+            else:
+                # Valid JSON, wrong shape (`null`, a list, a bare string).
+                # Treated as corruption for the same reason and by the same
+                # path: nothing here can be merged over the defaults, and the
+                # pre-existing code crashed outright on `null` (`key in None`
+                # raises TypeError) rather than degrading.
+                _quarantine_unreadable_settings(
+                    f"top level is {type(parsed).__name__}, not a JSON object"
+                )
     if not result["device_name"]:
         result["device_name"] = socket.gethostname()
 
@@ -972,6 +997,126 @@ def _settings_history_dir() -> Path:
     return SETTINGS_PATH.parent / SETTINGS_HISTORY_DIRNAME
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write *text* to *path* so that no reader -- and no crash -- ever sees a
+    partially written file.
+
+    tmp-in-the-same-directory + fsync + ``os.replace()``, the pattern
+    ``state.py`` and ``manifest.py`` already use. ``settings.json`` was the one
+    file of the four still ending in a bare ``write_text()``, which meant an
+    interrupted write (crash, OOM, power cut, full disk) left a truncated JSON
+    file that ``load_settings()`` then read as "unparseable, use defaults" --
+    on the reporting host, ~10 views of pins and every server setting silently
+    replaced by defaults, with no error anywhere.
+
+    The temp file MUST live in *path*'s own directory: ``os.replace()`` is only
+    atomic within a filesystem, and a ``/tmp`` staging file fails outright with
+    ``EXDEV`` when the config directory is on another mount (an encrypted or
+    network-mounted home is the common case).
+
+    Two deliberate differences from ``state.py``/``manifest.py``, both forced by
+    settings.json having writers those files do not have:
+
+    * **A unique temp name, not a fixed ``<target>.tmp``.** The ``muxplex`` CLI
+      (``settings set``, ``session-command add``/``rm``, ``reset``) writes
+      settings from a SEPARATE process while the server is running. Two
+      processes sharing one staging path interleave their bytes into it and
+      then each atomically publishes the mixture -- an atomic rename of corrupt
+      content is still corrupt content.
+    * **The target's permissions survive the write.** ``os.replace()`` publishes
+      the TEMP file's mode, and settings.json carries the federation key (and
+      on some hosts TLS material), so silently resetting its mode on every save
+      would be a security change nobody asked for. A file that does not exist
+      yet has no mode to preserve, so a first-ever write lands 0600 -- matching
+      how every other secret-bearing file muxplex creates is treated
+      (``federation_key``, TLS private keys, the ttyd socket).
+
+    The directory is fsynced after the rename: fsyncing the file's contents
+    makes the DATA durable, but the rename that publishes it is directory
+    metadata and can still be lost on a power cut without this. Best-effort --
+    a filesystem that refuses to open a directory read-only must not fail a
+    write that has already succeeded.
+    """
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = 0o600
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=directory, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        # Leave nothing behind to accumulate in the user's config directory,
+        # and leave whatever was already at *path* completely untouched.
+        tmp.unlink(missing_ok=True)
+        raise
+
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _quarantine_unreadable_settings(reason: str) -> None:
+    """Move an unreadable settings.json aside under a named path, loudly.
+
+    ``load_settings()`` still falls back to defaults after this -- raising
+    would take down every endpoint and the CLI over a data problem the operator
+    can actually fix -- but it must never let the NEXT ``save_settings()``
+    overwrite the only copy of the user's real configuration.
+
+    Renamed rather than copied, because ``load_settings()`` runs on essentially
+    every request: a copy would mint a fresh quarantine file per call and fill
+    the config directory within seconds, while moving the file out of the load
+    path makes the next call an ordinary "no settings file yet". So this fires
+    exactly once per corruption event, and the bytes stay recoverable.
+    """
+    quarantine = (
+        SETTINGS_PATH.parent
+        / f"{SETTINGS_PATH.name}.corrupt-{_next_snapshot_seq():012d}-{time.time():.6f}"
+    )
+    try:
+        os.replace(SETTINGS_PATH, quarantine)
+    except OSError:
+        _log.error(
+            "settings: %s is unreadable (%s) and could not be moved aside -- "
+            "falling back to defaults. Recover it from %s before changing any "
+            "setting, or the next write will overwrite it with defaults.",
+            SETTINGS_PATH,
+            reason,
+            _settings_history_dir(),
+            exc_info=True,
+        )
+        return
+    _log.error(
+        "settings: %s was unreadable (%s) -- falling back to defaults for this "
+        "load. The unreadable file is preserved at %s, and earlier good copies "
+        "are in %s. Recover from one of those before changing any setting, or "
+        "the defaults will be persisted over your configuration.",
+        SETTINGS_PATH,
+        reason,
+        quarantine,
+        _settings_history_dir(),
+    )
+
+
 def _next_snapshot_seq() -> int:
     global _snapshot_counter
     with _snapshot_counter_lock:
@@ -1008,7 +1153,10 @@ def _snapshot_current_settings() -> None:
         # (see _next_snapshot_seq's docstring-adjacent comment above).
         seq = _next_snapshot_seq()
         snapshot_path = history_dir / f"settings-{seq:012d}-{time.time():.6f}.json"
-        snapshot_path.write_text(SETTINGS_PATH.read_text())
+        # Atomic like the live file: these copies are the recovery path an
+        # operator reaches for when settings.json is unreadable, so a snapshot
+        # that can itself be torn by an interrupted write is worth little.
+        _atomic_write_text(snapshot_path, SETTINGS_PATH.read_text())
         _prune_settings_history(history_dir)
     except Exception:
         _log.warning("settings: failed to write history snapshot", exc_info=True)
@@ -1060,8 +1208,7 @@ def save_settings(data: dict) -> None:
             merged[key] = data[key]
     merged["_schema_version"] = SCHEMA_VERSION
     _snapshot_current_settings()
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(merged, indent=2) + "\n")
+    _atomic_write_text(SETTINGS_PATH, json.dumps(merged, indent=2) + "\n")
 
 
 class DestructiveSettingsWriteRejected(Exception):

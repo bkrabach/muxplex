@@ -586,6 +586,34 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   worked because a manual file backup happened to exist. Best-effort: a
   snapshot failure is logged and swallowed, never blocks or corrupts the
   real write.
+- **Every settings write is atomic** (`settings._atomic_write_text()`):
+  uniquely-named temp file in the settings directory itself, `fsync`,
+  `os.replace()`, then an `fsync` of the directory — the same
+  tmp-then-rename pattern `state.py`/`manifest.py` use. `settings.json` was
+  the last of the four state files still ending in a bare `write_text()`,
+  so an interrupted write (crash, OOM, power cut, full disk) could leave a
+  truncated JSON file, which the next read then treated as "unparseable,
+  use defaults". The temp name is unique per write, unlike `state.py`'s
+  fixed `<target>.tmp`, because `settings.json` has a second writer in a
+  *different process* — the `muxplex` CLI (`settings set`,
+  `session-command add`/`rm`, `reset`) — and two processes sharing one
+  staging path would interleave bytes into it and then each atomically
+  publish the mixture. Existing file permissions survive the replace (the
+  file carries the federation key); a first-ever write lands 0600.
+- **An unreadable settings file is preserved, never overwritten.**
+  `load_settings()` still falls back to `DEFAULT_SETTINGS` — raising would
+  take down every endpoint and the CLI over a recoverable data problem —
+  but it first *moves* the unreadable file aside to
+  `~/.config/muxplex/settings.json.corrupt-<seq>-<unix_ts>` and logs an
+  ERROR naming that path and `settings-history/`. Without this, the
+  fallback was silent and the next `save_settings()` persisted defaults
+  over the user's only copy of their configuration. Moved rather than
+  copied because `load_settings()` runs on essentially every request: the
+  move takes the bad file out of the load path, so this fires exactly once
+  per corruption event instead of minting a file per call. Valid JSON of
+  the wrong shape (`null`, a list, a bare string) takes the same path —
+  previously `null` raised `TypeError` out of `load_settings()` rather than
+  degrading.
 - **Destructive-write backstop on `views`** (`views.assess_views_destruction`,
   called from BOTH `settings.patch_settings()` and
   `settings.apply_synced_settings()` — the single lowest choke point each
