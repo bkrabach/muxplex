@@ -9346,7 +9346,14 @@ test('a views-touching patch pre-fetches once, then a single 409 triggers one mo
   globalThis.fetch = undefined;
 });
 
-test('a second consecutive 409 does not loop -- exactly two PATCH attempts, then rejects', async () => {
+// muxplex-htg widened this from "exactly one retry" to a bounded budget
+// (SETTINGS_CAS_MAX_ATTEMPTS). One retry was not enough: the CAS timestamp
+// moves on EVERY settings write, so a second consecutive conflict is what a
+// user creating two sessions at once routinely sees -- and the write was
+// being dropped. What this test still guards is the part that matters
+// equally: the budget TERMINATES. A server that will never accept the write
+// must not spin forever.
+test('a persisting 409 retries up to the bounded budget, then rejects -- it never loops forever', async () => {
   const calls = [];
   globalThis.fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
@@ -9364,20 +9371,23 @@ test('a second consecutive 409 does not loop -- exactly two PATCH attempts, then
 
   await assert.rejects(
     () => app.patchSettingsGuarded(() => ({ views: [] })),
-    (err) => err.status === 409,
-    'a persisting conflict must reject with the 409 error, not loop forever',
+    (err) => err.status === 409 && err.casExhausted === true,
+    'a persisting conflict must reject with the 409 error, tagged casExhausted ' +
+      'so the caller can tell the user what was lost, not loop forever',
   );
 
+  const budget = app.SETTINGS_CAS_MAX_ATTEMPTS;
+  assert.ok(budget >= 3, 'the budget must exceed the old single retry, got ' + budget);
   assert.strictEqual(
-    calls.filter((c) => c === 'PATCH /api/settings').length, 2,
-    'must not attempt a third PATCH after a second consecutive 409; calls: ' + JSON.stringify(calls),
+    calls.filter((c) => c === 'PATCH /api/settings').length, budget,
+    'must attempt PATCH exactly SETTINGS_CAS_MAX_ATTEMPTS times, no more; calls: ' + JSON.stringify(calls),
   );
-  // Three GETs: one proactive (patch touches `views`), one after the first
-  // 409 (CAS-retry re-fetch), one after the second/final 409 (re-render
-  // from server truth). The retry attempt itself does not proactively
-  // re-fetch again since it already has fresh data from the 409 handler.
+  // One proactive GET (the patch touches `views`), then one per 409: one
+  // before each retry, plus one on the final failure to re-render from
+  // server truth. Retry attempts do not proactively re-fetch again, since
+  // the 409 handler already handed them fresh data.
   assert.strictEqual(
-    calls.filter((c) => c === 'GET /api/settings').length, 3,
+    calls.filter((c) => c === 'GET /api/settings').length, budget + 1,
     'a views-touching patch that keeps conflicting re-fetches proactively once, then once per 409; calls: ' + JSON.stringify(calls),
   );
 
