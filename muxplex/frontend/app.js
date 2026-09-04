@@ -8785,9 +8785,165 @@ function _suppressAutofill(input) {
 }
 
 /**
+ * Characters that get rewritten to a dash in a session name.
+ *
+ * Source of truth is amplifier_workspace/tmux.py:54 `session_name_from_path()`
+ * -- the function that actually names the session under the default
+ * `new_session_template` -- whose first step is:
+ *
+ *     re.sub(r"[ :./\\]", "-", name)
+ *
+ * Mirroring it here is the whole point: the name the user sees in the box is
+ * then the name tmux ends up creating. Keep the two in sync.
+ *
+ * Deliberately NO case-folding: amplifier-workspace does not lowercase, so
+ * lowercasing here would reintroduce exactly the see-one-thing-get-another
+ * divergence this normalization exists to remove.
+ *
+ * @type {RegExp}
+ */
+const SESSION_NAME_SEPARATOR_RE = /[ :./\\]/g;
+
+/**
+ * Told to the user when everything they typed was separators (e.g. `///`), so
+ * normalization leaves nothing behind. Shared by both new-session flows so the
+ * wording cannot drift. Better than closing the input silently, and better than
+ * POSTing a name the server would reject with an opaque 400.
+ *
+ * @type {string}
+ */
+const SESSION_NAME_ALL_SEPARATORS_MSG =
+  'Session name needs a letter, number or underscore \u2014 that was all separators';
+
+/**
+ * Length cap seam for the new-session input -- intentionally unset.
+ *
+ * Setting the real number belongs to muxplex-1vz, which runs only after the two
+ * cap lanes land (muxplex-27o raises amplifier-workspace's arbitrary 32,
+ * muxplex-t4k raises tmux-kit's arbitrary 64) so all three numbers agree.
+ * Measured facts for whoever sets it: tmux itself has no length limit (a
+ * 4096-char name round-tripped fine on tmux 3.4); ext4's NAME_MAX -- 255
+ * BYTES, not characters -- is the real binding constraint.
+ *
+ * Put the number HERE, not as a literal buried in a handler.
+ *
+ * @type {number|null}
+ */
+const SESSION_NAME_MAX_LENGTH = null;
+
+/**
+ * The per-character half of session-name normalization, and the only half that
+ * is safe to run on every keystroke.
+ *
+ * Strictly one character in, one character out, so it can never move the caret
+ * on its own. The whole-string tidying -- collapsing runs of dashes, stripping
+ * leading/trailing dashes -- is deliberately NOT done here: collapsing `--` the
+ * instant it appears and stripping the trailing `-` of `my-` would delete the
+ * dash the user just typed and make a compound name impossible to type. That
+ * tidying runs on blur and on submit instead; see `_normalizeSessionName`.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function _normalizeSessionNameLive(value) {
+  return String(value == null ? '' : value).replace(SESSION_NAME_SEPARATOR_RE, '-');
+}
+
+/**
+ * Full session-name normalization, matching amplifier_workspace/tmux.py:54
+ * `session_name_from_path()` step for step:
+ *
+ *     re.sub(r"[ :./\\]", "-", name)   # separators -> dash
+ *     re.sub(r"-{2,}", "-", name)      # collapse runs of dashes
+ *     name.strip("-")                  # strip leading/trailing dashes
+ *
+ * Run on blur and on submit -- never per keystroke.
+ *
+ * Returns '' when the input holds nothing but separators (e.g. `///`), which
+ * callers must treat as "there is no name here, do not submit" rather than
+ * POSTing a name the server would reject with a 400.
+ *
+ * @param {string} value
+ * @returns {string} normalized name, or '' if nothing survives normalization
+ */
+function _normalizeSessionName(value) {
+  const substituted = _normalizeSessionNameLive(String(value == null ? '' : value).trim());
+  return substituted.replace(/-{2,}/g, '-').replace(/^-+/, '').replace(/-+$/, '');
+}
+
+/**
+ * Wire live normalization onto a session-name input so the field can never hold
+ * a name the server would reject: an invalid character becomes a dash the
+ * instant it lands, whether typed, pasted, dropped or autofilled. There is
+ * nothing left to warn about because there is no invalid state to be in.
+ *
+ * Three things this has to get right, all of them things a naive rewrite breaks:
+ *
+ * 1. Caret. Assigning `input.value` parks the caret at the end, so typing a
+ *    space after clicking back into the middle of a name would teleport the
+ *    cursor. We save and restore the selection explicitly. Because
+ *    `_normalizeSessionNameLive` is strictly 1:1 the old offsets are still
+ *    valid in the new value; we clamp anyway so a future rule change can't
+ *    silently throw the caret past the end.
+ * 2. Paste. The `input` event fires AFTER the pasted text has been inserted,
+ *    and we normalize the whole value rather than the delta, so
+ *    `insertFromPaste` needs no separate listener -- pasting `my new session`
+ *    reads `my-new-session` immediately.
+ * 3. IME. Rewriting the buffer mid-composition corrupts input for anyone typing
+ *    a language that needs an IME, so normalization is suspended between
+ *    `compositionstart` and `compositionend` and applied once at the end.
+ *
+ * @param {HTMLInputElement} input
+ * @returns {HTMLInputElement} the same input, for chaining
+ */
+function _attachSessionNameNormalization(input) {
+  let composing = false;
+
+  function normalizeNow() {
+    const before = input.value;
+    const after = _normalizeSessionNameLive(before);
+    if (after === before) return;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    input.value = after;
+    if (typeof start === 'number' && typeof input.setSelectionRange === 'function') {
+      const max = after.length;
+      input.setSelectionRange(
+        Math.min(start, max),
+        Math.min(typeof end === 'number' ? end : start, max),
+      );
+    }
+  }
+
+  input.addEventListener('compositionstart', function () {
+    composing = true;
+  });
+  input.addEventListener('compositionend', function () {
+    composing = false;
+    normalizeNow();
+  });
+  input.addEventListener('input', function () {
+    if (composing) return;
+    normalizeNow();
+  });
+  // Whole-string tidying only once the user has stopped typing. Safe here in a
+  // way it is not per-keystroke: nobody is mid-word on blur.
+  input.addEventListener('blur', function () {
+    if (composing) return;
+    const tidied = _normalizeSessionName(input.value);
+    if (tidied !== input.value) input.value = tidied;
+  });
+
+  return input;
+}
+
+/**
  * Create a new session name input element with shared base configuration.
  * Used by both showNewSessionInput (inline) and showFabSessionInput (overlay)
  * to avoid duplicating the setup properties.
+ *
+ * Live session-name normalization is attached HERE, in the one factory both
+ * flows build their input through, so the two cannot drift apart.
  *
  * @returns {HTMLInputElement}
  */
@@ -8796,7 +8952,8 @@ function _createSessionInput() {
   input.type = 'text';
   input.className = 'new-session-input';
   input.placeholder = 'Session name\u2026';
-  return _suppressAutofill(input);
+  if (SESSION_NAME_MAX_LENGTH) input.maxLength = SESSION_NAME_MAX_LENGTH;
+  return _attachSessionNameNormalization(_suppressAutofill(input));
 }
 
 /**
@@ -8907,11 +9064,17 @@ function showNewSessionInput(btn) {
 
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
-      const name = input.value.trim();
+      // Belt and braces. Live normalization already keeps the field valid, so
+      // this normally changes nothing -- but it catches whatever bypassed the
+      // input event (programmatic set, some autofill paths) and applies the
+      // collapse/strip tidying that is unsafe to run mid-typing.
+      const hadInput = input.value.trim() !== '';
+      const name = _normalizeSessionName(input.value);
       const remoteId = select ? select.value : '';
       const commandId = cmdSelect ? cmdSelect.value : '';
       cleanup();
       if (name) createNewSession(name, remoteId, commandId);
+      else if (hadInput) showToast(SESSION_NAME_ALL_SEPARATORS_MSG);
     } else if (e.key === 'Escape') {
       cleanup();
     }
@@ -8999,12 +9162,16 @@ function showFabSessionInput() {
   }
 
   input.addEventListener('keydown', function(e) {
+    // Same shared helpers as showNewSessionInput's Enter handler -- the two
+    // flows normalize through one place so they cannot drift apart.
     if (e.key === 'Enter') {
-      const name = input.value.trim();
+      const hadInput = input.value.trim() !== '';
+      const name = _normalizeSessionName(input.value);
       const remoteId = select ? select.value : '';
       const commandId = cmdSelect ? cmdSelect.value : '';
       cleanup();
       if (name) createNewSession(name, remoteId, commandId);
+      else if (hadInput) showToast(SESSION_NAME_ALL_SEPARATORS_MSG);
     } else if (e.key === 'Escape') {
       cleanup();
     }
@@ -10295,6 +10462,14 @@ if (typeof module !== 'undefined' && module.exports) {
     NEW_SESSION_DEFAULT_TEMPLATE,
     DELETE_SESSION_DEFAULT_TEMPLATE,
     _createCommandSelect,
+    // Session-name normalization (shared by both new-session flows)
+    SESSION_NAME_SEPARATOR_RE,
+    SESSION_NAME_MAX_LENGTH,
+    SESSION_NAME_ALL_SEPARATORS_MSG,
+    _normalizeSessionNameLive,
+    _normalizeSessionName,
+    _attachSessionNameNormalization,
+    _createSessionInput,
     createNewSession,
     renderCommandPairsSettings,
     _buildCommandPairRow,
