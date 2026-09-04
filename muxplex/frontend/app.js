@@ -269,6 +269,12 @@ let _lastFollowsMenu = null;     // most recent buildFollowsMenu() result (for f
 let _federatedDevicesRaw = [];
 let _federatedDevicesPollTimer;
 
+// INVARIANT: always an array. pollSessions() is the only thing that assigns
+// it from the network, and it refuses a body that is not one (see its
+// non-array guard). Consumers may therefore call array methods directly --
+// the several `_currentSessions || []` spellings below are belt-and-braces,
+// not evidence that the invariant is soft. If you add another assignment
+// site, keep it.
 let _currentSessions = [];
 let _viewingSession = null;
 let _viewingRemoteId = '';
@@ -310,6 +316,12 @@ let _visibilityPaused = false;
 let _heartbeatTimer;
 let _notificationPermission = 'default';
 let _pollFailCount = 0;
+// Latch for the malformed-session-body notice. pollSessions() runs every ~2s,
+// so an un-latched notice would be ~30 toasts a minute for as long as the
+// intermediary misbehaves. Set on entering the anomalous state, cleared by the
+// first poll that yields a real list -- so a second, separate outage is
+// reported again rather than suppressed forever.
+let _pollShapeAnomaly = false;
 let _previewPopover = null;
 let _previewTimer = null;
 
@@ -1557,6 +1569,62 @@ function setConnectionStatus(level) {
 
 // ─── Session polling ─────────────────────────────────────────────────────────────────────────────
 /**
+ * Name the shape of a poll body that wasn't a session array, for the log.
+ *
+ * Deliberately a SHAPE, not the body itself: whatever produced it is by
+ * definition not our server, and its payload is untrusted and potentially
+ * large. Key names are the part that identifies the culprit (`detail` reads
+ * as FastAPI, `error`/`code` as a portal or CDN envelope) at a bounded cost.
+ *
+ * @param {*} body - the parsed JSON body that arrived with the 200.
+ * @returns {string} a short, log-safe description.
+ */
+function describeSessionsBodyShape(body) {
+  if (body === null) return 'null';
+  if (typeof body !== 'object') return typeof body;
+  const keys = Object.keys(body);
+  if (!keys.length) return 'object with no keys';
+  const shown = keys.slice(0, 5).join(', ');
+  return 'object with keys: ' + shown + (keys.length > 5 ? ', \u2026' : '');
+}
+
+/**
+ * Handle a session poll that returned 200 with something that is not a list.
+ *
+ * Treated as a FAILED poll, not as an empty one. Two calls, both deliberate:
+ *
+ * 1. WHY THE PREVIOUS LIST IS KEPT rather than replaced with []. The catch in
+ *    pollSessions() already set the policy for "this poll produced no usable
+ *    session list": leave _currentSessions alone and degrade the connection
+ *    indicator. A malformed 200 is that same event -- it just happens not to
+ *    throw. [] would be worse than stale: it renders as "you have no
+ *    sessions", a confident falsehood the user can act on (create a duplicate,
+ *    conclude tmux died), where the retained list is merely old and the
+ *    indicator already says the feed is unhealthy.
+ *
+ * 2. WHY THE USER IS TOLD, when a plain network failure isn't. For a network
+ *    failure the indicator alone is honest -- the request didn't land. Here it
+ *    misleads: the request SUCCEEDED with a 200, so "offline" describes
+ *    nothing the user would recognize, and the grid just silently freezes.
+ *    That asymmetry is the whole reason this case gets words of its own.
+ *
+ * @param {string} endpoint - the path that answered.
+ * @param {*} body - the parsed JSON body that arrived with the 200.
+ */
+function reportMalformedSessionPoll(endpoint, body) {
+  _pollFailCount++;
+  setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
+  console.warn(
+    '[pollSessions] ' + endpoint + ' returned 200 with a non-array body (' +
+    describeSessionsBodyShape(body) + ') \u2014 keeping the previous session list',
+  );
+  if (!_pollShapeAnomaly) {
+    _pollShapeAnomaly = true;
+    showToast('Unexpected response from the server \u2014 showing the last known sessions.');
+  }
+}
+
+/**
  * Fetch sessions from the appropriate endpoint and update the UI.
  * Uses /api/federation/sessions when multi_device_enabled is true,
  * /api/sessions otherwise.
@@ -1574,9 +1642,36 @@ async function pollSessions() {
     // The dedicated pollActiveState() loop owns following on a fresh snapshot.
     const res = await api('GET', endpoint);
     const sessions = await res.json();
+    // A 200 is not by itself an answer. api() throws on non-2xx and a broken
+    // body makes res.json() throw -- both land in the catch below, which is
+    // the ONLY reason _currentSessions survives those. A 200 carrying
+    // well-formed JSON that simply is not a session list is neither: it used
+    // to be assigned on the next line, and the first complaint came later,
+    // from renderGrid() calling an array method that wasn't there -- which
+    // the catch then swallowed. _currentSessions stayed poisoned after that
+    // for every consumer that touches it (updatePillBell's .some,
+    // createNewSession's readiness .find, visibleCount) until a later poll
+    // happened to return a real list.
+    //
+    // Not reachable from muxplex's own server: both endpoints are annotated
+    // `-> list[dict]` (main.py get_sessions, federation_sessions), so FastAPI
+    // validates the response and a non-list becomes a 500, not a 200. It
+    // takes an intermediary -- a captive portal or CDN answering 200 with a
+    // JSON error envelope. The near-miss is the auth middleware's own 307 to
+    // /login, which a fetch follows to a 200: that one is survivable only
+    // because login.html is HTML, so res.json() throws.
+    //
+    // Guarding HERE, once, is what makes every consumer safe at the same
+    // time; the alternative is scattering Array.isArray across all of them
+    // and re-scattering it at each new call site.
+    if (!Array.isArray(sessions)) {
+      reportMalformedSessionPoll(endpoint, sessions);
+      return;
+    }
     const prev = _currentSessions;
     _currentSessions = sessions;
     _pollFailCount = 0;
+    _pollShapeAnomaly = false;
     setConnectionStatus('ok');
     renderGrid(sessions);
     renderSidebar(sessions, _viewingSession, _viewingRemoteId);
