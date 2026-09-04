@@ -2013,6 +2013,86 @@ def _require_valid_session_name(name: str) -> None:
         )
 
 
+# How long create_session() will keep re-enumerating after a spawn before it
+# gives up and reports the observed name as unconfirmed, and how often it
+# looks. The wait exists because tmux_kit's spawn_session() has its OWN 30s
+# budget and returns (True, None) when it expires -- "return success and let
+# the caller poll" -- so ok=True genuinely does not prove the session is
+# enumerable yet. Kept short: the honest "could not confirm" answer is more
+# useful to a client than a slow one, and the ordinary case resolves on the
+# first look.
+_CREATE_OBSERVE_TIMEOUT_S: float = 5.0
+_CREATE_OBSERVE_INTERVAL_S: float = 0.25
+
+
+async def _observe_created_session(
+    requested: str, known_before: set[str]
+) -> str | None:
+    """Return the name tmux ACTUALLY created, or None if it can't be determined.
+
+    The name we ASK for and the name tmux creates frequently differ, and tmux
+    reports success either way. Two confirmed mechanisms:
+
+      1. A non-default ``new_session_template`` derives its own name -- the
+         exemplar in the wild, ``amplifier-workspace ~/dev/{name}``, sanitizes
+         and TRUNCATES to 32 characters, so every requested name longer than
+         that comes back different.
+      2. tmux silently rewrites ``.`` to ``_`` at rc=0 (reproduced on 3.4).
+
+    So the requested name cannot be trusted as an identity. This is the same
+    verification the rename path already performs for the same reason (see
+    "step 8, Verify the observed name" in rename_session) -- that precedent is
+    deliberately followed rather than a second shape invented.
+
+    THE MATCHING RULE, and why it is what it is. We cannot assume observed ==
+    requested (that assumption IS the bug), so we need a defensible way to
+    decide which live session is the one we just made:
+
+      * An exact match wins outright. The requested name being live is
+        positive evidence, not merely an absence of mangling, and it stays
+        correct even when unrelated sessions appear concurrently.
+      * Otherwise, diff against a snapshot taken BEFORE the spawn. Exactly one
+        new arrival is attributable to us; that is the observed name. The
+        pre-spawn snapshot is what makes this work on a host that already has
+        sessions running -- without it every unrelated session would look like
+        a candidate.
+      * Anything else is AMBIGUOUS and returns None. Zero arrivals may just be
+        a session that has not become enumerable yet, so we keep looking until
+        the deadline. Two or more arrivals cannot be disambiguated by waiting
+        (a later look can only add more), so we stop immediately rather than
+        burn the budget on a question more data cannot answer. Naming either
+        one would be a coin flip reported as a fact.
+
+    Returning None is a real, expected outcome, not an error: the bounded wait
+    exists precisely because tmux_kit's ``spawn_session()`` returns
+    ``(True, None)`` when its own 30s budget expires, by design, leaving the
+    caller to poll. The caller must surface "could not confirm" rather than
+    fall back to echoing the requested name as though it had been observed --
+    that fallback would reintroduce this exact bug in a form that is harder to
+    see, because the response would look identical to a confirmed one.
+    """
+    deadline = time.monotonic() + _CREATE_OBSERVE_TIMEOUT_S
+    candidates: list[str] = []
+    while True:
+        observed_names = await enumerate_sessions()
+        if requested in observed_names:
+            return requested
+        candidates = sorted(set(observed_names) - known_before)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1 or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_CREATE_OBSERVE_INTERVAL_S)
+
+    _log.error(
+        "create: could not confirm the observed name for %r; tmux reported "
+        "success but the session is not identifiable (new arrivals=%r)",
+        requested,
+        candidates,
+    )
+    return None
+
+
 @app.post("/api/sessions")
 async def create_session(payload: CreateSessionPayload) -> dict:
     """Create a new session using the resolved command pair's
@@ -2020,9 +2100,24 @@ async def create_session(payload: CreateSessionPayload) -> dict:
 
     Substitutes ``{name}`` in the template with the validated payload name,
     runs the command as an async subprocess, and waits up to 30 seconds for
-    it to finish.  Returns ``{name, ok: True, command_id: ...}`` on success or
-    ``{name, ok: False, error: ...}`` with HTTP 500 on failure so that the
-    frontend can surface actionable errors instead of silently timing out.
+    it to finish.  Returns ``{name, ok: True, command_id, requested_name,
+    observed, name_confirmed}`` on success, or HTTP 500 on failure so that
+    the frontend can surface actionable errors instead of silently timing out.
+
+    ``name`` IS THE OBSERVED NAME, not the requested one. The two differ more
+    often than they look like they should: a non-default
+    ``new_session_template`` may derive its own name (the
+    ``amplifier-workspace`` case truncates to 32 characters), and tmux itself
+    silently rewrites ``.`` to ``_`` while reporting success. Returning the
+    requested name meant every downstream key -- the client's view pin, its
+    readiness poll, and the ``created_with`` manifest record below -- was
+    built from a name that matched no live session.
+
+    ``observed`` is the verified name or ``None``; ``name_confirmed`` says
+    which. When it is ``False``, ``name`` is the requested name echoed back as
+    a best effort and explicitly NOT an observation -- the session may simply
+    not be enumerable yet (see ``_observe_created_session()``). A client must
+    not treat an unconfirmed name as an identity.
 
     ``payload.command_id`` (optional) selects a configured session command
     pair -- see GET /api/session-commands. Omitting it (the default, and
@@ -2068,22 +2163,56 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     # second one that could drift. See its docstring and
     # SESSION_PERSISTENCE_DESIGN.md's "restore fidelity equals create
     # fidelity" principle.
+    # Snapshot the live sessions BEFORE the spawn. This is what lets the
+    # post-spawn verification below attribute a new arrival to us on a host
+    # that already has sessions running; see _observe_created_session().
+    known_before = set(await enumerate_sessions())
+
     ok, error = await spawn_session_command(name, command_id=payload.command_id)
     if not ok:
         raise HTTPException(status_code=500, detail=error)
 
+    # Re-enumerate and report the name tmux ACTUALLY created. `ok` above only
+    # means the session command did not fail -- it does NOT mean a session by
+    # this name exists, because the template may derive its own (the
+    # 32-char-truncating `amplifier-workspace` case) and tmux itself rewrites
+    # '.' to '_' at rc=0.
+    observed = await _observe_created_session(name, known_before)
+
+    # When the observed name could not be determined we still return the
+    # requested name -- there is nothing better to return, and the client
+    # needs *something* to poll on -- but `name_confirmed: False` says plainly
+    # that it is a request, not an observation. Never present it as confirmed.
+    effective_name = observed if observed is not None else name
+
     # Record which pair created this session, so delete can automatically
     # run the matching teardown. Recorded AFTER success -- a failed create
     # writes nothing and leaves no garbage (see manifest.py's created_with
-    # concurrency notes). Note: command["id"], not payload.command_id --
-    # normalizes None to the literal "default" so the record is always
-    # explicit.
+    # concurrency notes). Keyed on the OBSERVED name: delete looks the pair up
+    # by the live session's name, so a record filed under a mangled-away
+    # requested name is unreachable. In the unconfirmed case this falls back
+    # to the requested name -- best effort, and no worse than the pre-fix
+    # behavior. Note: command["id"], not payload.command_id -- normalizes None
+    # to the literal "default" so the record is always explicit.
     async with state_lock:
         manifest = load_manifest()
-        manifest = set_created_with(manifest, name, command["id"])
+        manifest = set_created_with(manifest, effective_name, command["id"])
         save_manifest(manifest)
 
-    return {"name": name, "ok": True, "command_id": command["id"]}
+    # `name` stays the field every existing client reads (app.js does
+    # `data.name || name`), so returning the observed name here is what
+    # repairs the view pin, the readiness poll, the loading tile, and the
+    # manifest record at once -- with no client change. `observed` and
+    # `name_confirmed` are additive, so a client that ignores them behaves
+    # exactly as before.
+    return {
+        "name": effective_name,
+        "ok": True,
+        "command_id": command["id"],
+        "requested_name": name,
+        "observed": observed,
+        "name_confirmed": observed is not None,
+    }
 
 
 @app.post("/api/sessions/{name}/connect")
