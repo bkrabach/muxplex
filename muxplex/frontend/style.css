@@ -4905,6 +4905,34 @@ body {
   color: var(--text-muted);
 }
 
+/* Inline rename field — replaces the "Rename…" row in place, same padding as
+   the row it stands in so the menu does not jump when it appears. The input
+   itself is .new-session-input (the shared factory's element), width-clamped
+   here because the menu is narrower than the header it was sized for. */
+.flyout-menu__rename {
+  display: flex;
+  align-items: center;
+  padding: 5px 10px;
+}
+
+.flyout-menu__rename .new-session-input {
+  width: 100%;
+  min-width: 0;
+}
+
+/* A local-only action (rename) shown on a REMOTE session's tile: visible and
+   explained via its title, but not clickable. See RENAME_LOCAL_ONLY_TITLE. */
+.flyout-menu__item:disabled,
+.flyout-sheet__item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.flyout-menu__item:disabled:hover,
+.flyout-sheet__item:disabled:active {
+  background: transparent;
+}
+
 .flyout-menu__confirm-btn {
   padding: 2px 8px;
   border-radius: 4px;

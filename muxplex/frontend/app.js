@@ -328,15 +328,30 @@ let _flyoutRemoteId = null;
  *   { label, action, className?, separator? }
  * The 'user' view type uses a unified Views submenu (no separate Remove item).
  */
+/**
+ * Told to the user when rename is offered on a REMOTE session's tile.
+ *
+ * Rename is deliberately local-only: main.py proxies create
+ * (POST /api/federation/{id}/sessions), delete, get and bell/clear, but there
+ * is no federation rename route at all. An enabled item would 404 in the
+ * user's face, so the item is shown DISABLED with this explanation rather
+ * than silently missing (which reads as a bug) or silently broken.
+ *
+ * @type {string}
+ */
+const RENAME_LOCAL_ONLY_TITLE = 'Rename works on this device\u2019s own sessions only';
+
 const FLYOUT_MENU_MAP = {
   'all': [
     { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Rename\u2026', action: 'rename', localOnly: true },
     { label: 'Hide', action: 'hide' },
     { separator: true },
     { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
   ],
   'user': [
     { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Rename\u2026', action: 'rename', localOnly: true },
     { label: 'Hide', action: 'hide' },
     { separator: true },
     { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
@@ -344,6 +359,7 @@ const FLYOUT_MENU_MAP = {
   'hidden': [
     { label: 'Unhide', action: 'unhide' },
     { label: 'Unhide & Add to View\u2026', action: 'unhide-add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Rename\u2026', action: 'rename', localOnly: true },
     { separator: true },
     { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
   ],
@@ -352,15 +368,22 @@ const FLYOUT_MENU_MAP = {
 /**
  * Build the flyout menu HTML string based on the active view type.
  * Uses FLYOUT_MENU_MAP to generate items — no if/else chains.
+ *
+ * @param {string} [remoteId] - The tile's remote device id ('' for a local
+ *   session). Defaults to the flyout's own captured value; passed explicitly
+ *   only by tests. Items flagged `localOnly` render disabled when this is set
+ *   — see RENAME_LOCAL_ONLY_TITLE for why that is a disable rather than a
+ *   silent omission.
  * @returns {string} HTML for the menu items
  */
-function _buildFlyoutMenuItems() {
+function _buildFlyoutMenuItems(remoteId) {
   // Determine view type: 'all', 'hidden', or 'user'
   var viewType = _activeView;
   if (viewType !== 'all' && viewType !== 'hidden') {
     viewType = 'user';
   }
 
+  var isRemote = !!(remoteId === undefined ? _flyoutRemoteId : remoteId);
   var items = FLYOUT_MENU_MAP[viewType] || FLYOUT_MENU_MAP['all'];
   var html = '';
 
@@ -389,7 +412,16 @@ function _buildFlyoutMenuItems() {
       titleAttr = ' title="Remove from ' + escapeHtml(_activeView) + '"';
     }
 
-    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '"' + titleAttr + '>';
+    // A local-only action on a remote tile: disabled and labelled, never
+    // offered as something that would fail on click.
+    var disabledAttr = '';
+    if (item.localOnly && isRemote) {
+      disabledAttr = ' disabled';
+      titleAttr = ' title="' + escapeHtml(RENAME_LOCAL_ONLY_TITLE) + '"';
+    }
+
+    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '"' +
+      titleAttr + disabledAttr + '>';
     html += label;
     html += '</button>';
   }
@@ -4031,7 +4063,14 @@ function _openFlyoutSheet() {
     var cls = 'flyout-sheet__item';
     if (item.className && item.className.indexOf('danger') !== -1) cls += ' flyout-sheet__item--danger';
 
-    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '">';
+    // Same local-only treatment as the desktop flyout: disabled and labelled
+    // on a remote tile rather than offered and then failing.
+    var sheetExtra = '';
+    if (item.localOnly && _flyoutRemoteId) {
+      sheetExtra = ' disabled title="' + escapeHtml(RENAME_LOCAL_ONLY_TITLE) + '"';
+    }
+
+    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '"' + sheetExtra + '>';
     html += label;
     html += '</button>';
   }
@@ -4072,6 +4111,14 @@ function _openFlyoutSheet() {
         var killRemoteId = _flyoutRemoteId;
         closeFlyoutMenu();
         _openMobileKillConfirm(killName, killRemoteId);
+      } else if (action === 'rename') {
+        // The inline field the desktop flyout uses has nowhere to live in a
+        // bottom sheet, so rename gets its own sheet — same shape as the kill
+        // confirm above, and the same shared input factory underneath.
+        var renameName = _flyoutSessionName;
+        if (_flyoutRemoteId) { showToast(RENAME_LOCAL_ONLY_TITLE); return; }
+        closeFlyoutMenu();
+        _openMobileRenameSheet(renameName);
       } else {
         // Dispatch directly
         _handleFlyoutClick(e);
@@ -4260,6 +4307,9 @@ function _handleFlyoutClick(e) {
       break;
     case 'unhide':
       _doUnhideSession();
+      break;
+    case 'rename':
+      _doRenameSessionInline(item);
       break;
     case 'kill':
       _doKillSessionInline(item);
@@ -4504,6 +4554,193 @@ function _doRemoveFromView() {
       showToast('Couldn\u2019t save \u2014 try again');
       console.warn('[_doRemoveFromView] PATCH failed:', err);
     });
+}
+
+/**
+ * Show an inline rename field inside the flyout menu.
+ *
+ * Replaces the "Rename…" item with a text field pre-filled with the current
+ * name. Enter submits, Escape cancels — deliberately the same two keys, and
+ * deliberately the same FIELD, as the new-session flows: the input comes from
+ * `_createSessionInput()`, which is where live normalization is attached. That
+ * reuse is the point. A hand-rolled input here would normalize differently
+ * from the create field, so "my session" would become "my-session" in one box
+ * and be rejected in the other — one concept, two rules, which is its own
+ * surprise.
+ *
+ * The row is built with real elements rather than an innerHTML string (the
+ * pattern `_doKillSessionInline` uses) precisely because the input has to be
+ * the factory's element, listeners and all — an HTML string cannot carry them.
+ *
+ * @param {HTMLElement} renameItem - The "Rename…" menu item element
+ */
+function _doRenameSessionInline(renameItem) {
+  var sessionName = _flyoutSessionName;
+  if (!sessionName || !_flyoutMenuEl || !renameItem || !renameItem.parentNode) return;
+  // Belt and braces: the item renders disabled on a remote tile, but a click
+  // arriving anyway must not reach an endpoint that does not exist.
+  if (_flyoutRemoteId) { showToast(RENAME_LOCAL_ONLY_TITLE); return; }
+
+  var row = document.createElement('div');
+  row.className = 'flyout-menu__rename';
+
+  var input = _createSessionInput();
+  input.value = sessionName;
+  input.title = 'Enter to rename, Esc to cancel';
+  input.setAttribute('aria-label', 'New name for ' + sessionName);
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      // The same full normalization the create flows run on submit: live
+      // normalization has already kept the field valid character by
+      // character, and this adds the collapse/strip tidying that is unsafe
+      // to run mid-typing.
+      var next = _normalizeSessionName(input.value);
+      if (!next) { showToast(SESSION_NAME_ALL_SEPARATORS_MSG); return; }
+      closeFlyoutMenu();
+      renameSession(sessionName, next);
+    } else if (e.key === 'Escape') {
+      closeFlyoutMenu();
+    }
+  });
+
+  row.appendChild(input);
+  renameItem.parentNode.replaceChild(row, renameItem);
+
+  if (typeof input.focus === 'function') input.focus();
+  // Select the whole name so typing replaces it, but leave it visible and
+  // editable — a user renaming `foo-bar` to `foo-baz` should not have to
+  // retype the shared prefix.
+  if (typeof input.select === 'function') input.select();
+}
+
+/**
+ * Open a bottom sheet for renaming a session (mobile).
+ *
+ * The desktop flyout's inline field has nowhere to live in a bottom sheet, so
+ * this mirrors `_openMobileKillConfirm`'s shape — but the field itself still
+ * comes from `_createSessionInput()`, so mobile and desktop cannot drift into
+ * normalizing differently.
+ *
+ * @param {string} sessionName - The session being renamed (local only)
+ */
+function _openMobileRenameSheet(sessionName) {
+  if (!sessionName) return;
+
+  var sheet = document.createElement('div');
+  sheet.className = 'flyout-sheet';
+
+  var html = '<div class="flyout-sheet__backdrop"></div>';
+  html += '<div class="flyout-sheet__panel" aria-label="Rename session" role="dialog">';
+  html += '<div class="flyout-sheet__handle" aria-hidden="true"></div>';
+  html += '<div class="flyout-sheet__title">Rename ' + escapeHtml(sessionName) + '</div>';
+  html += '<div class="flyout-menu__rename" data-rename-field></div>';
+  html += '<button class="flyout-sheet__item" data-action="confirm-rename" role="button">Rename</button>';
+  html += '<button class="flyout-sheet__item" data-action="cancel" role="button">Cancel</button>';
+  html += '</div>';
+
+  sheet.innerHTML = html;
+  document.body.appendChild(sheet);
+
+  var input = _createSessionInput();
+  input.value = sessionName;
+  input.setAttribute('aria-label', 'New name for ' + sessionName);
+  var host = sheet.querySelector('[data-rename-field]');
+  if (host) host.appendChild(input);
+
+  function submit() {
+    var next = _normalizeSessionName(input.value);
+    if (!next) { showToast(SESSION_NAME_ALL_SEPARATORS_MSG); return; }
+    sheet.remove();
+    renameSession(sessionName, next);
+  }
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') submit();
+    else if (e.key === 'Escape') sheet.remove();
+  });
+
+  var backdrop = sheet.querySelector('.flyout-sheet__backdrop');
+  if (backdrop) backdrop.addEventListener('click', function() { sheet.remove(); });
+
+  var panel = sheet.querySelector('.flyout-sheet__panel');
+  if (panel) {
+    panel.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      if (btn.dataset.action === 'confirm-rename') submit();
+      else sheet.remove();
+    });
+  }
+
+  if (typeof input.focus === 'function') input.focus();
+  if (typeof input.select === 'function') input.select();
+}
+
+/**
+ * Rename a session via POST /api/sessions/{name}/rename.
+ *
+ * Local sessions only — main.py proxies create/delete/get/bell-clear over
+ * federation but has no rename route, so a remote name never reaches here
+ * (see RENAME_LOCAL_ONLY_TITLE).
+ *
+ * Two things this reports honestly rather than optimistically:
+ *
+ * 1. The server re-enumerates tmux after the rename and returns the OBSERVED
+ *    name in `name`, which is not necessarily the one that was requested —
+ *    tmux can silently rewrite a name, and templates truncate. The toast
+ *    reports what actually exists now, not what we asked for. Reporting the
+ *    request back as fact is the exact see-one-thing-get-another divergence
+ *    this batch exists to remove.
+ * 2. On rejection the server sends its own sentence AND, when it can compute
+ *    one, a corrected name. api() (muxplex-ctx) already derives both into
+ *    err.message and err.suggested, so this offers the correction as a
+ *    one-click retry rather than re-parsing the body or making the user guess
+ *    at the rule. A suggestion equal to what was just submitted is ignored, so
+ *    a server echoing the name back cannot cause a prompt-and-retry loop.
+ *
+ * @param {string} name - Current session name
+ * @param {string} newName - Requested new name (already normalized by the caller)
+ * @returns {Promise<void>}
+ */
+async function renameSession(name, newName) {
+  // Nothing to do, and not worth a round trip. The server treats this as a
+  // no-op 200 anyway (§7.3), so this only saves the request.
+  if (!name || !newName || name === newName) return;
+
+  try {
+    const res = await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/rename', { new_name: newName });
+    var observed = newName;
+    try {
+      var body = await res.json();
+      if (body && typeof body.name === 'string' && body.name) observed = body.name;
+    } catch (parseErr) {
+      // No usable body — fall back to the requested name for the toast only.
+    }
+    showToast('Renamed to \'' + observed + '\'');
+    // The server killed the old ttyd as part of the rename, so a viewer of the
+    // old name is now pointed at nothing. Re-open under the observed name
+    // rather than dumping the user back to the grid.
+    if (_viewingSession === name && (_viewingRemoteId ?? '') === '') {
+      openSession(observed);
+    }
+    pollSessions();
+  } catch (err) {
+    // err.message is already the server's own explanation when it sent one --
+    // api() derives it, so there is nothing to re-parse here.
+    var msg = (err && err.message) || 'Failed to rename session';
+    var suggested = (err && err.suggested) || '';
+    if (suggested && suggested !== newName) {
+      var canAsk = typeof window !== 'undefined' && typeof window.confirm === 'function';
+      if (canAsk && window.confirm(msg + '\n\nRename to \'' + suggested + '\' instead?')) {
+        return renameSession(name, suggested);
+      }
+      // Declined (or no prompt available) -- still show the correction.
+      showToast(msg + ' Try \'' + suggested + '\'.');
+      return;
+    }
+    showToast(msg);
+  }
 }
 
 /**
@@ -10748,6 +10985,11 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
+    // Rename session (flyout ⋮ menu -> POST /api/sessions/{name}/rename)
+    RENAME_LOCAL_ONLY_TITLE,
+    renameSession,
+    _doRenameSessionInline,
+    _openMobileRenameSheet,
     // Manage View panel
     openManageViewPanel,
     closeManageViewPanel,
@@ -10759,6 +11001,8 @@ if (typeof module !== 'undefined' && module.exports) {
     _previewManageViewRule,
     _clearManageViewRulesPreviewTimer,
     // Flyout menu
+    FLYOUT_MENU_MAP,
+    _buildFlyoutMenuItems,
     openFlyoutMenu,
     closeFlyoutMenu,
     // Filter bar
