@@ -5488,6 +5488,23 @@ _AGENT_PROVIDER_ENV_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
 }
 
+#: The `error.type` on `POST /api/agent/chat/completions`'s 503 when the
+#: Agent was never set up on this server -- as opposed to a genuine fault.
+#:
+#: A STABLE STRING, deliberately not derived from any message. muxplex-at9
+#: shipped twice for the same structural reason: the "is this an
+#: un-onboarded server or a real failure?" decision lived in chat.js as a
+#: regex over the server's PROSE (`/not configured on this server/i`).
+#: Rewording the server's sentence -- which the sidecar -> embedded
+#: refactor did, entirely reasonably -- silently reverted the panel to
+#: "muxplex hit an error of its own... worth retrying once" on the one
+#: state every new install is in. Nothing failed; there was nothing that
+#: COULD fail. Public (no leading underscore) because it is half of a
+#: cross-language contract: chat.js matches this literal, and
+#: tests/test_agent_not_configured_contract.py fails the suite if either
+#: side renames it.
+AGENT_NOT_CONFIGURED_ERROR_TYPE = "agent_not_configured"
+
 # Serializes validate -> persist so two racing requests can't interleave
 # (SS9 "concurrent writes" of the design doc).
 _agent_credential_lock = asyncio.Lock()
@@ -6058,10 +6075,26 @@ async def agent_chat_completions_proxy(request: Request) -> Response:
             status_code=400,
         )
 
+    # muxplex-at9: EVERY reason check_available() can give -- amplifier-agent
+    # not installed, no provider credential -- means "the Agent was never set
+    # up on this server". That is the state every install STARTS in, and no
+    # amount of retrying changes it. Typing it as `server_error` made it
+    # indistinguishable from a genuine fault, and the panel duly told the
+    # owner to "retry once" on a box where the agent had simply never been
+    # installed. There is no transient case in this branch, so one
+    # discriminator is enough -- and it must be a FIELD, not a phrase: the
+    # v0.48.1 fix classified this by regexing the message prose, and the
+    # sidecar -> embedded refactor silently un-fixed it by rewording that
+    # prose. See AGENT_NOT_CONFIGURED_ERROR_TYPE's own comment.
     unavailable_reason = await agent_embedded_runner.check_available()
     if unavailable_reason:
         return JSONResponse(
-            {"error": {"message": unavailable_reason, "type": "server_error"}},
+            {
+                "error": {
+                    "message": unavailable_reason,
+                    "type": AGENT_NOT_CONFIGURED_ERROR_TYPE,
+                }
+            },
             status_code=503,
         )
 
