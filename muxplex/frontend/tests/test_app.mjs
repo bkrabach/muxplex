@@ -3634,7 +3634,11 @@ test('createNewSession polls for session before auto-opening (not immediate setT
   // loading tile injection and auto-add-to-view logic; setInterval is now ~2800 chars in.
   // Updated for named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md): command_id body
   // construction added near the top of the function, pushing setInterval to ~3600 chars.
-  const snippet = source.slice(start, start + 3800);
+  // Updated for muxplex-9zp (readiness-poll key-space fix): the poll now builds its
+  // expected keys for BOTH endpoint shapes and hands off to a late-arrival watcher,
+  // pushing setInterval to ~4900 chars in. Window is now the whole function body
+  // (~7600 chars) so ordinary growth inside createNewSession stops breaking this.
+  const snippet = source.slice(start, start + 7600);
   // Must NOT contain the old immediate-open pattern inside createNewSession
   assert.ok(
     !snippet.includes("setTimeout(() => openSession"),
@@ -6309,7 +6313,11 @@ test('createNewSession passes remoteId through to openSession for auto-open', ()
   assert.ok(fnStart !== -1, 'createNewSession function must exist');
   // Updated in v0.6.0: window increased from 3000 to 4000 — function grew with loading
   // tile injection and auto-add-to-view logic; openSession call is now ~3200 chars in.
-  const fnBody = source.substring(fnStart, fnStart + 4000);
+  // Updated for muxplex-9zp (readiness-poll key-space fix): the poll's expected-key
+  // construction and late-arrival watcher push the openSession call to ~5200 chars in.
+  // Window is now the whole function body (~7600 chars) so ordinary growth inside
+  // createNewSession stops breaking this.
+  const fnBody = source.substring(fnStart, fnStart + 7600);
   // Must call openSession with remoteId option
   assert.ok(
     fnBody.includes('openSession') && fnBody.includes('remoteId'),
