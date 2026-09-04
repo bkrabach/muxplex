@@ -1580,6 +1580,37 @@
     return /input_allowed_sessions/i.test(serverPart) ? "allowlist" : "global";
   }
 
+  /** True when `bodyText` is muxplex's own "the Agent was never set up on
+   * this server" refusal -- `{"error": {"type": "agent_not_configured"}}`,
+   * see main.py's AGENT_NOT_CONFIGURED_ERROR_TYPE.
+   *
+   * muxplex-at9, twice. The first fix asked "does the server's sentence
+   * contain the phrase 'not configured on this server'?" -- a question about
+   * PROSE. The sidecar -> embedded refactor rewrote that prose, the regex
+   * stopped matching, and every un-onboarded server silently went back to
+   * being told "worth retrying once" about a state retrying cannot touch.
+   * Nothing failed, because a regex that stops matching is not an error.
+   *
+   * So this asks a question about STRUCTURE instead, and the string it
+   * matches is pinned from the Python side
+   * (tests/test_agent_not_configured_contract.py asserts this file contains
+   * main.py's literal), which turns a future rename into a red suite rather
+   * than a quietly wrong message.
+   *
+   * Never throws: a non-JSON or truncated body is simply "not that case",
+   * which degrades to the generic 5xx handling -- the conservative
+   * direction, since mislabeling a REAL fault as "not set up" would send a
+   * user to configure something that is already configured. */
+  function isAgentNotConfiguredBody(bodyText) {
+    if (!bodyText) return false;
+    try {
+      var parsed = JSON.parse(bodyText);
+      return !!(parsed && parsed.error && parsed.error.type === "agent_not_configured");
+    } catch (e) {
+      return false;
+    }
+  }
+
   /** Turn a thrown tool error into { headline, remedy } in plain language.
    * `remedy` may be null when there is genuinely nothing the user can do.
    * `err` is the original Error when one is available; its structured
@@ -1649,24 +1680,24 @@
     if (m403) {
       return { headline: "muxplex refused that request.", remedy: null };
     }
-    // muxplex-at9: the 503 muxplex's OWN proxy returns when
-    // AMPLIFIER_AGENT_BEARER_TOKEN is unset -- i.e. the agent was never
-    // installed/configured on THIS server (main.py's
-    // agent_chat_completions_proxy). That is the default starting state
-    // for every fresh muxplex install, not a transient fault, so
-    // "worth retrying" (the generic m5xx phrasing just below) is actively
-    // wrong advice here -- retrying can never help until an operator
-    // configures it. Checked on the server's OWN wording, not on `name`:
-    // this failure reaches here through the plain `!resp.ok` path in
-    // runTurn() (name === "__request__"), never the SSE error-frame path,
-    // so it must not be scoped to name === "__stream__" the way the
-    // sidecar-unreachable case above is.
+    // muxplex-at9: the 503 muxplex's OWN endpoint returns when the Agent
+    // was never set up on THIS server -- amplifier-agent not installed, or
+    // installed with no provider credential (main.py's
+    // agent_chat_completions_proxy, via check_available()). That is the
+    // default starting state for every fresh muxplex install, not a
+    // transient fault, so "worth retrying" (the generic m5xx phrasing just
+    // below) is actively wrong advice here -- retrying can never help until
+    // an operator sets it up. Not scoped to a `name`: this failure reaches
+    // here through the plain `!resp.ok` path in runTurn()
+    // (name === "__request__"), never the SSE error-frame path, so it must
+    // not be scoped to name === "__stream__" the way the sidecar-unreachable
+    // case above is.
     //
     // In normal use nobody should ever see this: checkAgentGate() (below)
     // blanks the panel before a turn can even be attempted once the panel
     // is known to be unconfigured. This stays as the humanised fallback for
-    // the rare race (gate check said "configured" a moment ago, sidecar
-    // credential removed since) or a gate-check failure that fails open.
+    // the rare race (gate check said "configured" a moment ago, credential
+    // removed since) or a gate-check failure that fails open.
     //
     // Kept deliberately short -- one clause, no doc path. Most installs are
     // via `uv tool install`, which never sees README.md or docs/, so a
@@ -1675,7 +1706,16 @@
     // Anything more than this belongs behind a disclosure, the same way
     // the raw response text already sits behind "technical detail" below --
     // not stacked into a second visible paragraph.
-    if (m5xx && /not configured on this server/i.test(msg)) {
+    //
+    // The FIRST test is the structural one (err.agentNotConfigured, set at
+    // the throw site from the response's own `error.type`). The prose regex
+    // that follows it is a compatibility fallback ONLY -- it is what a
+    // pre-v0.49 server's wording looks like, and keeping it costs nothing
+    // while a browser holds a cached chat.js newer than the server it is
+    // talking to. It is emphatically not the primary path: relying on it
+    // IS the muxplex-at9 regression. See isAgentNotConfiguredBody() above.
+    if ((err && err.agentNotConfigured) ||
+        (m5xx && /not configured on this server/i.test(msg))) {
       return {
         headline: "The Agent isn't set up on this server yet.",
         remedy: "Set it up from Settings -> Agent.",
@@ -2333,7 +2373,12 @@
       clearStatus();
       appendToolError("__request__",
         "POST /api/agent/chat/completions failed: HTTP " + resp.status +
-        (errText ? " -- " + errText : ""));
+        (errText ? " -- " + errText : ""),
+        // muxplex-at9: classify from the response's own typed field, never
+        // from its wording. Attached the same way the 403 fence classifier
+        // carries err.inputFence -- humaniseToolError() prefers a structured
+        // field over anything re-parsed out of a message.
+        { agentNotConfigured: isAgentNotConfiguredBody(errText) });
       return;
     }
 

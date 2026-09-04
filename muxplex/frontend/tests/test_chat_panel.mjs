@@ -1638,3 +1638,117 @@ test('l2y: a genuinely very long wait still reads as progress, only the wording 
   const rows = panel.els['chat-messages']._children.filter((c) => /agent-status/.test(c.className || ''));
   assert.match(rows[rows.length - 1].className, /agent-status--wait/);
 });
+
+// =======================================================================
+// GROUP 10 (muxplex-at9) -- an un-onboarded server must READ as
+// un-onboarded, not as a transient muxplex fault.
+//
+// The owner's original report, verbatim: "muxplex hit an error of its own
+// while handling that. Worth retrying once" -- shown on a box where the
+// agent had simply never been installed. Retrying can NEVER help there.
+//
+// v0.48.1 fixed it by regexing the server's 503 prose for "not configured
+// on this server". That coupling broke silently when the sidecar -> embedded
+// refactor rewrote the prose (agent_embedded/runner.py) and nothing failed:
+// the branch stopped matching and every un-onboarded server went back to
+// being told to retry. These tests drive the REAL 503 body shape the server
+// sends today, so a prose rewrite can never quietly un-fix this again.
+// =======================================================================
+
+/** Fetch stub: the completions POST refuses with muxplex's own 503 for an
+ * agent that isn't set up on this server. `type` is the stable
+ * discriminator main.py sends (AGENT_NOT_CONFIGURED_ERROR_TYPE); `message`
+ * is deliberately the server's real, wordy operator-facing text, so these
+ * tests prove the classification does NOT depend on how it is worded. */
+function agentNotConfiguredFetch({ message, type = 'agent_not_configured' } = {}) {
+  return async (url) => {
+    if (url === '/api/agent/chat/completions') {
+      return {
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ error: { message: message, type: type } }),
+      };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+const NOT_INSTALLED_503 =
+  "The Agent isn't installed on this server yet. Whoever runs muxplex can " +
+  'install it with: muxplex ensure-agent';
+
+const NO_CREDENTIAL_503 =
+  'amplifier-agent embedded mode: no anthropic credential resolvable ' +
+  '(ANTHROPIC_API_KEY unset, and none stored at /home/u/.amplifier-agent/' +
+  'credentials.json). Set one via Settings -> Agent, or export the ' +
+  'environment variable.';
+
+test('at9: a 503 typed agent_not_configured never tells the user to retry', async () => {
+  const panel = loadChatPanel({ fetchImpl: agentNotConfiguredFetch({ message: NOT_INSTALLED_503 }) });
+  panel.els['chat-input'].value = 'hello';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(
+    () => /agent-msg-error/.test(
+      panel.els['chat-messages']._children.map((c) => c.className || '').join(' ')
+    ),
+    { label: 'the error to render' }
+  );
+  const rendered = fullText(panel.els['chat-messages']);
+
+  assert.doesNotMatch(rendered, /Worth retrying/i,
+    'retrying can never install an agent -- this is the exact wrong advice muxplex-at9 was filed about');
+  assert.doesNotMatch(rendered, /hit an error of its own/i,
+    'an un-onboarded server is not a muxplex fault');
+  assert.match(rendered, /isn't set up on this server/i,
+    'must name the actual state');
+  assert.match(rendered, /Settings/,
+    'must give a concrete next step the user can take from inside the app');
+});
+
+test('at9: classification survives a full rewrite of the server\'s wording', async () => {
+  // The regression this group exists to prevent: the classification must
+  // key on the typed field, never on the sentence. Both messages below are
+  // real 503 bodies from agent_embedded/runner.py, and NEITHER contains the
+  // phrase the pre-fix code matched on ("not configured on this server").
+  for (const message of [NOT_INSTALLED_503, NO_CREDENTIAL_503]) {
+    const panel = loadChatPanel({ fetchImpl: agentNotConfiguredFetch({ message }) });
+    panel.els['chat-input'].value = 'hello';
+    panel.els['chat-send-btn']._fire('click');
+    await waitUntil(
+      () => /agent-msg-error/.test(
+        panel.els['chat-messages']._children.map((c) => c.className || '').join(' ')
+      ),
+      { label: 'the error to render' }
+    );
+    const rendered = fullText(panel.els['chat-messages']);
+    assert.doesNotMatch(rendered, /Worth retrying/i, `wrongly classified as transient for: ${message}`);
+    assert.match(rendered, /isn't set up on this server/i, `not onboarded for: ${message}`);
+    // Transparency is still a feature, exactly as for tool errors: the raw
+    // server response stays available under "technical detail".
+    assert.ok(rendered.includes(message), 'the real server detail must still be shown');
+  }
+});
+
+test('at9: a genuine 5xx fault is still reported as a fault worth retrying', async () => {
+  // The guard against over-correcting: only the TYPED refusal is reframed.
+  // An untyped 500 is a real fault and must keep its retry advice.
+  const panel = loadChatPanel({
+    fetchImpl: async (url) => {
+      if (url === '/api/agent/chat/completions') {
+        return { ok: false, status: 500, text: async () => 'internal error' };
+      }
+      throw new Error('unexpected fetch url in test: ' + url);
+    },
+  });
+  panel.els['chat-input'].value = 'hello';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(
+    () => /agent-msg-error/.test(
+      panel.els['chat-messages']._children.map((c) => c.className || '').join(' ')
+    ),
+    { label: 'the error to render' }
+  );
+  const rendered = fullText(panel.els['chat-messages']);
+  assert.match(rendered, /Worth retrying/i, 'a real fault keeps its retry advice');
+  assert.doesNotMatch(rendered, /isn't set up on this server/i);
+});

@@ -87,6 +87,35 @@ _create_session_lock = asyncio.Lock()
 _prepared: Any = None
 
 
+#: What a user is told when amplifier-agent isn't installed here.
+#:
+#: USER-FACING, not a log line: ``credentials.full_status()`` returns this
+#: verbatim as ``message`` for ``state: "not_installed"``, and chat.js's
+#: ``_renderAgentCredentialStatus`` prints it as the PRIMARY line in
+#: Settings -> Agent. muxplex-at9 is precisely about internals being
+#: rendered at users (the original report leaked ``sudo: unknown user
+#: aa-svc`` there), so this sentence has to survive being read by someone
+#: who has never heard of a Python environment.
+#:
+#: It also has to be TRUE. The text this replaced advised ``pip install
+#: amplifier-agent`` and ``MUXPLEX_AGENT_MODE=sidecar``; neither can work.
+#: amplifier-agent is deliberately source-only -- pyproject.toml's
+#: ``[tool.uv.sources]``: "NOT published on PyPI ... there is no registry
+#: copy to fall back to" -- so pip has nothing to fetch. And the sidecar
+#: path was removed: ``is_embedded_mode()`` has zero callers in main.py,
+#: so that variable changes nothing at all. ``muxplex ensure-agent``
+#: (cli.py's ``ensure_agent()``, registered as a real subcommand) is the
+#: one command that actually closes this gap.
+#:
+#: The technical cause (which import failed, and why) is not discarded --
+#: it goes to the server log via ``_get_prepared`` below, where an
+#: operator can find it, and it stays on the exception chain.
+LIBRARY_MISSING_MESSAGE = (
+    "The Agent isn't installed on this server yet. Whoever runs muxplex can "
+    "install it with: muxplex ensure-agent"
+)
+
+
 class EmbeddedAgentUnavailable(RuntimeError):
     """amplifier-agent isn't importable in this Python environment."""
 
@@ -109,11 +138,17 @@ async def _get_prepared() -> Any:
                 from amplifier_agent_lib._runtime import prepare_bundle_for_session
                 from amplifier_agent_lib.bundle.cache import load_and_prepare_cached
             except ImportError as exc:
-                raise EmbeddedAgentUnavailable(
-                    "amplifier-agent is not installed in this Python environment "
-                    "(pip install amplifier-agent, or set MUXPLEX_AGENT_MODE=sidecar "
-                    "to use the separate sidecar process instead)"
-                ) from exc
+                # The operator's copy of the detail. LIBRARY_MISSING_MESSAGE
+                # is what a USER sees; this is the "which import, and why"
+                # an operator needs, kept out of the UI on purpose
+                # (muxplex-at9's second defect was raw subprocess stderr
+                # reaching a user-facing surface).
+                logger.warning(
+                    "embedded agent unavailable: amplifier-agent is not importable "
+                    "in this environment (%s). Install it with `muxplex ensure-agent`.",
+                    exc,
+                )
+                raise EmbeddedAgentUnavailable(LIBRARY_MISSING_MESSAGE) from exc
             prepared = await load_and_prepare_cached(aaa_version=aaa_version)
             prepare_bundle_for_session(prepared, host_config={}, workspace=_WORKSPACE)
             _prepared = prepared
