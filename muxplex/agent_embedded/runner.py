@@ -70,6 +70,20 @@ _KEEPALIVE_INTERVAL_SECONDS: float = 3.0
 
 _PROVIDER_ID = "anthropic"
 
+#: The model id a turn runs against when the request doesn't name one.
+#:
+#: Extracted from the inline literal that used to sit in
+#: :func:`stream_embedded_chat_completion` because it is not an internal
+#: detail: it is half of a cross-language pair. chat.js sends its own
+#: ``var MODEL`` on every turn, this is what the runner falls back to, and
+#: Settings -> Agent now DISPLAYS one of them as "the model you are talking
+#: to". If the two literals drift, the panel shows a model the turn does
+#: not use -- a confidently-wrong label, which is worse than no label at
+#: all. ``tests/test_agent_active_target.py`` pins them equal, the same
+#: cross-language seam ``AGENT_NOT_CONFIGURED_ERROR_TYPE`` (muxplex-at9)
+#: established one commit earlier.
+_DEFAULT_MODEL_ID = "claude-sonnet-5"
+
 #: A workaround for a filed upstream bug (see module docstring), NOT a
 #: preference -- mirrors the sidecar's own host-config
 #: (``docs/AGENT_CHAT_SIDECAR.md`` \u00a73: ``enable_prompt_caching: false``).
@@ -173,6 +187,23 @@ def active_provider() -> str:
     return _PROVIDER_ID
 
 
+def default_model() -> str:
+    """Return the model id a turn runs against when the request doesn't
+    name one (see ``_DEFAULT_MODEL_ID``).
+
+    Sibling of :func:`active_provider`, exposed for the same reason: so
+    ``credentials.full_status()`` reports the runner's OWN notion of what
+    a turn will use, rather than a second copy of the string living in a
+    file that never runs a turn.
+
+    NOT a claim that every turn uses this model -- a request may override
+    it (``body["model"]``), and chat.js always does. It is the server's
+    answer to "what would I run right now, absent instruction", which is
+    the only model question a server can answer honestly on its own.
+    """
+    return _DEFAULT_MODEL_ID
+
+
 async def library_unavailable_reason() -> str | None:
     """Return ``None`` if amplifier-agent is importable (and its bundle
     preparable) in this process, or a human-readable reason it is not.
@@ -240,7 +271,7 @@ async def stream_embedded_chat_completion(
     against the sidecar.
     """
     chunk_id = wire.new_chunk_id()
-    model_id = body.get("model") or "claude-sonnet-5"
+    model_id = body.get("model") or _DEFAULT_MODEL_ID
 
     # Defense in depth: main.py's route handler already calls
     # check_available() before opening the stream, but a race (library
