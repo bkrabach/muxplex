@@ -515,3 +515,206 @@ def test_session_from_federation_sessions_can_be_passed_straight_to_connect() ->
     client2 = _client(connect_handler)
     client2.connect(remote_session.name, remote_id=remote_session.remote_id)
     assert captured["path"] == "/api/federation/0/connect/dev"
+
+
+# ---------------------------------------------------------------------------
+# create_session() -- the observed-name contract
+#
+# The name a caller ASKS for and the name tmux ACTUALLY creates diverge
+# routinely: a non-default `new_session_template` may derive its own name
+# (the `amplifier-workspace` case truncates to 32 characters) and tmux
+# itself silently rewrites '.' to '_' while reporting success. The server
+# re-enumerates after the spawn and reports the OBSERVED name (main.py's
+# create_session(); `{name, requested_name, observed, name_confirmed}`).
+# These tests pin the client to consuming that answer rather than polling
+# the name it asked for -- which timed out on sessions that were created
+# perfectly fine.
+# ---------------------------------------------------------------------------
+
+
+def _create_session_handler(
+    post_body: dict[str, Any],
+    listed: list[str],
+    captured: dict[str, Any] | None = None,
+):
+    """Handler serving POST /api/sessions with *post_body* and
+    GET /api/sessions with one entry per name in *listed*."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if captured is not None:
+            captured.setdefault("paths", []).append(
+                f"{request.method} {request.url.path}"
+            )
+        if request.method == "POST":
+            return _json_response(200, post_body)
+        return _json_response(
+            200, [{"name": n, "snapshot": "", "bell": {}} for n in listed]
+        )
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    ("requested", "observed"),
+    [
+        # 32-char truncation -- the `amplifier-workspace ~/dev/{name}`
+        # template, confirmed on the reporting user's box.
+        (
+            "home-assistant-smart-tool-team-ci",
+            "home-assistant-smart-tool-team-c",
+        ),
+        # tmux's own silent '.' -> '_' rewrite, at rc=0.
+        ("my-lane.v2.fix", "my-lane_v2_fix"),
+    ],
+)
+def test_create_session_polls_the_observed_name_not_the_requested_one(
+    requested: str, observed: str
+) -> None:
+    """The regression. The session exists under *observed* and never under
+    *requested*; polling the requested name raises TimeoutError on a
+    session that came up fine."""
+    handler = _create_session_handler(
+        {
+            "name": observed,
+            "ok": True,
+            "command_id": "default",
+            "requested_name": requested,
+            "observed": observed,
+            "name_confirmed": True,
+        },
+        listed=[observed],
+    )
+
+    client = _client(handler)
+    result = client.create_session(requested, timeout=0.2, interval=0.01)
+
+    assert result.name == observed
+    assert result.requested_name == requested
+    assert result.observed == observed
+    assert result.name_confirmed is True
+    assert result.visible is True
+
+
+def test_create_session_reports_an_unconfirmed_name_instead_of_raising() -> None:
+    """`name_confirmed: false` means the server could not determine which
+    session it created. That is "created, name unconfirmed" -- NOT a
+    timeout, which would report a successful creation as a failure."""
+    handler = _create_session_handler(
+        {
+            "name": "unverifiable",
+            "ok": True,
+            "command_id": "default",
+            "requested_name": "unverifiable",
+            "observed": None,
+            "name_confirmed": False,
+        },
+        listed=[],
+    )
+
+    client = _client(handler)
+    result = client.create_session("unverifiable", timeout=0.05, interval=0.01)
+
+    assert result.name_confirmed is False
+    assert result.observed is None
+    assert result.visible is False
+
+
+def test_create_session_raises_when_a_confirmed_name_never_appears() -> None:
+    """The narrowing guard: swallowing the unconfirmed case must not
+    swallow a genuine "created but never reachable" failure. The server
+    OBSERVED this name in tmux, so its absence from the read cache is a
+    real anomaly the caller cannot proceed past."""
+    handler = _create_session_handler(
+        {
+            "name": "ghost",
+            "ok": True,
+            "command_id": "default",
+            "requested_name": "ghost",
+            "observed": "ghost",
+            "name_confirmed": True,
+        },
+        listed=[],
+    )
+
+    client = _client(handler)
+    with pytest.raises(TimeoutError) as exc_info:
+        client.create_session("ghost", timeout=0.05, interval=0.01)
+    assert "ghost" in str(exc_info.value)
+
+
+def test_create_session_against_a_pre_observation_server_still_raises() -> None:
+    """A server that predates the observed-name fields makes no
+    confirmation claim at all (`name_confirmed` absent, not False). The
+    client must NOT read that silence as "unconfirmed" and start
+    swallowing timeouts -- behavior there stays byte-identical to before
+    this change."""
+    handler = _create_session_handler(
+        {"name": "legacy", "ok": True, "command_id": "default"},
+        listed=[],
+    )
+
+    client = _client(handler)
+    with pytest.raises(TimeoutError):
+        client.create_session("legacy", timeout=0.05, interval=0.01)
+
+
+def test_create_session_against_a_pre_observation_server_parses_cleanly() -> None:
+    """The same pre-feature response, when the session DOES appear:
+    parses to `name_confirmed=None` (the server never said), never a
+    KeyError and never a fabricated True."""
+    handler = _create_session_handler(
+        {"name": "legacy", "ok": True, "command_id": "default"},
+        listed=["legacy"],
+    )
+
+    client = _client(handler)
+    result = client.create_session("legacy", timeout=0.2, interval=0.01)
+
+    assert result.name == "legacy"
+    assert result.name_confirmed is None
+    assert result.observed is None
+    assert result.visible is True
+
+
+def test_create_session_wait_false_reports_observed_name_no_poll() -> None:
+    """wait=False still hands back the server's answer -- a caller that
+    opts out of the poll must not be forced back to the requested name to
+    learn what was created. `visible` is None: nothing was polled."""
+    captured: dict[str, Any] = {}
+    handler = _create_session_handler(
+        {
+            "name": "trunc-32",
+            "ok": True,
+            "command_id": "default",
+            "requested_name": "trunc-32-and-then-some",
+            "observed": "trunc-32",
+            "name_confirmed": True,
+        },
+        listed=["trunc-32"],
+        captured=captured,
+    )
+
+    client = _client(handler)
+    result = client.create_session("trunc-32-and-then-some", wait=False)
+
+    assert result.name == "trunc-32"
+    assert result.visible is None
+    assert captured["paths"] == ["POST /api/sessions"]
+
+
+def test_create_session_body_still_sends_only_the_requested_name() -> None:
+    """Byte-identity of the REQUEST: consuming the response changes what
+    the client reads, never what it sends."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            captured["body"] = __import__("json").loads(request.content)
+            return _json_response(
+                200, {"name": "n", "ok": True, "command_id": "default"}
+            )
+        return _json_response(200, [{"name": "n", "snapshot": "", "bell": {}}])
+
+    client = _client(handler)
+    client.create_session("n", timeout=0.2, interval=0.01)
+    assert captured["body"] == {"name": "n"}

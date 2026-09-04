@@ -16,7 +16,13 @@ from muxplex_client.errors import (
     TargetGoneError,
     TargetNotSelfOwningError,
 )
-from muxplex_client.models import Bell, FollowupItem, Followups, HeartbeatResult
+from muxplex_client.models import (
+    Bell,
+    CreateSessionResult,
+    FollowupItem,
+    Followups,
+    HeartbeatResult,
+)
 
 # ---------------------------------------------------------------------------
 # Bell / needs_attention
@@ -894,3 +900,68 @@ def test_parse_session_commands_with_errors() -> None:
     }
     result = protocol.parse_session_commands(raw)
     assert result.errors == ("session_commands[0]: bad entry",)
+
+
+# ---------------------------------------------------------------------------
+# parse_create_session_result
+# ---------------------------------------------------------------------------
+
+
+def test_parse_create_session_result_full() -> None:
+    result = protocol.parse_create_session_result(
+        {
+            "name": "trunc-32",
+            "ok": True,
+            "command_id": "default",
+            "requested_name": "trunc-32-and-then-some",
+            "observed": "trunc-32",
+            "name_confirmed": True,
+        },
+        requested_name="trunc-32-and-then-some",
+    )
+    assert result == CreateSessionResult(
+        name="trunc-32",
+        requested_name="trunc-32-and-then-some",
+        observed="trunc-32",
+        name_confirmed=True,
+        command_id="default",
+    )
+
+
+def test_parse_create_session_result_unconfirmed() -> None:
+    result = protocol.parse_create_session_result(
+        {
+            "name": "asked-for",
+            "ok": True,
+            "command_id": "default",
+            "requested_name": "asked-for",
+            "observed": None,
+            "name_confirmed": False,
+        },
+        requested_name="asked-for",
+    )
+    assert result.observed is None
+    assert result.name_confirmed is False
+
+
+def test_parse_create_session_result_pre_feature_server() -> None:
+    """A server that predates the observed-name fields said nothing about
+    confirmation -- that parses to None (absent), never to a fabricated
+    True or a misleading False."""
+    result = protocol.parse_create_session_result(
+        {"name": "legacy", "ok": True, "command_id": "default"},
+        requested_name="legacy",
+    )
+    assert result.name == "legacy"
+    assert result.requested_name == "legacy"
+    assert result.observed is None
+    assert result.name_confirmed is None
+
+
+def test_parse_create_session_result_empty_body_falls_back_to_requested() -> None:
+    """Nothing usable in the body at all: the requested name is the only
+    identity left, and it is reported as unconfirmed-by-absence."""
+    result = protocol.parse_create_session_result({}, requested_name="asked-for")
+    assert result.name == "asked-for"
+    assert result.requested_name == "asked-for"
+    assert result.name_confirmed is None
