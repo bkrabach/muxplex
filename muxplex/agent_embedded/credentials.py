@@ -248,6 +248,19 @@ async def full_status() -> dict[str, Any]:
     that part IS purely informational, matching the sidecar's shape so the
     Settings -> Agent tab's per-provider display code (chat.js
     ``_renderAgentCredentialStatus``) works unmodified for both modes.
+
+    ``active`` (muxplex-nnl) answers the question nothing in the UI could
+    answer before: WHICH provider and model am I talking to. Both values
+    come from the runner itself (:func:`~muxplex.agent_embedded.runner.
+    active_provider` / :func:`~muxplex.agent_embedded.runner.default_model`)
+    rather than being restated here, so the panel cannot display a
+    provider/model pair the runner would not actually mount.
+
+    ``None`` in either field means UNKNOWN and must render as such. It is
+    not a hole to paper over with a plausible default: when the library
+    isn't importable there is no runner to have an active anything, and
+    "anthropic / claude-sonnet-5" printed under those conditions would be
+    a confident lie about a server that cannot run a turn at all.
     """
     from . import runner as _runner
 
@@ -260,6 +273,10 @@ async def full_status() -> dict[str, Any]:
             "sidecar": "running",
             "models": [],
             "mode": "embedded",
+            # Unknown, deliberately -- see the docstring. There is no
+            # importable runner here, so there is nothing whose active
+            # provider/model this could truthfully report.
+            "active": {"provider": None, "model": None},
         }
 
     providers = {p: resolve_status(p) for p in sorted(ALLOWED_PROVIDERS)}
@@ -290,6 +307,11 @@ async def full_status() -> dict[str, Any]:
         "sidecar": "running",
         "models": [],
         "mode": "embedded",
+        # Reported even when `state` is "not_configured": the library IS
+        # here, so the runner's provider/model are real facts about what a
+        # turn would mount. Whether a credential exists is a separate
+        # question, already answered by `state` and `providers`.
+        "active": {"provider": active_provider, "model": _runner.default_model()},
     }
 
 

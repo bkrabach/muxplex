@@ -1752,3 +1752,141 @@ test('at9: a genuine 5xx fault is still reported as a fault worth retrying', asy
   assert.match(rendered, /Worth retrying/i, 'a real fault keeps its retry advice');
   assert.doesNotMatch(rendered, /isn't set up on this server/i);
 });
+
+// =======================================================================
+// GROUP 11 (muxplex-nnl) -- the panel must say WHAT it is talking to, and
+// say "unknown" rather than guess.
+//
+// Nothing in the UI used to name the provider or the model. The fix reads
+// both from the server (GET /api/agent/provider-credential's `active`
+// block, composed from the embedded runner's own active_provider() /
+// default_model()), so the panel displays what a turn would really mount
+// instead of restating a constant of its own.
+//
+// Which makes the ABSENT cases the ones worth testing hardest. An older
+// server that sends no `active` block, a box where the Agent was never
+// installed (so there is no runner to have an active anything), and a
+// status fetch that simply failed must all render "unknown". The tempting
+// alternative -- falling back to chat.js's own MODEL, which is right on
+// most deployments -- would turn "I don't know" into "I was told, and
+// told wrong", which is the harder failure for a user to notice or
+// recover from. These tests drive the real render path and assert the
+// wrong-but-plausible value never appears.
+// =======================================================================
+
+/** Register the two Settings -> Agent elements this group renders into.
+ * Neither is in REQUIRED_IDS/OPTIONAL_IDS -- chat.js's init() does not
+ * require them (only the credential status refresh looks them up), so
+ * they are built here rather than grown into the shared fixture, exactly
+ * as addAgentCredentialFormEls() does for the credential form. */
+function addAgentTargetEls(panel) {
+  const statusEl = panel.document.createElement('div');
+  statusEl.id = 'agent-credential-status';
+  const targetEl = panel.document.createElement('div');
+  targetEl.id = 'agent-active-target';
+  // The literal index.html ships, so a test that asserts the placeholder
+  // was REPLACED is asserting something real.
+  targetEl.textContent = 'Checking...';
+  return { statusEl, targetEl };
+}
+
+/** Fetch stub answering the credential-status GET with `body`. Every other
+ * url throws, so an unexpected call is a loud test failure rather than a
+ * silent undefined. */
+function credentialStatusFetch(body) {
+  return async (url) => {
+    if (url === '/api/agent/provider-credential') {
+      return { ok: true, status: 200, json: async () => body };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+const CONFIGURED_STATUS = {
+  state: 'configured',
+  message: 'Embedded agent ready.',
+  providers: { anthropic: { source: 'file', masked: 'sk-ant...wxyz', env_var: null } },
+  sidecar: 'running',
+  models: [],
+  mode: 'embedded',
+  active: { provider: 'anthropic', model: 'claude-sonnet-5' },
+};
+
+test('nnl: the active provider and model are displayed, read from the server', async () => {
+  const panel = loadChatPanel({ fetchImpl: credentialStatusFetch(CONFIGURED_STATUS) });
+  const { targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /anthropic/, 'the provider must be named');
+  assert.match(targetEl.textContent, /claude-sonnet-5/, 'the model must be named');
+  assert.doesNotMatch(targetEl.textContent, /Checking/, 'the placeholder must be replaced');
+});
+
+test('nnl: a server that sends no active block renders unknown, never a plausible default', async () => {
+  // An older muxplex, before this field existed. The panel has its own
+  // MODEL constant sitting right there and it would be trivially easy to
+  // print it -- that is precisely the bug.
+  const { active, ...withoutActive } = CONFIGURED_STATUS;
+  void active;
+  const panel = loadChatPanel({ fetchImpl: credentialStatusFetch(withoutActive) });
+  const { targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /unknown/i, 'must say unknown');
+  assert.doesNotMatch(
+    targetEl.textContent,
+    /claude-sonnet-5/,
+    "must NOT fall back to chat.js's own MODEL -- a confident wrong answer is worse than none"
+  );
+  assert.doesNotMatch(targetEl.textContent, /anthropic/, 'must not assume the provider either');
+});
+
+test('nnl: an uninstalled Agent reports unknown on both fields, and still renders', async () => {
+  // state "not_installed" returns EARLY from _renderAgentCredentialStatus
+  // (the credential form is disabled and nothing further is rendered), so
+  // this also pins that the active line is rendered before that branch --
+  // a user on a fresh install is exactly who benefits from being told the
+  // server cannot name a provider or model at all.
+  const panel = loadChatPanel({
+    fetchImpl: credentialStatusFetch({
+      state: 'not_installed',
+      message: "The Agent isn't installed on this server yet.",
+      providers: {},
+      sidecar: 'running',
+      models: [],
+      mode: 'embedded',
+      active: { provider: null, model: null },
+    }),
+  });
+  const { statusEl, targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /unknown/i, 'no runner means no active target');
+  assert.doesNotMatch(targetEl.textContent, /claude-sonnet-5/);
+  assert.doesNotMatch(targetEl.textContent, /anthropic/);
+  assert.match(statusEl.textContent, /isn't installed/i, 'the not_installed branch still renders');
+});
+
+test('nnl: a failed status fetch resolves to unknown, not a stuck placeholder', async () => {
+  const panel = loadChatPanel({
+    fetchImpl: async (url) => {
+      if (url === '/api/agent/provider-credential') {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      throw new Error('unexpected fetch url in test: ' + url);
+    },
+  });
+  const { targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /unknown/i, 'a failed check is an unknown, not a pending one');
+  assert.doesNotMatch(
+    targetEl.textContent,
+    /Checking/,
+    'leaving "Checking..." up forever reads as still-working when it has already given up'
+  );
+});

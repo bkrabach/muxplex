@@ -3244,7 +3244,46 @@
     return resp.json();
   }
 
+  // muxplex-nnl: what a provider/model is called when the server did not
+  // tell us. Kept as a named constant because three separate code paths
+  // reach it (no `active` block from an older server, a null field from a
+  // box where the Agent isn't installed, and a failed status fetch) and
+  // all three must read identically -- an "unknown" that varies by path
+  // invites a reader to think the variations mean different things.
+  const AGENT_TARGET_UNKNOWN = "unknown";
+
+  /** Render the Settings -> Agent "Active provider and model" line.
+   *
+   * The whole point of muxplex-nnl is that this value is READ, never
+   * assumed: `data.active` is composed server-side from the embedded
+   * runner's own active_provider()/default_model(), so what shows here is
+   * what a turn would actually mount.
+   *
+   * Which makes the absent case the important one. A missing `active`
+   * block (an older server), a null field (the Agent isn't installed on
+   * this box, so there is no runner to have an active anything), or a
+   * status fetch that threw all render as "unknown" -- deliberately, and
+   * never as chat.js's own MODEL constant or any other plausible-looking
+   * default. A wrong-but-confident model name here is worse than a blank:
+   * it is exactly the "no surprises" failure this item was filed about,
+   * with the surprise moved from "I don't know" to "I was told wrong".
+   */
+  function _renderActiveAgentTarget(data) {
+    const el = document.getElementById("agent-active-target");
+    if (!el) return; // element not in the DOM (older frontend build)
+    const active = (data && data.active) || {};
+    const provider = active.provider || AGENT_TARGET_UNKNOWN;
+    const model = active.model || AGENT_TARGET_UNKNOWN;
+    el.textContent = "Provider: " + provider + " \u00b7 Model: " + model;
+  }
+
   function _renderAgentCredentialStatus(data) {
+    // First, and outside every branch below: the active provider/model is
+    // a fact about this server that a user wants in EVERY state --
+    // including not_installed and error, both of which return early from
+    // this function. (In those states it renders "unknown", which is the
+    // honest answer, not a degraded one.)
+    _renderActiveAgentTarget(data);
     const statusEl = document.getElementById("agent-credential-status");
     const shadowEl = document.getElementById("agent-credential-shadow-warning");
     const restartWarnEl = document.getElementById("agent-credential-restart-warning");
@@ -3313,6 +3352,11 @@
       _renderAgentCredentialStatus(data);
     } catch (err) {
       statusEl.textContent = "Could not check the Agent's credential status.";
+      // muxplex-nnl: a failed fetch means we do not know the active
+      // provider/model either -- say so, rather than leaving the
+      // "Checking..." placeholder up forever (which reads as "still
+      // working on it" and never resolves).
+      _renderActiveAgentTarget(null);
       console.error("[agent-credential] status fetch failed:", err);
     }
   }

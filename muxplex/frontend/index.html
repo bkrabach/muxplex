@@ -754,6 +754,19 @@
             </div>
             <span class="settings-helper">This choice is remembered on this device only. Your other devices keep their own.</span>
           </div>
+          <!-- muxplex-nnl: which provider and model the Agent is actually
+               talking to. Before this, nothing in the UI said -- a user
+               could not tell an Anthropic deployment from an OpenAI one,
+               or which model a turn would run against. Read live from the
+               server (GET /api/agent/provider-credential's `active` block,
+               sourced from the runner itself), never assumed here: an
+               older server that doesn't send `active`, or a box where the
+               Agent isn't installed, renders "unknown" rather than a
+               plausible default. -->
+          <div class="settings-field settings-field--column settings-field--section-gap">
+            <label class="settings-label">Active provider and model</label>
+            <div id="agent-active-target" class="settings-helper">Checking...</div>
+          </div>
           <!-- Agent provider credential -- docs/designs/agent-credentials.md.
                muxplex is a CONDUCTOR here, never a STORE: this form never
                receives a stored key back (GET returns a masked status
