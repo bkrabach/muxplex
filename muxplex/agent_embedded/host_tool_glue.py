@@ -1,3 +1,15 @@
+# pyright: reportMissingImports=false
+# amplifier_core arrives only with amplifier-agent, an OPTIONAL dependency
+# (pyproject.toml's `agent` extra). Both of this file's references to it are
+# already deliberately non-eager -- `ToolResult` under TYPE_CHECKING, and
+# `HookResult` lazily inside mount_host_tool_hook() -- for the reason spelled
+# out in full at the import block below. pyright therefore cannot resolve the
+# module in any environment that hasn't installed the extra (`uv sync --extra
+# dev`, CI's own recipe, and every fresh install before `ensure_agent()` runs).
+# That is the intended state, not a missing-dependency bug, so it is suppressed
+# at file level exactly as the sibling runner.py does -- rather than by adding a
+# hard dependency, or by chasing per-line `# type: ignore` comments through
+# ruff's import reformatting.
 """Host-tool yield glue -- ported into muxplex's own code.
 
 Ported (not imported) from amplifier-agent's sidecar-oriented packages:

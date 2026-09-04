@@ -156,6 +156,7 @@ def test_replace_items_requires_matching_revision():
     followups.append_item(state, "sess", "one", True)
     ok, error = followups.replace_items(state, "sess", 0, [{"text": "two"}])
     assert ok is False
+    assert error is not None
     assert error["revision_mismatch"] is True
     assert error["revision"] == 1
     # No write happened.
