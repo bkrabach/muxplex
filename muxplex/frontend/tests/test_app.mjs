@@ -6334,9 +6334,19 @@ test('createNewSession matches remote sessions by sessionKey in poll loop', () =
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('async function createNewSession(');
   assert.ok(fnStart !== -1, 'createNewSession function must exist');
-  // Updated in v0.6.0: window increased from 2000 to 3500 — expectedKey and sessionKey
-  // are now ~2500 chars into the function due to loading tile and view auto-add logic.
-  const fnBody = source.substring(fnStart, fnStart + 3500);
+  // Bound the slice by the NEXT top-level function declaration rather than a
+  // fixed character offset — the same fix commit 1e47189 applied to
+  // test_api_errors.mjs, for the same reason. This window has already been
+  // moved once (2000 -> 3500 in v0.6.0) and went short a second time when
+  // muxplex-1vz added the observed-name safety net above the poll loop.
+  // Neither change was wrong; the magic number was.
+  const HEAD = 'async function createNewSession(';
+  const afterCreate = source.slice(fnStart + HEAD.length);
+  const nextFn = afterCreate.search(/\n(?:async )?function [A-Za-z_]/);
+  const fnBody = source.substring(
+    fnStart,
+    nextFn === -1 ? source.length : fnStart + HEAD.length + nextFn,
+  );
   // Must use sessionKey in the match logic (with fallback to name)
   assert.ok(
     fnBody.includes('sessionKey'),

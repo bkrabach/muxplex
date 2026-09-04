@@ -8955,20 +8955,199 @@ const SESSION_NAME_ALL_SEPARATORS_MSG =
   'Session name needs a letter, number or underscore \u2014 that was all separators';
 
 /**
- * Length cap seam for the new-session input -- intentionally unset.
+ * The real session-name limit: 255 BYTES.
  *
- * Setting the real number belongs to muxplex-1vz, which runs only after the two
- * cap lanes land (muxplex-27o raises amplifier-workspace's arbitrary 32,
- * muxplex-t4k raises tmux-kit's arbitrary 64) so all three numbers agree.
- * Measured facts for whoever sets it: tmux itself has no length limit (a
- * 4096-char name round-tripped fine on tmux 3.4); ext4's NAME_MAX -- 255
- * BYTES, not characters -- is the real binding constraint.
+ * NOT a tmux limit -- tmux has none. Measured on tmux 3.4 over an isolated
+ * `-L` socket, names of 255, 256 and 300 characters all created rc=0 and
+ * round-tripped byte-exact through `list-sessions`.
  *
- * Put the number HERE, not as a literal buried in a handler.
+ * The binding constraint is the FILESYSTEM, because the configured
+ * `new_session_template` names a directory after the session
+ * (`amplifier-workspace ~/dev/{name}`), so the session name is a path
+ * component. Measured on this host's ext4:
  *
- * @type {number|null}
+ *     getconf NAME_MAX ~/dev        -> 255
+ *     mkdir 254 chars OK   255 OK   256 -> ENAMETOOLONG
+ *     mkdir 85 CJK chars (255 bytes) OK   86 CJK (258 bytes) -> FAIL
+ *
+ * That last pair is why this constant is named _BYTES: NAME_MAX is a byte
+ * budget. 86 characters is nowhere near 255 CHARACTERS, yet the filesystem
+ * refuses it. See SESSION_NAME_MAX_LENGTH below for what that costs us.
+ *
+ * This number is shared, not invented here. Two sibling repos landed the same
+ * 255 independently and the three must not drift apart again:
+ *   - amplifier-workspace (muxplex-27o): was a hardcoded 32 that SILENTLY
+ *     TRUNCATED; now reads os.pathconf(dir, 'PC_NAME_MAX') at call time and
+ *     refuses loudly, with 255 only as a fallback constant.
+ *   - tmux-kit (muxplex-i1r): was a 64-char reject; now
+ *     SESSION_NAME_MAX_LEN = 255, with SESSION_NAME_RE built FROM it.
+ * Three numbers that disagree is the bug this batch exists to remove.
+ *
+ * @type {number}
  */
-const SESSION_NAME_MAX_LENGTH = null;
+const SESSION_NAME_MAX_BYTES = 255;
+
+/**
+ * What the new-session input's `maxlength` attribute is set to.
+ *
+ * DERIVED from the byte cap, never written as a second literal -- two numbers
+ * that merely happen to match today is exactly how three repos ended up
+ * carrying 32, 64 and 255.
+ *
+ * THE RESIDUAL GAP, stated plainly: `maxlength` counts UTF-16 code units and
+ * the filesystem counts UTF-8 bytes. For any name the server will actually
+ * accept these are the same number, because tmux-kit's charset is ASCII-only
+ * (`[A-Za-z0-9_.-]`, one byte per character) -- so for the names that matter
+ * this attribute is an exact cap, not an approximation. For a name containing
+ * non-ASCII it is an UPPER BOUND only: 255 CJK characters pass `maxlength` and
+ * are 765 bytes. That case is not left silent -- the live hint below counts
+ * BYTES, so it reads "255 characters, 765/255 bytes -- over the limit" while
+ * the field is still being typed into. (The server rejects such a name on
+ * charset grounds regardless, so the overflow cannot reach the filesystem;
+ * the hint exists so the user is not left guessing which rule they broke.)
+ *
+ * @type {number}
+ */
+const SESSION_NAME_MAX_LENGTH = SESSION_NAME_MAX_BYTES;
+
+/**
+ * How much runway the live length hint gives before the cap bites, in bytes.
+ *
+ * A field that silently stops accepting keystrokes at 255 is itself a
+ * surprise, which is the thing being removed here -- so the counter has to
+ * arrive with room to react, not at the moment input stops. It stays hidden
+ * below this threshold on purpose: a character counter on every ordinary
+ * `work` or `muxplex-fixes` name would be noise, and noise is what gets
+ * ignored when it finally matters.
+ *
+ * @type {number}
+ */
+const SESSION_NAME_HINT_WITHIN_BYTES = 40;
+
+/**
+ * UTF-8 byte length of a string -- the unit the filesystem's NAME_MAX actually
+ * counts, and the only honest way to measure a session name against it.
+ *
+ * Hand-rolled rather than `new TextEncoder().encode(s).length` because this
+ * runs on every keystroke and allocating a Uint8Array per character typed is a
+ * waste; a test asserts it agrees with TextEncoder exactly, including for
+ * surrogate pairs (emoji), so the shortcut cannot quietly drift.
+ *
+ * @param {string} value
+ * @returns {number} byte length when encoded as UTF-8
+ */
+function _sessionNameByteLength(value) {
+  const s = String(value == null ? '' : value);
+  let bytes = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) {
+      bytes += 1;
+    } else if (c < 0x800) {
+      bytes += 2;
+    } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      // High surrogate followed by its pair -- one astral character, 4 bytes.
+      bytes += 4;
+      i++;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * The text of the live length hint for a name in progress, or '' when there is
+ * nothing worth saying.
+ *
+ * Reports BYTES against SESSION_NAME_MAX_BYTES, because bytes are what the
+ * filesystem enforces. When bytes and characters diverge -- only possible for
+ * a non-ASCII name -- both are shown, since "255 characters" and "over the
+ * limit" look like a contradiction unless the byte cost is on screen too.
+ *
+ * @param {string} value
+ * @returns {string} hint text, or '' to show no hint at all
+ */
+function _sessionNameLengthHintText(value) {
+  const s = String(value == null ? '' : value);
+  const bytes = _sessionNameByteLength(s);
+  if (bytes <= SESSION_NAME_MAX_BYTES - SESSION_NAME_HINT_WITHIN_BYTES) return '';
+  let suffix = '';
+  if (bytes > SESSION_NAME_MAX_BYTES) suffix = ' \u2014 over the limit';
+  else if (bytes === SESSION_NAME_MAX_BYTES) suffix = ' \u2014 at the limit';
+  if (bytes !== s.length) {
+    return s.length + ' characters, ' + bytes + '/' + SESSION_NAME_MAX_BYTES + ' bytes' + suffix;
+  }
+  return bytes + '/' + SESSION_NAME_MAX_BYTES + suffix;
+}
+
+/**
+ * Wire the live length hint onto a session-name input: a small counter that
+ * appears beside the field as the name approaches the cap, and flags it when
+ * the byte count goes over.
+ *
+ * The hint is a SIBLING of the input, and neither showNewSessionInput's nor
+ * showFabSessionInput's `cleanup()` knows it exists -- so it takes itself down
+ * on exactly the events those cleanups fire on (Enter, Escape, blur) rather
+ * than being left orphaned in the header after the input is gone. The FAB flow
+ * would also take it down with the overlay; doing it here means both flows are
+ * covered by one rule instead of two.
+ *
+ * @param {HTMLInputElement} input
+ * @returns {HTMLInputElement} the same input, for chaining
+ */
+function _attachSessionNameLengthHint(input) {
+  if (!SESSION_NAME_MAX_BYTES) return input;
+  let hint = null;
+
+  function removeHint() {
+    if (hint && hint.parentNode) hint.parentNode.removeChild(hint);
+  }
+
+  function render() {
+    const text = _sessionNameLengthHintText(input.value);
+    if (!text) {
+      removeHint();
+      return;
+    }
+    const parent = input.parentNode;
+    // Nothing to hang it on yet (the factory builds the input before either
+    // flow inserts it). Silently skipping is right: by the time a name is long
+    // enough to need a counter, the field is mounted and focused.
+    if (!parent || typeof parent.insertBefore !== 'function') return;
+    if (!hint) {
+      hint = document.createElement('span');
+      hint.className = 'new-session-length-hint';
+      hint.title = SESSION_NAME_MAX_BYTES +
+        ' bytes is the filesystem\u2019s limit for a session name. ' +
+        'Non-ASCII characters cost more than one byte each.';
+    }
+    hint.textContent = text;
+    if (hint.classList && typeof hint.classList.toggle === 'function') {
+      hint.classList.toggle(
+        'new-session-length-hint--over',
+        _sessionNameByteLength(input.value) > SESSION_NAME_MAX_BYTES,
+      );
+    }
+    if (hint.parentNode !== parent) parent.insertBefore(hint, input.nextSibling);
+  }
+
+  // Registered AFTER _attachSessionNameNormalization's own `input` listener
+  // (see _createSessionInput's call order), so the count reflects the
+  // normalized value the user is actually looking at.
+  input.addEventListener('input', render);
+  input.addEventListener('compositionend', render);
+  input.addEventListener('keydown', function (e) {
+    if (e && (e.key === 'Enter' || e.key === 'Escape')) removeHint();
+  });
+  input.addEventListener('blur', function () {
+    // Matches the 150ms both flows' blur cleanup waits, plus a little, so the
+    // hint never outlives the input it annotates.
+    setTimeout(removeHint, 160);
+  });
+
+  return input;
+}
 
 /**
  * The per-character half of session-name normalization, and the only half that
@@ -9092,7 +9271,11 @@ function _createSessionInput() {
   input.className = 'new-session-input';
   input.placeholder = 'Session name\u2026';
   if (SESSION_NAME_MAX_LENGTH) input.maxLength = SESSION_NAME_MAX_LENGTH;
-  return _attachSessionNameNormalization(_suppressAutofill(input));
+  // Length hint attached LAST so its `input` listener runs after normalization
+  // has rewritten the value -- it must count what the user is looking at.
+  return _attachSessionNameLengthHint(
+    _attachSessionNameNormalization(_suppressAutofill(input)),
+  );
 }
 
 /**
@@ -9515,7 +9698,19 @@ async function createNewSession(name, remoteId, commandId) {
     const data = await res.json();
     const sessionName = data.name || name;
 
-    showToast('Creating session \'' + sessionName + '\'…');
+    // Safety net: never adopt a different name in silence. muxplex-n8q made
+    // this endpoint report the name tmux ACTUALLY created, and the input is
+    // now capped at the real filesystem limit, so a rename should be
+    // unreachable -- which is precisely what everyone believed about
+    // amplifier-workspace's 32-char truncation until sessions went missing.
+    // ONE showToast, branching on the message: a second call in the same tick
+    // would overwrite the first (see the ordering note on the auto-add below).
+    showToast(
+      sessionName === name
+        ? 'Creating session \'' + sessionName + '\'…'
+        : 'Creating session \'' + sessionName + '\' — the name \'' + name +
+          '\' was changed to fit',
+    );
 
     // Auto-add to active user view (not 'all' or 'hidden'). Deliberately NOT
     // awaited -- the create UX must not wait on a settings write -- but
@@ -10787,11 +10982,16 @@ if (typeof module !== 'undefined' && module.exports) {
     _createCommandSelect,
     // Session-name normalization (shared by both new-session flows)
     SESSION_NAME_SEPARATOR_RE,
+    SESSION_NAME_MAX_BYTES,
     SESSION_NAME_MAX_LENGTH,
+    SESSION_NAME_HINT_WITHIN_BYTES,
     SESSION_NAME_ALL_SEPARATORS_MSG,
     _normalizeSessionNameLive,
     _normalizeSessionName,
     _attachSessionNameNormalization,
+    _sessionNameByteLength,
+    _sessionNameLengthHintText,
+    _attachSessionNameLengthHint,
     _createSessionInput,
     createNewSession,
     // Session-key construction + auto-add-to-view (muxplex-htg)
