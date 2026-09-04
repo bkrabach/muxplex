@@ -415,6 +415,86 @@ def test_create_session_without_command_id_sends_no_key(sync_client, monkeypatch
     assert captured["json"] == {"name": "contract-test-nokey"}
 
 
+def _stub_mangling_tmux(monkeypatch, mangles: dict[str, str]) -> None:
+    """Model a name-mangling session command: the spawn succeeds, and the
+    session that exists afterward carries `mangles[requested]`, never the
+    requested name.
+
+    Both real mechanisms have this shape -- a `new_session_template` that
+    derives its own name (`amplifier-workspace` truncates at 32 chars) and
+    tmux's own silent '.' -> '_' rewrite at rc=0.
+
+    Sessions ACCUMULATE, as a real tmux server's do. That matters: the
+    server attributes a create by diffing the enumeration against a
+    pre-spawn snapshot, so a stub that reset the list each time would hand
+    it a fake world in which nothing is ever new.
+    """
+    live: list[str] = []
+
+    async def fake_spawn(name: str, command_id: str | None = None):
+        created = mangles.get(name, name)
+        if created not in live:
+            live.append(created)
+        return (True, None)
+
+    async def fake_enumerate():
+        return list(live)
+
+    monkeypatch.setattr("muxplex.main.spawn_session_command", fake_spawn)
+    monkeypatch.setattr("muxplex.main.enumerate_sessions", fake_enumerate)
+    monkeypatch.setattr("muxplex.main.get_session_list", lambda: list(live))
+
+
+def test_create_session_client_consumes_the_servers_observed_name(
+    sync_client, monkeypatch
+):
+    """The cross-package half of muxplex-n8q/muxplex-7g8.
+
+    The server re-enumerates after the spawn and reports the OBSERVED name
+    (`{name, requested_name, observed, name_confirmed}`); the client polls
+    THAT name rather than the one it asked for. Each half is unit-tested in
+    its own suite -- this is the seam where a rename on either side would
+    otherwise go unnoticed until a user hit it, which is precisely what
+    this file exists to catch (see the module docstring).
+
+    Skips against a server predating those fields rather than failing: the
+    client is deliberately tolerant of one (`name_confirmed is None` means
+    "made no claim"), so there is no contract to check yet. The probe below
+    runs with `wait=False` specifically so that skip is REACHABLE -- a
+    waiting call against a pre-fix server raises TimeoutError before any
+    assertion, which is the very bug under test.
+    """
+    probed = "contract-test-capability-probe-aaaaaaaaaaaaa"
+    requested = "contract-test-mangled-name-well-over-32-chars"
+    observed = requested[:32]
+    assert len(requested) > 32
+    assert probed[:32] != observed  # two distinct sessions, not one
+
+    _stub_mangling_tmux(monkeypatch, {probed: probed[:32], requested: observed})
+
+    # Capability probe on a THROWAWAY name, and deliberately `wait=False`:
+    # the skip below has to be reachable, and a waiting call against a
+    # pre-fix server raises TimeoutError before any assertion runs -- that
+    # being the very bug under test. A separate name because a second
+    # create of the SAME session is no longer a new arrival, so the server
+    # (correctly) could not attribute it.
+    if sync_client.create_session(probed, wait=False).name_confirmed is None:
+        pytest.skip(
+            "server predates POST /api/sessions' observed-name fields "
+            "(muxplex-n8q); nothing to hold the client to yet"
+        )
+
+    # Against the pre-fix CLIENT this call raises TimeoutError: it polls
+    # `requested`, which no live session carries and never will.
+    result = sync_client.create_session(requested, timeout=2.0, interval=0.02)
+
+    assert result.name == observed
+    assert result.observed == observed
+    assert result.requested_name == requested
+    assert result.name_confirmed is True
+    assert result.visible is True
+
+
 def test_delete_session_force_reaches_server(sync_client, raw_http, monkeypatch):
     """?force=true reaches the server and substitutes the default pair
     when the recorded command_id no longer resolves."""
