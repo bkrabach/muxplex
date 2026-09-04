@@ -9592,20 +9592,50 @@ async function createNewSession(name, remoteId, commandId) {
       return deviceId ? s.remoteId === deviceId : !s.remoteId;
     }
 
+    // Array.isArray, not a bare truthiness check. _currentSessions is whatever
+    // GET /api/(federation/)sessions last deserialized, and `.find` on a
+    // non-array object is undefined -- calling it throws. Treating a non-array
+    // as "not found" keeps the poll on its ordinary give-up path instead of
+    // dying mid-callback (see pollEvery below for why that mattered).
+    function findCreatedSession() {
+      return Array.isArray(_currentSessions) ? _currentSessions.find(isCreatedSession) : undefined;
+    }
+
+    // Own the teardown here rather than trusting every branch of every tick to
+    // reach its own clearInterval. A tick that throws is the leak: an async
+    // setInterval callback rejects a promise nobody awaits, so the throw is
+    // INVISIBLE and the timer keeps rescheduling for the life of the page.
+    // `tick` returns true when the poll is finished; a tick that throws counts
+    // as finished too (`done` starts true), so the failure mode is one stopped
+    // timer and a reported error, never a timer nobody can stop.
+    function pollEvery(intervalMs, tick) {
+      var handle = setInterval(async function() {
+        var done = true;
+        try {
+          done = await tick();
+        } catch (err) {
+          console.error('[createNewSession] readiness poll tick failed:', err);
+          removeLoadingTile();
+          showToast('Session \'' + sessionName + '\' status is unknown - check the All list');
+        }
+        if (done) clearInterval(handle);
+      }, intervalMs);
+      return handle;
+    }
+
     // Poll until the session appears in _currentSessions (max 30s, every 2s)
     var attempts = 0;
     var maxAttempts = 15;
-    var pollForSession = setInterval(async function() {
+    pollEvery(2000, async function() {
       attempts++;
       await pollSessions();
-      var found = _currentSessions && _currentSessions.find(isCreatedSession);
+      var found = findCreatedSession();
       if (found) {
-        clearInterval(pollForSession);
         removeLoadingTile();
         showToast('Session \'' + sessionName + '\' ready');
         openSession(sessionName, { remoteId: deviceId });
+        return true;
       } else if (attempts >= maxAttempts) {
-        clearInterval(pollForSession);
         removeLoadingTile();
         // The POST already succeeded, so this is NOT a failure: the server can
         // legitimately still be working (tmux_kit's spawn_session returns
@@ -9616,8 +9646,10 @@ async function createNewSession(name, remoteId, commandId) {
         // user on a message that turned out to be wrong.
         showToast('Session \'' + sessionName + '\' is still starting - it will appear in the All list when ready');
         watchForLateArrival();
+        return true;
       }
-    }, 2000);
+      return false;
+    });
 
     // Phase two, after the 30s window gives up: 5s x 24 = two more minutes.
     // Deliberately does NOT auto-open -- a fullscreen switch minutes after the
@@ -9627,20 +9659,21 @@ async function createNewSession(name, remoteId, commandId) {
     function watchForLateArrival() {
       var lateAttempts = 0;
       var maxLateAttempts = 24;
-      var lateWatcher = setInterval(async function() {
+      pollEvery(5000, async function() {
         lateAttempts++;
         await pollSessions();
-        var arrived = _currentSessions && _currentSessions.find(isCreatedSession);
+        var arrived = findCreatedSession();
         if (arrived) {
-          clearInterval(lateWatcher);
           removeLoadingTile();
           showToast('Session \'' + sessionName + '\' is ready now - open it from the All list');
+          return true;
         } else if (lateAttempts >= maxLateAttempts) {
-          clearInterval(lateWatcher);
           removeLoadingTile();
           showToast('Session \'' + sessionName + '\' did not appear - creation may have failed');
+          return true;
         }
-      }, 5000);
+        return false;
+      });
     }
   } catch (err) {
     // err.message is already the server's own explanation when it sent one --
