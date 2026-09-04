@@ -9385,8 +9385,29 @@ async function createNewSession(name, remoteId, commandId) {
       return;
     }
 
-    // Compute expectedKey: for remote sessions, use 'deviceId:sessionName' (sessionKey format)
-    var expectedKey = deviceId ? (deviceId + ':' + sessionName) : sessionName;
+    // Which key-space _currentSessions carries depends on which endpoint
+    // pollSessions() just hit. GET /api/sessions (multi-device OFF) pops
+    // sessionKey, so a local session arrives carrying a bare `name`; GET
+    // /api/federation/sessions (multi-device ON) keeps it, so the SAME local
+    // session arrives as '<localDeviceId>:<name>'. Matching only one of those
+    // spaces is what produced a false "taking longer than expected" toast on
+    // every local create while multi-device was on. Build the key the way the
+    // view pin above builds it, and accept every space the active endpoint can
+    // legitimately return for THIS create.
+    var expectedKeys = deviceId
+      ? [deviceId + ':' + sessionName]
+      : [sessionName].concat(_localDeviceId ? [_localDeviceId + ':' + sessionName] : []);
+
+    // _localDeviceId is filled in asynchronously from /api/instance-info, so a
+    // create racing that fetch has no prefix to build with. remoteId is
+    // null/absent for a local session on BOTH endpoints and truthy for a
+    // peer's, so it identifies the session without needing the id -- and stops
+    // a peer's same-named session being mistaken for the one we just created.
+    function isCreatedSession(s) {
+      if (!s || s.name !== sessionName) return false;
+      if (expectedKeys.indexOf(s.sessionKey || s.name) !== -1) return true;
+      return deviceId ? s.remoteId === deviceId : !s.remoteId;
+    }
 
     // Poll until the session appears in _currentSessions (max 30s, every 2s)
     var attempts = 0;
@@ -9394,9 +9415,7 @@ async function createNewSession(name, remoteId, commandId) {
     var pollForSession = setInterval(async function() {
       attempts++;
       await pollSessions();
-      var found = _currentSessions && _currentSessions.find(function(s) {
-        return (s.sessionKey || s.name) === expectedKey;
-      });
+      var found = _currentSessions && _currentSessions.find(isCreatedSession);
       if (found) {
         clearInterval(pollForSession);
         removeLoadingTile();
@@ -9405,9 +9424,41 @@ async function createNewSession(name, remoteId, commandId) {
       } else if (attempts >= maxAttempts) {
         clearInterval(pollForSession);
         removeLoadingTile();
-        showToast('Session \'' + sessionName + '\' is taking longer than expected');
+        // The POST already succeeded, so this is NOT a failure: the server can
+        // legitimately still be working (tmux_kit's spawn_session returns
+        // success on its own 30s timeout and leaves the caller polling, and
+        // /api/sessions serves a list refreshed every couple of seconds). Say
+        // only what is actually known, then keep watching at a slower cadence
+        // so a late arrival still resolves the UI instead of stranding the
+        // user on a message that turned out to be wrong.
+        showToast('Session \'' + sessionName + '\' is still starting - it will appear in the All list when ready');
+        watchForLateArrival();
       }
     }, 2000);
+
+    // Phase two, after the 30s window gives up: 5s x 24 = two more minutes.
+    // Deliberately does NOT auto-open -- a fullscreen switch minutes after the
+    // fact would yank a user who has long since moved on -- it only clears the
+    // stale "creating" state and reports what actually happened. Declared
+    // after the loop that calls it (hoisted) so the main path reads first.
+    function watchForLateArrival() {
+      var lateAttempts = 0;
+      var maxLateAttempts = 24;
+      var lateWatcher = setInterval(async function() {
+        lateAttempts++;
+        await pollSessions();
+        var arrived = _currentSessions && _currentSessions.find(isCreatedSession);
+        if (arrived) {
+          clearInterval(lateWatcher);
+          removeLoadingTile();
+          showToast('Session \'' + sessionName + '\' is ready now - open it from the All list');
+        } else if (lateAttempts >= maxLateAttempts) {
+          clearInterval(lateWatcher);
+          removeLoadingTile();
+          showToast('Session \'' + sessionName + '\' did not appear - creation may have failed');
+        }
+      }, 5000);
+    }
   } catch (err) {
     // err.message is already the server's own explanation when it sent one --
     // api() derives it, so there is nothing to re-parse here.
