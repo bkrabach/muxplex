@@ -975,6 +975,19 @@
     </div>
 
     <div id="chat-composer" class="agent-panel-composer">
+      <!-- muxplex-1i9: the attachment strip for clipboard image paste.
+           INSIDE the composer, not a sibling above it, for one specific
+           reason: setGateState() hides #chat-composer when the Agent is
+           unconfigured, and a strip living outside it would keep showing
+           attachments beside a hidden composer. It takes a full-width row
+           of its own via `order:-1` + `flex-basis:100%` (see
+           .agent-panel-attachments in style.css) rather than joining the
+           textarea/Send row.
+           Starts hidden and is shown only when there is something to say --
+           a pending attachment, or a refusal to explain. chat.js's
+           renderAttachments() is the sole owner of its contents; nothing
+           else writes here. -->
+      <div id="chat-attachments" class="agent-panel-attachments hidden"></div>
       <!-- muxplex-8qp: rows="1" is the FLOOR, not the size. chat.js's
            autoGrowInput() sets the height from scrollHeight on every input
            event, bounded at a stated maximum, after which the textarea

@@ -278,6 +278,11 @@
   // muxplex-fx1: the "Agent isn't set up" gate -- see checkAgentGate()/
   // setGateState() near init() and #chat-gate's comment in index.html.
   var gateEl, gateTextEl, gateSettingsBtn, headerEl, composerEl, bylineEl;
+  // muxplex-1i9: the attachment strip above the textarea. OPTIONAL (not in
+  // init()'s required list) so an older index.html still boots a working
+  // text-only panel -- see handlePaste(), which falls through to the
+  // browser default rather than intercepting a paste it has nowhere to show.
+  var attachmentsEl;
 
   // Confirmation-gate elements (send_muxplex_session_input only -- see
   // requestInputConfirmation()/resolveConfirm() below).
@@ -680,6 +685,17 @@
       L.push("## Turn " + (t + 1) + " -- user");
       L.push("");
       L.push(um ? fence("", um.text) : "_(no user message recorded for this turn)_");
+      // muxplex-1i9: named, sized, and NOT included. A reader needs to know
+      // the model was shown a picture to make sense of the exchange; they
+      // do not need the picture, and shipping it here would leak whatever
+      // the screenshot happened to have on screen.
+      if (um && um.attachments && um.attachments.length) {
+        L.push("");
+        L.push("Attachments (image data deliberately omitted from this export): " +
+          um.attachments.map(function (a) {
+            return a.name + " (" + a.mime + ", " + formatBytes(a.bytes) + ")";
+          }).join(", "));
+      }
       if (um && um.app_state) {
         var st = um.app_state;
         L.push("");
@@ -960,9 +976,322 @@
     autoGrowInput();
   }
 
+  // ---------------------------------------------------------------------
+  // Clipboard image attachments (muxplex-1i9)
+  // ---------------------------------------------------------------------
+  // "Screenshot the broken thing and paste it" is the fastest bug report a
+  // person can file, and this panel's whole job is supervising terminal
+  // sessions -- showing is very often quicker than describing.
+  //
+  // THE FAILURE MODE THIS IS BUILT AGAINST, stated first because every
+  // decision below follows from it: a paste that appears to work and
+  // silently isn't there. The user pastes, the message sends, and the model
+  // answers confidently about an image it was never given. That is strictly
+  // worse than no attachment support at all, because it costs the user
+  // their trust in the answer rather than merely their time. So:
+  //
+  //   * The attachment is VISIBLE in the composer before it sends -- name,
+  //     size, and the actual thumbnail. You can see what you are about to
+  //     send, and remove it.
+  //   * Every refusal is VISIBLE and states its own limit. There is no
+  //     path here that drops an image without saying so.
+  //   * The transcript shows the image that went, so the record of what
+  //     was asked matches what was actually sent.
+  //
+  // SCOPE, deliberately: clipboard IMAGE paste only. No file picker, no
+  // drag-and-drop, no documents. See the DONE record for this item -- the
+  // paste half is the one people mean by this request and the only one
+  // testable end to end without a file dialog, so it shipped first rather
+  // than shipping both halves badly.
+  //
+  // RETENTION, explicitly (a pasted screenshot of a terminal routinely
+  // contains a key or a hostname): an attachment lives in this tab's
+  // memory only, for the life of the conversation. muxplex writes it to no
+  // disk, no database, no log; New chat drops it; closing the tab drops it.
+  // It travels in the request body to the model like the text does, and is
+  // REDACTED out of the debug export (see redactContentForCapture) --
+  // because that export is a file people paste into issues, and it must
+  // never be the thing that leaks the screenshot.
+
+  //: Per-image ceiling. 5 MB is the Anthropic API's own documented limit
+  //: for an image; a larger one would be rejected downstream with a far
+  //: less legible message, so it is refused here where the person who
+  //: pasted it is still looking at the composer.
+  var ATTACH_MAX_BYTES = 5 * 1024 * 1024;
+  //: Per-message ceiling. Four is well inside provider limits and is a
+  //: guard against a runaway paste, not a considered UX maximum.
+  var ATTACH_MAX_COUNT = 4;
+  //: What the provider actually accepts. Anything else is refused BY NAME
+  //: rather than attached and rejected later.
+  var ATTACH_ALLOWED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+  //: [{id, name, mime, bytes, dataUrl}] -- pending, not yet sent. Same
+  //: lifecycle as `messages`: cleared by newConversation() and by a
+  //: successful send.
+  var pendingAttachments = [];
+  var attachSeq = 0;
+  //: The current refusal text shown in the strip, or "" -- kept as state
+  //: rather than a detached DOM node so renderAttachments() stays the one
+  //: function that decides what the strip looks like.
+  var attachNotice = "";
+
+  function formatBytes(n) {
+    if (!isFinite(n) || n < 0) return "? bytes";
+    if (n < 1024) return n + " bytes";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  /** Why *file* cannot be attached, or null if it can. Pure -- it is the
+   * single place a refusal is decided, so the message the user reads and
+   * the decision the code makes can never disagree. */
+  function attachmentRejectReason(file) {
+    var name = (file && file.name) || "the pasted image";
+    var type = (file && file.type) || "";
+    if (ATTACH_ALLOWED_TYPES.indexOf(type) === -1) {
+      return name + " is not a supported image type (" + (type || "unknown") +
+        "). Supported: PNG, JPEG, GIF, WebP.";
+    }
+    if (typeof file.size === "number" && file.size > ATTACH_MAX_BYTES) {
+      return name + " is too large (" + formatBytes(file.size) + "). The limit is " +
+        formatBytes(ATTACH_MAX_BYTES) + " per image.";
+    }
+    return null;
+  }
+
+  function setAttachNotice(text) {
+    attachNotice = text || "";
+    renderAttachments();
+  }
+
+  function clearAttachments() {
+    pendingAttachments = [];
+    attachNotice = "";
+    renderAttachments();
+  }
+
+  function removeAttachment(id) {
+    pendingAttachments = pendingAttachments.filter(function (a) { return a.id !== id; });
+    // Removing an attachment also clears a stale refusal: the state the
+    // notice described no longer exists.
+    attachNotice = "";
+    renderAttachments();
+  }
+
+  /** The strip is the ONLY renderer of attachment state -- it is shown iff
+   * there is something to say (a pending attachment, or a refusal to
+   * explain) and hidden otherwise. */
+  function renderAttachments() {
+    if (!attachmentsEl) return;
+    attachmentsEl.textContent = "";
+    var empty = pendingAttachments.length === 0 && !attachNotice;
+    attachmentsEl.classList.toggle("hidden", empty);
+    if (empty) return;
+
+    pendingAttachments.forEach(function (a) {
+      var chip = document.createElement("span");
+      chip.className = "agent-attachment-chip";
+
+      var thumb = document.createElement("img");
+      thumb.className = "agent-attachment-thumb";
+      thumb.setAttribute("src", a.dataUrl);
+      // The name is right there in the chip; repeating it as alt text would
+      // make a screen reader say it twice.
+      thumb.setAttribute("alt", "");
+      chip.appendChild(thumb);
+
+      var label = document.createElement("span");
+      label.className = "agent-attachment-name";
+      label.textContent = a.name + " (" + formatBytes(a.bytes) + ")";
+      chip.appendChild(label);
+
+      var remove = document.createElement("button");
+      remove.className = "agent-attachment-remove";
+      remove.setAttribute("type", "button");
+      remove.setAttribute("data-attachment-remove", a.id);
+      remove.setAttribute("aria-label", "Remove attachment " + a.name);
+      remove.textContent = "\u00d7";
+      remove.addEventListener("click", function () { removeAttachment(a.id); });
+      chip.appendChild(remove);
+
+      attachmentsEl.appendChild(chip);
+    });
+
+    if (attachNotice) {
+      var note = document.createElement("div");
+      note.className = "agent-attachment-notice";
+      // role=alert: a refusal must interrupt, not wait politely behind
+      // whatever else the panel is announcing -- the user is mid-paste and
+      // about to hit send believing the image is attached.
+      note.setAttribute("role", "alert");
+      note.textContent = attachNotice;
+      attachmentsEl.appendChild(note);
+      announceStatus(attachNotice);
+    }
+  }
+
+  /** Read one clipboard image into `pendingAttachments`. Resolves when the
+   * strip reflects the outcome -- whether that outcome is an attachment or
+   * a stated refusal. It never resolves having done nothing silently. */
+  function addPastedImage(file) {
+    return new Promise(function (resolve) {
+      var reason = attachmentRejectReason(file);
+      if (reason) { setAttachNotice(reason); resolve(false); return; }
+
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        var url = (e && e.target && e.target.result) || reader.result;
+        if (typeof url !== "string" || url.indexOf("data:") !== 0) {
+          setAttachNotice((file.name || "The pasted image") +
+            " could not be read from the clipboard.");
+          resolve(false);
+          return;
+        }
+        attachSeq++;
+        pendingAttachments.push({
+          id: "att-" + attachSeq,
+          name: file.name || ("pasted-image-" + attachSeq + extensionFor(file.type)),
+          mime: file.type,
+          // The decoded size where the clipboard gave us one, so the chip
+          // agrees with the limit the refusal quotes.
+          bytes: typeof file.size === "number" ? file.size : url.length,
+          dataUrl: url,
+        });
+        renderAttachments();
+        resolve(true);
+      };
+      reader.onerror = function () {
+        setAttachNotice((file.name || "The pasted image") +
+          " could not be read from the clipboard.");
+        resolve(false);
+      };
+      try {
+        reader.readAsDataURL(file);
+      } catch (err) {
+        setAttachNotice((file.name || "The pasted image") +
+          " could not be read from the clipboard (" +
+          String((err && err.message) || err) + ").");
+        resolve(false);
+      }
+    });
+  }
+
+  function extensionFor(mime) {
+    if (mime === "image/png") return ".png";
+    if (mime === "image/jpeg") return ".jpg";
+    if (mime === "image/gif") return ".gif";
+    if (mime === "image/webp") return ".webp";
+    return "";
+  }
+
+  /** Every image file on a paste event, in clipboard order. Reads `items`
+   * first (the shape every current browser gives for a screenshot paste)
+   * and falls back to `files`. */
+  function clipboardImageFiles(e) {
+    var cd = e && e.clipboardData;
+    if (!cd) return [];
+    var out = [];
+    var items = cd.items;
+    if (items && items.length) {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (!it || it.kind !== "file") continue;
+        var f = it.getAsFile && it.getAsFile();
+        if (f && String(f.type || "").indexOf("image/") === 0) out.push(f);
+      }
+    }
+    if (!out.length && cd.files && cd.files.length) {
+      for (var j = 0; j < cd.files.length; j++) {
+        var g = cd.files[j];
+        if (g && String(g.type || "").indexOf("image/") === 0) out.push(g);
+      }
+    }
+    return out;
+  }
+
+  /** Paste handler for the composer.
+   *
+   * A text paste is NEVER touched -- no preventDefault, no interception --
+   * so the textarea's own behavior is exactly what it always was. Only a
+   * paste that actually carries image files is intercepted, and then only
+   * when there is a strip to show the result in: with no strip, falling
+   * through to the browser default is the honest degradation, because
+   * intercepting a paste we cannot display is the silent drop this whole
+   * feature exists to prevent. */
+  function handlePaste(e) {
+    if (!attachmentsEl) return;
+    var files = clipboardImageFiles(e);
+    if (!files.length) return;
+
+    // Committed: from here the browser must not ALSO paste a filename or a
+    // stray image into the textarea.
+    if (e.preventDefault) e.preventDefault();
+
+    var room = ATTACH_MAX_COUNT - pendingAttachments.length;
+    var accepted = files.slice(0, Math.max(0, room));
+    var overflow = files.length - accepted.length;
+
+    setAttachNotice("");
+    var chain = Promise.resolve();
+    accepted.forEach(function (f) {
+      chain = chain.then(function () { return addPastedImage(f); });
+    });
+    return chain.then(function () {
+      if (overflow > 0) {
+        // Additive, so a per-file refusal that already fired is not
+        // overwritten by the count message.
+        var prefix = attachNotice ? attachNotice + " " : "";
+        setAttachNotice(prefix + "At most " + ATTACH_MAX_COUNT +
+          " images per message \u2014 " + overflow +
+          (overflow === 1 ? " was" : " were") + " not attached.");
+      }
+    });
+  }
+
+  /** The `content` for one outgoing user message: a plain string when there
+   * is nothing attached (the overwhelmingly common case, byte-identical to
+   * what this panel has always sent), or OpenAI content blocks when there
+   * is. */
+  function buildUserContent(text, attachments) {
+    if (!attachments || !attachments.length) return text;
+    var parts = [];
+    if (text) parts.push({ type: "text", text: text });
+    attachments.forEach(function (a) {
+      parts.push({ type: "image_url", image_url: { url: a.dataUrl } });
+    });
+    return parts;
+  }
+
+  /** Message content, with any image bytes replaced by a description, for
+   * the debug capture buffer. See this section's RETENTION note: the
+   * export is a file that leaves the browser, and a pasted terminal
+   * screenshot is exactly the kind of thing that must not ride along in
+   * it. The fact that an image WAS attached is kept -- redacted, not
+   * erased, so the record still explains what the model was looking at. */
+  function redactContentForCapture(content) {
+    if (typeof content === "string") return truncateForCapture(content);
+    if (!Array.isArray(content)) return content;
+    return content.map(function (p) {
+      if (p && p.type === "image_url" && p.image_url) {
+        var url = String(p.image_url.url || "");
+        var mime = (url.match(/^data:([^;,]+)/) || [])[1] || "image";
+        return {
+          type: "image_url",
+          image_url: {
+            url: "[image attachment omitted from export: " + mime + ", " +
+              formatBytes(url.length) + " encoded]",
+          },
+        };
+      }
+      return p;
+    });
+  }
+
   function newConversation() {
     clientSessionId = "chat-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
     messages = [];
+    // A pending attachment belongs to the conversation being abandoned.
+    clearAttachments();
     messagesEl.textContent = "";
     // Debug capture buffer shares this conversation's lifecycle -- a fresh
     // conversation gets a fresh, empty capture log rather than mixing
@@ -2330,10 +2659,13 @@
       // per-message (terminal scrollback lives here after a
       // get_muxplex_session_details/send_muxplex_session_input round trip),
       // never dropped wholesale.
+      // muxplex-1i9: image content-blocks are redacted here, not truncated.
+      // Truncating base64 would still put thousands of bytes of a possibly
+      // secret-bearing screenshot into a file people paste into issues.
       messages: body.messages.map(function (m) {
         return {
           role: m.role,
-          content: typeof m.content === "string" ? truncateForCapture(m.content) : m.content,
+          content: redactContentForCapture(m.content),
           tool_call_id: m.tool_call_id,
           tool_calls: m.tool_calls,
         };
@@ -2597,17 +2929,39 @@
 
   async function handleSend() {
     var text = inputEl.value.trim();
-    if (!text) return;
+    // muxplex-1i9: a pasted screenshot with no caption IS the message --
+    // "look at this" is often exactly what the image already says. An
+    // empty composer with nothing attached stays a no-op, as before.
+    var attachments = pendingAttachments.slice();
+    if (!text && !attachments.length) return;
     inputEl.value = "";
+    clearAttachments(); // taken by value above -- the composer resets now, before the await
     autoGrowInput(); // collapse the composer back down with its content
     clearEmptyState(); // the opening line has done its job the moment there is a real message
     var bubble = appendBubble("user");
     bubble.textContent = text;
-    messages.push({ role: "user", content: text });
+    // Show what actually went, not just the words: the transcript is the
+    // record of what was asked, and "here, look" is meaningless without
+    // the thing being looked at.
+    attachments.forEach(function (a) {
+      var img = document.createElement("img");
+      img.className = "agent-msg-attachment";
+      img.setAttribute("src", a.dataUrl);
+      img.setAttribute("alt", "Attached image: " + a.name);
+      bubble.appendChild(img);
+    });
+    messages.push({ role: "user", content: buildUserContent(text, attachments) });
 
     turnIndex++;
     requestIndex = -1; // runTurn() increments this to 0 on its first call for this turn
-    capPush("user_message", { text: text, app_state: snapshotAppState() });
+    capPush("user_message", {
+      text: text,
+      // Metadata only -- never the bytes. See redactContentForCapture.
+      attachments: attachments.map(function (a) {
+        return { name: a.name, mime: a.mime, bytes: a.bytes };
+      }),
+      app_state: snapshotAppState(),
+    });
 
     sendBtn.disabled = true;
     try {
@@ -2718,6 +3072,12 @@
     headerEl = $("chat-panel-header");
     composerEl = $("chat-composer");
     bylineEl = $("chat-byline");
+    // muxplex-1i9. Deliberately NOT in the fatal __missing check below, for
+    // the same reason as the live region above: its absence costs a
+    // feature, not the panel. handlePaste() reads it and falls through to
+    // the browser's own paste when it is gone, so the degradation is
+    // "images cannot be attached", never "images vanish".
+    attachmentsEl = $("chat-attachments");
     gateEl = $("chat-gate");
     gateTextEl = $("chat-gate-text");
     gateSettingsBtn = $("chat-gate-settings-btn");
@@ -3183,8 +3543,12 @@
         insertNewlineAtCursor();
       }
     });
+    // muxplex-1i9: clipboard image paste. A text paste is untouched by this
+    // handler -- see handlePaste()'s own note.
+    inputEl.addEventListener("paste", handlePaste);
     inputEl.addEventListener("input", autoGrowInput);
     autoGrowInput();
+    renderAttachments(); // start hidden, from the same renderer that maintains it
     // Describe the chord that is actually active, from the same value the
     // handler above branches on (muxplex-18f).
     applyComposerKeyMode();
