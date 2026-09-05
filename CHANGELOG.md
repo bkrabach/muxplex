@@ -1,3 +1,29 @@
+## v0.58.2 (2026-09-05)
+
+**Session creation now reports the session tmux actually created, stays visible in the
+active view, and supports filesystem-valid names up to 255 bytes.**
+
+### Fixed
+
+- **Session creation:** normalize invalid separator characters while typing, return the
+  observed tmux session name rather than an unverified requested name, and display the
+  server's explanatory validation message rather than a generic HTTP error.
+- **Session discovery and views:** match the readiness poll to the federation endpoint's
+  session-key space, pin newly-created sessions to the view that created them, and make
+  failed view-pin writes visible instead of silently losing the session from that view.
+- **Session-name boundary:** frontend, API, and `tmux-kit` now agree on the
+  filesystem-derived 255-byte limit. `tmux-kit==0.5.0` is required by this release;
+  255-byte names are accepted and 256-byte names are rejected before tmux is invoked.
+- **State and federation reliability:** state writes use unique atomic staging paths,
+  pruning state is atomically persisted, concurrent settings writers are coordinated, and
+  federation retains safe merged views and rename tombstones.
+
+### Changed
+
+- **Validation and tooling:** test isolation now keeps test ttyd sockets and state files
+  separate from live muxplex services; Ruff and Pyright are pinned so the local and CI
+  verification gates use the same tooling.
+
 ## v0.58.1 (2026-08-21)
 
 **Fixed: wide terminal lines no longer reflow and re-wrap when you click-drag to select text.**
