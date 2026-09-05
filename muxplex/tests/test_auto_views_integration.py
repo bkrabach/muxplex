@@ -23,7 +23,6 @@ import subprocess
 import pytest
 from fastapi.testclient import TestClient
 
-import muxplex.pruning as pruning_mod
 import muxplex.settings as settings_mod
 from muxplex.identity import load_device_id
 from muxplex.main import _run_poll_cycle, app
@@ -37,23 +36,17 @@ _SOCKET = "auto-views-test"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def redirect_pruning_state_path(tmp_path, monkeypatch):
-    """Redirect PRUNING_STATE_PATH to a temporary file for all tests in
-    this module.
-
-    MUST be here, verbatim in spirit (copied from test_pruning.py's
-    identical fixture): conftest.py's autouse rails redirect SETTINGS_PATH
-    but NOT this path. Without it, step 5's assertions would read (and the
-    poll cycle would write) the real ~/.config/muxplex/pruning.json --
-    which, per AGENTS.md's recovery section, is the ONLY record of lost
-    session names after a real incident. Clobbering it here would be
-    exactly the "a test that destroys its host still passes" failure
-    conftest.py exists to stop.
-    """
-    fake_path = tmp_path / "pruning.json"
-    monkeypatch.setattr(pruning_mod, "PRUNING_STATE_PATH", fake_path)
-    return fake_path
+# PRUNING_STATE_PATH / STATE_PATH / MANIFEST_PATH isolation used to be
+# re-declared here, because conftest.py's autouse rails covered SETTINGS_PATH
+# alone. They now cover all four for EVERY test in the suite
+# (`_isolate_pruning_state_path`, `_isolate_state_path`,
+# `_isolate_manifest_path`), so the local copies are gone. Tests below take
+# `_isolate_pruning_state_path` by name to read the sidecar back.
+#
+# The reason those copies mattered is preserved where it now belongs, in
+# conftest.py: pruning.json is (per AGENTS.md's recovery section) the only
+# record of lost session names after a real incident, and MANIFEST_PATH is
+# bound ONCE at import from STATE_DIR, so moving STATE_DIR does not move it.
 
 
 @pytest.fixture
@@ -72,31 +65,6 @@ def tmux_socket():
         ["tmux", "-L", _SOCKET, "kill-server"],
         capture_output=True,
         check=False,
-    )
-
-
-@pytest.fixture(autouse=True)
-def use_tmp_state(tmp_path, monkeypatch):
-    """Redirect state.json to tmp_path for test isolation (mirrors
-    test_integration.py's use_tmp_state, without ttyd -- this module never
-    spawns one).
-
-    Also redirects `manifest.MANIFEST_PATH` -- it is computed ONCE at
-    import time as `STATE_DIR / "sessions.json"`, so patching
-    `state.STATE_DIR` alone does NOT move it (module-level values are
-    bound at import, not re-read live). Without this, `load_manifest()`
-    in `_run_poll_cycle` reads whatever real manifest exists in the DTU
-    container; if it happens to carry `pending_restore` from an unrelated
-    prior run, `_local_evaluable` goes False and NO local-owned key (rule
-    OR pin) ever accrues `first_missed_at` -- silently making step 5's
-    "never pruned" assertion vacuously true and breaking the step 6
-    contrast arm that is supposed to prove it isn't.
-    """
-    tmp_state_dir = tmp_path / "state"
-    monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_state_dir)
-    monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_state_dir / "state.json")
-    monkeypatch.setattr(
-        "muxplex.manifest.MANIFEST_PATH", tmp_state_dir / "sessions.json"
     )
 
 
@@ -208,7 +176,7 @@ def _sessions_by_name(client: TestClient) -> dict:
 
 @pytest.mark.integration
 def test_auto_view_self_heals_across_create_and_kill_with_contrast_and_union_arms(
-    tmux_socket, api_client, redirect_pruning_state_path
+    tmux_socket, api_client, _isolate_pruning_state_path
 ):
     device_id = load_device_id()
 
@@ -289,7 +257,7 @@ def test_auto_view_self_heals_across_create_and_kill_with_contrast_and_union_arm
     assert load_settings()["views_updated_at"] == views_updated_at_before
     assert settings_mod.SETTINGS_PATH.read_text() == on_disk_views_before
 
-    pruning_state = json.loads(redirect_pruning_state_path.read_text())
+    pruning_state = json.loads(_isolate_pruning_state_path.read_text())
     first_missed = pruning_state.get("first_missed_at", {})
     assert not any("av-alpha" in key for key in first_missed), (
         f"a rule-matched session must never accrue pruning bookkeeping; "

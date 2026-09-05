@@ -62,9 +62,19 @@ dtu-sync:
 	@amplifier-digital-twin file-push $(DTU) "$(TARBALL)" /root/muxplex-src.tar.gz >/dev/null
 	@amplifier-digital-twin update $(DTU) >/dev/null
 
-## Escape hatch: run on this host. Refuses if a live muxplex is serving.
+## Escape hatch: run on this host. Safe alongside a live muxplex by isolation.
+##
+## This used to claim "Refuses if a live muxplex is serving." It does not, and
+## has not since the host-network probe was retired (see conftest.py's "RETIRED
+## FIX"): the surviving pytest_sessionstart is an AST scan of test SOURCE and
+## never looks at the host at all. Verified 2026-09-05 -- a full run completed
+## repeatedly on a host serving a live muxplex, with no refusal. A guard people
+## believe in that cannot fire is worse than no guard, so the claim is gone.
+## What actually protects the host is conftest.py's autouse isolation of
+## settings.json / pruning.json / state.json / sessions.json, the tmux socket
+## dir, the port killer, and uvicorn.run.
 test-host:
-	@echo "Running on the HOST. The conftest guard will refuse if a live muxplex is up."
+	@echo "Running on the HOST. Host files are protected by conftest.py's autouse isolation rails, not by a refusal."
 	uv run pytest
 
 ## Verify the tree. NOTHING in here rewrites your files -- that is `fmt`.

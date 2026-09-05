@@ -30,7 +30,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import muxplex.main as main_mod
-import muxplex.manifest as manifest_mod
 from muxplex.main import _migrate_session_name, app
 from muxplex.manifest import (
     clear_rename_journal,
@@ -72,9 +71,8 @@ def test_is_tmux_stable_name_rejects_bad_charset():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def redirect_manifest_path(tmp_path, monkeypatch):
-    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+# MANIFEST_PATH is redirected for every test by conftest.py's autouse
+# `_isolate_manifest_path` -- the local copy that used to sit here is gone.
 
 
 def test_load_manifest_defaults_rename_in_flight_to_none():
@@ -359,12 +357,11 @@ def test_migrate_session_name_collision_row_pruning_deletes_new_key_clock():
 
 @pytest.fixture(autouse=True)
 def patch_startup_and_state(tmp_path, monkeypatch):
-    monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_path / "state" / "state.json")
+    # STATE_DIR / STATE_PATH / PRUNING_STATE_PATH are isolated for every test
+    # by conftest.py's autouse rails -- not re-declared here.
     monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", tmp_path / "ttyd")
     monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr("muxplex.identity.IDENTITY_PATH", tmp_path / "identity.json")
-    monkeypatch.setattr("muxplex.pruning.PRUNING_STATE_PATH", tmp_path / "pruning.json")
 
     async def _mock_reap_orphan():
         return 0

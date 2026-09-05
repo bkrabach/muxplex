@@ -35,6 +35,12 @@ host:
 
   * ``_isolate_settings_path`` -- no test's settings write can ever reach the
     real ``~/.config/muxplex/settings.json`` (closes incident 1).
+  * ``_isolate_pruning_state_path`` / ``_isolate_state_path`` /
+    ``_isolate_manifest_path`` -- the same guarantee for the three OTHER real
+    files production writes on every poll cycle (``pruning.json``,
+    ``state.json``, ``sessions.json``), which incident 1's fix did not cover.
+    See the block comment above those fixtures for the measured evidence:
+    150 writes aimed at the developer's real files in one full suite run.
   * ``_isolate_tmux_socket_dir`` -- no test's real tmux subprocess call can
     ever reach the ambient/production tmux server.
   * ``_neutralize_port_killer`` -- no test can invoke the REAL
@@ -167,6 +173,103 @@ def _isolate_settings_path(tmp_path, monkeypatch):
         settings_mod, "SETTINGS_PATH", tmp_path / "settings.json", raising=False
     )
     yield
+
+
+# ---------------------------------------------------------------------------
+# The other three real files the suite could reach -- incident 1's blind spot.
+#
+# ``_isolate_settings_path`` above closed incident 1 for settings.json ONLY.
+# Production writes three MORE files outside that path, all of them from
+# ``main._run_poll_cycle()`` on every single cycle:
+#
+#     muxplex/pruning.py   PRUNING_STATE_PATH  ~/.config/muxplex/pruning.json
+#     muxplex/state.py     STATE_PATH          ~/.local/share/muxplex/state.json
+#     muxplex/manifest.py  MANIFEST_PATH       ~/.local/share/muxplex/sessions.json
+#
+# Several tests drive that cycle with no redirect of their own. MEASURED, on
+# this project's own dev host, with a probe that intercepts and DIVERTS every
+# write aimed under those two directories (so the real files were never
+# touched to find this out): a full ``uv run pytest`` produced **150 writes
+# that would have landed on the developer's real files** -- 13 to the real
+# ``pruning.json`` and 30 to the real ``sessions.json``, from 34 distinct
+# tests, plus 47 ``mkdir``s of the two real directories. A scratch test
+# calling ``state.save_state()`` with no redirect hit the real ``state.json``
+# directly. The host was serving a live muxplex at the time, writing those
+# same files every poll cycle.
+#
+# ``pruning.json`` is the worst of the three to clobber: it is the stale-key
+# grace clock (``first_missed_at``). Fabricating or resetting entries in it
+# for the live instance's REAL session keys changes WHEN that instance prunes
+# real view pins -- a delayed, silent, off-host-looking corruption of the
+# user's views, hours after a green test run.
+#
+# Note the ``STATE_DIR`` patch in ``_isolate_state_path``: ``save_state()``
+# does ``STATE_DIR.mkdir(...)`` and only then writes ``STATE_PATH``, so a test
+# that redirects ``STATE_PATH`` alone still reaches into the real directory.
+# ``test_prune_backstop_poll_cycle.py`` redirected all three constants by hand
+# and STILL showed up in the probe for exactly that reason -- which is why
+# these are autouse rails rather than a per-file convention people re-derive.
+#
+# All three patch with ``raising=True`` on purpose. If a constant is renamed
+# or moved, the patch must FAIL rather than silently protect nothing -- that
+# swallow is precisely what camouflaged the 2026-08-08 ``should_escape``
+# incident documented at the bottom of this file.
+# ---------------------------------------------------------------------------
+
+
+def _isolated_state_dir(tmp_path):
+    """The per-test stand-in for ``~/.local/share/muxplex``.
+
+    ``state.json`` and ``sessions.json`` are siblings in production, so they
+    are siblings here too -- a test that reasons about one from the other
+    (or lists the directory) sees the real layout, not an invented one.
+    """
+    return tmp_path / "muxplex-isolated" / "state"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_pruning_state_path(tmp_path, monkeypatch):
+    """Point ``PRUNING_STATE_PATH`` at a per-test temp file for EVERY test.
+
+    Returns the path, so a test that wants to assert on the sidecar can take
+    this fixture by name instead of re-redirecting it.
+    """
+    import muxplex.pruning as pruning_mod
+
+    path = tmp_path / "muxplex-isolated" / "config" / "pruning.json"
+    monkeypatch.setattr(pruning_mod, "PRUNING_STATE_PATH", path)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_path(tmp_path, monkeypatch):
+    """Point ``STATE_DIR`` **and** ``STATE_PATH`` at per-test temp paths.
+
+    Both, not just ``STATE_PATH``: ``save_state()`` creates ``STATE_DIR``
+    before writing, so redirecting only the file still mkdirs the real
+    ``~/.local/share/muxplex``.
+    """
+    import muxplex.state as state_mod
+
+    state_dir = _isolated_state_dir(tmp_path)
+    monkeypatch.setattr(state_mod, "STATE_DIR", state_dir)
+    monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
+    return state_dir / "state.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_manifest_path(tmp_path, monkeypatch):
+    """Point ``MANIFEST_PATH`` at a per-test temp file for EVERY test.
+
+    Patched directly rather than via ``STATE_DIR``: ``manifest.py`` computes
+    ``MANIFEST_PATH = STATE_DIR / "sessions.json"`` ONCE at import, so moving
+    ``state.STATE_DIR`` afterwards does not move it.
+    """
+    import muxplex.manifest as manifest_mod
+
+    path = _isolated_state_dir(tmp_path) / "sessions.json"
+    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", path)
+    return path
 
 
 @pytest.fixture(autouse=True)

@@ -19,16 +19,29 @@ from muxplex.pruning import load_pruning_state, save_pruning_state
 
 
 # ---------------------------------------------------------------------------
-# Autouse fixture: redirect PRUNING_STATE_PATH to tmp_path for all tests
+# PRUNING_STATE_PATH isolation is NOT this module's job any more.
+#
+# conftest.py's autouse `_isolate_pruning_state_path` redirects it for EVERY
+# test in the suite and returns the path, so tests that want to assert on the
+# sidecar take it (via `pruning_sidecar` below) rather than re-redirecting it.
+# The local copy this file used to carry protected only the tests that
+# remembered to live here -- and a divert-probe found 13 writes reaching the
+# real ~/.config/muxplex/pruning.json from modules that had no such copy.
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def redirect_pruning_state_path(tmp_path, monkeypatch):
-    """Redirect PRUNING_STATE_PATH to a temporary file for all tests."""
-    fake_path = tmp_path / "pruning.json"
-    monkeypatch.setattr(pruning_mod, "PRUNING_STATE_PATH", fake_path)
-    return fake_path
+@pytest.fixture
+def pruning_sidecar(_isolate_pruning_state_path):
+    """The isolated sidecar path, with its parent directory created.
+
+    conftest's rail deliberately does NOT create the directory: a fresh host
+    has none, and `save_pruning_state()` creating it is itself a tested
+    behaviour (see `test_save_creates_parent_directories`). Tests that plant
+    file contents directly, without going through the writer, need the parent
+    to exist first -- that is this fixture's whole job.
+    """
+    _isolate_pruning_state_path.parent.mkdir(parents=True, exist_ok=True)
+    return _isolate_pruning_state_path
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +92,9 @@ def test_load_pruning_state_returns_empty_when_file_absent():
 # ---------------------------------------------------------------------------
 
 
-def test_load_pruning_state_returns_empty_on_corrupt_json(redirect_pruning_state_path):
+def test_load_pruning_state_returns_empty_on_corrupt_json(pruning_sidecar):
     """load_pruning_state() returns {} on corrupt JSON — never raises."""
-    redirect_pruning_state_path.write_text("NOT VALID JSON {{{{")
+    pruning_sidecar.write_text("NOT VALID JSON {{{{")
 
     result = load_pruning_state()
 
@@ -91,10 +104,10 @@ def test_load_pruning_state_returns_empty_on_corrupt_json(redirect_pruning_state
 
 
 def test_load_pruning_state_returns_empty_on_truncated_file(
-    redirect_pruning_state_path,
+    pruning_sidecar,
 ):
     """load_pruning_state() returns {} on a file with stray/truncated bytes."""
-    redirect_pruning_state_path.write_bytes(b"\xff\xfe truncated")
+    pruning_sidecar.write_bytes(b"\xff\xfe truncated")
 
     result = load_pruning_state()
 
@@ -104,10 +117,10 @@ def test_load_pruning_state_returns_empty_on_truncated_file(
 
 
 def test_load_pruning_state_returns_empty_on_non_dict_json(
-    redirect_pruning_state_path,
+    pruning_sidecar,
 ):
     """load_pruning_state() returns {} when JSON parses to a non-dict (e.g. a list)."""
-    redirect_pruning_state_path.write_text(json.dumps([1, 2, 3]))
+    pruning_sidecar.write_text(json.dumps([1, 2, 3]))
 
     result = load_pruning_state()
 
@@ -149,24 +162,24 @@ def test_save_creates_parent_directories(tmp_path, monkeypatch):
     assert nested_path.exists(), "save_pruning_state must create parent directories"
 
 
-def test_save_writes_valid_json(redirect_pruning_state_path):
+def test_save_writes_valid_json(pruning_sidecar):
     """save_pruning_state writes well-formed JSON (parseable by json.loads)."""
     state = {"first_missed_at": {"dev1:x": 1234567890.0}}
     save_pruning_state(state)
 
-    raw = redirect_pruning_state_path.read_text()
+    raw = pruning_sidecar.read_text()
     parsed = json.loads(raw)
     assert parsed == state
 
 
-def test_save_empty_state_round_trips(redirect_pruning_state_path):
+def test_save_empty_state_round_trips(pruning_sidecar):
     """An empty pruning state saves and loads cleanly."""
     save_pruning_state({})
     loaded = load_pruning_state()
     assert loaded == {}
 
 
-def test_save_overwrites_previous_state(redirect_pruning_state_path):
+def test_save_overwrites_previous_state(pruning_sidecar):
     """Subsequent saves overwrite the previous sidecar contents."""
     save_pruning_state({"first_missed_at": {"dev1:old": 111.0}})
     save_pruning_state({"first_missed_at": {"dev1:new": 222.0}})
