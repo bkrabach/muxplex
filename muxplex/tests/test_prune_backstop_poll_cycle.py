@@ -36,9 +36,6 @@ import time
 import pytest
 
 import muxplex.main as main_mod
-import muxplex.manifest as manifest_mod
-import muxplex.pruning as pruning_mod
-import muxplex.state as state_mod
 from muxplex.pruning import load_pruning_state, save_pruning_state
 from muxplex.settings import load_settings, save_settings
 
@@ -50,20 +47,18 @@ REMOTE_DEVICE = "dev-remote"
 _PAST_GRACE = 25 * 3600.0
 
 
-@pytest.fixture(autouse=True)
-def _isolate_sidecar_paths(tmp_path, monkeypatch):
-    """Redirect every file the poll cycle writes at a per-test temp path.
-
-    `conftest.py` already isolates SETTINGS_PATH for every test, but the
-    prune step also reads/writes pruning.json, and the cycle's earlier steps
-    write state.json and sessions.json. None of those are isolated globally,
-    and this file's whole point is asserting that specific files were NOT
-    written -- which is meaningless if they point at the developer's real
-    ones.
-    """
-    monkeypatch.setattr(pruning_mod, "PRUNING_STATE_PATH", tmp_path / "pruning.json")
-    monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
-    monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", tmp_path / "sessions.json")
+# This module used to redirect PRUNING_STATE_PATH / STATE_PATH / MANIFEST_PATH
+# itself, because conftest.py isolated SETTINGS_PATH alone. conftest.py now
+# isolates all three (plus STATE_DIR) for EVERY test, so the local copy is
+# gone -- its whole point, that "this file asserts specific files were NOT
+# written, which is meaningless if they point at the developer's real ones",
+# is now a property of the suite rather than of this file.
+#
+# Worth knowing why the local copy was not enough even here: it redirected
+# STATE_PATH but not STATE_DIR, and `save_state()` mkdirs STATE_DIR before
+# writing -- so a divert-probe still caught these four tests reaching into
+# the real ~/.local/share/muxplex. conftest's `_isolate_state_path` patches
+# both.
 
 
 @pytest.fixture(autouse=True)

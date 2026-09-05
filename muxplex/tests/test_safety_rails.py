@@ -172,6 +172,182 @@ def test_settings_path_is_isolated(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# The other three real files -- pruning.json / state.json / sessions.json.
+#
+# ``_isolate_settings_path`` closed incident 1 for settings.json only. These
+# rails cover the three files ``main._run_poll_cycle()`` writes on EVERY
+# cycle, which no autouse fixture covered until 2026-09-05. Measured before
+# the fix, with a divert-probe that intercepted (and redirected) every write
+# aimed under ~/.config/muxplex and ~/.local/share/muxplex: one full suite run
+# produced 150 writes that would have hit the developer's real files, from 34
+# distinct tests. See the block comment above the fixtures in conftest.py.
+#
+# Each test below fails if its fixture is deleted, renamed, or narrowed --
+# and ``test_sidecar_isolation_fixtures_cannot_be_silently_weakened`` fails if
+# one is turned into a no-op that still *looks* present.
+# ---------------------------------------------------------------------------
+
+_SIDECAR_FIXTURES = {
+    "_isolate_pruning_state_path": ("muxplex.pruning", ("PRUNING_STATE_PATH",)),
+    "_isolate_state_path": ("muxplex.state", ("STATE_DIR", "STATE_PATH")),
+    "_isolate_manifest_path": ("muxplex.manifest", ("MANIFEST_PATH",)),
+}
+
+
+def _assert_isolated(actual: Path, real: Path, tmp_path: Path, constant: str) -> None:
+    """Assert *constant* points inside this test's tmp tree, not at *real*."""
+    actual = Path(str(actual))
+    assert actual != real, (
+        f"{constant} points at the developer's REAL file ({actual}). The "
+        f"autouse isolation fixture in conftest.py has been removed or "
+        f"weakened -- a test that forgets its own redirect now writes the "
+        f"host's live muxplex state."
+    )
+    assert tmp_path in actual.parents, (
+        f"{constant} ({actual}) is not under this test's tmp_path "
+        f"({tmp_path}). Isolation must be per-test and disposable, not merely "
+        f"'somewhere other than home'."
+    )
+
+
+def test_pruning_state_path_is_isolated(tmp_path):
+    """Every test must get a temp PRUNING_STATE_PATH, isolated by default.
+
+    The worst of the three to clobber: pruning.json is the stale-key grace
+    clock (``first_missed_at``). Fabricating or resetting its entries for a
+    live instance's REAL session keys changes WHEN that instance prunes real
+    view pins -- silent corruption that surfaces hours after a green run.
+    """
+    import muxplex.pruning as pruning_mod
+
+    _assert_isolated(
+        pruning_mod.PRUNING_STATE_PATH,
+        Path.home() / ".config" / "muxplex" / "pruning.json",
+        tmp_path,
+        "PRUNING_STATE_PATH",
+    )
+
+
+def test_state_path_and_state_dir_are_isolated(tmp_path):
+    """BOTH ``STATE_PATH`` and ``STATE_DIR`` must be isolated.
+
+    ``save_state()`` does ``STATE_DIR.mkdir(parents=True, exist_ok=True)``
+    and only then writes ``STATE_PATH``, so redirecting the file alone still
+    reaches into the real ``~/.local/share/muxplex``. That exact half-fix is
+    why ``test_prune_backstop_poll_cycle.py`` -- which redirected all three
+    path constants by hand -- still showed up in the divert-probe.
+    """
+    import muxplex.state as state_mod
+
+    _assert_isolated(
+        state_mod.STATE_PATH,
+        Path.home() / ".local" / "share" / "muxplex" / "state.json",
+        tmp_path,
+        "STATE_PATH",
+    )
+    _assert_isolated(
+        state_mod.STATE_DIR,
+        Path.home() / ".local" / "share" / "muxplex",
+        tmp_path,
+        "STATE_DIR",
+    )
+
+
+def test_manifest_path_is_isolated(tmp_path):
+    """Every test must get a temp MANIFEST_PATH, isolated by default.
+
+    ``manifest.py`` binds ``MANIFEST_PATH = STATE_DIR / "sessions.json"`` ONCE
+    at import, so isolating ``state.STATE_DIR`` does not move it -- it needs
+    its own patch, and therefore its own rail.
+    """
+    import muxplex.manifest as manifest_mod
+
+    _assert_isolated(
+        manifest_mod.MANIFEST_PATH,
+        Path.home() / ".local" / "share" / "muxplex" / "sessions.json",
+        tmp_path,
+        "MANIFEST_PATH",
+    )
+
+
+def test_real_production_writes_land_in_tmp_not_on_the_host(tmp_path):
+    """End-to-end proof, through the REAL save functions.
+
+    The three tests above assert the constants look right; this one actually
+    calls production's own writers and checks where the bytes landed. A
+    fixture that patched a constant the writer no longer reads would pass the
+    former and fail this.
+    """
+    import muxplex.manifest as manifest_mod
+    import muxplex.pruning as pruning_mod
+    import muxplex.state as state_mod
+
+    pruning_mod.save_pruning_state({"first_missed_at": {"safety-rail": 1.0}})
+    state_mod.save_state(state_mod.empty_state())
+    manifest_mod.save_manifest(manifest_mod._empty_manifest())
+
+    for constant, path in (
+        ("PRUNING_STATE_PATH", pruning_mod.PRUNING_STATE_PATH),
+        ("STATE_PATH", state_mod.STATE_PATH),
+        ("MANIFEST_PATH", manifest_mod.MANIFEST_PATH),
+    ):
+        path = Path(str(path))
+        assert path.is_file(), f"{constant} write did not land at {path}"
+        assert tmp_path in path.parents, (
+            f"a real production write via {constant} landed OUTSIDE this "
+            f"test's tmp tree, at {path}. That is a write on the developer's "
+            f"host."
+        )
+
+
+def test_sidecar_isolation_fixtures_cannot_be_silently_weakened():
+    """Structural: each rail must exist, be autouse, and patch loudly.
+
+    Catches the weakenings the value-checks above cannot see -- a fixture
+    left in place but neutered. In particular ``raising=False`` is banned
+    here: if a constant is renamed or moved, the patch must FAIL rather than
+    silently protect nothing. That swallow is exactly what camouflaged the
+    2026-08-08 ``should_escape`` incident (see conftest.py's
+    ``_default_cgroup_escape_disabled`` docstring).
+    """
+    from . import conftest as ct
+
+    src = _CONFTEST.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    functions = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+    for name, (module, constants) in _SIDECAR_FIXTURES.items():
+        assert hasattr(ct, name), (
+            f"conftest.{name} was removed. That autouse fixture is what stops "
+            f"a test which forgets its own redirect from writing the "
+            f"developer's real {module} file(s): {', '.join(constants)}."
+        )
+        node = functions.get(name)
+        assert node is not None, f"conftest.{name} is no longer a plain function"
+
+        decorators = " ".join(ast.unparse(d) for d in node.decorator_list)
+        assert "autouse=True" in decorators, (
+            f"conftest.{name} is no longer autouse. A rail that must be "
+            f"opted into protects only the tests that already remembered."
+        )
+
+        body = ast.unparse(node)
+        for constant in constants:
+            assert constant in body, (
+                f"conftest.{name} no longer patches {module}.{constant}. "
+                f"Every one of these is written by main._run_poll_cycle() on "
+                f"every cycle; dropping one re-opens the real file."
+            )
+        assert "raising=False" not in body, (
+            f"conftest.{name} patches with raising=False. A renamed or moved "
+            f"constant would then be silently unprotected -- fail loud "
+            f"instead."
+        )
+
+
 def test_tmux_socket_dir_is_isolated_by_default():
     """Every test's real tmux subprocess calls must default to an isolated
     TMUX_TMPDIR, never the ambient one.
