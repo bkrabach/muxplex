@@ -393,6 +393,27 @@ consumers in ways this repo's tests won't catch:
   `AGENT_GUIDE.md` §4, "The read model is eventually consistent". They are
   deliberately kept in exactly one place; don't restate the numbers here.
   (Candidate future fix: write-through cache refresh on create/delete.)
+  **A caller must poll the name the create response reported, not the one it
+  requested** (next bullet) — under a name-mangling template the requested name
+  never appears at all, so a poll keyed on it cannot terminate in success, and
+  the resulting timeout looks identical to this cache race while having nothing
+  to do with it.
+- **`POST /api/sessions` reports the OBSERVED session name, never the request
+  echoed back.** `name` is re-read from a live enumeration after the spawn
+  (`main.py`'s `_observe_created_session()`) because the requested name is not
+  a reliable identity: a non-default `new_session_template` may derive its own
+  (the `amplifier-workspace` exemplar truncates to 32 characters) and tmux
+  silently rewrites `.` to `_` at rc=0. `requested_name`, `observed` and
+  `name_confirmed` are additive — a client that reads only `name` behaves as
+  before, and gets the repaired value. `name_confirmed: false` means the server
+  could not attribute exactly one new session to this create (not enumerable
+  yet, or two arrivals at once); `name` is then the requested name as a
+  best-effort fallback and **must not be presented as an observation** — that
+  fallback, silently, is the original defect. This mirrors the rename endpoint's
+  step-8 verification rather than inventing a second shape, and `created_with`
+  is keyed on the observed name for the same reason (delete resolves the pair by
+  the live session's name). Caller-facing guidance is in `AGENT_GUIDE.md` §4,
+  "The name you get back may not be the name you asked for".
 - **`GET /api/state` carries `settings_updated_at: float`**, merged in at
   request time from `settings.settings_updated_at` (settings.py) — it is
   NOT persisted in state.json; `empty_state()`/`load_state()`/`save_state()`

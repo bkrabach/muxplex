@@ -1974,6 +1974,31 @@ def test_agent_guide_does_not_prescribe_retired_terminal_conflict():
     assert "takeover=true" not in guide
 
 
+def test_agent_guide_polls_the_reported_name_not_the_requested_one():
+    """AGENT_GUIDE.md must not teach the defect the server just stopped having.
+
+    Pairs with test_create_session_observed_name.py, which pins the server
+    side: POST /api/sessions returns the OBSERVED name plus `requested_name`,
+    `observed` and `name_confirmed`. The guide's create-then-poll recipe
+    predates that and grepped the raw session list for the name the caller
+    ASKED for -- which, under a name-mangling `new_session_template` (32-char
+    truncation) or tmux's silent '.' -> '_' rewrite, never appears at all. A
+    reader following it burned the full 6s ceiling and reported failure on a
+    session that had come up fine, in code we would never see.
+
+    Same reasoning as the sibling test above: two narrow assertions guarding a
+    claim that HAS rotted, not a doc-lint suite. The absence check pins the
+    exact retired recipe; the presence checks pin the fields a caller cannot
+    poll correctly without knowing about.
+    """
+    guide = (Path(__file__).parent.parent.parent / "docs" / "AGENT_GUIDE.md").read_text(
+        encoding="utf-8"
+    )
+    assert "grep -q '\"agent-build\"'" not in guide
+    for field in ("requested_name", "observed", "name_confirmed"):
+        assert field in guide
+
+
 def test_connect_500_on_spawn_failure(client, monkeypatch):
     """ensure_ttyd raising TtydSpawnError -> 500."""
     from muxplex.ttyd import TtydSpawnError
