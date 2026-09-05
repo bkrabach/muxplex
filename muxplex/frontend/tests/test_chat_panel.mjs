@@ -1890,3 +1890,207 @@ test('nnl: a failed status fetch resolves to unknown, not a stuck placeholder', 
     'leaving "Checking..." up forever reads as still-working when it has already given up'
   );
 });
+
+// =======================================================================
+// GROUP 12 (muxplex-y15) -- the panel must check the model it displays
+// against what the provider actually serves, and must say "could not
+// check" whenever it could not.
+//
+// GROUP 11 above made the panel name the model muxplex BELIEVES it is
+// using, pinned to the runner's own constant so the display cannot drift
+// from what a turn sends. Nothing checked that the provider will actually
+// serve that id. A renamed or retired model displayed with complete
+// confidence and failed only mid-turn, after the stream had opened.
+//
+// Three outcomes, and the tests below are mostly about the third:
+//
+//   validated   -- the provider serves it.
+//   not_served  -- it does not. Name the model asked for AND what is
+//                  available; a generic failure is what this replaces.
+//   unknown     -- could not check. Must read as NEITHER a pass NOR a
+//                  failure.
+//
+// Rounding "unknown" in either direction has a specific cost. Rounding to
+// validated reinstates the original bug. Rounding to not_served tells a
+// user their working configuration is broken and invites them to change
+// something that was fine -- which is worse, because it is actionable and
+// wrong.
+//
+// And the structural one: checkAgentGate() must never make this call. The
+// gate FAILS OPEN on a status-check error by design (muxplex-at9), so a
+// validation call that errored there would silently show nothing at all.
+// =======================================================================
+
+/** Register the Settings -> Agent elements this group renders into --
+ * including #agent-model-check, which is what makes the served-model
+ * lookup happen at all (chat.js returns before fetching when it is
+ * absent). */
+function addAgentModelCheckEls(panel) {
+  const statusEl = panel.document.createElement('div');
+  statusEl.id = 'agent-credential-status';
+  const targetEl = panel.document.createElement('div');
+  targetEl.id = 'agent-active-target';
+  const checkEl = panel.document.createElement('div');
+  checkEl.id = 'agent-model-check';
+  // The literal index.html ships, so asserting it was REPLACED is real.
+  checkEl.textContent = 'Checking...';
+  return { statusEl, targetEl, checkEl };
+}
+
+/** Fetch stub answering BOTH agent GETs -- the cheap local status route
+ * and the live served-model route. Any other url throws, so an
+ * unexpected call is a loud failure rather than a silent undefined. */
+function agentPanelFetch(servedBody, { servedOk = true, servedStatus = 200 } = {}) {
+  return async (url) => {
+    if (url === '/api/agent/provider-credential') {
+      return { ok: true, status: 200, json: async () => CONFIGURED_STATUS };
+    }
+    if (url === '/api/agent/served-models') {
+      return { ok: servedOk, status: servedStatus, json: async () => servedBody };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+test('y15: a served model is confirmed in the panel', async () => {
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({
+      status: 'validated',
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+      served: ['claude-sonnet-5'],
+      detail: "anthropic serves 'claude-sonnet-5'.",
+    }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /serves/i);
+  assert.doesNotMatch(checkEl.textContent, /Checking/, 'the placeholder must be replaced');
+  assert.doesNotMatch(checkEl.textContent, /could not check/i);
+});
+
+test('y15: a model the provider does not serve is named specifically, with the alternatives', async () => {
+  // The item's acceptance criterion, verbatim: the mismatch is named --
+  // which model was asked for, which are available -- rather than
+  // surfacing later as a generic failed turn.
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({
+      status: 'not_served',
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+      served: ['claude-opus-5', 'claude-haiku-4-5'],
+      detail:
+        "anthropic does not serve 'claude-sonnet-5'. A turn using it will fail. " +
+        'Available models: claude-haiku-4-5, claude-opus-5',
+    }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /claude-sonnet-5/, 'must name the model asked for');
+  assert.match(checkEl.textContent, /claude-opus-5/, 'must name what IS available');
+  assert.match(checkEl.textContent, /does not serve/i);
+});
+
+test('y15: "could not check" reads as neither a pass nor a failure', async () => {
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({
+      status: 'unknown',
+      reason: 'no_credential',
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+      served: null,
+      detail: 'No anthropic credential is set, so the served model list cannot be read.',
+    }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /could not check/i);
+  assert.doesNotMatch(
+    checkEl.textContent,
+    /does not serve/i,
+    'an unchecked model must never be reported as an unserved one'
+  );
+});
+
+test('y15: a failed served-model lookup says "could not check", never a mismatch', async () => {
+  // The acceptance criterion's third case: when the lookup itself fails
+  // (network error, revoked key, timeout), the failure is reported as
+  // "could not check", never as a model mismatch.
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({}, { servedOk: false, servedStatus: 500 }),
+  });
+  const { statusEl, checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /could not check/i);
+  assert.doesNotMatch(checkEl.textContent, /does not serve/i);
+  assert.doesNotMatch(
+    checkEl.textContent,
+    /Checking/,
+    'leaving the placeholder up reads as still-working when it has already given up'
+  );
+  // ...and the failure of this one line must not take the rest of the
+  // panel down with it.
+  assert.match(statusEl.textContent, /Agent running/i);
+});
+
+test('y15: an unrecognised status value is treated as unknown, not as a pass', async () => {
+  // Guards the future: a server that grows a fourth status must degrade
+  // to "could not check" in an older panel, never to silent approval.
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({ status: 'something-new-from-a-newer-server' }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /could not check/i);
+});
+
+test('y15: the gate never makes the live served-model call', async () => {
+  // THE structural assertion. checkAgentGate() is polled and fails OPEN on
+  // error by design; a live provider round-trip there would make the gate
+  // network-dependent, and its failure would be invisible rather than
+  // reported. The gate must touch exactly one endpoint.
+  const panel = loadChatPanel({
+    fetchImpl: async (url) => {
+      if (url === '/api/agent/provider-credential') {
+        return { ok: true, status: 200, json: async () => CONFIGURED_STATUS };
+      }
+      throw new Error('unexpected fetch url in test: ' + url);
+    },
+  });
+  // The element IS present -- so this proves the gate does not call, not
+  // merely that there was nowhere to render.
+  addAgentModelCheckEls(panel);
+
+  await panel.credential.recheckGate();
+
+  const urls = panel.fetchCalls.map((c) => c.url);
+  assert.ok(urls.includes('/api/agent/provider-credential'), 'the gate reads the status route');
+  assert.ok(
+    !urls.includes('/api/agent/served-models'),
+    'the gate must not make a live provider call'
+  );
+});
+
+test('y15: an older frontend build without the element makes no served-model call at all', async () => {
+  // The check exists to put words on screen. With nowhere to put them the
+  // live provider call is pure cost -- and, incidentally, this is what
+  // keeps GROUP 11's fixtures (which do not register the element) free of
+  // a second fetch they never asked for.
+  const panel = loadChatPanel({ fetchImpl: credentialStatusFetch(CONFIGURED_STATUS) });
+  addAgentTargetEls(panel); // status + active-target only, no #agent-model-check
+
+  await panel.credential.refreshStatus();
+
+  const urls = panel.fetchCalls.map((c) => c.url);
+  assert.ok(!urls.includes('/api/agent/served-models'));
+});

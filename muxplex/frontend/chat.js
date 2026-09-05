@@ -3641,6 +3641,87 @@
     el.textContent = "Provider: " + provider + " \u00b7 Model: " + model;
   }
 
+  // muxplex-y15: how a "we could not check" reads. One constant because
+  // every path that reaches it -- no credential, provider offline, a
+  // provider that publishes no list, a shape we could not parse, or this
+  // fetch itself failing -- must read identically. The user-visible
+  // requirement is that this is distinguishable from BOTH a pass and a
+  // failure, so the wording never contains the word "not served" and
+  // never implies anything is wrong.
+  const AGENT_MODEL_CHECK_UNKNOWN_PREFIX = "Could not check";
+
+  /** Render the Settings -> Agent "is this model actually served?" line.
+   *
+   * The line above it (_renderActiveAgentTarget) reports the model the
+   * server BELIEVES it will use. That value is pinned to the runner's own
+   * constant (muxplex-nnl), so it cannot drift from what a turn sends --
+   * but nothing checked it against reality. A model id that the provider
+   * renamed or retired displayed with complete confidence and failed only
+   * at turn time, mid-stream. This closes that: muxplex asks the provider
+   * what it serves and says so.
+   *
+   * Three outcomes, kept distinct because collapsing any two of them just
+   * moves the defect:
+   *
+   *   validated   -- the provider serves it. Quiet confirmation.
+   *   not_served  -- names the model asked for AND what is available.
+   *   unknown     -- could not check. Must read as neither pass nor fail.
+   *
+   * DELIBERATELY NOT PART OF checkAgentGate(). The gate fails OPEN on a
+   * status-check error by design (muxplex-at9), which means a validation
+   * call that errored there would change nothing visible -- it would
+   * silently show nothing at all. So this renders into its own element on
+   * the settings path, where a failure has somewhere to be SEEN, and the
+   * gate keeps reading only /api/agent/provider-credential.
+   */
+  async function _refreshServedModelCheck() {
+    const el = document.getElementById("agent-model-check");
+    // Not in the DOM (older frontend build): return BEFORE fetching. The
+    // check exists to put words on screen; with nowhere to put them, the
+    // live provider call is pure cost.
+    if (!el) return;
+    let data;
+    try {
+      const resp = await fetch("/api/agent/served-models", {
+        headers: { Accept: "application/json" },
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      data = await resp.json();
+    } catch (err) {
+      // The failure of the CHECK is not evidence about the MODEL. Saying
+      // "not served" here would be the same confidently-wrong move this
+      // whole line exists to prevent, just sourced from our own outage
+      // instead of the provider's rename.
+      el.textContent = AGENT_MODEL_CHECK_UNKNOWN_PREFIX +
+        " whether the provider serves this model. This is not a sign the " +
+        "model is wrong.";
+      console.error("[agent-model-check] served-model lookup failed:", err);
+      return;
+    }
+    const status = data && data.status;
+    if (status === "validated") {
+      el.textContent = data.detail || "The provider serves this model.";
+      return;
+    }
+    if (status === "not_served") {
+      // The one case that names a real problem -- so it names BOTH halves
+      // of it (which model was asked for, which are available), per this
+      // item's acceptance criterion. The server composes that sentence;
+      // the fallback here only covers a server that answered "not_served"
+      // without a detail, and still refuses to invent a model list.
+      el.textContent = data.detail ||
+        ("The provider does not serve " + (data.model || "this model") + ".");
+      return;
+    }
+    // Anything else -- "unknown", or a status this build does not
+    // recognise -- is an unknown. Falling through to a pass or a failure
+    // for an unrecognised value is exactly how a future server change
+    // would silently start lying here.
+    el.textContent = AGENT_MODEL_CHECK_UNKNOWN_PREFIX +
+      " whether the provider serves this model" +
+      (data && data.detail ? ": " + data.detail : ".");
+  }
+
   function _renderAgentCredentialStatus(data) {
     // First, and outside every branch below: the active provider/model is
     // a fact about this server that a user wants in EVERY state --
@@ -3723,6 +3804,14 @@
       _renderActiveAgentTarget(null);
       console.error("[agent-credential] status fetch failed:", err);
     }
+    // muxplex-y15. AFTER the try/catch, and outside it, so it runs in both
+    // branches: a credential-status fetch that failed leaves the
+    // served-model line as a "Checking..." placeholder that never resolves
+    // otherwise -- the same stuck-placeholder failure muxplex-nnl fixed for
+    // the line above. Its own errors are handled internally, so it can
+    // never take the credential status down with it, and it is awaited so
+    // a caller that awaits refreshStatus() sees a settled panel.
+    await _refreshServedModelCheck();
   }
 
   // The owner's design call (Settings -> Agent Save button): we cannot know
@@ -3852,6 +3941,11 @@
   window.muxplexAgentCredential = {
     refreshStatus: _refreshAgentCredentialStatus,
     bindForm: _bindAgentCredentialForm,
+    // muxplex-y15. Exposed alongside refreshStatus (which already calls
+    // it) so the served-model check can be driven on its own -- and so a
+    // test can prove it is reachable WITHOUT going through the gate, which
+    // is the property that keeps a live provider call off the gate path.
+    refreshModelCheck: _refreshServedModelCheck,
     // muxplex-fx1 stale-gate fix: lets app.js's closeSettings() ask the chat
     // panel to re-validate its own "Agent isn't set up" gate as a
     // belt-and-suspenders check when Settings closes -- same cross-file
