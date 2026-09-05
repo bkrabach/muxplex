@@ -226,7 +226,7 @@ def save_manifest(manifest: dict[str, Any]) -> None:
 
     * They interleave their bytes into the single tmp file and each then
       atomically publishes the mixture -- an atomic rename of corrupt content
-      is still corrupt content. ``settings._atomic_write_text`` already fixed
+      is still corrupt content. ``settings.atomic_write_text`` already fixed
       exactly this for settings.json and named state.py/manifest.py as still
       carrying it; this is that same fix, applied where it was pointed.
     * The loser of the race crashes. Whoever calls ``os.replace()`` second
