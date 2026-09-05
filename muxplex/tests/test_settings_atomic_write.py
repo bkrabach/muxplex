@@ -34,6 +34,12 @@ it:
    See ``_awaits_between_load_and_save()`` for the exact rule, and
    ``test_await_scanner_detects_a_planted_violation`` for proof it can actually
    find something when something is there to find.
+
+Property 3's argument holds only WITHIN this process. The ``muxplex`` CLI
+writes settings.json from a separate one while the server runs, and that race
+is closed by an advisory cross-process lock spanning each read-modify-write --
+pinned separately in ``test_settings_cross_process_lock.py``, which also
+carries the reasoning for why a compare-and-swap could not have done the job.
 """
 
 from __future__ import annotations
@@ -195,10 +201,18 @@ def test_failed_publish_leaves_the_original_intact_and_no_debris(
     assert redirect_settings_path.read_text() == before
     assert json.loads(before)["port"] == 8088
 
+    # The sidecar lock file is not debris: it is a permanent, empty,
+    # deliberately NEVER-unlinked fixture of the config directory (see
+    # settings.settings_lock_path -- removing it between writes would break
+    # the mutual exclusion it exists to provide, because two processes would
+    # end up holding locks on two different inodes). Excluded by exact path
+    # rather than by a name pattern, so a real temp file can never slip
+    # through this exemption.
+    lock_file = settings_mod.settings_lock_path()
     leftovers = [
         p
         for p in redirect_settings_path.parent.iterdir()
-        if p != redirect_settings_path and p.is_file()
+        if p != redirect_settings_path and p != lock_file and p.is_file()
     ]
     assert leftovers == [], (
         f"temp file(s) left behind after a failed write: {leftovers}"

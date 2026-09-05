@@ -108,6 +108,7 @@ from muxplex.settings import (
     resolve_session_commands,
     resolve_tmux_socket_dir,
     save_settings,
+    settings_write_lock,
 )
 from muxplex.setup_page import detect_platform, render_setup_page
 from muxplex.state import (
@@ -534,25 +535,31 @@ async def _run_poll_cycle() -> None:
                 _rj_from = _rj.get("from")
                 _rj_to = _rj.get("to")
                 if _rj_to in name_set and _rj_from not in name_set:
-                    # tmux confirms the rename happened; complete it.
-                    _rj_state = load_state()
-                    _rj_settings = load_settings()
-                    _rj_pruning = load_pruning_state()
-                    _rj_device_id = load_device_id()
-                    _manifest, _rj_migrated = _migrate_session_name(
-                        _rj_state,
-                        _rj_settings,
-                        _manifest,
-                        _rj_pruning,
-                        _rj_from,
-                        _rj_to,
-                        _rj_device_id,
-                    )
-                    _manifest = clear_rename_journal(_manifest)
-                    save_state(_rj_state)
-                    save_settings(_rj_settings)
-                    save_pruning_state(_rj_pruning)
-                    save_manifest(_manifest)
+                    # tmux confirms the rename happened; complete it. The
+                    # cross-process settings lock spans the whole migration:
+                    # _migrate_session_name() rewrites keys across all four
+                    # keyspaces from one consistent read, and a CLI write
+                    # landing mid-migration would be discarded by the save
+                    # below (see settings.settings_write_lock()).
+                    with settings_write_lock():
+                        _rj_state = load_state()
+                        _rj_settings = load_settings()
+                        _rj_pruning = load_pruning_state()
+                        _rj_device_id = load_device_id()
+                        _manifest, _rj_migrated = _migrate_session_name(
+                            _rj_state,
+                            _rj_settings,
+                            _manifest,
+                            _rj_pruning,
+                            _rj_from,
+                            _rj_to,
+                            _rj_device_id,
+                        )
+                        _manifest = clear_rename_journal(_manifest)
+                        save_state(_rj_state)
+                        save_settings(_rj_settings)
+                        save_pruning_state(_rj_pruning)
+                        save_manifest(_manifest)
                     _rename_kill_old = _rj_from
                     _log.info(
                         "rename: poll cycle completed in-flight migration "
@@ -846,16 +853,25 @@ async def _run_poll_cycle() -> None:
     #      view.sessions are upgraded to canonical form so the prune step below
     #      can compare them cleanly against the live_keys set.
     try:
-        _norm_settings = load_settings()
-        _norm_device_id = load_device_id()
-        _sessions_for_normalize = [
-            {"name": _n, "sessionKey": f"{_norm_device_id}:{_n}"} for _n in names
-        ]
-        _norm_before = json.dumps(_norm_settings, sort_keys=True)
-        normalize_session_keys(_norm_settings, _sessions_for_normalize)
-        _norm_after = json.dumps(_norm_settings, sort_keys=True)
-        if _norm_before != _norm_after:
-            save_settings(_norm_settings)
+        # Cross-process lock spans the WHOLE load..save window, not the write.
+        # The `muxplex` CLI writes settings from a separate process while this
+        # loop is running; without this, a `config set` landing between this
+        # load and this save silently discards one of the two. See
+        # settings.settings_write_lock() for why a compare-and-swap is not
+        # sufficient here. The window contains no `await` (pinned by
+        # test_settings_read_modify_write_blocks_contain_no_await), so the
+        # event loop is never parked while the lock is held.
+        with settings_write_lock():
+            _norm_settings = load_settings()
+            _norm_device_id = load_device_id()
+            _sessions_for_normalize = [
+                {"name": _n, "sessionKey": f"{_norm_device_id}:{_n}"} for _n in names
+            ]
+            _norm_before = json.dumps(_norm_settings, sort_keys=True)
+            normalize_session_keys(_norm_settings, _sessions_for_normalize)
+            _norm_after = json.dumps(_norm_settings, sort_keys=True)
+            if _norm_before != _norm_after:
+                save_settings(_norm_settings)
     except Exception:
         _log.exception("session-key normalize cycle error")
 
@@ -893,96 +909,101 @@ async def _run_poll_cycle() -> None:
     #     other settings write — a mass-prune that would collapse views is
     #     rejected, not silently applied.
     try:
-        _prune_settings = load_settings()
-        _prune_state = load_pruning_state()
-        _grace_hours = float(_prune_settings.get("stale_key_grace_hours", 24.0))
-        _grace_seconds = _grace_hours * 3600.0
+        # Same cross-process lock, same reason, as the normalize step above:
+        # the whole load..save window is exclusive against the CLI's own
+        # writers. The lock is settings-scoped, so pruning.json's write inside
+        # this block rides along under it rather than needing its own.
+        with settings_write_lock():
+            _prune_settings = load_settings()
+            _prune_state = load_pruning_state()
+            _grace_hours = float(_prune_settings.get("stale_key_grace_hours", 24.0))
+            _grace_seconds = _grace_hours * 3600.0
 
-        _local_device_id = load_device_id()
-        _live_keys: set[str] = set()
-        for _name in names:
-            # Include both the bare name (for legacy stored entries) and the
-            # canonical device_id:name form.
-            _live_keys.add(_name)
-            _live_keys.add(f"{_local_device_id}:{_name}")
+            _local_device_id = load_device_id()
+            _live_keys: set[str] = set()
+            for _name in names:
+                # Include both the bare name (for legacy stored entries) and the
+                # canonical device_id:name form.
+                _live_keys.add(_name)
+                _live_keys.add(f"{_local_device_id}:{_name}")
 
-        # Merge in live session keys for every remote device CURRENTLY KNOWN
-        # to us via the federation session cache, and record which device_ids
-        # those are. A device absent from _federation_cache, or whose fail
-        # streak has exceeded the reachability grace threshold (same signal
-        # GET /api/federation/sessions uses to report "unreachable"), is
-        # excluded -- its keys stay "unknown" to the pruner below.
-        _known_remote_device_ids: set[str] = set()
-        for _remote_device_id, _cache_entry in _federation_cache.items():
-            if _cache_entry.get("fail_count", 0) >= _FEDERATION_GRACE_FAILURES:
-                continue
-            _known_remote_device_ids.add(_remote_device_id)
-            for _remote_sess in _cache_entry.get("sessions") or []:
-                _remote_key = _remote_sess.get("sessionKey")
-                if _remote_key:
-                    _live_keys.add(_remote_key)
+            # Merge in live session keys for every remote device CURRENTLY KNOWN
+            # to us via the federation session cache, and record which device_ids
+            # those are. A device absent from _federation_cache, or whose fail
+            # streak has exceeded the reachability grace threshold (same signal
+            # GET /api/federation/sessions uses to report "unreachable"), is
+            # excluded -- its keys stay "unknown" to the pruner below.
+            _known_remote_device_ids: set[str] = set()
+            for _remote_device_id, _cache_entry in _federation_cache.items():
+                if _cache_entry.get("fail_count", 0) >= _FEDERATION_GRACE_FAILURES:
+                    continue
+                _known_remote_device_ids.add(_remote_device_id)
+                for _remote_sess in _cache_entry.get("sessions") or []:
+                    _remote_key = _remote_sess.get("sessionKey")
+                    if _remote_key:
+                        _live_keys.add(_remote_key)
 
-        # Snapshot pre-prune views so a mass prune can be assessed against the
-        # SAME destructive-write backstop that guards PATCH /api/settings and
-        # federation sync (views.assess_views_destruction). The prune ACTION
-        # writes settings directly via save_settings() -- it does not go
-        # through patch_settings()/apply_synced_settings(), so it must run
-        # this check itself rather than inherit it for free.
-        _views_before_prune = _prune_settings.get("views")
+            # Snapshot pre-prune views so a mass prune can be assessed against the
+            # SAME destructive-write backstop that guards PATCH /api/settings and
+            # federation sync (views.assess_views_destruction). The prune ACTION
+            # writes settings directly via save_settings() -- it does not go
+            # through patch_settings()/apply_synced_settings(), so it must run
+            # this check itself rather than inherit it for free.
+            _views_before_prune = _prune_settings.get("views")
 
-        # SESSION_PERSISTENCE_DESIGN.md section 7.4: while a restore is
-        # pending, our own local session list just became unavailable (not
-        # refuted) -- treat local-owned keys the same as an unreachable
-        # remote device's ("unknown, not dead") so a cold start doesn't
-        # start a real prune countdown on view membership before the user
-        # has had a chance to run `muxplex restore`. Self-clearing: once
-        # pending_restore empties (restore succeeds, or is abandoned via
-        # --forget), this reverts to the normal evaluable behavior on the
-        # very next poll cycle -- no separate flag to remember to unset.
-        _local_evaluable = not bool(_manifest.get("pending_restore"))
+            # SESSION_PERSISTENCE_DESIGN.md section 7.4: while a restore is
+            # pending, our own local session list just became unavailable (not
+            # refuted) -- treat local-owned keys the same as an unreachable
+            # remote device's ("unknown, not dead") so a cold start doesn't
+            # start a real prune countdown on view membership before the user
+            # has had a chance to run `muxplex restore`. Self-clearing: once
+            # pending_restore empties (restore succeeds, or is abandoned via
+            # --forget), this reverts to the normal evaluable behavior on the
+            # very next poll cycle -- no separate flag to remember to unset.
+            _local_evaluable = not bool(_manifest.get("pending_restore"))
 
-        _prune_settings, _prune_state, _prune_changed = prune_stale_keys(
-            _prune_settings,
-            _live_keys,
-            pruning_state=_prune_state,
-            grace_seconds=_grace_seconds,
-            local_device_id=_local_device_id,
-            known_remote_device_ids=_known_remote_device_ids,
-            local_evaluable=_local_evaluable,
-        )
-
-        _prune_destructive = False
-        if _prune_changed:
-            _prune_assessment = assess_views_destruction(
-                _views_before_prune, _prune_settings.get("views")
+            _prune_settings, _prune_state, _prune_changed = prune_stale_keys(
+                _prune_settings,
+                _live_keys,
+                pruning_state=_prune_state,
+                grace_seconds=_grace_seconds,
+                local_device_id=_local_device_id,
+                known_remote_device_ids=_known_remote_device_ids,
+                local_evaluable=_local_evaluable,
             )
-            _prune_destructive = _prune_assessment.destructive
-            if _prune_destructive:
-                # Refuse to persist ANYTHING this cycle -- not settings, not
-                # pruning_state. Automatic background pruning must never be
-                # the thing that collapses views; unlike PATCH /api/settings,
-                # there is no `allow_destructive` override on this path (a
-                # background loop cannot consent to a bulk deletion on a
-                # human's behalf). Leaving pruning_state untouched means the
-                # exact same situation reproduces next cycle -- visible in
-                # logs, not silently applied and not silently dropped into a
-                # half-written state.
-                _log.error(
-                    "stale-key prune: refusing catastrophic prune (backstop): %s "
-                    "(before=%d views/%d members, after=%d views/%d members)",
-                    _prune_assessment.reason,
-                    _prune_assessment.before_views,
-                    _prune_assessment.before_members,
-                    _prune_assessment.after_views,
-                    _prune_assessment.after_members,
-                )
 
-        if not _prune_destructive:
-            save_pruning_state(_prune_state)
+            _prune_destructive = False
             if _prune_changed:
-                # Stale keys were removed and passed the backstop check —
-                # persist (triggers LWW sync on next cycle).
-                save_settings(_prune_settings)
+                _prune_assessment = assess_views_destruction(
+                    _views_before_prune, _prune_settings.get("views")
+                )
+                _prune_destructive = _prune_assessment.destructive
+                if _prune_destructive:
+                    # Refuse to persist ANYTHING this cycle -- not settings, not
+                    # pruning_state. Automatic background pruning must never be
+                    # the thing that collapses views; unlike PATCH /api/settings,
+                    # there is no `allow_destructive` override on this path (a
+                    # background loop cannot consent to a bulk deletion on a
+                    # human's behalf). Leaving pruning_state untouched means the
+                    # exact same situation reproduces next cycle -- visible in
+                    # logs, not silently applied and not silently dropped into a
+                    # half-written state.
+                    _log.error(
+                        "stale-key prune: refusing catastrophic prune (backstop): %s "
+                        "(before=%d views/%d members, after=%d views/%d members)",
+                        _prune_assessment.reason,
+                        _prune_assessment.before_views,
+                        _prune_assessment.before_members,
+                        _prune_assessment.after_views,
+                        _prune_assessment.after_members,
+                    )
+
+            if not _prune_destructive:
+                save_pruning_state(_prune_state)
+                if _prune_changed:
+                    # Stale keys were removed and passed the backstop check —
+                    # persist (triggers LWW sync on next cycle).
+                    save_settings(_prune_settings)
     except Exception:
         _log.exception("stale-key prune cycle error")
 
@@ -3363,21 +3384,32 @@ async def rename_session(
     # the response tells the truth, the keyspaces stay consistent with
     # reality.
     async with state_lock:
-        state = load_state()
-        settings = load_settings()
-        manifest = load_manifest()
-        pruning_state = load_pruning_state()
-        local_device_id = load_device_id()
+        # state_lock serializes this against other requests IN THIS PROCESS;
+        # settings_write_lock() is what serializes the settings half of the
+        # migration against the `muxplex` CLI, which writes settings.json from
+        # a separate process (see settings.settings_write_lock()).
+        with settings_write_lock():
+            state = load_state()
+            settings = load_settings()
+            manifest = load_manifest()
+            pruning_state = load_pruning_state()
+            local_device_id = load_device_id()
 
-        manifest, migrated = _migrate_session_name(
-            state, settings, manifest, pruning_state, name, observed, local_device_id
-        )
-        manifest = clear_rename_journal(manifest)
+            manifest, migrated = _migrate_session_name(
+                state,
+                settings,
+                manifest,
+                pruning_state,
+                name,
+                observed,
+                local_device_id,
+            )
+            manifest = clear_rename_journal(manifest)
 
-        save_state(state)
-        save_settings(settings)
-        save_manifest(manifest)
-        save_pruning_state(pruning_state)
+            save_state(state)
+            save_settings(settings)
+            save_manifest(manifest)
+            save_pruning_state(pruning_state)
 
     # ---- 10. kill_ttyd(old) (\u00a72.4) -- outside state_lock, like every other
     # subprocess call. Never touches the tmux session; the browser's WS
