@@ -161,25 +161,36 @@ dev = [
     # instead, so the number lives in exactly one place and local and CI
     # cannot silently disagree.
     #
-    # pyright is pinned to 1.1.408 and NOT to 1.1.411, which was the newest
-    # release when this pin was written and which the host copy nags about
-    # on every run ("v1.1.408 -> v1.1.411 available"). That is a measured
-    # decision, not caution: with the identical tree and the identical
-    # environment, changing only the checker,
-    #     1.1.408 -> 0 errors, 0 warnings
-    #     1.1.411 -> 1 error, agent_embedded/runner.py:394
-    #                reportOptionalMemberAccess on `context_module`
-    # and the flagged code is correct. It guards the call with a
-    # `can_seed = context_module is not None and hasattr(...)` boolean and
-    # only calls `set_messages` under `if can_seed:`; 1.1.411 just stopped
-    # narrowing `Optional` through that intermediate boolean. So the newer
-    # release invents an error on code nobody touched -- exactly the thing
-    # an unpinned tool does to an unrelated PR. Bumping is filed separately
-    # (muxplex-lh0); it needs the narrowing restructured or explicitly
-    # ignored, which is a code change with its own review, not a version
-    # number.
+    # pyright is pinned to 1.1.411 (muxplex-uca), the newest release at the
+    # time of the bump. It was held at 1.1.408 for two commits, and the
+    # reason it was held is worth keeping because it is the reason this pin
+    # exists at all: with the identical tree and environment, changing only
+    # the checker, 1.1.408 reported 0 errors while 1.1.411 reported 1 --
+    # reportOptionalMemberAccess on `context_module` in
+    # agent_embedded/runner.py -- on code nobody had touched. Exactly what
+    # an unpinned tool does to an unrelated PR.
+    #
+    # That diagnostic was then PROVEN a checker defect rather than assumed
+    # to be one (muxplex-lh0): inside a branch guarded by an aliased
+    # `x is not None and hasattr(x, ...)`, 1.1.411 widens a declared `Any`
+    # to `Any | None` -- adding back the exact member the guard excluded.
+    # See the ignore comment at that call site in runner.py for the minimal
+    # reproduction and the criterion for deleting it. That suppression is
+    # what makes this bump a version number and not a code change.
+    #
+    # Re-verified at bump time, so the ignore is not carried forward as
+    # dead suppression: 1.1.411 still reveals `Any | None` on the
+    # reproduction, and removing the ignore still reproduces the error
+    # under 1.1.411 (0 errors with it, 1 without). The whole tree is
+    # 0 errors, 0 warnings under this pin.
+    #
+    # Bump discipline for the next person: run the reproduction in
+    # runner.py's comment against the candidate version FIRST. If it has
+    # been fixed, delete the ignore in the same commit as the bump; if the
+    # bump surfaces new diagnostics elsewhere, they are findings to fix or
+    # report, not things to silence so the number can move.
     "ruff==0.15.5",
-    "pyright==1.1.408",
+    "pyright==1.1.411",
 ]
 
 [tool.uv.workspace]
