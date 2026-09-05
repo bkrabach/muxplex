@@ -1755,6 +1755,7 @@ def test_upgrade_target_archive_missing_path_refuses(tmp_path):
         }
     )
     assert target is None
+    assert reason is not None
     assert "no longer exists" in reason
 
 
@@ -5007,46 +5008,22 @@ def test_find_uv_probes_known_locations_when_which_returns_none(tmp_path, monkey
         shutil, "which", lambda name: None if name == "uv" else f"/usr/bin/{name}"
     )
 
-    # Create a fake uv binary in a location that _find_uv() probes
-    fake_uv = tmp_path / "uv"
+    # Create a real executable at the FIRST location _find_uv() probes --
+    # `~/.local/bin/uv` -- reached by pointing $HOME at tmp_path. Path.home()
+    # resolves via os.path.expanduser, which consults $HOME on POSIX, so the
+    # PRODUCTION candidate list is what gets walked here. Because this is the
+    # first candidate, any real uv elsewhere on the host is never reached and
+    # the outcome is deterministic.
+    #
+    # This test previously monkeypatched cli_mod._find_uv with a local
+    # re-implementation and then asserted on THAT, so it exercised no
+    # production code at all; the unused `original_find_uv` binding ruff
+    # flagged (F841) was the visible symptom of that tautology.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    fake_uv = tmp_path / ".local" / "bin" / "uv"
+    fake_uv.parent.mkdir(parents=True)
     fake_uv.write_text("#!/bin/sh\necho uv")
     fake_uv.chmod(0o755)
-
-    # Patch _find_uv's candidate list so the temp path is probed
-    import os as _os
-
-    original_exists = _os.path.exists
-    original_access = _os.access
-
-    def fake_exists(path):
-        if path == str(fake_uv):
-            return True
-        if path.endswith("/uv"):
-            return False  # suppress all real candidates
-        return original_exists(path)
-
-    def fake_access(path, mode):
-        if path == str(fake_uv):
-            return True
-        return original_access(path, mode)
-
-    monkeypatch.setattr(_os.path, "exists", fake_exists)
-    monkeypatch.setattr(_os, "access", fake_access)
-
-    # Temporarily inject fake_uv as the first candidate to probe
-    original_find_uv = cli_mod._find_uv
-
-    def patched_find_uv():
-        found = shutil.which("uv")
-        if found:
-            return found
-        candidates = [str(fake_uv)]
-        for path in candidates:
-            if _os.path.exists(path) and _os.access(path, _os.X_OK):
-                return path
-        return None
-
-    monkeypatch.setattr(cli_mod, "_find_uv", patched_find_uv)
 
     result = cli_mod._find_uv()
     assert result == str(fake_uv), (
@@ -6401,6 +6378,7 @@ def test_read_remote_tmux_kit_pin_clone_failure(monkeypatch):
         "https://github.com/bkrabach/nope", "v9.9.9"
     )
     assert version is None
+    assert err is not None
     assert "could not clone" in err
 
 
@@ -6421,6 +6399,7 @@ def test_read_remote_tmux_kit_pin_no_pin_found(monkeypatch):
         "https://github.com/bkrabach/muxplex", "v0.45.0"
     )
     assert version is None
+    assert err is not None
     assert "no tmux-kit" in err
 
 
@@ -6475,6 +6454,7 @@ def test_resolve_upgrade_kit_ref_falls_back_when_pin_read_fails(monkeypatch):
 
     kit_ref, warning = cli_mod._resolve_upgrade_kit_ref(info_mux, mux_target, info_kit)
     assert kit_ref == "v0.1.0"
+    assert warning is not None
     assert "could not clone" in warning
 
 
