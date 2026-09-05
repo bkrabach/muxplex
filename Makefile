@@ -67,8 +67,25 @@ test-host:
 	@echo "Running on the HOST. The conftest guard will refuse if a live muxplex is up."
 	uv run pytest
 
-check: fmt
+## Verify the tree. NOTHING in here rewrites your files -- that is `fmt`.
+##
+## This target used to be `check: fmt`, and `fmt` runs the REWRITING form of
+## `ruff format`. So `make check` silently reformatted whatever had drifted on
+## the way past and then reported success -- a gate that repairs the thing it
+## is meant to be checking is not a gate. Two files (auth.py, carrying an
+## explicitly "[not final]" WIP commit, and a test file from a sibling lane)
+## sat unformatted on main with every local run reporting green; the drift was
+## only ever visible as unrelated dirty files in somebody's working tree, and
+## the person who noticed had to be looking. Filed and fixed as muxplex-sxi.
+##
+## `ruff format --check` verifies and FAILS on drift. `fmt` remains the
+## separate, explicit "rewrite my files" verb. CI runs this same checking form
+## (.github/workflows/ci.yml -> the `lint` job), so a local green and a CI
+## green now mean the same thing -- before this, CI ran no formatting check at
+## all, so there was nothing to be inconsistent with.
+check:
 	@$(MAKE) --no-print-directory check-container-drift
+	uv run ruff format --check muxplex/
 	uv run ruff check muxplex/
 	uv run pyright muxplex/
 
@@ -90,5 +107,7 @@ check-container-drift:
 	  fi; \
 	  exit 0
 
+## Rewrite files in place. This is the ONLY target that edits your tree, and
+## it is deliberately not a prerequisite of `check` -- see `check`'s comment.
 fmt:
 	uv run ruff format muxplex/

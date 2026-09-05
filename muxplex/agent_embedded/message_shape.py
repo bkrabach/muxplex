@@ -166,14 +166,8 @@ def unsupported_image_reason(messages: list[dict[str, Any]]) -> str | None:
                 continue
             if part.get("type") == "image":
                 source = part.get("source")
-                got = (
-                    source.get("media_type")
-                    if isinstance(source, dict)
-                    else None
-                )
-                kind = (
-                    source.get("type") if isinstance(source, dict) else None
-                )
+                got = source.get("media_type") if isinstance(source, dict) else None
+                kind = source.get("type") if isinstance(source, dict) else None
                 if kind != "base64":
                     return (
                         "Cannot send this message: an attached image uses an "
@@ -203,9 +197,7 @@ def unsupported_image_reason(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def images_lost_reason(
-    history: list[dict[str, Any]], *, can_seed: bool
-) -> str | None:
+def images_lost_reason(history: list[dict[str, Any]], *, can_seed: bool) -> str | None:
     """Why this turn must refuse, or ``None`` to proceed.
 
     An image can only reach the model through history seeding (see this

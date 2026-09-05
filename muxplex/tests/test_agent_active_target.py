@@ -157,8 +157,7 @@ def test_active_provider_and_default_model_are_distinct_facts():
     not become aliases of one value."""
     assert agent_embedded_runner.active_provider() == "anthropic"
     assert (
-        agent_embedded_runner.default_model()
-        != agent_embedded_runner.active_provider()
+        agent_embedded_runner.default_model() != agent_embedded_runner.active_provider()
     )
 
 
@@ -180,7 +179,7 @@ async def test_full_status_reports_the_runners_active_provider_and_model(monkeyp
 
 
 async def test_active_target_is_reported_even_with_no_credential(monkeypatch):
-    """"Which provider/model would this server use" and "is there a key"
+    """ "Which provider/model would this server use" and "is there a key"
     are separate questions. A box with the library installed but no key
     yet can still answer the first one truthfully, and a user setting the
     key up is precisely who wants to know what they are about to talk
@@ -270,7 +269,7 @@ def test_the_read_path_never_returns_a_key_or_a_bearer(monkeypatch):
 
 def _chat_js_model_literal() -> str:
     match = re.search(r'var\s+MODEL\s*=\s*"([^"]+)"', _CHAT_JS)
-    assert match, "chat.js no longer declares `var MODEL = \"...\"`"
+    assert match, 'chat.js no longer declares `var MODEL = "..."`'
     return match.group(1)
 
 
