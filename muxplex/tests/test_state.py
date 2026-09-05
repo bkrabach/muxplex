@@ -4,8 +4,9 @@ All acceptance-criteria tests are defined here.
 """
 
 import asyncio
+import json
+import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -223,12 +224,48 @@ async def test_write_creates_state_dir_if_missing():
 
 
 async def test_write_is_atomic_no_tmp_file_left():
-    """After write_state(), no .tmp file should remain on disk."""
+    """After write_state(), no staging artifact should remain on disk.
+
+    Globs for ANY ``*.tmp`` rather than a hard-coded ``state.json.tmp``: the
+    staging name is unique per write (mkstemp), so the old fixed-path
+    assertion would check a path that can never exist and pass vacuously.
+    """
     import muxplex.state as state_mod
 
     await write_state(empty_state())
-    tmp_file = Path(str(state_mod.STATE_PATH) + ".tmp")
-    assert not tmp_file.exists()
+    leftovers = sorted(p.name for p in state_mod.STATE_PATH.parent.glob("*.tmp"))
+    assert leftovers == [], f"staging artifacts left behind: {leftovers}"
+
+
+async def test_concurrent_save_state_never_raises():
+    """Concurrent save_state() writers must not crash each other.
+
+    Companion to test_manifest.py's muxplex-673 regression: state.py carried
+    the identical fixed-``<target>.tmp`` staging path, so the loser of the
+    ``os.replace()`` race raised FileNotFoundError out of whatever request it
+    was serving. Fails against the old implementation.
+    """
+    import muxplex.state as state_mod
+
+    errors: list[BaseException] = []
+
+    def _writer() -> None:
+        for _ in range(150):
+            try:
+                state_mod.save_state(empty_state())
+            except BaseException as exc:  # noqa: BLE001 -- recorded, then asserted
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_writer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent writers raised: {errors[:3]}"
+    assert json.loads(state_mod.STATE_PATH.read_text()) is not None
+    leftovers = sorted(p.name for p in state_mod.STATE_PATH.parent.glob("*.tmp"))
+    assert leftovers == [], f"staging artifacts left behind: {leftovers}"
 
 
 async def test_concurrent_writes_do_not_corrupt():
