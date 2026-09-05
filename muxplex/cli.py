@@ -3610,6 +3610,12 @@ def commands_add(
     for why that -- not patch_settings() -- is correct here), which means
     this gets the settings-history/ snapshot for free (save_settings() is
     the choke point that writes it).
+
+    The load..save window is held under the cross-process settings lock (see
+    settings.settings_write_lock): this runs in a SEPARATE process from the
+    server, whose poll cycle writes settings on its own schedule, so without
+    it a `commands add` and a background prune landing in the same window
+    silently discard one another.
     """
     import json
 
@@ -3618,6 +3624,7 @@ def commands_add(
         load_settings,
         resolve_session_commands,
         save_settings,
+        settings_write_lock,
     )
 
     if cmd_id == RESERVED_COMMAND_ID:
@@ -3627,61 +3634,62 @@ def commands_add(
         )
         sys.exit(1)
 
-    settings = load_settings()
-    existing: list = list(settings.get("session_commands") or [])
-    existing_idx = next(
-        (
-            i
-            for i, e in enumerate(existing)
-            if isinstance(e, dict) and e.get("id") == cmd_id
-        ),
-        None,
-    )
-    if existing_idx is not None and not replace:
-        print(
-            f"error: id {cmd_id!r} already exists. Use --replace to overwrite it.",
-            file=sys.stderr,
+    with settings_write_lock():
+        settings = load_settings()
+        existing: list = list(settings.get("session_commands") or [])
+        existing_idx = next(
+            (
+                i
+                for i, e in enumerate(existing)
+                if isinstance(e, dict) and e.get("id") == cmd_id
+            ),
+            None,
         )
-        sys.exit(1)
+        if existing_idx is not None and not replace:
+            print(
+                f"error: id {cmd_id!r} already exists. Use --replace to overwrite it.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-    new_entry = {
-        "id": cmd_id,
-        "label": label,
-        "new_session_template": create,
-        "delete_session_template": delete,
-    }
-    prospective = list(existing)
-    if existing_idx is not None:
-        prospective[existing_idx] = new_entry
-    else:
-        prospective.append(new_entry)
+        new_entry = {
+            "id": cmd_id,
+            "label": label,
+            "new_session_template": create,
+            "delete_session_template": delete,
+        }
+        prospective = list(existing)
+        if existing_idx is not None:
+            prospective[existing_idx] = new_entry
+        else:
+            prospective.append(new_entry)
 
-    settings_for_check = dict(settings)
-    settings_for_check["session_commands"] = prospective
-    resolved, errors = resolve_session_commands(settings_for_check)
-    if cmd_id not in {c["id"] for c in resolved}:
-        print("error: this pair would be rejected by validation:", file=sys.stderr)
-        for err in errors:
-            print(f"  - {err}", file=sys.stderr)
-        sys.exit(1)
-    # Any OTHER error belongs to a pre-existing entry, not this one -- surface
-    # it as a warning (this add should not be blocked by an unrelated,
-    # already-broken entry), never silently.
-    other_errors = [e for e in errors if cmd_id not in e]
-    if other_errors:
-        print(
-            "warning: existing configuration has other issue(s), unaffected by this change:",
-            file=sys.stderr,
-        )
-        for err in other_errors:
-            print(f"  - {err}", file=sys.stderr)
+        settings_for_check = dict(settings)
+        settings_for_check["session_commands"] = prospective
+        resolved, errors = resolve_session_commands(settings_for_check)
+        if cmd_id not in {c["id"] for c in resolved}:
+            print("error: this pair would be rejected by validation:", file=sys.stderr)
+            for err in errors:
+                print(f"  - {err}", file=sys.stderr)
+            sys.exit(1)
+        # Any OTHER error belongs to a pre-existing entry, not this one -- surface
+        # it as a warning (this add should not be blocked by an unrelated,
+        # already-broken entry), never silently.
+        other_errors = [e for e in errors if cmd_id not in e]
+        if other_errors:
+            print(
+                "warning: existing configuration has other issue(s), unaffected by this change:",
+                file=sys.stderr,
+            )
+            for err in other_errors:
+                print(f"  - {err}", file=sys.stderr)
 
-    if dry_run:
-        print(json.dumps(prospective, indent=2))
-        return
+        if dry_run:
+            print(json.dumps(prospective, indent=2))
+            return
 
-    settings["session_commands"] = prospective
-    save_settings(settings)
+        settings["session_commands"] = prospective
+        save_settings(settings)
     action = "Replaced" if existing_idx is not None else "Added"
     print(f"  {action} command pair {cmd_id!r} ({label})")
     print(f"    create: {create}")
@@ -3689,24 +3697,34 @@ def commands_add(
 
 
 def commands_remove(cmd_id: str) -> None:
-    """Remove a named session command pair by id. Writes via save_settings()."""
-    from muxplex.settings import RESERVED_COMMAND_ID, load_settings, save_settings
+    """Remove a named session command pair by id. Writes via save_settings().
+
+    Read-modify-write, so the whole load..save window is held under the
+    cross-process settings lock -- see commands_add() above.
+    """
+    from muxplex.settings import (
+        RESERVED_COMMAND_ID,
+        load_settings,
+        save_settings,
+        settings_write_lock,
+    )
 
     if cmd_id == RESERVED_COMMAND_ID:
         print(f"error: cannot remove the built-in {cmd_id!r} pair", file=sys.stderr)
         sys.exit(1)
 
-    settings = load_settings()
-    existing = list(settings.get("session_commands") or [])
-    filtered = [
-        e for e in existing if not (isinstance(e, dict) and e.get("id") == cmd_id)
-    ]
-    if len(filtered) == len(existing):
-        print(f"error: no command pair with id {cmd_id!r}", file=sys.stderr)
-        sys.exit(1)
+    with settings_write_lock():
+        settings = load_settings()
+        existing = list(settings.get("session_commands") or [])
+        filtered = [
+            e for e in existing if not (isinstance(e, dict) and e.get("id") == cmd_id)
+        ]
+        if len(filtered) == len(existing):
+            print(f"error: no command pair with id {cmd_id!r}", file=sys.stderr)
+            sys.exit(1)
 
-    settings["session_commands"] = filtered
-    save_settings(settings)
+        settings["session_commands"] = filtered
+        save_settings(settings)
     print(f"  Removed command pair {cmd_id!r}")
 
 
@@ -3826,6 +3844,7 @@ def setup_tls(method: str = "auto") -> None:
         SETTINGS_PATH,
         load_settings,
         save_settings,
+        settings_write_lock,
     )
     from muxplex.tls import (
         _default_hostnames,
@@ -3958,9 +3977,22 @@ def setup_tls(method: str = "auto") -> None:
     # operator action the fence is meant to allow, so it writes directly
     # via save_settings() rather than going through the API-facing
     # patch_settings() filter.
-    _settings["tls_cert"] = str(cert_path)
-    _settings["tls_key"] = str(key_path)
-    save_settings(_settings)
+    #
+    # Deliberately RE-READS under the lock instead of saving the `_settings`
+    # copy loaded at the top of this function. Two reasons, and the first is
+    # the reason this is not simply wrapped in a `with` like every other CLI
+    # write path: everything between that load and here -- an interactive
+    # "Regenerate? [y/N]" prompt, Tailscale/mkcert/openssl subprocesses -- can
+    # take MINUTES, and holding the cross-process lock across it would stall
+    # the running server's poll cycle for exactly that long. Second, this
+    # command owns precisely two keys; re-reading means a settings change made
+    # from the browser or the poll cycle while certificates were being
+    # generated survives instead of being reverted to a minutes-old snapshot.
+    with settings_write_lock():
+        _settings = load_settings()
+        _settings["tls_cert"] = str(cert_path)
+        _settings["tls_key"] = str(key_path)
+        save_settings(_settings)
 
     # Print cert info
     hostnames_str = ", ".join(result["hostnames"])

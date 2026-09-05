@@ -172,6 +172,338 @@ def test_settings_path_is_isolated(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# The other three real files -- pruning.json / state.json / sessions.json.
+#
+# ``_isolate_settings_path`` closed incident 1 for settings.json only. These
+# rails cover the three files ``main._run_poll_cycle()`` writes on EVERY
+# cycle, which no autouse fixture covered until 2026-09-05. Measured before
+# the fix, with a divert-probe that intercepted (and redirected) every write
+# aimed under ~/.config/muxplex and ~/.local/share/muxplex: one full suite run
+# produced 150 writes that would have hit the developer's real files, from 34
+# distinct tests. See the block comment above the fixtures in conftest.py.
+#
+# Each test below fails if its fixture is deleted, renamed, or narrowed --
+# and ``test_sidecar_isolation_fixtures_cannot_be_silently_weakened`` fails if
+# one is turned into a no-op that still *looks* present.
+# ---------------------------------------------------------------------------
+
+_SIDECAR_FIXTURES = {
+    "_isolate_pruning_state_path": ("muxplex.pruning", ("PRUNING_STATE_PATH",)),
+    "_isolate_state_path": ("muxplex.state", ("STATE_DIR", "STATE_PATH")),
+    "_isolate_manifest_path": ("muxplex.manifest", ("MANIFEST_PATH",)),
+    "_isolate_ttyd_socket_dir": ("muxplex.ttyd", ("TTYD_SOCKET_DIR",)),
+}
+
+
+def _assert_isolated(actual: Path, real: Path, tmp_path: Path, constant: str) -> None:
+    """Assert *constant* points inside this test's tmp tree, not at *real*."""
+    actual = Path(str(actual))
+    assert actual != real, (
+        f"{constant} points at the developer's REAL file ({actual}). The "
+        f"autouse isolation fixture in conftest.py has been removed or "
+        f"weakened -- a test that forgets its own redirect now writes the "
+        f"host's live muxplex state."
+    )
+    assert tmp_path in actual.parents, (
+        f"{constant} ({actual}) is not under this test's tmp_path "
+        f"({tmp_path}). Isolation must be per-test and disposable, not merely "
+        f"'somewhere other than home'."
+    )
+
+
+def test_pruning_state_path_is_isolated(tmp_path):
+    """Every test must get a temp PRUNING_STATE_PATH, isolated by default.
+
+    The worst of the three to clobber: pruning.json is the stale-key grace
+    clock (``first_missed_at``). Fabricating or resetting its entries for a
+    live instance's REAL session keys changes WHEN that instance prunes real
+    view pins -- silent corruption that surfaces hours after a green run.
+    """
+    import muxplex.pruning as pruning_mod
+
+    _assert_isolated(
+        pruning_mod.PRUNING_STATE_PATH,
+        Path.home() / ".config" / "muxplex" / "pruning.json",
+        tmp_path,
+        "PRUNING_STATE_PATH",
+    )
+
+
+def test_state_path_and_state_dir_are_isolated(tmp_path):
+    """BOTH ``STATE_PATH`` and ``STATE_DIR`` must be isolated.
+
+    ``save_state()`` does ``STATE_DIR.mkdir(parents=True, exist_ok=True)``
+    and only then writes ``STATE_PATH``, so redirecting the file alone still
+    reaches into the real ``~/.local/share/muxplex``. That exact half-fix is
+    why ``test_prune_backstop_poll_cycle.py`` -- which redirected all three
+    path constants by hand -- still showed up in the divert-probe.
+    """
+    import muxplex.state as state_mod
+
+    _assert_isolated(
+        state_mod.STATE_PATH,
+        Path.home() / ".local" / "share" / "muxplex" / "state.json",
+        tmp_path,
+        "STATE_PATH",
+    )
+    _assert_isolated(
+        state_mod.STATE_DIR,
+        Path.home() / ".local" / "share" / "muxplex",
+        tmp_path,
+        "STATE_DIR",
+    )
+
+
+def test_manifest_path_is_isolated(tmp_path):
+    """Every test must get a temp MANIFEST_PATH, isolated by default.
+
+    ``manifest.py`` binds ``MANIFEST_PATH = STATE_DIR / "sessions.json"`` ONCE
+    at import, so isolating ``state.STATE_DIR`` does not move it -- it needs
+    its own patch, and therefore its own rail.
+    """
+    import muxplex.manifest as manifest_mod
+
+    _assert_isolated(
+        manifest_mod.MANIFEST_PATH,
+        Path.home() / ".local" / "share" / "muxplex" / "sessions.json",
+        tmp_path,
+        "MANIFEST_PATH",
+    )
+
+
+# ---------------------------------------------------------------------------
+# The FOURTH real path -- ~/.local/share/muxplex/ttyd.
+#
+# Not a sidecar file: a directory of LIVE AF_UNIX sockets and run files.
+# ``reap_orphan_ttyds()`` globs it, SIGTERMs the pid each run file names, and
+# unlinks the socket a live terminal is attached to -- so a test that reaches
+# it kills a terminal rather than merely corrupting a file. Measured LATENT
+# (0 hits over a full suite run; every ttyd test redirects it today) and
+# closed anyway -- see conftest's ``_isolate_ttyd_socket_dir`` docstring.
+#
+# It gets its own trio of tests rather than joining ``_assert_isolated``
+# above because it is deliberately NOT under ``tmp_path``: it can host a real
+# AF_UNIX socket, and ``tmp_path`` on macOS is already over the 102-byte
+# sun_path budget before a socket filename is appended.
+# ---------------------------------------------------------------------------
+
+
+def test_ttyd_socket_dir_is_isolated_by_default():
+    """Every test must get a scratch ``TTYD_SOCKET_DIR``, never the real one.
+
+    ``ttyd.py`` binds this constant at import from its OWN copy of
+    ``STATE_DIR``, so ``_isolate_state_path``'s patch does not move it --
+    same import-time-binding trap as ``MANIFEST_PATH``.
+    """
+    import muxplex.ttyd as ttyd_mod
+
+    actual = Path(str(ttyd_mod.TTYD_SOCKET_DIR))
+    real = Path.home() / ".local" / "share" / "muxplex" / "ttyd"
+
+    assert actual != real, (
+        f"TTYD_SOCKET_DIR points at the developer's REAL ttyd socket dir "
+        f"({actual}). The autouse rail in conftest.py has been removed or "
+        f"weakened. That directory holds LIVE per-session ttyd sockets: "
+        f"reap_orphan_ttyds() globs it, SIGTERMs the pid its run files name, "
+        f"and unlinks the socket a live terminal is attached to."
+    )
+    assert real not in actual.parents, (
+        f"TTYD_SOCKET_DIR ({actual}) is still INSIDE the real ttyd socket "
+        f"dir. A subdirectory is not isolation -- the reaper's glob is "
+        f"non-recursive, but spawn/kill still write under the real tree."
+    )
+    assert actual.name.startswith("mx-ttyd-"), (
+        f"TTYD_SOCKET_DIR ({actual}) does not look like the per-test scratch "
+        f"directory conftest._isolate_ttyd_socket_dir creates -- the rail may "
+        f"have been weakened."
+    )
+    assert actual.is_dir(), (
+        f"TTYD_SOCKET_DIR ({actual}) does not exist. mkdtemp creates it 0700, "
+        f"which is the mode validate_socket_dir() requires."
+    )
+
+
+def test_ttyd_socket_dir_fits_the_sun_path_budget():
+    """The isolated dir must be short enough to host a REAL AF_UNIX socket.
+
+    Arithmetic AND a real bind, because the arithmetic is the thing that got
+    it wrong before: ``tmp_path`` on macOS CI resolves to ~120 bytes before a
+    socket filename is even appended, which is over
+    ``SUN_PATH_BUDGET`` (102). A fixture rewritten to use ``tmp_path``
+    "for consistency" would pass every other test in this file and then fail
+    on macOS with ``File name too long`` -- exactly the incident recorded in
+    ``short_socket_dir``'s docstring. Also asserts structurally that the
+    fixture does not take ``tmp_path``, so the rewrite is caught on Linux
+    too, where a short ``tmp_path`` hides the bug by coincidence.
+    """
+    import muxplex.ttyd as ttyd_mod
+
+    resolved = Path(str(ttyd_mod.TTYD_SOCKET_DIR)).resolve()
+    projected = len(str(resolved)) + 1 + ttyd_mod.SOCKET_BASENAME_LEN
+    assert projected <= ttyd_mod.SUN_PATH_BUDGET, (
+        f"a socket under the isolated TTYD_SOCKET_DIR ({resolved}) would be "
+        f"{projected} bytes, over the {ttyd_mod.SUN_PATH_BUDGET}-byte "
+        f"sun_path budget. Use mkdtemp under /tmp, not tmp_path."
+    )
+
+    # The real proof: production's own derivation, bound for real.
+    sock_path = ttyd_mod.socket_path_for("safety-rail-probe")
+    assert sock_path.parent == Path(str(ttyd_mod.TTYD_SOCKET_DIR)), (
+        "socket_path_for() no longer derives from TTYD_SOCKET_DIR -- the "
+        "rail patches a constant production has stopped reading."
+    )
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.bind(str(sock_path))
+    finally:
+        probe.close()
+        sock_path.unlink(missing_ok=True)
+
+    # And production's own validator, which enforces mode 0700 + the budget.
+    ttyd_mod.validate_socket_dir(Path(str(ttyd_mod.TTYD_SOCKET_DIR)))
+
+    src = _CONFTEST.read_text(encoding="utf-8")
+    node = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "_isolate_ttyd_socket_dir"
+    )
+    params = {a.arg for a in node.args.args}
+    assert "tmp_path" not in params, (
+        "conftest._isolate_ttyd_socket_dir now takes tmp_path. That directory "
+        "can host a REAL AF_UNIX socket and pytest's tmp_path is over the "
+        "102-byte sun_path budget on macOS -- use mkdtemp under /tmp (see "
+        "short_socket_dir)."
+    )
+
+
+async def test_ttyd_reaper_reaches_only_the_isolated_dir():
+    """End-to-end through the REAL reaper -- the catastrophic path.
+
+    The two tests above assert the constant looks right; this one runs
+    ``reap_orphan_ttyds()`` for real and checks which directory it actually
+    globbed and unlinked. A rail that patched a constant the reaper no longer
+    reads would pass those and fail this.
+
+    The planted run file names a pid that cannot exist, so the identity check
+    fails and ``_terminate_pid`` is never reached -- this test proves the
+    reaper's REACH, it does not signal anything.
+    """
+    import json
+
+    import muxplex.ttyd as ttyd_mod
+
+    isolated = Path(str(ttyd_mod.TTYD_SOCKET_DIR))
+    real = Path.home() / ".local" / "share" / "muxplex" / "ttyd"
+    real_before = sorted(p.name for p in real.iterdir()) if real.is_dir() else None
+
+    sock = ttyd_mod.socket_path_for("safety-rail-orphan")
+    run_path = sock.with_suffix(".json")
+    sock.touch()
+    run_path.write_text(
+        json.dumps(
+            {
+                "pid": 2**30,  # above any pid_max; never present in `ps`
+                "session": "safety-rail-orphan",
+                "socket": str(sock),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    await ttyd_mod.reap_orphan_ttyds()
+
+    assert not run_path.exists() and not sock.exists(), (
+        f"reap_orphan_ttyds() did not touch the planted artifacts in the "
+        f"isolated dir ({isolated}) -- it is globbing some OTHER directory, "
+        f"so the autouse rail is patching a constant it does not read."
+    )
+    if real_before is not None:
+        assert sorted(p.name for p in real.iterdir()) == real_before, (
+            f"reap_orphan_ttyds() changed the contents of the developer's "
+            f"REAL ttyd socket dir ({real}). It unlinks sockets that live "
+            f"terminals are attached to."
+        )
+
+
+def test_real_production_writes_land_in_tmp_not_on_the_host(tmp_path):
+    """End-to-end proof, through the REAL save functions.
+
+    The three tests above assert the constants look right; this one actually
+    calls production's own writers and checks where the bytes landed. A
+    fixture that patched a constant the writer no longer reads would pass the
+    former and fail this.
+    """
+    import muxplex.manifest as manifest_mod
+    import muxplex.pruning as pruning_mod
+    import muxplex.state as state_mod
+
+    pruning_mod.save_pruning_state({"first_missed_at": {"safety-rail": 1.0}})
+    state_mod.save_state(state_mod.empty_state())
+    manifest_mod.save_manifest(manifest_mod._empty_manifest())
+
+    for constant, path in (
+        ("PRUNING_STATE_PATH", pruning_mod.PRUNING_STATE_PATH),
+        ("STATE_PATH", state_mod.STATE_PATH),
+        ("MANIFEST_PATH", manifest_mod.MANIFEST_PATH),
+    ):
+        path = Path(str(path))
+        assert path.is_file(), f"{constant} write did not land at {path}"
+        assert tmp_path in path.parents, (
+            f"a real production write via {constant} landed OUTSIDE this "
+            f"test's tmp tree, at {path}. That is a write on the developer's "
+            f"host."
+        )
+
+
+def test_sidecar_isolation_fixtures_cannot_be_silently_weakened():
+    """Structural: each rail must exist, be autouse, and patch loudly.
+
+    Catches the weakenings the value-checks above cannot see -- a fixture
+    left in place but neutered. In particular ``raising=False`` is banned
+    here: if a constant is renamed or moved, the patch must FAIL rather than
+    silently protect nothing. That swallow is exactly what camouflaged the
+    2026-08-08 ``should_escape`` incident (see conftest.py's
+    ``_default_cgroup_escape_disabled`` docstring).
+    """
+    from . import conftest as ct
+
+    src = _CONFTEST.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    functions = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+    for name, (module, constants) in _SIDECAR_FIXTURES.items():
+        assert hasattr(ct, name), (
+            f"conftest.{name} was removed. That autouse fixture is what stops "
+            f"a test which forgets its own redirect from writing the "
+            f"developer's real {module} file(s): {', '.join(constants)}."
+        )
+        node = functions.get(name)
+        assert node is not None, f"conftest.{name} is no longer a plain function"
+
+        decorators = " ".join(ast.unparse(d) for d in node.decorator_list)
+        assert "autouse=True" in decorators, (
+            f"conftest.{name} is no longer autouse. A rail that must be "
+            f"opted into protects only the tests that already remembered."
+        )
+
+        body = ast.unparse(node)
+        for constant in constants:
+            assert constant in body, (
+                f"conftest.{name} no longer patches {module}.{constant}. "
+                f"Every one of these is written by main._run_poll_cycle() on "
+                f"every cycle; dropping one re-opens the real file."
+            )
+        assert "raising=False" not in body, (
+            f"conftest.{name} patches with raising=False. A renamed or moved "
+            f"constant would then be silently unprotected -- fail loud "
+            f"instead."
+        )
+
+
 def test_tmux_socket_dir_is_isolated_by_default():
     """Every test's real tmux subprocess calls must default to an isolated
     TMUX_TMPDIR, never the ambient one.

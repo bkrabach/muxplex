@@ -158,6 +158,72 @@ function buildSharedScopeContext() {
   return vm.createContext(sandbox);
 }
 
+/**
+ * Explain a shared-scope evaluation failure by naming WHICH of two very
+ * different causes actually fired. Both used to surface as the same
+ * "likely a top-level binding collision" message, which sent muxplex-fii's
+ * investigation looking for a redeclaration that never existed -- the real
+ * cause there was `performance is not defined`, a gap in THIS FILE's
+ * sandbox, not a bug in the frontend.
+ *
+ * The two causes need opposite fixes:
+ *   - ReferenceError  -> the harness is incomplete; add a stub here.
+ *   - SyntaxError     -> the frontend is genuinely broken; fix the script.
+ *
+ * NOTE: `err instanceof ReferenceError` is FALSE here even for a real
+ * ReferenceError. The error is constructed inside the vm context's own
+ * realm, so it is an instance of THAT realm's ReferenceError, not this
+ * module's. `err.name` crosses the realm boundary correctly; `instanceof`
+ * does not. (Verified on node 18/20/22/24.)
+ *
+ * @param {string} src script src as it appears in index.html, e.g. '/chat.js'
+ * @param {unknown} err the error thrown by runInContext
+ * @returns {string} a message that names the cause and the correct fix
+ */
+function describeSharedScopeFailure(src, err) {
+  const name = (err && /** @type {any} */ (err).name) || '';
+  const message = (err && /** @type {any} */ (err).message) || String(err);
+  const header =
+    `${src} failed to evaluate in the shared global scope alongside the ` +
+    `scripts loaded before it.`;
+
+  const missingGlobal = /^([A-Za-z_$][\w$]*) is not defined$/.exec(message);
+  if (name === 'ReferenceError' && missingGlobal) {
+    return (
+      `${header}\n` +
+      `CAUSE: a gap in THIS TEST'S HARNESS, not a bug in ${src}. Some ` +
+      `top-level (load-time) code in ${src} reads the browser global ` +
+      `\`${missingGlobal[1]}\`, which every real browser provides but this ` +
+      `deliberately-minimal vm sandbox does not stub.\n` +
+      `FIX: add a \`${missingGlobal[1]}\` stub to buildSharedScopeContext() ` +
+      `in this file. Do NOT change ${src} to work around the sandbox, and ` +
+      `do NOT go hunting for a binding collision -- there isn't one.\n` +
+      `Original error: ${message}`
+    );
+  }
+
+  if (name === 'SyntaxError') {
+    return (
+      `${header}\n` +
+      `CAUSE: a REAL top-level binding collision between our own classic ` +
+      `scripts -- the exact production bug this test exists to catch (see ` +
+      `AGENTS.md's "Frontend classic scripts share one global scope" note). ` +
+      `In a browser this is a hard load failure, not a warning.\n` +
+      `FIX: rename or scope the colliding top-level binding in ${src} or in ` +
+      `the script that declared it first. Do NOT stub anything here.\n` +
+      `Original error: ${message}`
+    );
+  }
+
+  return (
+    `${header}\n` +
+    `CAUSE: unclassified (${name || 'no error name'}) -- neither a missing ` +
+    `sandbox global nor a binding collision. Read the original error before ` +
+    `assuming either.\n` +
+    `Original error: ${message}`
+  );
+}
+
 test('all frontend classic scripts share one global scope without a SyntaxError', () => {
   const srcs = parseLocalScriptSrcs(join(frontendDir, 'index.html'));
   assert.ok(srcs.length > 0, 'expected to find at least one local <script src> in index.html');
@@ -172,16 +238,13 @@ test('all frontend classic scripts share one global scope without a SyntaxError'
     // successive <script> tags and is what actually surfaces a top-level
     // redeclaration as a SyntaxError, exactly as it did in production for
     // v0.31.3 ("Identifier '_ownDeviceId' has already been declared").
-    assert.doesNotThrow(
-      () => new vm.Script(source, { filename: filePath }).runInContext(ctx),
-      (err) => {
-        throw new Error(
-          `${src} failed to evaluate in the shared global scope alongside the ` +
-          `scripts loaded before it -- likely a top-level binding collision ` +
-          `(see AGENTS.md's "Frontend classic scripts share one global scope" ` +
-          `note). Original error: ${err && err.message}`
-        );
-      }
-    );
+    try {
+      new vm.Script(source, { filename: filePath }).runInContext(ctx);
+    } catch (err) {
+      // describeSharedScopeFailure() names which of the two opposite causes
+      // fired (missing sandbox stub vs real binding collision) instead of
+      // asserting one of them -- see its docstring.
+      assert.fail(describeSharedScopeFailure(src, err));
+    }
   }
 });

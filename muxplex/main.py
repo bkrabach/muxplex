@@ -37,6 +37,7 @@ from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
 from starlette.types import Scope
 from tmux_kit.bell import build_alert_bell_hook
+from tmux_kit.names import SESSION_NAME_MAX_LEN
 from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
@@ -108,6 +109,7 @@ from muxplex.settings import (
     resolve_session_commands,
     resolve_tmux_socket_dir,
     save_settings,
+    settings_write_lock,
 )
 from muxplex.setup_page import detect_platform, render_setup_page
 from muxplex.state import (
@@ -161,6 +163,7 @@ from muxplex.views import (
     filter_visible,
     normalize_session_keys,
     prune_stale_keys,
+    record_views_change,
     validate_view_rules,
     view_patterns,
 )
@@ -250,6 +253,14 @@ async def _sync_settings_with_remotes(
     - If local is newer: push local settings via PUT /api/settings/sync.
     - If equal: no action.
 
+    `views` is the exception to "adopt": when the peer sends
+    `views_changed_at`, apply_synced_settings() MERGES views per view and
+    per member instead of replacing them, so an adopt no longer destroys a
+    pin this device made in the same sync window. If that merge leaves us
+    holding membership the peer lacks, apply_synced_settings() bumps our
+    `settings_updated_at` past the peer's -- which is what makes the very
+    next cycle take the push branch below and hand them the union.
+
     Errors are caught per-remote so one unreachable peer doesn't abort others.
     404/405 responses from older muxplex instances that lack sync endpoints are
     silently skipped.
@@ -278,15 +289,26 @@ async def _sync_settings_with_remotes(
             # in apply_synced_settings(): "no signal, fall back to
             # pre-existing behavior."
             remote_views_ts = remote_data.get("views_updated_at")
+            # Same additive contract as remote_views_ts: absent (None) means
+            # this peer predates the `views` merge and apply_synced_settings()
+            # resolves `views` by whole-set LWW exactly as before. Present
+            # (even as {}) means `views` is MERGED per view and per member,
+            # so a pin that just landed here is no longer destroyed by the
+            # peer's older definition of the same view.
+            remote_views_changed_at = remote_data.get("views_changed_at")
 
             if remote_ts > local_ts:
-                # Remote is newer — adopt. The destructive-write backstop
-                # inside apply_synced_settings() runs unconditionally here
-                # too, and a rejection is just another per-remote failure
-                # caught by the except below (leaves local untouched, next
-                # cycle retries).
+                # Remote is newer — adopt (MERGING `views` when the peer
+                # speaks it). The destructive-write backstop inside
+                # apply_synced_settings() runs unconditionally here too, and
+                # a rejection is just another per-remote failure caught by
+                # the except below (leaves local untouched, next cycle
+                # retries).
                 apply_synced_settings(
-                    remote_data.get("settings", {}), remote_ts, remote_views_ts
+                    remote_data.get("settings", {}),
+                    remote_ts,
+                    remote_views_ts,
+                    remote_views_changed_at,
                 )
                 # Refresh local state so subsequent remotes see the updated ts.
                 local_sync = get_syncable_settings()
@@ -297,10 +319,16 @@ async def _sync_settings_with_remotes(
                     "settings": {
                         k: local_sync[k]
                         for k in local_sync
-                        if k not in ("settings_updated_at", "views_updated_at")
+                        if k
+                        not in (
+                            "settings_updated_at",
+                            "views_updated_at",
+                            "views_changed_at",
+                        )
                     },
                     "settings_updated_at": local_ts,
                     "views_updated_at": local_sync.get("views_updated_at", 0.0),
+                    "views_changed_at": local_sync.get("views_changed_at", {}),
                 }
                 put_resp = await http_client.put(
                     f"{url}/api/settings/sync",
@@ -534,25 +562,31 @@ async def _run_poll_cycle() -> None:
                 _rj_from = _rj.get("from")
                 _rj_to = _rj.get("to")
                 if _rj_to in name_set and _rj_from not in name_set:
-                    # tmux confirms the rename happened; complete it.
-                    _rj_state = load_state()
-                    _rj_settings = load_settings()
-                    _rj_pruning = load_pruning_state()
-                    _rj_device_id = load_device_id()
-                    _manifest, _rj_migrated = _migrate_session_name(
-                        _rj_state,
-                        _rj_settings,
-                        _manifest,
-                        _rj_pruning,
-                        _rj_from,
-                        _rj_to,
-                        _rj_device_id,
-                    )
-                    _manifest = clear_rename_journal(_manifest)
-                    save_state(_rj_state)
-                    save_settings(_rj_settings)
-                    save_pruning_state(_rj_pruning)
-                    save_manifest(_manifest)
+                    # tmux confirms the rename happened; complete it. The
+                    # cross-process settings lock spans the whole migration:
+                    # _migrate_session_name() rewrites keys across all four
+                    # keyspaces from one consistent read, and a CLI write
+                    # landing mid-migration would be discarded by the save
+                    # below (see settings.settings_write_lock()).
+                    with settings_write_lock():
+                        _rj_state = load_state()
+                        _rj_settings = load_settings()
+                        _rj_pruning = load_pruning_state()
+                        _rj_device_id = load_device_id()
+                        _manifest, _rj_migrated = _migrate_session_name(
+                            _rj_state,
+                            _rj_settings,
+                            _manifest,
+                            _rj_pruning,
+                            _rj_from,
+                            _rj_to,
+                            _rj_device_id,
+                        )
+                        _manifest = clear_rename_journal(_manifest)
+                        save_state(_rj_state)
+                        save_settings(_rj_settings)
+                        save_pruning_state(_rj_pruning)
+                        save_manifest(_manifest)
                     _rename_kill_old = _rj_from
                     _log.info(
                         "rename: poll cycle completed in-flight migration "
@@ -846,16 +880,43 @@ async def _run_poll_cycle() -> None:
     #      view.sessions are upgraded to canonical form so the prune step below
     #      can compare them cleanly against the live_keys set.
     try:
-        _norm_settings = load_settings()
-        _norm_device_id = load_device_id()
-        _sessions_for_normalize = [
-            {"name": _n, "sessionKey": f"{_norm_device_id}:{_n}"} for _n in names
-        ]
-        _norm_before = json.dumps(_norm_settings, sort_keys=True)
-        normalize_session_keys(_norm_settings, _sessions_for_normalize)
-        _norm_after = json.dumps(_norm_settings, sort_keys=True)
-        if _norm_before != _norm_after:
-            save_settings(_norm_settings)
+        # Cross-process lock spans the WHOLE load..save window, not the write.
+        # The `muxplex` CLI writes settings from a separate process while this
+        # loop is running; without this, a `config set` landing between this
+        # load and this save silently discards one of the two. See
+        # settings.settings_write_lock() for why a compare-and-swap is not
+        # sufficient here. The window contains no `await` (pinned by
+        # test_settings_read_modify_write_blocks_contain_no_await), so the
+        # event loop is never parked while the lock is held.
+        with settings_write_lock():
+            _norm_settings = load_settings()
+            _norm_device_id = load_device_id()
+            _sessions_for_normalize = [
+                {"name": _n, "sessionKey": f"{_norm_device_id}:{_n}"} for _n in names
+            ]
+            # Session NAMES live on every device currently known to us. This
+            # is the evidence normalize_session_keys needs before it may
+            # retire a legacy bare-name entry fleet-wide (muxplex-w6g): a bare
+            # key has no owner, so a name another device is also running may
+            # be ITS pin, and tombstoning it would unpin its live session.
+            # Same reachability gate the prune step below uses.
+            _norm_remote_names: set[str] = set()
+            for _cache_entry in _federation_cache.values():
+                if _cache_entry.get("fail_count", 0) >= _FEDERATION_GRACE_FAILURES:
+                    continue
+                for _remote_sess in _cache_entry.get("sessions") or []:
+                    _remote_name = _remote_sess.get("name")
+                    if _remote_name:
+                        _norm_remote_names.add(_remote_name)
+            _norm_before = json.dumps(_norm_settings, sort_keys=True)
+            normalize_session_keys(
+                _norm_settings,
+                _sessions_for_normalize,
+                remote_live_names=_norm_remote_names,
+            )
+            _norm_after = json.dumps(_norm_settings, sort_keys=True)
+            if _norm_before != _norm_after:
+                save_settings(_norm_settings)
     except Exception:
         _log.exception("session-key normalize cycle error")
 
@@ -893,96 +954,122 @@ async def _run_poll_cycle() -> None:
     #     other settings write — a mass-prune that would collapse views is
     #     rejected, not silently applied.
     try:
-        _prune_settings = load_settings()
-        _prune_state = load_pruning_state()
-        _grace_hours = float(_prune_settings.get("stale_key_grace_hours", 24.0))
-        _grace_seconds = _grace_hours * 3600.0
+        # Same cross-process lock, same reason, as the normalize step above:
+        # the whole load..save window is exclusive against the CLI's own
+        # writers. The lock is settings-scoped, so pruning.json's write inside
+        # this block rides along under it rather than needing its own.
+        with settings_write_lock():
+            _prune_settings = load_settings()
+            _prune_state = load_pruning_state()
+            _grace_hours = float(_prune_settings.get("stale_key_grace_hours", 24.0))
+            _grace_seconds = _grace_hours * 3600.0
 
-        _local_device_id = load_device_id()
-        _live_keys: set[str] = set()
-        for _name in names:
-            # Include both the bare name (for legacy stored entries) and the
-            # canonical device_id:name form.
-            _live_keys.add(_name)
-            _live_keys.add(f"{_local_device_id}:{_name}")
+            _local_device_id = load_device_id()
+            _live_keys: set[str] = set()
+            for _name in names:
+                # Include both the bare name (for legacy stored entries) and the
+                # canonical device_id:name form.
+                _live_keys.add(_name)
+                _live_keys.add(f"{_local_device_id}:{_name}")
 
-        # Merge in live session keys for every remote device CURRENTLY KNOWN
-        # to us via the federation session cache, and record which device_ids
-        # those are. A device absent from _federation_cache, or whose fail
-        # streak has exceeded the reachability grace threshold (same signal
-        # GET /api/federation/sessions uses to report "unreachable"), is
-        # excluded -- its keys stay "unknown" to the pruner below.
-        _known_remote_device_ids: set[str] = set()
-        for _remote_device_id, _cache_entry in _federation_cache.items():
-            if _cache_entry.get("fail_count", 0) >= _FEDERATION_GRACE_FAILURES:
-                continue
-            _known_remote_device_ids.add(_remote_device_id)
-            for _remote_sess in _cache_entry.get("sessions") or []:
-                _remote_key = _remote_sess.get("sessionKey")
-                if _remote_key:
-                    _live_keys.add(_remote_key)
+            # Merge in live session keys for every remote device CURRENTLY KNOWN
+            # to us via the federation session cache, and record which device_ids
+            # those are. A device absent from _federation_cache, or whose fail
+            # streak has exceeded the reachability grace threshold (same signal
+            # GET /api/federation/sessions uses to report "unreachable"), is
+            # excluded -- its keys stay "unknown" to the pruner below.
+            _known_remote_device_ids: set[str] = set()
+            for _remote_device_id, _cache_entry in _federation_cache.items():
+                if _cache_entry.get("fail_count", 0) >= _FEDERATION_GRACE_FAILURES:
+                    continue
+                _known_remote_device_ids.add(_remote_device_id)
+                for _remote_sess in _cache_entry.get("sessions") or []:
+                    _remote_key = _remote_sess.get("sessionKey")
+                    if _remote_key:
+                        _live_keys.add(_remote_key)
 
-        # Snapshot pre-prune views so a mass prune can be assessed against the
-        # SAME destructive-write backstop that guards PATCH /api/settings and
-        # federation sync (views.assess_views_destruction). The prune ACTION
-        # writes settings directly via save_settings() -- it does not go
-        # through patch_settings()/apply_synced_settings(), so it must run
-        # this check itself rather than inherit it for free.
-        _views_before_prune = _prune_settings.get("views")
+            # Snapshot pre-prune views so a mass prune can be assessed against the
+            # SAME destructive-write backstop that guards PATCH /api/settings and
+            # federation sync (views.assess_views_destruction). The prune ACTION
+            # writes settings directly via save_settings() -- it does not go
+            # through patch_settings()/apply_synced_settings(), so it must run
+            # this check itself rather than inherit it for free.
+            #
+            # THE COPY IS LOAD-BEARING -- do not "optimize" it away. A plain
+            # `_prune_settings.get("views")` is a REFERENCE to the same list of
+            # the same view dicts that prune_stale_keys() is about to mutate in
+            # place (it removes members by rebinding `view["sessions"]`). The
+            # assessment below would then compare the post-prune state against
+            # ITSELF: before == after, always, making all three thresholds
+            # unreachable and this whole backstop dead code. It shipped that way
+            # and no test caught it, because test_views.py's mirror of this step
+            # builds its own snapshot -- the aliasing lives here, in the caller.
+            # test_prune_backstop_poll_cycle.py drives the real cycle instead.
+            #
+            # Cost: ~22us for a realistic config (8 views x 10 pins), ~194us for
+            # an extreme one (30 x 50), once per ~2s cycle -- noise next to the
+            # load_settings() JSON parse in this same block. The alternative
+            # (have prune_stale_keys report the counts) is rejected on
+            # correctness, not cost: the backstop's notion of "member" includes
+            # each view's rule patterns (views._view_member_count counts
+            # VIEW_RULE_KEY entries too), which the pruner neither touches nor
+            # counts -- so it would have to duplicate that rule, giving two
+            # definitions of the number that can silently drift apart.
+            _views_before_prune = copy.deepcopy(_prune_settings.get("views"))
 
-        # SESSION_PERSISTENCE_DESIGN.md section 7.4: while a restore is
-        # pending, our own local session list just became unavailable (not
-        # refuted) -- treat local-owned keys the same as an unreachable
-        # remote device's ("unknown, not dead") so a cold start doesn't
-        # start a real prune countdown on view membership before the user
-        # has had a chance to run `muxplex restore`. Self-clearing: once
-        # pending_restore empties (restore succeeds, or is abandoned via
-        # --forget), this reverts to the normal evaluable behavior on the
-        # very next poll cycle -- no separate flag to remember to unset.
-        _local_evaluable = not bool(_manifest.get("pending_restore"))
+            # SESSION_PERSISTENCE_DESIGN.md section 7.4: while a restore is
+            # pending, our own local session list just became unavailable (not
+            # refuted) -- treat local-owned keys the same as an unreachable
+            # remote device's ("unknown, not dead") so a cold start doesn't
+            # start a real prune countdown on view membership before the user
+            # has had a chance to run `muxplex restore`. Self-clearing: once
+            # pending_restore empties (restore succeeds, or is abandoned via
+            # --forget), this reverts to the normal evaluable behavior on the
+            # very next poll cycle -- no separate flag to remember to unset.
+            _local_evaluable = not bool(_manifest.get("pending_restore"))
 
-        _prune_settings, _prune_state, _prune_changed = prune_stale_keys(
-            _prune_settings,
-            _live_keys,
-            pruning_state=_prune_state,
-            grace_seconds=_grace_seconds,
-            local_device_id=_local_device_id,
-            known_remote_device_ids=_known_remote_device_ids,
-            local_evaluable=_local_evaluable,
-        )
-
-        _prune_destructive = False
-        if _prune_changed:
-            _prune_assessment = assess_views_destruction(
-                _views_before_prune, _prune_settings.get("views")
+            _prune_settings, _prune_state, _prune_changed = prune_stale_keys(
+                _prune_settings,
+                _live_keys,
+                pruning_state=_prune_state,
+                grace_seconds=_grace_seconds,
+                local_device_id=_local_device_id,
+                known_remote_device_ids=_known_remote_device_ids,
+                local_evaluable=_local_evaluable,
             )
-            _prune_destructive = _prune_assessment.destructive
-            if _prune_destructive:
-                # Refuse to persist ANYTHING this cycle -- not settings, not
-                # pruning_state. Automatic background pruning must never be
-                # the thing that collapses views; unlike PATCH /api/settings,
-                # there is no `allow_destructive` override on this path (a
-                # background loop cannot consent to a bulk deletion on a
-                # human's behalf). Leaving pruning_state untouched means the
-                # exact same situation reproduces next cycle -- visible in
-                # logs, not silently applied and not silently dropped into a
-                # half-written state.
-                _log.error(
-                    "stale-key prune: refusing catastrophic prune (backstop): %s "
-                    "(before=%d views/%d members, after=%d views/%d members)",
-                    _prune_assessment.reason,
-                    _prune_assessment.before_views,
-                    _prune_assessment.before_members,
-                    _prune_assessment.after_views,
-                    _prune_assessment.after_members,
-                )
 
-        if not _prune_destructive:
-            save_pruning_state(_prune_state)
+            _prune_destructive = False
             if _prune_changed:
-                # Stale keys were removed and passed the backstop check —
-                # persist (triggers LWW sync on next cycle).
-                save_settings(_prune_settings)
+                _prune_assessment = assess_views_destruction(
+                    _views_before_prune, _prune_settings.get("views")
+                )
+                _prune_destructive = _prune_assessment.destructive
+                if _prune_destructive:
+                    # Refuse to persist ANYTHING this cycle -- not settings, not
+                    # pruning_state. Automatic background pruning must never be
+                    # the thing that collapses views; unlike PATCH /api/settings,
+                    # there is no `allow_destructive` override on this path (a
+                    # background loop cannot consent to a bulk deletion on a
+                    # human's behalf). Leaving pruning_state untouched means the
+                    # exact same situation reproduces next cycle -- visible in
+                    # logs, not silently applied and not silently dropped into a
+                    # half-written state.
+                    _log.error(
+                        "stale-key prune: refusing catastrophic prune (backstop): %s "
+                        "(before=%d views/%d members, after=%d views/%d members)",
+                        _prune_assessment.reason,
+                        _prune_assessment.before_views,
+                        _prune_assessment.before_members,
+                        _prune_assessment.after_views,
+                        _prune_assessment.after_members,
+                    )
+
+            if not _prune_destructive:
+                save_pruning_state(_prune_state)
+                if _prune_changed:
+                    # Stale keys were removed and passed the backstop check —
+                    # persist (triggers LWW sync on next cycle).
+                    save_settings(_prune_settings)
     except Exception:
         _log.exception("stale-key prune cycle error")
 
@@ -1342,6 +1429,15 @@ class SettingsSyncPayload(BaseModel):
     # function's docstring for the full views-specific-conflict-resolution
     # story). Never required -- Pydantic defaults it to None.
     views_updated_at: float | None = None
+    # Additive, optional, same contract: the per-view/per-member presence
+    # stamps that let `views` be MERGED instead of replaced wholesale (see
+    # settings.DEFAULT_SETTINGS' "views_changed_at" comment and views.py's
+    # "Federation merge of `views`" header). None means "this peer doesn't
+    # speak it" -- apply_synced_settings() then resolves `views` by the
+    # pre-existing views_updated_at LWW, unchanged. An empty dict is a real
+    # signal and does NOT mean the same thing: it says the peer supports
+    # merging but has recorded no presence change yet.
+    views_changed_at: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -2008,9 +2104,89 @@ def _require_valid_session_name(name: str) -> None:
             status_code=400,
             detail=(
                 "Invalid session name. Allowed characters: letters, digits, "
-                "and _ . - (1-64 characters)."
+                f"and _ . - (1-{SESSION_NAME_MAX_LEN} characters)."
             ),
         )
+
+
+# How long create_session() will keep re-enumerating after a spawn before it
+# gives up and reports the observed name as unconfirmed, and how often it
+# looks. The wait exists because tmux_kit's spawn_session() has its OWN 30s
+# budget and returns (True, None) when it expires -- "return success and let
+# the caller poll" -- so ok=True genuinely does not prove the session is
+# enumerable yet. Kept short: the honest "could not confirm" answer is more
+# useful to a client than a slow one, and the ordinary case resolves on the
+# first look.
+_CREATE_OBSERVE_TIMEOUT_S: float = 5.0
+_CREATE_OBSERVE_INTERVAL_S: float = 0.25
+
+
+async def _observe_created_session(
+    requested: str, known_before: set[str]
+) -> str | None:
+    """Return the name tmux ACTUALLY created, or None if it can't be determined.
+
+    The name we ASK for and the name tmux creates frequently differ, and tmux
+    reports success either way. Two confirmed mechanisms:
+
+      1. A non-default ``new_session_template`` derives its own name -- the
+         exemplar in the wild, ``amplifier-workspace ~/dev/{name}``, sanitizes
+         and TRUNCATES to 32 characters, so every requested name longer than
+         that comes back different.
+      2. tmux silently rewrites ``.`` to ``_`` at rc=0 (reproduced on 3.4).
+
+    So the requested name cannot be trusted as an identity. This is the same
+    verification the rename path already performs for the same reason (see
+    "step 8, Verify the observed name" in rename_session) -- that precedent is
+    deliberately followed rather than a second shape invented.
+
+    THE MATCHING RULE, and why it is what it is. We cannot assume observed ==
+    requested (that assumption IS the bug), so we need a defensible way to
+    decide which live session is the one we just made:
+
+      * An exact match wins outright. The requested name being live is
+        positive evidence, not merely an absence of mangling, and it stays
+        correct even when unrelated sessions appear concurrently.
+      * Otherwise, diff against a snapshot taken BEFORE the spawn. Exactly one
+        new arrival is attributable to us; that is the observed name. The
+        pre-spawn snapshot is what makes this work on a host that already has
+        sessions running -- without it every unrelated session would look like
+        a candidate.
+      * Anything else is AMBIGUOUS and returns None. Zero arrivals may just be
+        a session that has not become enumerable yet, so we keep looking until
+        the deadline. Two or more arrivals cannot be disambiguated by waiting
+        (a later look can only add more), so we stop immediately rather than
+        burn the budget on a question more data cannot answer. Naming either
+        one would be a coin flip reported as a fact.
+
+    Returning None is a real, expected outcome, not an error: the bounded wait
+    exists precisely because tmux_kit's ``spawn_session()`` returns
+    ``(True, None)`` when its own 30s budget expires, by design, leaving the
+    caller to poll. The caller must surface "could not confirm" rather than
+    fall back to echoing the requested name as though it had been observed --
+    that fallback would reintroduce this exact bug in a form that is harder to
+    see, because the response would look identical to a confirmed one.
+    """
+    deadline = time.monotonic() + _CREATE_OBSERVE_TIMEOUT_S
+    candidates: list[str] = []
+    while True:
+        observed_names = await enumerate_sessions()
+        if requested in observed_names:
+            return requested
+        candidates = sorted(set(observed_names) - known_before)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1 or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_CREATE_OBSERVE_INTERVAL_S)
+
+    _log.error(
+        "create: could not confirm the observed name for %r; tmux reported "
+        "success but the session is not identifiable (new arrivals=%r)",
+        requested,
+        candidates,
+    )
+    return None
 
 
 @app.post("/api/sessions")
@@ -2020,9 +2196,24 @@ async def create_session(payload: CreateSessionPayload) -> dict:
 
     Substitutes ``{name}`` in the template with the validated payload name,
     runs the command as an async subprocess, and waits up to 30 seconds for
-    it to finish.  Returns ``{name, ok: True, command_id: ...}`` on success or
-    ``{name, ok: False, error: ...}`` with HTTP 500 on failure so that the
-    frontend can surface actionable errors instead of silently timing out.
+    it to finish.  Returns ``{name, ok: True, command_id, requested_name,
+    observed, name_confirmed}`` on success, or HTTP 500 on failure so that
+    the frontend can surface actionable errors instead of silently timing out.
+
+    ``name`` IS THE OBSERVED NAME, not the requested one. The two differ more
+    often than they look like they should: a non-default
+    ``new_session_template`` may derive its own name (the
+    ``amplifier-workspace`` case truncates to 32 characters), and tmux itself
+    silently rewrites ``.`` to ``_`` while reporting success. Returning the
+    requested name meant every downstream key -- the client's view pin, its
+    readiness poll, and the ``created_with`` manifest record below -- was
+    built from a name that matched no live session.
+
+    ``observed`` is the verified name or ``None``; ``name_confirmed`` says
+    which. When it is ``False``, ``name`` is the requested name echoed back as
+    a best effort and explicitly NOT an observation -- the session may simply
+    not be enumerable yet (see ``_observe_created_session()``). A client must
+    not treat an unconfirmed name as an identity.
 
     ``payload.command_id`` (optional) selects a configured session command
     pair -- see GET /api/session-commands. Omitting it (the default, and
@@ -2068,22 +2259,56 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     # second one that could drift. See its docstring and
     # SESSION_PERSISTENCE_DESIGN.md's "restore fidelity equals create
     # fidelity" principle.
+    # Snapshot the live sessions BEFORE the spawn. This is what lets the
+    # post-spawn verification below attribute a new arrival to us on a host
+    # that already has sessions running; see _observe_created_session().
+    known_before = set(await enumerate_sessions())
+
     ok, error = await spawn_session_command(name, command_id=payload.command_id)
     if not ok:
         raise HTTPException(status_code=500, detail=error)
 
+    # Re-enumerate and report the name tmux ACTUALLY created. `ok` above only
+    # means the session command did not fail -- it does NOT mean a session by
+    # this name exists, because the template may derive its own (the
+    # 32-char-truncating `amplifier-workspace` case) and tmux itself rewrites
+    # '.' to '_' at rc=0.
+    observed = await _observe_created_session(name, known_before)
+
+    # When the observed name could not be determined we still return the
+    # requested name -- there is nothing better to return, and the client
+    # needs *something* to poll on -- but `name_confirmed: False` says plainly
+    # that it is a request, not an observation. Never present it as confirmed.
+    effective_name = observed if observed is not None else name
+
     # Record which pair created this session, so delete can automatically
     # run the matching teardown. Recorded AFTER success -- a failed create
     # writes nothing and leaves no garbage (see manifest.py's created_with
-    # concurrency notes). Note: command["id"], not payload.command_id --
-    # normalizes None to the literal "default" so the record is always
-    # explicit.
+    # concurrency notes). Keyed on the OBSERVED name: delete looks the pair up
+    # by the live session's name, so a record filed under a mangled-away
+    # requested name is unreachable. In the unconfirmed case this falls back
+    # to the requested name -- best effort, and no worse than the pre-fix
+    # behavior. Note: command["id"], not payload.command_id -- normalizes None
+    # to the literal "default" so the record is always explicit.
     async with state_lock:
         manifest = load_manifest()
-        manifest = set_created_with(manifest, name, command["id"])
+        manifest = set_created_with(manifest, effective_name, command["id"])
         save_manifest(manifest)
 
-    return {"name": name, "ok": True, "command_id": command["id"]}
+    # `name` stays the field every existing client reads (app.js does
+    # `data.name || name`), so returning the observed name here is what
+    # repairs the view pin, the readiness poll, the loading tile, and the
+    # manifest record at once -- with no client change. `observed` and
+    # `name_confirmed` are additive, so a client that ignores them behaves
+    # exactly as before.
+    return {
+        "name": effective_name,
+        "ok": True,
+        "command_id": command["id"],
+        "requested_name": name,
+        "observed": observed,
+        "name_confirmed": observed is not None,
+    }
 
 
 @app.post("/api/sessions/{name}/connect")
@@ -2946,6 +3171,20 @@ def _migrate_session_name(
     old_key = f"{local_device_id}:{old_name}"
     new_key = f"{local_device_id}:{new_name}"
 
+    # Snapshot the pre-rewrite membership so record_views_change() below can
+    # diff it (muxplex-w6g). Only `name`/`sessions` are read by that diff, so
+    # this is a targeted copy rather than a deepcopy of unrelated view fields.
+    views_before = [
+        {
+            "name": view.get("name"),
+            "sessions": list(view.get("sessions") or [])
+            if isinstance(view.get("sessions"), list)
+            else [],
+        }
+        for view in settings.get("views") or []
+        if isinstance(view, dict)
+    ]
+
     pins_moved = 0
     for view in settings.get("views") or []:
         view_sessions = view.get("sessions")
@@ -2961,6 +3200,28 @@ def _migrate_session_name(
         view["sessions"] = deduped
         pins_moved += 1
     migrated["view_pins"] = pins_moved
+
+    # Record the rewrite as what it is -- one deletion plus one addition -- in
+    # the SAME per-member map the federation merge already reads
+    # (`settings["views_changed_at"]`, muxplex-npg). Without this the removal
+    # of old_key is indistinguishable from "this device never knew about that
+    # pin", so the next sync resurrects it from a peer that has not heard
+    # about the rename, and the view carries a key matching no live session
+    # until prune_stale_keys removes it (24h by default).
+    #
+    # Provably safe to tombstone, unlike a bare legacy name (see
+    # normalize_session_keys' docstring): old_key is `<local_device_id>:<old>`
+    # by construction three lines above. Only THIS device can own that key, so
+    # retiring it states a fact about our own keyspace rather than inferring
+    # something about another device's -- `dev-b:<old>` is a different session
+    # and is never touched here.
+    #
+    # record_views_change() DIFFS; it never back-fills. A rename of a session
+    # nobody pinned moves no pins and therefore stamps nothing.
+    if pins_moved:
+        settings["views_changed_at"] = record_views_change(
+            views_before, settings.get("views"), settings.get("views_changed_at")
+        )
 
     hidden = settings.get("hidden_sessions")
     if isinstance(hidden, list) and old_key in hidden:
@@ -3234,21 +3495,32 @@ async def rename_session(
     # the response tells the truth, the keyspaces stay consistent with
     # reality.
     async with state_lock:
-        state = load_state()
-        settings = load_settings()
-        manifest = load_manifest()
-        pruning_state = load_pruning_state()
-        local_device_id = load_device_id()
+        # state_lock serializes this against other requests IN THIS PROCESS;
+        # settings_write_lock() is what serializes the settings half of the
+        # migration against the `muxplex` CLI, which writes settings.json from
+        # a separate process (see settings.settings_write_lock()).
+        with settings_write_lock():
+            state = load_state()
+            settings = load_settings()
+            manifest = load_manifest()
+            pruning_state = load_pruning_state()
+            local_device_id = load_device_id()
 
-        manifest, migrated = _migrate_session_name(
-            state, settings, manifest, pruning_state, name, observed, local_device_id
-        )
-        manifest = clear_rename_journal(manifest)
+            manifest, migrated = _migrate_session_name(
+                state,
+                settings,
+                manifest,
+                pruning_state,
+                name,
+                observed,
+                local_device_id,
+            )
+            manifest = clear_rename_journal(manifest)
 
-        save_state(state)
-        save_settings(settings)
-        save_manifest(manifest)
-        save_pruning_state(pruning_state)
+            save_state(state)
+            save_settings(settings)
+            save_manifest(manifest)
+            save_pruning_state(pruning_state)
 
     # ---- 10. kill_ttyd(old) (\u00a72.4) -- outside state_lock, like every other
     # subprocess call. Never touches the tmux session; the browser's WS
@@ -3776,22 +4048,25 @@ async def get_settings_sync() -> dict:
     settings_updated_at and views_updated_at timestamps; infrastructure keys
     (host, port, federation_key, etc.) are never included.
 
-    `views_updated_at` is an additive field (see SettingsSyncPayload /
-    apply_synced_settings): a peer that predates it simply doesn't look for
-    it in this response.
+    `views_updated_at` and `views_changed_at` are additive fields (see
+    SettingsSyncPayload / apply_synced_settings): a peer that predates
+    either simply doesn't look for it in this response, and resolves `views`
+    the way it always did.
     """
     syncable = get_syncable_settings()
     ts = syncable.get("settings_updated_at", 0.0)
     views_ts = syncable.get("views_updated_at", 0.0)
+    views_changed_at = syncable.get("views_changed_at", {})
     settings = {
         k: v
         for k, v in syncable.items()
-        if k not in ("settings_updated_at", "views_updated_at")
+        if k not in ("settings_updated_at", "views_updated_at", "views_changed_at")
     }
     return {
         "settings": settings,
         "settings_updated_at": ts,
         "views_updated_at": views_ts,
+        "views_changed_at": views_changed_at,
     }
 
 
@@ -3809,10 +4084,13 @@ async def put_settings_sync(payload: SettingsSyncPayload):
     resync from there -- its view IS stale/inconsistent with ours.
 
     If strictly newer, applies via apply_synced_settings(), passing through
-    `views_updated_at` for the views-specific conflict resolution described
-    in that function's docstring (an older peer simply omits the field --
-    Pydantic defaults it to None -- and apply_synced_settings() falls back
-    to its pre-existing, fully-interoperable behavior).
+    `views_updated_at` AND `views_changed_at` for the views-specific
+    conflict resolution described in that function's docstring (an older
+    peer simply omits either field -- Pydantic defaults both to None -- and
+    apply_synced_settings() falls back to its pre-existing,
+    fully-interoperable behavior). With `views_changed_at` present, `views`
+    is merged rather than replaced, so this endpoint accepting a peer's
+    write no longer costs this device a pin it made moments ago.
 
     The destructive-write backstop is NOT optional here and has no override:
     apply_synced_settings() runs it unconditionally as its first act, before
@@ -3833,6 +4111,7 @@ async def put_settings_sync(payload: SettingsSyncPayload):
                 payload.settings,
                 payload.settings_updated_at,
                 payload.views_updated_at,
+                payload.views_changed_at,
             )
         except DestructiveSettingsWriteRejected as exc:
             syncable = get_syncable_settings()
@@ -5488,6 +5767,23 @@ _AGENT_PROVIDER_ENV_VARS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
 }
 
+#: The `error.type` on `POST /api/agent/chat/completions`'s 503 when the
+#: Agent was never set up on this server -- as opposed to a genuine fault.
+#:
+#: A STABLE STRING, deliberately not derived from any message. muxplex-at9
+#: shipped twice for the same structural reason: the "is this an
+#: un-onboarded server or a real failure?" decision lived in chat.js as a
+#: regex over the server's PROSE (`/not configured on this server/i`).
+#: Rewording the server's sentence -- which the sidecar -> embedded
+#: refactor did, entirely reasonably -- silently reverted the panel to
+#: "muxplex hit an error of its own... worth retrying once" on the one
+#: state every new install is in. Nothing failed; there was nothing that
+#: COULD fail. Public (no leading underscore) because it is half of a
+#: cross-language contract: chat.js matches this literal, and
+#: tests/test_agent_not_configured_contract.py fails the suite if either
+#: side renames it.
+AGENT_NOT_CONFIGURED_ERROR_TYPE = "agent_not_configured"
+
 # Serializes validate -> persist so two racing requests can't interleave
 # (SS9 "concurrent writes" of the design doc).
 _agent_credential_lock = asyncio.Lock()
@@ -5520,6 +5816,35 @@ async def get_agent_provider_credential(request: Request) -> dict:
     `data.providers` for the per-provider masked/source display.
     """
     return await agent_embedded_credentials.full_status()
+
+
+@app.get("/api/agent/served-models")
+async def get_agent_served_models(request: Request) -> dict:
+    """Does the provider actually SERVE the model the panel displays?
+    (muxplex-y15.)
+
+    A SEPARATE route from `/api/agent/provider-credential`, and that
+    separation is the design, not an accident. That route backs both the
+    Settings -> Agent tab AND `checkAgentGate()`, which chat.js polls; it
+    is expected to be cheap and purely local. This one makes a live call
+    to the provider, so it is requested explicitly, only when the settings
+    tab renders, and never by the gate. A provider outage therefore cannot
+    slow down -- or change the behaviour of -- whether the chat panel is
+    usable.
+
+    Read-only, no key in and no key out: the credential is resolved
+    server-side by the same env-first chain a real turn uses, used for one
+    `list_models()` call, and never echoed. Sits behind the same shared
+    auth middleware as every other `/api/` route.
+
+    Always 200. The three outcomes (`validated` / `not_served` /
+    `unknown`) are the RESULT, not the transport: an HTTP error here would
+    be indistinguishable to the caller from the fetch itself failing, and
+    chat.js renders both of those as "could not check" anyway -- so the
+    interesting distinction (could not check vs. genuinely not served)
+    would be the one thrown away.
+    """
+    return await agent_embedded_credentials.served_model_check()
 
 
 @app.post("/api/agent/provider-credential")
@@ -6058,10 +6383,26 @@ async def agent_chat_completions_proxy(request: Request) -> Response:
             status_code=400,
         )
 
+    # muxplex-at9: EVERY reason check_available() can give -- amplifier-agent
+    # not installed, no provider credential -- means "the Agent was never set
+    # up on this server". That is the state every install STARTS in, and no
+    # amount of retrying changes it. Typing it as `server_error` made it
+    # indistinguishable from a genuine fault, and the panel duly told the
+    # owner to "retry once" on a box where the agent had simply never been
+    # installed. There is no transient case in this branch, so one
+    # discriminator is enough -- and it must be a FIELD, not a phrase: the
+    # v0.48.1 fix classified this by regexing the message prose, and the
+    # sidecar -> embedded refactor silently un-fixed it by rewording that
+    # prose. See AGENT_NOT_CONFIGURED_ERROR_TYPE's own comment.
     unavailable_reason = await agent_embedded_runner.check_available()
     if unavailable_reason:
         return JSONResponse(
-            {"error": {"message": unavailable_reason, "type": "server_error"}},
+            {
+                "error": {
+                    "message": unavailable_reason,
+                    "type": AGENT_NOT_CONFIGURED_ERROR_TYPE,
+                }
+            },
             status_code=503,
         )
 

@@ -4,15 +4,26 @@ Server-side settings management for muxplex.
 Settings are stored at ~/.config/muxplex/settings.json.
 """
 
+import contextlib
 import copy
+import functools
 import json
 import logging
 import os
 import re
 import socket
+import stat
+import tempfile
 import threading
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import ParamSpec, TypeVar
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX-only; muxplex requires tmux
+    fcntl = None  # type: ignore[assignment]
 
 _log = logging.getLogger(__name__)
 
@@ -239,6 +250,38 @@ DEFAULT_SETTINGS: dict = {
     # timestamp), so old (pre-this-field) peers keep interoperating exactly
     # as before.
     "views_updated_at": 0.0,
+    # Per-view / per-member presence stamps that let federation sync MERGE
+    # `views` instead of picking one side. Metadata, exactly like the two
+    # timestamps above: not a "setting" a client would ever send, outside
+    # SYNCABLE_KEYS, and threaded through the sync payload explicitly (see
+    # get_syncable_settings / apply_synced_settings / SettingsSyncPayload).
+    #
+    #     {"<view name>": {"at": <float|None>,
+    #                      "members": {"<session key>": <float>}}}
+    #
+    # WHY THIS EXISTS: views_updated_at narrowed the LWW race but still
+    # resolved it by REPLACING our `views` with the peer's, so two devices
+    # editing views inside one ~30s sync window still destroyed the loser's
+    # edit -- a pin that just landed, silently gone on the next render. A
+    # merge needs to tell "absent because deleted" from "absent because
+    # never seen", which no comparison of the two arrays can do. These
+    # stamps are that missing bit: presence is DERIVED (in `sessions` =
+    # present, stamped but absent = tombstone, unstamped = never seen), so
+    # one float per element buys both directions. Full rationale, the
+    # tempting-but-unsound timestamp-inference alternative, and the costs
+    # (payload growth, tombstone GC, clock skew) are in views.py's
+    # "Federation merge of `views`" header.
+    #
+    # SERVER-DERIVED, NEVER CLIENT-SUPPLIED: every stamp comes from
+    # `views.record_views_change()` diffing what a write actually changed.
+    # patch_settings() deliberately refuses to copy this key out of a PATCH
+    # body. That is what makes it safe against a stale client -- a browser
+    # tab that knows nothing about this key cannot drop or forge it.
+    #
+    # BACKWARD COMPATIBILITY: a peer that doesn't send it leaves
+    # `incoming_views_changed_at=None`, and apply_synced_settings() falls
+    # back to the pre-existing views_updated_at LWW path unchanged.
+    "views_changed_at": {},
     "_schema_version": SCHEMA_VERSION,
     # Grace period (hours) before a session key missing from all live sessions
     # is removed from views/hidden_sessions. Syncable so the operator can tune
@@ -697,13 +740,36 @@ def load_settings() -> dict:
     result = copy.deepcopy(DEFAULT_SETTINGS)
     data: dict = {}
     try:
-        text = SETTINGS_PATH.read_text()
-        data = json.loads(text)
-        for key in DEFAULT_SETTINGS:
-            if key in data:
-                result[key] = data[key]
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+        text: str | None = SETTINGS_PATH.read_text()
+    except FileNotFoundError:
+        # First run, or the file was just quarantined by a previous call. Not
+        # an incident -- defaults ARE the answer here.
+        text = None
+    if text is not None:
+        # An unreadable file is NOT silently discarded: falling straight
+        # through to defaults means the next save_settings() persists those
+        # defaults over the user's real configuration, which is the only copy
+        # of it. Move it aside under a named path first (see
+        # _quarantine_unreadable_settings) so recovery stays possible.
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            _quarantine_unreadable_settings(f"invalid JSON: {exc}")
+        else:
+            if isinstance(parsed, dict):
+                data = parsed
+                for key in DEFAULT_SETTINGS:
+                    if key in data:
+                        result[key] = data[key]
+            else:
+                # Valid JSON, wrong shape (`null`, a list, a bare string).
+                # Treated as corruption for the same reason and by the same
+                # path: nothing here can be merged over the defaults, and the
+                # pre-existing code crashed outright on `null` (`key in None`
+                # raises TypeError) rather than degrading.
+                _quarantine_unreadable_settings(
+                    f"top level is {type(parsed).__name__}, not a JSON object"
+                )
     if not result["device_name"]:
         result["device_name"] = socket.gethostname()
 
@@ -968,8 +1034,362 @@ _snapshot_counter_lock = threading.Lock()
 _snapshot_counter = 0
 
 
+# ---------------------------------------------------------------------------
+# Cross-process write lock
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. The server is a single-threaded asyncio application, so
+# every in-process `load_settings()` ... `save_settings()` sequence runs to
+# completion with nothing able to interleave -- that is what makes the poll
+# loop's unlocked writers safe, and it is pinned by
+# test_settings_read_modify_write_blocks_contain_no_await. But that argument
+# stops at the process boundary, and settings.json has writers OUTSIDE this
+# process: the `muxplex` CLI (`config set`, `config reset`, `commands
+# add`/`rm`, `tls setup`) does its own load -> mutate -> save while the server
+# is running. If a poll cycle's normalize or prune step saves between the
+# CLI's load and its save (or vice versa), one side's change is silently
+# discarded -- no error, no log, no retry. Same user-visible signature as
+# every other bug in this family: "I changed it and it didn't stick."
+#
+# WHY THE LOCK SPANS THE WHOLE READ-MODIFY-WRITE, not just the write. Locking
+# only `save_settings()` prevents nothing: both writers still read the same
+# starting state, and the second write still lands last and wins. The window
+# that must be exclusive is load -> mutate -> save.
+#
+# WHY NOT COMPARE-AND-SWAP, which the browser already has. `PATCH
+# /api/settings` accepts `expected_settings_updated_at` (see
+# docs/API_SEMANTICS.md) and it is the cheaper-looking fix, but it does not
+# work here, for two independent reasons:
+#
+#   * `settings_updated_at` is bumped ONLY by patch_settings() (and only when
+#     the patch touches a syncable key) and apply_synced_settings(). A bare
+#     save_settings() never touches it -- and a bare save_settings() is
+#     exactly what the poll cycle's normalize and prune steps use, and what
+#     `commands add`/`rm`, `config reset` (all), and `tls setup` use. A CAS on
+#     that field is structurally blind to the very writers this item is about.
+#     Making it see them would mean bumping settings_updated_at on every write,
+#     which is a change to the timestamp federation LWW arbitrates on -- a far
+#     more dangerous edit than the bug it would be fixing.
+#   * Even with a perfect version token (mtime, content hash), compare-then-
+#     write is not atomic ACROSS PROCESSES. It narrows the losing window from
+#     the whole read-modify-write down to compare -> os.replace, but a loser
+#     can still clobber. The requirement is "neither write is silently
+#     discarded", not "discarded less often".
+#
+# HONEST LIMITS. This is an ADVISORY lock: it binds only processes that take
+# it. Hand-editing settings.json in $EDITOR while the server runs is still
+# outside it (as it always was). And a caller that times out proceeds anyway
+# -- see settings_write_lock() for why that is the right failure mode.
+SETTINGS_LOCK_SUFFIX = ".lock"
+
+# How long a writer waits for the lock before giving up and proceeding without
+# it. The expected wait is MILLISECONDS -- the critical section is a ~10KB
+# read, an in-memory mutation, a history snapshot and an atomic write -- so
+# this is a backstop against a pathologically slow holder, not a normal cost.
+# A holder that CRASHES releases instantly (the kernel drops flock when the fd
+# closes), so this timeout is never the recovery path for a dead process.
+#
+# It is deliberately short because the server acquires it on its single event
+# loop: a longer timeout would trade a rare lost update for a visible stall of
+# the whole server.
+SETTINGS_LOCK_TIMEOUT = 2.0
+SETTINGS_LOCK_POLL_INTERVAL = 0.005
+
+# Guards the two globals below. The package uses no threads today, but this
+# costs nothing and makes the depth bookkeeping correct rather than
+# incidentally correct. Re-entrant so that a nested settings_write_lock() in
+# the same thread (see below) is not a self-deadlock.
+_settings_lock_guard = threading.RLock()
+_settings_lock_fd: int | None = None
+_settings_lock_depth = 0
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def settings_lock_path() -> Path:
+    """Sidecar lockfile beside settings.json.
+
+    Computed fresh from the CURRENT ``SETTINGS_PATH`` on every call (not
+    cached at import) so it tracks any override of it -- including the test
+    suite's autouse redirect, which is what keeps a test's lock from ever
+    touching the real config directory. Same rule, same reason, as
+    ``ca_cert_path()``.
+
+    A SIDECAR, never settings.json itself: ``atomic_write_text`` publishes by
+    ``os.replace()``, which swaps in a NEW inode. A lock held on the old inode
+    would silently stop excluding anyone the moment the first write landed.
+    The lockfile is therefore never written to and **never unlinked** -- an
+    unlink is the same bug in slower motion (holder A locks inode X, B creates
+    inode Y, both believe they hold the lock).
+    """
+    return SETTINGS_PATH.parent / f"{SETTINGS_PATH.name}{SETTINGS_LOCK_SUFFIX}"
+
+
+def _acquire_settings_flock(timeout: float) -> int | None:
+    """Try to take the exclusive flock, bounded by *timeout*.
+
+    Returns the held fd, or ``None`` when the lock could not be taken (timed
+    out, unavailable platform, or an unusable config directory). ``None`` is
+    not an error the caller has to handle -- see settings_write_lock().
+    """
+    if fcntl is None:  # pragma: no cover - POSIX-only
+        return None
+    path = settings_lock_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        _log.warning(
+            "settings: could not open lock file %s -- proceeding without the "
+            "cross-process write lock",
+            path,
+            exc_info=True,
+        )
+        return None
+
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                _log.warning(
+                    "settings: another process has held %s for more than %.1fs "
+                    "-- proceeding WITHOUT the lock. A concurrent write may be "
+                    "lost (this is the pre-lock behaviour, never worse).",
+                    path,
+                    timeout,
+                )
+                return None
+            time.sleep(SETTINGS_LOCK_POLL_INTERVAL)
+
+
+@contextlib.contextmanager
+def settings_write_lock(timeout: float = SETTINGS_LOCK_TIMEOUT) -> Iterator[bool]:
+    """Hold the cross-process settings lock for a whole read-modify-write.
+
+    Wrap the ENTIRE window, from ``load_settings()`` through
+    ``save_settings()``::
+
+        with settings_write_lock():
+            settings = load_settings()
+            settings["views"] = new_views
+            save_settings(settings)
+
+    Yields ``True`` when the lock is genuinely held and ``False`` when the
+    body is running unprotected. Almost every caller should ignore the value:
+    the contract is "do the write either way", and the two hazards this has to
+    survive are why.
+
+    **Re-entrant within a process.** ``load_settings()`` can itself call
+    ``save_settings()`` (the showHoverPreview migration), and
+    ``save_settings()`` takes this lock, so a nested acquire is a normal
+    occurrence rather than a bug. Nesting reuses the one held fd and is
+    tracked by depth -- taking a SECOND fd on the same file would block
+    against the first and deadlock the process against itself.
+
+    **The server must never be blocked on a lock a CLI process holds.** This
+    is acquired synchronously on the server's single event loop, so the wait
+    is bounded (see SETTINGS_LOCK_TIMEOUT) and a timeout LOGS AND PROCEEDS
+    rather than raising. Proceeding degrades exactly to the pre-lock
+    behaviour -- a possible lost update -- which is never worse than what
+    happened before this existed, whereas raising would turn a rare race into
+    a poll cycle that dies, or a CLI command that refuses to run, whenever the
+    lock is contended.
+    """
+    global _settings_lock_fd, _settings_lock_depth
+    with _settings_lock_guard:
+        if _settings_lock_depth > 0:
+            _settings_lock_depth += 1
+            try:
+                yield _settings_lock_fd is not None
+            finally:
+                _settings_lock_depth -= 1
+            return
+
+        fd = _acquire_settings_flock(timeout)
+        _settings_lock_fd = fd
+        _settings_lock_depth = 1
+        try:
+            yield fd is not None
+        finally:
+            _settings_lock_depth = 0
+            _settings_lock_fd = None
+            # `fcntl is not None` is implied by `fd is not None` (only
+            # _acquire_settings_flock mints an fd, and it returns None without
+            # fcntl) -- restated so the release path reads as safe on its own
+            # rather than depending on a fact established two functions away.
+            if fd is not None and fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
+
+def _under_settings_write_lock(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run *fn* with the cross-process settings lock held for its whole body.
+
+    For functions that ARE a self-contained read-modify-write
+    (``patch_settings``, ``apply_synced_settings``): the window is the entire
+    call, so a decorator states that more clearly than re-indenting a hundred
+    lines under a ``with``, and cannot be half-applied by a later edit.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with settings_write_lock():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def _settings_history_dir() -> Path:
     return SETTINGS_PATH.parent / SETTINGS_HISTORY_DIRNAME
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write *text* to *path* so that no reader -- and no crash -- ever sees a
+    partially written file.
+
+    tmp-in-the-same-directory + fsync + ``os.replace()``. This is the shared
+    implementation for muxplex's config/state writers, not a settings-only
+    helper: ``pruning.save_pruning_state()`` calls it directly, and
+    ``state.py``/``manifest.py`` follow the same pattern with their own
+    durability trade-offs (see their docstrings). It is public for that reason
+    -- a name that another module imports is not private, and a fifth private
+    copy of this is how the existing implementations would drift apart.
+
+    Where each of the four state files stood, and why this exists:
+
+    * ``settings.json`` (here) -- the first fixed. A bare ``write_text()``
+      meant an interrupted write (crash, OOM, power cut, full disk) left a
+      truncated JSON file that ``load_settings()`` then read as "unparseable,
+      use defaults" -- on the reporting host, ~10 views of pins and every
+      server setting silently replaced by defaults, with no error anywhere.
+    * ``sessions.json`` / ``state.json`` -- already atomic, but staged through
+      a SHARED fixed ``<target>.tmp`` path; muxplex-673 gave them unique
+      staging names (see ``manifest.save_manifest()`` for the measurement).
+    * ``pruning.json`` -- the last, and the reason this docstring no longer
+      claims settings.json was "the one file of the four" still ending in a
+      bare ``write_text()``. That claim outlived its truth by three fixes:
+      ``save_pruning_state()`` was still a bare ``write_text()`` when it was
+      written, and a truncated ``pruning.json`` degrades to ``{}`` -- silently
+      resetting the stale-key grace clock that decides when real view pins get
+      pruned.
+
+    The temp file MUST live in *path*'s own directory: ``os.replace()`` is only
+    atomic within a filesystem, and a ``/tmp`` staging file fails outright with
+    ``EXDEV`` when the config directory is on another mount (an encrypted or
+    network-mounted home is the common case).
+
+    Two properties worth stating explicitly, both originally forced by
+    settings.json's own writers:
+
+    * **A unique temp name, not a fixed ``<target>.tmp``.** The ``muxplex`` CLI
+      (``settings set``, ``session-command add``/``rm``, ``reset``) writes
+      settings from a SEPARATE process while the server is running. Two
+      processes sharing one staging path interleave their bytes into it and
+      then each atomically publishes the mixture -- an atomic rename of corrupt
+      content is still corrupt content. Every caller inherits this, so a file
+      that grows a second writer later cannot acquire that bug by omission.
+    * **The target's permissions survive the write.** ``os.replace()`` publishes
+      the TEMP file's mode, and settings.json carries the federation key (and
+      on some hosts TLS material), so silently resetting its mode on every save
+      would be a security change nobody asked for. A file that does not exist
+      yet has no mode to preserve, so a first-ever write lands 0600 -- matching
+      how every other secret-bearing file muxplex creates is treated
+      (``federation_key``, TLS private keys, the ttyd socket). A caller whose
+      file holds no secret (``pruning.json``) simply inherits the tighter
+      default on first creation; an operator who widens it afterwards keeps
+      that choice.
+
+    The directory is fsynced after the rename: fsyncing the file's contents
+    makes the DATA durable, but the rename that publishes it is directory
+    metadata and can still be lost on a power cut without this. Best-effort --
+    a filesystem that refuses to open a directory read-only must not fail a
+    write that has already succeeded.
+    """
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = 0o600
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=directory, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        # Leave nothing behind to accumulate in the user's config directory,
+        # and leave whatever was already at *path* completely untouched.
+        tmp.unlink(missing_ok=True)
+        raise
+
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+def _quarantine_unreadable_settings(reason: str) -> None:
+    """Move an unreadable settings.json aside under a named path, loudly.
+
+    ``load_settings()`` still falls back to defaults after this -- raising
+    would take down every endpoint and the CLI over a data problem the operator
+    can actually fix -- but it must never let the NEXT ``save_settings()``
+    overwrite the only copy of the user's real configuration.
+
+    Renamed rather than copied, because ``load_settings()`` runs on essentially
+    every request: a copy would mint a fresh quarantine file per call and fill
+    the config directory within seconds, while moving the file out of the load
+    path makes the next call an ordinary "no settings file yet". So this fires
+    exactly once per corruption event, and the bytes stay recoverable.
+    """
+    quarantine = (
+        SETTINGS_PATH.parent
+        / f"{SETTINGS_PATH.name}.corrupt-{_next_snapshot_seq():012d}-{time.time():.6f}"
+    )
+    try:
+        os.replace(SETTINGS_PATH, quarantine)
+    except OSError:
+        _log.error(
+            "settings: %s is unreadable (%s) and could not be moved aside -- "
+            "falling back to defaults. Recover it from %s before changing any "
+            "setting, or the next write will overwrite it with defaults.",
+            SETTINGS_PATH,
+            reason,
+            _settings_history_dir(),
+            exc_info=True,
+        )
+        return
+    _log.error(
+        "settings: %s was unreadable (%s) -- falling back to defaults for this "
+        "load. The unreadable file is preserved at %s, and earlier good copies "
+        "are in %s. Recover from one of those before changing any setting, or "
+        "the defaults will be persisted over your configuration.",
+        SETTINGS_PATH,
+        reason,
+        quarantine,
+        _settings_history_dir(),
+    )
 
 
 def _next_snapshot_seq() -> int:
@@ -1008,7 +1428,10 @@ def _snapshot_current_settings() -> None:
         # (see _next_snapshot_seq's docstring-adjacent comment above).
         seq = _next_snapshot_seq()
         snapshot_path = history_dir / f"settings-{seq:012d}-{time.time():.6f}.json"
-        snapshot_path.write_text(SETTINGS_PATH.read_text())
+        # Atomic like the live file: these copies are the recovery path an
+        # operator reaches for when settings.json is unreadable, so a snapshot
+        # that can itself be torn by an interrupted write is worth little.
+        atomic_write_text(snapshot_path, SETTINGS_PATH.read_text())
         _prune_settings_history(history_dir)
     except Exception:
         _log.warning("settings: failed to write history snapshot", exc_info=True)
@@ -1053,15 +1476,25 @@ def save_settings(data: dict) -> None:
     single lowest choke point where the settings file is actually written,
     so every caller (API PATCH, federation sync, internal code) gets the
     safety net for free.
+
+    Takes the cross-process write lock (settings_write_lock()) around the
+    snapshot + write. This is NOT sufficient on its own -- a caller that read
+    settings BEFORE calling here still races anyone who wrote in between, and
+    must hold the lock across its own read-modify-write window. What locking
+    here buys is that a *blind* overwrite (``config reset`` with no key, which
+    reads nothing) still can't land in the middle of somebody else's window,
+    and that the snapshot written to settings-history/ is of a file nobody is
+    concurrently replacing. Nesting inside a caller's lock is free (see
+    settings_write_lock()'s re-entrancy note).
     """
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     for key in DEFAULT_SETTINGS:
         if key in data:
             merged[key] = data[key]
     merged["_schema_version"] = SCHEMA_VERSION
-    _snapshot_current_settings()
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(merged, indent=2) + "\n")
+    with settings_write_lock():
+        _snapshot_current_settings()
+        atomic_write_text(SETTINGS_PATH, json.dumps(merged, indent=2) + "\n")
 
 
 class DestructiveSettingsWriteRejected(Exception):
@@ -1103,6 +1536,7 @@ class InvalidViewRuleRejected(Exception):
         super().__init__("; ".join(errors))
 
 
+@_under_settings_write_lock
 def patch_settings(
     patch: dict,
     *,
@@ -1110,6 +1544,12 @@ def patch_settings(
     allow_local_keys: frozenset[str] = frozenset(),
 ) -> dict:
     """Merge known keys from *patch* into the current settings, save, and return result.
+
+    The whole call is a read-modify-write and runs under the cross-process
+    settings lock (see ``settings_write_lock``). This is the choke point for
+    ``PATCH /api/settings`` AND for the CLI's ``config set`` / ``config reset
+    <key>``, so it is where a browser write and a terminal write get
+    serialized against each other and against the poll cycle.
 
     Unknown keys in *patch* are silently ignored.
 
@@ -1154,6 +1594,12 @@ def patch_settings(
     """
     current = load_settings()
     patch = _translate_legacy_hover_preview_key(patch)
+
+    # Snapshot BEFORE any mutation: record_views_change() below diffs this
+    # against the post-patch array to stamp exactly what this write added or
+    # removed. A shallow copy is not enough -- the per-view `sessions` lists
+    # are what changes, and the patch may hand us the very same objects.
+    previous_views = copy.deepcopy(current.get("views"))
 
     if "views" in patch:
         # Lazy import: avoids potential circular import between settings and views.
@@ -1223,6 +1669,15 @@ def patch_settings(
                 # pair -- skip the generic copy so an invalid/contradictory
                 # payload value is never applied directly.
                 continue
+            if key == "views_changed_at":
+                # Server-derived metadata, never client-supplied:
+                # record_views_change() below is its ONLY writer here. A
+                # client that could set it could forge a tombstone (deleting
+                # a peer's pin fleet-wide) or erase one (resurrecting a
+                # deletion) -- and no legitimate client has any reason to
+                # send it. Same single-writer discipline as the
+                # deviceLabelPlacement pair just above.
+                continue
             current[key] = patch[key]
 
     # deviceLabelPlacement/showDeviceBadges: authoritative-key-with-derived-
@@ -1261,19 +1716,38 @@ def patch_settings(
     if "views" in patch or "hidden_sessions" in patch:
         current["views_updated_at"] = time.time()
 
+    # Stamp presence changes for the federation merge. Runs whenever `views`
+    # was in the patch -- including a patch that changed nothing about it,
+    # which correctly stamps nothing (record_views_change diffs, it does not
+    # touch what did not move). Never back-fills stamps onto views that were
+    # already there.
+    if "views" in patch:
+        from muxplex.views import record_views_change
+
+        current["views_changed_at"] = record_views_change(
+            previous_views, current.get("views"), current.get("views_changed_at")
+        )
+
     save_settings(current)
     return current
 
 
+@_under_settings_write_lock
 def apply_synced_settings(
     incoming_settings: dict,
     incoming_timestamp: float,
     incoming_views_updated_at: float | None = None,
+    incoming_views_changed_at: dict | None = None,
 ) -> dict:
     """Apply synced settings from a remote server.
 
     Only applies keys that are in SYNCABLE_KEYS. Sets settings_updated_at
     to the incoming timestamp (NOT time.time()) to prevent sync loops.
+
+    Like patch_settings(), the whole call is a read-modify-write and runs
+    under the cross-process settings lock (see ``settings_write_lock``) -- a
+    federation sync landing between a CLI write's read and its write would
+    lose one of them exactly like any other concurrent writer.
 
     `_schema_version` is intentionally **never** accepted from the wire.
     Each device speaks for its own schema version; receiving a peer's version
@@ -1314,9 +1788,39 @@ def apply_synced_settings(
     unconditionally (gated only by the backstop, never by a per-field
     timestamp), which is exactly the pre-existing behavior, so older peers
     keep interoperating without any change on their end.
+
+    `views` MERGE (`incoming_views_changed_at`): everything above still
+    describes how `hidden_sessions` is resolved, and how `views` is resolved
+    against a peer that predates this argument. When the peer DOES supply
+    `views_changed_at` (and an actual `views` list), `views` is no longer
+    resolved by picking a side at all -- it is MERGED per view and per
+    member via `views.merge_views`, so a pin that just landed here and a pin
+    that just landed there both survive, while a genuine deletion on either
+    side is still honoured. Read views.py's "Federation merge of `views`"
+    header for the semantics and the costs. Three consequences worth
+    knowing at this level:
+
+      * The merge runs regardless of which side's `views_updated_at` is
+        newer. It is symmetric, so both devices reach the same answer;
+        `views_updated_at` only decides non-membership attributes and
+        ordering, and is left at the later of the two afterwards.
+      * The destructive-write backstop is assessed against the MERGED
+        array -- i.e. against what will actually be written -- not against
+        the peer's payload. Same guarantee, applied to the real outcome.
+      * If the merge produced membership the peer does not have, this
+        device makes itself look newer (`settings_updated_at`/
+        `views_updated_at` bumped past the incoming ones) so the next sync
+        cycle pushes the union back. Without that, adopting the peer's
+        timestamp verbatim would leave both sides equal -- "no action" --
+        and the peer would never learn about our pin.
     """
     # Lazy import: avoids potential circular import between settings and views
-    from muxplex.views import assess_views_destruction, enforce_mutual_exclusion
+    from muxplex.views import (
+        assess_views_destruction,
+        enforce_mutual_exclusion,
+        merge_views,
+        views_membership_signature,
+    )
 
     incoming_settings = _translate_legacy_hover_preview_key(incoming_settings)
     current = load_settings()
@@ -1330,7 +1834,46 @@ def apply_synced_settings(
         or incoming_views_updated_at > local_views_updated_at
     )
 
-    if views_keys_present and apply_views_fields:
+    # Merge path: the peer speaks `views_changed_at` AND actually sent a
+    # `views` list. An empty dict is a real signal ("I support this, I have
+    # simply never recorded a presence change") -- only None means "no
+    # signal, fall back to the pre-existing LWW behavior below."
+    incoming_views = incoming_settings.get("views")
+    merge_views_field = incoming_views_changed_at is not None and isinstance(
+        incoming_views, list
+    )
+    merged_views: list | None = None
+    merged_views_changed_at: dict | None = None
+    if merge_views_field:
+        merged_views, merged_views_changed_at = merge_views(
+            current.get("views"),
+            current.get("views_changed_at"),
+            incoming_views,
+            incoming_views_changed_at,
+            local_views_updated_at=local_views_updated_at,
+            incoming_views_updated_at=incoming_views_updated_at or 0.0,
+        )
+
+    if merge_views_field:
+        # Assess what is actually about to be written (the merge result),
+        # not the peer's payload. A merge can only shed a member a tombstone
+        # accounts for, so this should be quiet -- but the backstop stays
+        # unconditional on this path, exactly as before.
+        assessment = assess_views_destruction(current.get("views"), merged_views)
+        if assessment.destructive:
+            _log.warning(
+                "settings: rejected destructive views write (federation merge): %s "
+                "(before=%d views/%d members, after=%d views/%d members)",
+                assessment.reason,
+                assessment.before_views,
+                assessment.before_members,
+                assessment.after_views,
+                assessment.after_members,
+            )
+            raise DestructiveSettingsWriteRejected(
+                assessment.reason, assessment.as_counts_dict()
+            )
+    elif views_keys_present and apply_views_fields:
         assessment = assess_views_destruction(
             current.get("views"), incoming_settings.get("views")
         )
@@ -1354,6 +1897,9 @@ def apply_synced_settings(
             continue
         if key not in incoming_settings:
             continue
+        if key == "views" and merge_views_field:
+            # Resolved by merge, not by copy -- assigned below.
+            continue
         if key in ("views", "hidden_sessions") and not apply_views_fields:
             # Incoming views-related data is stale by views_updated_at --
             # keep ours, but still apply every other syncable key below.
@@ -1372,7 +1918,28 @@ def apply_synced_settings(
     # reconcile_device_label's docstring).
     reconcile_device_label(current, incoming_settings)
 
-    if views_keys_present and apply_views_fields:
+    settings_updated_at = incoming_timestamp
+
+    if merge_views_field:
+        contributed = views_membership_signature(
+            merged_views
+        ) != views_membership_signature(incoming_views)
+        current["views"] = merged_views
+        current["views_changed_at"] = merged_views_changed_at
+        current["views_updated_at"] = max(
+            local_views_updated_at, incoming_views_updated_at or 0.0
+        )
+        if contributed:
+            # We hold membership the peer does not. Look strictly newer than
+            # what they sent so the next cycle pushes the union back to them
+            # -- see this function's docstring. `time.time()` rather than a
+            # bare +epsilon so a peer with a fast clock cannot pin us
+            # permanently below it. Terminates: once the peer has merged the
+            # union, its own signature matches and it does not bump back.
+            bumped = max(incoming_timestamp, time.time())
+            settings_updated_at = bumped
+            current["views_updated_at"] = max(current["views_updated_at"], bumped)
+    elif views_keys_present and apply_views_fields:
         current["views_updated_at"] = (
             incoming_views_updated_at
             if incoming_views_updated_at is not None
@@ -1380,7 +1947,7 @@ def apply_synced_settings(
         )
 
     enforce_mutual_exclusion(current)
-    current["settings_updated_at"] = incoming_timestamp
+    current["settings_updated_at"] = settings_updated_at
     save_settings(current)
     return current
 
@@ -1404,17 +1971,19 @@ def peer_supports_v2(peer_settings: dict) -> bool:
 def get_syncable_settings() -> dict:
     """Return only syncable settings + metadata timestamps.
 
-    `settings_updated_at` and `views_updated_at` are metadata, not
-    themselves syncable "settings" -- they're timestamps used by the
-    receiving peer to arbitrate conflicts (see apply_synced_settings), which
-    is why they're merged in here explicitly rather than living in
-    SYNCABLE_KEYS. A peer that doesn't understand `views_updated_at` simply
-    ignores the extra field (additive wire change; see AGENTS.md).
+    `settings_updated_at`, `views_updated_at` and `views_changed_at` are
+    metadata, not themselves syncable "settings" -- they are what the
+    receiving peer uses to arbitrate conflicts (see apply_synced_settings),
+    which is why they're merged in here explicitly rather than living in
+    SYNCABLE_KEYS. A peer that doesn't understand `views_updated_at` or
+    `views_changed_at` simply ignores the extra field (additive wire change;
+    see AGENTS.md), and falls back to whole-set LWW on `views`.
     """
     settings = load_settings()
     result = {key: settings[key] for key in SYNCABLE_KEYS if key in settings}
     result["settings_updated_at"] = settings.get("settings_updated_at", 0.0)
     result["views_updated_at"] = settings.get("views_updated_at", 0.0)
+    result["views_changed_at"] = settings.get("views_changed_at", {})
     return result
 
 

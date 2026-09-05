@@ -136,7 +136,7 @@ inherit it.
 | Property | Mechanism |
 |---|---|
 | Backup before touch | timestamped copy beside the file, never clobbering an existing backup |
-| Atomic write | tmp + `os.replace`, the `state.py`/`manifest.py` pattern (not the non-atomic `settings.py` one) |
+| Atomic write | `settings.atomic_write_text()` — tmp + fsync + `os.replace` in the target's own directory; the one shared writer every muxplex state file now uses (corrected — see below) |
 | Symlink safety | refuse by default with the real target named; `--allow-symlink` resolves first and preserves the link |
 | Content preservation | after writing, the file minus the block is compared to the original and mismatch raises |
 | Load verification | a throwaway tmux server on a **private socket** reads back an `@muxplex_loaded` sentinel |
@@ -146,6 +146,23 @@ inherit it.
 The verification step is the reason this is safe to run at all: muxplex writes,
 then *proves* tmux accepts the result, rather than reporting success because the
 write returned no error.
+
+**Correction (2026-09-05, `muxplex-bzx`).** As written on 2026-08-01 the "Atomic
+write" row read: *"tmp + `os.replace`, the `state.py`/`manifest.py` pattern (not
+the non-atomic `settings.py` one)."* Both halves stopped being true, in two
+steps:
+
+- `muxplex-afu` (`70034df`) made `save_settings()` atomic. The parenthetical
+  became false there, and `settings.atomic_write_text()` became the shared
+  implementation — `pruning.save_pruning_state()` uses it as of `muxplex-dsm`,
+  and all four state files are atomic today.
+- `muxplex-fjv` (`1cc72f4`) removed this module's private tmp + `os.replace()`.
+  `tmux_config._atomic_write()` now resolves symlinks and delegates to the shared
+  writer, gaining the fsync it never had; its docstring records that decision.
+
+Corrected in place rather than left as a dated artefact because this row is a
+*safety property of shipped code*, not a record of an argument — see the
+convention in `docs/plans/README.md`.
 
 ### Why not print instructions instead of writing?
 

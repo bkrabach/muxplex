@@ -279,6 +279,96 @@ jobs:
         working-directory: muxplex/frontend
         run: node --test tests/*.mjs
 
+  lint:
+    # Until this job existed, NO job in this workflow ran ruff -- in either
+    # form. Formatting and lint were enforced exclusively by `make check` on a
+    # contributor's own machine, and `make check` was `check: fmt`, where `fmt`
+    # is the REWRITING form of `ruff format`. So the local command silently
+    # repaired whatever had drifted and reported success, and CI had nothing to
+    # say about it either way. Two files rode main unformatted under a fully
+    # green loop (muxplex/auth.py, itself carrying an explicitly "[not final]"
+    # WIP commit, and muxplex/tests/test_agent_not_configured_contract.py) and
+    # were noticed only because a person happened to run the checking form by
+    # hand. Same shape as the gaps test-frontend and test-client closed: a
+    # check that existed but was in nobody's loop. Filed as muxplex-sxi; the
+    # Makefile's `check` target now gates on `--check` and this job runs the
+    # identical commands, so local green and CI green mean the same thing.
+    #
+    # WHERE THE VERSIONS COME FROM (muxplex-6d9). These steps used to run
+    # `uvx ruff@0.15.5`, and pyright did not run here at all -- because
+    # neither tool was declared anywhere in the repo, so the LOCAL `uv run
+    # ruff` / `uv run pyright` in `make check` found nothing in the project
+    # environment and fell through to whatever was on the contributor's
+    # PATH. That is not a theoretical hazard: on one host, one commit, one
+    # command (`uv run ruff check muxplex/`), varying only PATH order,
+    #     ~/.local/bin/ruff 0.15.5 -> "All checks passed!"
+    #     /snap/bin/ruff    0.16.4 -> "Found 216 errors."
+    # Both tools are now declared and exactly pinned in pyproject.toml's
+    # [dependency-groups].dev, which `uv sync` installs by DEFAULT, and this
+    # job runs them through `uv run` against that same lock. So the pinned
+    # versions live in exactly one place: there is no CI-side version number
+    # to drift from the local one, which is why the hard-coded `ruff@0.15.5`
+    # is gone from these steps rather than merely updated. See that group's
+    # comments for the pin discipline (exact `==`, bumped deliberately with
+    # whatever reformat or fix it implies) and for the history behind the
+    # pyright pin, which was held at 1.1.408 until the one diagnostic
+    # blocking 1.1.411 was proven a checker defect (muxplex-lh0) and the
+    # pin was moved to 1.1.411 (muxplex-uca).
+    #
+    # These are the same three commands the Makefile's `check` target runs,
+    # in the same order, so a local green and a CI green mean the same
+    # thing. `make check` itself is deliberately NOT invoked here: it also
+    # runs check-container-drift, which is about a contributor's local
+    # verification container and has nothing to check on a CI runner.
+    #
+    # pyright fetches its own node runtime on first run (its `nodeenv`
+    # dependency) -- that is why this job installs dependencies rather than
+    # running a standalone tool, and why it is a little slower than a pure
+    # ruff job. `uv sync` with no flags is exactly what a contributor runs;
+    # if that ever stops being enough to lint and typecheck the tree, this
+    # job goes red, which is the point.
+    name: lint (ruff format --check, ruff check, pyright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (bare `uv sync` -- installs the dev group, tools included)
+        run: uv sync
+
+      - name: Assert the gate's tools came from the project, not the runner's PATH
+        # Cheap tripwire for the exact regression this job was rewritten to
+        # close. If `ruff`/`pyright` ever stop resolving inside .venv, they
+        # are being inherited from the environment again and this job's
+        # verdict has quietly stopped being about the pins in pyproject.toml.
+        run: |
+          set -euo pipefail
+          for tool in ruff pyright; do
+            resolved="$(uv run --no-sync which "$tool")"
+            echo "$tool -> $resolved"
+            case "$resolved" in
+              "$PWD"/.venv/bin/*) ;;
+              *) echo "::error::$tool resolved to $resolved, outside this project's .venv --" \
+                      "the lint gate is running an undeclared tool from PATH (muxplex-6d9)"; exit 1 ;;
+            esac
+          done
+          uv run --no-sync ruff --version
+          uv run --no-sync pyright --version
+
+      - name: ruff format --check (verify only -- never rewrites)
+        run: uv run --no-sync ruff format --check muxplex/
+
+      - name: ruff check
+        run: uv run --no-sync ruff check muxplex/
+
+      - name: pyright
+        run: uv run --no-sync pyright muxplex/
+
   guard-tmux-kit-pin-source-agreement:
     # HISTORY: this job used to be guard-no-tmux-kit-source-override, and
     # forbade ANY [tool.uv.sources] entry for tmux-kit outright. That guard

@@ -17,7 +17,9 @@ Covers:
 """
 
 import json
-from pathlib import Path
+import os
+import threading
+from unittest.mock import patch
 
 import pytest
 
@@ -145,12 +147,85 @@ def test_save_manifest_creates_parent_directories(tmp_path, monkeypatch):
 
 
 def test_save_manifest_leaves_no_tmp_file(redirect_manifest_path):
-    """After save_manifest, no .tmp artifact remains (atomic os.replace)."""
+    """After save_manifest, no staging artifact remains (atomic os.replace).
+
+    Globs for ANY ``*.tmp`` in the directory rather than asserting one
+    hard-coded ``sessions.json.tmp`` path. The staging name is now unique per
+    write (mkstemp), so a fixed-name assertion would check a path that can
+    never exist and pass vacuously forever -- exactly the dead-safety-check
+    shape this suite exists to catch.
+    """
     save_manifest(manifest_mod._empty_manifest())
 
-    tmp_file = Path(str(redirect_manifest_path) + ".tmp")
-    assert not tmp_file.exists()
+    leftovers = sorted(p.name for p in redirect_manifest_path.parent.glob("*.tmp"))
+    assert leftovers == [], f"staging artifacts left behind: {leftovers}"
     assert redirect_manifest_path.exists()
+
+
+def test_save_manifest_stages_under_a_unique_name_each_write(redirect_manifest_path):
+    """Each save_manifest() must stage under a DIFFERENT temp path.
+
+    A fixed ``<target>.tmp`` is only safe with exactly one writer process,
+    and this manifest has several: the server's poll cycle and endpoints,
+    plus ``muxplex restore`` in a separate process. Sharing one staging path
+    lets two writers interleave bytes into it and each publish the mixture,
+    and makes the loser of the ``os.replace()`` race raise FileNotFoundError
+    out of whatever request it was serving (muxplex-673).
+
+    Asserting the two staging paths DIFFER is the direct, deterministic
+    statement of that fix -- it fails immediately against the old
+    fixed-name implementation.
+    """
+    seen: list[str] = []
+    real_replace = os.replace
+
+    def _recording_replace(src, dst, **kwargs):
+        seen.append(str(src))
+        return real_replace(src, dst, **kwargs)
+
+    with patch("muxplex.manifest.os.replace", side_effect=_recording_replace):
+        save_manifest(manifest_mod._empty_manifest())
+        save_manifest(manifest_mod._empty_manifest())
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1], f"both writes staged through the same path: {seen[0]}"
+    assert str(redirect_manifest_path) not in seen, (
+        "the staging path must never be the target itself"
+    )
+
+
+def test_concurrent_save_manifest_never_raises(redirect_manifest_path):
+    """Concurrent writers must not crash each other, and must leave valid JSON.
+
+    The muxplex-673 regression. Against the old fixed-``sessions.json.tmp``
+    implementation this fails with
+    ``FileNotFoundError: ... 'sessions.json.tmp' -> 'sessions.json'`` --
+    the same error, from the same line, that took down
+    ``test_rename_fields_present`` once in five full-suite runs while a live
+    muxplex was writing the same real file on this host.
+
+    Threads, not processes: the defect is a shared staging PATH, so threads
+    reproduce it identically at a fraction of the cost.
+    """
+    errors: list[BaseException] = []
+
+    def _writer() -> None:
+        for _ in range(150):
+            try:
+                save_manifest(manifest_mod._empty_manifest())
+            except BaseException as exc:  # noqa: BLE001 -- recorded, then asserted
+                errors.append(exc)
+
+    threads = [threading.Thread(target=_writer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"concurrent writers raised: {errors[:3]}"
+    assert json.loads(redirect_manifest_path.read_text()) is not None
+    leftovers = sorted(p.name for p in redirect_manifest_path.parent.glob("*.tmp"))
+    assert leftovers == [], f"staging artifacts left behind: {leftovers}"
 
 
 def test_save_manifest_writes_valid_json(redirect_manifest_path):

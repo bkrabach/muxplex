@@ -174,8 +174,8 @@ def test_is_tmux_stable_name_matches_real_tmux_behavior(socket_dir):
 
 @pytest.fixture(autouse=True)
 def patch_startup_and_state(tmp_path, short_socket_dir, monkeypatch):
-    monkeypatch.setattr("muxplex.state.STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr("muxplex.state.STATE_PATH", tmp_path / "state" / "state.json")
+    # STATE_DIR / STATE_PATH / PRUNING_STATE_PATH / MANIFEST_PATH are isolated
+    # for every test by conftest.py's autouse rails -- not re-declared here.
     # validate_socket_dir() -- mocked to a no-op below -- is normally what
     # creates this directory at real startup. With it neutralized, a real
     # ttyd spawn's `-i <dir>/mx-<hash>.sock` bind fails silently (missing
@@ -190,8 +190,6 @@ def patch_startup_and_state(tmp_path, short_socket_dir, monkeypatch):
     monkeypatch.setattr("muxplex.ttyd.TTYD_SOCKET_DIR", ttyd_socket_dir)
     monkeypatch.setattr("muxplex.settings.SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr("muxplex.identity.IDENTITY_PATH", tmp_path / "identity.json")
-    monkeypatch.setattr("muxplex.pruning.PRUNING_STATE_PATH", tmp_path / "pruning.json")
-    monkeypatch.setattr("muxplex.manifest.MANIFEST_PATH", tmp_path / "sessions.json")
 
     async def _mock_reap_orphan():
         return 0

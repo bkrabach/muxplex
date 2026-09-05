@@ -1638,3 +1638,459 @@ test('l2y: a genuinely very long wait still reads as progress, only the wording 
   const rows = panel.els['chat-messages']._children.filter((c) => /agent-status/.test(c.className || ''));
   assert.match(rows[rows.length - 1].className, /agent-status--wait/);
 });
+
+// =======================================================================
+// GROUP 10 (muxplex-at9) -- an un-onboarded server must READ as
+// un-onboarded, not as a transient muxplex fault.
+//
+// The owner's original report, verbatim: "muxplex hit an error of its own
+// while handling that. Worth retrying once" -- shown on a box where the
+// agent had simply never been installed. Retrying can NEVER help there.
+//
+// v0.48.1 fixed it by regexing the server's 503 prose for "not configured
+// on this server". That coupling broke silently when the sidecar -> embedded
+// refactor rewrote the prose (agent_embedded/runner.py) and nothing failed:
+// the branch stopped matching and every un-onboarded server went back to
+// being told to retry. These tests drive the REAL 503 body shape the server
+// sends today, so a prose rewrite can never quietly un-fix this again.
+// =======================================================================
+
+/** Fetch stub: the completions POST refuses with muxplex's own 503 for an
+ * agent that isn't set up on this server. `type` is the stable
+ * discriminator main.py sends (AGENT_NOT_CONFIGURED_ERROR_TYPE); `message`
+ * is deliberately the server's real, wordy operator-facing text, so these
+ * tests prove the classification does NOT depend on how it is worded. */
+function agentNotConfiguredFetch({ message, type = 'agent_not_configured' } = {}) {
+  return async (url) => {
+    if (url === '/api/agent/chat/completions') {
+      return {
+        ok: false,
+        status: 503,
+        text: async () => JSON.stringify({ error: { message: message, type: type } }),
+      };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+const NOT_INSTALLED_503 =
+  "The Agent isn't installed on this server yet. Whoever runs muxplex can " +
+  'install it with: muxplex ensure-agent';
+
+const NO_CREDENTIAL_503 =
+  'amplifier-agent embedded mode: no anthropic credential resolvable ' +
+  '(ANTHROPIC_API_KEY unset, and none stored at /home/u/.amplifier-agent/' +
+  'credentials.json). Set one via Settings -> Agent, or export the ' +
+  'environment variable.';
+
+test('at9: a 503 typed agent_not_configured never tells the user to retry', async () => {
+  const panel = loadChatPanel({ fetchImpl: agentNotConfiguredFetch({ message: NOT_INSTALLED_503 }) });
+  panel.els['chat-input'].value = 'hello';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(
+    () => /agent-msg-error/.test(
+      panel.els['chat-messages']._children.map((c) => c.className || '').join(' ')
+    ),
+    { label: 'the error to render' }
+  );
+  const rendered = fullText(panel.els['chat-messages']);
+
+  assert.doesNotMatch(rendered, /Worth retrying/i,
+    'retrying can never install an agent -- this is the exact wrong advice muxplex-at9 was filed about');
+  assert.doesNotMatch(rendered, /hit an error of its own/i,
+    'an un-onboarded server is not a muxplex fault');
+  assert.match(rendered, /isn't set up on this server/i,
+    'must name the actual state');
+  assert.match(rendered, /Settings/,
+    'must give a concrete next step the user can take from inside the app');
+});
+
+test('at9: classification survives a full rewrite of the server\'s wording', async () => {
+  // The regression this group exists to prevent: the classification must
+  // key on the typed field, never on the sentence. Both messages below are
+  // real 503 bodies from agent_embedded/runner.py, and NEITHER contains the
+  // phrase the pre-fix code matched on ("not configured on this server").
+  for (const message of [NOT_INSTALLED_503, NO_CREDENTIAL_503]) {
+    const panel = loadChatPanel({ fetchImpl: agentNotConfiguredFetch({ message }) });
+    panel.els['chat-input'].value = 'hello';
+    panel.els['chat-send-btn']._fire('click');
+    await waitUntil(
+      () => /agent-msg-error/.test(
+        panel.els['chat-messages']._children.map((c) => c.className || '').join(' ')
+      ),
+      { label: 'the error to render' }
+    );
+    const rendered = fullText(panel.els['chat-messages']);
+    assert.doesNotMatch(rendered, /Worth retrying/i, `wrongly classified as transient for: ${message}`);
+    assert.match(rendered, /isn't set up on this server/i, `not onboarded for: ${message}`);
+    // Transparency is still a feature, exactly as for tool errors: the raw
+    // server response stays available under "technical detail".
+    assert.ok(rendered.includes(message), 'the real server detail must still be shown');
+  }
+});
+
+test('at9: a genuine 5xx fault is still reported as a fault worth retrying', async () => {
+  // The guard against over-correcting: only the TYPED refusal is reframed.
+  // An untyped 500 is a real fault and must keep its retry advice.
+  const panel = loadChatPanel({
+    fetchImpl: async (url) => {
+      if (url === '/api/agent/chat/completions') {
+        return { ok: false, status: 500, text: async () => 'internal error' };
+      }
+      throw new Error('unexpected fetch url in test: ' + url);
+    },
+  });
+  panel.els['chat-input'].value = 'hello';
+  panel.els['chat-send-btn']._fire('click');
+  await waitUntil(
+    () => /agent-msg-error/.test(
+      panel.els['chat-messages']._children.map((c) => c.className || '').join(' ')
+    ),
+    { label: 'the error to render' }
+  );
+  const rendered = fullText(panel.els['chat-messages']);
+  assert.match(rendered, /Worth retrying/i, 'a real fault keeps its retry advice');
+  assert.doesNotMatch(rendered, /isn't set up on this server/i);
+});
+
+// =======================================================================
+// GROUP 11 (muxplex-nnl) -- the panel must say WHAT it is talking to, and
+// say "unknown" rather than guess.
+//
+// Nothing in the UI used to name the provider or the model. The fix reads
+// both from the server (GET /api/agent/provider-credential's `active`
+// block, composed from the embedded runner's own active_provider() /
+// default_model()), so the panel displays what a turn would really mount
+// instead of restating a constant of its own.
+//
+// Which makes the ABSENT cases the ones worth testing hardest. An older
+// server that sends no `active` block, a box where the Agent was never
+// installed (so there is no runner to have an active anything), and a
+// status fetch that simply failed must all render "unknown". The tempting
+// alternative -- falling back to chat.js's own MODEL, which is right on
+// most deployments -- would turn "I don't know" into "I was told, and
+// told wrong", which is the harder failure for a user to notice or
+// recover from. These tests drive the real render path and assert the
+// wrong-but-plausible value never appears.
+// =======================================================================
+
+/** Register the two Settings -> Agent elements this group renders into.
+ * Neither is in REQUIRED_IDS/OPTIONAL_IDS -- chat.js's init() does not
+ * require them (only the credential status refresh looks them up), so
+ * they are built here rather than grown into the shared fixture, exactly
+ * as addAgentCredentialFormEls() does for the credential form. */
+function addAgentTargetEls(panel) {
+  const statusEl = panel.document.createElement('div');
+  statusEl.id = 'agent-credential-status';
+  const targetEl = panel.document.createElement('div');
+  targetEl.id = 'agent-active-target';
+  // The literal index.html ships, so a test that asserts the placeholder
+  // was REPLACED is asserting something real.
+  targetEl.textContent = 'Checking...';
+  return { statusEl, targetEl };
+}
+
+/** Fetch stub answering the credential-status GET with `body`. Every other
+ * url throws, so an unexpected call is a loud test failure rather than a
+ * silent undefined. */
+function credentialStatusFetch(body) {
+  return async (url) => {
+    if (url === '/api/agent/provider-credential') {
+      return { ok: true, status: 200, json: async () => body };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+const CONFIGURED_STATUS = {
+  state: 'configured',
+  message: 'Embedded agent ready.',
+  providers: { anthropic: { source: 'file', masked: 'sk-ant...wxyz', env_var: null } },
+  sidecar: 'running',
+  models: [],
+  mode: 'embedded',
+  active: { provider: 'anthropic', model: 'claude-sonnet-5' },
+};
+
+test('nnl: the active provider and model are displayed, read from the server', async () => {
+  const panel = loadChatPanel({ fetchImpl: credentialStatusFetch(CONFIGURED_STATUS) });
+  const { targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /anthropic/, 'the provider must be named');
+  assert.match(targetEl.textContent, /claude-sonnet-5/, 'the model must be named');
+  assert.doesNotMatch(targetEl.textContent, /Checking/, 'the placeholder must be replaced');
+});
+
+test('nnl: a server that sends no active block renders unknown, never a plausible default', async () => {
+  // An older muxplex, before this field existed. The panel has its own
+  // MODEL constant sitting right there and it would be trivially easy to
+  // print it -- that is precisely the bug.
+  const { active, ...withoutActive } = CONFIGURED_STATUS;
+  void active;
+  const panel = loadChatPanel({ fetchImpl: credentialStatusFetch(withoutActive) });
+  const { targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /unknown/i, 'must say unknown');
+  assert.doesNotMatch(
+    targetEl.textContent,
+    /claude-sonnet-5/,
+    "must NOT fall back to chat.js's own MODEL -- a confident wrong answer is worse than none"
+  );
+  assert.doesNotMatch(targetEl.textContent, /anthropic/, 'must not assume the provider either');
+});
+
+test('nnl: an uninstalled Agent reports unknown on both fields, and still renders', async () => {
+  // state "not_installed" returns EARLY from _renderAgentCredentialStatus
+  // (the credential form is disabled and nothing further is rendered), so
+  // this also pins that the active line is rendered before that branch --
+  // a user on a fresh install is exactly who benefits from being told the
+  // server cannot name a provider or model at all.
+  const panel = loadChatPanel({
+    fetchImpl: credentialStatusFetch({
+      state: 'not_installed',
+      message: "The Agent isn't installed on this server yet.",
+      providers: {},
+      sidecar: 'running',
+      models: [],
+      mode: 'embedded',
+      active: { provider: null, model: null },
+    }),
+  });
+  const { statusEl, targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /unknown/i, 'no runner means no active target');
+  assert.doesNotMatch(targetEl.textContent, /claude-sonnet-5/);
+  assert.doesNotMatch(targetEl.textContent, /anthropic/);
+  assert.match(statusEl.textContent, /isn't installed/i, 'the not_installed branch still renders');
+});
+
+test('nnl: a failed status fetch resolves to unknown, not a stuck placeholder', async () => {
+  const panel = loadChatPanel({
+    fetchImpl: async (url) => {
+      if (url === '/api/agent/provider-credential') {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      throw new Error('unexpected fetch url in test: ' + url);
+    },
+  });
+  const { targetEl } = addAgentTargetEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(targetEl.textContent, /unknown/i, 'a failed check is an unknown, not a pending one');
+  assert.doesNotMatch(
+    targetEl.textContent,
+    /Checking/,
+    'leaving "Checking..." up forever reads as still-working when it has already given up'
+  );
+});
+
+// =======================================================================
+// GROUP 12 (muxplex-y15) -- the panel must check the model it displays
+// against what the provider actually serves, and must say "could not
+// check" whenever it could not.
+//
+// GROUP 11 above made the panel name the model muxplex BELIEVES it is
+// using, pinned to the runner's own constant so the display cannot drift
+// from what a turn sends. Nothing checked that the provider will actually
+// serve that id. A renamed or retired model displayed with complete
+// confidence and failed only mid-turn, after the stream had opened.
+//
+// Three outcomes, and the tests below are mostly about the third:
+//
+//   validated   -- the provider serves it.
+//   not_served  -- it does not. Name the model asked for AND what is
+//                  available; a generic failure is what this replaces.
+//   unknown     -- could not check. Must read as NEITHER a pass NOR a
+//                  failure.
+//
+// Rounding "unknown" in either direction has a specific cost. Rounding to
+// validated reinstates the original bug. Rounding to not_served tells a
+// user their working configuration is broken and invites them to change
+// something that was fine -- which is worse, because it is actionable and
+// wrong.
+//
+// And the structural one: checkAgentGate() must never make this call. The
+// gate FAILS OPEN on a status-check error by design (muxplex-at9), so a
+// validation call that errored there would silently show nothing at all.
+// =======================================================================
+
+/** Register the Settings -> Agent elements this group renders into --
+ * including #agent-model-check, which is what makes the served-model
+ * lookup happen at all (chat.js returns before fetching when it is
+ * absent). */
+function addAgentModelCheckEls(panel) {
+  const statusEl = panel.document.createElement('div');
+  statusEl.id = 'agent-credential-status';
+  const targetEl = panel.document.createElement('div');
+  targetEl.id = 'agent-active-target';
+  const checkEl = panel.document.createElement('div');
+  checkEl.id = 'agent-model-check';
+  // The literal index.html ships, so asserting it was REPLACED is real.
+  checkEl.textContent = 'Checking...';
+  return { statusEl, targetEl, checkEl };
+}
+
+/** Fetch stub answering BOTH agent GETs -- the cheap local status route
+ * and the live served-model route. Any other url throws, so an
+ * unexpected call is a loud failure rather than a silent undefined. */
+function agentPanelFetch(servedBody, { servedOk = true, servedStatus = 200 } = {}) {
+  return async (url) => {
+    if (url === '/api/agent/provider-credential') {
+      return { ok: true, status: 200, json: async () => CONFIGURED_STATUS };
+    }
+    if (url === '/api/agent/served-models') {
+      return { ok: servedOk, status: servedStatus, json: async () => servedBody };
+    }
+    throw new Error('unexpected fetch url in test: ' + url);
+  };
+}
+
+test('y15: a served model is confirmed in the panel', async () => {
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({
+      status: 'validated',
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+      served: ['claude-sonnet-5'],
+      detail: "anthropic serves 'claude-sonnet-5'.",
+    }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /serves/i);
+  assert.doesNotMatch(checkEl.textContent, /Checking/, 'the placeholder must be replaced');
+  assert.doesNotMatch(checkEl.textContent, /could not check/i);
+});
+
+test('y15: a model the provider does not serve is named specifically, with the alternatives', async () => {
+  // The item's acceptance criterion, verbatim: the mismatch is named --
+  // which model was asked for, which are available -- rather than
+  // surfacing later as a generic failed turn.
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({
+      status: 'not_served',
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+      served: ['claude-opus-5', 'claude-haiku-4-5'],
+      detail:
+        "anthropic does not serve 'claude-sonnet-5'. A turn using it will fail. " +
+        'Available models: claude-haiku-4-5, claude-opus-5',
+    }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /claude-sonnet-5/, 'must name the model asked for');
+  assert.match(checkEl.textContent, /claude-opus-5/, 'must name what IS available');
+  assert.match(checkEl.textContent, /does not serve/i);
+});
+
+test('y15: "could not check" reads as neither a pass nor a failure', async () => {
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({
+      status: 'unknown',
+      reason: 'no_credential',
+      provider: 'anthropic',
+      model: 'claude-sonnet-5',
+      served: null,
+      detail: 'No anthropic credential is set, so the served model list cannot be read.',
+    }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /could not check/i);
+  assert.doesNotMatch(
+    checkEl.textContent,
+    /does not serve/i,
+    'an unchecked model must never be reported as an unserved one'
+  );
+});
+
+test('y15: a failed served-model lookup says "could not check", never a mismatch', async () => {
+  // The acceptance criterion's third case: when the lookup itself fails
+  // (network error, revoked key, timeout), the failure is reported as
+  // "could not check", never as a model mismatch.
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({}, { servedOk: false, servedStatus: 500 }),
+  });
+  const { statusEl, checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /could not check/i);
+  assert.doesNotMatch(checkEl.textContent, /does not serve/i);
+  assert.doesNotMatch(
+    checkEl.textContent,
+    /Checking/,
+    'leaving the placeholder up reads as still-working when it has already given up'
+  );
+  // ...and the failure of this one line must not take the rest of the
+  // panel down with it.
+  assert.match(statusEl.textContent, /Agent running/i);
+});
+
+test('y15: an unrecognised status value is treated as unknown, not as a pass', async () => {
+  // Guards the future: a server that grows a fourth status must degrade
+  // to "could not check" in an older panel, never to silent approval.
+  const panel = loadChatPanel({
+    fetchImpl: agentPanelFetch({ status: 'something-new-from-a-newer-server' }),
+  });
+  const { checkEl } = addAgentModelCheckEls(panel);
+
+  await panel.credential.refreshStatus();
+
+  assert.match(checkEl.textContent, /could not check/i);
+});
+
+test('y15: the gate never makes the live served-model call', async () => {
+  // THE structural assertion. checkAgentGate() is polled and fails OPEN on
+  // error by design; a live provider round-trip there would make the gate
+  // network-dependent, and its failure would be invisible rather than
+  // reported. The gate must touch exactly one endpoint.
+  const panel = loadChatPanel({
+    fetchImpl: async (url) => {
+      if (url === '/api/agent/provider-credential') {
+        return { ok: true, status: 200, json: async () => CONFIGURED_STATUS };
+      }
+      throw new Error('unexpected fetch url in test: ' + url);
+    },
+  });
+  // The element IS present -- so this proves the gate does not call, not
+  // merely that there was nowhere to render.
+  addAgentModelCheckEls(panel);
+
+  await panel.credential.recheckGate();
+
+  const urls = panel.fetchCalls.map((c) => c.url);
+  assert.ok(urls.includes('/api/agent/provider-credential'), 'the gate reads the status route');
+  assert.ok(
+    !urls.includes('/api/agent/served-models'),
+    'the gate must not make a live provider call'
+  );
+});
+
+test('y15: an older frontend build without the element makes no served-model call at all', async () => {
+  // The check exists to put words on screen. With nowhere to put them the
+  // live provider call is pure cost -- and, incidentally, this is what
+  // keeps GROUP 11's fixtures (which do not register the element) free of
+  // a second fetch they never asked for.
+  const panel = loadChatPanel({ fetchImpl: credentialStatusFetch(CONFIGURED_STATUS) });
+  addAgentTargetEls(panel); // status + active-target only, no #agent-model-check
+
+  await panel.credential.refreshStatus();
+
+  const urls = panel.fetchCalls.map((c) => c.url);
+  assert.ok(!urls.includes('/api/agent/served-models'));
+});

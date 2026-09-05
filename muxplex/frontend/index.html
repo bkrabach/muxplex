@@ -754,6 +754,33 @@
             </div>
             <span class="settings-helper">This choice is remembered on this device only. Your other devices keep their own.</span>
           </div>
+          <!-- muxplex-nnl: which provider and model the Agent is actually
+               talking to. Before this, nothing in the UI said -- a user
+               could not tell an Anthropic deployment from an OpenAI one,
+               or which model a turn would run against. Read live from the
+               server (GET /api/agent/provider-credential's `active` block,
+               sourced from the runner itself), never assumed here: an
+               older server that doesn't send `active`, or a box where the
+               Agent isn't installed, renders "unknown" rather than a
+               plausible default. -->
+          <div class="settings-field settings-field--column settings-field--section-gap">
+            <label class="settings-label">Active provider and model</label>
+            <div id="agent-active-target" class="settings-helper">Checking...</div>
+            <!-- muxplex-y15: the line above says which model muxplex
+                 BELIEVES it is using. This one says whether the provider
+                 will actually serve it. A renamed or retired model id
+                 used to display with total confidence and fail only
+                 mid-turn, after the response stream had already opened.
+                 Filled from GET /api/agent/served-models -- a SEPARATE
+                 request from the credential status above, because it
+                 makes a live provider call and the credential-status
+                 route also backs the chat panel's gate. Three outcomes
+                 are kept distinct on purpose: served, not served, and
+                 "could not check" (no key, offline, or a provider that
+                 publishes no list) -- the last of which must read as
+                 neither a pass nor a failure. -->
+            <div id="agent-model-check" class="settings-helper">Checking...</div>
+          </div>
           <!-- Agent provider credential -- docs/designs/agent-credentials.md.
                muxplex is a CONDUCTOR here, never a STORE: this form never
                receives a stored key back (GET returns a masked status
@@ -975,6 +1002,19 @@
     </div>
 
     <div id="chat-composer" class="agent-panel-composer">
+      <!-- muxplex-1i9: the attachment strip for clipboard image paste.
+           INSIDE the composer, not a sibling above it, for one specific
+           reason: setGateState() hides #chat-composer when the Agent is
+           unconfigured, and a strip living outside it would keep showing
+           attachments beside a hidden composer. It takes a full-width row
+           of its own via `order:-1` + `flex-basis:100%` (see
+           .agent-panel-attachments in style.css) rather than joining the
+           textarea/Send row.
+           Starts hidden and is shown only when there is something to say --
+           a pending attachment, or a refusal to explain. chat.js's
+           renderAttachments() is the sole owner of its contents; nothing
+           else writes here. -->
+      <div id="chat-attachments" class="agent-panel-attachments hidden"></div>
       <!-- muxplex-8qp: rows="1" is the FLOOR, not the size. chat.js's
            autoGrowInput() sets the height from scrollHeight on every input
            event, bounded at a stated maximum, after which the textarea

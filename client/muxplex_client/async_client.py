@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Self, Sequence
 
@@ -24,6 +25,7 @@ from .errors import ApiError, CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
+    CreateSessionResult,
     FederationSessions,
     FocusResult,
     FollowupItem,
@@ -175,19 +177,30 @@ class AsyncMuxplexClient:
         wait: bool = True,
         timeout: float = 6.0,
         interval: float = 0.3,
-    ) -> None:
+    ) -> CreateSessionResult:
         """See `sync_client.MuxplexClient.create_session` for the full
-        `command_id` rationale -- identical here, `await`-shaped."""
+        observed-name/`command_id` rationale -- identical here,
+        `await`-shaped. In particular: this polls the name the SERVER
+        reported, never the one asked for, and reports an unconfirmable
+        name as `name_confirmed=False` rather than as a timeout."""
         body: dict[str, Any] = {"name": name}
         if command_id is not None:
             body["command_id"] = command_id
-        await self._request("POST", "/api/sessions", json=body, session_name=name)
-        if wait and not await self.wait_for_session(
-            name, timeout=timeout, interval=interval
-        ):
+        result = protocol.parse_create_session_result(
+            await self._request("POST", "/api/sessions", json=body, session_name=name),
+            requested_name=name,
+        )
+        if not wait:
+            return result
+        seen = await self.wait_for_session(
+            result.name, timeout=timeout, interval=interval
+        )
+        if not seen and result.name_confirmed is not False:
             raise TimeoutError(
-                f"session {name!r} did not appear in the read cache within {timeout}s"
+                f"session {result.name!r} did not appear in the read cache "
+                f"within {timeout}s (requested {result.requested_name!r})"
             )
+        return replace(result, visible=seen)
 
     async def delete_session(self, name: str, *, force: bool = False) -> None:
         """See `sync_client.MuxplexClient.delete_session` for the full

@@ -49,7 +49,12 @@ from typing import Any
 
 from . import wire
 from .host_tool_glue import HostToolProxy, mount_host_tool_hook
-from .message_shape import extract_host_tools, split_history_and_prompt
+from .message_shape import (
+    extract_host_tools,
+    images_lost_reason,
+    split_history_and_prompt,
+    unsupported_image_reason,
+)
 
 logger = logging.getLogger("muxplex.agent_embedded.runner")
 
@@ -64,6 +69,20 @@ _WORKSPACE = os.environ.get("MUXPLEX_AGENT_WORKSPACE", "muxplex-embedded")
 _KEEPALIVE_INTERVAL_SECONDS: float = 3.0
 
 _PROVIDER_ID = "anthropic"
+
+#: The model id a turn runs against when the request doesn't name one.
+#:
+#: Extracted from the inline literal that used to sit in
+#: :func:`stream_embedded_chat_completion` because it is not an internal
+#: detail: it is half of a cross-language pair. chat.js sends its own
+#: ``var MODEL`` on every turn, this is what the runner falls back to, and
+#: Settings -> Agent now DISPLAYS one of them as "the model you are talking
+#: to". If the two literals drift, the panel shows a model the turn does
+#: not use -- a confidently-wrong label, which is worse than no label at
+#: all. ``tests/test_agent_active_target.py`` pins them equal, the same
+#: cross-language seam ``AGENT_NOT_CONFIGURED_ERROR_TYPE`` (muxplex-at9)
+#: established one commit earlier.
+_DEFAULT_MODEL_ID = "claude-sonnet-5"
 
 #: A workaround for a filed upstream bug (see module docstring), NOT a
 #: preference -- mirrors the sidecar's own host-config
@@ -85,6 +104,35 @@ _prepared_lock = asyncio.Lock()
 # call.
 _create_session_lock = asyncio.Lock()
 _prepared: Any = None
+
+
+#: What a user is told when amplifier-agent isn't installed here.
+#:
+#: USER-FACING, not a log line: ``credentials.full_status()`` returns this
+#: verbatim as ``message`` for ``state: "not_installed"``, and chat.js's
+#: ``_renderAgentCredentialStatus`` prints it as the PRIMARY line in
+#: Settings -> Agent. muxplex-at9 is precisely about internals being
+#: rendered at users (the original report leaked ``sudo: unknown user
+#: aa-svc`` there), so this sentence has to survive being read by someone
+#: who has never heard of a Python environment.
+#:
+#: It also has to be TRUE. The text this replaced advised ``pip install
+#: amplifier-agent`` and ``MUXPLEX_AGENT_MODE=sidecar``; neither can work.
+#: amplifier-agent is deliberately source-only -- pyproject.toml's
+#: ``[tool.uv.sources]``: "NOT published on PyPI ... there is no registry
+#: copy to fall back to" -- so pip has nothing to fetch. And the sidecar
+#: path was removed: ``is_embedded_mode()`` has zero callers in main.py,
+#: so that variable changes nothing at all. ``muxplex ensure-agent``
+#: (cli.py's ``ensure_agent()``, registered as a real subcommand) is the
+#: one command that actually closes this gap.
+#:
+#: The technical cause (which import failed, and why) is not discarded --
+#: it goes to the server log via ``_get_prepared`` below, where an
+#: operator can find it, and it stays on the exception chain.
+LIBRARY_MISSING_MESSAGE = (
+    "The Agent isn't installed on this server yet. Whoever runs muxplex can "
+    "install it with: muxplex ensure-agent"
+)
 
 
 class EmbeddedAgentUnavailable(RuntimeError):
@@ -109,11 +157,17 @@ async def _get_prepared() -> Any:
                 from amplifier_agent_lib._runtime import prepare_bundle_for_session
                 from amplifier_agent_lib.bundle.cache import load_and_prepare_cached
             except ImportError as exc:
-                raise EmbeddedAgentUnavailable(
-                    "amplifier-agent is not installed in this Python environment "
-                    "(pip install amplifier-agent, or set MUXPLEX_AGENT_MODE=sidecar "
-                    "to use the separate sidecar process instead)"
-                ) from exc
+                # The operator's copy of the detail. LIBRARY_MISSING_MESSAGE
+                # is what a USER sees; this is the "which import, and why"
+                # an operator needs, kept out of the UI on purpose
+                # (muxplex-at9's second defect was raw subprocess stderr
+                # reaching a user-facing surface).
+                logger.warning(
+                    "embedded agent unavailable: amplifier-agent is not importable "
+                    "in this environment (%s). Install it with `muxplex ensure-agent`.",
+                    exc,
+                )
+                raise EmbeddedAgentUnavailable(LIBRARY_MISSING_MESSAGE) from exc
             prepared = await load_and_prepare_cached(aaa_version=aaa_version)
             prepare_bundle_for_session(prepared, host_config={}, workspace=_WORKSPACE)
             _prepared = prepared
@@ -131,6 +185,23 @@ def active_provider() -> str:
     the same string living in a sibling file.
     """
     return _PROVIDER_ID
+
+
+def default_model() -> str:
+    """Return the model id a turn runs against when the request doesn't
+    name one (see ``_DEFAULT_MODEL_ID``).
+
+    Sibling of :func:`active_provider`, exposed for the same reason: so
+    ``credentials.full_status()`` reports the runner's OWN notion of what
+    a turn will use, rather than a second copy of the string living in a
+    file that never runs a turn.
+
+    NOT a claim that every turn uses this model -- a request may override
+    it (``body["model"]``), and chat.js always does. It is the server's
+    answer to "what would I run right now, absent instruction", which is
+    the only model question a server can answer honestly on its own.
+    """
+    return _DEFAULT_MODEL_ID
 
 
 async def library_unavailable_reason() -> str | None:
@@ -200,7 +271,7 @@ async def stream_embedded_chat_completion(
     against the sidecar.
     """
     chunk_id = wire.new_chunk_id()
-    model_id = body.get("model") or "claude-sonnet-5"
+    model_id = body.get("model") or _DEFAULT_MODEL_ID
 
     # Defense in depth: main.py's route handler already calls
     # check_available() before opening the stream, but a race (library
@@ -231,6 +302,20 @@ async def stream_embedded_chat_completion(
         return
 
     messages = body.get("messages") or []
+
+    # muxplex-1i9: refuse an image the provider cannot carry BEFORE any
+    # session exists. The Anthropic provider's user-message loop discards
+    # an unrecognised content-block with no error and no log line (see
+    # message_shape.normalize_image_part), so an unsupported attachment
+    # that got this far would produce a confident answer about an image
+    # the model never saw. Checked on the RAW client messages, ahead of
+    # normalization, because normalization is what drops them.
+    unsupported = unsupported_image_reason(messages)
+    if unsupported:
+        logger.warning("embedded runner: %s", unsupported)
+        yield wire.sse_error(unsupported).encode()
+        return
+
     history, prompt = split_history_and_prompt(messages)
     host_tool_specs = extract_host_tools(body.get("tools"))
 
@@ -291,8 +376,61 @@ async def stream_embedded_chat_completion(
 
     if history:
         context_module = session.coordinator.get("context")
-        if context_module is not None and hasattr(context_module, "set_messages"):
-            await context_module.set_messages(history)
+        can_seed = context_module is not None and hasattr(
+            context_module, "set_messages"
+        )
+        # muxplex-1i9: history seeding is the ONLY path an attachment can
+        # travel (session.execute() takes a str -- see message_shape's
+        # split_history_and_prompt). If it is unavailable AND this turn
+        # carries images, refuse out loud instead of running a turn whose
+        # answer would be about an image the model was never shown. With
+        # no images this stays exactly as tolerant as it always was.
+        refusal = images_lost_reason(history, can_seed=can_seed)
+        if refusal:
+            logger.error("embedded runner: %s", refusal)
+            yield wire.sse_error(refusal).encode()
+            return
+        if can_seed:
+            # muxplex-lh0: `# pyright: ignore` for a checker defect, NOT for a
+            # real finding. pyright 1.1.411 reports reportOptionalMemberAccess
+            # here ("set_messages" is not a known attribute of "None");
+            # 1.1.408 reports nothing. Same tree, same venv, only the checker
+            # version differs.
+            #
+            # 1.1.411 is the one that is wrong, and provably so. Ask either
+            # version for the type of `context_module` at the
+            # `session.coordinator.get("context")` line above and both
+            # answer `Any` -- amplifier-agent is an optional extra, so
+            # `session` and everything reached through it is unresolved (see
+            # this file's header). `Any` does not contain `None`. Inside
+            # `if can_seed:` -- the branch where `context_module is not None`
+            # has just been proven -- 1.1.408 still says `Any`, while 1.1.411
+            # says `Any | None`. It ADDS the member the guard excluded, on the
+            # branch that excludes it. There is no reading under which that is
+            # a stricter-but-correct analysis; it is an unsound narrowing.
+            #
+            # Minimal reproduction, no muxplex involved:
+            #
+            #     def f(x: Any) -> None:
+            #         g = x is not None and hasattr(x, "m")
+            #         if g:
+            #             reveal_type(x)  # 1.1.408: Any | 1.1.411: Any | None
+            #
+            # It needs all three of: a declared `Any`, the guard aliased to a
+            # local (`g`), and a `hasattr` conjunct. Drop any one -- inline the
+            # condition, or alias `is not None` alone, or alias `hasattr`
+            # alone -- and 1.1.411 agrees with 1.1.408 again. Declare `x` as a
+            # real `M | None` instead and neither version narrows the alias at
+            # all, so this is not pyright tightening up on Optionals; it is a
+            # defect confined to the `Any` + aliased-conjunction path.
+            #
+            # The guard is therefore left exactly as it is (`can_seed` is also
+            # passed to images_lost_reason() above, and restructuring working
+            # runtime code to satisfy a checker bug would trade a real,
+            # untested code path for a cosmetic one). Delete this ignore once
+            # the pinned pyright is one that has fixed the narrowing -- the
+            # reproduction above is how to tell without guessing.
+            await context_module.set_messages(history)  # pyright: ignore[reportOptionalMemberAccess]
         else:
             logger.warning(
                 "embedded runner: conversation seeding skipped: context module %r has no set_messages",

@@ -1079,9 +1079,19 @@ it's still how CI and release validation work, and still what proves you're
 testing the exact artifact you're about to push — but it is no longer required
 just to run the suite safely on this host.
 
-- Python: `uv sync --extra dev && uv run pytest` (an isolated env is no longer
+- Python: `uv sync && uv run pytest` (an isolated env is no longer
   required for safety, but is still recommended for reproducibility; tests
   marked `integration` need a real tmux binary and are deselected by default).
+  A BARE `uv sync` is deliberately enough, and `--extra dev` is no longer
+  needed: pytest/pytest-asyncio/beautifulsoup4 still live in the `dev` extra,
+  but `[dependency-groups].dev` now pulls that extra in via a `muxplex[dev]`
+  self-reference, and uv installs a dependency group by default where it does
+  not install an extra. Before that (muxplex-6d9), a fresh `uv sync` produced
+  a venv with no pytest and no bs4, and the symptom was not a missing pytest
+  — it was pyright reporting phantom bs4 import errors on untouched code.
+  That same group also declares and exactly pins the `make check` gate's own
+  tools (`ruff`, `pyright`), so `uv run ruff` / `uv run pyright` resolve from
+  the project instead of falling through to whatever is on your PATH.
 - Frontend: `node --test frontend/tests/*.mjs`. Use the glob, not a single
   file — the previously-documented `test_app.mjs`-only command silently
   never ran `test_terminal.mjs`.

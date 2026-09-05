@@ -269,6 +269,12 @@ let _lastFollowsMenu = null;     // most recent buildFollowsMenu() result (for f
 let _federatedDevicesRaw = [];
 let _federatedDevicesPollTimer;
 
+// INVARIANT: always an array. pollSessions() is the only thing that assigns
+// it from the network, and it refuses a body that is not one (see its
+// non-array guard). Consumers may therefore call array methods directly --
+// the several `_currentSessions || []` spellings below are belt-and-braces,
+// not evidence that the invariant is soft. If you add another assignment
+// site, keep it.
 let _currentSessions = [];
 let _viewingSession = null;
 let _viewingRemoteId = '';
@@ -310,6 +316,12 @@ let _visibilityPaused = false;
 let _heartbeatTimer;
 let _notificationPermission = 'default';
 let _pollFailCount = 0;
+// Latch for the malformed-session-body notice. pollSessions() runs every ~2s,
+// so an un-latched notice would be ~30 toasts a minute for as long as the
+// intermediary misbehaves. Set on entering the anomalous state, cleared by the
+// first poll that yields a real list -- so a second, separate outage is
+// reported again rather than suppressed forever.
+let _pollShapeAnomaly = false;
 let _previewPopover = null;
 let _previewTimer = null;
 
@@ -328,15 +340,30 @@ let _flyoutRemoteId = null;
  *   { label, action, className?, separator? }
  * The 'user' view type uses a unified Views submenu (no separate Remove item).
  */
+/**
+ * Told to the user when rename is offered on a REMOTE session's tile.
+ *
+ * Rename is deliberately local-only: main.py proxies create
+ * (POST /api/federation/{id}/sessions), delete, get and bell/clear, but there
+ * is no federation rename route at all. An enabled item would 404 in the
+ * user's face, so the item is shown DISABLED with this explanation rather
+ * than silently missing (which reads as a bug) or silently broken.
+ *
+ * @type {string}
+ */
+const RENAME_LOCAL_ONLY_TITLE = 'Rename works on this device\u2019s own sessions only';
+
 const FLYOUT_MENU_MAP = {
   'all': [
     { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Rename\u2026', action: 'rename', localOnly: true },
     { label: 'Hide', action: 'hide' },
     { separator: true },
     { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
   ],
   'user': [
     { label: 'Add to View\u2026', action: 'add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Rename\u2026', action: 'rename', localOnly: true },
     { label: 'Hide', action: 'hide' },
     { separator: true },
     { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
@@ -344,6 +371,7 @@ const FLYOUT_MENU_MAP = {
   'hidden': [
     { label: 'Unhide', action: 'unhide' },
     { label: 'Unhide & Add to View\u2026', action: 'unhide-add-to-view', className: 'flyout-menu__item--has-submenu' },
+    { label: 'Rename\u2026', action: 'rename', localOnly: true },
     { separator: true },
     { label: 'Kill Session', action: 'kill', className: 'flyout-menu__item--danger' },
   ],
@@ -352,15 +380,22 @@ const FLYOUT_MENU_MAP = {
 /**
  * Build the flyout menu HTML string based on the active view type.
  * Uses FLYOUT_MENU_MAP to generate items — no if/else chains.
+ *
+ * @param {string} [remoteId] - The tile's remote device id ('' for a local
+ *   session). Defaults to the flyout's own captured value; passed explicitly
+ *   only by tests. Items flagged `localOnly` render disabled when this is set
+ *   — see RENAME_LOCAL_ONLY_TITLE for why that is a disable rather than a
+ *   silent omission.
  * @returns {string} HTML for the menu items
  */
-function _buildFlyoutMenuItems() {
+function _buildFlyoutMenuItems(remoteId) {
   // Determine view type: 'all', 'hidden', or 'user'
   var viewType = _activeView;
   if (viewType !== 'all' && viewType !== 'hidden') {
     viewType = 'user';
   }
 
+  var isRemote = !!(remoteId === undefined ? _flyoutRemoteId : remoteId);
   var items = FLYOUT_MENU_MAP[viewType] || FLYOUT_MENU_MAP['all'];
   var html = '';
 
@@ -389,7 +424,16 @@ function _buildFlyoutMenuItems() {
       titleAttr = ' title="Remove from ' + escapeHtml(_activeView) + '"';
     }
 
-    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '"' + titleAttr + '>';
+    // A local-only action on a remote tile: disabled and labelled, never
+    // offered as something that would fail on click.
+    var disabledAttr = '';
+    if (item.localOnly && isRemote) {
+      disabledAttr = ' disabled';
+      titleAttr = ' title="' + escapeHtml(RENAME_LOCAL_ONLY_TITLE) + '"';
+    }
+
+    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '"' +
+      titleAttr + disabledAttr + '>';
     html += label;
     html += '</button>';
   }
@@ -491,6 +535,65 @@ function isMobile() {
 }
 
 // ─── Fetch wrapper ────────────────────────────────────────────────────────────
+/**
+ * Pull the human-readable sentence out of a failed response's parsed JSON body.
+ *
+ * The server already explains itself; this is the one place that decision is
+ * made, so every api() caller shows the explanation instead of each catch
+ * hand-rolling its own extraction (or, as before, showing none at all).
+ *
+ * Four real shapes come back from main.py:
+ *   {"detail": "a sentence"}                          -- plain HTTPException
+ *   {"detail": {"detail": "...", "suggested": "..."}} -- structured (rename)
+ *   {"detail": [{"loc": [...], "msg": "..."}]}        -- FastAPI 422 validation
+ *   {"detail": "...", "invalid_view_rule": true}      -- flat JSONResponse
+ *
+ * A structured detail carrying only flags has no sentence to show: return ''
+ * so the caller falls back to the status line rather than printing
+ * "[object Object]" at a user.
+ *
+ * @param {*} body - The parsed JSON body, or undefined if there wasn't one.
+ * @returns {string} The server's explanation, or '' if it sent none.
+ */
+function serverErrorText(body) {
+  if (!body || typeof body !== 'object') return '';
+  const detail = body.detail;
+  if (typeof detail === 'string') return detail.trim();
+  if (Array.isArray(detail)) {
+    // FastAPI request-validation errors: one entry per offending field.
+    return detail
+      .map((d) => (typeof d === 'string' ? d : (d && typeof d.msg === 'string' ? d.msg : '')))
+      .filter(Boolean)
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    // Structured detail -- the sentence sits one level in, next to the flags.
+    const inner = detail.detail || detail.message || detail.msg;
+    return typeof inner === 'string' ? inner.trim() : '';
+  }
+  // A body with no `detail` key at all still occasionally carries prose.
+  if (typeof body.message === 'string') return body.message.trim();
+  if (typeof body.error === 'string') return body.error.trim();
+  return '';
+}
+
+/**
+ * Pull the server's fix-it suggestion (a corrected name) out of a failed
+ * response body, if it computed one. The rename endpoint returns `suggested`
+ * inside its structured detail; a flat body could carry it at the top level.
+ *
+ * @param {*} body - The parsed JSON body, or undefined if there wasn't one.
+ * @returns {string} The suggested replacement, or '' if the server sent none.
+ */
+function serverErrorSuggestion(body) {
+  if (!body || typeof body !== 'object') return '';
+  const detail = body.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail) && typeof detail.suggested === 'string') {
+    return detail.suggested;
+  }
+  return typeof body.suggested === 'string' ? body.suggested : '';
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
@@ -511,6 +614,21 @@ async function api(method, path, body) {
     } catch (parseErr) {
       // no-op: no usable JSON body on this error response
     }
+    // Prefer the server's own explanation over the opaque status line. This is
+    // deliberately done HERE rather than in each catch: every caller that shows
+    // err.message now shows what is actually wrong ("Invalid session name.
+    // Allowed characters: ...") instead of "HTTP 400: Bad Request". The status
+    // line stays as err.httpMessage, and remains err.message whenever the body
+    // carried nothing human-readable.
+    const serverText = serverErrorText(err.body);
+    if (serverText) {
+      err.httpMessage = err.message;
+      err.message = serverText;
+    }
+    // A server-computed correction (rename's `suggested`) -- surfaced so a
+    // caller can offer it as a one-click fix instead of discarding it.
+    const suggested = serverErrorSuggestion(err.body);
+    if (suggested) err.suggested = suggested;
     throw err;
   }
   return res;
@@ -1483,6 +1601,62 @@ function setConnectionStatus(level) {
 
 // ─── Session polling ─────────────────────────────────────────────────────────────────────────────
 /**
+ * Name the shape of a poll body that wasn't a session array, for the log.
+ *
+ * Deliberately a SHAPE, not the body itself: whatever produced it is by
+ * definition not our server, and its payload is untrusted and potentially
+ * large. Key names are the part that identifies the culprit (`detail` reads
+ * as FastAPI, `error`/`code` as a portal or CDN envelope) at a bounded cost.
+ *
+ * @param {*} body - the parsed JSON body that arrived with the 200.
+ * @returns {string} a short, log-safe description.
+ */
+function describeSessionsBodyShape(body) {
+  if (body === null) return 'null';
+  if (typeof body !== 'object') return typeof body;
+  const keys = Object.keys(body);
+  if (!keys.length) return 'object with no keys';
+  const shown = keys.slice(0, 5).join(', ');
+  return 'object with keys: ' + shown + (keys.length > 5 ? ', \u2026' : '');
+}
+
+/**
+ * Handle a session poll that returned 200 with something that is not a list.
+ *
+ * Treated as a FAILED poll, not as an empty one. Two calls, both deliberate:
+ *
+ * 1. WHY THE PREVIOUS LIST IS KEPT rather than replaced with []. The catch in
+ *    pollSessions() already set the policy for "this poll produced no usable
+ *    session list": leave _currentSessions alone and degrade the connection
+ *    indicator. A malformed 200 is that same event -- it just happens not to
+ *    throw. [] would be worse than stale: it renders as "you have no
+ *    sessions", a confident falsehood the user can act on (create a duplicate,
+ *    conclude tmux died), where the retained list is merely old and the
+ *    indicator already says the feed is unhealthy.
+ *
+ * 2. WHY THE USER IS TOLD, when a plain network failure isn't. For a network
+ *    failure the indicator alone is honest -- the request didn't land. Here it
+ *    misleads: the request SUCCEEDED with a 200, so "offline" describes
+ *    nothing the user would recognize, and the grid just silently freezes.
+ *    That asymmetry is the whole reason this case gets words of its own.
+ *
+ * @param {string} endpoint - the path that answered.
+ * @param {*} body - the parsed JSON body that arrived with the 200.
+ */
+function reportMalformedSessionPoll(endpoint, body) {
+  _pollFailCount++;
+  setConnectionStatus(_pollFailCount <= 2 ? 'warn' : 'err');
+  console.warn(
+    '[pollSessions] ' + endpoint + ' returned 200 with a non-array body (' +
+    describeSessionsBodyShape(body) + ') \u2014 keeping the previous session list',
+  );
+  if (!_pollShapeAnomaly) {
+    _pollShapeAnomaly = true;
+    showToast('Unexpected response from the server \u2014 showing the last known sessions.');
+  }
+}
+
+/**
  * Fetch sessions from the appropriate endpoint and update the UI.
  * Uses /api/federation/sessions when multi_device_enabled is true,
  * /api/sessions otherwise.
@@ -1500,9 +1674,36 @@ async function pollSessions() {
     // The dedicated pollActiveState() loop owns following on a fresh snapshot.
     const res = await api('GET', endpoint);
     const sessions = await res.json();
+    // A 200 is not by itself an answer. api() throws on non-2xx and a broken
+    // body makes res.json() throw -- both land in the catch below, which is
+    // the ONLY reason _currentSessions survives those. A 200 carrying
+    // well-formed JSON that simply is not a session list is neither: it used
+    // to be assigned on the next line, and the first complaint came later,
+    // from renderGrid() calling an array method that wasn't there -- which
+    // the catch then swallowed. _currentSessions stayed poisoned after that
+    // for every consumer that touches it (updatePillBell's .some,
+    // createNewSession's readiness .find, visibleCount) until a later poll
+    // happened to return a real list.
+    //
+    // Not reachable from muxplex's own server: both endpoints are annotated
+    // `-> list[dict]` (main.py get_sessions, federation_sessions), so FastAPI
+    // validates the response and a non-list becomes a 500, not a 200. It
+    // takes an intermediary -- a captive portal or CDN answering 200 with a
+    // JSON error envelope. The near-miss is the auth middleware's own 307 to
+    // /login, which a fetch follows to a 200: that one is survivable only
+    // because login.html is HTML, so res.json() throws.
+    //
+    // Guarding HERE, once, is what makes every consumer safe at the same
+    // time; the alternative is scattering Array.isArray across all of them
+    // and re-scattering it at each new call site.
+    if (!Array.isArray(sessions)) {
+      reportMalformedSessionPoll(endpoint, sessions);
+      return;
+    }
     const prev = _currentSessions;
     _currentSessions = sessions;
     _pollFailCount = 0;
+    _pollShapeAnomaly = false;
     setConnectionStatus('ok');
     renderGrid(sessions);
     renderSidebar(sessions, _viewingSession, _viewingRemoteId);
@@ -3957,7 +4158,14 @@ function _openFlyoutSheet() {
     var cls = 'flyout-sheet__item';
     if (item.className && item.className.indexOf('danger') !== -1) cls += ' flyout-sheet__item--danger';
 
-    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '">';
+    // Same local-only treatment as the desktop flyout: disabled and labelled
+    // on a remote tile rather than offered and then failing.
+    var sheetExtra = '';
+    if (item.localOnly && _flyoutRemoteId) {
+      sheetExtra = ' disabled title="' + escapeHtml(RENAME_LOCAL_ONLY_TITLE) + '"';
+    }
+
+    html += '<button class="' + cls + '" role="menuitem" data-action="' + item.action + '"' + sheetExtra + '>';
     html += label;
     html += '</button>';
   }
@@ -3998,6 +4206,14 @@ function _openFlyoutSheet() {
         var killRemoteId = _flyoutRemoteId;
         closeFlyoutMenu();
         _openMobileKillConfirm(killName, killRemoteId);
+      } else if (action === 'rename') {
+        // The inline field the desktop flyout uses has nowhere to live in a
+        // bottom sheet, so rename gets its own sheet — same shape as the kill
+        // confirm above, and the same shared input factory underneath.
+        var renameName = _flyoutSessionName;
+        if (_flyoutRemoteId) { showToast(RENAME_LOCAL_ONLY_TITLE); return; }
+        closeFlyoutMenu();
+        _openMobileRenameSheet(renameName);
       } else {
         // Dispatch directly
         _handleFlyoutClick(e);
@@ -4186,6 +4402,9 @@ function _handleFlyoutClick(e) {
       break;
     case 'unhide':
       _doUnhideSession();
+      break;
+    case 'rename':
+      _doRenameSessionInline(item);
       break;
     case 'kill':
       _doKillSessionInline(item);
@@ -4430,6 +4649,193 @@ function _doRemoveFromView() {
       showToast('Couldn\u2019t save \u2014 try again');
       console.warn('[_doRemoveFromView] PATCH failed:', err);
     });
+}
+
+/**
+ * Show an inline rename field inside the flyout menu.
+ *
+ * Replaces the "Rename…" item with a text field pre-filled with the current
+ * name. Enter submits, Escape cancels — deliberately the same two keys, and
+ * deliberately the same FIELD, as the new-session flows: the input comes from
+ * `_createSessionInput()`, which is where live normalization is attached. That
+ * reuse is the point. A hand-rolled input here would normalize differently
+ * from the create field, so "my session" would become "my-session" in one box
+ * and be rejected in the other — one concept, two rules, which is its own
+ * surprise.
+ *
+ * The row is built with real elements rather than an innerHTML string (the
+ * pattern `_doKillSessionInline` uses) precisely because the input has to be
+ * the factory's element, listeners and all — an HTML string cannot carry them.
+ *
+ * @param {HTMLElement} renameItem - The "Rename…" menu item element
+ */
+function _doRenameSessionInline(renameItem) {
+  var sessionName = _flyoutSessionName;
+  if (!sessionName || !_flyoutMenuEl || !renameItem || !renameItem.parentNode) return;
+  // Belt and braces: the item renders disabled on a remote tile, but a click
+  // arriving anyway must not reach an endpoint that does not exist.
+  if (_flyoutRemoteId) { showToast(RENAME_LOCAL_ONLY_TITLE); return; }
+
+  var row = document.createElement('div');
+  row.className = 'flyout-menu__rename';
+
+  var input = _createSessionInput();
+  input.value = sessionName;
+  input.title = 'Enter to rename, Esc to cancel';
+  input.setAttribute('aria-label', 'New name for ' + sessionName);
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      // The same full normalization the create flows run on submit: live
+      // normalization has already kept the field valid character by
+      // character, and this adds the collapse/strip tidying that is unsafe
+      // to run mid-typing.
+      var next = _normalizeSessionName(input.value);
+      if (!next) { showToast(SESSION_NAME_ALL_SEPARATORS_MSG); return; }
+      closeFlyoutMenu();
+      renameSession(sessionName, next);
+    } else if (e.key === 'Escape') {
+      closeFlyoutMenu();
+    }
+  });
+
+  row.appendChild(input);
+  renameItem.parentNode.replaceChild(row, renameItem);
+
+  if (typeof input.focus === 'function') input.focus();
+  // Select the whole name so typing replaces it, but leave it visible and
+  // editable — a user renaming `foo-bar` to `foo-baz` should not have to
+  // retype the shared prefix.
+  if (typeof input.select === 'function') input.select();
+}
+
+/**
+ * Open a bottom sheet for renaming a session (mobile).
+ *
+ * The desktop flyout's inline field has nowhere to live in a bottom sheet, so
+ * this mirrors `_openMobileKillConfirm`'s shape — but the field itself still
+ * comes from `_createSessionInput()`, so mobile and desktop cannot drift into
+ * normalizing differently.
+ *
+ * @param {string} sessionName - The session being renamed (local only)
+ */
+function _openMobileRenameSheet(sessionName) {
+  if (!sessionName) return;
+
+  var sheet = document.createElement('div');
+  sheet.className = 'flyout-sheet';
+
+  var html = '<div class="flyout-sheet__backdrop"></div>';
+  html += '<div class="flyout-sheet__panel" aria-label="Rename session" role="dialog">';
+  html += '<div class="flyout-sheet__handle" aria-hidden="true"></div>';
+  html += '<div class="flyout-sheet__title">Rename ' + escapeHtml(sessionName) + '</div>';
+  html += '<div class="flyout-menu__rename" data-rename-field></div>';
+  html += '<button class="flyout-sheet__item" data-action="confirm-rename" role="button">Rename</button>';
+  html += '<button class="flyout-sheet__item" data-action="cancel" role="button">Cancel</button>';
+  html += '</div>';
+
+  sheet.innerHTML = html;
+  document.body.appendChild(sheet);
+
+  var input = _createSessionInput();
+  input.value = sessionName;
+  input.setAttribute('aria-label', 'New name for ' + sessionName);
+  var host = sheet.querySelector('[data-rename-field]');
+  if (host) host.appendChild(input);
+
+  function submit() {
+    var next = _normalizeSessionName(input.value);
+    if (!next) { showToast(SESSION_NAME_ALL_SEPARATORS_MSG); return; }
+    sheet.remove();
+    renameSession(sessionName, next);
+  }
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') submit();
+    else if (e.key === 'Escape') sheet.remove();
+  });
+
+  var backdrop = sheet.querySelector('.flyout-sheet__backdrop');
+  if (backdrop) backdrop.addEventListener('click', function() { sheet.remove(); });
+
+  var panel = sheet.querySelector('.flyout-sheet__panel');
+  if (panel) {
+    panel.addEventListener('click', function(e) {
+      var btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      if (btn.dataset.action === 'confirm-rename') submit();
+      else sheet.remove();
+    });
+  }
+
+  if (typeof input.focus === 'function') input.focus();
+  if (typeof input.select === 'function') input.select();
+}
+
+/**
+ * Rename a session via POST /api/sessions/{name}/rename.
+ *
+ * Local sessions only — main.py proxies create/delete/get/bell-clear over
+ * federation but has no rename route, so a remote name never reaches here
+ * (see RENAME_LOCAL_ONLY_TITLE).
+ *
+ * Two things this reports honestly rather than optimistically:
+ *
+ * 1. The server re-enumerates tmux after the rename and returns the OBSERVED
+ *    name in `name`, which is not necessarily the one that was requested —
+ *    tmux can silently rewrite a name, and templates truncate. The toast
+ *    reports what actually exists now, not what we asked for. Reporting the
+ *    request back as fact is the exact see-one-thing-get-another divergence
+ *    this batch exists to remove.
+ * 2. On rejection the server sends its own sentence AND, when it can compute
+ *    one, a corrected name. api() (muxplex-ctx) already derives both into
+ *    err.message and err.suggested, so this offers the correction as a
+ *    one-click retry rather than re-parsing the body or making the user guess
+ *    at the rule. A suggestion equal to what was just submitted is ignored, so
+ *    a server echoing the name back cannot cause a prompt-and-retry loop.
+ *
+ * @param {string} name - Current session name
+ * @param {string} newName - Requested new name (already normalized by the caller)
+ * @returns {Promise<void>}
+ */
+async function renameSession(name, newName) {
+  // Nothing to do, and not worth a round trip. The server treats this as a
+  // no-op 200 anyway (§7.3), so this only saves the request.
+  if (!name || !newName || name === newName) return;
+
+  try {
+    const res = await api('POST', '/api/sessions/' + encodeURIComponent(name) + '/rename', { new_name: newName });
+    var observed = newName;
+    try {
+      var body = await res.json();
+      if (body && typeof body.name === 'string' && body.name) observed = body.name;
+    } catch (parseErr) {
+      // No usable body — fall back to the requested name for the toast only.
+    }
+    showToast('Renamed to \'' + observed + '\'');
+    // The server killed the old ttyd as part of the rename, so a viewer of the
+    // old name is now pointed at nothing. Re-open under the observed name
+    // rather than dumping the user back to the grid.
+    if (_viewingSession === name && (_viewingRemoteId ?? '') === '') {
+      openSession(observed);
+    }
+    pollSessions();
+  } catch (err) {
+    // err.message is already the server's own explanation when it sent one --
+    // api() derives it, so there is nothing to re-parse here.
+    var msg = (err && err.message) || 'Failed to rename session';
+    var suggested = (err && err.suggested) || '';
+    if (suggested && suggested !== newName) {
+      var canAsk = typeof window !== 'undefined' && typeof window.confirm === 'function';
+      if (canAsk && window.confirm(msg + '\n\nRename to \'' + suggested + '\' instead?')) {
+        return renameSession(name, suggested);
+      }
+      // Declined (or no prompt available) -- still show the correction.
+      showToast(msg + ' Try \'' + suggested + '\'.');
+      return;
+    }
+    showToast(msg);
+  }
 }
 
 /**
@@ -7165,6 +7571,42 @@ function onSortOrderChange() {
   selectSortOrder(value);
 }
 
+// ─── Settings CAS retry policy ──────────────────────────────────────────
+// Total PATCH attempts for a stale-baseline 409 (1 initial + 4 retries).
+// Sized for CONTENTION, not for an outage: every retry re-fetches server
+// truth and rebuilds the patch, so the only thing that keeps failing is a
+// writer that keeps beating us. Five attempts covers a burst of concurrent
+// creates; beyond that the honest answer is to tell the user, not to keep
+// trying.
+const SETTINGS_CAS_MAX_ATTEMPTS = 5;
+const SETTINGS_CAS_BASE_BACKOFF_MS = 25;
+const SETTINGS_CAS_MAX_BACKOFF_MS = 1000;
+
+/**
+ * Jittered exponential backoff before CAS retry `attempt` (0-based).
+ *
+ * The jitter is the point, not decoration: two tabs that just collided are
+ * running the same code and would otherwise wake on the same schedule and
+ * collide again. Spreading them is what makes the second attempt likely to
+ * land at all.
+ * @param {number} attempt - 0-based index of the retry about to be made.
+ * @returns {number} milliseconds to wait.
+ */
+function _settingsCasBackoffMs(attempt) {
+  var base = SETTINGS_CAS_BASE_BACKOFF_MS * Math.pow(2, attempt);
+  return Math.min(SETTINGS_CAS_MAX_BACKOFF_MS, Math.round(base / 2 + Math.random() * base));
+}
+
+/**
+ * Promise-returning sleep. Named separately from setTimeout so the retry
+ * path reads as a policy decision rather than an incidental timer.
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function _delay(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
 /**
  * PATCH /api/settings with optimistic-concurrency protection against the
  * settings-clobber bug: a tab holding a STALE `_serverSettings` snapshot
@@ -7201,27 +7643,50 @@ function onSortOrderChange() {
  * resend the same destructive payload, so this case never retries: it
  * reloads server truth, re-renders, and logs a warning instead.
  *
+ * A stale-baseline 409 is retried up to SETTINGS_CAS_MAX_ATTEMPTS times
+ * with jittered backoff (see _settingsCasBackoffMs). One retry is not
+ * enough: the CAS timestamp moves on EVERY settings write, so any
+ * concurrent writer -- a second browser tab, the ~15s federated settings
+ * sync, or simply two sessions being created moments apart -- costs an
+ * attempt. Two consecutive conflicts are ordinary, not exotic, and losing
+ * the write after them silently dropped whatever the user had just asked
+ * for. The budget is bounded so a server that will never accept the write
+ * still terminates rather than spinning.
+ *
  * @param {function(object): object} mutateFn - Given a deep copy of the
  *   CURRENT `_serverSettings` (freshly re-fetched when the resulting patch
  *   touches views/hidden_sessions; see above), returns the PATCH BODY to
- *   send, e.g. `{ views: [...] }`. May be called up to three times: once to
- *   detect intent, once (only if that intent touches views/hidden_sessions)
- *   against a freshly re-fetched snapshot, and -- only on exactly one
- *   stale-baseline 409 -- once more with an even-fresher snapshot.
+ *   send, e.g. `{ views: [...] }`. Called once to detect intent, once (only
+ *   if that intent touches views/hidden_sessions) against a freshly
+ *   re-fetched snapshot, and once more per stale-baseline 409 retry, each
+ *   time with an even-fresher snapshot. It must therefore be idempotent
+ *   with respect to the snapshot it is handed -- every existing call site
+ *   already is, since each rebuilds its patch from `fresh` rather than
+ *   accumulating into a captured array.
  * @param {object} [opts]
- * @param {boolean} [opts.retry=true] - Internal: false on the retry attempt
- *   itself, so a second consecutive 409 does not loop.
+ * @param {number} [opts.attempt=0] - Internal: 0-based retry counter.
+ * @param {boolean} [opts.retry] - Internal/back-compat: `false` means "this
+ *   is already the last attempt", equivalent to exhausting the budget.
  * @returns {Promise<object>} the parsed PATCH response body (redacted
  *   settings, same shape GET /api/settings returns).
+ * @throws the underlying error. A 409 that exhausted the retry budget is
+ *   tagged `err.casExhausted = true` so a caller can phrase a terminal
+ *   message for the user instead of guessing why it failed.
  */
 async function patchSettingsGuarded(mutateFn, opts) {
-  var retry = !opts || opts.retry !== false;
-  // The retry attempt (opts.retry === false) already has a guaranteed-fresh
+  var attempt = (opts && typeof opts.attempt === 'number') ? opts.attempt : 0;
+  // Back-compat: an external caller passing the old {retry: false} means
+  // "do not retry again", i.e. treat this as the final attempt.
+  if (opts && opts.retry === false && !(typeof opts.attempt === 'number')) {
+    attempt = SETTINGS_CAS_MAX_ATTEMPTS - 1;
+  }
+  var retry = attempt + 1 < SETTINGS_CAS_MAX_ATTEMPTS;
+  // A retry attempt (attempt > 0) already has a guaranteed-fresh
   // baseline -- the 409 handler below just re-fetched it moments ago
   // specifically so the retry could rebuild against server truth. Skip the
   // detection re-fetch in that case; doing it anyway would just be a
   // redundant extra round-trip against data that hasn't changed.
-  var isRetryAttempt = !!(opts && opts.retry === false);
+  var isRetryAttempt = attempt > 0;
   var baseline = _serverSettings ? JSON.parse(JSON.stringify(_serverSettings)) : {};
   var patch = mutateFn(baseline);
 
@@ -7260,23 +7725,29 @@ async function patchSettingsGuarded(mutateFn, opts) {
       throw err;
     }
     if (err.status === 409 && retry) {
-      // Stale baseline: re-fetch server truth, re-apply the SAME intent to
-      // the FRESH copy, and retry exactly once (retry:false below means a
-      // second consecutive 409 falls to the else-branch, not another retry).
+      // Stale baseline: back off (so two clients that just collided do not
+      // immediately collide again on the same schedule), THEN re-fetch
+      // server truth -- in that order, so the baseline we rebuild from is as
+      // fresh as possible at the moment we send -- and re-apply the SAME
+      // intent to the fresh copy.
+      await _delay(_settingsCasBackoffMs(attempt));
       await loadServerSettings();
       _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
-      return patchSettingsGuarded(mutateFn, { retry: false });
+      return patchSettingsGuarded(mutateFn, { attempt: attempt + 1 });
     }
     if (err.status === 409) {
-      // Second consecutive 409: don't loop. Re-render from server truth and
-      // surface a brief non-blocking notice (no dedicated toast text here --
-      // this is an edge case a normal user is unlikely to hit twice in a
-      // row -- console.warn is the existing fallback pattern used elsewhere
-      // in this file, e.g. loadServerSettings()'s own catch).
+      // Budget exhausted: don't loop. Re-render from server truth so the UI
+      // stops showing a change that never landed, and tag the error so the
+      // CALLER can tell the user what they lost -- a bare console.warn here
+      // is invisible to the person whose request was just dropped.
       await loadServerSettings();
       _lastSettingsUpdatedAt = (_serverSettings && _serverSettings.settings_updated_at) || _lastSettingsUpdatedAt;
       _rerenderViewDependentUI();
-      console.warn('[patchSettingsGuarded] conflict persisted after retry; reloaded from server');
+      console.warn(
+        '[patchSettingsGuarded] conflict persisted after ' + (attempt + 1) +
+        ' attempts; reloaded from server',
+      );
+      err.casExhausted = true;
     }
     throw err;
   }
@@ -8785,9 +9256,344 @@ function _suppressAutofill(input) {
 }
 
 /**
+ * Characters that get rewritten to a dash in a session name.
+ *
+ * Source of truth is amplifier_workspace/tmux.py:54 `session_name_from_path()`
+ * -- the function that actually names the session under the default
+ * `new_session_template` -- whose first step is:
+ *
+ *     re.sub(r"[ :./\\]", "-", name)
+ *
+ * Mirroring it here is the whole point: the name the user sees in the box is
+ * then the name tmux ends up creating. Keep the two in sync.
+ *
+ * Deliberately NO case-folding: amplifier-workspace does not lowercase, so
+ * lowercasing here would reintroduce exactly the see-one-thing-get-another
+ * divergence this normalization exists to remove.
+ *
+ * @type {RegExp}
+ */
+const SESSION_NAME_SEPARATOR_RE = /[ :./\\]/g;
+
+/**
+ * Told to the user when everything they typed was separators (e.g. `///`), so
+ * normalization leaves nothing behind. Shared by both new-session flows so the
+ * wording cannot drift. Better than closing the input silently, and better than
+ * POSTing a name the server would reject with an opaque 400.
+ *
+ * @type {string}
+ */
+const SESSION_NAME_ALL_SEPARATORS_MSG =
+  'Session name needs a letter, number or underscore \u2014 that was all separators';
+
+/**
+ * The real session-name limit: 255 BYTES.
+ *
+ * NOT a tmux limit -- tmux has none. Measured on tmux 3.4 over an isolated
+ * `-L` socket, names of 255, 256 and 300 characters all created rc=0 and
+ * round-tripped byte-exact through `list-sessions`.
+ *
+ * The binding constraint is the FILESYSTEM, because the configured
+ * `new_session_template` names a directory after the session
+ * (`amplifier-workspace ~/dev/{name}`), so the session name is a path
+ * component. Measured on this host's ext4:
+ *
+ *     getconf NAME_MAX ~/dev        -> 255
+ *     mkdir 254 chars OK   255 OK   256 -> ENAMETOOLONG
+ *     mkdir 85 CJK chars (255 bytes) OK   86 CJK (258 bytes) -> FAIL
+ *
+ * That last pair is why this constant is named _BYTES: NAME_MAX is a byte
+ * budget. 86 characters is nowhere near 255 CHARACTERS, yet the filesystem
+ * refuses it. See SESSION_NAME_MAX_LENGTH below for what that costs us.
+ *
+ * This number is shared, not invented here. Two sibling repos landed the same
+ * 255 independently and the three must not drift apart again:
+ *   - amplifier-workspace (muxplex-27o): was a hardcoded 32 that SILENTLY
+ *     TRUNCATED; now reads os.pathconf(dir, 'PC_NAME_MAX') at call time and
+ *     refuses loudly, with 255 only as a fallback constant.
+ *   - tmux-kit (muxplex-i1r): was a 64-char reject; now
+ *     SESSION_NAME_MAX_LEN = 255, with SESSION_NAME_RE built FROM it.
+ * Three numbers that disagree is the bug this batch exists to remove.
+ *
+ * @type {number}
+ */
+const SESSION_NAME_MAX_BYTES = 255;
+
+/**
+ * What the new-session input's `maxlength` attribute is set to.
+ *
+ * DERIVED from the byte cap, never written as a second literal -- two numbers
+ * that merely happen to match today is exactly how three repos ended up
+ * carrying 32, 64 and 255.
+ *
+ * THE RESIDUAL GAP, stated plainly: `maxlength` counts UTF-16 code units and
+ * the filesystem counts UTF-8 bytes. For any name the server will actually
+ * accept these are the same number, because tmux-kit's charset is ASCII-only
+ * (`[A-Za-z0-9_.-]`, one byte per character) -- so for the names that matter
+ * this attribute is an exact cap, not an approximation. For a name containing
+ * non-ASCII it is an UPPER BOUND only: 255 CJK characters pass `maxlength` and
+ * are 765 bytes. That case is not left silent -- the live hint below counts
+ * BYTES, so it reads "255 characters, 765/255 bytes -- over the limit" while
+ * the field is still being typed into. (The server rejects such a name on
+ * charset grounds regardless, so the overflow cannot reach the filesystem;
+ * the hint exists so the user is not left guessing which rule they broke.)
+ *
+ * @type {number}
+ */
+const SESSION_NAME_MAX_LENGTH = SESSION_NAME_MAX_BYTES;
+
+/**
+ * How much runway the live length hint gives before the cap bites, in bytes.
+ *
+ * A field that silently stops accepting keystrokes at 255 is itself a
+ * surprise, which is the thing being removed here -- so the counter has to
+ * arrive with room to react, not at the moment input stops. It stays hidden
+ * below this threshold on purpose: a character counter on every ordinary
+ * `work` or `muxplex-fixes` name would be noise, and noise is what gets
+ * ignored when it finally matters.
+ *
+ * @type {number}
+ */
+const SESSION_NAME_HINT_WITHIN_BYTES = 40;
+
+/**
+ * UTF-8 byte length of a string -- the unit the filesystem's NAME_MAX actually
+ * counts, and the only honest way to measure a session name against it.
+ *
+ * Hand-rolled rather than `new TextEncoder().encode(s).length` because this
+ * runs on every keystroke and allocating a Uint8Array per character typed is a
+ * waste; a test asserts it agrees with TextEncoder exactly, including for
+ * surrogate pairs (emoji), so the shortcut cannot quietly drift.
+ *
+ * @param {string} value
+ * @returns {number} byte length when encoded as UTF-8
+ */
+function _sessionNameByteLength(value) {
+  const s = String(value == null ? '' : value);
+  let bytes = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) {
+      bytes += 1;
+    } else if (c < 0x800) {
+      bytes += 2;
+    } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      // High surrogate followed by its pair -- one astral character, 4 bytes.
+      bytes += 4;
+      i++;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * The text of the live length hint for a name in progress, or '' when there is
+ * nothing worth saying.
+ *
+ * Reports BYTES against SESSION_NAME_MAX_BYTES, because bytes are what the
+ * filesystem enforces. When bytes and characters diverge -- only possible for
+ * a non-ASCII name -- both are shown, since "255 characters" and "over the
+ * limit" look like a contradiction unless the byte cost is on screen too.
+ *
+ * @param {string} value
+ * @returns {string} hint text, or '' to show no hint at all
+ */
+function _sessionNameLengthHintText(value) {
+  const s = String(value == null ? '' : value);
+  const bytes = _sessionNameByteLength(s);
+  if (bytes <= SESSION_NAME_MAX_BYTES - SESSION_NAME_HINT_WITHIN_BYTES) return '';
+  let suffix = '';
+  if (bytes > SESSION_NAME_MAX_BYTES) suffix = ' \u2014 over the limit';
+  else if (bytes === SESSION_NAME_MAX_BYTES) suffix = ' \u2014 at the limit';
+  if (bytes !== s.length) {
+    return s.length + ' characters, ' + bytes + '/' + SESSION_NAME_MAX_BYTES + ' bytes' + suffix;
+  }
+  return bytes + '/' + SESSION_NAME_MAX_BYTES + suffix;
+}
+
+/**
+ * Wire the live length hint onto a session-name input: a small counter that
+ * appears beside the field as the name approaches the cap, and flags it when
+ * the byte count goes over.
+ *
+ * The hint is a SIBLING of the input, and neither showNewSessionInput's nor
+ * showFabSessionInput's `cleanup()` knows it exists -- so it takes itself down
+ * on exactly the events those cleanups fire on (Enter, Escape, blur) rather
+ * than being left orphaned in the header after the input is gone. The FAB flow
+ * would also take it down with the overlay; doing it here means both flows are
+ * covered by one rule instead of two.
+ *
+ * @param {HTMLInputElement} input
+ * @returns {HTMLInputElement} the same input, for chaining
+ */
+function _attachSessionNameLengthHint(input) {
+  if (!SESSION_NAME_MAX_BYTES) return input;
+  let hint = null;
+
+  function removeHint() {
+    if (hint && hint.parentNode) hint.parentNode.removeChild(hint);
+  }
+
+  function render() {
+    const text = _sessionNameLengthHintText(input.value);
+    if (!text) {
+      removeHint();
+      return;
+    }
+    const parent = input.parentNode;
+    // Nothing to hang it on yet (the factory builds the input before either
+    // flow inserts it). Silently skipping is right: by the time a name is long
+    // enough to need a counter, the field is mounted and focused.
+    if (!parent || typeof parent.insertBefore !== 'function') return;
+    if (!hint) {
+      hint = document.createElement('span');
+      hint.className = 'new-session-length-hint';
+      hint.title = SESSION_NAME_MAX_BYTES +
+        ' bytes is the filesystem\u2019s limit for a session name. ' +
+        'Non-ASCII characters cost more than one byte each.';
+    }
+    hint.textContent = text;
+    if (hint.classList && typeof hint.classList.toggle === 'function') {
+      hint.classList.toggle(
+        'new-session-length-hint--over',
+        _sessionNameByteLength(input.value) > SESSION_NAME_MAX_BYTES,
+      );
+    }
+    if (hint.parentNode !== parent) parent.insertBefore(hint, input.nextSibling);
+  }
+
+  // Registered AFTER _attachSessionNameNormalization's own `input` listener
+  // (see _createSessionInput's call order), so the count reflects the
+  // normalized value the user is actually looking at.
+  input.addEventListener('input', render);
+  input.addEventListener('compositionend', render);
+  input.addEventListener('keydown', function (e) {
+    if (e && (e.key === 'Enter' || e.key === 'Escape')) removeHint();
+  });
+  input.addEventListener('blur', function () {
+    // Matches the 150ms both flows' blur cleanup waits, plus a little, so the
+    // hint never outlives the input it annotates.
+    setTimeout(removeHint, 160);
+  });
+
+  return input;
+}
+
+/**
+ * The per-character half of session-name normalization, and the only half that
+ * is safe to run on every keystroke.
+ *
+ * Strictly one character in, one character out, so it can never move the caret
+ * on its own. The whole-string tidying -- collapsing runs of dashes, stripping
+ * leading/trailing dashes -- is deliberately NOT done here: collapsing `--` the
+ * instant it appears and stripping the trailing `-` of `my-` would delete the
+ * dash the user just typed and make a compound name impossible to type. That
+ * tidying runs on blur and on submit instead; see `_normalizeSessionName`.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function _normalizeSessionNameLive(value) {
+  return String(value == null ? '' : value).replace(SESSION_NAME_SEPARATOR_RE, '-');
+}
+
+/**
+ * Full session-name normalization, matching amplifier_workspace/tmux.py:54
+ * `session_name_from_path()` step for step:
+ *
+ *     re.sub(r"[ :./\\]", "-", name)   # separators -> dash
+ *     re.sub(r"-{2,}", "-", name)      # collapse runs of dashes
+ *     name.strip("-")                  # strip leading/trailing dashes
+ *
+ * Run on blur and on submit -- never per keystroke.
+ *
+ * Returns '' when the input holds nothing but separators (e.g. `///`), which
+ * callers must treat as "there is no name here, do not submit" rather than
+ * POSTing a name the server would reject with a 400.
+ *
+ * @param {string} value
+ * @returns {string} normalized name, or '' if nothing survives normalization
+ */
+function _normalizeSessionName(value) {
+  const substituted = _normalizeSessionNameLive(String(value == null ? '' : value).trim());
+  return substituted.replace(/-{2,}/g, '-').replace(/^-+/, '').replace(/-+$/, '');
+}
+
+/**
+ * Wire live normalization onto a session-name input so the field can never hold
+ * a name the server would reject: an invalid character becomes a dash the
+ * instant it lands, whether typed, pasted, dropped or autofilled. There is
+ * nothing left to warn about because there is no invalid state to be in.
+ *
+ * Three things this has to get right, all of them things a naive rewrite breaks:
+ *
+ * 1. Caret. Assigning `input.value` parks the caret at the end, so typing a
+ *    space after clicking back into the middle of a name would teleport the
+ *    cursor. We save and restore the selection explicitly. Because
+ *    `_normalizeSessionNameLive` is strictly 1:1 the old offsets are still
+ *    valid in the new value; we clamp anyway so a future rule change can't
+ *    silently throw the caret past the end.
+ * 2. Paste. The `input` event fires AFTER the pasted text has been inserted,
+ *    and we normalize the whole value rather than the delta, so
+ *    `insertFromPaste` needs no separate listener -- pasting `my new session`
+ *    reads `my-new-session` immediately.
+ * 3. IME. Rewriting the buffer mid-composition corrupts input for anyone typing
+ *    a language that needs an IME, so normalization is suspended between
+ *    `compositionstart` and `compositionend` and applied once at the end.
+ *
+ * @param {HTMLInputElement} input
+ * @returns {HTMLInputElement} the same input, for chaining
+ */
+function _attachSessionNameNormalization(input) {
+  let composing = false;
+
+  function normalizeNow() {
+    const before = input.value;
+    const after = _normalizeSessionNameLive(before);
+    if (after === before) return;
+    const start = input.selectionStart;
+    const end = input.selectionEnd;
+    input.value = after;
+    if (typeof start === 'number' && typeof input.setSelectionRange === 'function') {
+      const max = after.length;
+      input.setSelectionRange(
+        Math.min(start, max),
+        Math.min(typeof end === 'number' ? end : start, max),
+      );
+    }
+  }
+
+  input.addEventListener('compositionstart', function () {
+    composing = true;
+  });
+  input.addEventListener('compositionend', function () {
+    composing = false;
+    normalizeNow();
+  });
+  input.addEventListener('input', function () {
+    if (composing) return;
+    normalizeNow();
+  });
+  // Whole-string tidying only once the user has stopped typing. Safe here in a
+  // way it is not per-keystroke: nobody is mid-word on blur.
+  input.addEventListener('blur', function () {
+    if (composing) return;
+    const tidied = _normalizeSessionName(input.value);
+    if (tidied !== input.value) input.value = tidied;
+  });
+
+  return input;
+}
+
+/**
  * Create a new session name input element with shared base configuration.
  * Used by both showNewSessionInput (inline) and showFabSessionInput (overlay)
  * to avoid duplicating the setup properties.
+ *
+ * Live session-name normalization is attached HERE, in the one factory both
+ * flows build their input through, so the two cannot drift apart.
  *
  * @returns {HTMLInputElement}
  */
@@ -8796,7 +9602,12 @@ function _createSessionInput() {
   input.type = 'text';
   input.className = 'new-session-input';
   input.placeholder = 'Session name\u2026';
-  return _suppressAutofill(input);
+  if (SESSION_NAME_MAX_LENGTH) input.maxLength = SESSION_NAME_MAX_LENGTH;
+  // Length hint attached LAST so its `input` listener runs after normalization
+  // has rewritten the value -- it must count what the user is looking at.
+  return _attachSessionNameLengthHint(
+    _attachSessionNameNormalization(_suppressAutofill(input)),
+  );
 }
 
 /**
@@ -8907,11 +9718,17 @@ function showNewSessionInput(btn) {
 
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
-      const name = input.value.trim();
+      // Belt and braces. Live normalization already keeps the field valid, so
+      // this normally changes nothing -- but it catches whatever bypassed the
+      // input event (programmatic set, some autofill paths) and applies the
+      // collapse/strip tidying that is unsafe to run mid-typing.
+      const hadInput = input.value.trim() !== '';
+      const name = _normalizeSessionName(input.value);
       const remoteId = select ? select.value : '';
       const commandId = cmdSelect ? cmdSelect.value : '';
       cleanup();
       if (name) createNewSession(name, remoteId, commandId);
+      else if (hadInput) showToast(SESSION_NAME_ALL_SEPARATORS_MSG);
     } else if (e.key === 'Escape') {
       cleanup();
     }
@@ -8999,12 +9816,16 @@ function showFabSessionInput() {
   }
 
   input.addEventListener('keydown', function(e) {
+    // Same shared helpers as showNewSessionInput's Enter handler -- the two
+    // flows normalize through one place so they cannot drift apart.
     if (e.key === 'Enter') {
-      const name = input.value.trim();
+      const hadInput = input.value.trim() !== '';
+      const name = _normalizeSessionName(input.value);
       const remoteId = select ? select.value : '';
       const commandId = cmdSelect ? cmdSelect.value : '';
       cleanup();
       if (name) createNewSession(name, remoteId, commandId);
+      else if (hadInput) showToast(SESSION_NAME_ALL_SEPARATORS_MSG);
     } else if (e.key === 'Escape') {
       cleanup();
     }
@@ -9060,6 +9881,132 @@ function showFabSessionInput() {
 }
 
 /**
+ * Build the device-qualified session key the server stores in view
+ * definitions and reports back as `sessionKey`: `"<device_id>:<name>"`, or
+ * the bare name when no device id is known.
+ *
+ * ONE constructor, deliberately: createNewSession pins a session into a view
+ * under this key and then polls for the session to appear under the same
+ * key. Those two halves disagreeing is precisely how a created session goes
+ * missing, so they share this function rather than each spelling out the
+ * concatenation.
+ * @param {string} deviceId - device id, or '' / null when unknown.
+ * @param {string} sessionName
+ * @returns {string}
+ */
+function buildSessionKey(deviceId, sessionName) {
+  return deviceId ? (deviceId + ':' + sessionName) : sessionName;
+}
+
+/**
+ * True when a "device id" is really a federation array INDEX.
+ *
+ * The device select falls back to `String(i)` when a peer reports no
+ * device_id (see _createCommandSelect). Real device ids are never all
+ * digits -- a server's is a UUID (identity.py) and a browser's is
+ * `d-xxxxxxxx` (generateDeviceId) -- so this discriminates cleanly. A pin
+ * built on an index can never match the server's `"<device_id>:<name>"`
+ * key, so writing one is strictly worse than writing nothing: it silently
+ * lodges an entry in the view definition that will match nothing, forever.
+ * @param {string} deviceId
+ * @returns {boolean}
+ */
+function _isIndexLikeDeviceId(deviceId) {
+  return /^\d+$/.test(String(deviceId));
+}
+
+/**
+ * Resolve this instance's own device_id, fetching /api/instance-info if the
+ * load-time fetch (see init) has not landed yet.
+ *
+ * The load-time fetch is fire-and-forget, so a session created in the first
+ * moments after a page load used to be pinned under a BARE name. That only
+ * ever worked because the server normalizes such keys after the fact
+ * (normalize_session_keys) and resolves them by dual lookup -- robustness
+ * we should not be spending on an avoidable race.
+ * @returns {Promise<string>} the device id, or '' if it cannot be resolved.
+ */
+async function _ensureLocalDeviceId() {
+  if (_localDeviceId) return _localDeviceId;
+  try {
+    const res = await api('GET', '/api/instance-info');
+    const info = await res.json();
+    if (info && info.device_id) _localDeviceId = info.device_id;
+  } catch (err) {
+    // Fall through to '' -- a bare-name pin still self-heals server-side.
+    console.warn('[_ensureLocalDeviceId] could not resolve local device_id:', err);
+  }
+  return _localDeviceId || '';
+}
+
+/**
+ * Pin a freshly created session into the view it was created from.
+ *
+ * Fire-and-forget by design -- it must never delay the create UX -- but
+ * never SILENT. The user created this session while looking at a particular
+ * view; a session that does not appear there directly contradicts what they
+ * just asked for, and they have no other way to find out. Every terminal
+ * outcome (a CAS that never lands, a destructive-write backstop rejection, a
+ * peer that reports no device id, a view deleted mid-flight) tells them.
+ *
+ * @param {string} sessionName - name the server actually created.
+ * @param {string} remoteId - federation device id, or '' for local.
+ * @param {string} viewName - view to pin into, captured at create time (the
+ *   user may switch views while the PATCH is in flight).
+ * @returns {Promise<void>} always resolves; failures surface as a toast.
+ */
+async function _autoAddSessionToView(sessionName, remoteId, viewName) {
+  function notAdded(detail) {
+    showToast(
+      'Session \'' + sessionName + '\' created, but not added to view \'' +
+      viewName + '\' — ' + detail,
+    );
+  }
+  if (remoteId && _isIndexLikeDeviceId(remoteId)) {
+    console.warn(
+      '[createNewSession] peer reported no device_id (fell back to array index "' +
+      remoteId + '"); refusing to write a pin that could never match',
+    );
+    notAdded('that device reports no device id');
+    return;
+  }
+  try {
+    var deviceId = remoteId || await _ensureLocalDeviceId();
+    var newSessionKey = buildSessionKey(deviceId, sessionName);
+    var viewStillExists = false;
+    var body = await patchSettingsGuarded(function (fresh) {
+      var freshViews = JSON.parse(JSON.stringify((fresh && fresh.views) || []));
+      var freshIdx = -1;
+      for (var fi = 0; fi < freshViews.length; fi++) {
+        if (freshViews[fi].name === viewName) { freshIdx = fi; break; }
+      }
+      // Recomputed on every call, not latched: mutateFn runs again per retry
+      // against a fresher snapshot, and the view could have been deleted in
+      // between.
+      viewStillExists = freshIdx >= 0;
+      if (viewStillExists && !freshViews[freshIdx].sessions.includes(newSessionKey)) {
+        freshViews[freshIdx].sessions.push(newSessionKey);
+      }
+      return { views: freshViews };
+    });
+    if (_serverSettings) _serverSettings.views = body.views;
+    if (!viewStillExists) {
+      // The PATCH succeeded, but against server truth in which the view no
+      // longer exists -- a success that did not do what was asked.
+      console.warn('[createNewSession] view \'' + viewName + '\' no longer exists; pin not written');
+      notAdded('that view no longer exists');
+    }
+  } catch (err) {
+    console.warn('[createNewSession] auto-add to view failed:', err);
+    notAdded(
+      err && err.casExhausted
+        ? 'the settings kept changing underneath — add it from the session menu'
+        : 'add it from the session menu',
+    );
+  }
+}
+
+/**
  * Create a new tmux session via POST /api/sessions.
  * Shows a toast, then polls _currentSessions until the session name appears
  * (or times out after 30s) before calling openSession — this handles commands
@@ -9083,39 +10030,43 @@ async function createNewSession(name, remoteId, commandId) {
     const data = await res.json();
     const sessionName = data.name || name;
 
-    // Auto-add to active user view (not 'all' or 'hidden')
+    // Safety net: never adopt a different name in silence. muxplex-n8q made
+    // this endpoint report the name tmux ACTUALLY created, and the input is
+    // now capped at the real filesystem limit, so a rename should be
+    // unreachable -- which is precisely what everyone believed about
+    // amplifier-workspace's 32-char truncation until sessions went missing.
+    // ONE showToast, branching on the message: a second call in the same tick
+    // would overwrite the first (see the ordering note on the auto-add below).
+    showToast(
+      sessionName === name
+        ? 'Creating session \'' + sessionName + '\'…'
+        : 'Creating session \'' + sessionName + '\' — the name \'' + name +
+          '\' was changed to fit',
+    );
+
+    // Auto-add to active user view (not 'all' or 'hidden'). Deliberately NOT
+    // awaited -- the create UX must not wait on a settings write -- but
+    // _autoAddSessionToView surfaces every failure to the user rather than
+    // dropping it into the console.
+    //
+    // Ordered AFTER the toast above on purpose: the refusal path (a peer
+    // with no device_id) has no await before its notice, so starting this
+    // first would show the notice and then immediately overwrite it with
+    // 'Creating session…' in the same tick.
     if (_activeView !== 'all' && _activeView !== 'hidden') {
+      // Capture the view NAME now. The PATCH resolves later and the user may
+      // have switched views by then; re-reading _activeView inside the
+      // callback would pin the session into whatever view they moved to.
+      var targetView = _activeView;
       var views = (_serverSettings && _serverSettings.views) || [];
       var viewIdx = -1;
       for (var vi = 0; vi < views.length; vi++) {
-        if (views[vi].name === _activeView) { viewIdx = vi; break; }
+        if (views[vi].name === targetView) { viewIdx = vi; break; }
       }
       if (viewIdx >= 0) {
-        var newSessionKey = remoteId ? (remoteId + ':' + sessionName) : sessionName;
-        if (!remoteId && _localDeviceId) {
-          newSessionKey = _localDeviceId + ':' + sessionName;
-        }
-        patchSettingsGuarded(function(fresh) {
-          var freshViews = JSON.parse(JSON.stringify((fresh && fresh.views) || []));
-          var freshIdx = -1;
-          for (var fi = 0; fi < freshViews.length; fi++) {
-            if (freshViews[fi].name === _activeView) { freshIdx = fi; break; }
-          }
-          if (freshIdx >= 0 && !freshViews[freshIdx].sessions.includes(newSessionKey)) {
-            freshViews[freshIdx].sessions.push(newSessionKey);
-          }
-          return { views: freshViews };
-        })
-          .then(function(body) {
-            if (_serverSettings) _serverSettings.views = body.views;
-          })
-          .catch(function(err) {
-            console.warn('[createNewSession] auto-add to view failed:', err);
-          });
+        _autoAddSessionToView(sessionName, remoteId, targetView);
       }
     }
-
-    showToast('Creating session \'' + sessionName + '\'…');
 
     // Inject a loading placeholder tile so the user sees feedback immediately
     var loadingTile = null;
@@ -9144,31 +10095,130 @@ async function createNewSession(name, remoteId, commandId) {
       return;
     }
 
-    // Compute expectedKey: for remote sessions, use 'deviceId:sessionName' (sessionKey format)
-    var expectedKey = deviceId ? (deviceId + ':' + sessionName) : sessionName;
+    // Which key-space _currentSessions carries depends on which endpoint
+    // pollSessions() just hit. GET /api/sessions (multi-device OFF) pops
+    // sessionKey, so a local session arrives carrying a bare `name`; GET
+    // /api/federation/sessions (multi-device ON) keeps it, so the SAME local
+    // session arrives as '<localDeviceId>:<name>'. Matching only one of those
+    // spaces is what produced a false "taking longer than expected" toast on
+    // every local create while multi-device was on. Build the key the way the
+    // view pin above builds it, and accept every space the active endpoint can
+    // legitimately return for THIS create.
+    var expectedKeys = deviceId
+      ? [deviceId + ':' + sessionName]
+      : [sessionName].concat(_localDeviceId ? [_localDeviceId + ':' + sessionName] : []);
+
+    // _localDeviceId is filled in asynchronously from /api/instance-info, so a
+    // create racing that fetch has no prefix to build with. remoteId is
+    // null/absent for a local session on BOTH endpoints and truthy for a
+    // peer's, so it identifies the session without needing the id -- and stops
+    // a peer's same-named session being mistaken for the one we just created.
+    function isCreatedSession(s) {
+      if (!s || s.name !== sessionName) return false;
+      if (expectedKeys.indexOf(s.sessionKey || s.name) !== -1) return true;
+      return deviceId ? s.remoteId === deviceId : !s.remoteId;
+    }
+
+    // Array.isArray, not a bare truthiness check. _currentSessions is whatever
+    // GET /api/(federation/)sessions last deserialized, and `.find` on a
+    // non-array object is undefined -- calling it throws. Treating a non-array
+    // as "not found" keeps the poll on its ordinary give-up path instead of
+    // dying mid-callback (see pollEvery below for why that mattered).
+    function findCreatedSession() {
+      return Array.isArray(_currentSessions) ? _currentSessions.find(isCreatedSession) : undefined;
+    }
+
+    // Own the teardown here rather than trusting every branch of every tick to
+    // reach its own clearInterval. A tick that throws is the leak: an async
+    // setInterval callback rejects a promise nobody awaits, so the throw is
+    // INVISIBLE and the timer keeps rescheduling for the life of the page.
+    // `tick` returns true when the poll is finished; a tick that throws counts
+    // as finished too (`done` starts true), so the failure mode is one stopped
+    // timer and a reported error, never a timer nobody can stop.
+    function pollEvery(intervalMs, tick) {
+      var handle = setInterval(async function() {
+        var done = true;
+        try {
+          done = await tick();
+        } catch (err) {
+          console.error('[createNewSession] readiness poll tick failed:', err);
+          removeLoadingTile();
+          showToast('Session \'' + sessionName + '\' status is unknown - check the All list');
+        }
+        if (done) clearInterval(handle);
+      }, intervalMs);
+      return handle;
+    }
 
     // Poll until the session appears in _currentSessions (max 30s, every 2s)
     var attempts = 0;
     var maxAttempts = 15;
-    var pollForSession = setInterval(async function() {
+    pollEvery(2000, async function() {
       attempts++;
       await pollSessions();
-      var found = _currentSessions && _currentSessions.find(function(s) {
-        return (s.sessionKey || s.name) === expectedKey;
-      });
+      var found = findCreatedSession();
       if (found) {
-        clearInterval(pollForSession);
         removeLoadingTile();
         showToast('Session \'' + sessionName + '\' ready');
         openSession(sessionName, { remoteId: deviceId });
+        return true;
       } else if (attempts >= maxAttempts) {
-        clearInterval(pollForSession);
         removeLoadingTile();
-        showToast('Session \'' + sessionName + '\' is taking longer than expected');
+        // The POST already succeeded, so this is NOT a failure: the server can
+        // legitimately still be working (tmux_kit's spawn_session returns
+        // success on its own 30s timeout and leaves the caller polling, and
+        // /api/sessions serves a list refreshed every couple of seconds). Say
+        // only what is actually known, then keep watching at a slower cadence
+        // so a late arrival still resolves the UI instead of stranding the
+        // user on a message that turned out to be wrong.
+        showToast('Session \'' + sessionName + '\' is still starting - it will appear in the All list when ready');
+        watchForLateArrival();
+        return true;
       }
-    }, 2000);
+      return false;
+    });
+
+    // Phase two, after the 30s window gives up: 5s x 24 = two more minutes.
+    // Deliberately does NOT auto-open -- a fullscreen switch minutes after the
+    // fact would yank a user who has long since moved on -- it only clears the
+    // stale "creating" state and reports what actually happened. Declared
+    // after the loop that calls it (hoisted) so the main path reads first.
+    function watchForLateArrival() {
+      var lateAttempts = 0;
+      var maxLateAttempts = 24;
+      pollEvery(5000, async function() {
+        lateAttempts++;
+        await pollSessions();
+        var arrived = findCreatedSession();
+        if (arrived) {
+          removeLoadingTile();
+          showToast('Session \'' + sessionName + '\' is ready now - open it from the All list');
+          return true;
+        } else if (lateAttempts >= maxLateAttempts) {
+          removeLoadingTile();
+          showToast('Session \'' + sessionName + '\' did not appear - creation may have failed');
+          return true;
+        }
+        return false;
+      });
+    }
   } catch (err) {
-    showToast(err.message || 'Failed to create session');
+    // err.message is already the server's own explanation when it sent one --
+    // api() derives it, so there is nothing to re-parse here.
+    var msg = (err && err.message) || 'Failed to create session';
+    // err.suggested is a name the server says WOULD be accepted. Offer it as a
+    // one-click correction rather than making the user guess at the rule.
+    var suggested = (err && err.suggested) || '';
+    if (suggested && suggested !== name) {
+      var canAsk = typeof window !== 'undefined' && typeof window.confirm === 'function';
+      if (canAsk && window.confirm(msg + '\n\nCreate \'' + suggested + '\' instead?')) {
+        return createNewSession(suggested, remoteId, commandId);
+      }
+      // Declined (or no prompt available) -- still show the correction.
+      showToast(msg + ' Try \'' + suggested + '\'.');
+      return;
+    }
+    showToast(msg);
   }
 }
 
@@ -10225,6 +11275,11 @@ if (typeof module !== 'undefined' && module.exports) {
     createNewSession,
     // Kill session
     killSession,
+    // Rename session (flyout ⋮ menu -> POST /api/sessions/{name}/rename)
+    RENAME_LOCAL_ONLY_TITLE,
+    renameSession,
+    _doRenameSessionInline,
+    _openMobileRenameSheet,
     // Manage View panel
     openManageViewPanel,
     closeManageViewPanel,
@@ -10236,6 +11291,8 @@ if (typeof module !== 'undefined' && module.exports) {
     _previewManageViewRule,
     _clearManageViewRulesPreviewTimer,
     // Flyout menu
+    FLYOUT_MENU_MAP,
+    _buildFlyoutMenuItems,
     openFlyoutMenu,
     closeFlyoutMenu,
     // Filter bar
@@ -10295,7 +11352,28 @@ if (typeof module !== 'undefined' && module.exports) {
     NEW_SESSION_DEFAULT_TEMPLATE,
     DELETE_SESSION_DEFAULT_TEMPLATE,
     _createCommandSelect,
+    // Session-name normalization (shared by both new-session flows)
+    SESSION_NAME_SEPARATOR_RE,
+    SESSION_NAME_MAX_BYTES,
+    SESSION_NAME_MAX_LENGTH,
+    SESSION_NAME_HINT_WITHIN_BYTES,
+    SESSION_NAME_ALL_SEPARATORS_MSG,
+    _normalizeSessionNameLive,
+    _normalizeSessionName,
+    _attachSessionNameNormalization,
+    _sessionNameByteLength,
+    _sessionNameLengthHintText,
+    _attachSessionNameLengthHint,
+    _createSessionInput,
     createNewSession,
+    // Session-key construction + auto-add-to-view (muxplex-htg)
+    buildSessionKey,
+    _isIndexLikeDeviceId,
+    _ensureLocalDeviceId,
+    _autoAddSessionToView,
+    // Settings CAS retry policy
+    SETTINGS_CAS_MAX_ATTEMPTS,
+    _settingsCasBackoffMs,
     renderCommandPairsSettings,
     _buildCommandPairRow,
     _shellQuote,

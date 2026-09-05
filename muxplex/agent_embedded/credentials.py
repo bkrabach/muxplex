@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -92,25 +94,43 @@ def resolve_status(provider: str) -> dict[str, Any]:
     }
 
 
-async def validate_key(
+async def _enumerate_models(
     provider: str, api_key: str, *, timeout_seconds: float = 15.0
-) -> tuple[str, str]:
-    """Validate *api_key* for *provider* with a REAL, lightweight provider
-    call -- the in-process equivalent of the sidecar's scratch-home
-    ``auth set`` + ``models list --provider`` validation (see
-    docs/designs/agent-credentials.md SS3.3). Never touches the
-    credentials file or any process-wide state: the candidate key is used
-    to instantiate the provider class directly and discarded when this
-    function returns, so a concurrent turn using the REAL stored/env
+) -> tuple[str, str, list[Any] | None]:
+    """Ask *provider* what it serves, once, using *api_key*, and return
+    ``(verdict, detail, raw_models)``.
+
+    THE single place muxplex asks a provider to enumerate its models. Two
+    callers want that answer for two different reasons:
+    :func:`validate_key` only cares whether the call SUCCEEDED (is this
+    candidate key any good?), while :func:`served_model_check` needs the
+    LIST itself (is the model the panel displays actually served?). A
+    second copy of this instantiate/call/close dance would be a second
+    thing to keep correct, and the enumeration half is the part with a
+    live network call in it.
+
+    Never touches the credentials file or any process-wide state: the key
+    is used to instantiate the provider class directly and discarded when
+    this function returns, so a concurrent turn using the REAL stored/env
     credential is never at risk.
 
-    Returns ``(verdict, detail)``:
+    Verdicts (this taxonomy is :func:`validate_key`'s original one,
+    unchanged, so its contract is preserved exactly):
 
-    * ``"ok"``             -- key accepted; detail names how many models came back.
+    * ``"ok"``             -- the provider answered; detail names how many models came back.
     * ``"bad_key"``        -- the provider rejected the credential (401/auth error).
     * ``"unreachable"``    -- timeout or a non-auth connection error.
     * ``"module_missing"`` -- the provider's Python module isn't installed.
     * ``"error"``          -- couldn't even attempt the call (bad plumbing).
+
+    ``raw_models`` is ``None`` for every non-``"ok"`` verdict -- ABSENT,
+    never an empty list. That distinction is load-bearing downstream: an
+    empty list means "the provider answered, and named nothing", which is
+    a legitimate answer for some providers; ``None`` means "we never got
+    an answer at all". Collapsing the two would let a failed call read as
+    a provider that serves no models -- i.e. it would turn "I could not
+    check" into "your model is not served", which is precisely the
+    confidently-wrong failure this seam exists to prevent.
     """
     try:
         # Reaching into amplifier_agent_cli.admin.models' leading-underscore
@@ -129,7 +149,7 @@ async def validate_key(
             load_provider_class,
         )
     except ImportError as exc:
-        return "error", f"amplifier-agent CLI package not importable: {exc}"
+        return "error", f"amplifier-agent CLI package not importable: {exc}", None
 
     try:
         _load_provider_module(provider)
@@ -137,17 +157,18 @@ async def validate_key(
         return (
             "module_missing",
             f"provider module not installed for {provider!r}: {exc}",
+            None,
         )
 
     provider_class = load_provider_class(provider)
     if provider_class is None:
-        return "error", f"no provider class found for {provider!r}"
+        return "error", f"no provider class found for {provider!r}", None
 
     instance = _try_instantiate_provider(
         provider_class, credentials={"api_key": api_key}
     )
     if instance is None:
-        return "error", f"could not instantiate the {provider!r} provider class"
+        return "error", f"could not instantiate the {provider!r} provider class", None
 
     try:
         list_models = instance.list_models
@@ -161,6 +182,7 @@ async def validate_key(
         return (
             "unreachable",
             f"timed out after {timeout_seconds}s calling {provider!r}'s API",
+            None,
         )
     except Exception as exc:  # noqa: BLE001 -- classified by the provider's own error text below
         combined = str(exc).lower()
@@ -173,8 +195,8 @@ async def validate_key(
             "incorrect api key",
         )
         if any(marker in combined for marker in bad_key_markers):
-            return "bad_key", f"{type(exc).__name__}: {exc}"
-        return "unreachable", f"{type(exc).__name__}: {exc}"
+            return "bad_key", f"{type(exc).__name__}: {exc}", None
+        return "unreachable", f"{type(exc).__name__}: {exc}", None
     finally:
         close = getattr(instance, "close", None)
         if callable(close):
@@ -190,8 +212,327 @@ async def validate_key(
         # own "no live model list available" advisory rather than treating
         # empty as failure (see amplifier_agent_cli/admin/models.py's
         # docstring contract table).
-        return "ok", "0 models returned (may be expected for this provider)"
-    return "ok", f"{len(models)} model(s) returned"
+        return "ok", "0 models returned (may be expected for this provider)", []
+    return "ok", f"{len(models)} model(s) returned", list(models)
+
+
+async def validate_key(
+    provider: str, api_key: str, *, timeout_seconds: float = 15.0
+) -> tuple[str, str]:
+    """Validate *api_key* for *provider* with a REAL, lightweight provider
+    call -- the in-process equivalent of the sidecar's scratch-home
+    ``auth set`` + ``models list --provider`` validation (see
+    docs/designs/agent-credentials.md SS3.3).
+
+    A thin projection of :func:`_enumerate_models` onto the only question
+    this caller asks: did the call work? The served list itself is
+    discarded here on purpose -- a candidate key being validated is not
+    necessarily the credential a turn will actually use (env still wins
+    over a stored key), so caching THIS list against the resolved
+    credential would be wrong. :func:`served_model_check` does that
+    against the resolved credential instead.
+
+    Returns ``(verdict, detail)``; see :func:`_enumerate_models` for the
+    verdict taxonomy, which this preserves unchanged.
+    """
+    verdict, detail, _models = await _enumerate_models(
+        provider, api_key, timeout_seconds=timeout_seconds
+    )
+    return verdict, detail
+
+
+#: How long a SUCCESSFUL enumeration is reused before the provider is
+#: asked again.
+#:
+#: A served-model list changes on the order of months; a live API call on
+#: every Settings -> Agent open is disproportionate to that, and the item
+#: this implements (muxplex-y15) called for a caching policy by name. Only
+#: successes are cached -- a timeout or a refused key is never remembered,
+#: because a transient failure that stuck for five minutes would keep
+#: reporting "could not check" long after the provider came back.
+SERVED_MODELS_TTL_SECONDS: float = 300.0
+
+#: provider -> (credential fingerprint, monotonic fetch time, model ids).
+#:
+#: Keyed by a fingerprint of the RESOLVED credential, not just by
+#: provider, so swapping the environment variable or saving a new key
+#: through the panel invalidates the entry by construction rather than by
+#: remembering to call something. The fingerprint is a truncated SHA-256
+#: -- never the key, and never even the masked form, which is displayed
+#: and therefore reversible-ish by eye.
+_served_models_cache: dict[str, tuple[str, float, tuple[str, ...]]] = {}
+_served_models_lock = asyncio.Lock()
+
+
+def _credential_fingerprint(api_key: str) -> str:
+    """Stable, non-reversible cache key for a credential."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+
+
+def clear_served_models_cache() -> None:
+    """Forget every cached enumeration.
+
+    Exists for tests and for any future caller that knows the credential
+    landscape changed underneath us. Not called on the persist path: a
+    newly stored key changes the fingerprint, so the entry is already
+    invalid without anyone having to remember this function exists.
+    """
+    _served_models_cache.clear()
+
+
+def _model_ids(raw_models: list[Any]) -> list[str] | None:
+    """Normalise whatever ``list_models()`` returned into model id
+    strings, or ``None`` if the shape cannot be read.
+
+    ``None`` -- not ``[]`` -- is the answer for an unreadable shape, and
+    that is the whole reason this function exists separately. An empty
+    list flows downstream as "the provider serves nothing we recognise",
+    which would render as "your model is not served"; a shape we simply
+    could not parse must render as "could not check" instead. muxplex does
+    not own ``list_models()``'s return type (it lives in amplifier-agent's
+    provider classes), so a future upstream change to it must degrade to
+    an honest unknown rather than to a confident, wrong accusation.
+
+    Three shapes are accepted because all three are plausible for a list
+    of models and none costs anything to support: bare strings, objects
+    with an ``id``/``name``/``model`` attribute (the shape this repo's own
+    test doubles use), and mappings with those keys.
+    """
+    ids: list[str] = []
+    for entry in raw_models:
+        if isinstance(entry, str):
+            value: Any = entry
+        elif isinstance(entry, dict):
+            value = entry.get("id") or entry.get("name") or entry.get("model")
+        else:
+            value = (
+                getattr(entry, "id", None)
+                or getattr(entry, "name", None)
+                or getattr(entry, "model", None)
+            )
+        if not isinstance(value, str) or not value:
+            # One unreadable entry is enough: a partial list would let a
+            # served model look absent purely because its entry was the
+            # one we could not parse.
+            return None
+        ids.append(value)
+    return ids
+
+
+def _match_served(model: str, served: list[str]) -> str | None:
+    """Return the served id that satisfies *model*, or ``None``.
+
+    Exact match first. Failing that, a dash-delimited family match in
+    either direction -- ``claude-sonnet-5`` against a served
+    ``claude-sonnet-5-20260101``, or vice versa -- counts as served, and
+    the caller names the exact served id it matched so the difference is
+    visible rather than hidden.
+
+    This asymmetry is deliberate, and it is the one judgement call in this
+    file. A false "not served" tells a user their working configuration is
+    broken and invites them to change something that was fine; a false
+    "served" merely fails to warn, which is exactly where this feature
+    started. The cost of the two mistakes is not symmetric, so the
+    matching leans away from crying wolf.
+    """
+    if model in served:
+        return model
+    for candidate in served:
+        if candidate.startswith(model + "-") or model.startswith(candidate + "-"):
+            return candidate
+    return None
+
+
+def _resolve_api_key(provider: str) -> str:
+    """Return the credential a real turn would use for *provider*, or ``""``.
+
+    The same env-first chain :func:`resolve_status` reports on and
+    ``runner.check_available()`` gates on -- not a second resolution
+    order. Only the KEY is returned, and only to :func:`served_model_check`
+    one stack frame away; it is never stored, never cached (its
+    fingerprint is), and never leaves the process.
+
+    Split out as a named function for the same reason ``resolve_status``
+    is one: it is the single place this module touches amplifier-agent's
+    resolver, which makes it the seam a test can stand in for. Without it,
+    every test of the served-model logic would need the optional ``agent``
+    extra installed and would skip on the environments where this logic is
+    most likely to be changed blind.
+    """
+    from amplifier_agent_cli.provider_sources import resolve_credential_detailed
+
+    resolution = resolve_credential_detailed(provider)
+    if not resolution.resolved:
+        return ""
+    return (resolution.credentials or {}).get("api_key", "") or ""
+
+
+async def served_model_check(*, timeout_seconds: float = 15.0) -> dict[str, Any]:
+    """Answer, honestly, whether the provider actually serves the model
+    the Agent panel displays.
+
+    THE POINT: before this, the panel showed the model muxplex BELIEVES it
+    is using (muxplex-nnl pinned that display to the runner's own
+    constant, so it cannot drift from what a turn sends). Nothing checked
+    that the provider will serve it. A renamed, retired, or mistyped model
+    id displayed with total confidence and failed only at turn time, mid
+    stream -- the software knowing something the user does not.
+
+    THREE OUTCOMES, deliberately distinct, because collapsing any two of
+    them recreates the defect in a new place::
+
+        status="validated"   the provider serves this model.
+        status="not_served"  the provider answered, and this model is not
+                             in the list. `served` names what IS available.
+        status="unknown"     we could not check. `reason` says why.
+
+    ``"unknown"`` must read as neither a pass nor a failure. Every path
+    that cannot produce a real answer -- no library, no credential, a
+    refused key, a timeout, a provider that enumerates nothing, a model
+    list in a shape we cannot parse -- lands here rather than being
+    rounded to the nearest confident verdict.
+
+    NOT ON THE GATE PATH, and that is structural rather than incidental.
+    ``full_status()`` backs both Settings -> Agent AND ``checkAgentGate()``,
+    which chat.js polls, and that gate FAILS OPEN on error by design
+    (muxplex-at9). Putting a live provider round-trip in ``full_status()``
+    would make the gate slow, network-dependent, and would let a provider
+    blip influence whether the panel is usable. So this is a separate
+    function behind a separate endpoint, requested only when the settings
+    tab renders.
+    """
+    from . import runner as _runner
+
+    library_reason = await _runner.library_unavailable_reason()
+    if library_reason:
+        # No importable runner means no provider to ask and no model whose
+        # servability could be in question -- the same reason full_status()
+        # reports a null active provider/model here.
+        return {
+            "status": "unknown",
+            "reason": "library_missing",
+            "provider": None,
+            "model": None,
+            "served": None,
+            "detail": library_reason,
+        }
+
+    provider = _runner.active_provider()
+    model = _runner.default_model()
+
+    api_key = _resolve_api_key(provider)
+    if not api_key:
+        return {
+            "status": "unknown",
+            "reason": "no_credential",
+            "provider": provider,
+            "model": model,
+            "served": None,
+            "detail": (
+                f"No {provider} credential is set, so the served model list "
+                "cannot be read. This is not a sign the model is wrong."
+            ),
+        }
+
+    fingerprint = _credential_fingerprint(api_key)
+    # The lock is held ACROSS the provider call, deliberately: it makes
+    # this single-flight. Two settings tabs opening at once produce one
+    # request, and the second caller finds the cache warm rather than
+    # duplicating a live round-trip. The cost is that the second caller
+    # waits out the first one's timeout -- which is the right trade for a
+    # panel line, and is bounded by `timeout_seconds` either way.
+    async with _served_models_lock:
+        cached = _served_models_cache.get(provider)
+        fresh = (
+            cached is not None
+            and cached[0] == fingerprint
+            and (time.monotonic() - cached[1]) < SERVED_MODELS_TTL_SECONDS
+        )
+        if cached is not None and fresh:
+            served = list(cached[2])
+        else:
+            verdict, detail, raw_models = await _enumerate_models(
+                provider, api_key, timeout_seconds=timeout_seconds
+            )
+            if verdict != "ok" or raw_models is None:
+                return {
+                    "status": "unknown",
+                    "reason": verdict if verdict != "ok" else "error",
+                    "provider": provider,
+                    "model": model,
+                    "served": None,
+                    "detail": (
+                        f"Could not read {provider}'s model list: {detail}. "
+                        "This is not a sign the model is wrong."
+                    ),
+                }
+            ids = _model_ids(raw_models)
+            if ids is None:
+                return {
+                    "status": "unknown",
+                    "reason": "unreadable_model_list",
+                    "provider": provider,
+                    "model": model,
+                    "served": None,
+                    "detail": (
+                        f"{provider} returned a model list in a shape muxplex "
+                        "could not read, so the model could not be checked."
+                    ),
+                }
+            if not ids:
+                # Legitimate for some providers -- validate_key's own
+                # docstring already notes azure-openai returns an empty
+                # list by design with a perfectly good key. Not evidence
+                # the model is absent; evidence there is nothing to check
+                # against.
+                return {
+                    "status": "unknown",
+                    "reason": "no_enumeration",
+                    "provider": provider,
+                    "model": model,
+                    "served": [],
+                    "detail": (
+                        f"{provider} does not publish a model list, so the "
+                        "model could not be checked against one."
+                    ),
+                }
+            served = ids
+            _served_models_cache[provider] = (
+                fingerprint,
+                time.monotonic(),
+                tuple(ids),
+            )
+
+    matched = _match_served(model, served)
+    if matched is None:
+        return {
+            "status": "not_served",
+            "reason": None,
+            "provider": provider,
+            "model": model,
+            "served": served,
+            "detail": (
+                f"{provider} does not serve {model!r}. A turn using it will "
+                "fail. Available models: " + ", ".join(sorted(served))
+            ),
+        }
+    if matched != model:
+        return {
+            "status": "validated",
+            "reason": None,
+            "provider": provider,
+            "model": model,
+            "served": served,
+            "detail": f"{provider} serves {model!r} as {matched!r}.",
+        }
+    return {
+        "status": "validated",
+        "reason": None,
+        "provider": provider,
+        "model": model,
+        "served": served,
+        "detail": f"{provider} serves {model!r}.",
+    }
 
 
 def persist_key(provider: str, api_key: str) -> Path:
@@ -248,6 +589,34 @@ async def full_status() -> dict[str, Any]:
     that part IS purely informational, matching the sidecar's shape so the
     Settings -> Agent tab's per-provider display code (chat.js
     ``_renderAgentCredentialStatus``) works unmodified for both modes.
+
+    ``active`` (muxplex-nnl) answers the question nothing in the UI could
+    answer before: WHICH provider and model am I talking to. Both values
+    come from the runner itself (:func:`~muxplex.agent_embedded.runner.
+    active_provider` / :func:`~muxplex.agent_embedded.runner.default_model`)
+    rather than being restated here, so the panel cannot display a
+    provider/model pair the runner would not actually mount.
+
+    ``None`` in either field means UNKNOWN and must render as such. It is
+    not a hole to paper over with a plausible default: when the library
+    isn't importable there is no runner to have an active anything, and
+    "anthropic / claude-sonnet-5" printed under those conditions would be
+    a confident lie about a server that cannot run a turn at all.
+
+    THE ``models`` FIELD IS GONE (muxplex-y15), deliberately rather than
+    by oversight. It was a sidecar-shape leftover -- ``[]`` on every
+    embedded response since embedded mode began, with zero readers in the
+    frontend. muxplex-nnl noted it and left it; that was the right call
+    then and the wrong one to repeat, because this change finally gives
+    the served-model list a real home
+    (:func:`served_model_check`, behind ``GET /api/agent/served-models``).
+    Populating it HERE was the tempting alternative and is the one thing
+    that must not happen: this response backs ``checkAgentGate()``, which
+    chat.js polls, so a live provider round-trip in this function would
+    make the gate network-dependent. Keeping an always-empty ``models``
+    alongside a real served list elsewhere would leave two answers to one
+    question, and the permanently-empty one is the one a reader would
+    find first.
     """
     from . import runner as _runner
 
@@ -258,8 +627,11 @@ async def full_status() -> dict[str, Any]:
             "message": library_reason,
             "providers": {},
             "sidecar": "running",
-            "models": [],
             "mode": "embedded",
+            # Unknown, deliberately -- see the docstring. There is no
+            # importable runner here, so there is nothing whose active
+            # provider/model this could truthfully report.
+            "active": {"provider": None, "model": None},
         }
 
     providers = {p: resolve_status(p) for p in sorted(ALLOWED_PROVIDERS)}
@@ -288,15 +660,22 @@ async def full_status() -> dict[str, Any]:
         # field), which is correct: that warning describes a cost embedded
         # mode never has.
         "sidecar": "running",
-        "models": [],
         "mode": "embedded",
+        # Reported even when `state` is "not_configured": the library IS
+        # here, so the runner's provider/model are real facts about what a
+        # turn would mount. Whether a credential exists is a separate
+        # question, already answered by `state` and `providers`.
+        "active": {"provider": active_provider, "model": _runner.default_model()},
     }
 
 
 __all__ = [
     "ALLOWED_PROVIDERS",
+    "SERVED_MODELS_TTL_SECONDS",
+    "clear_served_models_cache",
     "full_status",
     "persist_key",
     "resolve_status",
+    "served_model_check",
     "validate_key",
 ]

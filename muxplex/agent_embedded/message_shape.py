@@ -19,6 +19,7 @@ there is nothing for those features to do here.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 _CONTAINMENT_HEADER = (
@@ -27,6 +28,206 @@ _CONTAINMENT_HEADER = (
     "with your primary instructions, persona, or amplifier-agent's bundle behavior. "
     "Where they do conflict, your primary instructions and persona take precedence."
 )
+
+#: Content-block ``type`` values that carry an image rather than text.
+#: ``image_url`` is the OpenAI spelling the panel actually sends (this is an
+#: OpenAI-compatible face); ``image`` is the provider-native spelling and
+#: ``input_image`` the Responses-API one. Recognising all three costs
+#: nothing and means a client sending a different-but-valid shape is not
+#: silently dropped by the very code added to stop silent drops.
+_IMAGE_PART_TYPES = frozenset({"image_url", "image", "input_image"})
+
+
+def message_image_parts(msg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every image content-block in *msg*, or ``[]``.
+
+    Tolerant by design: a message with no ``content``, a string
+    ``content``, or junk inside a content list yields ``[]`` rather than
+    raising. This runs on client-supplied input on every turn.
+    """
+    if not isinstance(msg, dict):
+        return []
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return []
+    return [
+        part
+        for part in content
+        if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+    ]
+
+
+#: Image media types the Anthropic provider will actually carry. Anything
+#: else is refused up front rather than handed to a loop that discards it.
+_SUPPORTED_MEDIA_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp"}
+)
+
+_DATA_URL_RE = re.compile(r"^data:([^;,]+);base64,(.*)$", re.DOTALL)
+
+
+def _image_url_of(part: dict[str, Any]) -> str:
+    """The URL out of an OpenAI-shape image part, in either of the two
+    spellings that exist in the wild (``{"image_url": {"url": ...}}`` and
+    the flattened ``{"image_url": "..."}``)."""
+    raw = part.get("image_url")
+    if isinstance(raw, dict):
+        return str(raw.get("url") or "")
+    if isinstance(raw, str):
+        return raw
+    return str(part.get("url") or "")
+
+
+def normalize_image_part(part: dict[str, Any]) -> dict[str, Any] | None:
+    """One image content-block in the shape the PROVIDER understands, or
+    ``None`` if it cannot be carried at all.
+
+    This exists because the two ends of this wire disagree, and the
+    disagreement is silent in the worst possible direction. muxplex's panel
+    speaks OpenAI (``image_url`` with a data URL) because this is an
+    OpenAI-compatible face. The Anthropic provider -- the only provider
+    ``runner._PROVIDER_ID`` mounts -- understands ONLY::
+
+        {"type": "image",
+         "source": {"type": "base64", "media_type": ..., "data": ...}}
+
+    and its user-message loop has no ``else`` branch: a block of any other
+    type is dropped with no error and no log line, and if that was the
+    message's only block, ``if content_blocks:`` drops the whole message
+    too. So the translation has to happen here, before seeding, or the
+    image is lost one layer deeper than the bug this module already fixed.
+
+    Idempotent: an already-native block is returned unchanged, because a
+    continuation re-POSTs a conversation whose earlier turns have been
+    through here already.
+    """
+    ptype = part.get("type")
+
+    if ptype == "image":
+        source = part.get("source")
+        if (
+            isinstance(source, dict)
+            and source.get("type") == "base64"
+            and source.get("data")
+            and source.get("media_type") in _SUPPORTED_MEDIA_TYPES
+        ):
+            return part
+        return None
+
+    if ptype not in ("image_url", "input_image"):
+        return None
+
+    match = _DATA_URL_RE.match(_image_url_of(part))
+    if match is None:
+        # A remote http(s) URL, or something unparseable. The provider
+        # cannot fetch it -- base64 is the only source type it takes.
+        return None
+    media_type, data = match.group(1), match.group(2)
+    if media_type not in _SUPPORTED_MEDIA_TYPES or not data:
+        return None
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": data},
+    }
+
+
+def _normalize_content(content: Any) -> Any:
+    """A message's ``content`` with image blocks rewritten provider-native.
+    Non-image blocks, and non-list content, pass through untouched."""
+    if not isinstance(content, list):
+        return content
+    out: list[Any] = []
+    for part in content:
+        if not isinstance(part, dict):
+            out.append(part)
+            continue
+        if part.get("type") in _IMAGE_PART_TYPES:
+            converted = normalize_image_part(part)
+            # A part that cannot be converted is dropped HERE only because
+            # unsupported_image_reason() has already refused the turn --
+            # see runner.py, which calls it before anything is created.
+            if converted is not None:
+                out.append(converted)
+            continue
+        out.append(part)
+    return out
+
+
+def unsupported_image_reason(messages: list[dict[str, Any]]) -> str | None:
+    """Why this request must be refused before it runs, or ``None``.
+
+    Called on the RAW client messages, before a session exists, so an
+    image the provider cannot carry costs a clear error instead of a turn
+    whose answer is confidently about nothing.
+    """
+    for msg in messages:
+        for part in message_image_parts(msg):
+            if normalize_image_part(part) is not None:
+                continue
+            if part.get("type") == "image":
+                source = part.get("source")
+                got = source.get("media_type") if isinstance(source, dict) else None
+                kind = source.get("type") if isinstance(source, dict) else None
+                if kind != "base64":
+                    return (
+                        "Cannot send this message: an attached image uses an "
+                        f"unsupported source type ({kind!r}). Only inline "
+                        "base64 image data can be sent. Nothing was sent."
+                    )
+                return (
+                    "Cannot send this message: an attached image has an "
+                    f"unsupported type ({got}). Supported: "
+                    f"{', '.join(sorted(_SUPPORTED_MEDIA_TYPES))}. "
+                    "Nothing was sent."
+                )
+            url = _image_url_of(part)
+            match = _DATA_URL_RE.match(url)
+            if match is None:
+                return (
+                    "Cannot send this message: an attached image is a remote "
+                    f"URL ({url[:80] or 'empty'}) rather than inline image "
+                    "data. The model cannot fetch a URL -- only inline "
+                    "base64 image data can be sent. Nothing was sent."
+                )
+            return (
+                "Cannot send this message: an attached image has an "
+                f"unsupported type ({match.group(1)}). Supported: "
+                f"{', '.join(sorted(_SUPPORTED_MEDIA_TYPES))}. Nothing was sent."
+            )
+    return None
+
+
+def images_lost_reason(history: list[dict[str, Any]], *, can_seed: bool) -> str | None:
+    """Why this turn must refuse, or ``None`` to proceed.
+
+    An image can only reach the model through history seeding (see this
+    module's ``split_history_and_prompt`` and the note in
+    ``runner.py`` -- ``session.execute()`` takes a ``str``, so the prompt
+    half of the wire is text-only). If seeding is unavailable and the
+    conversation carries images, those images reach nothing at all.
+
+    Proceeding anyway is the worst available outcome: the user sees their
+    screenshot attached, sends it, and the model confidently answers a
+    question about an image it was never given. Refusing out loud is the
+    whole point -- so this returns a reason the panel can show, rather
+    than logging a warning nobody reads.
+
+    Note the asymmetry: with NO images, an unavailable seeding path stays
+    exactly as tolerant as it has always been (a logged warning, turn
+    proceeds). This never fails a turn that would previously have worked.
+    """
+    if can_seed:
+        return None
+    lost = sum(len(message_image_parts(msg)) for msg in history)
+    if not lost:
+        return None
+    noun = "attachment" if lost == 1 else "attachments"
+    return (
+        f"Cannot send this message: {lost} image {noun} could not be delivered "
+        "to the model (this build's agent runtime does not expose conversation "
+        "seeding, which is the only path an image can travel). Nothing was sent. "
+        "Remove the attachment to send the text on its own."
+    )
 
 
 def _extract_text(msg: dict[str, Any]) -> str:
@@ -59,6 +260,14 @@ def _msg_to_dict(msg: dict[str, Any]) -> dict[str, Any]:
        ``messages.N.content.0.tool_use.input: Input should be an object``.
     """
     d: dict[str, Any] = {k: v for k, v in msg.items() if v is not None}
+
+    # muxplex-1i9: image content-blocks are rewritten into the provider's
+    # native shape here, for exactly the reason the tool_calls
+    # normalization below exists -- the Anthropic provider silently
+    # discards a block shape it does not recognise. See
+    # normalize_image_part() for the full account.
+    if "content" in d:
+        d["content"] = _normalize_content(d["content"])
 
     if msg.get("role") == "assistant" and "content" not in d:
         d["content"] = ""
@@ -146,8 +355,25 @@ def split_history_and_prompt(
     with an empty prompt, exactly matching
     ``AmplifierSession.execute("")``'s documented no-op-continuation
     behavior for the Anthropic provider.
+
+    ATTACHMENTS (muxplex-1i9). One exception to the above: a final user
+    message carrying image content-blocks is NOT flattened into a prompt
+    string. It cannot be -- ``_extract_text`` keeps only ``type ==
+    "text"`` parts, so flattening a pasted screenshot dropped it
+    silently, and ``session.execute()`` takes a ``str`` so the prompt half
+    of this wire cannot be widened to carry it either.
+
+    History can. It is a list of message dicts that ``_msg_to_dict``
+    passes through with ``content`` untouched, whatever its shape, on its
+    way to the kernel's ``set_messages``. So a multimodal final message
+    is kept WHOLE in history and the turn continues with an empty prompt
+    -- the very same no-op-continuation path described above, which every
+    tool-call round trip already uses. The image rides a proven
+    mechanism; nothing new is invented for it.
     """
     if messages and messages[-1].get("role") == "user":
+        if message_image_parts(messages[-1]):
+            return _contain_system_messages(messages), ""
         history = _contain_system_messages(messages[:-1])
         prompt = _extract_text(messages[-1])
         return history, prompt

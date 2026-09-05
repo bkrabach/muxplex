@@ -262,6 +262,7 @@ _STATIC_EXTENSIONS = {
 # imports AuthMiddleware from this module).
 _FRONTEND_DIR = (Path(__file__).parent / "frontend").resolve()
 
+
 def _is_real_static_asset(path: str) -> bool:
     """Return True only if *path* resolves to an actual file inside
     ``_FRONTEND_DIR`` — i.e. something the static-file mount would genuinely

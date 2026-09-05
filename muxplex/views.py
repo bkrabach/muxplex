@@ -19,6 +19,7 @@ Other invariants:
 
 import fnmatch
 import time
+from collections.abc import Iterable
 from typing import NamedTuple
 
 RESERVED_VIEW_NAMES = frozenset({"all", "hidden"})
@@ -186,6 +187,505 @@ def assess_views_destruction(
     return ViewsDestructionAssessment(
         False, "", before_views, after_views, before_members, after_members
     )
+
+
+# ---------------------------------------------------------------------------
+# Federation merge of `views` (LWW-Element-Set with derived tombstones)
+#
+# THE BUG THIS CLOSES. Federation sync used to resolve a `views` conflict by
+# PICKING ONE SIDE: `apply_synced_settings()` replaced the whole array with
+# the peer's. `views_updated_at` narrowed the window (an unrelated `fontSize`
+# edit no longer wins a views race) but did NOT close it -- two devices that
+# both edit views inside one ~30s sync window still race, and the loser's
+# edit is silently destroyed. User-visible symptom: pin a session to a view,
+# the CAS accepts it, the server reports success, and up to ~30s later a
+# peer's older view definition replaces it. Nothing errors. The pin is
+# simply gone on the next render.
+#
+# WHY A PLAIN MERGE IS NOT ENOUGH. Union the two arrays and additions
+# survive -- but a member GENUINELY DELETED on device A is resurrected by
+# device B, which still lists it. Under a set union, "absent because
+# deleted" and "absent because never seen" are the same observation. No
+# amount of arithmetic over the two arrays can tell them apart.
+#
+# WHY TIMESTAMPS ALONE ARE NOT ENOUGH EITHER (the tempting wrong answer):
+# "keep the member if it was added after the other side's views_updated_at,
+# drop it otherwise." That reads a timestamp as knowledge. B's array being
+# written at T2 > T1 does not mean B had SEEN A's T1 addition -- if the two
+# devices had not synced in between, B simply never knew. That is precisely
+# the concurrent-edit case this code exists for, so timestamp inference is
+# unsound exactly where it matters.
+#
+# WHAT WE DO INSTEAD -- an LWW-Element-Set whose tombstones are DERIVED:
+#   * `views[i].sessions` stays the authoritative present-set. Unchanged
+#     wire shape; the frontend needs no changes and never sends metadata.
+#   * `settings["views_changed_at"]` records, per view and per member, the
+#     moment its PRESENCE last changed (added OR removed):
+#         {"<view name>": {"at": <float|None>,
+#                          "members": {"<session key>": <float>}}}
+#   * Presence is DERIVED, never stored: a key listed in `sessions` is
+#     present; a key with a stamp but NOT in `sessions` is a tombstone; a
+#     key with no stamp at all is "never seen / predates this feature".
+#     One float per element, and the tombstone falls out for free.
+#
+# The server is the only writer of `views_changed_at`, and it derives every
+# stamp by DIFFING what a write changed (see `record_views_change`). That is
+# what makes this safe against a client that knows nothing about it: a stale
+# PWA tab PATCHing an old array cannot drop the metadata, because it never
+# sends it.
+#
+# COSTS, stated plainly (see also docs/API_SEMANTICS.md):
+#   * Payload growth: one `"<key>": <float>` per pinned member (~35 bytes)
+#     plus one per un-GC'd tombstone. A 10-view/100-member configuration
+#     costs a few KB in settings.json and in every sync payload.
+#   * Tombstone GC is time-based (VIEW_TOMBSTONE_TTL_SECONDS). A device
+#     offline LONGER than the TTL, still holding a since-deleted pin, will
+#     resurrect that one pin when it returns. Bounded and self-limiting: if
+#     the underlying session no longer exists, `prune_stale_keys` removes
+#     it again within `stale_key_grace_hours`. The alternative -- keeping
+#     every deletion forever -- grows without bound, which is worse.
+#   * Cross-device clock skew matters at member granularity now. This is
+#     NOT a new trust requirement: `settings_updated_at`/`views_updated_at`
+#     already arbitrate by wall clock. It is strictly finer-grained, so a
+#     skewed peer now loses/wins ONE member instead of the whole array.
+#   * `hidden_sessions` is deliberately NOT merged here -- it keeps the
+#     existing `views_updated_at` LWW. Same bug class, separate item.
+#
+# KEY REWRITES (muxplex-w6g). A rename (`main._migrate_session_name`) and a
+# bare-name upgrade (`normalize_session_keys`) do not add or remove a member
+# -- they REPLACE one key with another. That is a deletion plus an addition,
+# and both halves are stamped through the machinery above; there is no third
+# state. What differs is only WHAT MAY BE RETIRED:
+#   * `<local_device_id>:<name>` -- ours by construction. No other device can
+#     own that key, so the tombstone states a fact about our own keyspace.
+#   * a legacy BARE name -- has no owner (`filter_visible` matches it by name
+#     against every device's sessions), so it may denote a PEER's own live
+#     session. Retiring it fleet-wide would unpin that session. Stamped only
+#     against evidence that no known device is running that name; otherwise
+#     upgraded locally and left unstamped, which can only ever leave a
+#     redundant entry. See `normalize_session_keys`.
+# ---------------------------------------------------------------------------
+
+# How long a tombstone (a stamp for a key that is no longer present) is kept
+# before garbage collection. Answers "when is it safe to forget a deletion?"
+# -- strictly speaking never, without knowing every peer has seen it, which
+# this design deliberately does not track. 30 days is chosen to be far longer
+# than any plausible sync outage while still bounding growth; see the cost
+# note above for exactly what a longer-than-TTL outage costs.
+VIEW_TOMBSTONE_TTL_SECONDS: float = 30 * 24 * 60 * 60
+
+
+def _as_timestamp(value: object) -> float | None:
+    """Coerce a settings-file value to a float timestamp, or None.
+
+    `bool` is excluded explicitly: it is a subclass of `int`, and a stray
+    `true` in settings.json must read as "no stamp", never as `1.0` (which
+    would be a timestamp in 1970 and would lose every comparison).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _max_stamp(a: float | None, b: float | None) -> float | None:
+    """Later of two optional stamps; None only when both are None."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return max(a, b)
+
+
+def normalize_views_changed_at(raw: object) -> dict[str, dict]:
+    """Return a well-formed `views_changed_at` map from arbitrary input.
+
+    Shape: ``{view_name: {"at": float|None, "members": {key: float}}}``.
+
+    Every entry that isn't structurally usable is dropped rather than
+    raising -- this map is read on the poll cycle and on every sync, and a
+    hand-edited or peer-supplied malformation must never 500 either path
+    (same defensive posture as `view_patterns`/`matches_name_pattern`).
+    Dropping a stamp is safe by construction: a missing stamp reads as
+    "never seen", and the merge's add-wins bias then keeps the member.
+    """
+    out: dict[str, dict] = {}
+    if not isinstance(raw, dict):
+        return out
+    for name, entry in raw.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            continue
+        members: dict[str, float] = {}
+        raw_members = entry.get("members")
+        if isinstance(raw_members, dict):
+            for key, stamp in raw_members.items():
+                value = _as_timestamp(stamp)
+                if isinstance(key, str) and value is not None:
+                    members[key] = value
+        out[name] = {"at": _as_timestamp(entry.get("at")), "members": members}
+    return out
+
+
+def _index_views(views: object) -> tuple[list[str], dict[str, dict]]:
+    """Return (name order, name -> view dict) for MERGEABLE view entries.
+
+    A view is mergeable iff it is a dict whose `name` is a str and is the
+    first entry with that name. Everything else (a non-dict entry, a missing
+    or non-str name, a duplicate name) has no identity to merge ON, so it is
+    excluded here and preserved verbatim from the LOCAL side by
+    `merge_views` -- never silently dropped, and never merged against the
+    wrong peer entry.
+    """
+    order: list[str] = []
+    index: dict[str, dict] = {}
+    if not isinstance(views, list):
+        return order, index
+    for view in views:
+        if not isinstance(view, dict):
+            continue
+        name = view.get("name")
+        if not isinstance(name, str) or name in index:
+            continue
+        order.append(name)
+        index[name] = view
+    return order, index
+
+
+def _view_members(view: dict | None) -> list[str]:
+    """Ordered, de-duplicated `sessions` entries of one view (str only)."""
+    if view is None:
+        return []
+    sessions = view.get("sessions")
+    if not isinstance(sessions, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in sessions:
+        if isinstance(key, str) and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+def _survives(
+    local_present: bool,
+    local_at: float | None,
+    incoming_present: bool,
+    incoming_at: float | None,
+) -> bool:
+    """Resolve one element's presence across the two sides.
+
+    Present on both, or absent on both: no conflict. Otherwise exactly one
+    side lists it, and the question is whether the OTHER side deleted it or
+    never knew about it -- which is exactly what the stamps answer:
+
+      * absent side has NO stamp -> it never knew -> KEEP (add-wins over
+        ignorance; this is the pin-just-landed case).
+      * present side has no stamp but the absent side has one -> our copy
+        predates this feature and theirs is a real, dated deletion -> DROP
+        (an unknown add time is "long ago"; otherwise a deletion could
+        never propagate to a device holding legacy data).
+      * both stamped -> later wins; a tie KEEPS. The tie-break is
+        deliberate: a resurrected pin is a visible annoyance the user can
+        undo, a lost pin is the silent data loss this whole mechanism
+        exists to stop.
+    """
+    if local_present and incoming_present:
+        return True
+    if not local_present and not incoming_present:
+        return False
+    present_at = local_at if local_present else incoming_at
+    absent_at = incoming_at if local_present else local_at
+    if absent_at is None:
+        return True
+    if present_at is None:
+        return False
+    return present_at >= absent_at
+
+
+def _merge_members(
+    local_view: dict | None,
+    incoming_view: dict | None,
+    local_stamps: dict[str, float],
+    incoming_stamps: dict[str, float],
+    incoming_authoritative: bool,
+) -> tuple[list[str], dict[str, float]]:
+    """Merge one view's member list. Returns (members, member stamps).
+
+    Order follows the authoritative side (see `merge_views`), then appends
+    the other side's extras -- so both devices compute the SAME order and
+    stop trading it back and forth forever. Stamps are carried for absent
+    keys too -- that IS the tombstone -- and garbage-collected later by
+    `_gc_views_changed_at`.
+    """
+    local_members = _view_members(local_view)
+    incoming_members = _view_members(incoming_view)
+    local_set = set(local_members)
+    incoming_set = set(incoming_members)
+    if incoming_authoritative:
+        ordered = incoming_members + [k for k in local_members if k not in incoming_set]
+    else:
+        ordered = local_members + [k for k in incoming_members if k not in local_set]
+
+    merged: list[str] = []
+    for key in ordered:
+        if _survives(
+            key in local_set,
+            local_stamps.get(key),
+            key in incoming_set,
+            incoming_stamps.get(key),
+        ):
+            merged.append(key)
+
+    stamps: dict[str, float] = {}
+    for key in set(local_stamps) | set(incoming_stamps) | local_set | incoming_set:
+        stamp = _max_stamp(local_stamps.get(key), incoming_stamps.get(key))
+        if stamp is not None:
+            stamps[key] = stamp
+    return merged, stamps
+
+
+def _gc_views_changed_at(
+    changed_at: dict[str, dict], views: object, now: float, ttl: float
+) -> dict[str, dict]:
+    """Drop expired tombstones and stamps that carry no information.
+
+    A stamp for a still-present view/member is kept indefinitely (bounded by
+    how much configuration actually exists). A stamp for an ABSENT one is a
+    tombstone and is dropped once it is older than *ttl*. A view entry that
+    is absent AND unstamped says nothing at all and is dropped immediately.
+    """
+    _, index = _index_views(views)
+    out: dict[str, dict] = {}
+    for name, entry in changed_at.items():
+        at = entry.get("at")
+        view = index.get(name)
+        if view is None:
+            # View tombstone: keep only while it can still out-vote a peer
+            # that has not yet heard about the deletion.
+            if at is not None and now - at <= ttl:
+                out[name] = {"at": at, "members": {}}
+            continue
+        present = set(_view_members(view))
+        members = {
+            key: stamp
+            for key, stamp in entry.get("members", {}).items()
+            if key in present or now - stamp <= ttl
+        }
+        if at is None and not members:
+            continue
+        out[name] = {"at": at, "members": members}
+    return out
+
+
+def record_views_change(
+    previous_views: object,
+    current_views: object,
+    changed_at: object,
+    *,
+    now: float | None = None,
+    tombstone_ttl: float = VIEW_TOMBSTONE_TTL_SECONDS,
+) -> dict[str, dict]:
+    """Stamp every view/member whose PRESENCE changed between the two arrays.
+
+    This is how `views_changed_at` is maintained: derived server-side by
+    diffing what a write actually changed, never supplied by a client. A
+    caller that replaces `views` wholesale (`PATCH /api/settings`, the
+    stale-key prune) calls this with the array as it stood BEFORE the write
+    and the array as it stands after.
+
+    Elements that did not change presence keep whatever stamp they had --
+    including none. An unstamped element is legitimate and means exactly
+    "no presence change has been observed since this feature shipped"; it is
+    never back-filled with `now`, which would falsely claim every existing
+    view was created at this instant.
+
+    Returns a NEW map (garbage-collected); does not mutate its arguments.
+    """
+    if now is None:
+        now = time.time()
+    _, previous_index = _index_views(previous_views)
+    _, current_index = _index_views(current_views)
+    meta = normalize_views_changed_at(changed_at)
+
+    for name in set(previous_index) | set(current_index):
+        entry = meta.setdefault(name, {"at": None, "members": {}})
+        was_present = name in previous_index
+        is_present = name in current_index
+        if was_present != is_present:
+            entry["at"] = now
+        if not is_present:
+            # The view's own tombstone covers its members; per-member stamps
+            # for a deleted view would be dropped by GC anyway.
+            continue
+        before = set(_view_members(previous_index.get(name)))
+        after = set(_view_members(current_index[name]))
+        for key in before ^ after:
+            entry["members"][key] = now
+
+    return _gc_views_changed_at(meta, current_views, now, tombstone_ttl)
+
+
+def stamp_view_member_changes(
+    settings: dict,
+    changes: Iterable[tuple[str, str]],
+    *,
+    now: float | None = None,
+    tombstone_ttl: float = VIEW_TOMBSTONE_TTL_SECONDS,
+) -> dict:
+    """Stamp individual `(view name, session key)` presence changes.
+
+    The list-driven sibling of `record_views_change`, for a caller that
+    already knows exactly which members it moved and does not have a
+    before/after pair to diff -- `prune_stale_keys` (which removes members
+    while walking them) and `normalize_session_keys` (which may stamp only
+    SOME of what it rewrote; see its docstring).
+
+    Same map, same one-float-per-element representation, same GC: presence
+    stays DERIVED from `views[*].sessions`, so a stamped key still present is
+    an add and a stamped key now absent is a tombstone. There is no third
+    state, and `merge_views`/`_survives` need no knowledge of who wrote a
+    stamp or why.
+
+    Mutates and returns *settings* (views.py's mutate-then-save convention).
+    An empty *changes* writes nothing at all -- not even a GC pass -- so a
+    caller that moved nothing never dirties the file.
+    """
+    pending = list(changes)
+    if not pending:
+        return settings
+    if now is None:
+        now = time.time()
+    meta = normalize_views_changed_at(settings.get("views_changed_at"))
+    for view_name, key in pending:
+        entry = meta.setdefault(view_name, {"at": None, "members": {}})
+        entry["members"][key] = now
+    settings["views_changed_at"] = _gc_views_changed_at(
+        meta, settings.get("views"), now, tombstone_ttl
+    )
+    return settings
+
+
+def merge_views(
+    local_views: object,
+    local_changed_at: object,
+    incoming_views: object,
+    incoming_changed_at: object,
+    *,
+    local_views_updated_at: float = 0.0,
+    incoming_views_updated_at: float = 0.0,
+    now: float | None = None,
+    tombstone_ttl: float = VIEW_TOMBSTONE_TTL_SECONDS,
+) -> tuple[list, dict[str, dict]]:
+    """Merge a peer's `views` with ours. Returns (merged views, stamps).
+
+    Pure and side-effect-free; neither input is mutated (view dicts are
+    shallow-copied before `sessions` is replaced). Commutative and
+    idempotent on the presence decision, so both devices reach the same
+    answer independently and re-merging a converged state changes nothing.
+
+    Presence of every view and every member is resolved by `_survives` --
+    read that docstring; it is the entire semantic core. What is NOT
+    resolved per-element, and deliberately so:
+
+      * A view's OTHER attributes (`match_names`, and any field a future
+        version adds) come wholesale from whichever side has the larger
+        `views_updated_at` -- the "authoritative" side; tie -> local. Rule
+        edits are not the silent data-loss case this exists to fix, and
+        per-attribute stamps would multiply the payload cost for no
+        reported symptom.
+      * ORDER follows that same authoritative side, then appends the other
+        side's extras. Order must not be merged element-wise, and it must
+        not simply be "ours": if each device kept its own order, every sync
+        would see the peer's array as different from its own merge result,
+        conclude it had something to contribute, and push -- forever, every
+        ~30s, on both devices. Both sides pick the same authority, so both
+        compute the same order and the exchange settles.
+      * A local entry with no mergeable identity (not a dict, no str name,
+        or a duplicate name) is APPENDED verbatim at the end rather than
+        dropped. There is nothing to merge it against and no meaningful
+        position for it once the order comes from the peer, but dropping it
+        would be the exact silent destruction this function exists to stop.
+    """
+    if now is None:
+        now = time.time()
+    local_order, local_index = _index_views(local_views)
+    incoming_order, incoming_index = _index_views(incoming_views)
+    local_meta = normalize_views_changed_at(local_changed_at)
+    incoming_meta = normalize_views_changed_at(incoming_changed_at)
+    incoming_authoritative = incoming_views_updated_at > local_views_updated_at
+
+    merged_meta: dict[str, dict] = {}
+    merged_views: dict[str, dict] = {}
+
+    if incoming_authoritative:
+        names = incoming_order + [n for n in local_order if n not in incoming_index]
+    else:
+        names = local_order + [n for n in incoming_order if n not in local_index]
+    for name in names:
+        local_view = local_index.get(name)
+        incoming_view = incoming_index.get(name)
+        local_entry = local_meta.get(name, {})
+        incoming_entry = incoming_meta.get(name, {})
+        local_at = local_entry.get("at")
+        incoming_at = incoming_entry.get("at")
+
+        members, member_stamps = _merge_members(
+            local_view,
+            incoming_view,
+            local_entry.get("members", {}),
+            incoming_entry.get("members", {}),
+            incoming_authoritative,
+        )
+
+        if _survives(
+            local_view is not None, local_at, incoming_view is not None, incoming_at
+        ):
+            base = incoming_view if incoming_authoritative and incoming_view else None
+            if base is None:
+                base = local_view if local_view is not None else incoming_view
+            merged = dict(base or {})
+            merged["name"] = name
+            merged["sessions"] = members
+            merged_views[name] = merged
+            merged_meta[name] = {
+                "at": _max_stamp(local_at, incoming_at),
+                "members": member_stamps,
+            }
+        else:
+            # Deleted. The view's tombstone is the whole record; per-member
+            # stamps under it are meaningless and would only grow the payload.
+            merged_meta[name] = {"at": _max_stamp(local_at, incoming_at), "members": {}}
+
+    result: list = [merged_views[n] for n in names if n in merged_views]
+
+    # Local entries with no mergeable identity survive at the end -- see the
+    # docstring. Identified by object identity against what _index_views
+    # accepted, so a duplicate-name entry is caught too.
+    kept = {id(v) for v in local_index.values()}
+    for view in local_views if isinstance(local_views, list) else []:
+        if id(view) not in kept:
+            result.append(view)
+
+    return result, _gc_views_changed_at(merged_meta, result, now, tombstone_ttl)
+
+
+def views_membership_signature(views: object) -> dict[str, frozenset]:
+    """Return `{view name: frozenset(member keys)}` -- the part of `views`
+    that `merge_views` actually decides.
+
+    Used by `settings.apply_synced_settings()` to answer one question after a
+    merge: does the merged state differ from what the PEER sent? If it does,
+    this device holds membership information the peer does not, and must make
+    itself look newer so the next cycle pushes it back -- otherwise the merge
+    is a one-way trip, the peer never learns about our pin, and adopting the
+    peer's `settings_updated_at` leaves the two stuck at equal timestamps
+    ("no action") forever.
+
+    Deliberately ignores order and every non-membership attribute, so a
+    cosmetic difference never triggers a push that would bounce back.
+    """
+    _, index = _index_views(views)
+    return {name: frozenset(_view_members(view)) for name, view in index.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +977,13 @@ def visible_count(
 # ---------------------------------------------------------------------------
 
 
-def normalize_session_keys(settings: dict, sessions: list[dict]) -> dict:
+def normalize_session_keys(
+    settings: dict,
+    sessions: list[dict],
+    *,
+    remote_live_names: set[str] | None = None,
+    now: float | None = None,
+) -> dict:
     """Upgrade bare-name entries in stored keys to `device_id:name` form.
 
     Pre-v2 stored entries used bare `name` strings. v2 stores
@@ -492,6 +998,43 @@ def normalize_session_keys(settings: dict, sessions: list[dict]) -> dict:
     `prune_stale_keys` (Phase 4).
 
     Mutates and returns *settings*.
+
+    FEDERATION (`remote_live_names`, muxplex-w6g) — this upgrade is a key
+    REWRITE: it removes one member from a view and adds another. Unstamped,
+    the removal reads to `merge_views` as "this device never knew about that
+    key", so a peer that has not normalized yet re-introduces the legacy
+    entry on every cycle and the view carries both forms of one pin
+    indefinitely (the bare form is never pruned either — it matches a live
+    session BY NAME, so it stays in `live_keys` forever).
+
+    Stamping the removal fixes that, but a bare name is the one key shape
+    that is NOT safe to retire on inference alone. It has no owner:
+    `filter_visible` matches it by name against EVERY device's sessions, so
+    `work` means "any live session called work", including a peer's own.
+    Retiring it fleet-wide would unpin the peer's own live session — losing
+    a real pin, which is strictly worse than the redundant entry not
+    stamping leaves behind (muxplex-npg's reasoning, preserved).
+
+    So the retirement is stamped only against evidence the caller supplies:
+
+      * `remote_live_names is None` (the default, and every caller that
+        cannot vouch for the fleet) — nothing is stamped at all. Exactly the
+        pre-w6g behavior.
+      * a set of session NAMES live on every device currently known to the
+        caller — a bare entry NOT in that set denotes our own session
+        unambiguously and is retired with a tombstone; one that IS in it is
+        upgraded locally but left unstamped, as before.
+
+    Residual, stated plainly: a device we have no current knowledge of (never
+    polled, or unreachable) could still be running that name. It loses the
+    legacy pin only if it is ALSO still carrying an un-normalized bare entry
+    for it — and it cannot be, for long: this same function runs on its own
+    poll cycle every few seconds, canonicalizing into its OWN device
+    namespace, while federation sync runs every ~30 cycles and never on the
+    first. When both devices have normalized, both tombstone the bare key and
+    each keeps its own canonical key, which is the correct outcome and the
+    common one. `prune_stale_keys` already accepts the same bound (a bare key
+    has no owner, so the positive-knowledge rule cannot gate it).
     """
     # Build a name → sessionKey map from live sessions. Only sessions that
     # actually have a sessionKey contribute; bare-name live sessions are
@@ -506,21 +1049,55 @@ def normalize_session_keys(settings: dict, sessions: list[dict]) -> dict:
             # single canonical form anyway; leave the bare-name entry alone.
             name_to_key.setdefault(name, key)
 
-    def upgrade(entries: list[str]) -> list[str]:
+    def upgrade(entries: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+        """Return (upgraded entries, the (old, new) rewrites performed)."""
         result: list[str] = []
+        rewrites: list[tuple[str, str]] = []
         for entry in entries:
-            if entry in name_to_key:
-                result.append(name_to_key[entry])
-            else:
+            replacement = name_to_key.get(entry)
+            if replacement is None:
                 result.append(entry)
-        return result
+            else:
+                result.append(replacement)
+                rewrites.append((entry, replacement))
+        return result, rewrites
 
     if isinstance(settings.get("hidden_sessions"), list):
-        settings["hidden_sessions"] = upgrade(settings["hidden_sessions"])
+        # Never stamped: `hidden_sessions` is still resolved by whole-set LWW,
+        # not merged per member (see views.py's federation header).
+        settings["hidden_sessions"], _ = upgrade(settings["hidden_sessions"])
+
+    # (view name, session key) presence changes this rewrite is entitled to
+    # record -- see the docstring for what "entitled" means and why a bare
+    # name another known device is running is deliberately excluded.
+    changes: list[tuple[str, str]] = []
 
     for view in settings.get("views") or []:
-        if isinstance(view.get("sessions"), list):
-            view["sessions"] = upgrade(view["sessions"])
+        entries = view.get("sessions")
+        if not isinstance(entries, list):
+            continue
+        before = set(entries)
+        upgraded, rewrites = upgrade(entries)
+        view["sessions"] = upgraded
+        view_name = view.get("name")
+        if remote_live_names is None or not isinstance(view_name, str):
+            continue
+        for old_key, new_key in rewrites:
+            if old_key in remote_live_names:
+                # Ambiguous: a device we know about is running that bare name,
+                # so the entry may be ITS pin, not ours. Upgrade locally (as
+                # before), record nothing.
+                continue
+            changes.append((view_name, old_key))
+            if new_key not in before:
+                # The canonical form was not already pinned here, so this is a
+                # real addition. Stamped for the same reason the retirement is:
+                # a rewrite is one delete plus one add, and recording only half
+                # of it would let a peer's older tombstone for the new key drop
+                # the pin we just canonicalized.
+                changes.append((view_name, new_key))
+
+    stamp_view_member_changes(settings, changes, now=now)
 
     return settings
 
@@ -737,6 +1314,12 @@ def prune_stale_keys(
          miss this key" — never check live_keys against pruning_state's keys
          that aren't actually in stored settings (clean up bookkeeping for
          keys that are no longer referenced anywhere).
+      4. Every member this prune removes from a view is stamped into
+         `settings["views_changed_at"]` (see `record_views_change` /
+         `merge_views`), so a federation merge reads it as a real deletion
+         rather than resurrecting it from a peer that hasn't pruned yet.
+         `hidden_sessions` removals are NOT stamped: that key is still
+         resolved by whole-set LWW, not merged.
 
     Positive-knowledge rule (federation-aware pruning):
       A remote-owned key (`"<device_id>:<name>"` where device_id != our own)
@@ -769,6 +1352,14 @@ def prune_stale_keys(
         now = time.time()
 
     known_remote_device_ids = known_remote_device_ids or set()
+
+    # Members this prune removes, as (view name, session key). Stamped into
+    # `views_changed_at` at the end so the removal reads as a real DELETION
+    # to every peer, not as "this device never knew about it" -- without
+    # this, the next federation merge would resurrect every pruned key from
+    # a peer that has not pruned it yet, and undo this prune on every cycle
+    # until it did. See merge_views/_survives.
+    pruned_members: list[tuple[str, str]] = []
 
     # Collect all session keys currently referenced in settings.
     all_settings_keys: set[str] = set()
@@ -823,6 +1414,9 @@ def prune_stale_keys(
                     if key in view_sessions:
                         view["sessions"] = [k for k in view_sessions if k != key]
                         settings_changed = True
+                        view_name = view.get("name")
+                        if isinstance(view_name, str):
+                            pruned_members.append((view_name, key))
                 # Drop the bookkeeping entry now that the key is gone.
                 del first_missed[key]
             # else: still within grace — leave settings and bookkeeping alone.
@@ -844,5 +1438,7 @@ def prune_stale_keys(
     for key in list(first_missed):
         if key not in current_settings_keys:
             del first_missed[key]
+
+    stamp_view_member_changes(settings, pruned_members, now=now)
 
     return settings, pruning_state, settings_changed

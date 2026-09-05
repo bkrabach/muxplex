@@ -31,6 +31,7 @@ from .errors import (
 from .models import (
     Bell,
     ConnectResult,
+    CreateSessionResult,
     FederationSessions,
     FocusResult,
     FollowupItem,
@@ -58,6 +59,7 @@ __all__ = [
     "map_status_error",
     "parse_bell",
     "parse_connect_result",
+    "parse_create_session_result",
     "parse_federation_sessions",
     "parse_focus_result",
     "parse_followup_item",
@@ -271,6 +273,38 @@ def parse_heartbeat_result(raw: Mapping[str, Any]) -> HeartbeatResult:
         device_id=raw["device_id"],
         status=raw.get("status", "ok"),
         sync_group=raw.get("sync_group", "global"),
+    )
+
+
+def parse_create_session_result(
+    raw: Mapping[str, Any], *, requested_name: str
+) -> CreateSessionResult:
+    """Parse POST /api/sessions.
+
+    `requested_name` is passed in rather than read off the wire because it
+    is the one thing the caller knows for certain and the server may not
+    report: on a pre-observation server there is no `requested_name` key
+    at all, and on any server the response body could be empty. It is the
+    fallback identity, never the preferred one.
+
+    `name_confirmed` is read with a presence check, NOT `.get(..., False)`
+    -- a pre-feature server that omits the key made no claim, which is
+    `None`. Collapsing that silence into `False` would tell every caller
+    the name was checked and found wanting, when it was never checked at
+    all. Same "absence parses to None, never a fabricated value" treatment
+    `parse_bell()` gives `source`.
+
+    `visible` is never set here -- it records the CLIENT's own poll (see
+    `CreateSessionResult`), which this pure parser does not perform.
+    """
+    return CreateSessionResult(
+        name=raw.get("name") or requested_name,
+        requested_name=raw.get("requested_name") or requested_name,
+        observed=raw.get("observed"),
+        name_confirmed=(
+            bool(raw["name_confirmed"]) if "name_confirmed" in raw else None
+        ),
+        command_id=raw.get("command_id"),
     )
 
 

@@ -233,6 +233,72 @@ def test_install_through_symlink_preserves_the_link(sandbox: Path) -> None:
     assert tmux_option(sandbox) == "base-3"
 
 
+def test_atomic_write_through_a_symlink_preserves_the_link(sandbox: Path) -> None:
+    """The same guarantee as above, asserted directly on ``_atomic_write``.
+
+    The install-level test needs a real tmux binary and is skipped without one,
+    so on a tmux-less machine nothing covered the symlink resolution at all.
+    This is the property that made ``_atomic_write`` worth keeping as a wrapper
+    when it stopped carrying its own tmp + ``os.replace()``.
+    """
+    repo = sandbox / "dotfiles"
+    repo.mkdir()
+    real = repo / "tmux.conf"
+    real.write_text(USER_CONF)
+    link = sandbox / ".tmux.conf"
+    link.symlink_to(real)
+
+    tc._atomic_write(link, "rewritten\n")
+
+    assert link.is_symlink(), "symlink must survive the write"
+    assert real.read_text() == "rewritten\n", "wrote through to the real file"
+
+
+def test_atomic_write_delegates_to_the_shared_helper(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Durability lives in ONE place (``settings.atomic_write_text``).
+
+    A sixth private copy of tmp + ``os.replace()`` here would silently lose the
+    contents fsync, the unique staging name, and the mode preservation the
+    shared helper provides -- which is precisely how this module drifted the
+    first time. Asserting the delegation, and that the RESOLVED path is what
+    gets handed over, catches that regression by construction.
+    """
+    repo = sandbox / "dotfiles"
+    repo.mkdir()
+    real = repo / "tmux.conf"
+    real.write_text(USER_CONF)
+    link = sandbox / ".tmux.conf"
+    link.symlink_to(real)
+
+    seen: list[tuple[Path, str]] = []
+    monkeypatch.setattr(tc, "atomic_write_text", lambda p, text: seen.append((p, text)))
+
+    tc._atomic_write(link, "rewritten\n")
+
+    assert seen == [(real, "rewritten\n")], (
+        "must hand the shared writer the resolved target, not the symlink"
+    )
+
+
+def test_atomic_write_preserves_the_targets_mode(sandbox: Path) -> None:
+    """``os.replace()`` publishes the TEMP file's mode.
+
+    A private staging file created at umask default silently widened a config
+    the user had deliberately narrowed -- muxplex writes to no other file it
+    did not create, so this is the one place that mattered.
+    """
+    target = sandbox / ".tmux.conf"
+    target.write_text(USER_CONF)
+    target.chmod(0o600)
+
+    tc._atomic_write(target, "rewritten\n")
+
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.read_text() == "rewritten\n"
+
+
 # ── Uninstall ──────────────────────────────────────────────────────────────
 
 

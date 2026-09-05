@@ -3634,7 +3634,11 @@ test('createNewSession polls for session before auto-opening (not immediate setT
   // loading tile injection and auto-add-to-view logic; setInterval is now ~2800 chars in.
   // Updated for named session command pairs (docs/plans/2026-08-02-named-session-command-pairs-plan.md): command_id body
   // construction added near the top of the function, pushing setInterval to ~3600 chars.
-  const snippet = source.slice(start, start + 3800);
+  // Updated for muxplex-9zp (readiness-poll key-space fix): the poll now builds its
+  // expected keys for BOTH endpoint shapes and hands off to a late-arrival watcher,
+  // pushing setInterval to ~4900 chars in. Window is now the whole function body
+  // (~7600 chars) so ordinary growth inside createNewSession stops breaking this.
+  const snippet = source.slice(start, start + 7600);
   // Must NOT contain the old immediate-open pattern inside createNewSession
   assert.ok(
     !snippet.includes("setTimeout(() => openSession"),
@@ -6309,7 +6313,11 @@ test('createNewSession passes remoteId through to openSession for auto-open', ()
   assert.ok(fnStart !== -1, 'createNewSession function must exist');
   // Updated in v0.6.0: window increased from 3000 to 4000 — function grew with loading
   // tile injection and auto-add-to-view logic; openSession call is now ~3200 chars in.
-  const fnBody = source.substring(fnStart, fnStart + 4000);
+  // Updated for muxplex-9zp (readiness-poll key-space fix): the poll's expected-key
+  // construction and late-arrival watcher push the openSession call to ~5200 chars in.
+  // Window is now the whole function body (~7600 chars) so ordinary growth inside
+  // createNewSession stops breaking this.
+  const fnBody = source.substring(fnStart, fnStart + 7600);
   // Must call openSession with remoteId option
   assert.ok(
     fnBody.includes('openSession') && fnBody.includes('remoteId'),
@@ -6326,9 +6334,19 @@ test('createNewSession matches remote sessions by sessionKey in poll loop', () =
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('async function createNewSession(');
   assert.ok(fnStart !== -1, 'createNewSession function must exist');
-  // Updated in v0.6.0: window increased from 2000 to 3500 — expectedKey and sessionKey
-  // are now ~2500 chars into the function due to loading tile and view auto-add logic.
-  const fnBody = source.substring(fnStart, fnStart + 3500);
+  // Bound the slice by the NEXT top-level function declaration rather than a
+  // fixed character offset — the same fix commit 1e47189 applied to
+  // test_api_errors.mjs, for the same reason. This window has already been
+  // moved once (2000 -> 3500 in v0.6.0) and went short a second time when
+  // muxplex-1vz added the observed-name safety net above the poll loop.
+  // Neither change was wrong; the magic number was.
+  const HEAD = 'async function createNewSession(';
+  const afterCreate = source.slice(fnStart + HEAD.length);
+  const nextFn = afterCreate.search(/\n(?:async )?function [A-Za-z_]/);
+  const fnBody = source.substring(
+    fnStart,
+    nextFn === -1 ? source.length : fnStart + HEAD.length + nextFn,
+  );
   // Must use sessionKey in the match logic (with fallback to name)
   assert.ok(
     fnBody.includes('sessionKey'),
@@ -9346,7 +9364,14 @@ test('a views-touching patch pre-fetches once, then a single 409 triggers one mo
   globalThis.fetch = undefined;
 });
 
-test('a second consecutive 409 does not loop -- exactly two PATCH attempts, then rejects', async () => {
+// muxplex-htg widened this from "exactly one retry" to a bounded budget
+// (SETTINGS_CAS_MAX_ATTEMPTS). One retry was not enough: the CAS timestamp
+// moves on EVERY settings write, so a second consecutive conflict is what a
+// user creating two sessions at once routinely sees -- and the write was
+// being dropped. What this test still guards is the part that matters
+// equally: the budget TERMINATES. A server that will never accept the write
+// must not spin forever.
+test('a persisting 409 retries up to the bounded budget, then rejects -- it never loops forever', async () => {
   const calls = [];
   globalThis.fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
@@ -9364,20 +9389,23 @@ test('a second consecutive 409 does not loop -- exactly two PATCH attempts, then
 
   await assert.rejects(
     () => app.patchSettingsGuarded(() => ({ views: [] })),
-    (err) => err.status === 409,
-    'a persisting conflict must reject with the 409 error, not loop forever',
+    (err) => err.status === 409 && err.casExhausted === true,
+    'a persisting conflict must reject with the 409 error, tagged casExhausted ' +
+      'so the caller can tell the user what was lost, not loop forever',
   );
 
+  const budget = app.SETTINGS_CAS_MAX_ATTEMPTS;
+  assert.ok(budget >= 3, 'the budget must exceed the old single retry, got ' + budget);
   assert.strictEqual(
-    calls.filter((c) => c === 'PATCH /api/settings').length, 2,
-    'must not attempt a third PATCH after a second consecutive 409; calls: ' + JSON.stringify(calls),
+    calls.filter((c) => c === 'PATCH /api/settings').length, budget,
+    'must attempt PATCH exactly SETTINGS_CAS_MAX_ATTEMPTS times, no more; calls: ' + JSON.stringify(calls),
   );
-  // Three GETs: one proactive (patch touches `views`), one after the first
-  // 409 (CAS-retry re-fetch), one after the second/final 409 (re-render
-  // from server truth). The retry attempt itself does not proactively
-  // re-fetch again since it already has fresh data from the 409 handler.
+  // One proactive GET (the patch touches `views`), then one per 409: one
+  // before each retry, plus one on the final failure to re-render from
+  // server truth. Retry attempts do not proactively re-fetch again, since
+  // the 409 handler already handed them fresh data.
   assert.strictEqual(
-    calls.filter((c) => c === 'GET /api/settings').length, 3,
+    calls.filter((c) => c === 'GET /api/settings').length, budget + 1,
     'a views-touching patch that keeps conflicting re-fetches proactively once, then once per 409; calls: ' + JSON.stringify(calls),
   );
 

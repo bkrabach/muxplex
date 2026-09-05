@@ -8,6 +8,7 @@ Signature-identical to `async_client.AsyncMuxplexClient` with `await` and an
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Self, Sequence
 
@@ -19,6 +20,7 @@ from .errors import ApiError, CommandTimeout, MuxplexError, UnreachableError
 from .models import (
     CommandResult,
     ConnectResult,
+    CreateSessionResult,
     FederationSessions,
     FocusResult,
     FollowupItem,
@@ -204,11 +206,33 @@ class MuxplexClient:
         wait: bool = True,
         timeout: float = 6.0,
         interval: float = 0.3,
-    ) -> None:
+    ) -> CreateSessionResult:
         """POST /api/sessions. With wait=True, polls until the session is
         visible in the ~2s read cache -- 0.3s interval, 6s ceiling, the
-        measured schedule from AGENT_GUIDE.md §4. Raises TimeoutError if
-        it never appears.
+        measured schedule from AGENT_GUIDE.md §4.
+
+        POLLS THE NAME THE SERVER REPORTED, NEVER THE ONE ASKED FOR. The
+        two differ routinely -- a `new_session_template` that derives its
+        own name (`amplifier-workspace` truncates at 32 characters), and
+        tmux's own silent '.' -> '_' rewrite at rc=0. Polling the
+        requested name raised TimeoutError on sessions that had been
+        created perfectly fine; the server already re-enumerates and
+        reports what it observed (see main.py's `create_session()`), so
+        this consumes that answer rather than re-deriving it here. Two
+        disagreeing implementations of "which session did I just create"
+        is the defect, not the fix.
+
+        Raises TimeoutError only when a name the server CONFIRMED never
+        surfaces in the read cache -- a real anomaly the caller cannot
+        proceed past (`connect()` 404s on a session the cache doesn't
+        list). When the server reports `name_confirmed: false` it is
+        saying it could not determine which session it created; that
+        returns normally with `CreateSessionResult.name_confirmed ==
+        False` -- "created, name unconfirmed" -- because raising there
+        would report a successful creation as a failure. A server that
+        predates those fields makes no claim either way
+        (`name_confirmed is None`) and keeps the original raise-on-timeout
+        behavior exactly.
 
         `command_id` selects a configured session command pair (see
         `list_session_commands()` / GET /api/session-commands;
@@ -222,11 +246,19 @@ class MuxplexClient:
         body: dict[str, Any] = {"name": name}
         if command_id is not None:
             body["command_id"] = command_id
-        self._request("POST", "/api/sessions", json=body, session_name=name)
-        if wait and not self.wait_for_session(name, timeout=timeout, interval=interval):
+        result = protocol.parse_create_session_result(
+            self._request("POST", "/api/sessions", json=body, session_name=name),
+            requested_name=name,
+        )
+        if not wait:
+            return result
+        seen = self.wait_for_session(result.name, timeout=timeout, interval=interval)
+        if not seen and result.name_confirmed is not False:
             raise TimeoutError(
-                f"session {name!r} did not appear in the read cache within {timeout}s"
+                f"session {result.name!r} did not appear in the read cache "
+                f"within {timeout}s (requested {result.requested_name!r})"
             )
+        return replace(result, visible=seen)
 
     def delete_session(self, name: str, *, force: bool = False) -> None:
         """DELETE /api/sessions/{name}.

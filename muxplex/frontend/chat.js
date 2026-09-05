@@ -278,6 +278,11 @@
   // muxplex-fx1: the "Agent isn't set up" gate -- see checkAgentGate()/
   // setGateState() near init() and #chat-gate's comment in index.html.
   var gateEl, gateTextEl, gateSettingsBtn, headerEl, composerEl, bylineEl;
+  // muxplex-1i9: the attachment strip above the textarea. OPTIONAL (not in
+  // init()'s required list) so an older index.html still boots a working
+  // text-only panel -- see handlePaste(), which falls through to the
+  // browser default rather than intercepting a paste it has nowhere to show.
+  var attachmentsEl;
 
   // Confirmation-gate elements (send_muxplex_session_input only -- see
   // requestInputConfirmation()/resolveConfirm() below).
@@ -680,6 +685,17 @@
       L.push("## Turn " + (t + 1) + " -- user");
       L.push("");
       L.push(um ? fence("", um.text) : "_(no user message recorded for this turn)_");
+      // muxplex-1i9: named, sized, and NOT included. A reader needs to know
+      // the model was shown a picture to make sense of the exchange; they
+      // do not need the picture, and shipping it here would leak whatever
+      // the screenshot happened to have on screen.
+      if (um && um.attachments && um.attachments.length) {
+        L.push("");
+        L.push("Attachments (image data deliberately omitted from this export): " +
+          um.attachments.map(function (a) {
+            return a.name + " (" + a.mime + ", " + formatBytes(a.bytes) + ")";
+          }).join(", "));
+      }
       if (um && um.app_state) {
         var st = um.app_state;
         L.push("");
@@ -960,9 +976,322 @@
     autoGrowInput();
   }
 
+  // ---------------------------------------------------------------------
+  // Clipboard image attachments (muxplex-1i9)
+  // ---------------------------------------------------------------------
+  // "Screenshot the broken thing and paste it" is the fastest bug report a
+  // person can file, and this panel's whole job is supervising terminal
+  // sessions -- showing is very often quicker than describing.
+  //
+  // THE FAILURE MODE THIS IS BUILT AGAINST, stated first because every
+  // decision below follows from it: a paste that appears to work and
+  // silently isn't there. The user pastes, the message sends, and the model
+  // answers confidently about an image it was never given. That is strictly
+  // worse than no attachment support at all, because it costs the user
+  // their trust in the answer rather than merely their time. So:
+  //
+  //   * The attachment is VISIBLE in the composer before it sends -- name,
+  //     size, and the actual thumbnail. You can see what you are about to
+  //     send, and remove it.
+  //   * Every refusal is VISIBLE and states its own limit. There is no
+  //     path here that drops an image without saying so.
+  //   * The transcript shows the image that went, so the record of what
+  //     was asked matches what was actually sent.
+  //
+  // SCOPE, deliberately: clipboard IMAGE paste only. No file picker, no
+  // drag-and-drop, no documents. See the DONE record for this item -- the
+  // paste half is the one people mean by this request and the only one
+  // testable end to end without a file dialog, so it shipped first rather
+  // than shipping both halves badly.
+  //
+  // RETENTION, explicitly (a pasted screenshot of a terminal routinely
+  // contains a key or a hostname): an attachment lives in this tab's
+  // memory only, for the life of the conversation. muxplex writes it to no
+  // disk, no database, no log; New chat drops it; closing the tab drops it.
+  // It travels in the request body to the model like the text does, and is
+  // REDACTED out of the debug export (see redactContentForCapture) --
+  // because that export is a file people paste into issues, and it must
+  // never be the thing that leaks the screenshot.
+
+  //: Per-image ceiling. 5 MB is the Anthropic API's own documented limit
+  //: for an image; a larger one would be rejected downstream with a far
+  //: less legible message, so it is refused here where the person who
+  //: pasted it is still looking at the composer.
+  var ATTACH_MAX_BYTES = 5 * 1024 * 1024;
+  //: Per-message ceiling. Four is well inside provider limits and is a
+  //: guard against a runaway paste, not a considered UX maximum.
+  var ATTACH_MAX_COUNT = 4;
+  //: What the provider actually accepts. Anything else is refused BY NAME
+  //: rather than attached and rejected later.
+  var ATTACH_ALLOWED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+  //: [{id, name, mime, bytes, dataUrl}] -- pending, not yet sent. Same
+  //: lifecycle as `messages`: cleared by newConversation() and by a
+  //: successful send.
+  var pendingAttachments = [];
+  var attachSeq = 0;
+  //: The current refusal text shown in the strip, or "" -- kept as state
+  //: rather than a detached DOM node so renderAttachments() stays the one
+  //: function that decides what the strip looks like.
+  var attachNotice = "";
+
+  function formatBytes(n) {
+    if (!isFinite(n) || n < 0) return "? bytes";
+    if (n < 1024) return n + " bytes";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  /** Why *file* cannot be attached, or null if it can. Pure -- it is the
+   * single place a refusal is decided, so the message the user reads and
+   * the decision the code makes can never disagree. */
+  function attachmentRejectReason(file) {
+    var name = (file && file.name) || "the pasted image";
+    var type = (file && file.type) || "";
+    if (ATTACH_ALLOWED_TYPES.indexOf(type) === -1) {
+      return name + " is not a supported image type (" + (type || "unknown") +
+        "). Supported: PNG, JPEG, GIF, WebP.";
+    }
+    if (typeof file.size === "number" && file.size > ATTACH_MAX_BYTES) {
+      return name + " is too large (" + formatBytes(file.size) + "). The limit is " +
+        formatBytes(ATTACH_MAX_BYTES) + " per image.";
+    }
+    return null;
+  }
+
+  function setAttachNotice(text) {
+    attachNotice = text || "";
+    renderAttachments();
+  }
+
+  function clearAttachments() {
+    pendingAttachments = [];
+    attachNotice = "";
+    renderAttachments();
+  }
+
+  function removeAttachment(id) {
+    pendingAttachments = pendingAttachments.filter(function (a) { return a.id !== id; });
+    // Removing an attachment also clears a stale refusal: the state the
+    // notice described no longer exists.
+    attachNotice = "";
+    renderAttachments();
+  }
+
+  /** The strip is the ONLY renderer of attachment state -- it is shown iff
+   * there is something to say (a pending attachment, or a refusal to
+   * explain) and hidden otherwise. */
+  function renderAttachments() {
+    if (!attachmentsEl) return;
+    attachmentsEl.textContent = "";
+    var empty = pendingAttachments.length === 0 && !attachNotice;
+    attachmentsEl.classList.toggle("hidden", empty);
+    if (empty) return;
+
+    pendingAttachments.forEach(function (a) {
+      var chip = document.createElement("span");
+      chip.className = "agent-attachment-chip";
+
+      var thumb = document.createElement("img");
+      thumb.className = "agent-attachment-thumb";
+      thumb.setAttribute("src", a.dataUrl);
+      // The name is right there in the chip; repeating it as alt text would
+      // make a screen reader say it twice.
+      thumb.setAttribute("alt", "");
+      chip.appendChild(thumb);
+
+      var label = document.createElement("span");
+      label.className = "agent-attachment-name";
+      label.textContent = a.name + " (" + formatBytes(a.bytes) + ")";
+      chip.appendChild(label);
+
+      var remove = document.createElement("button");
+      remove.className = "agent-attachment-remove";
+      remove.setAttribute("type", "button");
+      remove.setAttribute("data-attachment-remove", a.id);
+      remove.setAttribute("aria-label", "Remove attachment " + a.name);
+      remove.textContent = "\u00d7";
+      remove.addEventListener("click", function () { removeAttachment(a.id); });
+      chip.appendChild(remove);
+
+      attachmentsEl.appendChild(chip);
+    });
+
+    if (attachNotice) {
+      var note = document.createElement("div");
+      note.className = "agent-attachment-notice";
+      // role=alert: a refusal must interrupt, not wait politely behind
+      // whatever else the panel is announcing -- the user is mid-paste and
+      // about to hit send believing the image is attached.
+      note.setAttribute("role", "alert");
+      note.textContent = attachNotice;
+      attachmentsEl.appendChild(note);
+      announceStatus(attachNotice);
+    }
+  }
+
+  /** Read one clipboard image into `pendingAttachments`. Resolves when the
+   * strip reflects the outcome -- whether that outcome is an attachment or
+   * a stated refusal. It never resolves having done nothing silently. */
+  function addPastedImage(file) {
+    return new Promise(function (resolve) {
+      var reason = attachmentRejectReason(file);
+      if (reason) { setAttachNotice(reason); resolve(false); return; }
+
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        var url = (e && e.target && e.target.result) || reader.result;
+        if (typeof url !== "string" || url.indexOf("data:") !== 0) {
+          setAttachNotice((file.name || "The pasted image") +
+            " could not be read from the clipboard.");
+          resolve(false);
+          return;
+        }
+        attachSeq++;
+        pendingAttachments.push({
+          id: "att-" + attachSeq,
+          name: file.name || ("pasted-image-" + attachSeq + extensionFor(file.type)),
+          mime: file.type,
+          // The decoded size where the clipboard gave us one, so the chip
+          // agrees with the limit the refusal quotes.
+          bytes: typeof file.size === "number" ? file.size : url.length,
+          dataUrl: url,
+        });
+        renderAttachments();
+        resolve(true);
+      };
+      reader.onerror = function () {
+        setAttachNotice((file.name || "The pasted image") +
+          " could not be read from the clipboard.");
+        resolve(false);
+      };
+      try {
+        reader.readAsDataURL(file);
+      } catch (err) {
+        setAttachNotice((file.name || "The pasted image") +
+          " could not be read from the clipboard (" +
+          String((err && err.message) || err) + ").");
+        resolve(false);
+      }
+    });
+  }
+
+  function extensionFor(mime) {
+    if (mime === "image/png") return ".png";
+    if (mime === "image/jpeg") return ".jpg";
+    if (mime === "image/gif") return ".gif";
+    if (mime === "image/webp") return ".webp";
+    return "";
+  }
+
+  /** Every image file on a paste event, in clipboard order. Reads `items`
+   * first (the shape every current browser gives for a screenshot paste)
+   * and falls back to `files`. */
+  function clipboardImageFiles(e) {
+    var cd = e && e.clipboardData;
+    if (!cd) return [];
+    var out = [];
+    var items = cd.items;
+    if (items && items.length) {
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (!it || it.kind !== "file") continue;
+        var f = it.getAsFile && it.getAsFile();
+        if (f && String(f.type || "").indexOf("image/") === 0) out.push(f);
+      }
+    }
+    if (!out.length && cd.files && cd.files.length) {
+      for (var j = 0; j < cd.files.length; j++) {
+        var g = cd.files[j];
+        if (g && String(g.type || "").indexOf("image/") === 0) out.push(g);
+      }
+    }
+    return out;
+  }
+
+  /** Paste handler for the composer.
+   *
+   * A text paste is NEVER touched -- no preventDefault, no interception --
+   * so the textarea's own behavior is exactly what it always was. Only a
+   * paste that actually carries image files is intercepted, and then only
+   * when there is a strip to show the result in: with no strip, falling
+   * through to the browser default is the honest degradation, because
+   * intercepting a paste we cannot display is the silent drop this whole
+   * feature exists to prevent. */
+  function handlePaste(e) {
+    if (!attachmentsEl) return;
+    var files = clipboardImageFiles(e);
+    if (!files.length) return;
+
+    // Committed: from here the browser must not ALSO paste a filename or a
+    // stray image into the textarea.
+    if (e.preventDefault) e.preventDefault();
+
+    var room = ATTACH_MAX_COUNT - pendingAttachments.length;
+    var accepted = files.slice(0, Math.max(0, room));
+    var overflow = files.length - accepted.length;
+
+    setAttachNotice("");
+    var chain = Promise.resolve();
+    accepted.forEach(function (f) {
+      chain = chain.then(function () { return addPastedImage(f); });
+    });
+    return chain.then(function () {
+      if (overflow > 0) {
+        // Additive, so a per-file refusal that already fired is not
+        // overwritten by the count message.
+        var prefix = attachNotice ? attachNotice + " " : "";
+        setAttachNotice(prefix + "At most " + ATTACH_MAX_COUNT +
+          " images per message \u2014 " + overflow +
+          (overflow === 1 ? " was" : " were") + " not attached.");
+      }
+    });
+  }
+
+  /** The `content` for one outgoing user message: a plain string when there
+   * is nothing attached (the overwhelmingly common case, byte-identical to
+   * what this panel has always sent), or OpenAI content blocks when there
+   * is. */
+  function buildUserContent(text, attachments) {
+    if (!attachments || !attachments.length) return text;
+    var parts = [];
+    if (text) parts.push({ type: "text", text: text });
+    attachments.forEach(function (a) {
+      parts.push({ type: "image_url", image_url: { url: a.dataUrl } });
+    });
+    return parts;
+  }
+
+  /** Message content, with any image bytes replaced by a description, for
+   * the debug capture buffer. See this section's RETENTION note: the
+   * export is a file that leaves the browser, and a pasted terminal
+   * screenshot is exactly the kind of thing that must not ride along in
+   * it. The fact that an image WAS attached is kept -- redacted, not
+   * erased, so the record still explains what the model was looking at. */
+  function redactContentForCapture(content) {
+    if (typeof content === "string") return truncateForCapture(content);
+    if (!Array.isArray(content)) return content;
+    return content.map(function (p) {
+      if (p && p.type === "image_url" && p.image_url) {
+        var url = String(p.image_url.url || "");
+        var mime = (url.match(/^data:([^;,]+)/) || [])[1] || "image";
+        return {
+          type: "image_url",
+          image_url: {
+            url: "[image attachment omitted from export: " + mime + ", " +
+              formatBytes(url.length) + " encoded]",
+          },
+        };
+      }
+      return p;
+    });
+  }
+
   function newConversation() {
     clientSessionId = "chat-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
     messages = [];
+    // A pending attachment belongs to the conversation being abandoned.
+    clearAttachments();
     messagesEl.textContent = "";
     // Debug capture buffer shares this conversation's lifecycle -- a fresh
     // conversation gets a fresh, empty capture log rather than mixing
@@ -1580,6 +1909,37 @@
     return /input_allowed_sessions/i.test(serverPart) ? "allowlist" : "global";
   }
 
+  /** True when `bodyText` is muxplex's own "the Agent was never set up on
+   * this server" refusal -- `{"error": {"type": "agent_not_configured"}}`,
+   * see main.py's AGENT_NOT_CONFIGURED_ERROR_TYPE.
+   *
+   * muxplex-at9, twice. The first fix asked "does the server's sentence
+   * contain the phrase 'not configured on this server'?" -- a question about
+   * PROSE. The sidecar -> embedded refactor rewrote that prose, the regex
+   * stopped matching, and every un-onboarded server silently went back to
+   * being told "worth retrying once" about a state retrying cannot touch.
+   * Nothing failed, because a regex that stops matching is not an error.
+   *
+   * So this asks a question about STRUCTURE instead, and the string it
+   * matches is pinned from the Python side
+   * (tests/test_agent_not_configured_contract.py asserts this file contains
+   * main.py's literal), which turns a future rename into a red suite rather
+   * than a quietly wrong message.
+   *
+   * Never throws: a non-JSON or truncated body is simply "not that case",
+   * which degrades to the generic 5xx handling -- the conservative
+   * direction, since mislabeling a REAL fault as "not set up" would send a
+   * user to configure something that is already configured. */
+  function isAgentNotConfiguredBody(bodyText) {
+    if (!bodyText) return false;
+    try {
+      var parsed = JSON.parse(bodyText);
+      return !!(parsed && parsed.error && parsed.error.type === "agent_not_configured");
+    } catch (e) {
+      return false;
+    }
+  }
+
   /** Turn a thrown tool error into { headline, remedy } in plain language.
    * `remedy` may be null when there is genuinely nothing the user can do.
    * `err` is the original Error when one is available; its structured
@@ -1649,24 +2009,24 @@
     if (m403) {
       return { headline: "muxplex refused that request.", remedy: null };
     }
-    // muxplex-at9: the 503 muxplex's OWN proxy returns when
-    // AMPLIFIER_AGENT_BEARER_TOKEN is unset -- i.e. the agent was never
-    // installed/configured on THIS server (main.py's
-    // agent_chat_completions_proxy). That is the default starting state
-    // for every fresh muxplex install, not a transient fault, so
-    // "worth retrying" (the generic m5xx phrasing just below) is actively
-    // wrong advice here -- retrying can never help until an operator
-    // configures it. Checked on the server's OWN wording, not on `name`:
-    // this failure reaches here through the plain `!resp.ok` path in
-    // runTurn() (name === "__request__"), never the SSE error-frame path,
-    // so it must not be scoped to name === "__stream__" the way the
-    // sidecar-unreachable case above is.
+    // muxplex-at9: the 503 muxplex's OWN endpoint returns when the Agent
+    // was never set up on THIS server -- amplifier-agent not installed, or
+    // installed with no provider credential (main.py's
+    // agent_chat_completions_proxy, via check_available()). That is the
+    // default starting state for every fresh muxplex install, not a
+    // transient fault, so "worth retrying" (the generic m5xx phrasing just
+    // below) is actively wrong advice here -- retrying can never help until
+    // an operator sets it up. Not scoped to a `name`: this failure reaches
+    // here through the plain `!resp.ok` path in runTurn()
+    // (name === "__request__"), never the SSE error-frame path, so it must
+    // not be scoped to name === "__stream__" the way the sidecar-unreachable
+    // case above is.
     //
     // In normal use nobody should ever see this: checkAgentGate() (below)
     // blanks the panel before a turn can even be attempted once the panel
     // is known to be unconfigured. This stays as the humanised fallback for
-    // the rare race (gate check said "configured" a moment ago, sidecar
-    // credential removed since) or a gate-check failure that fails open.
+    // the rare race (gate check said "configured" a moment ago, credential
+    // removed since) or a gate-check failure that fails open.
     //
     // Kept deliberately short -- one clause, no doc path. Most installs are
     // via `uv tool install`, which never sees README.md or docs/, so a
@@ -1675,7 +2035,16 @@
     // Anything more than this belongs behind a disclosure, the same way
     // the raw response text already sits behind "technical detail" below --
     // not stacked into a second visible paragraph.
-    if (m5xx && /not configured on this server/i.test(msg)) {
+    //
+    // The FIRST test is the structural one (err.agentNotConfigured, set at
+    // the throw site from the response's own `error.type`). The prose regex
+    // that follows it is a compatibility fallback ONLY -- it is what a
+    // pre-v0.49 server's wording looks like, and keeping it costs nothing
+    // while a browser holds a cached chat.js newer than the server it is
+    // talking to. It is emphatically not the primary path: relying on it
+    // IS the muxplex-at9 regression. See isAgentNotConfiguredBody() above.
+    if ((err && err.agentNotConfigured) ||
+        (m5xx && /not configured on this server/i.test(msg))) {
       return {
         headline: "The Agent isn't set up on this server yet.",
         remedy: "Set it up from Settings -> Agent.",
@@ -2290,10 +2659,13 @@
       // per-message (terminal scrollback lives here after a
       // get_muxplex_session_details/send_muxplex_session_input round trip),
       // never dropped wholesale.
+      // muxplex-1i9: image content-blocks are redacted here, not truncated.
+      // Truncating base64 would still put thousands of bytes of a possibly
+      // secret-bearing screenshot into a file people paste into issues.
       messages: body.messages.map(function (m) {
         return {
           role: m.role,
-          content: typeof m.content === "string" ? truncateForCapture(m.content) : m.content,
+          content: redactContentForCapture(m.content),
           tool_call_id: m.tool_call_id,
           tool_calls: m.tool_calls,
         };
@@ -2333,7 +2705,12 @@
       clearStatus();
       appendToolError("__request__",
         "POST /api/agent/chat/completions failed: HTTP " + resp.status +
-        (errText ? " -- " + errText : ""));
+        (errText ? " -- " + errText : ""),
+        // muxplex-at9: classify from the response's own typed field, never
+        // from its wording. Attached the same way the 403 fence classifier
+        // carries err.inputFence -- humaniseToolError() prefers a structured
+        // field over anything re-parsed out of a message.
+        { agentNotConfigured: isAgentNotConfiguredBody(errText) });
       return;
     }
 
@@ -2552,17 +2929,39 @@
 
   async function handleSend() {
     var text = inputEl.value.trim();
-    if (!text) return;
+    // muxplex-1i9: a pasted screenshot with no caption IS the message --
+    // "look at this" is often exactly what the image already says. An
+    // empty composer with nothing attached stays a no-op, as before.
+    var attachments = pendingAttachments.slice();
+    if (!text && !attachments.length) return;
     inputEl.value = "";
+    clearAttachments(); // taken by value above -- the composer resets now, before the await
     autoGrowInput(); // collapse the composer back down with its content
     clearEmptyState(); // the opening line has done its job the moment there is a real message
     var bubble = appendBubble("user");
     bubble.textContent = text;
-    messages.push({ role: "user", content: text });
+    // Show what actually went, not just the words: the transcript is the
+    // record of what was asked, and "here, look" is meaningless without
+    // the thing being looked at.
+    attachments.forEach(function (a) {
+      var img = document.createElement("img");
+      img.className = "agent-msg-attachment";
+      img.setAttribute("src", a.dataUrl);
+      img.setAttribute("alt", "Attached image: " + a.name);
+      bubble.appendChild(img);
+    });
+    messages.push({ role: "user", content: buildUserContent(text, attachments) });
 
     turnIndex++;
     requestIndex = -1; // runTurn() increments this to 0 on its first call for this turn
-    capPush("user_message", { text: text, app_state: snapshotAppState() });
+    capPush("user_message", {
+      text: text,
+      // Metadata only -- never the bytes. See redactContentForCapture.
+      attachments: attachments.map(function (a) {
+        return { name: a.name, mime: a.mime, bytes: a.bytes };
+      }),
+      app_state: snapshotAppState(),
+    });
 
     sendBtn.disabled = true;
     try {
@@ -2673,6 +3072,12 @@
     headerEl = $("chat-panel-header");
     composerEl = $("chat-composer");
     bylineEl = $("chat-byline");
+    // muxplex-1i9. Deliberately NOT in the fatal __missing check below, for
+    // the same reason as the live region above: its absence costs a
+    // feature, not the panel. handlePaste() reads it and falls through to
+    // the browser's own paste when it is gone, so the degradation is
+    // "images cannot be attached", never "images vanish".
+    attachmentsEl = $("chat-attachments");
     gateEl = $("chat-gate");
     gateTextEl = $("chat-gate-text");
     gateSettingsBtn = $("chat-gate-settings-btn");
@@ -3138,8 +3543,12 @@
         insertNewlineAtCursor();
       }
     });
+    // muxplex-1i9: clipboard image paste. A text paste is untouched by this
+    // handler -- see handlePaste()'s own note.
+    inputEl.addEventListener("paste", handlePaste);
     inputEl.addEventListener("input", autoGrowInput);
     autoGrowInput();
+    renderAttachments(); // start hidden, from the same renderer that maintains it
     // Describe the chord that is actually active, from the same value the
     // handler above branches on (muxplex-18f).
     applyComposerKeyMode();
@@ -3199,7 +3608,127 @@
     return resp.json();
   }
 
+  // muxplex-nnl: what a provider/model is called when the server did not
+  // tell us. Kept as a named constant because three separate code paths
+  // reach it (no `active` block from an older server, a null field from a
+  // box where the Agent isn't installed, and a failed status fetch) and
+  // all three must read identically -- an "unknown" that varies by path
+  // invites a reader to think the variations mean different things.
+  const AGENT_TARGET_UNKNOWN = "unknown";
+
+  /** Render the Settings -> Agent "Active provider and model" line.
+   *
+   * The whole point of muxplex-nnl is that this value is READ, never
+   * assumed: `data.active` is composed server-side from the embedded
+   * runner's own active_provider()/default_model(), so what shows here is
+   * what a turn would actually mount.
+   *
+   * Which makes the absent case the important one. A missing `active`
+   * block (an older server), a null field (the Agent isn't installed on
+   * this box, so there is no runner to have an active anything), or a
+   * status fetch that threw all render as "unknown" -- deliberately, and
+   * never as chat.js's own MODEL constant or any other plausible-looking
+   * default. A wrong-but-confident model name here is worse than a blank:
+   * it is exactly the "no surprises" failure this item was filed about,
+   * with the surprise moved from "I don't know" to "I was told wrong".
+   */
+  function _renderActiveAgentTarget(data) {
+    const el = document.getElementById("agent-active-target");
+    if (!el) return; // element not in the DOM (older frontend build)
+    const active = (data && data.active) || {};
+    const provider = active.provider || AGENT_TARGET_UNKNOWN;
+    const model = active.model || AGENT_TARGET_UNKNOWN;
+    el.textContent = "Provider: " + provider + " \u00b7 Model: " + model;
+  }
+
+  // muxplex-y15: how a "we could not check" reads. One constant because
+  // every path that reaches it -- no credential, provider offline, a
+  // provider that publishes no list, a shape we could not parse, or this
+  // fetch itself failing -- must read identically. The user-visible
+  // requirement is that this is distinguishable from BOTH a pass and a
+  // failure, so the wording never contains the word "not served" and
+  // never implies anything is wrong.
+  const AGENT_MODEL_CHECK_UNKNOWN_PREFIX = "Could not check";
+
+  /** Render the Settings -> Agent "is this model actually served?" line.
+   *
+   * The line above it (_renderActiveAgentTarget) reports the model the
+   * server BELIEVES it will use. That value is pinned to the runner's own
+   * constant (muxplex-nnl), so it cannot drift from what a turn sends --
+   * but nothing checked it against reality. A model id that the provider
+   * renamed or retired displayed with complete confidence and failed only
+   * at turn time, mid-stream. This closes that: muxplex asks the provider
+   * what it serves and says so.
+   *
+   * Three outcomes, kept distinct because collapsing any two of them just
+   * moves the defect:
+   *
+   *   validated   -- the provider serves it. Quiet confirmation.
+   *   not_served  -- names the model asked for AND what is available.
+   *   unknown     -- could not check. Must read as neither pass nor fail.
+   *
+   * DELIBERATELY NOT PART OF checkAgentGate(). The gate fails OPEN on a
+   * status-check error by design (muxplex-at9), which means a validation
+   * call that errored there would change nothing visible -- it would
+   * silently show nothing at all. So this renders into its own element on
+   * the settings path, where a failure has somewhere to be SEEN, and the
+   * gate keeps reading only /api/agent/provider-credential.
+   */
+  async function _refreshServedModelCheck() {
+    const el = document.getElementById("agent-model-check");
+    // Not in the DOM (older frontend build): return BEFORE fetching. The
+    // check exists to put words on screen; with nowhere to put them, the
+    // live provider call is pure cost.
+    if (!el) return;
+    let data;
+    try {
+      const resp = await fetch("/api/agent/served-models", {
+        headers: { Accept: "application/json" },
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      data = await resp.json();
+    } catch (err) {
+      // The failure of the CHECK is not evidence about the MODEL. Saying
+      // "not served" here would be the same confidently-wrong move this
+      // whole line exists to prevent, just sourced from our own outage
+      // instead of the provider's rename.
+      el.textContent = AGENT_MODEL_CHECK_UNKNOWN_PREFIX +
+        " whether the provider serves this model. This is not a sign the " +
+        "model is wrong.";
+      console.error("[agent-model-check] served-model lookup failed:", err);
+      return;
+    }
+    const status = data && data.status;
+    if (status === "validated") {
+      el.textContent = data.detail || "The provider serves this model.";
+      return;
+    }
+    if (status === "not_served") {
+      // The one case that names a real problem -- so it names BOTH halves
+      // of it (which model was asked for, which are available), per this
+      // item's acceptance criterion. The server composes that sentence;
+      // the fallback here only covers a server that answered "not_served"
+      // without a detail, and still refuses to invent a model list.
+      el.textContent = data.detail ||
+        ("The provider does not serve " + (data.model || "this model") + ".");
+      return;
+    }
+    // Anything else -- "unknown", or a status this build does not
+    // recognise -- is an unknown. Falling through to a pass or a failure
+    // for an unrecognised value is exactly how a future server change
+    // would silently start lying here.
+    el.textContent = AGENT_MODEL_CHECK_UNKNOWN_PREFIX +
+      " whether the provider serves this model" +
+      (data && data.detail ? ": " + data.detail : ".");
+  }
+
   function _renderAgentCredentialStatus(data) {
+    // First, and outside every branch below: the active provider/model is
+    // a fact about this server that a user wants in EVERY state --
+    // including not_installed and error, both of which return early from
+    // this function. (In those states it renders "unknown", which is the
+    // honest answer, not a degraded one.)
+    _renderActiveAgentTarget(data);
     const statusEl = document.getElementById("agent-credential-status");
     const shadowEl = document.getElementById("agent-credential-shadow-warning");
     const restartWarnEl = document.getElementById("agent-credential-restart-warning");
@@ -3268,8 +3797,21 @@
       _renderAgentCredentialStatus(data);
     } catch (err) {
       statusEl.textContent = "Could not check the Agent's credential status.";
+      // muxplex-nnl: a failed fetch means we do not know the active
+      // provider/model either -- say so, rather than leaving the
+      // "Checking..." placeholder up forever (which reads as "still
+      // working on it" and never resolves).
+      _renderActiveAgentTarget(null);
       console.error("[agent-credential] status fetch failed:", err);
     }
+    // muxplex-y15. AFTER the try/catch, and outside it, so it runs in both
+    // branches: a credential-status fetch that failed leaves the
+    // served-model line as a "Checking..." placeholder that never resolves
+    // otherwise -- the same stuck-placeholder failure muxplex-nnl fixed for
+    // the line above. Its own errors are handled internally, so it can
+    // never take the credential status down with it, and it is awaited so
+    // a caller that awaits refreshStatus() sees a settled panel.
+    await _refreshServedModelCheck();
   }
 
   // The owner's design call (Settings -> Agent Save button): we cannot know
@@ -3399,6 +3941,11 @@
   window.muxplexAgentCredential = {
     refreshStatus: _refreshAgentCredentialStatus,
     bindForm: _bindAgentCredentialForm,
+    // muxplex-y15. Exposed alongside refreshStatus (which already calls
+    // it) so the served-model check can be driven on its own -- and so a
+    // test can prove it is reachable WITHOUT going through the gate, which
+    // is the property that keeps a live provider call off the gate path.
+    refreshModelCheck: _refreshServedModelCheck,
     // muxplex-fx1 stale-gate fix: lets app.js's closeSettings() ask the chat
     // panel to re-validate its own "Agent isn't set up" gate as a
     // belt-and-suspenders check when Settings closes -- same cross-file

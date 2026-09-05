@@ -393,6 +393,27 @@ consumers in ways this repo's tests won't catch:
   `AGENT_GUIDE.md` §4, "The read model is eventually consistent". They are
   deliberately kept in exactly one place; don't restate the numbers here.
   (Candidate future fix: write-through cache refresh on create/delete.)
+  **A caller must poll the name the create response reported, not the one it
+  requested** (next bullet) — under a name-mangling template the requested name
+  never appears at all, so a poll keyed on it cannot terminate in success, and
+  the resulting timeout looks identical to this cache race while having nothing
+  to do with it.
+- **`POST /api/sessions` reports the OBSERVED session name, never the request
+  echoed back.** `name` is re-read from a live enumeration after the spawn
+  (`main.py`'s `_observe_created_session()`) because the requested name is not
+  a reliable identity: a non-default `new_session_template` may derive its own
+  (the `amplifier-workspace` exemplar truncates to 32 characters) and tmux
+  silently rewrites `.` to `_` at rc=0. `requested_name`, `observed` and
+  `name_confirmed` are additive — a client that reads only `name` behaves as
+  before, and gets the repaired value. `name_confirmed: false` means the server
+  could not attribute exactly one new session to this create (not enumerable
+  yet, or two arrivals at once); `name` is then the requested name as a
+  best-effort fallback and **must not be presented as an observation** — that
+  fallback, silently, is the original defect. This mirrors the rename endpoint's
+  step-8 verification rather than inventing a second shape, and `created_with`
+  is keyed on the observed name for the same reason (delete resolves the pair by
+  the live session's name). Caller-facing guidance is in `AGENT_GUIDE.md` §4,
+  "The name you get back may not be the name you asked for".
 - **`GET /api/state` carries `settings_updated_at: float`**, merged in at
   request time from `settings.settings_updated_at` (settings.py) — it is
   NOT persisted in state.json; `empty_state()`/`load_state()`/`save_state()`
@@ -586,6 +607,48 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   worked because a manual file backup happened to exist. Best-effort: a
   snapshot failure is logged and swallowed, never blocks or corrupts the
   real write.
+- **Every settings write is atomic** (`settings.atomic_write_text()`):
+  uniquely-named temp file in the settings directory itself, `fsync`,
+  `os.replace()`, then an `fsync` of the directory — the same
+  tmp-then-rename pattern `state.py`/`manifest.py` use. `settings.json` was
+  the *first* of the four state files fixed: it had been ending in a bare
+  `write_text()`, so an interrupted write (crash, OOM, power cut, full
+  disk) could leave a truncated JSON file, which the next read then treated
+  as "unparseable, use defaults". The temp name is unique per write, which
+  matters wherever a file has a second writer in a *different process* —
+  `settings.json` has one in the `muxplex` CLI (`settings set`,
+  `session-command add`/`rm`, `reset`) — because two processes sharing one
+  staging path would interleave bytes into it and then each atomically
+  publish the mixture. Existing file permissions survive the replace (the
+  file carries the federation key); a first-ever write lands 0600.
+  This helper is public and shared, not settings-only: `pruning.py` calls
+  it directly (see the `pruning.json` bullet below), and `state.py` /
+  `manifest.py` carry the same pattern with their own durability
+  trade-offs. The other three files were fixed after this one —
+  `sessions.json`/`state.json` were atomic but shared a fixed
+  `<target>.tmp` staging path until they got unique names, and
+  `pruning.json` was still a bare `write_text()` until later still.
+- **`pruning.json` is written the same way** (`pruning.save_pruning_state()`
+  → `settings.atomic_write_text()`). This sidecar holds `first_missed_at`,
+  the per-device stale-key grace clock, and `load_pruning_state()`
+  deliberately returns `{}` on unparseable content — so a truncated write
+  did not merely corrupt the file, it silently restarted the grace period
+  for every session key and changed WHEN real view pins get pruned, then
+  erased its own evidence on the next poll cycle. Never synced to peers.
+- **An unreadable settings file is preserved, never overwritten.**
+  `load_settings()` still falls back to `DEFAULT_SETTINGS` — raising would
+  take down every endpoint and the CLI over a recoverable data problem —
+  but it first *moves* the unreadable file aside to
+  `~/.config/muxplex/settings.json.corrupt-<seq>-<unix_ts>` and logs an
+  ERROR naming that path and `settings-history/`. Without this, the
+  fallback was silent and the next `save_settings()` persisted defaults
+  over the user's only copy of their configuration. Moved rather than
+  copied because `load_settings()` runs on essentially every request: the
+  move takes the bad file out of the load path, so this fires exactly once
+  per corruption event instead of minting a file per call. Valid JSON of
+  the wrong shape (`null`, a list, a bare string) takes the same path —
+  previously `null` raised `TypeError` out of `load_settings()` rather than
+  degrading.
 - **Destructive-write backstop on `views`** (`views.assess_views_destruction`,
   called from BOTH `settings.patch_settings()` and
   `settings.apply_synced_settings()` — the single lowest choke point each
@@ -638,6 +701,94 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   behavior — apply views/hidden_sessions unconditionally, gated only by the
   backstop above — so older peers keep interoperating with zero changes on
   their end.
+- **`views_changed_at`** (third piece of sync metadata, alongside the two
+  timestamps above; threaded through the `/api/settings/sync` GET/PUT
+  payload, not in `SYNCABLE_KEYS`): the per-view / per-member presence
+  stamps that let federation sync **merge** `views` instead of picking one
+  side. `views_updated_at` narrowed the LWW race but still resolved it by
+  REPLACING our array with the peer's, so two devices editing views inside
+  one ~30s sync window still destroyed the loser's edit — a pin that just
+  landed, silently gone on the next render, the same symptom the CAS and
+  the backstop were each added for.
+  Shape: `{"<view name>": {"at": <float|null>, "members": {"<session key>":
+  <float>}}}` — the moment that view / that member last changed PRESENCE.
+  Presence itself is **derived, never stored**: a key listed in
+  `view.sessions` is present; a key with a stamp but absent from `sessions`
+  is a **tombstone**; a key with no stamp at all is "never seen / predates
+  this feature". That distinction is the whole point — under a plain union,
+  "absent because deleted" and "absent because never seen" are the same
+  observation, and a member genuinely deleted on one device gets resurrected
+  by another that still lists it. Resolution per element
+  (`views.merge_views`): present on both, or absent on both, is no conflict;
+  otherwise the absent side's stamp is a deletion and the present side's is
+  an add, later wins, **a tie keeps** (a resurrected pin is visible and
+  undoable; a lost pin is silent). An absent side with NO stamp never
+  deletes; a present side with no stamp loses to a dated deletion, so a
+  deletion can still reach a device holding pre-feature data.
+  **Server-derived, never client-supplied**: every stamp comes from
+  `views.record_views_change()` diffing what a write actually changed, and
+  `patch_settings()` refuses to copy this key out of a PATCH body — a
+  client that could set it could forge a tombstone (deleting a peer's pin
+  fleet-wide) or erase one. That is also what makes it safe against a stale
+  PWA tab: a client that knows nothing about the key cannot drop it.
+  Ordering and every non-membership attribute (`match_names`, …) still come
+  wholesale from the side with the larger `views_updated_at` — both devices
+  pick the same authority, so both compute the same order and the exchange
+  settles instead of ping-ponging forever. The destructive-write backstop
+  runs on the MERGED array, i.e. on what will actually be written.
+  If the merge leaves this device holding membership the peer lacks, it
+  bumps its own `settings_updated_at`/`views_updated_at` past the incoming
+  ones so the NEXT cycle pushes the union back; adopting the peer's
+  timestamp verbatim would park both sides on "equal: no action" and the
+  peer would never learn about our pin. Terminates, because a converged
+  merge contributes nothing and bumps nothing.
+  **Backward compatible**: a peer that omits the field leaves
+  `incoming_views_changed_at=None` and `views` is resolved by the
+  pre-existing `views_updated_at` LWW, unchanged. `{}` is NOT the same
+  signal — it means "supports merging, has recorded no presence change yet".
+  **Costs, stated rather than hidden** (see views.py's "Federation merge of
+  `views`" header): the payload grows by one float per pinned member plus
+  one per live tombstone; tombstone GC is time-based
+  (`VIEW_TOMBSTONE_TTL_SECONDS`, 30 days), so a device offline LONGER than
+  that, still holding a since-deleted pin, resurrects that one pin —
+  bounded, and `prune_stale_keys` removes it again within
+  `stale_key_grace_hours` if the underlying session is gone; and clock skew
+  now matters per member rather than per array, which is strictly
+  finer-grained than the whole-blob LWW that already depended on it.
+  `hidden_sessions` is deliberately **not** merged — it keeps the
+  `views_updated_at` LWW described above.
+- **A key REWRITE is stamped as one deletion plus one addition** — but only
+  where the retired key is this device's to retire. Two paths rewrite a
+  member of `views[*].sessions` rather than adding or removing one:
+  `POST /api/sessions/{name}/rename` (which moves `<device>:<old>` to
+  `<device>:<new>`) and the poll cycle's key normalization (which upgrades a
+  legacy bare-name entry to `<device_id>:<name>`). Left unstamped, the
+  removal half reads to the merge as "this device never knew about that
+  key", so a peer still holding the old key re-introduces it on the next
+  sync — user-visible as *rename a session on one device, and the old pin
+  comes back from the dead on another*, where it matches no live session
+  until `prune_stale_keys` removes it (`stale_key_grace_hours`, 24h
+  default). No new state: the rewrite writes the same `views_changed_at`
+  stamps every other write derives, read by the same resolution rules.
+  **What a rewrite may retire, and why it is limited:** a rename's old key
+  is `<local_device_id>:<old name>` by construction, and only this device
+  can own that key — retiring it states a fact about our own keyspace, so
+  `dev-b:<old name>` (a different device's session that merely shares the
+  bare name) is never touched. A legacy **bare** name has no owner at all:
+  `filter_visible` matches it by NAME against every device's sessions, so
+  it may equally denote a peer's own live session, and tombstoning it
+  fleet-wide would unpin that session — losing a real pin, which is worse
+  than the redundant entry the conservative choice leaves behind. So the
+  normalization only stamps a bare retirement when the caller can show no
+  device currently known to it is running that name; every other caller
+  (`remote_live_names` omitted) upgrades locally and stamps nothing,
+  exactly as before. Residual, stated rather than hidden: a device we have
+  no current knowledge of could be running that name and would lose the
+  pin — but only while it is ALSO still carrying an un-normalized bare
+  entry for it, which its own poll cycle clears within seconds, well before
+  its first federation sync. When both devices have normalized, both
+  tombstone the bare key and each keeps its own canonical key, which is the
+  correct outcome.
 - **`PUT /api/settings/sync`'s existing `payload.settings_updated_at >
   local_ts` comparison IS this endpoint's CAS/precondition discipline** — a
   peer only gets to write when its view of the world is strictly newer than

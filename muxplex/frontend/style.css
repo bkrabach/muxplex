@@ -2205,6 +2205,11 @@ body {
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
+  /* muxplex-1i9: lets .agent-panel-attachments claim a full-width row above
+     the textarea/Send row. With the strip hidden this changes nothing --
+     the textarea already shrinks (flex: 1 1 auto), so a two-item row has
+     nothing to wrap. */
+  flex-wrap: wrap;
   /* muxplex-8qp: the textarea grows with its content now, so the default
      `stretch` would stretch Send to match it -- a Send button that gets
      taller the more you type. flex-end keeps it beside the LAST line, where
@@ -2253,6 +2258,98 @@ body {
 .agent-panel-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Clipboard image attachments (muxplex-1i9)
+   ---------------------------------------------------------------------
+   The strip sits ABOVE the textarea/Send row (order:-1, full basis) so the
+   thing you are about to send is visible without displacing the caret. It
+   is shown only when it has something to say -- chat.js toggles .hidden
+   from renderAttachments(), the sole owner of its contents.
+
+   Everything here uses the app's own tokens rather than fresh values: an
+   attachment chip is panel chrome, not a new visual language. */
+.agent-panel-attachments {
+  order: -1;
+  flex: 0 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.agent-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 4px 3px 3px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: 12px/1.3 var(--font-ui);
+  color: var(--text);
+}
+
+/* The thumbnail is the honesty in this feature: the name alone tells you
+   something is attached, the picture tells you WHICH something. */
+.agent-attachment-thumb {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+}
+
+.agent-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.agent-attachment-remove {
+  background: none;
+  border: none;
+  /* --text-muted (6.3:1, AA), not --text-dim: tokens.css marks --text-dim
+     decorative and "never the only carrier of meaning", and the glyph IS
+     the only visual carrier of "remove this" here. */
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 14px/1 var(--font-ui);
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.agent-attachment-remove:hover {
+  color: var(--text);
+  background: var(--bg-surface);
+}
+
+/* A refusal. Sized and coloured to be read, not dismissed -- this is the
+   message standing between a user and the belief that their screenshot
+   was sent when it was not. */
+.agent-attachment-notice {
+  flex: 0 0 100%;
+  font: 12px/1.4 var(--font-ui);
+  /* --err, not var(--danger, ...): tokens.css records that --danger is
+     undefined and every call site renders its own inline fallback, with
+     two different reds shipping under one name. A new rule should not add
+     a third. --err is the defined signal token for exactly this. */
+  color: var(--err);
+}
+
+/* An image inside a sent user bubble: the transcript's record of what was
+   actually asked. Bounded so a large screenshot cannot push the
+   conversation off screen. */
+.agent-msg-attachment {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  max-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 /* Send (muxplex-5bn) -- a REAL button, deliberately, not a link.
@@ -3576,6 +3673,31 @@ body {
 
 .new-session-input::placeholder {
   color: var(--text-dim);
+}
+
+/* Live length counter beside the new-session input (muxplex-1vz).
+   Hidden entirely until the name approaches the 255-byte filesystem limit --
+   a counter on every ordinary session name would be noise, and noise is what
+   gets ignored when it finally matters. */
+.new-session-length-hint {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Over the BYTE limit -- reachable only with non-ASCII characters, where
+   maxlength (UTF-16 code units) and NAME_MAX (UTF-8 bytes) diverge. */
+.new-session-length-hint--over {
+  color: var(--err);
+}
+
+.fab-input-overlay .new-session-length-hint {
+  display: block;
+  margin: 4px 0 0;
 }
 
 .new-session-device-select,
@@ -4903,6 +5025,34 @@ body {
   padding: 7px 12px;
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* Inline rename field — replaces the "Rename…" row in place, same padding as
+   the row it stands in so the menu does not jump when it appears. The input
+   itself is .new-session-input (the shared factory's element), width-clamped
+   here because the menu is narrower than the header it was sized for. */
+.flyout-menu__rename {
+  display: flex;
+  align-items: center;
+  padding: 5px 10px;
+}
+
+.flyout-menu__rename .new-session-input {
+  width: 100%;
+  min-width: 0;
+}
+
+/* A local-only action (rename) shown on a REMOTE session's tile: visible and
+   explained via its title, but not clickable. See RENAME_LOCAL_ONLY_TITLE. */
+.flyout-menu__item:disabled,
+.flyout-sheet__item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.flyout-menu__item:disabled:hover,
+.flyout-sheet__item:disabled:active {
+  background: transparent;
 }
 
 .flyout-menu__confirm-btn {

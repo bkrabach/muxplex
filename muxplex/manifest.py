@@ -106,6 +106,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -214,14 +215,45 @@ def save_manifest(manifest: dict[str, Any]) -> None:
     extra syscall is the cheapest correctness available and is the one
     place this module deliberately differs from save_state()'s cheaper
     pattern (see SESSION_PERSISTENCE_DESIGN.md section 7.2).
+
+    The staging file gets a UNIQUE name (tempfile.mkstemp), not a fixed
+    ``sessions.json.tmp``. This manifest has more than one writer process:
+    the server writes it every poll cycle and from the rename/create/delete
+    endpoints, and ``muxplex restore`` (cli.cmd_restore -> restore.py) writes
+    it from a SEPARATE process while that server is running. Two processes
+    sharing one staging path have two distinct failure modes, and both were
+    reachable here:
+
+    * They interleave their bytes into the single tmp file and each then
+      atomically publishes the mixture -- an atomic rename of corrupt content
+      is still corrupt content. ``settings.atomic_write_text`` already fixed
+      exactly this for settings.json and named state.py/manifest.py as still
+      carrying it; this is that same fix, applied where it was pointed.
+    * The loser of the race crashes. Whoever calls ``os.replace()`` second
+      finds the tmp file already renamed out from under it and raises
+      ``FileNotFoundError: ... 'sessions.json.tmp' -> 'sessions.json'``, out
+      of whatever request happened to be holding the pen -- the rename
+      endpoint's step 6 journal write included (muxplex-673).
+
+    Measured: four processes writing one shared staging path, 12000 writes,
+    3007 FileNotFoundError (25%). With a unique name per write, zero.
     """
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = Path(str(MANIFEST_PATH) + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(json.dumps(manifest, indent=2) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, MANIFEST_PATH)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=MANIFEST_PATH.parent, prefix=f".{MANIFEST_PATH.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(manifest, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, MANIFEST_PATH)
+    except BaseException:
+        # Leave nothing behind to accumulate in the state directory, and
+        # leave whatever was already at MANIFEST_PATH completely untouched.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def get_restore_cwd(manifest: dict[str, Any], name: str) -> str | None:

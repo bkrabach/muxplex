@@ -33,11 +33,12 @@ assumed (tmux 3.4 on Linux):
     explicitly allowed we resolve first and leave the link intact.
 
 SAFETY POSTURE. This is the only place muxplex writes to a file it did not
-create, so every write is: backed up first, atomic (tmp + ``os.replace``, the
-``state.py``/``manifest.py`` pattern rather than the non-atomic ``settings.py``
-one), verified by re-reading the file AND by starting a throwaway tmux server
-on a private socket, and reversible. Anything ambiguous raises
-``TmuxConfigError`` -- there is no degraded path.
+create, so every write is: backed up first, atomic (delegated to the shared
+``settings.atomic_write_text`` -- see ``_atomic_write`` below for why this
+module wraps it rather than carrying its own copy), verified by re-reading the
+file AND by starting a throwaway tmux server on a private socket, and
+reversible. Anything ambiguous raises ``TmuxConfigError`` -- there is no
+degraded path.
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ import time
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+
+from muxplex.settings import atomic_write_text
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 # Module-level constants (not inline Path.home() calls) so tests can redirect
@@ -297,21 +300,49 @@ def render_preview(theme: str, copy_mode: str = "desktop") -> str:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """tmp + os.replace, per state.py/manifest.py (NOT the non-atomic
-    settings.py pattern).
+    """Resolve a symlink, then publish *content* via the SHARED atomic writer.
 
-    Symlinks are resolved FIRST: os.replace() onto a symlink path would replace
-    the symlink itself with a regular file, silently detaching a dotfiles repo.
+    Symlinks are resolved FIRST, and that is the whole reason this wrapper
+    exists: ``os.replace()`` onto a symlink path replaces the symlink itself
+    with a regular file, silently detaching a tracked dotfiles repo. That is a
+    tmux-config policy, not a property of atomic writing -- a general helper
+    must publish at the path its caller named, so the resolution belongs here
+    and stays here.
+
+    DECISION (muxplex-fjv) -- why this delegates instead of writing its own
+    tmp + ``os.replace()``. It used to be the FIFTH private copy of that
+    pattern in this repo, and the only one that never fsynced the contents.
+    Consolidating onto ``settings.atomic_write_text`` (which
+    ``pruning.save_pruning_state()`` already uses) buys three things this copy
+    was missing, and costs one behaviour change worth stating out loud:
+
+    * **The contents are fsynced before the rename.** The missing fsync was a
+      real gap, not a deliberate trade-off: nothing here ever argued for it,
+      and this module's own stated posture is that every write is atomic,
+      verified and reversible. ``os.replace()`` alone gives atomic
+      *visibility*, not durability -- a power cut can commit the rename while
+      the data blocks are still unwritten, atomically publishing an EMPTY
+      ``~/.tmux.conf``. The backup taken just before the write survives that,
+      so it was recoverable rather than fatal, but "recoverable from a backup"
+      is a worse guarantee than the other four writers already had.
+    * **A unique staging name per write, not per process.** The old
+      ``.muxplex-tmp-<pid>`` suffix was unique across processes but shared by
+      every write within one -- see ``manifest.save_manifest()`` for what a
+      shared staging path costs.
+    * **The target's mode survives the write.** ``os.replace()`` publishes the
+      TEMP file's mode, so the old code silently reset a user who had
+      ``chmod 600 ~/.tmux.conf`` back to whatever their umask gave. The
+      behaviour change: a file muxplex creates from scratch now lands 0600
+      instead of umask-default, matching every other file muxplex creates. A
+      tmux config is read by the user's own tmux, so this costs nothing; an
+      operator who widens it afterwards keeps that choice.
+
+    If a future writer here needs different durability, change the shared
+    helper deliberately -- do not fork a sixth copy.
     """
     if path.is_symlink():
         path = path.resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + f".muxplex-tmp-{os.getpid()}")
-    try:
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    atomic_write_text(path, content)
 
 
 def _backup(path: Path) -> Path:

@@ -367,6 +367,49 @@ class HeartbeatResult:
 
 
 @dataclass(frozen=True)
+class CreateSessionResult:
+    """POST /api/sessions.
+
+    The name a caller ASKS for and the name tmux ACTUALLY creates diverge
+    routinely: a non-default `new_session_template` may derive its own
+    name (the `amplifier-workspace` case truncates to 32 characters) and
+    tmux itself silently rewrites '.' to '_' while reporting success. The
+    server re-enumerates after the spawn and reports what it found (see
+    main.py's `create_session()`); this is that answer, parsed.
+
+    `name` is the identity to use downstream -- the observed name when the
+    server could confirm one, otherwise the requested name as a best
+    effort. Never construct a key from `requested_name` instead.
+
+    `observed` is the verified name or `None`. `name_confirmed` says which
+    -- and is three-state on purpose:
+
+      * `True`  -- the server enumerated the session and `name` IS it.
+      * `False` -- the server looked and could NOT determine which session
+        it created. `name` is a request, not an observation; treat it as
+        a lead, never as an identity.
+      * `None`  -- the server said nothing at all about confirmation (it
+        predates these fields). Absence of a claim, not a denial of one --
+        distinct from `False`, and deliberately not collapsed into it.
+
+    `visible` records THIS CLIENT's own independent observation: whether
+    `name` appeared in the server's session list while `create_session()`
+    polled for it. `None` means nothing was polled (`wait=False`). It is
+    kept separate from `name_confirmed` rather than folded into it -- the
+    server's finding and the client's poll are two different facts, and
+    silently promoting one into the other would be exactly the second,
+    competing name-reconciliation mechanism this fix exists to avoid.
+    """
+
+    name: str
+    requested_name: str
+    observed: str | None = None
+    name_confirmed: bool | None = None
+    visible: bool | None = None
+    command_id: str | None = None
+
+
+@dataclass(frozen=True)
 class RenameResult:
     """POST /api/sessions/{name}/rename.
 
