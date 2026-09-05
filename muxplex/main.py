@@ -5668,6 +5668,35 @@ async def get_agent_provider_credential(request: Request) -> dict:
     return await agent_embedded_credentials.full_status()
 
 
+@app.get("/api/agent/served-models")
+async def get_agent_served_models(request: Request) -> dict:
+    """Does the provider actually SERVE the model the panel displays?
+    (muxplex-y15.)
+
+    A SEPARATE route from `/api/agent/provider-credential`, and that
+    separation is the design, not an accident. That route backs both the
+    Settings -> Agent tab AND `checkAgentGate()`, which chat.js polls; it
+    is expected to be cheap and purely local. This one makes a live call
+    to the provider, so it is requested explicitly, only when the settings
+    tab renders, and never by the gate. A provider outage therefore cannot
+    slow down -- or change the behaviour of -- whether the chat panel is
+    usable.
+
+    Read-only, no key in and no key out: the credential is resolved
+    server-side by the same env-first chain a real turn uses, used for one
+    `list_models()` call, and never echoed. Sits behind the same shared
+    auth middleware as every other `/api/` route.
+
+    Always 200. The three outcomes (`validated` / `not_served` /
+    `unknown`) are the RESULT, not the transport: an HTTP error here would
+    be indistinguishable to the caller from the fetch itself failing, and
+    chat.js renders both of those as "could not check" anyway -- so the
+    interesting distinction (could not check vs. genuinely not served)
+    would be the one thrown away.
+    """
+    return await agent_embedded_credentials.served_model_check()
+
+
 @app.post("/api/agent/provider-credential")
 async def post_agent_provider_credential(
     payload: ProviderCredentialRequest, request: Request
