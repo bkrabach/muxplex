@@ -391,7 +391,46 @@ async def stream_embedded_chat_completion(
             yield wire.sse_error(refusal).encode()
             return
         if can_seed:
-            await context_module.set_messages(history)
+            # muxplex-lh0: `# pyright: ignore` for a checker defect, NOT for a
+            # real finding. pyright 1.1.411 reports reportOptionalMemberAccess
+            # here ("set_messages" is not a known attribute of "None");
+            # 1.1.408 reports nothing. Same tree, same venv, only the checker
+            # version differs.
+            #
+            # 1.1.411 is the one that is wrong, and provably so. Ask either
+            # version for the type of `context_module` at the
+            # `session.coordinator.get("context")` line above and both
+            # answer `Any` -- amplifier-agent is an optional extra, so
+            # `session` and everything reached through it is unresolved (see
+            # this file's header). `Any` does not contain `None`. Inside
+            # `if can_seed:` -- the branch where `context_module is not None`
+            # has just been proven -- 1.1.408 still says `Any`, while 1.1.411
+            # says `Any | None`. It ADDS the member the guard excluded, on the
+            # branch that excludes it. There is no reading under which that is
+            # a stricter-but-correct analysis; it is an unsound narrowing.
+            #
+            # Minimal reproduction, no muxplex involved:
+            #
+            #     def f(x: Any) -> None:
+            #         g = x is not None and hasattr(x, "m")
+            #         if g:
+            #             reveal_type(x)  # 1.1.408: Any | 1.1.411: Any | None
+            #
+            # It needs all three of: a declared `Any`, the guard aliased to a
+            # local (`g`), and a `hasattr` conjunct. Drop any one -- inline the
+            # condition, or alias `is not None` alone, or alias `hasattr`
+            # alone -- and 1.1.411 agrees with 1.1.408 again. Declare `x` as a
+            # real `M | None` instead and neither version narrows the alias at
+            # all, so this is not pyright tightening up on Optionals; it is a
+            # defect confined to the `Any` + aliased-conjunction path.
+            #
+            # The guard is therefore left exactly as it is (`can_seed` is also
+            # passed to images_lost_reason() above, and restructuring working
+            # runtime code to satisfy a checker bug would trade a real,
+            # untested code path for a cosmetic one). Delete this ignore once
+            # the pinned pyright is one that has fixed the narrowing -- the
+            # reproduction above is how to tell without guessing.
+            await context_module.set_messages(history)  # pyright: ignore[reportOptionalMemberAccess]
         else:
             logger.warning(
                 "embedded runner: conversation seeding skipped: context module %r has no set_messages",
