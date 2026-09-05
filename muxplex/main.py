@@ -974,7 +974,28 @@ async def _run_poll_cycle() -> None:
             # writes settings directly via save_settings() -- it does not go
             # through patch_settings()/apply_synced_settings(), so it must run
             # this check itself rather than inherit it for free.
-            _views_before_prune = _prune_settings.get("views")
+            #
+            # THE COPY IS LOAD-BEARING -- do not "optimize" it away. A plain
+            # `_prune_settings.get("views")` is a REFERENCE to the same list of
+            # the same view dicts that prune_stale_keys() is about to mutate in
+            # place (it removes members by rebinding `view["sessions"]`). The
+            # assessment below would then compare the post-prune state against
+            # ITSELF: before == after, always, making all three thresholds
+            # unreachable and this whole backstop dead code. It shipped that way
+            # and no test caught it, because test_views.py's mirror of this step
+            # builds its own snapshot -- the aliasing lives here, in the caller.
+            # test_prune_backstop_poll_cycle.py drives the real cycle instead.
+            #
+            # Cost: ~22us for a realistic config (8 views x 10 pins), ~194us for
+            # an extreme one (30 x 50), once per ~2s cycle -- noise next to the
+            # load_settings() JSON parse in this same block. The alternative
+            # (have prune_stale_keys report the counts) is rejected on
+            # correctness, not cost: the backstop's notion of "member" includes
+            # each view's rule patterns (views._view_member_count counts
+            # VIEW_RULE_KEY entries too), which the pruner neither touches nor
+            # counts -- so it would have to duplicate that rule, giving two
+            # definitions of the number that can silently drift apart.
+            _views_before_prune = copy.deepcopy(_prune_settings.get("views"))
 
             # SESSION_PERSISTENCE_DESIGN.md section 7.4: while a restore is
             # pending, our own local session list just became unavailable (not
