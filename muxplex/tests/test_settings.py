@@ -1504,15 +1504,22 @@ def test_apply_synced_settings_ignores_nonsyncable_keys():
 
 
 def test_get_syncable_settings_returns_only_syncable_keys():
-    """get_syncable_settings returns only SYNCABLE_KEYS + metadata timestamps
-    (settings_updated_at, views_updated_at)."""
+    """get_syncable_settings returns only SYNCABLE_KEYS + sync metadata.
+
+    The metadata set is exactly the three fields the receiving peer uses to
+    arbitrate a conflict -- two timestamps and the per-view/per-member
+    presence stamps that let `views` be merged rather than replaced. None of
+    them is a "setting" a client would send, which is why each is threaded
+    in explicitly rather than living in SYNCABLE_KEYS.
+    """
     result = get_syncable_settings()
-    metadata_keys = {"settings_updated_at", "views_updated_at"}
+    metadata_keys = {"settings_updated_at", "views_updated_at", "views_changed_at"}
     for key in result:
         assert key in SYNCABLE_KEYS or key in metadata_keys
     assert "host" not in result
     assert "settings_updated_at" in result
     assert "views_updated_at" in result
+    assert "views_changed_at" in result
 
 
 def test_apply_synced_settings_does_not_use_time_now():
