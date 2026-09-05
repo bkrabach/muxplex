@@ -1078,22 +1078,9 @@ _snapshot_counter = 0
 #
 # HONEST LIMITS. This is an ADVISORY lock: it binds only processes that take
 # it. Hand-editing settings.json in $EDITOR while the server runs is still
-# outside it (as it always was). And a caller that times out proceeds anyway
-# -- see settings_write_lock() for why that is the right failure mode.
+# outside it (as it always was). A cooperating writer never proceeds without
+# the lock: availability must not be traded for a silent lost update.
 SETTINGS_LOCK_SUFFIX = ".lock"
-
-# How long a writer waits for the lock before giving up and proceeding without
-# it. The expected wait is MILLISECONDS -- the critical section is a ~10KB
-# read, an in-memory mutation, a history snapshot and an atomic write -- so
-# this is a backstop against a pathologically slow holder, not a normal cost.
-# A holder that CRASHES releases instantly (the kernel drops flock when the fd
-# closes), so this timeout is never the recovery path for a dead process.
-#
-# It is deliberately short because the server acquires it on its single event
-# loop: a longer timeout would trade a rare lost update for a visible stall of
-# the whole server.
-SETTINGS_LOCK_TIMEOUT = 2.0
-SETTINGS_LOCK_POLL_INTERVAL = 0.005
 
 # Guards the two globals below. The package uses no threads today, but this
 # costs nothing and makes the depth bookkeeping correct rather than
@@ -1126,49 +1113,39 @@ def settings_lock_path() -> Path:
     return SETTINGS_PATH.parent / f"{SETTINGS_PATH.name}{SETTINGS_LOCK_SUFFIX}"
 
 
-def _acquire_settings_flock(timeout: float) -> int | None:
-    """Try to take the exclusive flock, bounded by *timeout*.
+class SettingsWriteLockError(RuntimeError):
+    """A settings write could not establish its required exclusive lock."""
 
-    Returns the held fd, or ``None`` when the lock could not be taken (timed
-    out, unavailable platform, or an unusable config directory). ``None`` is
-    not an error the caller has to handle -- see settings_write_lock().
+
+def _acquire_settings_flock() -> int:
+    """Take the exclusive flock, or fail before a write can lose data.
+
+    A holder which crashes releases ``flock`` when the kernel closes its file
+    descriptor. A live holder may make the caller wait, but proceeding without
+    the lock would reopen the lost-update bug this lock exists to prevent.
     """
-    if fcntl is None:  # pragma: no cover - POSIX-only
-        return None
+    if fcntl is None:  # pragma: no cover - muxplex requires POSIX/tmux
+        raise SettingsWriteLockError("fcntl.flock is unavailable on this platform")
     path = settings_lock_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    except OSError:
-        _log.warning(
-            "settings: could not open lock file %s -- proceeding without the "
-            "cross-process write lock",
-            path,
-            exc_info=True,
-        )
-        return None
-
-    deadline = time.monotonic() + max(timeout, 0.0)
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return fd
-        except OSError:
-            if time.monotonic() >= deadline:
-                os.close(fd)
-                _log.warning(
-                    "settings: another process has held %s for more than %.1fs "
-                    "-- proceeding WITHOUT the lock. A concurrent write may be "
-                    "lost (this is the pre-lock behaviour, never worse).",
-                    path,
-                    timeout,
-                )
-                return None
-            time.sleep(SETTINGS_LOCK_POLL_INTERVAL)
+    except OSError as exc:
+        raise SettingsWriteLockError(
+            f"could not open settings lock file {path}: {exc}"
+        ) from exc
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        os.close(fd)
+        raise SettingsWriteLockError(
+            f"could not acquire settings lock file {path}: {exc}"
+        ) from exc
+    return fd
 
 
 @contextlib.contextmanager
-def settings_write_lock(timeout: float = SETTINGS_LOCK_TIMEOUT) -> Iterator[bool]:
+def settings_write_lock() -> Iterator[bool]:
     """Hold the cross-process settings lock for a whole read-modify-write.
 
     Wrap the ENTIRE window, from ``load_settings()`` through
@@ -1179,10 +1156,10 @@ def settings_write_lock(timeout: float = SETTINGS_LOCK_TIMEOUT) -> Iterator[bool
             settings["views"] = new_views
             save_settings(settings)
 
-    Yields ``True`` when the lock is genuinely held and ``False`` when the
-    body is running unprotected. Almost every caller should ignore the value:
-    the contract is "do the write either way", and the two hazards this has to
-    survive are why.
+    Always yields ``True``. If the lock cannot be opened or acquired, raises
+    ``SettingsWriteLockError`` before the body runs. Running an update
+    unprotected after a timeout is not degraded availability; it is silent
+    data loss.
 
     **Re-entrant within a process.** ``load_settings()`` can itself call
     ``save_settings()`` (the showHoverPreview migration), and
@@ -1191,14 +1168,11 @@ def settings_write_lock(timeout: float = SETTINGS_LOCK_TIMEOUT) -> Iterator[bool
     tracked by depth -- taking a SECOND fd on the same file would block
     against the first and deadlock the process against itself.
 
-    **The server must never be blocked on a lock a CLI process holds.** This
-    is acquired synchronously on the server's single event loop, so the wait
-    is bounded (see SETTINGS_LOCK_TIMEOUT) and a timeout LOGS AND PROCEEDS
-    rather than raising. Proceeding degrades exactly to the pre-lock
-    behaviour -- a possible lost update -- which is never worse than what
-    happened before this existed, whereas raising would turn a rare race into
-    a poll cycle that dies, or a CLI command that refuses to run, whenever the
-    lock is contended.
+    **A cooperating writer must never continue without the lock.** A normal
+    holder's critical section is a local read, mutation, history snapshot, and
+    atomic write. If its process crashes the kernel releases the flock. If it
+    remains alive, waiting preserves the user's setting instead of silently
+    discarding either writer's change.
     """
     global _settings_lock_fd, _settings_lock_depth
     with _settings_lock_guard:
@@ -1210,19 +1184,18 @@ def settings_write_lock(timeout: float = SETTINGS_LOCK_TIMEOUT) -> Iterator[bool
                 _settings_lock_depth -= 1
             return
 
-        fd = _acquire_settings_flock(timeout)
+        fd = _acquire_settings_flock()
         _settings_lock_fd = fd
         _settings_lock_depth = 1
         try:
-            yield fd is not None
+            yield True
         finally:
             _settings_lock_depth = 0
             _settings_lock_fd = None
-            # `fcntl is not None` is implied by `fd is not None` (only
-            # _acquire_settings_flock mints an fd, and it returns None without
-            # fcntl) -- restated so the release path reads as safe on its own
-            # rather than depending on a fact established two functions away.
-            if fd is not None and fcntl is not None:
+            # `fcntl is not None` is implied by a successfully acquired fd
+            # (only _acquire_settings_flock mints one), but restated so the
+            # release path reads as safe on its own.
+            if fcntl is not None:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_UN)
                 finally:
