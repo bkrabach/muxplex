@@ -133,13 +133,20 @@ def test_temp_file_lives_in_the_same_directory_as_the_target(
 def test_temp_file_name_is_unique_per_write(redirect_settings_path, monkeypatch):
     """Two writers must never share one temp path.
 
-    ``state.py``/``manifest.py`` use a fixed ``<target>.tmp`` sibling, which is
-    fine for files only this process writes. ``settings.json`` is different:
-    the ``muxplex`` CLI (``settings set``, ``session-command add``, ``reset``)
+    ``settings.json`` is where this requirement was first FORCED: the
+    ``muxplex`` CLI (``settings set``, ``session-command add``, ``reset``)
     writes it from a SEPARATE process while the server is running. Two
     processes sharing one temp path interleave their bytes into it, and then
     each atomically publishes the resulting mixture -- an atomic rename of
     corrupt content is still corrupt content.
+
+    It is no longer where it is UNIQUE. ``state.py`` and ``manifest.py`` staged
+    through a fixed ``<target>.tmp`` sibling on the reasoning that a file only
+    this process writes cannot collide -- and muxplex-673 disproved exactly
+    that assumption for both of them; they now take unique ``mkstemp`` names
+    too (see ``manifest.save_manifest()`` for the measurement). So this test
+    guards a property every muxplex state writer holds, not a settings-only
+    quirk.
     """
     captured: list[str] = []
     monkeypatch.setattr(
