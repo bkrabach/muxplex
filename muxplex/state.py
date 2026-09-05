@@ -103,6 +103,7 @@ not hold it (see docs/API_SEMANTICS.md).
 import asyncio
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -578,11 +579,32 @@ def save_state(state: dict) -> None:
 
     Uses the write-to-tmp-then-os.replace pattern so readers never see a
     partial file.  Creates STATE_DIR (and parents) if it does not exist.
+
+    The staging file gets a UNIQUE name (tempfile.mkstemp), not a fixed
+    ``state.json.tmp`` -- see save_manifest()'s docstring for the full
+    reasoning and the measurement. Short version: a fixed staging path is
+    only safe when there is exactly one writer process, and there is not.
+    Two writers sharing it either publish an interleaved mixture, or the
+    loser of the ``os.replace()`` race raises ``FileNotFoundError`` out of
+    whatever request it was serving.
+
+    Deliberately still no fsync: this file is cheap to lose and rebuilt on
+    the next poll cycle, which is the documented difference from
+    manifest.py (SESSION_PERSISTENCE_DESIGN.md section 7.2). Only the
+    staging NAME changes here, not the durability contract.
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = Path(str(STATE_PATH) + ".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    os.replace(tmp, STATE_PATH)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=STATE_DIR, prefix=f".{STATE_PATH.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(state, indent=2))
+        os.replace(tmp, STATE_PATH)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------

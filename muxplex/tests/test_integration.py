@@ -281,14 +281,17 @@ async def test_state_file_written_atomically_by_poll_cycle(tmux_server):
         await _run_poll_cycle()
 
     state_path = state_mod.STATE_PATH
-    tmp_path = state_mod.STATE_PATH.parent / (state_mod.STATE_PATH.name + ".tmp")
 
     # state.json must exist after a successful poll cycle
     assert state_path.exists(), "state.json was not written by _run_poll_cycle"
 
-    # The temporary file must be gone (atomic write completed)
-    assert not tmp_path.exists(), (
-        ".tmp file was left behind (atomic write may have failed)"
+    # No staging artifact may be left behind (atomic write completed).
+    # Globbed, not a hard-coded "state.json.tmp": the staging name is unique
+    # per write (mkstemp), so a fixed-path assertion would check a path that
+    # can never exist and pass vacuously.
+    leftovers = sorted(p.name for p in state_path.parent.glob("*.tmp"))
+    assert leftovers == [], (
+        f".tmp file(s) left behind (atomic write may have failed): {leftovers}"
     )
 
     # File content must be valid JSON
