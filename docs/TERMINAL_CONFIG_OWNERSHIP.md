@@ -48,7 +48,9 @@ Of that list, tmux found a home. The rest did not; see §5.2 and §7.
 
 All verified against live machine state and source, not inferred. Retained
 unedited except for inline `→` notes recording where a finding has since been
-acted on.
+acted on — plus exactly one exception: a binding rule in §2.4 that became false
+is struck through in place, because a rule is read as a live constraint rather
+than as dated evidence. Its `→` note says why.
 
 ### 2.1 The layering already exists and works — for two tiers only
 
@@ -95,15 +97,28 @@ Also: dotfiles vs amplifier wezterm keybindings are **inverted**
 - **Already owns:** `new_session_template`, `delete_session_template` (arbitrary shell, `{name}` substituted), `tmux_socket_dir` (TMUX_TMPDIR override), `window_size_largest`, and a globally-registered tmux `alert-bell` hook.
 - **Never writes any tmux config file** — confirmed by grep.
 - **Scar tissue that must be respected:** a stale browser tab once PATCHed a whole `views` array and destroyed 7 of 8 views → hence the destructive-write backstop and 20-deep settings-history rotation. A `systemctl restart` once destroyed 44 live sessions → hence `KillMode=process` and `cgroup_escape.py`. AGENTS.md: *"The user's tmux sessions are the product... not recoverable."*
-- **Binding rules:** API-first, frontend second, never frontend-only. `LOCAL_ONLY_KEYS` exists because *API auth ≠ operator authority*. No server-side type validation exists. `save_settings()` is non-atomic. `test_frontend_js.py` has 229 source-text assertions that trip on frontend refactors. Never run tests on a live host.
+- **Binding rules:** API-first, frontend second, never frontend-only. `LOCAL_ONLY_KEYS` exists because *API auth ≠ operator authority*. No server-side type validation exists. ~~`save_settings()` is non-atomic.~~ **No longer true — struck; see the note below.** `test_frontend_js.py` has 229 source-text assertions that trip on frontend refactors. Never run tests on a live host.
 - **Adding a settings tab is ~15 lines**: one `<button data-tab="x">` + one `<div class="settings-panel" data-tab="x">`. The tab switcher needs no change.
 - **Closest existing analog** to a config editor: the deck PWA's Export/Import JSON + Reset triad (`deck/index.html:143-155`) — deliberately kept local-only to avoid federation sync complexity.
 
-→ Two of these have changed. "Never writes any tmux config file" stopped being
+→ Three of these have changed. "Never writes any tmux config file" stopped being
 true at v0.31.0. "No server-side type validation exists" was the reason
 `tmux_theme` and `tmux_copy_mode` are each validated against a closed set rather
 than trusted as flat-blob values (§5.3, §5.4). The 15-line tab estimate held: the
 Terminal tab is the sixth.
+
+→ **"`save_settings()` is non-atomic" is struck, not annotated in place**
+(2026-09-05, `muxplex-bzx`). It stopped being true at `muxplex-afu` (`70034df`),
+which moved `settings.json` onto tmp + fsync + `os.replace()` in the target's own
+directory; `settings.atomic_write_text()` is now the shared writer that
+`pruning.py` and `tmux_config.py` also call, and all four state files are atomic
+as of `muxplex-dsm` and `muxplex-fjv`. Everything else in §2 is retained unedited
+behind a `→` note, but a **binding rule** is read as a live constraint, not as
+dated evidence: left standing, it tells someone designing a new settings surface
+to redo atomicity work already done, or to route around a hazard that no longer
+exists. The strikethrough keeps the record without leaving a false rule in a list
+of rules. `docs/API_SEMANTICS.md` has the current durability story for all four
+writers.
 
 ### 2.5 Proven mechanism
 
