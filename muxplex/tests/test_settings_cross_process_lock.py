@@ -81,12 +81,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # read-modify-write windows to overlap: without it two processes can complete
 # a whole cycle in well under a millisecond and interleave only by luck, which
 # is how a concurrency test ends up passing for the wrong reason. 40ms is far
-# longer than a real critical section and far shorter than
-# SETTINGS_LOCK_TIMEOUT (2.0s), so the locked run never times out and falls
-# back to running unprotected.
+# longer than a real critical section while still keeping this ordinary
+# contention test quick.
 WRITER_ITERATIONS = 15
 WRITER_HOLD_S = 0.04
 WRITER_TIMEOUT_S = 120.0
+LONG_LOCK_HOLD_S = 2.25
 
 _WORKER_SOURCE = '''\
 """Child-process settings writer. Not a test -- see the module that writes it.
@@ -283,6 +283,132 @@ def test_two_locked_writers_lose_nothing(settings_file, worker_script, tmp_path)
         "a concurrent write was lost despite the cross-process lock: "
         f"{len(survived)} of {len(expected)} survived"
     )
+
+
+_LONG_HOLDER_SOURCE = '''\
+"""Hold the real muxplex settings lock long enough to expose timeout bypasses."""
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+target = os.environ.get("MUXPLEX_TEST_SETTINGS_PATH")
+if not target:
+    sys.stderr.write("MUXPLEX_TEST_SETTINGS_PATH unset -- refusing to write\\n")
+    sys.exit(3)
+
+import muxplex.settings as settings_mod
+
+settings_mod.SETTINGS_PATH = Path(target)
+ready = Path(sys.argv[1])
+hold_s = float(sys.argv[2])
+
+with settings_mod.settings_write_lock():
+    settings = settings_mod.load_settings()
+    settings["hidden_sessions"] = list(settings.get("hidden_sessions") or []) + ["alpha"]
+    ready.write_text("locked", encoding="utf-8")
+    time.sleep(hold_s)
+    settings_mod.save_settings(settings)
+'''
+
+
+def test_waiting_writer_never_bypasses_a_long_held_lock(settings_file, tmp_path):
+    """A cooperative writer waits; it never trades its update for availability.
+
+    The original implementation made a waiting process proceed without the
+    flock after two seconds. This child holds the real lock for longer than
+    that, after reading and mutating the file but before saving it. The parent
+    must wait, then load the child's committed value before writing its own.
+
+    Against the timeout-bypass implementation, ``held`` is False after roughly
+    two seconds and this assertion fails; if that assertion were removed, the
+    child then overwrites the parent's ``beta`` update with its stale
+    ``alpha`` snapshot. The test is therefore a controlled reproduction of
+    the macOS CI interleaving, independent of filesystem speed.
+    """
+    settings_file.write_text(json.dumps({"hidden_sessions": []}), encoding="utf-8")
+    script = tmp_path / "long_lock_holder.py"
+    script.write_text(_LONG_HOLDER_SOURCE, encoding="utf-8")
+    ready = tmp_path / "long-lock-holder-ready"
+    holder = subprocess.Popen(
+        [sys.executable, str(script), str(ready), str(LONG_LOCK_HOLD_S)],
+        env=_child_env(settings_file),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + WRITER_TIMEOUT_S
+        while not ready.exists():
+            assert time.monotonic() < deadline, "lock holder never acquired the lock"
+            time.sleep(0.005)
+
+        with settings_mod.settings_write_lock() as held:
+            assert held is True
+            settings = settings_mod.load_settings()
+            settings["hidden_sessions"] = list(
+                settings.get("hidden_sessions") or []
+            ) + ["beta"]
+            settings_mod.save_settings(settings)
+    finally:
+        out, err = holder.communicate(timeout=WRITER_TIMEOUT_S)
+        assert holder.returncode == 0, (
+            f"lock holder failed ({holder.returncode}): {out}{err}"
+        )
+
+    assert json.loads(settings_file.read_text())["hidden_sessions"] == ["alpha", "beta"]
+
+
+_CRASH_HOLDER_SOURCE = '''\
+"""Acquire the real lock, then exit without releasing it in user-space."""
+
+import os
+import sys
+from pathlib import Path
+
+target = os.environ.get("MUXPLEX_TEST_SETTINGS_PATH")
+if not target:
+    sys.stderr.write("MUXPLEX_TEST_SETTINGS_PATH unset -- refusing to write\\n")
+    sys.exit(3)
+
+import muxplex.settings as settings_mod
+
+settings_mod.SETTINGS_PATH = Path(target)
+ready = Path(sys.argv[1])
+with settings_mod.settings_write_lock():
+    ready.write_text("locked", encoding="utf-8")
+    os._exit(0)
+'''
+
+
+def test_kernel_releases_the_lock_when_a_holder_crashes(settings_file, tmp_path):
+    """A dead holder cannot strand a future writer behind the blocking flock."""
+    script = tmp_path / "crash_lock_holder.py"
+    script.write_text(_CRASH_HOLDER_SOURCE, encoding="utf-8")
+    ready = tmp_path / "crash-lock-holder-ready"
+    holder = subprocess.Popen(
+        [sys.executable, str(script), str(ready)],
+        env=_child_env(settings_file),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + WRITER_TIMEOUT_S
+    while not ready.exists():
+        assert time.monotonic() < deadline, "crash holder never acquired the lock"
+        time.sleep(0.005)
+    out, err = holder.communicate(timeout=WRITER_TIMEOUT_S)
+    assert holder.returncode == 0, (
+        f"crash holder failed ({holder.returncode}): {out}{err}"
+    )
+
+    with settings_mod.settings_write_lock() as held:
+        assert held is True
+        settings_mod.save_settings({"sort_order": "name"})
+
+    assert json.loads(settings_file.read_text())["sort_order"] == "name"
 
 
 # ---------------------------------------------------------------------------
@@ -594,8 +720,8 @@ def test_lock_is_released_when_the_body_raises(settings_file):
     """An exception inside the window must not strand the lock.
 
     A stranded lock would make every subsequent writer -- server and CLI --
-    wait out SETTINGS_LOCK_TIMEOUT and then proceed unprotected, converting a
-    rare race into a permanent one.
+    block forever. Releasing it in ``finally`` is therefore necessary for both
+    correctness and availability.
     """
     with pytest.raises(RuntimeError):
         with settings_mod.settings_write_lock():
@@ -638,22 +764,21 @@ def test_lock_file_survives_a_write_cycle(settings_file):
     assert lock_path.stat().st_ino == inode
 
 
-def test_a_timed_out_acquire_proceeds_instead_of_raising(settings_file, monkeypatch):
-    """Contention must never take down the poll cycle or refuse a CLI command.
+def test_lock_acquire_failure_refuses_to_run_an_unprotected_write(
+    settings_file, monkeypatch
+):
+    """A lock setup failure is loud; continuing would silently lose updates."""
+    settings_file.write_text(json.dumps({"sort_order": "manual"}), encoding="utf-8")
 
-    The acquire is bounded because the server takes it on its single event
-    loop. On timeout it logs and proceeds, which degrades exactly to the
-    pre-lock behaviour (a possible lost update) -- never worse. Raising would
-    turn a rare race into a poll cycle that dies, or a ``muxplex config set``
-    that refuses to run, whenever the lock happens to be contended.
-    """
-    monkeypatch.setattr(settings_mod, "_acquire_settings_flock", lambda _timeout: None)
+    def _fail() -> int:
+        raise settings_mod.SettingsWriteLockError("simulated lock failure")
 
-    with settings_mod.settings_write_lock() as held:
-        assert held is False
+    monkeypatch.setattr(settings_mod, "_acquire_settings_flock", _fail)
+
+    with pytest.raises(settings_mod.SettingsWriteLockError, match="simulated"):
         settings_mod.save_settings({"sort_order": "name"})
 
-    assert json.loads(settings_file.read_text())["sort_order"] == "name"
+    assert json.loads(settings_file.read_text())["sort_order"] == "manual"
     assert settings_mod._settings_lock_depth == 0
 
 
