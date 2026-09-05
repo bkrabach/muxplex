@@ -35,6 +35,12 @@ export MUXPLEX_KEY="$(cat ~/.config/muxplex/federation_key)"   # on the server
 All examples send `Accept: application/json` deliberately — see
 [Authentication](#1-authentication) for why that matters.
 
+Every example uses the session name `agent-build` for readability. In real code
+that literal stands in for **the name `POST /api/sessions` reported back**, which
+is not always the one you asked for — see
+[§4](#the-name-you-get-back-may-not-be-the-name-you-asked-for). Capture it once
+on create and carry it forward; don't retype the requested name into later calls.
+
 ---
 
 ## 1. Authentication
@@ -407,7 +413,19 @@ curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" \
      "$MUXPLEX_URL/api/sessions"
 ```
 
-→ `{"name": "agent-build", "ok": true}`
+```json
+{
+  "name": "agent-build",
+  "ok": true,
+  "command_id": "default",
+  "requested_name": "agent-build",
+  "observed": "agent-build",
+  "name_confirmed": true
+}
+```
+
+**`name` is the name tmux actually created, not your request echoed back.** Read
+the next subsection before you use the name you sent for anything.
 
 Names must match `^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$` (`sessions.SESSION_NAME_RE`)
 — ASCII letters, digits, `_ . -`, first character alphanumeric-or-underscore,
@@ -418,7 +436,74 @@ applies to every endpoint that takes a session name in the path.
 The server runs the operator's configured `new_session_template`, which may be
 something other than plain `tmux new-session`. A long-running template that
 hasn't finished in 30 seconds is **not** treated as a failure — the endpoint
-returns success and expects you to poll for the session to appear.
+returns success and expects you to poll for the reported name to appear
+(["The read model is eventually consistent"](#the-read-model-is-eventually-consistent--poll-on-a-short-interval-not-a-long-sleep)).
+
+#### The name you get back may not be the name you asked for
+
+⚠️ **This one fails silently.** Unlike the cache race below, nothing errors and
+nothing looks wrong: every downstream call simply addresses a session that does
+not exist, and the failure surfaces later as a timeout or a 404 you will blame
+on something else.
+
+The name you ASK for and the name tmux ACTUALLY creates diverge routinely, and
+tmux reports success either way. Two confirmed mechanisms:
+
+* **A non-default `new_session_template` derives its own name.** The exemplar in
+  the wild, `amplifier-workspace ~/dev/{name}`, sanitizes and **truncates at 32
+  characters** — so every requested name longer than that comes back different.
+  Observed on a live host: `home-assistant-smart-tool-team-ci` (33 chars) was
+  asked for; `home-assistant-smart-tool-team-c` (32) is what exists.
+* **tmux silently rewrites `.` to `_`**, at exit code 0, with nothing in any log
+  (reproduced on tmux 3.4). `my-lane.v2.fix` becomes `my-lane_v2_fix`.
+
+So the server does not guess. After the spawn it re-enumerates live sessions and
+reports what it found (`main.py`'s `_observe_created_session()`), using the same
+verification the rename endpoint already performs for the same reason. Four
+fields carry the answer:
+
+| Field | Meaning |
+|---|---|
+| `name` | **the identity to use downstream.** The observed name when one was confirmed; otherwise your requested name as a best-effort fallback. |
+| `requested_name` | exactly what you sent, echoed back for correlation. Never build a key from this. |
+| `observed` | the verified live name, or `null` when the server could not determine one. |
+| `name_confirmed` | `true` when `name` is an observation, `false` when it is only a fallback. |
+
+**Rule: build every downstream key from `name`, never from the string you sent.**
+`/connect`, `/input`, `DELETE`, the readiness poll below, and the
+`input_allowed_sessions` glob match ([§5.3](#53-the-security-boundary-is-the-allowlist-not-the-content))
+are all keyed on the name tmux actually has. An allowlist entry naming an exact
+session (rather than an `agent-*`-style pattern) will not match a name that got
+truncated on the way in — you'll see a 403 that has nothing to do with your
+request being wrong.
+
+**`name_confirmed: false` means "created, name unconfirmed" — a success, not a
+failure.** `ok: true` says the create command ran. The server then looked for up
+to 5 seconds and could not attribute exactly one new session to you: either it
+is not enumerable yet, or two sessions appeared at once and naming either one
+would be a coin flip reported as a fact. `name` falls back to your requested
+name so you have something to poll on, but in this state it is **a lead, not an
+identity**. Two things not to do with it:
+
+* **Don't report the create as failed.** Something was created. Saying otherwise
+  sends the human looking for a bug that isn't there — and may prompt a retry
+  that creates a second session.
+* **Don't type into it** ([§5](#5-typing-into-a-session-post-apisessionsnameinput)).
+  Input aimed at an unconfirmed name is exactly how a keystroke lands in a pane
+  you did not create. Confirm the name first (poll it; if it never appears, diff
+  `GET /api/sessions` against a listing taken *before* your create), or stop and
+  tell the human.
+
+A server that predates this change returns `{name, ok, command_id}` and no
+`observed`/`name_confirmed` at all. **Absence is not `false`** — it is a server
+making no claim either way, and the right behavior there is the pre-change one
+(treat `name` as the name and let a poll timeout be a real error). Feature-gate
+on `GET /api/instance-info`'s `version` ([§2](#2-discover-the-instance)) rather
+than probing.
+
+`muxplex_client`'s `create_session()` (`client/muxplex_client/sync_client.py`)
+is the reference implementation of everything in this subsection, including the
+three-state handling; read it before writing your own.
 
 #### Optional: pick a named command pair with `command_id`
 
@@ -457,7 +542,12 @@ curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" \
      "$MUXPLEX_URL/api/sessions"
 ```
 
-→ `{"name": "agent-build", "ok": true, "command_id": "amplifier"}`
+→ `{"name": "agent-build", "ok": true, "command_id": "amplifier", "requested_name":
+"agent-build", "observed": "agent-build", "name_confirmed": true}`
+
+The `amplifier` pair above is precisely the case that mangles names — its
+template truncates at 32 characters — so `name` and `requested_name` will differ
+here more often than under the default pair. Read them, don't assume them.
 
 **`command_id` is entirely optional, and omitting it is byte-identical to
 today** — every pre-existing client (and every example elsewhere in this
@@ -533,23 +623,61 @@ serve a **~2 second poll cache**. A session you just created via
 `POST /api/sessions` does not appear in `GET /api/sessions` — and **404s on
 `/connect` and `/input`** — until the next poll cycle catches up.
 
-That 404 is not "your session failed to create." It is the cache.
+That 404 is not "your session failed to create." It is one of two things, and
+telling them apart is the whole job:
+
+1. **The cache hasn't caught up yet.** This resolves on its own, normally in
+   well under a second. Poll for it.
+2. **You are polling a name that will never exist** — because you polled the
+   name you *asked for* instead of the one the create response *reported*
+   ([above](#the-name-you-get-back-may-not-be-the-name-you-asked-for)). This one
+   never resolves: the loop burns its entire ceiling and then declares failure
+   on a session that came up perfectly fine.
 
 **Measured, not assumed:** in traced runs, the new session was visible well
 under 1 second after create — one trace resolved on the 3rd poll attempt at
 0.3-second spacing (~0.9s elapsed total). A flat `sleep 3` wastes most of that
 time waiting on a race that's usually already over. Poll on a short interval
-with a generous ceiling instead:
+with a generous ceiling, **on the name the server reported**:
 
 ```bash
-curl -sS -X POST … -d '{"name":"agent-build"}' "$MUXPLEX_URL/api/sessions"
+CREATED=$(curl -sS -X POST -H "Authorization: Bearer $MUXPLEX_KEY" \
+     -H "Content-Type: application/json" -H "Accept: application/json" \
+     -d '{"name":"agent-build"}' "$MUXPLEX_URL/api/sessions")
 
+# The name tmux ACTUALLY created. Read it; never assume it is "agent-build".
+NAME=$(jq -r '.name' <<<"$CREATED")
+CONFIRMED=$(jq -r '.name_confirmed' <<<"$CREATED")   # true | false | null
+
+SEEN=
 for _ in $(seq 1 20); do
   sleep 0.3
   curl -sS -H "Authorization: Bearer $MUXPLEX_KEY" -H "Accept: application/json" \
-       "$MUXPLEX_URL/api/sessions" | grep -q '"agent-build"' && break
+       "$MUXPLEX_URL/api/sessions" \
+    | jq -e --arg n "$NAME" 'any(.[]; .name == $n)' >/dev/null && { SEEN=1; break; }
 done
+
+if [[ -n "$SEEN" ]]; then
+  echo "ready: $NAME"
+elif [[ "$CONFIRMED" == "false" ]]; then
+  # "Created, name unconfirmed" (§4). NOT a failure — but $NAME is a lead, not
+  # an identity: don't /connect to it and don't type into it. Reconcile against
+  # a session listing taken before the create, or hand it to the human.
+  echo "created, but could not confirm which session is ours" >&2
+else
+  # A name the server CONFIRMED that never surfaced — a real anomaly. (An older
+  # server reports `null` here, makes no claim, and lands in this branch too:
+  # unchanged pre-feature behavior, deliberately not treated as "unconfirmed".)
+  echo "session $NAME never appeared within 6s" >&2
+  exit 1
+fi
 ```
+
+The match is an exact `jq` comparison rather than a substring `grep` for the
+name in the raw JSON (which is what this recipe used to do): a substring match
+succeeds against any session whose name merely *contains* the string, and a
+truncated name is a **prefix** of the name you asked for — exactly the shape
+where a loose match finds the wrong session and reports it as yours.
 
 20 attempts at 0.3s is a 6-second ceiling — comfortably above the ~1s typical
 case, so a genuinely slow poll cycle still resolves without a rewrite. This is
@@ -1539,6 +1667,13 @@ the conventions for anyone changing the server.
 - [ ] **Poll on a short interval (e.g. 0.3s) after every create/delete**,
       not a flat multi-second sleep. A 404 right after a create is the cache,
       not a failure — see §4; typical resolution is under 1s.
+- [ ] **Use the `name` the create response reported — never the name you
+      asked for.** They differ routinely (a template that truncates at 32
+      characters; tmux's silent `.` → `_`), and polling the requested name
+      is a loop that can never succeed (§4).
+- [ ] **Treat `name_confirmed: false` as "created, name unconfirmed" — a
+      success.** Don't report it as a failed create, and don't `/connect` or
+      `/input` on an unconfirmed name (§4).
 - [ ] Treat any 403 from `/input` as "the operator must edit `settings.json`" —
       never try to route around it.
 - [ ] **Check the read-back `snapshot`** after every input. Don't fire blind.
