@@ -115,6 +115,11 @@ markers = [
 ]
 
 [dependency-groups]
+# THE DIFFERENCE THAT MATTERS between this group and
+# [project.optional-dependencies].dev above: uv installs this group on a
+# BARE `uv sync`; it does NOT install an extra unless asked
+# (`uv sync --extra dev`). Anything the developer loop cannot function
+# without belongs here, not there.
 dev = [
     "pytest-timeout>=2.4.0",
     # Workspace-editable, dev-only. NEVER a runtime dependency of the server
@@ -123,6 +128,58 @@ dev = [
     # muxplex_client and drive it over httpx.ASGITransport against the real
     # app in-process.
     "muxplex-client",
+    # Self-reference pulling in the `dev` EXTRA above, so a bare `uv sync`
+    # also gets pytest/pytest-asyncio/beautifulsoup4. Before this line, it
+    # did not: a fresh `uv sync` produced a venv with no pytest and no
+    # bs4, and the symptom was not "pytest is missing" -- it was pyright
+    # reporting 2 phantom import errors on muxplex/tests/ for a bs4 that
+    # was never installed, on code nobody had touched (found by
+    # muxplex-447). The extra stays authoritative and un-duplicated:
+    # `uv pip install -e ".[dev,agent]"` (CI's test-latest-deps job, which
+    # deliberately resolves without the lock and does not read dependency
+    # groups at all) is unaffected, and there is no second list to drift.
+    "muxplex[dev]",
+    # The `make check` gate's own tools. Undeclared until now, which meant
+    # `uv run ruff` / `uv run pyright` found nothing in the project env and
+    # fell through to whatever was on the contributor's PATH -- so the
+    # gate's verdict was a property of the machine, not of the code.
+    # Measured on one host, one commit, one command
+    # (`uv run ruff check muxplex/`), varying only PATH order:
+    #     ~/.local/bin/ruff 0.15.5 -> "All checks passed!"
+    #     /snap/bin/ruff    0.16.4 -> "Found 216 errors."
+    # Both exit codes were honest; neither ruff was wrong. There was simply
+    # no declared answer to "which ruff is the gate?"
+    #
+    # EXACT `==` pins, deliberately, for both: lint rules and formatting are
+    # moving targets, so a floating pin lets an upstream release invent
+    # errors on untouched code and turn an unrelated PR red. Bump either pin
+    # in its own commit, together with whatever reformat or fix it implies.
+    #
+    # ruff 0.15.5 is the version this tree is currently formatted and linted
+    # clean under, and the version CI's `lint` job used to hard-code as
+    # `uvx ruff@0.15.5`. That job now runs `uv run ruff` against this pin
+    # instead, so the number lives in exactly one place and local and CI
+    # cannot silently disagree.
+    #
+    # pyright is pinned to 1.1.408 and NOT to 1.1.411, which was the newest
+    # release when this pin was written and which the host copy nags about
+    # on every run ("v1.1.408 -> v1.1.411 available"). That is a measured
+    # decision, not caution: with the identical tree and the identical
+    # environment, changing only the checker,
+    #     1.1.408 -> 0 errors, 0 warnings
+    #     1.1.411 -> 1 error, agent_embedded/runner.py:394
+    #                reportOptionalMemberAccess on `context_module`
+    # and the flagged code is correct. It guards the call with a
+    # `can_seed = context_module is not None and hasattr(...)` boolean and
+    # only calls `set_messages` under `if can_seed:`; 1.1.411 just stopped
+    # narrowing `Optional` through that intermediate boolean. So the newer
+    # release invents an error on code nobody touched -- exactly the thing
+    # an unpinned tool does to an unrelated PR. Bumping is filed separately
+    # (muxplex-lh0); it needs the narrowing restructured or explicitly
+    # ignored, which is a code change with its own review, not a version
+    # number.
+    "ruff==0.15.5",
+    "pyright==1.1.408",
 ]
 
 [tool.uv.workspace]
