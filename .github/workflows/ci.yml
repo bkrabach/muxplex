@@ -310,8 +310,10 @@ jobs:
     # to drift from the local one, which is why the hard-coded `ruff@0.15.5`
     # is gone from these steps rather than merely updated. See that group's
     # comments for the pin discipline (exact `==`, bumped deliberately with
-    # whatever reformat or fix it implies) and for why pyright is pinned to
-    # 1.1.408 rather than the newer 1.1.411.
+    # whatever reformat or fix it implies) and for the history behind the
+    # pyright pin, which was held at 1.1.408 until the one diagnostic
+    # blocking 1.1.411 was proven a checker defect (muxplex-lh0) and the
+    # pin was moved to 1.1.411 (muxplex-uca).
     #
     # These are the same three commands the Makefile's `check` target runs,
     # in the same order, so a local green and a CI green mean the same
