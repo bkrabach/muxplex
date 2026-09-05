@@ -19,6 +19,7 @@ Other invariants:
 
 import fnmatch
 import time
+from collections.abc import Iterable
 from typing import NamedTuple
 
 RESERVED_VIEW_NAMES = frozenset({"all", "hidden"})
@@ -249,6 +250,20 @@ def assess_views_destruction(
 #     skewed peer now loses/wins ONE member instead of the whole array.
 #   * `hidden_sessions` is deliberately NOT merged here -- it keeps the
 #     existing `views_updated_at` LWW. Same bug class, separate item.
+#
+# KEY REWRITES (muxplex-w6g). A rename (`main._migrate_session_name`) and a
+# bare-name upgrade (`normalize_session_keys`) do not add or remove a member
+# -- they REPLACE one key with another. That is a deletion plus an addition,
+# and both halves are stamped through the machinery above; there is no third
+# state. What differs is only WHAT MAY BE RETIRED:
+#   * `<local_device_id>:<name>` -- ours by construction. No other device can
+#     own that key, so the tombstone states a fact about our own keyspace.
+#   * a legacy BARE name -- has no owner (`filter_visible` matches it by name
+#     against every device's sessions), so it may denote a PEER's own live
+#     session. Retiring it fleet-wide would unpin that session. Stamped only
+#     against evidence that no known device is running that name; otherwise
+#     upgraded locally and left unstamped, which can only ever leave a
+#     redundant entry. See `normalize_session_keys`.
 # ---------------------------------------------------------------------------
 
 # How long a tombstone (a stamp for a key that is no longer present) is kept
@@ -508,6 +523,46 @@ def record_views_change(
             entry["members"][key] = now
 
     return _gc_views_changed_at(meta, current_views, now, tombstone_ttl)
+
+
+def stamp_view_member_changes(
+    settings: dict,
+    changes: Iterable[tuple[str, str]],
+    *,
+    now: float | None = None,
+    tombstone_ttl: float = VIEW_TOMBSTONE_TTL_SECONDS,
+) -> dict:
+    """Stamp individual `(view name, session key)` presence changes.
+
+    The list-driven sibling of `record_views_change`, for a caller that
+    already knows exactly which members it moved and does not have a
+    before/after pair to diff -- `prune_stale_keys` (which removes members
+    while walking them) and `normalize_session_keys` (which may stamp only
+    SOME of what it rewrote; see its docstring).
+
+    Same map, same one-float-per-element representation, same GC: presence
+    stays DERIVED from `views[*].sessions`, so a stamped key still present is
+    an add and a stamped key now absent is a tombstone. There is no third
+    state, and `merge_views`/`_survives` need no knowledge of who wrote a
+    stamp or why.
+
+    Mutates and returns *settings* (views.py's mutate-then-save convention).
+    An empty *changes* writes nothing at all -- not even a GC pass -- so a
+    caller that moved nothing never dirties the file.
+    """
+    pending = list(changes)
+    if not pending:
+        return settings
+    if now is None:
+        now = time.time()
+    meta = normalize_views_changed_at(settings.get("views_changed_at"))
+    for view_name, key in pending:
+        entry = meta.setdefault(view_name, {"at": None, "members": {}})
+        entry["members"][key] = now
+    settings["views_changed_at"] = _gc_views_changed_at(
+        meta, settings.get("views"), now, tombstone_ttl
+    )
+    return settings
 
 
 def merge_views(
@@ -922,7 +977,13 @@ def visible_count(
 # ---------------------------------------------------------------------------
 
 
-def normalize_session_keys(settings: dict, sessions: list[dict]) -> dict:
+def normalize_session_keys(
+    settings: dict,
+    sessions: list[dict],
+    *,
+    remote_live_names: set[str] | None = None,
+    now: float | None = None,
+) -> dict:
     """Upgrade bare-name entries in stored keys to `device_id:name` form.
 
     Pre-v2 stored entries used bare `name` strings. v2 stores
@@ -937,6 +998,43 @@ def normalize_session_keys(settings: dict, sessions: list[dict]) -> dict:
     `prune_stale_keys` (Phase 4).
 
     Mutates and returns *settings*.
+
+    FEDERATION (`remote_live_names`, muxplex-w6g) — this upgrade is a key
+    REWRITE: it removes one member from a view and adds another. Unstamped,
+    the removal reads to `merge_views` as "this device never knew about that
+    key", so a peer that has not normalized yet re-introduces the legacy
+    entry on every cycle and the view carries both forms of one pin
+    indefinitely (the bare form is never pruned either — it matches a live
+    session BY NAME, so it stays in `live_keys` forever).
+
+    Stamping the removal fixes that, but a bare name is the one key shape
+    that is NOT safe to retire on inference alone. It has no owner:
+    `filter_visible` matches it by name against EVERY device's sessions, so
+    `work` means "any live session called work", including a peer's own.
+    Retiring it fleet-wide would unpin the peer's own live session — losing
+    a real pin, which is strictly worse than the redundant entry not
+    stamping leaves behind (muxplex-npg's reasoning, preserved).
+
+    So the retirement is stamped only against evidence the caller supplies:
+
+      * `remote_live_names is None` (the default, and every caller that
+        cannot vouch for the fleet) — nothing is stamped at all. Exactly the
+        pre-w6g behavior.
+      * a set of session NAMES live on every device currently known to the
+        caller — a bare entry NOT in that set denotes our own session
+        unambiguously and is retired with a tombstone; one that IS in it is
+        upgraded locally but left unstamped, as before.
+
+    Residual, stated plainly: a device we have no current knowledge of (never
+    polled, or unreachable) could still be running that name. It loses the
+    legacy pin only if it is ALSO still carrying an un-normalized bare entry
+    for it — and it cannot be, for long: this same function runs on its own
+    poll cycle every few seconds, canonicalizing into its OWN device
+    namespace, while federation sync runs every ~30 cycles and never on the
+    first. When both devices have normalized, both tombstone the bare key and
+    each keeps its own canonical key, which is the correct outcome and the
+    common one. `prune_stale_keys` already accepts the same bound (a bare key
+    has no owner, so the positive-knowledge rule cannot gate it).
     """
     # Build a name → sessionKey map from live sessions. Only sessions that
     # actually have a sessionKey contribute; bare-name live sessions are
@@ -951,21 +1049,55 @@ def normalize_session_keys(settings: dict, sessions: list[dict]) -> dict:
             # single canonical form anyway; leave the bare-name entry alone.
             name_to_key.setdefault(name, key)
 
-    def upgrade(entries: list[str]) -> list[str]:
+    def upgrade(entries: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+        """Return (upgraded entries, the (old, new) rewrites performed)."""
         result: list[str] = []
+        rewrites: list[tuple[str, str]] = []
         for entry in entries:
-            if entry in name_to_key:
-                result.append(name_to_key[entry])
-            else:
+            replacement = name_to_key.get(entry)
+            if replacement is None:
                 result.append(entry)
-        return result
+            else:
+                result.append(replacement)
+                rewrites.append((entry, replacement))
+        return result, rewrites
 
     if isinstance(settings.get("hidden_sessions"), list):
-        settings["hidden_sessions"] = upgrade(settings["hidden_sessions"])
+        # Never stamped: `hidden_sessions` is still resolved by whole-set LWW,
+        # not merged per member (see views.py's federation header).
+        settings["hidden_sessions"], _ = upgrade(settings["hidden_sessions"])
+
+    # (view name, session key) presence changes this rewrite is entitled to
+    # record -- see the docstring for what "entitled" means and why a bare
+    # name another known device is running is deliberately excluded.
+    changes: list[tuple[str, str]] = []
 
     for view in settings.get("views") or []:
-        if isinstance(view.get("sessions"), list):
-            view["sessions"] = upgrade(view["sessions"])
+        entries = view.get("sessions")
+        if not isinstance(entries, list):
+            continue
+        before = set(entries)
+        upgraded, rewrites = upgrade(entries)
+        view["sessions"] = upgraded
+        view_name = view.get("name")
+        if remote_live_names is None or not isinstance(view_name, str):
+            continue
+        for old_key, new_key in rewrites:
+            if old_key in remote_live_names:
+                # Ambiguous: a device we know about is running that bare name,
+                # so the entry may be ITS pin, not ours. Upgrade locally (as
+                # before), record nothing.
+                continue
+            changes.append((view_name, old_key))
+            if new_key not in before:
+                # The canonical form was not already pinned here, so this is a
+                # real addition. Stamped for the same reason the retirement is:
+                # a rewrite is one delete plus one add, and recording only half
+                # of it would let a peer's older tombstone for the new key drop
+                # the pin we just canonicalized.
+                changes.append((view_name, new_key))
+
+    stamp_view_member_changes(settings, changes, now=now)
 
     return settings
 
@@ -1307,13 +1439,6 @@ def prune_stale_keys(
         if key not in current_settings_keys:
             del first_missed[key]
 
-    if pruned_members:
-        meta = normalize_views_changed_at(settings.get("views_changed_at"))
-        for view_name, key in pruned_members:
-            entry = meta.setdefault(view_name, {"at": None, "members": {}})
-            entry["members"][key] = now
-        settings["views_changed_at"] = _gc_views_changed_at(
-            meta, settings.get("views"), now, VIEW_TOMBSTONE_TTL_SECONDS
-        )
+    stamp_view_member_changes(settings, pruned_members, now=now)
 
     return settings, pruning_state, settings_changed

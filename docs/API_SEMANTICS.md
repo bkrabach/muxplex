@@ -743,6 +743,38 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   finer-grained than the whole-blob LWW that already depended on it.
   `hidden_sessions` is deliberately **not** merged — it keeps the
   `views_updated_at` LWW described above.
+- **A key REWRITE is stamped as one deletion plus one addition** — but only
+  where the retired key is this device's to retire. Two paths rewrite a
+  member of `views[*].sessions` rather than adding or removing one:
+  `POST /api/sessions/{name}/rename` (which moves `<device>:<old>` to
+  `<device>:<new>`) and the poll cycle's key normalization (which upgrades a
+  legacy bare-name entry to `<device_id>:<name>`). Left unstamped, the
+  removal half reads to the merge as "this device never knew about that
+  key", so a peer still holding the old key re-introduces it on the next
+  sync — user-visible as *rename a session on one device, and the old pin
+  comes back from the dead on another*, where it matches no live session
+  until `prune_stale_keys` removes it (`stale_key_grace_hours`, 24h
+  default). No new state: the rewrite writes the same `views_changed_at`
+  stamps every other write derives, read by the same resolution rules.
+  **What a rewrite may retire, and why it is limited:** a rename's old key
+  is `<local_device_id>:<old name>` by construction, and only this device
+  can own that key — retiring it states a fact about our own keyspace, so
+  `dev-b:<old name>` (a different device's session that merely shares the
+  bare name) is never touched. A legacy **bare** name has no owner at all:
+  `filter_visible` matches it by NAME against every device's sessions, so
+  it may equally denote a peer's own live session, and tombstoning it
+  fleet-wide would unpin that session — losing a real pin, which is worse
+  than the redundant entry the conservative choice leaves behind. So the
+  normalization only stamps a bare retirement when the caller can show no
+  device currently known to it is running that name; every other caller
+  (`remote_live_names` omitted) upgrades locally and stamps nothing,
+  exactly as before. Residual, stated rather than hidden: a device we have
+  no current knowledge of could be running that name and would lose the
+  pin — but only while it is ALSO still carrying an un-normalized bare
+  entry for it, which its own poll cycle clears within seconds, well before
+  its first federation sync. When both devices have normalized, both
+  tombstone the bare key and each keeps its own canonical key, which is the
+  correct outcome.
 - **`PUT /api/settings/sync`'s existing `payload.settings_updated_at >
   local_ts` comparison IS this endpoint's CAS/precondition discipline** — a
   peer only gets to write when its view of the world is strictly newer than
