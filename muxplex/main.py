@@ -250,6 +250,14 @@ async def _sync_settings_with_remotes(
     - If local is newer: push local settings via PUT /api/settings/sync.
     - If equal: no action.
 
+    `views` is the exception to "adopt": when the peer sends
+    `views_changed_at`, apply_synced_settings() MERGES views per view and
+    per member instead of replacing them, so an adopt no longer destroys a
+    pin this device made in the same sync window. If that merge leaves us
+    holding membership the peer lacks, apply_synced_settings() bumps our
+    `settings_updated_at` past the peer's -- which is what makes the very
+    next cycle take the push branch below and hand them the union.
+
     Errors are caught per-remote so one unreachable peer doesn't abort others.
     404/405 responses from older muxplex instances that lack sync endpoints are
     silently skipped.
@@ -278,15 +286,26 @@ async def _sync_settings_with_remotes(
             # in apply_synced_settings(): "no signal, fall back to
             # pre-existing behavior."
             remote_views_ts = remote_data.get("views_updated_at")
+            # Same additive contract as remote_views_ts: absent (None) means
+            # this peer predates the `views` merge and apply_synced_settings()
+            # resolves `views` by whole-set LWW exactly as before. Present
+            # (even as {}) means `views` is MERGED per view and per member,
+            # so a pin that just landed here is no longer destroyed by the
+            # peer's older definition of the same view.
+            remote_views_changed_at = remote_data.get("views_changed_at")
 
             if remote_ts > local_ts:
-                # Remote is newer — adopt. The destructive-write backstop
-                # inside apply_synced_settings() runs unconditionally here
-                # too, and a rejection is just another per-remote failure
-                # caught by the except below (leaves local untouched, next
-                # cycle retries).
+                # Remote is newer — adopt (MERGING `views` when the peer
+                # speaks it). The destructive-write backstop inside
+                # apply_synced_settings() runs unconditionally here too, and
+                # a rejection is just another per-remote failure caught by
+                # the except below (leaves local untouched, next cycle
+                # retries).
                 apply_synced_settings(
-                    remote_data.get("settings", {}), remote_ts, remote_views_ts
+                    remote_data.get("settings", {}),
+                    remote_ts,
+                    remote_views_ts,
+                    remote_views_changed_at,
                 )
                 # Refresh local state so subsequent remotes see the updated ts.
                 local_sync = get_syncable_settings()
@@ -297,10 +316,16 @@ async def _sync_settings_with_remotes(
                     "settings": {
                         k: local_sync[k]
                         for k in local_sync
-                        if k not in ("settings_updated_at", "views_updated_at")
+                        if k
+                        not in (
+                            "settings_updated_at",
+                            "views_updated_at",
+                            "views_changed_at",
+                        )
                     },
                     "settings_updated_at": local_ts,
                     "views_updated_at": local_sync.get("views_updated_at", 0.0),
+                    "views_changed_at": local_sync.get("views_changed_at", {}),
                 }
                 put_resp = await http_client.put(
                     f"{url}/api/settings/sync",
@@ -1342,6 +1367,15 @@ class SettingsSyncPayload(BaseModel):
     # function's docstring for the full views-specific-conflict-resolution
     # story). Never required -- Pydantic defaults it to None.
     views_updated_at: float | None = None
+    # Additive, optional, same contract: the per-view/per-member presence
+    # stamps that let `views` be MERGED instead of replaced wholesale (see
+    # settings.DEFAULT_SETTINGS' "views_changed_at" comment and views.py's
+    # "Federation merge of `views`" header). None means "this peer doesn't
+    # speak it" -- apply_synced_settings() then resolves `views` by the
+    # pre-existing views_updated_at LWW, unchanged. An empty dict is a real
+    # signal and does NOT mean the same thing: it says the peer supports
+    # merging but has recorded no presence change yet.
+    views_changed_at: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -3905,22 +3939,25 @@ async def get_settings_sync() -> dict:
     settings_updated_at and views_updated_at timestamps; infrastructure keys
     (host, port, federation_key, etc.) are never included.
 
-    `views_updated_at` is an additive field (see SettingsSyncPayload /
-    apply_synced_settings): a peer that predates it simply doesn't look for
-    it in this response.
+    `views_updated_at` and `views_changed_at` are additive fields (see
+    SettingsSyncPayload / apply_synced_settings): a peer that predates
+    either simply doesn't look for it in this response, and resolves `views`
+    the way it always did.
     """
     syncable = get_syncable_settings()
     ts = syncable.get("settings_updated_at", 0.0)
     views_ts = syncable.get("views_updated_at", 0.0)
+    views_changed_at = syncable.get("views_changed_at", {})
     settings = {
         k: v
         for k, v in syncable.items()
-        if k not in ("settings_updated_at", "views_updated_at")
+        if k not in ("settings_updated_at", "views_updated_at", "views_changed_at")
     }
     return {
         "settings": settings,
         "settings_updated_at": ts,
         "views_updated_at": views_ts,
+        "views_changed_at": views_changed_at,
     }
 
 
@@ -3938,10 +3975,13 @@ async def put_settings_sync(payload: SettingsSyncPayload):
     resync from there -- its view IS stale/inconsistent with ours.
 
     If strictly newer, applies via apply_synced_settings(), passing through
-    `views_updated_at` for the views-specific conflict resolution described
-    in that function's docstring (an older peer simply omits the field --
-    Pydantic defaults it to None -- and apply_synced_settings() falls back
-    to its pre-existing, fully-interoperable behavior).
+    `views_updated_at` AND `views_changed_at` for the views-specific
+    conflict resolution described in that function's docstring (an older
+    peer simply omits either field -- Pydantic defaults both to None -- and
+    apply_synced_settings() falls back to its pre-existing,
+    fully-interoperable behavior). With `views_changed_at` present, `views`
+    is merged rather than replaced, so this endpoint accepting a peer's
+    write no longer costs this device a pin it made moments ago.
 
     The destructive-write backstop is NOT optional here and has no override:
     apply_synced_settings() runs it unconditionally as its first act, before
@@ -3962,6 +4002,7 @@ async def put_settings_sync(payload: SettingsSyncPayload):
                 payload.settings,
                 payload.settings_updated_at,
                 payload.views_updated_at,
+                payload.views_changed_at,
             )
         except DestructiveSettingsWriteRejected as exc:
             syncable = get_syncable_settings()

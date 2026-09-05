@@ -241,6 +241,38 @@ DEFAULT_SETTINGS: dict = {
     # timestamp), so old (pre-this-field) peers keep interoperating exactly
     # as before.
     "views_updated_at": 0.0,
+    # Per-view / per-member presence stamps that let federation sync MERGE
+    # `views` instead of picking one side. Metadata, exactly like the two
+    # timestamps above: not a "setting" a client would ever send, outside
+    # SYNCABLE_KEYS, and threaded through the sync payload explicitly (see
+    # get_syncable_settings / apply_synced_settings / SettingsSyncPayload).
+    #
+    #     {"<view name>": {"at": <float|None>,
+    #                      "members": {"<session key>": <float>}}}
+    #
+    # WHY THIS EXISTS: views_updated_at narrowed the LWW race but still
+    # resolved it by REPLACING our `views` with the peer's, so two devices
+    # editing views inside one ~30s sync window still destroyed the loser's
+    # edit -- a pin that just landed, silently gone on the next render. A
+    # merge needs to tell "absent because deleted" from "absent because
+    # never seen", which no comparison of the two arrays can do. These
+    # stamps are that missing bit: presence is DERIVED (in `sessions` =
+    # present, stamped but absent = tombstone, unstamped = never seen), so
+    # one float per element buys both directions. Full rationale, the
+    # tempting-but-unsound timestamp-inference alternative, and the costs
+    # (payload growth, tombstone GC, clock skew) are in views.py's
+    # "Federation merge of `views`" header.
+    #
+    # SERVER-DERIVED, NEVER CLIENT-SUPPLIED: every stamp comes from
+    # `views.record_views_change()` diffing what a write actually changed.
+    # patch_settings() deliberately refuses to copy this key out of a PATCH
+    # body. That is what makes it safe against a stale client -- a browser
+    # tab that knows nothing about this key cannot drop or forge it.
+    #
+    # BACKWARD COMPATIBILITY: a peer that doesn't send it leaves
+    # `incoming_views_changed_at=None`, and apply_synced_settings() falls
+    # back to the pre-existing views_updated_at LWW path unchanged.
+    "views_changed_at": {},
     "_schema_version": SCHEMA_VERSION,
     # Grace period (hours) before a session key missing from all live sessions
     # is removed from views/hidden_sessions. Syncable so the operator can tune
@@ -1302,6 +1334,12 @@ def patch_settings(
     current = load_settings()
     patch = _translate_legacy_hover_preview_key(patch)
 
+    # Snapshot BEFORE any mutation: record_views_change() below diffs this
+    # against the post-patch array to stamp exactly what this write added or
+    # removed. A shallow copy is not enough -- the per-view `sessions` lists
+    # are what changes, and the patch may hand us the very same objects.
+    previous_views = copy.deepcopy(current.get("views"))
+
     if "views" in patch:
         # Lazy import: avoids potential circular import between settings and views.
         from muxplex.views import assess_views_destruction, validate_view_rules
@@ -1370,6 +1408,15 @@ def patch_settings(
                 # pair -- skip the generic copy so an invalid/contradictory
                 # payload value is never applied directly.
                 continue
+            if key == "views_changed_at":
+                # Server-derived metadata, never client-supplied:
+                # record_views_change() below is its ONLY writer here. A
+                # client that could set it could forge a tombstone (deleting
+                # a peer's pin fleet-wide) or erase one (resurrecting a
+                # deletion) -- and no legitimate client has any reason to
+                # send it. Same single-writer discipline as the
+                # deviceLabelPlacement pair just above.
+                continue
             current[key] = patch[key]
 
     # deviceLabelPlacement/showDeviceBadges: authoritative-key-with-derived-
@@ -1408,6 +1455,18 @@ def patch_settings(
     if "views" in patch or "hidden_sessions" in patch:
         current["views_updated_at"] = time.time()
 
+    # Stamp presence changes for the federation merge. Runs whenever `views`
+    # was in the patch -- including a patch that changed nothing about it,
+    # which correctly stamps nothing (record_views_change diffs, it does not
+    # touch what did not move). Never back-fills stamps onto views that were
+    # already there.
+    if "views" in patch:
+        from muxplex.views import record_views_change
+
+        current["views_changed_at"] = record_views_change(
+            previous_views, current.get("views"), current.get("views_changed_at")
+        )
+
     save_settings(current)
     return current
 
@@ -1416,6 +1475,7 @@ def apply_synced_settings(
     incoming_settings: dict,
     incoming_timestamp: float,
     incoming_views_updated_at: float | None = None,
+    incoming_views_changed_at: dict | None = None,
 ) -> dict:
     """Apply synced settings from a remote server.
 
@@ -1461,9 +1521,39 @@ def apply_synced_settings(
     unconditionally (gated only by the backstop, never by a per-field
     timestamp), which is exactly the pre-existing behavior, so older peers
     keep interoperating without any change on their end.
+
+    `views` MERGE (`incoming_views_changed_at`): everything above still
+    describes how `hidden_sessions` is resolved, and how `views` is resolved
+    against a peer that predates this argument. When the peer DOES supply
+    `views_changed_at` (and an actual `views` list), `views` is no longer
+    resolved by picking a side at all -- it is MERGED per view and per
+    member via `views.merge_views`, so a pin that just landed here and a pin
+    that just landed there both survive, while a genuine deletion on either
+    side is still honoured. Read views.py's "Federation merge of `views`"
+    header for the semantics and the costs. Three consequences worth
+    knowing at this level:
+
+      * The merge runs regardless of which side's `views_updated_at` is
+        newer. It is symmetric, so both devices reach the same answer;
+        `views_updated_at` only decides non-membership attributes and
+        ordering, and is left at the later of the two afterwards.
+      * The destructive-write backstop is assessed against the MERGED
+        array -- i.e. against what will actually be written -- not against
+        the peer's payload. Same guarantee, applied to the real outcome.
+      * If the merge produced membership the peer does not have, this
+        device makes itself look newer (`settings_updated_at`/
+        `views_updated_at` bumped past the incoming ones) so the next sync
+        cycle pushes the union back. Without that, adopting the peer's
+        timestamp verbatim would leave both sides equal -- "no action" --
+        and the peer would never learn about our pin.
     """
     # Lazy import: avoids potential circular import between settings and views
-    from muxplex.views import assess_views_destruction, enforce_mutual_exclusion
+    from muxplex.views import (
+        assess_views_destruction,
+        enforce_mutual_exclusion,
+        merge_views,
+        views_membership_signature,
+    )
 
     incoming_settings = _translate_legacy_hover_preview_key(incoming_settings)
     current = load_settings()
@@ -1477,7 +1567,46 @@ def apply_synced_settings(
         or incoming_views_updated_at > local_views_updated_at
     )
 
-    if views_keys_present and apply_views_fields:
+    # Merge path: the peer speaks `views_changed_at` AND actually sent a
+    # `views` list. An empty dict is a real signal ("I support this, I have
+    # simply never recorded a presence change") -- only None means "no
+    # signal, fall back to the pre-existing LWW behavior below."
+    incoming_views = incoming_settings.get("views")
+    merge_views_field = incoming_views_changed_at is not None and isinstance(
+        incoming_views, list
+    )
+    merged_views: list | None = None
+    merged_views_changed_at: dict | None = None
+    if merge_views_field:
+        merged_views, merged_views_changed_at = merge_views(
+            current.get("views"),
+            current.get("views_changed_at"),
+            incoming_views,
+            incoming_views_changed_at,
+            local_views_updated_at=local_views_updated_at,
+            incoming_views_updated_at=incoming_views_updated_at or 0.0,
+        )
+
+    if merge_views_field:
+        # Assess what is actually about to be written (the merge result),
+        # not the peer's payload. A merge can only shed a member a tombstone
+        # accounts for, so this should be quiet -- but the backstop stays
+        # unconditional on this path, exactly as before.
+        assessment = assess_views_destruction(current.get("views"), merged_views)
+        if assessment.destructive:
+            _log.warning(
+                "settings: rejected destructive views write (federation merge): %s "
+                "(before=%d views/%d members, after=%d views/%d members)",
+                assessment.reason,
+                assessment.before_views,
+                assessment.before_members,
+                assessment.after_views,
+                assessment.after_members,
+            )
+            raise DestructiveSettingsWriteRejected(
+                assessment.reason, assessment.as_counts_dict()
+            )
+    elif views_keys_present and apply_views_fields:
         assessment = assess_views_destruction(
             current.get("views"), incoming_settings.get("views")
         )
@@ -1501,6 +1630,9 @@ def apply_synced_settings(
             continue
         if key not in incoming_settings:
             continue
+        if key == "views" and merge_views_field:
+            # Resolved by merge, not by copy -- assigned below.
+            continue
         if key in ("views", "hidden_sessions") and not apply_views_fields:
             # Incoming views-related data is stale by views_updated_at --
             # keep ours, but still apply every other syncable key below.
@@ -1519,7 +1651,28 @@ def apply_synced_settings(
     # reconcile_device_label's docstring).
     reconcile_device_label(current, incoming_settings)
 
-    if views_keys_present and apply_views_fields:
+    settings_updated_at = incoming_timestamp
+
+    if merge_views_field:
+        contributed = views_membership_signature(
+            merged_views
+        ) != views_membership_signature(incoming_views)
+        current["views"] = merged_views
+        current["views_changed_at"] = merged_views_changed_at
+        current["views_updated_at"] = max(
+            local_views_updated_at, incoming_views_updated_at or 0.0
+        )
+        if contributed:
+            # We hold membership the peer does not. Look strictly newer than
+            # what they sent so the next cycle pushes the union back to them
+            # -- see this function's docstring. `time.time()` rather than a
+            # bare +epsilon so a peer with a fast clock cannot pin us
+            # permanently below it. Terminates: once the peer has merged the
+            # union, its own signature matches and it does not bump back.
+            bumped = max(incoming_timestamp, time.time())
+            settings_updated_at = bumped
+            current["views_updated_at"] = max(current["views_updated_at"], bumped)
+    elif views_keys_present and apply_views_fields:
         current["views_updated_at"] = (
             incoming_views_updated_at
             if incoming_views_updated_at is not None
@@ -1527,7 +1680,7 @@ def apply_synced_settings(
         )
 
     enforce_mutual_exclusion(current)
-    current["settings_updated_at"] = incoming_timestamp
+    current["settings_updated_at"] = settings_updated_at
     save_settings(current)
     return current
 
@@ -1551,17 +1704,19 @@ def peer_supports_v2(peer_settings: dict) -> bool:
 def get_syncable_settings() -> dict:
     """Return only syncable settings + metadata timestamps.
 
-    `settings_updated_at` and `views_updated_at` are metadata, not
-    themselves syncable "settings" -- they're timestamps used by the
-    receiving peer to arbitrate conflicts (see apply_synced_settings), which
-    is why they're merged in here explicitly rather than living in
-    SYNCABLE_KEYS. A peer that doesn't understand `views_updated_at` simply
-    ignores the extra field (additive wire change; see AGENTS.md).
+    `settings_updated_at`, `views_updated_at` and `views_changed_at` are
+    metadata, not themselves syncable "settings" -- they are what the
+    receiving peer uses to arbitrate conflicts (see apply_synced_settings),
+    which is why they're merged in here explicitly rather than living in
+    SYNCABLE_KEYS. A peer that doesn't understand `views_updated_at` or
+    `views_changed_at` simply ignores the extra field (additive wire change;
+    see AGENTS.md), and falls back to whole-set LWW on `views`.
     """
     settings = load_settings()
     result = {key: settings[key] for key in SYNCABLE_KEYS if key in settings}
     result["settings_updated_at"] = settings.get("settings_updated_at", 0.0)
     result["views_updated_at"] = settings.get("views_updated_at", 0.0)
+    result["views_changed_at"] = settings.get("views_changed_at", {})
     return result
 
 

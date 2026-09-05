@@ -377,6 +377,7 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `composeBarOpen` | `null` | Terminal compose bar (typed input into a tmux session) state: `true`, `false`, or `null` (never toggled -- resolves to visible on every device width, more discoverable than the old mobile-only default) |
 | `settings_updated_at` | `0.0` | Unix timestamp of last settings write (used for federation sync) |
 | `views_updated_at` | `0.0` | Unix timestamp of last change to `views`/`hidden_sessions` specifically. Metadata like `settings_updated_at`, used to arbitrate views-specific federation sync conflicts independently of unrelated field changes (e.g. a `fontSize` edit no longer bumps this). Not itself a syncable setting -- see `docs/API_SEMANTICS.md`. |
+| `views_changed_at` | `{}` | Per-view / per-member stamps recording when each view and each pinned session last changed PRESENCE, shaped `{"<view>": {"at": <ts\|null>, "members": {"<session key>": <ts>}}}`. This is what lets federation sync **merge** `views` instead of replacing them wholesale, so a pin made on one device and a pin made on another both survive while a genuine deletion on either is still honoured. Metadata, like the two timestamps above: written only by the server (never accepted from a client PATCH), not itself a syncable setting. See `docs/API_SEMANTICS.md`. |
 
 **Priority:** CLI flags > `settings.json` > defaults.
 

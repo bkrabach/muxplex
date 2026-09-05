@@ -103,10 +103,11 @@ async def test_sync_adopts_newer_remote_settings():
 
         await main_mod._sync_settings_with_remotes(remote_config, http_client)
 
-        # Third positional arg is the remote's views_updated_at, absent here
-        # (remote_data has no such key) -- get()'s default is None, which
-        # apply_synced_settings() treats as "legacy peer, no signal."
-        mock_apply.assert_called_once_with(remote_settings, remote_ts, None)
+        # Third and fourth positional args are the remote's views_updated_at
+        # and views_changed_at, both absent here (remote_data has neither
+        # key) -- get()'s default is None, which apply_synced_settings()
+        # treats as "legacy peer, no signal" for each independently.
+        mock_apply.assert_called_once_with(remote_settings, remote_ts, None, None)
         http_client.put.assert_not_called()
 
 

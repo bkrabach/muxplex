@@ -666,6 +666,62 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   behavior — apply views/hidden_sessions unconditionally, gated only by the
   backstop above — so older peers keep interoperating with zero changes on
   their end.
+- **`views_changed_at`** (third piece of sync metadata, alongside the two
+  timestamps above; threaded through the `/api/settings/sync` GET/PUT
+  payload, not in `SYNCABLE_KEYS`): the per-view / per-member presence
+  stamps that let federation sync **merge** `views` instead of picking one
+  side. `views_updated_at` narrowed the LWW race but still resolved it by
+  REPLACING our array with the peer's, so two devices editing views inside
+  one ~30s sync window still destroyed the loser's edit — a pin that just
+  landed, silently gone on the next render, the same symptom the CAS and
+  the backstop were each added for.
+  Shape: `{"<view name>": {"at": <float|null>, "members": {"<session key>":
+  <float>}}}` — the moment that view / that member last changed PRESENCE.
+  Presence itself is **derived, never stored**: a key listed in
+  `view.sessions` is present; a key with a stamp but absent from `sessions`
+  is a **tombstone**; a key with no stamp at all is "never seen / predates
+  this feature". That distinction is the whole point — under a plain union,
+  "absent because deleted" and "absent because never seen" are the same
+  observation, and a member genuinely deleted on one device gets resurrected
+  by another that still lists it. Resolution per element
+  (`views.merge_views`): present on both, or absent on both, is no conflict;
+  otherwise the absent side's stamp is a deletion and the present side's is
+  an add, later wins, **a tie keeps** (a resurrected pin is visible and
+  undoable; a lost pin is silent). An absent side with NO stamp never
+  deletes; a present side with no stamp loses to a dated deletion, so a
+  deletion can still reach a device holding pre-feature data.
+  **Server-derived, never client-supplied**: every stamp comes from
+  `views.record_views_change()` diffing what a write actually changed, and
+  `patch_settings()` refuses to copy this key out of a PATCH body — a
+  client that could set it could forge a tombstone (deleting a peer's pin
+  fleet-wide) or erase one. That is also what makes it safe against a stale
+  PWA tab: a client that knows nothing about the key cannot drop it.
+  Ordering and every non-membership attribute (`match_names`, …) still come
+  wholesale from the side with the larger `views_updated_at` — both devices
+  pick the same authority, so both compute the same order and the exchange
+  settles instead of ping-ponging forever. The destructive-write backstop
+  runs on the MERGED array, i.e. on what will actually be written.
+  If the merge leaves this device holding membership the peer lacks, it
+  bumps its own `settings_updated_at`/`views_updated_at` past the incoming
+  ones so the NEXT cycle pushes the union back; adopting the peer's
+  timestamp verbatim would park both sides on "equal: no action" and the
+  peer would never learn about our pin. Terminates, because a converged
+  merge contributes nothing and bumps nothing.
+  **Backward compatible**: a peer that omits the field leaves
+  `incoming_views_changed_at=None` and `views` is resolved by the
+  pre-existing `views_updated_at` LWW, unchanged. `{}` is NOT the same
+  signal — it means "supports merging, has recorded no presence change yet".
+  **Costs, stated rather than hidden** (see views.py's "Federation merge of
+  `views`" header): the payload grows by one float per pinned member plus
+  one per live tombstone; tombstone GC is time-based
+  (`VIEW_TOMBSTONE_TTL_SECONDS`, 30 days), so a device offline LONGER than
+  that, still holding a since-deleted pin, resurrects that one pin —
+  bounded, and `prune_stale_keys` removes it again within
+  `stale_key_grace_hours` if the underlying session is gone; and clock skew
+  now matters per member rather than per array, which is strictly
+  finer-grained than the whole-blob LWW that already depended on it.
+  `hidden_sessions` is deliberately **not** merged — it keeps the
+  `views_updated_at` LWW described above.
 - **`PUT /api/settings/sync`'s existing `payload.settings_updated_at >
   local_ts` comparison IS this endpoint's CAS/precondition discipline** — a
   peer only gets to write when its view of the world is strictly newer than
