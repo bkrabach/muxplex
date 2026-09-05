@@ -41,6 +41,14 @@ host:
     ``state.json``, ``sessions.json``), which incident 1's fix did not cover.
     See the block comment above those fixtures for the measured evidence:
     150 writes aimed at the developer's real files in one full suite run.
+  * ``_isolate_ttyd_socket_dir`` -- the fourth such real path, and the only
+    one whose worst case is a KILLED LIVE TERMINAL rather than a corrupted
+    file: ``reap_orphan_ttyds()`` globs that directory, SIGTERMs the pid its
+    run files name, and unlinks the sockets live terminals are attached to.
+    Unlike the three above it was measured LATENT (0 hits over a full suite
+    run -- every ttyd test redirects it today), and closed anyway; see that
+    fixture's docstring for the shapes a forgetful test takes and what they
+    reached.
   * ``_isolate_tmux_socket_dir`` -- no test's real tmux subprocess call can
     ever reach the ambient/production tmux server.
   * ``_neutralize_port_killer`` -- no test can invoke the REAL
@@ -270,6 +278,83 @@ def _isolate_manifest_path(tmp_path, monkeypatch):
     path = _isolated_state_dir(tmp_path) / "sessions.json"
     monkeypatch.setattr(manifest_mod, "MANIFEST_PATH", path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ttyd_socket_dir(monkeypatch):
+    """Point ``muxplex.ttyd.TTYD_SOCKET_DIR`` at a per-test scratch directory
+    for EVERY test -- the fourth real path, and the only one whose worst case
+    is not a corrupted file but a **killed live terminal**.
+
+    ``ttyd.py`` binds ``TTYD_SOCKET_DIR = ttyd_socket_dir()`` ONCE at import,
+    from its OWN ``from muxplex.state import STATE_DIR`` -- so the
+    ``state.STATE_DIR`` patch in ``_isolate_state_path`` above does NOT move
+    it. Same import-time-binding trap as ``MANIFEST_PATH``, same answer: its
+    own patch, its own rail.
+
+    **Why this one is worse than a stray file.** The real directory
+    (``~/.local/share/muxplex/ttyd``) holds the LIVE per-session ttyd sockets
+    and their run files. ``reap_orphan_ttyds()`` GLOBs it, reads each run
+    file, and on an identity match calls ``_terminate_pid(pid)`` and then
+    unlinks BOTH artifacts. A test that reaches it does not litter -- it
+    SIGTERMs the live instance's terminal and deletes the socket that
+    terminal is attached to. Measured on this dev host while writing this
+    fixture: the real directory contained ``mx-1d0f14d6a467.{sock,json}``
+    for a live ``ttyd -W -m 3 -i .../mx-1d0f14d6a467.sock tmux attach -t
+    <session>`` (pid 3713206) -- precisely the identity ``reap_orphan_ttyds()``
+    confirms before signalling.
+
+    **Latent, not active -- fixed anyway, and then it stopped being
+    hypothetical.** A divert-probe over a full ``uv run pytest`` (same
+    technique as the three rails above: intercept and REDIRECT every
+    operation aimed under the real directory, so it is never touched to find
+    this out) recorded **0 hits** -- every test that touches ttyd today
+    redirects ``TTYD_SOCKET_DIR`` itself. That is precisely the state the
+    other three were in before someone wrote a test that forgot. Three
+    scratch tests taking the shapes a forgetful test plausibly takes -- write
+    a run file via ``socket_path_for()``, call ``reap_orphan_ttyds()``, call
+    ``validate_socket_dir(TTYD_SOCKET_DIR)`` -- produced **11 hits (9
+    mutating: 2 mkdir, 2 chmod, 1 write_text, 1 touch, 2 unlink, 1 REAL
+    AF_UNIX bind; plus the 2 reap globs)** without this fixture and **0**
+    with it. After the fix a full suite run shows **0 mutating hits**; the
+    only two remaining are ``iterdir`` reads from
+    ``test_ttyd_reaper_reaches_only_the_isolated_dir``, which lists the real
+    directory before and after solely to assert it did not change.
+
+    **The damage is not theoretical -- it was observed here.** While
+    mutation-testing this very rail (deleting it to confirm
+    ``test_safety_rails.py`` fails), one run was done WITHOUT the probe.
+    ``reap_orphan_ttyds()`` immediately globbed the real directory, matched
+    the live run file's identity, SIGTERMed ttyd pid 3713206 -- the process
+    serving a live terminal -- and unlinked its socket and run file. The
+    supervising muxplex respawned it seconds later as pid 28664, which is the
+    only reason this reads as an anecdote rather than an outage. Removing
+    this fixture does not risk a stray file; it kills a terminal.
+
+    **Deliberately NOT built on pytest's own ``tmp_path``** -- identical
+    reasoning to ``short_socket_dir`` and ``_isolate_tmux_socket_dir`` below,
+    and this fixture is the one where it actually bites: this directory can
+    host a REAL AF_UNIX socket, and ``validate_socket_dir()`` hard-fails when
+    ``len(str(dir.resolve())) + 1 + SOCKET_BASENAME_LEN`` exceeds
+    ``SUN_PATH_BUDGET`` (102 bytes). macOS ``tmp_path`` is ~120 bytes before
+    a socket filename is appended. ``mkdtemp`` under ``/tmp`` is short on
+    every supported platform: ``/tmp/mx-ttyd-XXXXXXXX`` is 21 bytes, leaving
+    ~60 bytes of headroom under budget. ``test_safety_rails.py`` asserts that
+    headroom numerically rather than trusting this comment.
+
+    ``mkdtemp`` also creates the directory 0700 -- the mode
+    ``validate_socket_dir()`` requires -- so a forgetful test that validates
+    the isolated directory gets production's real behaviour, not a spurious
+    failure.
+    """
+    import muxplex.ttyd as ttyd_mod
+
+    ttyd_dir = Path(tempfile.mkdtemp(prefix="mx-ttyd-", dir="/tmp"))
+    monkeypatch.setattr(ttyd_mod, "TTYD_SOCKET_DIR", ttyd_dir)
+    try:
+        yield ttyd_dir
+    finally:
+        shutil.rmtree(ttyd_dir, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

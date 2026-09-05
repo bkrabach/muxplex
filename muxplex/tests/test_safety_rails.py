@@ -192,6 +192,7 @@ _SIDECAR_FIXTURES = {
     "_isolate_pruning_state_path": ("muxplex.pruning", ("PRUNING_STATE_PATH",)),
     "_isolate_state_path": ("muxplex.state", ("STATE_DIR", "STATE_PATH")),
     "_isolate_manifest_path": ("muxplex.manifest", ("MANIFEST_PATH",)),
+    "_isolate_ttyd_socket_dir": ("muxplex.ttyd", ("TTYD_SOCKET_DIR",)),
 }
 
 
@@ -269,6 +270,161 @@ def test_manifest_path_is_isolated(tmp_path):
         tmp_path,
         "MANIFEST_PATH",
     )
+
+
+# ---------------------------------------------------------------------------
+# The FOURTH real path -- ~/.local/share/muxplex/ttyd.
+#
+# Not a sidecar file: a directory of LIVE AF_UNIX sockets and run files.
+# ``reap_orphan_ttyds()`` globs it, SIGTERMs the pid each run file names, and
+# unlinks the socket a live terminal is attached to -- so a test that reaches
+# it kills a terminal rather than merely corrupting a file. Measured LATENT
+# (0 hits over a full suite run; every ttyd test redirects it today) and
+# closed anyway -- see conftest's ``_isolate_ttyd_socket_dir`` docstring.
+#
+# It gets its own trio of tests rather than joining ``_assert_isolated``
+# above because it is deliberately NOT under ``tmp_path``: it can host a real
+# AF_UNIX socket, and ``tmp_path`` on macOS is already over the 102-byte
+# sun_path budget before a socket filename is appended.
+# ---------------------------------------------------------------------------
+
+
+def test_ttyd_socket_dir_is_isolated_by_default():
+    """Every test must get a scratch ``TTYD_SOCKET_DIR``, never the real one.
+
+    ``ttyd.py`` binds this constant at import from its OWN copy of
+    ``STATE_DIR``, so ``_isolate_state_path``'s patch does not move it --
+    same import-time-binding trap as ``MANIFEST_PATH``.
+    """
+    import muxplex.ttyd as ttyd_mod
+
+    actual = Path(str(ttyd_mod.TTYD_SOCKET_DIR))
+    real = Path.home() / ".local" / "share" / "muxplex" / "ttyd"
+
+    assert actual != real, (
+        f"TTYD_SOCKET_DIR points at the developer's REAL ttyd socket dir "
+        f"({actual}). The autouse rail in conftest.py has been removed or "
+        f"weakened. That directory holds LIVE per-session ttyd sockets: "
+        f"reap_orphan_ttyds() globs it, SIGTERMs the pid its run files name, "
+        f"and unlinks the socket a live terminal is attached to."
+    )
+    assert real not in actual.parents, (
+        f"TTYD_SOCKET_DIR ({actual}) is still INSIDE the real ttyd socket "
+        f"dir. A subdirectory is not isolation -- the reaper's glob is "
+        f"non-recursive, but spawn/kill still write under the real tree."
+    )
+    assert actual.name.startswith("mx-ttyd-"), (
+        f"TTYD_SOCKET_DIR ({actual}) does not look like the per-test scratch "
+        f"directory conftest._isolate_ttyd_socket_dir creates -- the rail may "
+        f"have been weakened."
+    )
+    assert actual.is_dir(), (
+        f"TTYD_SOCKET_DIR ({actual}) does not exist. mkdtemp creates it 0700, "
+        f"which is the mode validate_socket_dir() requires."
+    )
+
+
+def test_ttyd_socket_dir_fits_the_sun_path_budget():
+    """The isolated dir must be short enough to host a REAL AF_UNIX socket.
+
+    Arithmetic AND a real bind, because the arithmetic is the thing that got
+    it wrong before: ``tmp_path`` on macOS CI resolves to ~120 bytes before a
+    socket filename is even appended, which is over
+    ``SUN_PATH_BUDGET`` (102). A fixture rewritten to use ``tmp_path``
+    "for consistency" would pass every other test in this file and then fail
+    on macOS with ``File name too long`` -- exactly the incident recorded in
+    ``short_socket_dir``'s docstring. Also asserts structurally that the
+    fixture does not take ``tmp_path``, so the rewrite is caught on Linux
+    too, where a short ``tmp_path`` hides the bug by coincidence.
+    """
+    import muxplex.ttyd as ttyd_mod
+
+    resolved = Path(str(ttyd_mod.TTYD_SOCKET_DIR)).resolve()
+    projected = len(str(resolved)) + 1 + ttyd_mod.SOCKET_BASENAME_LEN
+    assert projected <= ttyd_mod.SUN_PATH_BUDGET, (
+        f"a socket under the isolated TTYD_SOCKET_DIR ({resolved}) would be "
+        f"{projected} bytes, over the {ttyd_mod.SUN_PATH_BUDGET}-byte "
+        f"sun_path budget. Use mkdtemp under /tmp, not tmp_path."
+    )
+
+    # The real proof: production's own derivation, bound for real.
+    sock_path = ttyd_mod.socket_path_for("safety-rail-probe")
+    assert sock_path.parent == Path(str(ttyd_mod.TTYD_SOCKET_DIR)), (
+        "socket_path_for() no longer derives from TTYD_SOCKET_DIR -- the "
+        "rail patches a constant production has stopped reading."
+    )
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.bind(str(sock_path))
+    finally:
+        probe.close()
+        sock_path.unlink(missing_ok=True)
+
+    # And production's own validator, which enforces mode 0700 + the budget.
+    ttyd_mod.validate_socket_dir(Path(str(ttyd_mod.TTYD_SOCKET_DIR)))
+
+    src = _CONFTEST.read_text(encoding="utf-8")
+    node = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "_isolate_ttyd_socket_dir"
+    )
+    params = {a.arg for a in node.args.args}
+    assert "tmp_path" not in params, (
+        "conftest._isolate_ttyd_socket_dir now takes tmp_path. That directory "
+        "can host a REAL AF_UNIX socket and pytest's tmp_path is over the "
+        "102-byte sun_path budget on macOS -- use mkdtemp under /tmp (see "
+        "short_socket_dir)."
+    )
+
+
+async def test_ttyd_reaper_reaches_only_the_isolated_dir():
+    """End-to-end through the REAL reaper -- the catastrophic path.
+
+    The two tests above assert the constant looks right; this one runs
+    ``reap_orphan_ttyds()`` for real and checks which directory it actually
+    globbed and unlinked. A rail that patched a constant the reaper no longer
+    reads would pass those and fail this.
+
+    The planted run file names a pid that cannot exist, so the identity check
+    fails and ``_terminate_pid`` is never reached -- this test proves the
+    reaper's REACH, it does not signal anything.
+    """
+    import json
+
+    import muxplex.ttyd as ttyd_mod
+
+    isolated = Path(str(ttyd_mod.TTYD_SOCKET_DIR))
+    real = Path.home() / ".local" / "share" / "muxplex" / "ttyd"
+    real_before = sorted(p.name for p in real.iterdir()) if real.is_dir() else None
+
+    sock = ttyd_mod.socket_path_for("safety-rail-orphan")
+    run_path = sock.with_suffix(".json")
+    sock.touch()
+    run_path.write_text(
+        json.dumps(
+            {
+                "pid": 2**30,  # above any pid_max; never present in `ps`
+                "session": "safety-rail-orphan",
+                "socket": str(sock),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    await ttyd_mod.reap_orphan_ttyds()
+
+    assert not run_path.exists() and not sock.exists(), (
+        f"reap_orphan_ttyds() did not touch the planted artifacts in the "
+        f"isolated dir ({isolated}) -- it is globbing some OTHER directory, "
+        f"so the autouse rail is patching a constant it does not read."
+    )
+    if real_before is not None:
+        assert sorted(p.name for p in real.iterdir()) == real_before, (
+            f"reap_orphan_ttyds() changed the contents of the developer's "
+            f"REAL ttyd socket dir ({real}). It unlinks sockets that live "
+            f"terminals are attached to."
+        )
 
 
 def test_real_production_writes_land_in_tmp_not_on_the_host(tmp_path):
