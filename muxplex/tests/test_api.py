@@ -4869,20 +4869,27 @@ def test_delete_session_rejects_shell_injection(client, monkeypatch):
 
 
 def test_create_session_rejects_invalid_charset(client, monkeypatch):
-    """POST /api/sessions rejects names with spaces/metacharacters (400), not a subprocess."""
+    """POST /api/sessions rejects unsafe or over-cap names (400), not a subprocess."""
     from unittest.mock import AsyncMock
 
     spawned = AsyncMock()
     monkeypatch.setattr("tmux_kit.spawn.asyncio.create_subprocess_shell", spawned)
 
-    for bad in ["has space", "back`tick`", "pipe|it", "dollar$ign", "a" * 65, "co:lon"]:
+    for bad in [
+        "has space",
+        "back`tick`",
+        "pipe|it",
+        "dollar$ign",
+        "a" * 256,
+        "co:lon",
+    ]:
         response = client.post("/api/sessions", json={"name": bad})
         assert response.status_code == 400, f"expected 400 for {bad!r}"
     assert spawned.call_count == 0
 
 
 def test_create_and_delete_accept_ordinary_names(client, monkeypatch, tmp_path):
-    """Valid names (letters/digits/_.-) still create and delete normally."""
+    """Valid names (letters/digits/_.-) through the 255-character cap create normally."""
     import json
     from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -4901,7 +4908,7 @@ def test_create_and_delete_accept_ordinary_names(client, monkeypatch, tmp_path):
     )
 
     # Representative of real live session names (dots, underscores, hyphens).
-    for name in ["amplifier-wiki", "a2a", "my_project.v2", "AAA-claw"]:
+    for name in ["amplifier-wiki", "a2a", "my_project.v2", "AAA-claw", "a" * 255]:
         resp = client.post("/api/sessions", json={"name": name})
         assert resp.status_code == 200, f"valid name {name!r} must be accepted"
 

@@ -11,31 +11,15 @@ places that cannot see each other:
   3. muxplex's frontend   (muxplex-1vz) -- ``SESSION_NAME_MAX_BYTES`` in
      ``frontend/app.js``, a JavaScript literal no Python test read until now.
 
-Those three carried 32, 64 and 255 respectively, and that disagreement WAS the
-bug: amplifier-workspace silently truncated at 32, tmux-kit rejected at 65, and
-the input field accepted 255. They were reconciled onto 255 -- the filesystem's
-real NAME_MAX in bytes -- but nothing turned red when they disagreed, so
-nothing stops the next person from moving one and not the others.
+Those three once carried 32, 64 and 255 respectively, and that disagreement was
+the bug: amplifier-workspace silently truncated at 32, tmux-kit rejected at 65,
+and the input field accepted 255. They now agree on 255 -- the filesystem's
+real NAME_MAX in bytes -- and this file prevents them from drifting apart again.
 
 This file is that missing red. It reads the JavaScript constant out of app.js
 as source text (the same technique test_frontend_js.py uses) and compares it
 against the cap the INSTALLED tmux-kit actually enforces, so a drift in either
 direction fails here rather than in a user's browser.
-
-THE ONE RECORDED DISAGREEMENT. As of this writing they legitimately do NOT
-agree, and that is deliberate rather than accidental:
-
-    app.js   255   (the real filesystem limit -- muxplex-1vz)
-    tmux-kit  64   (pinned at tmux-kit==0.4.0, which predates the raise)
-
-tmux-kit's raise to 255 landed on a branch but was never published to PyPI
-(publishing is an irreversible external action and remains the owner's call --
-see muxplex-i1r's resolution), so muxplex's pin cannot move yet. That exact
-pair is recorded below as a pinned-open exception; ANY other disagreement
-fails. When the pin is finally bumped and the two agree,
-``test_recorded_disagreement_window_is_still_open`` fails on purpose, so the
-exception cannot outlive its reason and quietly mask a real regression back to
-this state.
 
 Read-only source and metadata inspection; no tmux, no network, no subprocess.
 """
@@ -60,19 +44,6 @@ _MAIN_PY: str = _MAIN_PY_PATH.read_text(encoding="utf-8")
 # the absolute path of whatever machine happened to run the suite.
 _APP_JS_REL = "muxplex/frontend/app.js"
 _MAIN_PY_REL = "muxplex/main.py"
-
-# ---------------------------------------------------------------------------
-# The pinned-open exception. Delete BOTH of these (and the two tests that
-# reference them) in the same change that bumps the tmux-kit pin.
-# ---------------------------------------------------------------------------
-_RECORDED_APP_JS_CAP = 255
-_RECORDED_KIT_CAP = 64
-_RECORDED_REASON = (
-    "tmux-kit's raise from 64 to 255 (muxplex-i1r) landed on a branch but was "
-    "never published to PyPI, so muxplex still pins tmux-kit==0.4.0. Names of "
-    "65..255 characters are accepted by the input and refused by the server "
-    "with a visible 400 until that pin moves."
-)
 
 
 def _installed_tmux_kit_version() -> str:
@@ -102,27 +73,11 @@ def _app_js_cap() -> tuple[int, int]:
 def _installed_kit_cap() -> tuple[int, str]:
     """Return (cap, where-it-came-from) for the INSTALLED tmux-kit.
 
-    Prefers the exported ``SESSION_NAME_MAX_LEN`` constant (tmux-kit >= 0.5.0,
-    where ``SESSION_NAME_RE`` is built from it). Falls back to reading the
-    length bound straight out of ``SESSION_NAME_RE`` for older pins, which is
-    the only cap those versions have. Either way the number is cross-checked
-    against real behaviour by ``test_installed_tmux_kit_cap_is_real``.
+    tmux-kit >= 0.5.0 exports ``SESSION_NAME_MAX_LEN`` and builds
+    ``SESSION_NAME_RE`` from it. Its value is cross-checked against real
+    behaviour by ``test_installed_tmux_kit_cap_is_real``.
     """
-    exported = getattr(_kit_names, "SESSION_NAME_MAX_LEN", None)
-    if isinstance(exported, int):
-        return exported, "tmux_kit.names.SESSION_NAME_MAX_LEN"
-
-    pattern = _kit_names.SESSION_NAME_RE.pattern
-    match = re.search(r"\{0,(\d+)\}", pattern)
-    assert match is not None, (
-        f"installed tmux-kit exports no SESSION_NAME_MAX_LEN constant AND its "
-        f"SESSION_NAME_RE has no readable `{{0,N}}` length bound "
-        f"(pattern: {pattern!r}), so muxplex cannot tell what session-name "
-        f"length the server it depends on will accept. Teach this helper the "
-        f"new shape rather than dropping the check (muxplex-i8w)."
-    )
-    # The bound applies to the characters AFTER the mandatory leading one.
-    return int(match.group(1)) + 1, f"SESSION_NAME_RE bound in {pattern!r}"
+    return _kit_names.SESSION_NAME_MAX_LEN, "tmux_kit.names.SESSION_NAME_MAX_LEN"
 
 
 def _kit_location() -> str:
@@ -166,16 +121,9 @@ def test_installed_tmux_kit_cap_is_real():
 
 
 def test_app_js_cap_agrees_with_installed_tmux_kit():
-    """app.js's cap and the installed tmux-kit's cap must be the same number.
-
-    The one exception is the disagreement recorded at the top of this file,
-    which is deliberate, understood, and self-retiring.
-    """
+    """app.js's cap and the installed tmux-kit's cap must be the same number."""
     app_cap, app_line = _app_js_cap()
     kit_cap, kit_source = _installed_kit_cap()
-
-    if app_cap == kit_cap:
-        return
 
     both = (
         f"  app.js    SESSION_NAME_MAX_BYTES = {app_cap}\n"
@@ -185,60 +133,22 @@ def test_app_js_cap_agrees_with_installed_tmux_kit():
         f"            ({_kit_location()})"
     )
 
-    if (app_cap, kit_cap) == (_RECORDED_APP_JS_CAP, _RECORDED_KIT_CAP):
-        return  # the recorded, pinned-open window -- see the module docstring
-
-    raise AssertionError(
+    assert app_cap == kit_cap, (
         "SESSION-NAME CAP DRIFT -- the frontend and the server no longer agree "
         "on how long a session name may be:\n\n"
         f"{both}\n\n"
         "A name between these two numbers is accepted by the new-session input "
         "and refused by the server, which is the exact bug muxplex-1vz / "
         "muxplex-i1r / muxplex-27o were opened to remove (they were 255, 64 "
-        "and 32).\n\n"
-        "Move BOTH numbers together, or -- if the disagreement is deliberate "
-        "and temporary, as a tmux-kit pin bump waiting on a release is -- "
-        "record the new pair in this file's _RECORDED_APP_JS_CAP / "
-        "_RECORDED_KIT_CAP with the reason, so it is a decision someone made "
-        "rather than a drift nobody noticed."
-    )
-
-
-def test_recorded_disagreement_window_is_still_open():
-    """Fails once the recorded exception is obsolete, so it cannot linger.
-
-    An exception that outlives its reason is worse than no check at all: it
-    would let a later regression back into exactly this state pass silently.
-    """
-    app_cap, _ = _app_js_cap()
-    kit_cap, kit_source = _installed_kit_cap()
-
-    assert (app_cap, kit_cap) == (_RECORDED_APP_JS_CAP, _RECORDED_KIT_CAP), (
-        f"the recorded session-name cap disagreement is no longer the current "
-        f"state:\n\n"
-        f"  recorded:  app.js {_RECORDED_APP_JS_CAP} vs tmux-kit "
-        f"{_RECORDED_KIT_CAP}\n"
-        f"  actual:    app.js {app_cap} ({_APP_JS_REL}) vs tmux-kit "
-        f"{kit_cap} ({kit_source})\n\n"
-        f"Recorded reason was: {_RECORDED_REASON}\n\n"
-        f"If the two caps now AGREE, this is good news and the fix is to "
-        f"delete _RECORDED_APP_JS_CAP, _RECORDED_KIT_CAP, _RECORDED_REASON, "
-        f"the pinned-open branch in "
-        f"test_app_js_cap_agrees_with_installed_tmux_kit, this test, and the "
-        f"module docstring's 'ONE RECORDED DISAGREEMENT' section. "
-        f"test_app_js_cap_agrees_with_installed_tmux_kit then enforces plain "
-        f"equality with no exceptions, which is the end state this file wants."
+        "and 32). Move BOTH numbers together."
     )
 
 
 def test_main_py_400_detail_quotes_the_enforced_cap():
     """The 400 muxplex returns must name the length the server really enforces.
 
-    ``_require_valid_session_name`` spells the cap out in prose ("1-64
-    characters"), which is a third copy of the number with nothing holding it
-    to the other two. When the tmux-kit pin moves, that sentence becomes a
-    confident lie told to the user at the exact moment they need it to be
-    true -- so it fails here instead (muxplex-i1r's named follow-up).
+    ``_require_valid_session_name`` must interpolate tmux-kit's exported cap,
+    rather than creating a third copy of the number that can drift.
     """
     body_match = re.search(
         r"def _require_valid_session_name\(.*?\n(?=\n\n(?:def |# |@))",

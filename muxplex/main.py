@@ -37,6 +37,7 @@ from pydantic import BaseModel, field_validator
 from starlette.responses import RedirectResponse, Response
 from starlette.types import Scope
 from tmux_kit.bell import build_alert_bell_hook
+from tmux_kit.names import SESSION_NAME_MAX_LEN
 from websockets.asyncio.client import unix_connect
 from websockets.typing import Subprotocol
 
@@ -2103,7 +2104,7 @@ def _require_valid_session_name(name: str) -> None:
             status_code=400,
             detail=(
                 "Invalid session name. Allowed characters: letters, digits, "
-                "and _ . - (1-64 characters)."
+                f"and _ . - (1-{SESSION_NAME_MAX_LEN} characters)."
             ),
         )
 

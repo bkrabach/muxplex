@@ -133,7 +133,7 @@ async function apiError(method, path, body) {
 }
 
 const ALLOWED_CHARS_DETAIL =
-  'Invalid session name. Allowed characters: letters, digits, and _ . - (1-64 characters).';
+  'Invalid session name. Allowed characters: letters, digits, and _ . - (1-255 characters).';
 
 let _origFetch;
 beforeEach(() => {
