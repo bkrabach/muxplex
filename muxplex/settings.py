@@ -4,7 +4,9 @@ Server-side settings management for muxplex.
 Settings are stored at ~/.config/muxplex/settings.json.
 """
 
+import contextlib
 import copy
+import functools
 import json
 import logging
 import os
@@ -14,7 +16,14 @@ import stat
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import ParamSpec, TypeVar
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX-only; muxplex requires tmux
+    fcntl = None  # type: ignore[assignment]
 
 _log = logging.getLogger(__name__)
 
@@ -993,6 +1002,218 @@ _snapshot_counter_lock = threading.Lock()
 _snapshot_counter = 0
 
 
+# ---------------------------------------------------------------------------
+# Cross-process write lock
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. The server is a single-threaded asyncio application, so
+# every in-process `load_settings()` ... `save_settings()` sequence runs to
+# completion with nothing able to interleave -- that is what makes the poll
+# loop's unlocked writers safe, and it is pinned by
+# test_settings_read_modify_write_blocks_contain_no_await. But that argument
+# stops at the process boundary, and settings.json has writers OUTSIDE this
+# process: the `muxplex` CLI (`config set`, `config reset`, `commands
+# add`/`rm`, `tls setup`) does its own load -> mutate -> save while the server
+# is running. If a poll cycle's normalize or prune step saves between the
+# CLI's load and its save (or vice versa), one side's change is silently
+# discarded -- no error, no log, no retry. Same user-visible signature as
+# every other bug in this family: "I changed it and it didn't stick."
+#
+# WHY THE LOCK SPANS THE WHOLE READ-MODIFY-WRITE, not just the write. Locking
+# only `save_settings()` prevents nothing: both writers still read the same
+# starting state, and the second write still lands last and wins. The window
+# that must be exclusive is load -> mutate -> save.
+#
+# WHY NOT COMPARE-AND-SWAP, which the browser already has. `PATCH
+# /api/settings` accepts `expected_settings_updated_at` (see
+# docs/API_SEMANTICS.md) and it is the cheaper-looking fix, but it does not
+# work here, for two independent reasons:
+#
+#   * `settings_updated_at` is bumped ONLY by patch_settings() (and only when
+#     the patch touches a syncable key) and apply_synced_settings(). A bare
+#     save_settings() never touches it -- and a bare save_settings() is
+#     exactly what the poll cycle's normalize and prune steps use, and what
+#     `commands add`/`rm`, `config reset` (all), and `tls setup` use. A CAS on
+#     that field is structurally blind to the very writers this item is about.
+#     Making it see them would mean bumping settings_updated_at on every write,
+#     which is a change to the timestamp federation LWW arbitrates on -- a far
+#     more dangerous edit than the bug it would be fixing.
+#   * Even with a perfect version token (mtime, content hash), compare-then-
+#     write is not atomic ACROSS PROCESSES. It narrows the losing window from
+#     the whole read-modify-write down to compare -> os.replace, but a loser
+#     can still clobber. The requirement is "neither write is silently
+#     discarded", not "discarded less often".
+#
+# HONEST LIMITS. This is an ADVISORY lock: it binds only processes that take
+# it. Hand-editing settings.json in $EDITOR while the server runs is still
+# outside it (as it always was). And a caller that times out proceeds anyway
+# -- see settings_write_lock() for why that is the right failure mode.
+SETTINGS_LOCK_SUFFIX = ".lock"
+
+# How long a writer waits for the lock before giving up and proceeding without
+# it. The expected wait is MILLISECONDS -- the critical section is a ~10KB
+# read, an in-memory mutation, a history snapshot and an atomic write -- so
+# this is a backstop against a pathologically slow holder, not a normal cost.
+# A holder that CRASHES releases instantly (the kernel drops flock when the fd
+# closes), so this timeout is never the recovery path for a dead process.
+#
+# It is deliberately short because the server acquires it on its single event
+# loop: a longer timeout would trade a rare lost update for a visible stall of
+# the whole server.
+SETTINGS_LOCK_TIMEOUT = 2.0
+SETTINGS_LOCK_POLL_INTERVAL = 0.005
+
+# Guards the two globals below. The package uses no threads today, but this
+# costs nothing and makes the depth bookkeeping correct rather than
+# incidentally correct. Re-entrant so that a nested settings_write_lock() in
+# the same thread (see below) is not a self-deadlock.
+_settings_lock_guard = threading.RLock()
+_settings_lock_fd: int | None = None
+_settings_lock_depth = 0
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def settings_lock_path() -> Path:
+    """Sidecar lockfile beside settings.json.
+
+    Computed fresh from the CURRENT ``SETTINGS_PATH`` on every call (not
+    cached at import) so it tracks any override of it -- including the test
+    suite's autouse redirect, which is what keeps a test's lock from ever
+    touching the real config directory. Same rule, same reason, as
+    ``ca_cert_path()``.
+
+    A SIDECAR, never settings.json itself: ``_atomic_write_text`` publishes by
+    ``os.replace()``, which swaps in a NEW inode. A lock held on the old inode
+    would silently stop excluding anyone the moment the first write landed.
+    The lockfile is therefore never written to and **never unlinked** -- an
+    unlink is the same bug in slower motion (holder A locks inode X, B creates
+    inode Y, both believe they hold the lock).
+    """
+    return SETTINGS_PATH.parent / f"{SETTINGS_PATH.name}{SETTINGS_LOCK_SUFFIX}"
+
+
+def _acquire_settings_flock(timeout: float) -> int | None:
+    """Try to take the exclusive flock, bounded by *timeout*.
+
+    Returns the held fd, or ``None`` when the lock could not be taken (timed
+    out, unavailable platform, or an unusable config directory). ``None`` is
+    not an error the caller has to handle -- see settings_write_lock().
+    """
+    if fcntl is None:  # pragma: no cover - POSIX-only
+        return None
+    path = settings_lock_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        _log.warning(
+            "settings: could not open lock file %s -- proceeding without the "
+            "cross-process write lock",
+            path,
+            exc_info=True,
+        )
+        return None
+
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                _log.warning(
+                    "settings: another process has held %s for more than %.1fs "
+                    "-- proceeding WITHOUT the lock. A concurrent write may be "
+                    "lost (this is the pre-lock behaviour, never worse).",
+                    path,
+                    timeout,
+                )
+                return None
+            time.sleep(SETTINGS_LOCK_POLL_INTERVAL)
+
+
+@contextlib.contextmanager
+def settings_write_lock(timeout: float = SETTINGS_LOCK_TIMEOUT) -> Iterator[bool]:
+    """Hold the cross-process settings lock for a whole read-modify-write.
+
+    Wrap the ENTIRE window, from ``load_settings()`` through
+    ``save_settings()``::
+
+        with settings_write_lock():
+            settings = load_settings()
+            settings["views"] = new_views
+            save_settings(settings)
+
+    Yields ``True`` when the lock is genuinely held and ``False`` when the
+    body is running unprotected. Almost every caller should ignore the value:
+    the contract is "do the write either way", and the two hazards this has to
+    survive are why.
+
+    **Re-entrant within a process.** ``load_settings()`` can itself call
+    ``save_settings()`` (the showHoverPreview migration), and
+    ``save_settings()`` takes this lock, so a nested acquire is a normal
+    occurrence rather than a bug. Nesting reuses the one held fd and is
+    tracked by depth -- taking a SECOND fd on the same file would block
+    against the first and deadlock the process against itself.
+
+    **The server must never be blocked on a lock a CLI process holds.** This
+    is acquired synchronously on the server's single event loop, so the wait
+    is bounded (see SETTINGS_LOCK_TIMEOUT) and a timeout LOGS AND PROCEEDS
+    rather than raising. Proceeding degrades exactly to the pre-lock
+    behaviour -- a possible lost update -- which is never worse than what
+    happened before this existed, whereas raising would turn a rare race into
+    a poll cycle that dies, or a CLI command that refuses to run, whenever the
+    lock is contended.
+    """
+    global _settings_lock_fd, _settings_lock_depth
+    with _settings_lock_guard:
+        if _settings_lock_depth > 0:
+            _settings_lock_depth += 1
+            try:
+                yield _settings_lock_fd is not None
+            finally:
+                _settings_lock_depth -= 1
+            return
+
+        fd = _acquire_settings_flock(timeout)
+        _settings_lock_fd = fd
+        _settings_lock_depth = 1
+        try:
+            yield fd is not None
+        finally:
+            _settings_lock_depth = 0
+            _settings_lock_fd = None
+            # `fcntl is not None` is implied by `fd is not None` (only
+            # _acquire_settings_flock mints an fd, and it returns None without
+            # fcntl) -- restated so the release path reads as safe on its own
+            # rather than depending on a fact established two functions away.
+            if fd is not None and fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
+
+def _under_settings_write_lock(fn: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run *fn* with the cross-process settings lock held for its whole body.
+
+    For functions that ARE a self-contained read-modify-write
+    (``patch_settings``, ``apply_synced_settings``): the window is the entire
+    call, so a decorator states that more clearly than re-indenting a hundred
+    lines under a ``with``, and cannot be half-applied by a later edit.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with settings_write_lock():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def _settings_history_dir() -> Path:
     return SETTINGS_PATH.parent / SETTINGS_HISTORY_DIRNAME
 
@@ -1201,14 +1422,25 @@ def save_settings(data: dict) -> None:
     single lowest choke point where the settings file is actually written,
     so every caller (API PATCH, federation sync, internal code) gets the
     safety net for free.
+
+    Takes the cross-process write lock (settings_write_lock()) around the
+    snapshot + write. This is NOT sufficient on its own -- a caller that read
+    settings BEFORE calling here still races anyone who wrote in between, and
+    must hold the lock across its own read-modify-write window. What locking
+    here buys is that a *blind* overwrite (``config reset`` with no key, which
+    reads nothing) still can't land in the middle of somebody else's window,
+    and that the snapshot written to settings-history/ is of a file nobody is
+    concurrently replacing. Nesting inside a caller's lock is free (see
+    settings_write_lock()'s re-entrancy note).
     """
     merged = copy.deepcopy(DEFAULT_SETTINGS)
     for key in DEFAULT_SETTINGS:
         if key in data:
             merged[key] = data[key]
     merged["_schema_version"] = SCHEMA_VERSION
-    _snapshot_current_settings()
-    _atomic_write_text(SETTINGS_PATH, json.dumps(merged, indent=2) + "\n")
+    with settings_write_lock():
+        _snapshot_current_settings()
+        _atomic_write_text(SETTINGS_PATH, json.dumps(merged, indent=2) + "\n")
 
 
 class DestructiveSettingsWriteRejected(Exception):
@@ -1250,6 +1482,7 @@ class InvalidViewRuleRejected(Exception):
         super().__init__("; ".join(errors))
 
 
+@_under_settings_write_lock
 def patch_settings(
     patch: dict,
     *,
@@ -1257,6 +1490,12 @@ def patch_settings(
     allow_local_keys: frozenset[str] = frozenset(),
 ) -> dict:
     """Merge known keys from *patch* into the current settings, save, and return result.
+
+    The whole call is a read-modify-write and runs under the cross-process
+    settings lock (see ``settings_write_lock``). This is the choke point for
+    ``PATCH /api/settings`` AND for the CLI's ``config set`` / ``config reset
+    <key>``, so it is where a browser write and a terminal write get
+    serialized against each other and against the poll cycle.
 
     Unknown keys in *patch* are silently ignored.
 
@@ -1412,6 +1651,7 @@ def patch_settings(
     return current
 
 
+@_under_settings_write_lock
 def apply_synced_settings(
     incoming_settings: dict,
     incoming_timestamp: float,
@@ -1421,6 +1661,11 @@ def apply_synced_settings(
 
     Only applies keys that are in SYNCABLE_KEYS. Sets settings_updated_at
     to the incoming timestamp (NOT time.time()) to prevent sync loops.
+
+    Like patch_settings(), the whole call is a read-modify-write and runs
+    under the cross-process settings lock (see ``settings_write_lock``) -- a
+    federation sync landing between a CLI write's read and its write would
+    lose one of them exactly like any other concurrent writer.
 
     `_schema_version` is intentionally **never** accepted from the wire.
     Each device speaks for its own schema version; receiving a peer's version
