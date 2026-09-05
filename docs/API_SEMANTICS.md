@@ -607,20 +607,34 @@ logic — duplication across PWA/sidecar/agents is where drift bugs come from.
   worked because a manual file backup happened to exist. Best-effort: a
   snapshot failure is logged and swallowed, never blocks or corrupts the
   real write.
-- **Every settings write is atomic** (`settings._atomic_write_text()`):
+- **Every settings write is atomic** (`settings.atomic_write_text()`):
   uniquely-named temp file in the settings directory itself, `fsync`,
   `os.replace()`, then an `fsync` of the directory — the same
   tmp-then-rename pattern `state.py`/`manifest.py` use. `settings.json` was
-  the last of the four state files still ending in a bare `write_text()`,
-  so an interrupted write (crash, OOM, power cut, full disk) could leave a
-  truncated JSON file, which the next read then treated as "unparseable,
-  use defaults". The temp name is unique per write, unlike `state.py`'s
-  fixed `<target>.tmp`, because `settings.json` has a second writer in a
-  *different process* — the `muxplex` CLI (`settings set`,
-  `session-command add`/`rm`, `reset`) — and two processes sharing one
+  the *first* of the four state files fixed: it had been ending in a bare
+  `write_text()`, so an interrupted write (crash, OOM, power cut, full
+  disk) could leave a truncated JSON file, which the next read then treated
+  as "unparseable, use defaults". The temp name is unique per write, which
+  matters wherever a file has a second writer in a *different process* —
+  `settings.json` has one in the `muxplex` CLI (`settings set`,
+  `session-command add`/`rm`, `reset`) — because two processes sharing one
   staging path would interleave bytes into it and then each atomically
   publish the mixture. Existing file permissions survive the replace (the
   file carries the federation key); a first-ever write lands 0600.
+  This helper is public and shared, not settings-only: `pruning.py` calls
+  it directly (see the `pruning.json` bullet below), and `state.py` /
+  `manifest.py` carry the same pattern with their own durability
+  trade-offs. The other three files were fixed after this one —
+  `sessions.json`/`state.json` were atomic but shared a fixed
+  `<target>.tmp` staging path until they got unique names, and
+  `pruning.json` was still a bare `write_text()` until later still.
+- **`pruning.json` is written the same way** (`pruning.save_pruning_state()`
+  → `settings.atomic_write_text()`). This sidecar holds `first_missed_at`,
+  the per-device stale-key grace clock, and `load_pruning_state()`
+  deliberately returns `{}` on unparseable content — so a truncated write
+  did not merely corrupt the file, it silently restarted the grace period
+  for every session key and changed WHEN real view pins get pruned, then
+  erased its own evidence on the next poll cycle. Never synced to peers.
 - **An unreadable settings file is preserved, never overwritten.**
   `load_settings()` still falls back to `DEFAULT_SETTINGS` — raising would
   take down every endpoint and the CLI over a recoverable data problem —

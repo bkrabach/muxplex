@@ -1116,7 +1116,7 @@ def settings_lock_path() -> Path:
     touching the real config directory. Same rule, same reason, as
     ``ca_cert_path()``.
 
-    A SIDECAR, never settings.json itself: ``_atomic_write_text`` publishes by
+    A SIDECAR, never settings.json itself: ``atomic_write_text`` publishes by
     ``os.replace()``, which swaps in a NEW inode. A lock held on the old inode
     would silently stop excluding anyone the moment the first write landed.
     The lockfile is therefore never written to and **never unlinked** -- an
@@ -1250,39 +1250,61 @@ def _settings_history_dir() -> Path:
     return SETTINGS_PATH.parent / SETTINGS_HISTORY_DIRNAME
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(path: Path, text: str) -> None:
     """Write *text* to *path* so that no reader -- and no crash -- ever sees a
     partially written file.
 
-    tmp-in-the-same-directory + fsync + ``os.replace()``, the pattern
-    ``state.py`` and ``manifest.py`` already use. ``settings.json`` was the one
-    file of the four still ending in a bare ``write_text()``, which meant an
-    interrupted write (crash, OOM, power cut, full disk) left a truncated JSON
-    file that ``load_settings()`` then read as "unparseable, use defaults" --
-    on the reporting host, ~10 views of pins and every server setting silently
-    replaced by defaults, with no error anywhere.
+    tmp-in-the-same-directory + fsync + ``os.replace()``. This is the shared
+    implementation for muxplex's config/state writers, not a settings-only
+    helper: ``pruning.save_pruning_state()`` calls it directly, and
+    ``state.py``/``manifest.py`` follow the same pattern with their own
+    durability trade-offs (see their docstrings). It is public for that reason
+    -- a name that another module imports is not private, and a fifth private
+    copy of this is how the existing implementations would drift apart.
+
+    Where each of the four state files stood, and why this exists:
+
+    * ``settings.json`` (here) -- the first fixed. A bare ``write_text()``
+      meant an interrupted write (crash, OOM, power cut, full disk) left a
+      truncated JSON file that ``load_settings()`` then read as "unparseable,
+      use defaults" -- on the reporting host, ~10 views of pins and every
+      server setting silently replaced by defaults, with no error anywhere.
+    * ``sessions.json`` / ``state.json`` -- already atomic, but staged through
+      a SHARED fixed ``<target>.tmp`` path; muxplex-673 gave them unique
+      staging names (see ``manifest.save_manifest()`` for the measurement).
+    * ``pruning.json`` -- the last, and the reason this docstring no longer
+      claims settings.json was "the one file of the four" still ending in a
+      bare ``write_text()``. That claim outlived its truth by three fixes:
+      ``save_pruning_state()`` was still a bare ``write_text()`` when it was
+      written, and a truncated ``pruning.json`` degrades to ``{}`` -- silently
+      resetting the stale-key grace clock that decides when real view pins get
+      pruned.
 
     The temp file MUST live in *path*'s own directory: ``os.replace()`` is only
     atomic within a filesystem, and a ``/tmp`` staging file fails outright with
     ``EXDEV`` when the config directory is on another mount (an encrypted or
     network-mounted home is the common case).
 
-    Two deliberate differences from ``state.py``/``manifest.py``, both forced by
-    settings.json having writers those files do not have:
+    Two properties worth stating explicitly, both originally forced by
+    settings.json's own writers:
 
     * **A unique temp name, not a fixed ``<target>.tmp``.** The ``muxplex`` CLI
       (``settings set``, ``session-command add``/``rm``, ``reset``) writes
       settings from a SEPARATE process while the server is running. Two
       processes sharing one staging path interleave their bytes into it and
       then each atomically publishes the mixture -- an atomic rename of corrupt
-      content is still corrupt content.
+      content is still corrupt content. Every caller inherits this, so a file
+      that grows a second writer later cannot acquire that bug by omission.
     * **The target's permissions survive the write.** ``os.replace()`` publishes
       the TEMP file's mode, and settings.json carries the federation key (and
       on some hosts TLS material), so silently resetting its mode on every save
       would be a security change nobody asked for. A file that does not exist
       yet has no mode to preserve, so a first-ever write lands 0600 -- matching
       how every other secret-bearing file muxplex creates is treated
-      (``federation_key``, TLS private keys, the ttyd socket).
+      (``federation_key``, TLS private keys, the ttyd socket). A caller whose
+      file holds no secret (``pruning.json``) simply inherits the tighter
+      default on first creation; an operator who widens it afterwards keeps
+      that choice.
 
     The directory is fsynced after the rename: fsyncing the file's contents
     makes the DATA durable, but the rename that publishes it is directory
@@ -1409,7 +1431,7 @@ def _snapshot_current_settings() -> None:
         # Atomic like the live file: these copies are the recovery path an
         # operator reaches for when settings.json is unreadable, so a snapshot
         # that can itself be torn by an interrupted write is worth little.
-        _atomic_write_text(snapshot_path, SETTINGS_PATH.read_text())
+        atomic_write_text(snapshot_path, SETTINGS_PATH.read_text())
         _prune_settings_history(history_dir)
     except Exception:
         _log.warning("settings: failed to write history snapshot", exc_info=True)
@@ -1472,7 +1494,7 @@ def save_settings(data: dict) -> None:
     merged["_schema_version"] = SCHEMA_VERSION
     with settings_write_lock():
         _snapshot_current_settings()
-        _atomic_write_text(SETTINGS_PATH, json.dumps(merged, indent=2) + "\n")
+        atomic_write_text(SETTINGS_PATH, json.dumps(merged, indent=2) + "\n")
 
 
 class DestructiveSettingsWriteRejected(Exception):
