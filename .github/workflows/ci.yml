@@ -279,6 +279,53 @@ jobs:
         working-directory: muxplex/frontend
         run: node --test tests/*.mjs
 
+  lint:
+    # Until this job existed, NO job in this workflow ran ruff -- in either
+    # form. Formatting and lint were enforced exclusively by `make check` on a
+    # contributor's own machine, and `make check` was `check: fmt`, where `fmt`
+    # is the REWRITING form of `ruff format`. So the local command silently
+    # repaired whatever had drifted and reported success, and CI had nothing to
+    # say about it either way. Two files rode main unformatted under a fully
+    # green loop (muxplex/auth.py, itself carrying an explicitly "[not final]"
+    # WIP commit, and muxplex/tests/test_agent_not_configured_contract.py) and
+    # were noticed only because a person happened to run the checking form by
+    # hand. Same shape as the gaps test-frontend and test-client closed: a
+    # check that existed but was in nobody's loop. Filed as muxplex-sxi; the
+    # Makefile's `check` target now gates on `--check` and this job runs the
+    # identical commands, so local green and CI green mean the same thing.
+    #
+    # Pinned to an exact ruff version on purpose. Formatting is a moving
+    # target -- a newer ruff can reformat a file that an older one considered
+    # clean -- so an unpinned `latest` here would turn an upstream release into
+    # a surprise red build on an unrelated PR. Bump this pin deliberately, in
+    # its own commit, together with whatever reformat it implies.
+    #
+    # NOT running pyright here, and that is a stated gap rather than a silent
+    # one: `make check` runs it locally, but pyright is a heavier install
+    # (it fetches its own node runtime) and, unlike ruff, is not currently
+    # pinned anywhere in this repo -- neither is ruff itself for the LOCAL
+    # loop, which resolves both tools from whatever happens to be on the
+    # contributor's PATH rather than from a declared dependency. Closing that
+    # (declare + pin both as dev dependencies, then add pyright here) is filed
+    # separately rather than smuggled into this change, because it touches
+    # pyproject.toml and uv.lock.
+    name: lint (ruff format --check, ruff check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: ruff format --check (verify only -- never rewrites)
+        run: uvx ruff@0.15.5 format --check muxplex/
+
+      - name: ruff check
+        run: uvx ruff@0.15.5 check muxplex/
+
   guard-tmux-kit-pin-source-agreement:
     # HISTORY: this job used to be guard-no-tmux-kit-source-override, and
     # forbade ANY [tool.uv.sources] entry for tmux-kit outright. That guard

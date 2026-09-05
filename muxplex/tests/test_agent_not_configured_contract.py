@@ -50,9 +50,7 @@ from muxplex.main import (
     app,
 )
 
-_CHAT_JS = (
-    pathlib.Path(__file__).parent.parent / "frontend" / "chat.js"
-).read_text()
+_CHAT_JS = (pathlib.Path(__file__).parent.parent / "frontend" / "chat.js").read_text()
 
 
 def _authed_client() -> TestClient:
@@ -91,7 +89,8 @@ def test_chat_completions_503_is_typed_not_configured(_unavailable):
     with, and one discriminator is sufficient.
     """
     resp = _authed_client().post(
-        "/api/agent/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]}
+        "/api/agent/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}]},
     )
     assert resp.status_code == 503
     body = resp.json()
@@ -117,9 +116,7 @@ def test_chat_js_branches_on_the_same_literal_the_server_sends():
 def test_chat_completions_503_body_is_json_not_sse(_unavailable):
     """Unchanged contract, pinned so the typing change above cannot
     accidentally turn the refusal into a stream."""
-    resp = _authed_client().post(
-        "/api/agent/chat/completions", json={"messages": []}
-    )
+    resp = _authed_client().post("/api/agent/chat/completions", json={"messages": []})
     assert resp.headers["content-type"].startswith("application/json")
     json.loads(resp.content)  # parses -- not an SSE frame
 
