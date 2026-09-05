@@ -162,6 +162,7 @@ from muxplex.views import (
     filter_visible,
     normalize_session_keys,
     prune_stale_keys,
+    record_views_change,
     validate_view_rules,
     view_patterns,
 )
@@ -892,8 +893,26 @@ async def _run_poll_cycle() -> None:
             _sessions_for_normalize = [
                 {"name": _n, "sessionKey": f"{_norm_device_id}:{_n}"} for _n in names
             ]
+            # Session NAMES live on every device currently known to us. This
+            # is the evidence normalize_session_keys needs before it may
+            # retire a legacy bare-name entry fleet-wide (muxplex-w6g): a bare
+            # key has no owner, so a name another device is also running may
+            # be ITS pin, and tombstoning it would unpin its live session.
+            # Same reachability gate the prune step below uses.
+            _norm_remote_names: set[str] = set()
+            for _cache_entry in _federation_cache.values():
+                if _cache_entry.get("fail_count", 0) >= _FEDERATION_GRACE_FAILURES:
+                    continue
+                for _remote_sess in _cache_entry.get("sessions") or []:
+                    _remote_name = _remote_sess.get("name")
+                    if _remote_name:
+                        _norm_remote_names.add(_remote_name)
             _norm_before = json.dumps(_norm_settings, sort_keys=True)
-            normalize_session_keys(_norm_settings, _sessions_for_normalize)
+            normalize_session_keys(
+                _norm_settings,
+                _sessions_for_normalize,
+                remote_live_names=_norm_remote_names,
+            )
             _norm_after = json.dumps(_norm_settings, sort_keys=True)
             if _norm_before != _norm_after:
                 save_settings(_norm_settings)
@@ -3151,6 +3170,20 @@ def _migrate_session_name(
     old_key = f"{local_device_id}:{old_name}"
     new_key = f"{local_device_id}:{new_name}"
 
+    # Snapshot the pre-rewrite membership so record_views_change() below can
+    # diff it (muxplex-w6g). Only `name`/`sessions` are read by that diff, so
+    # this is a targeted copy rather than a deepcopy of unrelated view fields.
+    views_before = [
+        {
+            "name": view.get("name"),
+            "sessions": list(view.get("sessions") or [])
+            if isinstance(view.get("sessions"), list)
+            else [],
+        }
+        for view in settings.get("views") or []
+        if isinstance(view, dict)
+    ]
+
     pins_moved = 0
     for view in settings.get("views") or []:
         view_sessions = view.get("sessions")
@@ -3166,6 +3199,28 @@ def _migrate_session_name(
         view["sessions"] = deduped
         pins_moved += 1
     migrated["view_pins"] = pins_moved
+
+    # Record the rewrite as what it is -- one deletion plus one addition -- in
+    # the SAME per-member map the federation merge already reads
+    # (`settings["views_changed_at"]`, muxplex-npg). Without this the removal
+    # of old_key is indistinguishable from "this device never knew about that
+    # pin", so the next sync resurrects it from a peer that has not heard
+    # about the rename, and the view carries a key matching no live session
+    # until prune_stale_keys removes it (24h by default).
+    #
+    # Provably safe to tombstone, unlike a bare legacy name (see
+    # normalize_session_keys' docstring): old_key is `<local_device_id>:<old>`
+    # by construction three lines above. Only THIS device can own that key, so
+    # retiring it states a fact about our own keyspace rather than inferring
+    # something about another device's -- `dev-b:<old>` is a different session
+    # and is never touched here.
+    #
+    # record_views_change() DIFFS; it never back-fills. A rename of a session
+    # nobody pinned moves no pins and therefore stamps nothing.
+    if pins_moved:
+        settings["views_changed_at"] = record_views_change(
+            views_before, settings.get("views"), settings.get("views_changed_at")
+        )
 
     hidden = settings.get("hidden_sessions")
     if isinstance(hidden, list) and old_key in hidden:
