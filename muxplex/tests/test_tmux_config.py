@@ -37,7 +37,7 @@ pytestmark = pytest.mark.usefixtures("sandbox")
 HAS_TMUX = shutil.which("tmux") is not None
 needs_tmux = pytest.mark.skipif(not HAS_TMUX, reason="tmux not installed")
 _HYPERLINK_VERSION_RE = re.compile(
-    r"^(3\.([4-9]|[1-9][0-9]+)|[4-9][0-9]*\.[0-9]+)([a-z].*)?$"
+    r"^(3\.([4-9]|[1-9][0-9]+)|([4-9]|[1-9][0-9]+)\.[0-9]+)([a-z].*)?$"
 )
 
 
@@ -57,6 +57,7 @@ def _has_tmux_34() -> bool:
         ("3.4a", True),
         ("3.10", True),
         ("4.0", True),
+        ("10.0", True),
     ],
 )
 def test_osc8_version_gate_is_numeric_not_lexical(
@@ -64,6 +65,43 @@ def test_osc8_version_gate_is_numeric_not_lexical(
 ) -> None:
     """Keep the tmux 3.0-compatible config gate correct across two-digit minors."""
     assert (_HYPERLINK_VERSION_RE.fullmatch(version) is not None) is supported
+
+
+@needs_tmux
+def test_osc8_version_predicate_is_valid_tmux_format(sandbox: Path) -> None:
+    """tmux itself must parse and evaluate the POSIX ERE gate."""
+    socket = f"muxplex-osc8-format-{uuid.uuid4().hex[:8]}"
+    env = {**os.environ, "HOME": str(sandbox)}
+    env.pop("TMUX", None)
+    env.pop("XDG_CONFIG_HOME", None)
+    predicate = (
+        "#{m/r:^(3\\.([4-9]|[1-9][0-9]+)|"
+        "([4-9]|[1-9][0-9]+)\\.[0-9]+)([a-z].*)?$,#{version}}"
+    )
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "new-session", "-d"],
+            check=True,
+            env=env,
+            timeout=10,
+        )
+        result = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", predicate],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        assert result.stdout.strip() == ("1" if _has_tmux_34() else "0")
+    finally:
+        subprocess.run(
+            ["tmux", "-L", socket, "kill-server"],
+            capture_output=True,
+            env=env,
+            check=False,
+            timeout=10,
+        )
 
 
 needs_tmux_34 = pytest.mark.skipif(
@@ -287,7 +325,7 @@ def test_install_refreshes_existing_base_fragment_with_osc8_feature(
     )
     assert (
         "if-shell -F "
-        "'#{m/r:^(3\\.([4-9]|[1-9][0-9]+)|[4-9][0-9]*\\.[0-9]+)([a-z].*)?$,#{version}}' "
+        "'#{m/r:^(3\\.([4-9]|[1-9][0-9]+)|([4-9]|[1-9][0-9]+)\\.[0-9]+)([a-z].*)?$,#{version}}' "
         "'set -as terminal-features \",xterm*:hyperlinks\"'"
     ) in base.read_text()
 
