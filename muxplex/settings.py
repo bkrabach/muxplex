@@ -169,6 +169,15 @@ DEFAULT_SETTINGS: dict = {
     "tls_cert": "",
     "tls_key": "",
     "fontSize": 14,
+    # Terminal font family -- a closed vocabulary (FONT_FAMILIES) selecting
+    # which Nerd Font the browser-side xterm.js terminal renders. The browser
+    # loads the font itself via @font-face from frontend/fonts/ (served by the
+    # static mount), so this key only carries the short selector name; the
+    # frontend maps it to a CSS font stack (see terminal.js's
+    # NERD_FONT_STACKS). "default" = the original non-Nerd-Font stack.
+    # Normalized at the load_settings() boundary (see normalize_font_family())
+    # so a bad value on disk can never reach the terminal renderer.
+    "fontFamily": "FiraCode",
     # Font size (px) of the tile/sidebar preview text -- independent of
     # `fontSize` above, which only ever drove the live xterm.js terminal.
     # Feeds --preview-font-size (frontend/app.js's applyDisplaySettings()),
@@ -556,6 +565,27 @@ def normalize_preview_zoom(value: object) -> int:
     return _coerce_clamped_int(value, 50, 200, DEFAULT_SETTINGS["previewZoom"])
 
 
+# Closed vocabulary for the fontFamily setting (see its DEFAULT_SETTINGS
+# comment). "default" preserves the original non-Nerd-Font stack; the rest
+# name a Nerd Font shipped in frontend/fonts/ and declared via @font-face.
+# This is a closed set (not free text) so a hand-edited settings.json can
+# never point the terminal at an arbitrary/unavailable font family.
+FONT_FAMILIES: frozenset[str] = frozenset(
+    {"default", "FiraCode", "JetBrainsMono", "Meslo", "Noto"}
+)
+
+
+def normalize_font_family(value: object) -> str:
+    """Coerce ``fontFamily`` into the closed vocabulary ``FONT_FAMILIES``.
+
+    Same load-time boundary as ``normalize_preview_font_size``: a malformed
+    value on disk (wrong type, a retired name, hand-edited nonsense) falls back
+    to ``DEFAULT_SETTINGS["fontFamily"]`` rather than reaching xterm.js and
+    rendering the terminal in an unavailable family.
+    """
+    return value if value in FONT_FAMILIES else DEFAULT_SETTINGS["fontFamily"]
+
+
 # Closed vocabulary for the deviceLabelPlacement setting (see its
 # DEFAULT_SETTINGS comment and reconcile_device_label() below).
 DEVICE_LABEL_PLACEMENTS: frozenset[str] = frozenset({"titlebar", "corner", "off"})
@@ -584,6 +614,7 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
     {
         # Display preferences
         "fontSize",
+        "fontFamily",
         "previewFontSize",
         "previewZoom",
         "hoverPreviewDelay",
@@ -792,6 +823,7 @@ def load_settings() -> dict:
     # range, hand-edited nonsense) can never reach the renderer.
     result["previewFontSize"] = normalize_preview_font_size(result["previewFontSize"])
     result["previewZoom"] = normalize_preview_zoom(result["previewZoom"])
+    result["fontFamily"] = normalize_font_family(result["fontFamily"])
 
     # One-time migration: an existing settings.json predating deviceLabelPlacement
     # carries only showDeviceBadges. Derive the placement from it so the mirror

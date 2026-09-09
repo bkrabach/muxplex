@@ -37,6 +37,36 @@ let _termOwnDeviceId = '';
 // unrelated future conflict.
 let _pendingTakeover = false;
 
+// ─── Terminal font stacks ───────────────────────────────────────────────────
+// Maps the `fontFamily` display setting (a short closed-vocab selector set in
+// settings.py FONT_FAMILIES and shipped from the server) to the CSS
+// font-family stack xterm.js renders. The Nerd Font families are declared via
+// @font-face in style.css and shipped as TTFs in frontend/fonts/ (served by
+// the static mount, so the browser loads them client-side -- a font installed
+// on the server host is NOT visible to the browser). "default" preserves the
+// original non-Nerd-Font stack. Each Nerd Font stack falls back to the
+// original monospace stack so the terminal stays legible before the webfont
+// finishes loading. The TTFs are the NerdFontMono variants (single-cell icon
+// width) so powerline/box glyphs never drift the cell grid.
+const NERD_FONT_STACKS = {
+  default: "'SF Mono', 'Fira Code', Consolas, monospace",
+  FiraCode: "'FiraCode Nerd Font', 'SF Mono', 'Fira Code', Consolas, monospace",
+  JetBrainsMono: "'JetBrainsMono Nerd Font', 'SF Mono', 'Fira Code', Consolas, monospace",
+  Meslo: "'Meslo Nerd Font', 'SF Mono', 'Fira Code', Consolas, monospace",
+  Noto: "'Noto Sans Mono Nerd Font', 'SF Mono', 'Fira Code', Consolas, monospace",
+};
+
+/**
+ * Resolve a `fontFamily` selector value to a CSS font-family stack.
+ * Unknown values fall back to the "default" stack so a bad value can never
+ * hand xterm an empty/unavailable family.
+ * @param {string} [family] - selector key from getDisplaySettings().fontFamily
+ * @returns {string} CSS font-family stack
+ */
+function _resolveFontStack(family) {
+  return NERD_FONT_STACKS[family] || NERD_FONT_STACKS.default;
+}
+
 // ─── Module-level encoding helpers ──────────────────────────────────────────
 // Hoisted here so the clipboard key handler (in openTerminal) can also use them.
 const _encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
@@ -741,7 +771,7 @@ function createTerminal(fontSize) {
   _term = new window.Terminal({
     cursorBlink: true,
     fontSize: effectiveFontSize,
-    fontFamily: "'SF Mono', 'Fira Code', Consolas, monospace",
+    fontFamily: _resolveFontStack(typeof getDisplaySettings === 'function' ? getDisplaySettings().fontFamily : 'default'),
     theme: {
       background: '#000000',
       foreground: '#c9d1d9',
@@ -1181,6 +1211,31 @@ function setTerminalFontSize(size) {
 }
 
 window._setTerminalFontSize = setTerminalFontSize;
+
+// ---------------------------------------------------------------------------
+// setTerminalFontFamily — live font-family update without reconnecting
+// ---------------------------------------------------------------------------
+
+/**
+ * Update the terminal font family at runtime without reconnecting.
+ * Sets _term.options.fontFamily, forces a full re-render so the DOM renderer
+ * re-applies the new font, and refits so cell metrics (which xterm measures
+ * from the fontFamily option, NOT from CSS) recalculate. No-op when no
+ * terminal is open; the next openTerminal() picks up the new family anyway.
+ * @param {string} family - selector key from getDisplaySettings().fontFamily
+ */
+function setTerminalFontFamily(family) {
+  if (!_term) return;
+  _term.options.fontFamily = _resolveFontStack(family);
+  // Force a full re-render so the DOM renderer repaints with the new font
+  // before fit() re-measures cell dimensions.
+  try { _term.refresh(0, (_term.rows || 1) - 1); } catch (_) {}
+  if (_fitAddon) {
+    try { _fitAddon.fit(); } catch (_) {}
+  }
+}
+
+window._setTerminalFontFamily = setTerminalFontFamily;
 
 // ---------------------------------------------------------------------------
 // Mobile touch scroll — rAF-batched WheelEvent dispatch

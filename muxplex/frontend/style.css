@@ -1,5 +1,46 @@
 /* Design tokens, dark base theme, typography */
 
+/*
+ * Terminal Nerd Fonts -- @font-face declarations.
+ *
+ * xterm.js measures cell metrics from the `fontFamily` Terminal option, not
+ * from CSS, so the font must be available to the browser (client-side). These
+ * TTFs ship in frontend/fonts/ and are served by the static mount at /fonts/.
+ * Only the font the terminal actually uses is fetched (browsers do not load
+ * an @font-face family until it is referenced), so the unselected fonts cost
+ * nothing. The TTFs are the NerdFontMono variants (single-cell icon width).
+ * font-display: swap keeps the terminal legible in the fallback stack while a
+ * webfont loads.
+ */
+@font-face {
+  font-family: "FiraCode Nerd Font";
+  src: url("/fonts/FiraCodeNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrainsMono Nerd Font";
+  src: url("/fonts/JetBrainsMonoNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Meslo Nerd Font";
+  src: url("/fonts/MesloNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Noto Sans Mono Nerd Font";
+  src: url("/fonts/NotoSansMonoNerdFont-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* Background palette */
   --bg: #0D1117;           /* --color-bg-base */

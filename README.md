@@ -366,6 +366,7 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `tls_cert` † | `""` | Path to TLS certificate file (empty = HTTP) |
 | `tls_key` † | `""` | Path to TLS private key file (empty = HTTP) |
 | `fontSize` | `14` | Terminal font size (px) |
+| `fontFamily` | `"FiraCode"` | Terminal font family: `default` (system mono), `FiraCode`, `JetBrainsMono`, `Meslo`, `Noto`. The Nerd Font TTFs ship in `frontend/fonts/` and load client-side via `@font-face`; a font installed on the server host is not visible to the browser. |
 | `previewFontSize` | `11` | Tile/sidebar preview text font size (px), `8`-`24`. Independent of `fontSize`, which drives only the live terminal. |
 | `previewZoom` | `100` | Tile size / grid minimum column width scale (%), `50`-`200`. `100` reproduces the default sizing. |
 | `hoverPreviewDelay` | `1500` | Hover preview popup delay (ms). `0` = Off. The sole control for the popover (as of v0.47.0; folds in the retired `showHoverPreview` checkbox -- see below) |

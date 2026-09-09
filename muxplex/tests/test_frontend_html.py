@@ -645,6 +645,24 @@ def test_html_settings_font_size_options() -> None:
     )
 
 
+def test_html_settings_font_family_options() -> None:
+    """setting-font-family select must offer the Nerd Font vocabulary with FiraCode selected."""
+    soup = _SOUP
+    select = soup.find(id="setting-font-family")
+    assert select is not None, "Missing #setting-font-family"
+    assert select.name == "select", (
+        f"#setting-font-family must be a <select>, got: {select.name}"
+    )
+    values = [o.get("value") for o in select.find_all("option")]
+    for v in ("default", "FiraCode", "JetBrainsMono", "Meslo", "Noto"):
+        assert v in values, f"#setting-font-family missing option value='{v}'"
+    selected_opt = select.find("option", attrs={"selected": True})
+    assert selected_opt is not None, "setting-font-family must have a selected option"
+    assert selected_opt.get("value") == "FiraCode", (
+        f"setting-font-family default must be FiraCode, got: {selected_opt.get('value')}"
+    )
+
+
 def test_html_settings_hover_delay_options() -> None:
     """setting-hover-delay select must have Off (0), 1000, 1500 (selected), 2000, 3000."""
     soup = _SOUP
