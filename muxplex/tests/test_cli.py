@@ -353,6 +353,26 @@ def test_doctor_shows_platform(capsys):
     assert "Platform" in out
 
 
+def test_doctor_diagnoses_broken_pam_import(capsys, monkeypatch):
+    """doctor must surface a PAM import failure (e.g. missing six), not swallow it.
+
+    Regression guard for the "10-minute chase": pam_available()/pam_probe()
+    used to swallow python-pam's ImportError into a plain False, so a missing
+    transitive `six` read as a benign "no PAM -- will auto-generate a password"
+    fallback instead of a broken-install diagnostic.
+    """
+    from muxplex.cli import doctor
+
+    monkeypatch.setattr(
+        "muxplex.cli.pam_probe", lambda: (False, "No module named 'six'")
+    )
+    doctor()
+    out = capsys.readouterr().out
+    assert "python-pam failed to import" in out
+    assert "six" in out
+    assert "uv tool install --reinstall --force muxplex" in out
+
+
 def test_doctor_subcommand_registered():
     """doctor must be a valid subcommand in main() argparse."""
     import io

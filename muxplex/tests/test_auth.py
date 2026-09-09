@@ -216,6 +216,32 @@ def test_pam_available_returns_false_on_import_error(monkeypatch):
     assert pam_available() is False
 
 
+def test_pam_probe_surfaces_transitive_import_error(monkeypatch):
+    """pam_probe() returns the ImportError message so doctor can show the cause.
+
+    python-pam's undeclared transitive dep `six` missing is the real-world case
+    this exists for: `import pam` raises `No module named 'six'`, and the old
+    bool-only `pam_available()` swallowed it into a silent False.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "pam":
+            raise ImportError("No module named 'six'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+    from muxplex.auth import pam_available, pam_probe
+
+    available, error = pam_probe()
+    assert available is False
+    assert error == "No module named 'six'"
+    # pam_available() stays a plain bool over the same probe
+    assert pam_available() is False
+
+
 def test_authenticate_pam_success(monkeypatch):
     """authenticate_pam() returns True when PAM succeeds for the running user."""
     from muxplex.auth import authenticate_pam

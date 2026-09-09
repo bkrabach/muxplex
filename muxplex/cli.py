@@ -16,6 +16,7 @@ from muxplex.auth import (
     get_secret_path,
     load_password,
     pam_available,
+    pam_probe,
 )
 
 # Module-level path constants (overridable in tests via monkeypatch)
@@ -2059,7 +2060,9 @@ def doctor() -> None:
 
     # Auth status
     pw_path = get_password_path()
-    if pam_available():
+    pam_ok, pam_err = pam_probe()
+    auth_mode = cfg.get("auth", "pam")
+    if pam_ok:
         import pwd
 
         username = pwd.getpwuid(os.getuid()).pw_name
@@ -2070,6 +2073,19 @@ def doctor() -> None:
         print(f"  {ok_mark} Auth: password (env var)")
     else:
         print(f"  {warn_mark} Auth: no PAM, no password — will auto-generate on serve")
+    # PAM is the configured/default mode but its import failed -- surface the
+    # cause instead of letting the fallback above read as a benign config
+    # choice. This is the difference between "I chose password mode" and "PAM
+    # is what I expect but its import is broken" (e.g. python-pam's undeclared
+    # transitive dep `six` missing on a stale install). The latter is a broken
+    # install, not a preference -- without this line it is a 10-minute chase.
+    if not pam_ok and pam_err and auth_mode == "pam":
+        print(
+            f"  {fail_mark} Auth: PAM is the configured mode but python-pam"
+            f" failed to import ({pam_err}). This is usually a missing"
+            f" transitive dependency (e.g. six). Reinstall with"
+            f" `uv tool install --reinstall --force muxplex` or `muxplex upgrade`."
+        )
 
     # tmux sessions (if tmux is available)
     if tmux_path:
