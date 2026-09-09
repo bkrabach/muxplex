@@ -33,6 +33,8 @@ function loadTerminal() {
   let lastWsInstance = null;
   let capturedOscHandler = null;
   let clipboardWrites = [];
+  let terminalOptions = null;
+  let webLinksCallback = null;
 
   let capturedWsUrl = null;
   let onDataCallCount = 0;
@@ -131,9 +133,17 @@ function loadTerminal() {
     addEventListener: () => {},
     location: { href: '' },
     innerWidth: 1024,
-    Terminal: function Terminal() { return mockTerm; },
+    Terminal: function Terminal(options) {
+      terminalOptions = options;
+      return mockTerm;
+    },
     FitAddon: {
       FitAddon: function FitAddon() { return { fit: () => { fitCallCount++; } }; },
+    },
+    WebLinksAddon: {
+      WebLinksAddon: function WebLinksAddon(callback) {
+        webLinksCallback = callback;
+      },
     },
     _openTerminal: undefined,
     _closeTerminal: undefined,
@@ -190,6 +200,9 @@ function loadTerminal() {
     get termWriteMessages() { return termWriteMessages; },
     get focusCallCount() { return focusCallCount; },
     get clipboardWrites() { return clipboardWrites; },
+    get terminalOptions() { return terminalOptions; },
+    get webLinksCallback() { return webLinksCallback; },
+    window: globalThis.window,
     wsConstructedCount() { return wsConstructedCount; },
     overlayVisible() { return !overlayHidden; },
     overlayText() { return overlayText; },
@@ -1435,18 +1448,6 @@ test('terminal.js registers OSC 52 handler for tmux clipboard bridge', () => {
   );
 });
 
-// --- Clickable URLs via xterm-addon-web-links ---
-
-test('terminal.js loads xterm-addon-web-links for clickable URLs', () => {
-  const source = fs.readFileSync(new URL('../terminal.js', import.meta.url), 'utf8');
-  assert.ok(source.includes('WebLinksAddon'), 'must reference WebLinksAddon');
-  assert.ok(
-    source.includes('ctrlKey') || source.includes('metaKey'),
-    'must check modifier key for link clicks',
-  );
-  assert.ok(source.includes('window.open'), 'must open URLs in new tab');
-});
-
 // --- Search addon (xterm-addon-search) ---
 
 test('terminal.js loads xterm-addon-search', () => {
@@ -1668,80 +1669,79 @@ test('terminal.js createTerminal does not read fontSize from localStorage', () =
 });
 
 test('openTerminal uses passed fontSize to configure xterm.js Terminal constructor', () => {
-  // Verify openTerminal forwards fontSize parameter to createTerminal.
-  const modulePath = join(__dirname, '..', 'terminal.js');
-  delete require.cache[require.resolve(modulePath)];
+  const t = loadTerminal();
+  const originalSetTimeout = globalThis.setTimeout;
+  try {
+    globalThis.setTimeout = () => 0;
+    t.openTerminal('session', '', 20);
 
-  let capturedTerminalOptions = null;
-  const mockTerm = {
-    cols: 80, rows: 24,
-    open: () => {},
-    onData: () => {},
-    onResize: () => {},
-    loadAddon: () => {},
-    dispose: () => {},
-    write: () => {},
-    focus: () => {},
-    attachCustomKeyEventHandler: () => {},
-    getSelection: () => '',
-    onSelectionChange: () => {},
-    parser: { registerOscHandler: () => {} },
-    options: { fontSize: 14 },
+    assert.ok(t.terminalOptions, 'Terminal constructor must have been called');
+    assert.strictEqual(
+      t.terminalOptions.fontSize, 20,
+      'openTerminal must pass the fontSize argument to the xterm.js Terminal constructor',
+    );
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test('plain-click OSC 8 labels and visible URLs share safe HTTP(S)-only activation', () => {
+  const t = loadTerminal();
+  const openedWindows = [];
+  const originalOpen = t.window.open;
+  const originalSetTimeout = globalThis.setTimeout;
+  t.window.open = (...args) => {
+    const child = { opener: 'source-window', location: { href: '' } };
+    openedWindows.push({ args, child });
+    return child;
   };
 
-  globalThis.WebSocket = class MockWS {
-    constructor() { this.readyState = 1; this.binaryType = ''; }
-    addEventListener() {}
-    close() {}
-    send() {}
-  };
-  globalThis.WebSocket.OPEN = 1;
-  globalThis.location = { protocol: 'http:', host: 'localhost' };
-  globalThis.document = {
-    getElementById: (id) => {
-      if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
-      if (id === 'reconnect-overlay') return { classList: { add: () => {}, remove: () => {} } };
-      if (id === 'reconnect-overlay-text') return { textContent: '' };
-      if (id === 'reconnect-overlay-takeover-btn') return { classList: { add: () => {}, remove: () => {} }, onclick: null };
-      return null;
-    },
-    querySelector: () => null,
-    querySelectorAll: () => [],
-    addEventListener: () => {},
-    createElement: () => ({ style: {}, classList: { add: () => {}, remove: () => {} } }),
-  };
-  globalThis.window = {
-    addEventListener: () => {},
-    location: { href: '' },
-    innerWidth: 1024,
-    Terminal: function Terminal(options) {
-      capturedTerminalOptions = options;
-      return mockTerm;
-    },
-    FitAddon: { FitAddon: function FitAddon() { return { fit: () => {} }; } },
-  };
+  try {
+    globalThis.setTimeout = () => 0;
+    t.openTerminal('session');
 
-  const origSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (_fn, _ms) => 0;
+    assert.ok(t.terminalOptions?.linkHandler,
+      'Terminal constructor must receive a linkHandler for OSC 8 labels');
+    assert.strictEqual(typeof t.terminalOptions.linkHandler.activate, 'function',
+      'OSC 8 linkHandler must provide an activation callback');
+    assert.strictEqual(t.terminalOptions.linkHandler.allowNonHttpProtocols, undefined,
+      'the OSC 8 link handler must retain xterm\'s default non-HTTP protocol rejection');
+    assert.strictEqual(typeof t.webLinksCallback, 'function',
+      'WebLinksAddon must receive a callback for visible literal URLs');
 
-  require(modulePath);
+    // Neither callback is given Ctrl/Cmd modifier state: both must plain-click.
+    t.terminalOptions.linkHandler.activate({}, 'https://example.com/markdown-label', {});
+    t.webLinksCallback({}, 'http://example.test/visible-url');
 
-  globalThis.setTimeout = origSetTimeout;
+    assert.strictEqual(openedWindows.length, 2,
+      'both OSC 8 labels and visible URLs must activate HTTP(S) links on plain click');
+    assert.deepStrictEqual(openedWindows.map(({ args }) => args),
+      [['', '_blank'], ['', '_blank']],
+      'each link must first open a blank window, never navigate directly to terminal output');
+    assert.deepStrictEqual(openedWindows.map(({ child }) => child.opener), [null, null],
+      'each activated link must clear the opened window opener');
+    assert.deepStrictEqual(openedWindows.map(({ child }) => child.location.href),
+      ['https://example.com/markdown-label', 'http://example.test/visible-url'],
+      'each validated link must navigate the isolated window to its parsed URL');
 
-  const openTerminal = globalThis.window._openTerminal;
-
-  const origST2 = globalThis.setTimeout;
-  globalThis.setTimeout = (_fn, _ms) => 0;
-
-  openTerminal('session', '', 20);
-
-  globalThis.setTimeout = origST2;
-
-  assert.ok(capturedTerminalOptions !== null, 'Terminal constructor must have been called');
-  assert.strictEqual(
-    capturedTerminalOptions.fontSize, 20,
-    'openTerminal must pass the fontSize argument to the xterm.js Terminal constructor',
-  );
+    const blockedUris = [
+      'javascript:alert(1)',
+      'file:///etc/passwd',
+      'data:text/html,owned',
+      'ftp://example.com/file',
+      'custom-scheme:value',
+      'not a URL',
+    ];
+    for (const uri of blockedUris) {
+      t.terminalOptions.linkHandler.activate({}, uri, {});
+      t.webLinksCallback({}, uri);
+    }
+    assert.strictEqual(openedWindows.length, 2,
+      'both callbacks must reject malformed and non-HTTP(S) terminal URIs');
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    t.window.open = originalOpen;
+  }
 });
 
 // ─── §0/§7 guard: per-session-ttyd session-desync conflict (formerly the ───
