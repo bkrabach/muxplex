@@ -474,6 +474,21 @@ parses the real `<script src=...>` tags out of `index.html` (excluding
 asserting none throws a `SyntaxError`. Any new frontend script is
 automatically covered the moment it's added to `index.html`.
 
+## Terminal links: plain-click activation has one security boundary
+
+Both OSC 8 Markdown-style labels (`Terminal`'s `linkHandler`) and visible
+literal URLs (`xterm-addon-web-links`) are activated by plain click through
+`_termActivateExternalLink()` in `terminal.js`. Terminal output is untrusted:
+that helper must parse the URI and accept exactly `http:` and `https:` before
+opening it. Do not rely on xterm's OSC 8 provider filtering as the boundary,
+and do not enable `allowNonHttpProtocols`.
+
+The helper opens a blank window, clears `opener`, then assigns the validated
+URL. Do not replace that flow with direct `window.open(uri, '_blank')`:
+terminal-controlled pages must not receive an opener. Plain-click
+activation applies only to detected links; ordinary terminal text must remain
+selectable.
+
 ## `attachCustomKeyEventHandler`: `return false` does NOT stop the browser
 
 xterm.js's custom key handler returning `false` stops **xterm's own** key

@@ -55,6 +55,29 @@ function _encodePayload(typeChar, str) {
   return payload;
 }
 
+// Both xterm's OSC 8 link handler and xterm-addon-web-links receive terminal
+// output as untrusted input. Keep their activation path shared so a security
+// fix cannot silently apply to only Markdown labels or only visible URLs.
+function _termActivateExternalLink(uri) {
+  var parsed;
+  try {
+    parsed = new URL(uri);
+  } catch (_) {
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return;
+  }
+
+  // Do not navigate a newly opened window directly to untrusted terminal
+  // output: clear its opener before assigning its destination.
+  var linkWindow = window.open('', '_blank');
+  if (linkWindow) {
+    linkWindow.opener = null;
+    linkWindow.location.href = parsed.href;
+  }
+}
+
 // ─── Clipboard helpers ───────────────────────────────────────────────────────
 // Ctrl+Shift+C: copy terminal selection to system clipboard
 // Ctrl+Shift+V: handled natively by xterm.js (browser paste event → xterm → WebSocket)
@@ -749,6 +772,14 @@ function createTerminal(fontSize) {
     },
     scrollback: mobile ? 500 : 5000,
     allowProposedApi: true,
+    // OSC 8 Markdown-style labels activate on a plain click. xterm keeps its
+    // default HTTP(S)-only provider filtering; _termActivateExternalLink
+    // validates again because the URI originated in terminal output.
+    linkHandler: {
+      activate: function(_event, uri) {
+        _termActivateExternalLink(uri);
+      },
+    },
   });
 
   // Unicode 11 width tables — MUST be loaded before any data is written so the
@@ -787,15 +818,13 @@ function createTerminal(fontSize) {
     };
   }
 
-  // Clickable URLs — Ctrl+Click (Windows/Linux) or Cmd+Click (macOS) opens in new tab.
-  // xterm-addon-web-links auto-detects URLs and adds hover underlines.
-  // Plain click is preserved for normal terminal text selection.
+  // xterm-addon-web-links auto-detects visible literal URLs and adds hover
+  // underlines. Like OSC 8 labels, a plain click opens HTTP(S) URLs; normal
+  // terminal text remains available for selection.
   var WebLinksAddon = window.WebLinksAddon && window.WebLinksAddon.WebLinksAddon;
   if (WebLinksAddon) {
-    _term.loadAddon(new WebLinksAddon(function(event, uri) {
-      if (event.ctrlKey || event.metaKey) {
-        window.open(uri, '_blank');
-      }
+    _term.loadAddon(new WebLinksAddon(function(_event, uri) {
+      _termActivateExternalLink(uri);
     }));
   }
 

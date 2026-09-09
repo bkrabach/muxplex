@@ -25,7 +25,7 @@
 - **Mouse select auto-copy** — selecting text copies to system clipboard on release
 - **OSC 52 tmux clipboard bridge** — tmux copy mode selections go to system clipboard
 - **Search** — Ctrl+F opens a search bar to find text in terminal scrollback (xterm-addon-search)
-- **Clickable URLs and Markdown labels** — Ctrl+Click (Cmd+Click on macOS) opens detected URLs. OSC 8 Markdown-style labels support xterm's native plain-click destination confirmation for HTTP(S) links, opening in an isolated new tab.
+- **Clickable URLs and Markdown labels** — Plain-click visible HTTP(S) URLs and OSC 8 Markdown-style labels to open them directly in an isolated new tab; other terminal text remains selectable.
 - **Inline image rendering** — Sixel and iTerm2 graphic protocols for tools like yazi file manager (xterm-addon-image)
 - **Sidebar session switcher** — quick-switch between sessions with live previews
 
@@ -450,7 +450,7 @@ Two things that make a good edit look like a no-op:
 | Cmd+V / Ctrl+Shift+V | Paste from system clipboard (native browser paste) |
 | Ctrl+F | Open terminal search bar |
 | Enter / Shift+Enter | Next / previous search match |
-| Ctrl+Click (Cmd+Click) | Open URL in new tab |
+| Click an HTTP(S) URL or Markdown label | Open it in a new tab |
 | `,` (comma) | Open settings |
 | Escape | Close settings / return to dashboard |
 
