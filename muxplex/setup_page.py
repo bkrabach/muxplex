@@ -104,7 +104,11 @@ _INSTRUCTIONS = {
             <strong>Settings &rarr; General &rarr; About &rarr; Certificate
             Trust Settings</strong>, and toggle the muxplex CA to
             <strong>ON</strong> (full trust).</li>
-        <li>Reload this page in your browser.</li>
+        <li><strong>Fully close and reopen your browser</strong> (not just
+            reload the page) &mdash; swipe it away in the App Switcher, or
+            confirm it isn't still running in the background, then relaunch
+            and come back here. You should now see a padlock instead of a
+            warning shield.</li>
       </ol>
     """,
     "macos": """
@@ -115,7 +119,12 @@ _INSTRUCTIONS = {
         <li>Find "muxplex" in the list, double-click it, expand
             <strong>Trust</strong>, and set <strong>When using this
             certificate</strong> to <strong>Always Trust</strong>.</li>
-        <li>Enter your password if prompted, then reload this page.</li>
+        <li>Enter your password if prompted. Then <strong>fully quit and
+            reopen your browser</strong> (not just reload the page)
+            &mdash; quit it completely (Cmd+Q, not just closing the
+            window), or confirm it isn't still running in the Dock, then
+            relaunch and come back here. You should now see a padlock
+            instead of a warning shield.</li>
       </ol>
     """,
     "windows": """
@@ -127,7 +136,11 @@ _INSTRUCTIONS = {
             <strong>Current User</strong>, then <strong>Place all
             certificates in the following store</strong> &rarr;
             <strong>Trusted Root Certification Authorities</strong>.</li>
-        <li>Confirm the security warning, then reload this page.</li>
+        <li>Confirm the security warning. Then <strong>fully close and
+            reopen your browser</strong> (not just reload the page)
+            &mdash; close all windows and confirm it isn't still running in
+            the system tray, then relaunch and come back here. You should
+            now see a padlock instead of a warning shield.</li>
       </ol>
     """,
 }
