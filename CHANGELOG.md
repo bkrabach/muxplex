@@ -1,3 +1,14 @@
+## v0.58.4 (2026-09-09)
+
+**Terminal links now open safe HTTP(S) destinations directly on plain click.**
+
+### Fixed
+
+- **Terminal links:** OSC 8 Markdown-style labels and visible HTTP(S) URLs
+  share the same direct plain-click behavior without xterm's native
+  destination warning. Malformed and non-HTTP(S) protocols are rejected, and
+  accepted destinations open in an isolated window with no opener.
+
 ## v0.58.3 (2026-09-09)
 
 **Markdown-style OSC 8 hyperlinks now survive live muxplex terminals with safe
