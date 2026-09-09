@@ -1,3 +1,25 @@
+## v0.58.3 (2026-09-09)
+
+**Markdown-style OSC 8 hyperlinks now survive live muxplex terminals with safe
+HTTP(S) activation.**
+
+### Added
+
+- **Live terminals:** preserve OSC 8 URI and label sequences from tmux through
+  the attached terminal, including after detach and re-attach redraw.
+- **Markdown labels:** HTTP(S) links use xterm's native plain-click destination
+  confirmation before opening in an isolated new tab; unsupported schemes are
+  ignored.
+
+### Changed
+
+- **tmux compatibility:** enable the `hyperlinks` terminal feature only on
+  tmux 3.4 and newer, with a numeric version gate that handles versions such
+  as `3.4a` and `3.10` correctly. Older tmux versions do not evaluate the
+  unknown feature.
+- **Existing installations:** run `muxplex tmux install` and reopen the
+  terminal after upgrading so the managed tmux fragments are refreshed.
+
 ## v0.58.2 (2026-09-05)
 
 **Session creation now reports the session tmux actually created, stays visible in the
