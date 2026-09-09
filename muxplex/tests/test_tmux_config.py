@@ -14,10 +14,18 @@ still runs on a machine without it.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import os
+import pty
 import re
+import select
+import shlex
 import shutil
 import subprocess
+import tempfile
+import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -28,6 +36,78 @@ pytestmark = pytest.mark.usefixtures("sandbox")
 
 HAS_TMUX = shutil.which("tmux") is not None
 needs_tmux = pytest.mark.skipif(not HAS_TMUX, reason="tmux not installed")
+_HYPERLINK_VERSION_RE = re.compile(
+    r"^(3\.([4-9]|[1-9][0-9]+)|([4-9]|[1-9][0-9]+)\.[0-9]+)([a-z].*)?$"
+)
+
+
+def _has_tmux_34() -> bool:
+    version = tc.tmux_version()
+    return version is not None and (
+        version[0] > 3 or (version[0] == 3 and version[1] >= 4)
+    )
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ("3.0", False),
+        ("3.3", False),
+        ("3.4", True),
+        ("3.4a", True),
+        ("3.10", True),
+        ("4.0", True),
+        ("10.0", True),
+    ],
+)
+def test_osc8_version_gate_is_numeric_not_lexical(
+    version: str, supported: bool
+) -> None:
+    """Keep the tmux 3.0-compatible config gate correct across two-digit minors."""
+    assert (_HYPERLINK_VERSION_RE.fullmatch(version) is not None) is supported
+
+
+@needs_tmux
+def test_osc8_version_predicate_is_valid_tmux_format(sandbox: Path) -> None:
+    """tmux itself must parse and evaluate the POSIX ERE gate."""
+    socket = f"muxplex-osc8-format-{uuid.uuid4().hex[:8]}"
+    env = {**os.environ, "HOME": str(sandbox)}
+    env.pop("TMUX", None)
+    env.pop("XDG_CONFIG_HOME", None)
+    predicate = (
+        "#{m/r:^(3\\.([4-9]|[1-9][0-9]+)|"
+        "([4-9]|[1-9][0-9]+)\\.[0-9]+)([a-z].*)?$,#{version}}"
+    )
+    try:
+        subprocess.run(
+            ["tmux", "-L", socket, "new-session", "-d"],
+            check=True,
+            env=env,
+            timeout=10,
+        )
+        result = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", predicate],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        assert result.stdout.strip() == ("1" if _has_tmux_34() else "0")
+    finally:
+        subprocess.run(
+            ["tmux", "-L", socket, "kill-server"],
+            capture_output=True,
+            env=env,
+            check=False,
+            timeout=10,
+        )
+
+
+needs_tmux_34 = pytest.mark.skipif(
+    not _has_tmux_34(),
+    reason="OSC 8 hyperlinks require tmux >= 3.4",
+)
 
 USER_CONF = """# my precious config, curated since 2011
 set -g prefix C-a
@@ -83,6 +163,63 @@ def tmux_option(home: Path, option: str = "@muxplex_loaded") -> str:
     ).stdout.strip()
     subprocess.run(kill, capture_output=True, env=env, check=False)
     return out
+
+
+def _read_pty_until(fd: int, matches, *, timeout: float = 5.0) -> bytes:
+    """Collect attached-client output until *matches* or a bounded timeout."""
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if matches(bytes(output)):
+            return bytes(output)
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining == 0:
+            break
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            break
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            continue
+        except OSError as exc:
+            if exc.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
+        output.extend(chunk)
+    return bytes(output)
+
+
+@contextlib.contextmanager
+def _attached_tmux_client(socket: str, session: str, env: dict[str, str]):
+    """Attach through a real pty and clean up only the client this test owns."""
+    master_fd, slave_fd = pty.openpty()
+    try:
+        client = subprocess.Popen(  # noqa: ASYNC220 -- non-blocking fork/exec
+            ["tmux", "-L", socket, "attach-session", "-t", session],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+        )
+    except BaseException:
+        os.close(master_fd)
+        os.close(slave_fd)
+        raise
+    os.close(slave_fd)
+    os.set_blocking(master_fd, False)
+    try:
+        yield master_fd
+    finally:
+        client.terminate()
+        try:
+            client.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            client.kill()
+            client.wait(timeout=5)
+        os.close(master_fd)
 
 
 # ── Ground truth about tmux itself ─────────────────────────────────────────
@@ -170,6 +307,27 @@ def test_install_is_idempotent(sandbox: Path) -> None:
     assert text == first, "file unchanged on re-run"
     assert second["changed"] is False
     assert third["backup"] is None, "no backup churn on a no-op"
+
+
+def test_install_refreshes_existing_base_fragment_with_osc8_feature(
+    sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upgraded package refreshes managed fragments even when its block exists."""
+    monkeypatch.setattr(tc, "tmux_version", lambda: (3, 4))
+    tc.install()
+    base = tc.TMUX_D_PATH / "10-muxplex-base.conf"
+    base.write_text("# stale managed fragment\n")
+
+    result = tc.install()
+
+    assert result["changed"] is False, (
+        "the already-installed user block stays untouched"
+    )
+    assert (
+        "if-shell -F "
+        "'#{m/r:^(3\\.([4-9]|[1-9][0-9]+)|([4-9]|[1-9][0-9]+)\\.[0-9]+)([a-z].*)?$,#{version}}' "
+        "'set -as terminal-features \",xterm*:hyperlinks\"'"
+    ) in base.read_text()
 
 
 def test_install_replaces_a_stale_block_in_place(sandbox: Path) -> None:
@@ -485,6 +643,115 @@ def test_apply_live_is_a_noop_without_a_running_server(sandbox: Path) -> None:
     tc.install()
     r = tc.apply_live(socket="muxplex-test-no-such-server")
     assert r["applied"] is False
+
+
+@needs_tmux
+@needs_tmux_34
+@pytest.mark.integration
+def test_osc8_hyperlink_reaches_an_attached_terminal_and_reattach_redraw(
+    sandbox: Path,
+) -> None:
+    """A Rich-style OSC 8 label reaches a live pty and a later redraw.
+
+    ``capture-pane -e`` is deliberately not used as proof: it preserves OSC 8
+    input even when terminal-features does not forward it to an attached client.
+    """
+    socket = f"muxplex-osc8-{uuid.uuid4().hex[:8]}"
+    session = "osc8"
+    tmux_tmpdir = Path(tempfile.mkdtemp(prefix="tmux-osc8-", dir="/tmp"))
+    env = {
+        **os.environ,
+        "HOME": str(sandbox),
+        "TERM": "xterm-256color",
+        "TMUX_TMPDIR": str(tmux_tmpdir),
+    }
+    env.pop("TMUX", None)
+    env.pop("XDG_CONFIG_HOME", None)
+
+    uri = "https://example.test/rich-markdown-label"
+    label = "Rich Markdown label"
+    # Send printf escapes as ordinary shell text; a literal ESC passed through
+    # send-keys would be consumed by tmux before the shell could emit it.
+    payload = rf"\033]8;id=rich;{uri}\033\\{label}\033]8;;\033\\"
+    forwarded = re.compile(
+        rb"\x1b]8;[^;]*;"
+        + re.escape(uri.encode())
+        + rb"\x1b\\(?:(?:\x1b\[[0-?]*[ -/]*[@-~])|[\r\n])*"
+        + re.escape(label.encode())
+        + rb"\x1b]8;;\x1b\\"
+    )
+    try:
+        tc.install()
+        subprocess.run(
+            [
+                "tmux",
+                "-L",
+                socket,
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-x",
+                "80",
+                "-y",
+                "24",
+            ],
+            check=True,
+            env=env,
+            timeout=10,
+        )
+
+        with _attached_tmux_client(socket, session, env) as first_client:
+            initial = _read_pty_until(first_client, bool)
+            assert initial, "tmux client did not attach within the bounded wait"
+            subprocess.run(
+                [
+                    "tmux",
+                    "-L",
+                    socket,
+                    "send-keys",
+                    "-l",
+                    "-t",
+                    session,
+                    f"printf {shlex.quote(payload)}",
+                ],
+                check=True,
+                env=env,
+                timeout=10,
+            )
+            subprocess.run(
+                ["tmux", "-L", socket, "send-keys", "-t", session, "Enter"],
+                check=True,
+                env=env,
+                timeout=10,
+            )
+            live = _read_pty_until(
+                first_client, lambda output: forwarded.search(output)
+            )
+            assert forwarded.search(live), (
+                "the exact URI and label did not reach the live attached terminal; "
+                f"received {live!r}"
+            )
+
+        with _attached_tmux_client(socket, session, env) as second_client:
+            redraw = _read_pty_until(
+                second_client, lambda output: forwarded.search(output)
+            )
+            assert forwarded.search(redraw), (
+                "the OSC 8 URI and label did not survive detach/re-attach redraw; "
+                f"received {redraw!r}"
+            )
+    finally:
+        try:
+            subprocess.run(
+                ["tmux", "-L", socket, "kill-server"],
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=10,
+            )
+        finally:
+            shutil.rmtree(tmux_tmpdir, ignore_errors=True)
 
 
 # ── Settings integration ───────────────────────────────────────────────────

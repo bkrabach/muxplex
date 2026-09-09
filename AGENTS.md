@@ -993,6 +993,17 @@ if you're reading this and can't find one either — say so, the same way.
 
 ## Testing & workflow
 
+### OSC 8 hyperlinks: prove the attached terminal, not capture-pane
+
+`terminal-features` gained `hyperlinks` in tmux 3.4, while muxplex still
+supports tmux 3.0. Keep the feature version-gated so an older tmux never
+evaluates the unknown feature; use tmux 3.0's `m/r` regex format rather than a
+lexical version comparison (`3.10` must pass). `capture-pane -e` preserves OSC
+8 input even when a terminal feature does not forward it, so it is not proof:
+the regression test must read URI+label bytes from a real attached PTY and
+again after detach/re-attach redraw, using only an explicitly owned `-L` socket
+and exact cleanup.
+
 ### The suite is safe to run on a host running a live muxplex — by structural isolation, not by refusal
 
 `uv run pytest` on a developer box that is also serving muxplex caused real

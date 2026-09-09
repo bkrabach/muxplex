@@ -25,7 +25,7 @@
 - **Mouse select auto-copy** — selecting text copies to system clipboard on release
 - **OSC 52 tmux clipboard bridge** — tmux copy mode selections go to system clipboard
 - **Search** — Ctrl+F opens a search bar to find text in terminal scrollback (xterm-addon-search)
-- **Clickable URLs** — Ctrl+Click (Cmd+Click on macOS) opens URLs in terminal output in a new tab (xterm-addon-web-links)
+- **Clickable URLs and Markdown labels** — Ctrl+Click (Cmd+Click on macOS) opens detected URLs. OSC 8 Markdown-style labels support xterm's native plain-click destination confirmation for HTTP(S) links, opening in an isolated new tab.
 - **Inline image rendering** — Sixel and iTerm2 graphic protocols for tools like yazi file manager (xterm-addon-image)
 - **Sidebar session switcher** — quick-switch between sessions with live previews
 
@@ -93,6 +93,10 @@
   - Other: https://github.com/tsl0922/ttyd#installation
 
 > **Tip:** Run `muxplex doctor` to check all dependencies and system status.
+>
+> **OSC 8 Markdown links:** require tmux 3.4+. Existing users must run
+> `muxplex tmux install` and reopen the terminal after upgrading; upgrading the
+> package alone does not refresh the managed tmux fragments.
 
 ---
 
