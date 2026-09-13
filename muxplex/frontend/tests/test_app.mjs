@@ -3475,17 +3475,18 @@ test('openSession mounts terminal AFTER connect POST, not inside animation timer
     new URL('../app.js', import.meta.url), 'utf8'
   );
 
-  // Find the openSession function body. Window is intentionally generous
-  // (not just enough for the CURRENT source) so a legitimate addition near
-  // the top of the function (e.g. a guard/comment block) doesn't push
-  // _openTerminal outside the window and produce a false failure here --
-  // that exact false failure is what widened this from 4000 to 5000.
   const fnStart = source.indexOf('async function openSession');
-  // Widened 5000 -> 6000 for the sync-groups terminal-conflict handling
-  // (showTerminalConflictDialog branch) added to the /connect catch block --
-  // same reasoning as the prior 4000 -> 5000 widening: a legitimate addition
-  // near the top of the function must not produce a false failure here.
-  const fnBody = source.substring(fnStart, fnStart + 6000);
+  const braceStart = source.indexOf('{', fnStart);
+  let depth = 0;
+  let fnEnd = -1;
+  for (let i = braceStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) { fnEnd = i; break; }
+    }
+  }
+  const fnBody = source.slice(fnStart, fnEnd + 1);
 
   // _openTerminal must NOT appear inside setTimeout
   const setTimeoutIdx = fnBody.indexOf('setTimeout');
@@ -5100,7 +5101,17 @@ test('closeSession reapplies fit layout when returning to dashboard', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('function closeSession');
   assert.ok(fnStart !== -1, 'closeSession function must exist');
-  const fnBody = source.substring(fnStart, fnStart + 1500);
+  const braceStart = source.indexOf('{', fnStart);
+  let depth = 0;
+  let fnEnd = -1;
+  for (let i = braceStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) { fnEnd = i; break; }
+    }
+  }
+  const fnBody = source.slice(fnStart, fnEnd + 1);
   assert.ok(
     fnBody.includes('applyFitLayout'),
     'closeSession must call applyFitLayout for fit mode when returning to dashboard'

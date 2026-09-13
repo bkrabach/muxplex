@@ -6117,6 +6117,12 @@ function _composeSessionKey(name, remoteId) {
         _composeDrafts.delete(oldKey);
       }
     });
+    if (_composeTextareaOwnerKey && _composeTextareaOwnerKey.indexOf(fallbackPrefix) === 0) {
+      _composeTextareaOwnerKey = buildSessionKey(
+        _localDeviceId,
+        _composeTextareaOwnerKey.slice(fallbackPrefix.length),
+      );
+    }
   }
   return key;
 }
