@@ -180,6 +180,47 @@ async def test_restore_persists_verified_progress_before_reporter_failure(monkey
     assert set(load_manifest()["pending_restore"]["sessions"]) == {"second"}
 
 
+async def test_restore_persists_verified_progress_before_window_probe_cancellation(
+    monkeypatch,
+):
+    """Cancellation during optional reporting preserves already-verified work."""
+    save_manifest(
+        {
+            "schema": 2,
+            "epoch": None,
+            "sessions": {},
+            "pending_restore": {
+                "detected_at": 1.0,
+                "lost_epoch": {},
+                "sessions": {"first": {}, "second": {}},
+            },
+            "created_with": {},
+            "rename_in_flight": None,
+        }
+    )
+    spawned: list[str] = []
+
+    async def spawn(name: str, **_kwargs) -> tuple[bool, None]:
+        spawned.append(name)
+        return True, None
+
+    async def observed() -> list[str]:
+        return ["first"]
+
+    async def cancelled_window_probe(_name: str) -> None:
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(restore_mod, "spawn_session_command", spawn)
+    monkeypatch.setattr(restore_mod, "enumerate_sessions_strict", observed)
+    monkeypatch.setattr(restore_mod, "_probe_windows", cancelled_window_probe)
+
+    with pytest.raises(asyncio.CancelledError):
+        await restore_mod.execute_restore(["first", "second"], force=True)
+
+    assert spawned == ["first"]
+    assert set(load_manifest()["pending_restore"]["sessions"]) == {"second"}
+
+
 def test_manifest_lock_prevents_stale_poll_from_restoring_cleared_pending_name():
     """A paused poll RMW cannot overwrite restore's completed progress."""
     manifest_path = manifest_mod.MANIFEST_PATH

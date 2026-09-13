@@ -482,11 +482,13 @@ async def execute_restore(
             )
             continue
 
-        windows = await _probe_windows(name)
         # Progress is durable BEFORE this outcome can be reported. If a later
-        # result/reporting failure aborts this run, retry planning sees this
-        # name as complete and never recreates the verified session.
+        # probe or reporting failure aborts this run, retry planning sees this
+        # name as complete and never recreates the verified session. Keep this
+        # immediately after exact live-state verification: even cancellation
+        # while awaiting the optional probe must not lose proven progress.
         await _persist_restored({name})
+        windows = await _probe_windows(name)
         if windows is not None and windows <= 1:
             record_result(
                 SessionResult(
