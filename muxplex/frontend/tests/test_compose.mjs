@@ -194,6 +194,9 @@ beforeEach(() => {
   globalThis.window.innerWidth = 1024;
   installSettingsFetchStub();
   app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  app._setLocalDeviceIdForTests(null);
+  app._composeDrafts.clear();
   app._setDeviceId('dev-1');
   // Start every test from "server settings loaded, composeBarOpen never
   // explicitly set" -- the real post-load state initComposePref() is
@@ -675,20 +678,66 @@ test('bar shows when a session is open and preference is on', () => {
   assert.strictEqual(elements['compose-bar'].classList.contains('hidden'), false);
 });
 
-test('_composeOnSessionOpen clears any stale draft from a previous session', () => {
-  elements['compose-input'].value = 'leftover draft';
+test('session drafts restore only for their device-qualified identity', () => {
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('');
+  elements['compose-input'].value = 'local draft';
+  app._composeStoreActiveDraft();
+
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('remote-device');
   app._composeOnSessionOpen();
   assert.strictEqual(elements['compose-input'].value, '');
+  elements['compose-input'].value = 'remote draft';
+  app._composeStoreActiveDraft();
+
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('');
+  app._composeOnSessionOpen();
+  assert.strictEqual(elements['compose-input'].value, 'local draft');
+
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('remote-device');
+  app._composeOnSessionOpen();
+  assert.strictEqual(elements['compose-input'].value, 'remote draft');
 });
 
-test('_composeOnSessionClose hides the bar and clears the draft', () => {
+test('late send response cannot erase the newly viewed session draft', async () => {
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._setViewingSession('a');
+  app._setViewingRemoteId('');
+  elements['compose-input'].value = 'send A';
+  let resolveFetch;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Promise((resolve) => { resolveFetch = resolve; });
+  const send = app._composeSend();
+
+  app._setViewingSession('b');
+  elements['compose-input'].value = 'draft B';
+  app._composeStoreActiveDraft();
+  resolveFetch({ ok: true, json: async () => ({ ok: true }) });
+  await send;
+  globalThis.fetch = origFetch;
+
+  assert.strictEqual(elements['compose-input'].value, 'draft B');
+  assert.strictEqual(app._composeDrafts.get('local-device:b'), 'draft B');
+});
+
+test('close preserves the outgoing draft while hiding the bar', () => {
   app._setViewingSession('s1');
+  app._setViewingRemoteId('');
+  app._setLocalDeviceIdForTests('local-device');
   app._composeSetPref(true);
   elements['compose-input'].value = 'draft';
+  app._composeStoreActiveDraft(); // mirrors closeSession's pre-mutation capture
   app._setViewingSession(null); // mirrors closeSession()'s ordering
   app._composeOnSessionClose();
   assert.strictEqual(elements['compose-input'].value, '');
   assert.strictEqual(elements['compose-bar'].classList.contains('hidden'), true);
+  assert.strictEqual(app._composeDrafts.get('local-device:s1'), 'draft');
 });
 
 test('refit is called on show, on hide, and on auto-grow', () => {

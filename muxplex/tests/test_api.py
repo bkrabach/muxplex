@@ -4607,6 +4607,15 @@ def test_setup_page_never_echoes_raw_user_agent(client, tmp_path, monkeypatch):
     assert "zzqq" not in response.text
 
 
+def test_setup_page_tells_every_supported_browser_to_fully_reopen():
+    """Trust-store changes do not reliably take effect on a mere reload."""
+    from muxplex.setup_page import render_setup_page
+
+    page = render_setup_page("other", ca_available=True).lower()
+    assert page.count("fully close and reopen your browser") == 4
+    assert "not just reload" in page
+
+
 # ---------------------------------------------------------------------------
 # Auth exemption did not widen beyond the two new paths
 # ---------------------------------------------------------------------------

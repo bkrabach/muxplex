@@ -5671,6 +5671,7 @@ async function openSession(name, opts = {}) {
   // to the session they just switched away from.
   var isLocal = !opts.isFollow;
   if (isLocal) _pendingLocalSwitches++;
+  _composeStoreActiveDraft();
   hidePreview();
   _viewingSession = name;
   _viewingRemoteId = opts.remoteId != null ? opts.remoteId : '';
@@ -5786,6 +5787,7 @@ async function openSession(name, opts = {}) {
  * @returns {Promise<void>}
  */
 function closeSession() {
+  _composeStoreActiveDraft();
   _viewMode = 'grid';
   _viewingSession = null;
   _composeOnSessionClose();
@@ -5893,6 +5895,11 @@ function _setViewingSession(name) {
  */
 function _setViewingRemoteId(remoteId) {
   _viewingRemoteId = remoteId;
+}
+
+/** Test-only helper: set the local server's federation identity directly. */
+function _setLocalDeviceIdForTests(deviceId) {
+  _localDeviceId = deviceId || null;
 }
 
 /**
@@ -6019,7 +6026,64 @@ function _setLastHeartbeatGoneIdForTests(id) {
 // left in place afterward, unread from now on -- harmless, not worth a
 // second write path just to clear it.
 const COMPOSE_PREF_STORAGE_KEY = 'muxplex-compose-bar'; // legacy key, migration-only -- see initComposePref
-let _composeSendInFlight = false;
+const COMPOSE_LOCAL_FALLBACK_DEVICE_ID = '__muxplex-local__';
+const _composeDrafts = new Map();
+let _composeSendInFlightKey = null;
+
+/**
+ * Return the device-qualified identity for the currently viewed session.
+ *
+ * A federation remote always supplies its stable server device id.  A local
+ * server can briefly be unknown while /api/instance-info is still loading;
+ * give that case a private in-memory namespace rather than the bare name, so
+ * a remote session called "shell" can never borrow its draft.  Once the local
+ * id arrives, migrate those in-memory entries to the normal buildSessionKey()
+ * form.  This is intentionally memory-only: compose text remains private to
+ * this browser tab and is never sent or written to localStorage.
+ */
+function _composeSessionKey(name, remoteId) {
+  if (!name) return null;
+  var deviceId = remoteId || _localDeviceId || COMPOSE_LOCAL_FALLBACK_DEVICE_ID;
+  var key = buildSessionKey(deviceId, name);
+  if (_localDeviceId) {
+    var fallbackPrefix = COMPOSE_LOCAL_FALLBACK_DEVICE_ID + ':';
+    _composeDrafts.forEach(function(value, oldKey) {
+      if (oldKey.indexOf(fallbackPrefix) === 0) {
+        _composeDrafts.set(buildSessionKey(_localDeviceId, oldKey.slice(fallbackPrefix.length)), value);
+        _composeDrafts.delete(oldKey);
+      }
+    });
+  }
+  return key;
+}
+
+function _composeActiveKey() {
+  return _composeSessionKey(_viewingSession, _viewingRemoteId);
+}
+
+function _composeStoreDraft(key, value) {
+  if (!key) return;
+  if (value) _composeDrafts.set(key, value);
+  else _composeDrafts.delete(key);
+}
+
+function _composeStoreActiveDraft() {
+  var input = $('compose-input');
+  if (input) _composeStoreDraft(_composeActiveKey(), input.value);
+}
+
+function _composeClearSubmittedDraft(key, raw) {
+  // A response is allowed to clear only the exact draft it submitted.  This
+  // guards both typing while a request is pending and an A response arriving
+  // after the user has switched to B.
+  if (_composeDrafts.get(key) === raw) _composeDrafts.delete(key);
+  if (_composeActiveKey() !== key) return false;
+  var input = $('compose-input');
+  if (!input || input.value !== raw) return false;
+  input.value = '';
+  input.style.height = '';
+  return true;
+}
 
 /**
  * Resolve the effective on/off state from the loaded server setting.
@@ -6135,7 +6199,7 @@ function _composeRenderEnabledState() {
   var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
   bar.classList.toggle('compose-bar--disabled', !enabled);
   if (input) input.disabled = !enabled;
-  if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlight;
+  if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlightKey === _composeActiveKey();
   if (queueBtn) {
     // Follow-ups run only on the host that owns the session (spec §8) --
     // never offered for a remote-viewed session.
@@ -6183,7 +6247,6 @@ function _composeClearDraft() {
     input.style.height = '';
   }
   _composeHideError();
-  _composeSendInFlight = false;
   // A live dictation session belongs to the session/draft being cleared --
   // see _sttForceStop()'s docstring for why this is abort(), not stop().
   _sttForceStop();
@@ -6209,6 +6272,11 @@ function _composeClearDraft() {
  */
 function _composeOnSessionOpen() {
   _composeClearDraft();
+  var input = $('compose-input');
+  if (input) {
+    input.value = _composeDrafts.get(_composeActiveKey()) || '';
+    if (input.value) _composeAutoGrow(input);
+  }
   _composeRender();
   _followupsRefresh();
 }
@@ -6367,20 +6435,24 @@ function _composeErrorMessage(err) {
  * dictated a paragraph must never lose it to a 403.
  */
 async function _composeSend() {
-  if (_composeSendInFlight) return;
   var input = $('compose-input');
   if (!input) return;
+  var targetKey = _composeActiveKey();
+  if (_composeSendInFlightKey === targetKey) return;
+  var targetSession = _viewingSession;
+  var raw = input.value;
   var normalized = _composeNormalizeText(input.value);
   if (!normalized.trim()) {
     _composeShowError('Nothing to send.');
     return;
   }
-  if (!_viewingSession) {
+  if (!targetSession || !targetKey) {
     _composeShowError('No session is open.');
     return;
   }
 
-  _composeSendInFlight = true;
+  _composeStoreDraft(targetKey, raw);
+  _composeSendInFlightKey = targetKey;
   var sendBtn = $('compose-send-btn');
   if (sendBtn) sendBtn.disabled = true;
   input.setAttribute('aria-busy', 'true');
@@ -6388,20 +6460,22 @@ async function _composeSend() {
   try {
     await api(
       'POST',
-      withDevice('/api/sessions/' + encodeURIComponent(_viewingSession) + '/input'),
+      withDevice('/api/sessions/' + encodeURIComponent(targetSession) + '/input'),
       { text: normalized, enter: true },
     );
-    input.value = '';
-    input.style.height = '';
-    _composeHideError();
-    if (window._refitTerminal) window._refitTerminal();
-    input.focus();
+    if (_composeClearSubmittedDraft(targetKey, raw)) {
+      _composeHideError();
+      if (window._refitTerminal) window._refitTerminal();
+      input.focus();
+    }
   } catch (err) {
-    _composeShowError(_composeErrorMessage(err));
+    if (_composeActiveKey() === targetKey) _composeShowError(_composeErrorMessage(err));
   } finally {
-    _composeSendInFlight = false;
-    input.removeAttribute('aria-busy');
-    if (sendBtn) sendBtn.disabled = !(_serverSettings && _serverSettings.input_enabled === true);
+    if (_composeSendInFlightKey === targetKey) _composeSendInFlightKey = null;
+    if (_composeActiveKey() === targetKey) {
+      input.removeAttribute('aria-busy');
+      if (sendBtn) sendBtn.disabled = !(_serverSettings && _serverSettings.input_enabled === true);
+    }
   }
 }
 
@@ -6424,7 +6498,10 @@ function _bindComposeEventListeners() {
   var input = $('compose-input');
   if (input) {
     input.addEventListener('keydown', _composeKeydown);
-    input.addEventListener('input', function() { _composeAutoGrow(input); });
+    input.addEventListener('input', function() {
+      _composeStoreActiveDraft();
+      _composeAutoGrow(input);
+    });
   }
   // Queue shortcut is document-level, not local to #compose-input -- see
   // _followupsQueueKeydown()'s docstring for why (the terminal has focus
@@ -6863,6 +6940,7 @@ function _sttHandleResult(event) {
   var input = $('compose-input');
   if (!input || !event || !event.results) return;
   _sttApplyTranscript(input, event.results);
+  _composeStoreActiveDraft();
   _composeAutoGrow(input);
 }
 
@@ -7330,26 +7408,30 @@ function _followupsSetDataForTests(data) {
 async function _followupsQueueDraft() {
   var input = $('compose-input');
   if (!input) return;
+  var targetKey = _composeActiveKey();
+  var targetSession = _viewingSession;
+  var raw = input.value;
   var normalized = _composeNormalizeText(input.value);
   if (!normalized.trim()) {
     _composeShowError('Nothing to queue.');
     return;
   }
-  if (!_viewingSession) {
+  if (!targetSession || !targetKey) {
     _composeShowError('No session is open.');
     return;
   }
+  _composeStoreDraft(targetKey, raw);
   try {
     await api(
       'POST',
-      '/api/sessions/' + encodeURIComponent(_viewingSession) + '/followups',
+      '/api/sessions/' + encodeURIComponent(targetSession) + '/followups',
       { text: normalized, enter: true },
     );
-    input.value = '';
-    input.style.height = '';
-    _composeHideError();
-    if (window._refitTerminal) window._refitTerminal();
-    await _followupsRefresh();
+    if (_composeClearSubmittedDraft(targetKey, raw)) {
+      _composeHideError();
+      if (window._refitTerminal) window._refitTerminal();
+      await _followupsRefresh();
+    }
   } catch (err) {
     // A failed queue attempt must be impossible to miss: the inline
     // compose-error box is easy to overlook (no auto-dismiss, but also no
@@ -7359,9 +7441,11 @@ async function _followupsQueueDraft() {
     // surface used elsewhere in this file for other errors; using it here
     // too means "nothing happened" and "it failed" are never visually
     // identical outcomes.
-    var msg = _composeErrorMessage(err);
-    _composeShowError(msg);
-    showToast('Follow-up not queued: ' + msg);
+    if (_composeActiveKey() === targetKey) {
+      var msg = _composeErrorMessage(err);
+      _composeShowError(msg);
+      showToast('Follow-up not queued: ' + msg);
+    }
   }
 }
 
@@ -11121,6 +11205,12 @@ if (typeof module !== 'undefined' && module.exports) {
     _composeHideError,
     _composeShowError,
     _composeClearDraft,
+    _composeSessionKey,
+    _composeActiveKey,
+    _composeStoreDraft,
+    _composeStoreActiveDraft,
+    _composeClearSubmittedDraft,
+    _composeDrafts,
     _composeOnSessionOpen,
     _composeOnSessionClose,
     _composeNormalizeText,
@@ -11213,6 +11303,7 @@ if (typeof module !== 'undefined' && module.exports) {
     getFocusedSessionName,
     _setViewingSession,
     _setViewingRemoteId,
+    _setLocalDeviceIdForTests,
     _setPendingLocalSwitches,
     _setPendingViewSwitches,
     _setSyncGroupMode,

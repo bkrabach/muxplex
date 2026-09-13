@@ -186,14 +186,28 @@ def verify_session_cookie(secret: str, cookie: str, ttl_seconds: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def pam_available() -> bool:
-    """Check whether the python-pam module is importable."""
+def pam_probe() -> tuple[bool, str | None]:
+    """Probe the optional PAM binding without changing the fallback contract.
+
+    Returns ``(available, import_error)``.  A missing top-level ``pam`` module
+    is ordinary optional-dependency absence and has no error detail.  An import
+    that starts loading ``pam`` but fails on a transitive dependency is a broken
+    install, and the detail lets diagnostics make that actionable only when PAM
+    was actually selected.
+    """
     try:
         import pam  # noqa: F401
 
-        return True
-    except ImportError:
-        return False
+        return True, None
+    except ImportError as exc:
+        if exc.name == "pam":
+            return False, None
+        return False, str(exc) or f"could not import {exc.name or 'a PAM dependency'}"
+
+
+def pam_available() -> bool:
+    """Check whether the python-pam module is importable (legacy boolean API)."""
+    return pam_probe()[0]
 
 
 def authenticate_pam(username: str, password: str) -> bool:

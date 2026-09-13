@@ -5,6 +5,7 @@ import logging
 import os
 import platform
 import secrets as _secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from muxplex.auth import (
     get_secret_path,
     load_password,
     pam_available,
+    pam_probe,
 )
 
 # Module-level path constants (overridable in tests via monkeypatch)
@@ -2059,7 +2061,8 @@ def doctor() -> None:
 
     # Auth status
     pw_path = get_password_path()
-    if pam_available():
+    pam_is_available, pam_import_error = pam_probe()
+    if pam_is_available:
         import pwd
 
         username = pwd.getpwuid(os.getuid()).pw_name
@@ -2070,6 +2073,16 @@ def doctor() -> None:
         print(f"  {ok_mark} Auth: password (env var)")
     else:
         print(f"  {warn_mark} Auth: no PAM, no password — will auto-generate on serve")
+
+    if cfg.get("auth") == "pam" and pam_import_error:
+        print(
+            f"  {warn_mark} PAM: configured but its Python binding is broken"
+            f" ({pam_import_error})"
+        )
+        print(
+            "    Reinstall muxplex with the same installer/source, then rerun"
+            " muxplex doctor."
+        )
 
     # tmux sessions (if tmux is available)
     if tmux_path:
@@ -2198,7 +2211,9 @@ def _check_dependencies() -> None:
         sys.exit(1)
 
 
-def _verify_version_moved(before: str, update_was_available: bool) -> bool:
+def _verify_version_moved(
+    before: str, update_was_available: bool, installer: str | None = None
+) -> bool:
     """Confirm an upgrade actually landed. Print and return False if it did not.
 
     A zero exit from the installer means "the installer did what I asked", NOT
@@ -2223,15 +2238,40 @@ def _verify_version_moved(before: str, update_was_available: bool) -> bool:
         print(
             f"  ERROR: install reported success but the version did not change"
             f" (still v{after}).\n"
-            f"  The resolver almost certainly served a cached index that predates"
-            f" the release.\n"
-            f"  Fix it with:\n"
-            f"      uv tool install --reinstall --refresh --force muxplex"
+            f"  The selected package source did not provide the newer release.\n"
+            f"  --refresh only refreshes this machine's local cache; it cannot"
+            f" make a stale corporate/upstream mirror carry a missing package.\n"
         )
+        if installer == "uv":
+            print("  If the upstream index has the release, retry with:")
+            print("      uv tool install --reinstall --refresh --force muxplex")
+        elif installer == "pip":
+            print("  If the upstream index has the release, retry with:")
+            print("      pip install --upgrade --no-cache-dir muxplex")
+        else:
+            print(
+                "  Check the configured package index/mirror and reinstall with"
+                " the same installer and source."
+            )
         return False
     if after != before:
         print(f"  Version: v{before} \u2192 v{after}")
     return True
+
+
+def _wsl_ca_unc_path(ca_cert_path: Path) -> str | None:
+    """Return a Windows-readable UNC path for a WSL-generated CA, if known.
+
+    ``WSL_DISTRO_NAME`` is supplied by WSL itself.  Without it, guessing a
+    distribution name would send a Windows user to a dead share, so callers
+    must use the download fallback instead.
+    """
+    if "microsoft" not in platform.release().lower():
+        return None
+    distro = os.environ.get("WSL_DISTRO_NAME", "").strip()
+    if not distro or any(char in distro for char in "\\/"):
+        return None
+    return r"\\wsl.localhost" + "\\" + distro + str(ca_cert_path).replace("/", "\\")
 
 
 def _read_remote_tmux_kit_pin(repo_url: str, ref: str) -> tuple[str | None, str | None]:
@@ -3000,7 +3040,9 @@ def upgrade(*, force: bool = False) -> None:
                 if result.returncode != 0:
                     print(f"  ERROR: uv tool install failed:\n{result.stderr}")
                     _install_failed = True
-                elif not _verify_version_moved(info["version"], update_available):
+                elif not _verify_version_moved(
+                    info["version"], update_available, installer="uv"
+                ):
                     _install_failed = True
                 else:
                     shape_ok, shape_msg = _verify_install_shape_preserved(
@@ -3034,7 +3076,9 @@ def upgrade(*, force: bool = False) -> None:
                     if result.returncode != 0:
                         print(f"  ERROR: pip install failed:\n{result.stderr}")
                         _install_failed = True
-                    elif not _verify_version_moved(info["version"], update_available):
+                    elif not _verify_version_moved(
+                        info["version"], update_available, installer="pip"
+                    ):
                         _install_failed = True
                     else:
                         shape_ok, shape_msg = _verify_install_shape_preserved(
@@ -4023,25 +4067,35 @@ def setup_tls(method: str = "auto") -> None:
         print()
     elif method_used == "ca":
         ca_cert_path_str = result.get("ca_cert_path", "")
+        shell_ca_path = shlex.quote(ca_cert_path_str)
+        powershell_ca_path = ca_cert_path_str.replace("'", "''")
+        wsl_ca_path = _wsl_ca_unc_path(Path(ca_cert_path_str))
         print(f"  Local CA:    {ca_cert_path_str}")
         print()
         print("  Install the CA on each client to eliminate browser warnings.")
         print("  The leaf rotates without re-trusting; the CA is what you trust.")
         print()
         print("  Windows (PowerShell, no admin needed):")
-        print(
-            "    Import-Certificate -FilePath <path-to-ca.crt> "
-            "-CertStoreLocation Cert:\\CurrentUser\\Root"
-        )
+        if wsl_ca_path:
+            print(
+                f"    Import-Certificate -FilePath '{wsl_ca_path}' "
+                "-CertStoreLocation Cert:\\CurrentUser\\Root"
+            )
+        else:
+            print(
+                "    Open this server's /setup page in the Windows browser and"
+                " download muxplex-ca.crt, then import that downloaded file"
+                " into Cert:\\CurrentUser\\Root."
+            )
         print()
         print("  macOS:")
         print(
             "    sudo security add-trusted-cert -d -r trustRoot "
-            "-k /Library/Keychains/System.keychain <path-to-ca.crt>"
+            f"-k /Library/Keychains/System.keychain {shell_ca_path}"
         )
         print()
         print("  Linux (system-wide):")
-        print("    sudo cp <path-to-ca.crt> /usr/local/share/ca-certificates/")
+        print(f"    sudo cp {shell_ca_path} /usr/local/share/ca-certificates/")
         print("    sudo update-ca-certificates")
         print()
         print("  Leaf cert rotates yearly — re-run 'muxplex setup-tls --method ca'")
