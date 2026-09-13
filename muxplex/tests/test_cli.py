@@ -6029,10 +6029,13 @@ def test_upgrade_no_version_change_uses_pip_recovery_when_pip_installed(
 def test_wsl_ca_unc_path_requires_a_safe_known_distro(monkeypatch, tmp_path):
     import muxplex.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod.platform, "release", lambda: "5.15.90-microsoft-standard-WSL2")
+    monkeypatch.setattr(
+        cli_mod.platform, "release", lambda: "5.15.90-microsoft-standard-WSL2"
+    )
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
     assert cli_mod._wsl_ca_unc_path(tmp_path / "ca" / "muxplex-ca.crt") == (
-        r"\\wsl.localhost\Ubuntu-24.04" + str(tmp_path / "ca" / "muxplex-ca.crt").replace("/", "\\")
+        r"\\wsl.localhost\Ubuntu-24.04"
+        + str(tmp_path / "ca" / "muxplex-ca.crt").replace("/", "\\")
     )
     monkeypatch.setenv("WSL_DISTRO_NAME", "bad/name")
     assert cli_mod._wsl_ca_unc_path(tmp_path / "ca" / "muxplex-ca.crt") is None
