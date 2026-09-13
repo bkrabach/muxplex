@@ -76,6 +76,7 @@ async def test_poll_confirmed_empty_inventory_reconciles_but_retains_followups(m
             "sessions": {"gone": {"bell": {"unseen_count": 1}}},
             "active_session": "gone",
             "terminal_session": "gone",
+            "devices": {},
             "followups": {"gone": {"revision": 1, "items": [{"id": "x", "text": "keep"}]}},
         }
     )
