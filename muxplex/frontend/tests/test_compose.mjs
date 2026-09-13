@@ -617,6 +617,46 @@ test('a second send while one is pending is ignored', async () => {
   assert.strictEqual(callCount, 1);
 });
 
+test('overlapping A and B sends remain independently pending', async () => {
+  app._setLocalDeviceIdForTests('local-device');
+  app._setServerSettings({ input_enabled: true });
+  const input = elements['compose-input'];
+  const sendBtn = elements['compose-send-btn'];
+  const pending = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Promise((resolve) => { pending.push(resolve); });
+
+  app._setViewingSession('a');
+  input.value = 'first A';
+  const sendA = app._composeSend();
+
+  app._setViewingSession('b');
+  input.value = 'first B';
+  const sendB = app._composeSend();
+  assert.strictEqual(pending.length, 2, 'different session identities may each have one request pending');
+
+  app._setViewingSession('a');
+  input.value = 'first A';
+  app._composeRenderEnabledState();
+  assert.strictEqual(sendBtn.disabled, true, 'returning to A must preserve A pending state');
+  await app._composeSend();
+  assert.strictEqual(pending.length, 2, 'a second A request must be refused while A is pending');
+
+  pending[0]({ ok: true, json: async () => ({ ok: true, session: 'a' }) });
+  await sendA;
+  assert.strictEqual(sendBtn.disabled, false, 'A is enabled once its own request completes, even while B remains pending');
+
+  input.value = 'second A';
+  const sendA2 = app._composeSend();
+  assert.strictEqual(pending.length, 3, 'A can send again after its original request completes');
+
+  pending[1]({ ok: true, json: async () => ({ ok: true, session: 'b' }) });
+  await sendB;
+  pending[2]({ ok: true, json: async () => ({ ok: true, session: 'a' }) });
+  await sendA2;
+  globalThis.fetch = origFetch;
+});
+
 // --- Enabled/disabled render from settings.input_enabled ---
 
 test('input_enabled=true enables the textarea and send button, hides the notice', async () => {

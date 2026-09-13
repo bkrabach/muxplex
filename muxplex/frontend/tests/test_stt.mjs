@@ -678,13 +678,23 @@ test('_sttStop is a no-op when nothing is running', () => {
   assert.doesNotThrow(() => app._sttStop());
 });
 
-test('_sttForceStop calls .abort() (not .stop()) and suppresses the end message', () => {
+test('_sttForceStop retires recognition synchronously before .abort()', () => {
   let stopped = false;
   let aborted = false;
-  app._setSttRecognition({ stop: () => { stopped = true; }, abort: () => { aborted = true; } });
+  app._sttSetState('listening');
+  app._setSttRecognition({
+    stop: () => { stopped = true; },
+    abort: () => {
+      aborted = true;
+      assert.strictEqual(app._getSttRecognition(), null, 'old recognition must be retired before abort can deliver callbacks');
+      assert.strictEqual(app._getSttState(), 'idle', 'the next session must be able to start dictation immediately');
+    },
+  });
   app._sttForceStop();
   assert.strictEqual(aborted, true);
   assert.strictEqual(stopped, false);
+  assert.strictEqual(app._getSttRecognition(), null);
+  assert.strictEqual(app._getSttState(), 'idle');
 });
 
 test('_composeClearDraft() force-stops any live dictation session', () => {

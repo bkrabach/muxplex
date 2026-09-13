@@ -2385,9 +2385,79 @@ test('openSession saves A before a failing B connect and rejects late A dictatio
   assert.strictEqual(app._composeDrafts.get('local-device:alpha'), 'draft A');
   assert.strictEqual(app._composeDrafts.get('local-device:beta'), 'saved B');
   assert.strictEqual(composeInput.value, '', 'late A recognition must not contaminate B or the closed view');
+  recognition.onend();
+  assert.strictEqual(app._getSttRecognition(), null, 'the aborted A handle must already be retired');
+  assert.strictEqual(app._getSttState(), 'idle', 'delayed A end must not leave dictation stuck');
 
-  app._setSttRecognition(null);
+  app._setSttStatus(null);
+  app._setSttMode(null);
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.window.SpeechRecognition = origSpeechRecognition;
+});
+
+test('openSession A to B retires delayed A dictation before B starts', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const origSpeechRecognition = globalThis.window.SpeechRecognition;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const generic = {
+    textContent: '', style: {}, classList: classes, disabled: false,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  const composeInput = {
+    value: 'draft A', style: {}, classList: classes, disabled: false, selectionStart: 7,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+    setSelectionRange: () => {},
+  };
+  const recognitions = [];
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._composeDrafts.set('local-device:beta', 'saved B');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+  app._setSttStatus('available');
+  app._setSttMode('ondevice');
   app._sttSetState('idle');
+  globalThis.window.SpeechRecognition = function() {
+    recognitions.push(this);
+    this.start = () => {};
+    this.abort = () => {};
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.fetch = async (url) => ({
+    ok: true,
+    json: async () => url.includes('/followups')
+      ? { session: 'beta', items: [], halted: null }
+      : {},
+  });
+
+  app._sttStart();
+  const recognitionA = recognitions[0];
+  await app.openSession('beta', { skipAnimation: true });
+  assert.strictEqual(composeInput.value, 'saved B');
+  assert.strictEqual(app._getSttRecognition(), null, 'A must be retired synchronously at the transition');
+  assert.strictEqual(app._getSttState(), 'idle');
+
+  app._sttStart();
+  const recognitionB = recognitions[1];
+  assert.ok(recognitionB, 'B can start its own recognition session without waiting for A end');
+  recognitionA.onresult({ results: [{ 0: { transcript: 'late A' }, isFinal: true }] });
+  recognitionA.onend();
+
+  assert.strictEqual(composeInput.value, 'saved B', 'late A callbacks must not alter B draft');
+  assert.strictEqual(app._getSttRecognition(), recognitionB, 'late A end must not retire B recognition');
+  assert.strictEqual(app._getSttState(), 'listening');
+  recognitionB.onend();
+  assert.strictEqual(app._getSttRecognition(), null);
+  assert.strictEqual(app._getSttState(), 'idle');
+
   app._setSttStatus(null);
   app._setSttMode(null);
   globalThis.fetch = origFetch;

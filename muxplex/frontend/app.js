@@ -6035,7 +6035,7 @@ function _setLastHeartbeatGoneIdForTests(id) {
 const COMPOSE_PREF_STORAGE_KEY = 'muxplex-compose-bar'; // legacy key, migration-only -- see initComposePref
 const COMPOSE_LOCAL_FALLBACK_DEVICE_ID = '__muxplex-local__';
 const _composeDrafts = new Map();
-let _composeSendInFlightKey = null;
+const _composeSendInFlightKeys = new Set();
 
 /** `0` is a valid federation id, so remote is never a truthiness test. */
 function _composeIsRemoteId(remoteId) {
@@ -6222,7 +6222,7 @@ function _composeRenderEnabledState() {
   var enabled = !remote && !!(_serverSettings && _serverSettings.input_enabled === true);
   bar.classList.toggle('compose-bar--disabled', !enabled);
   if (input) input.disabled = !enabled;
-  if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlightKey === _composeActiveKey();
+  if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlightKeys.has(_composeActiveKey());
   if (queueBtn) {
     // Follow-ups run only on the host that owns the session (spec §8) --
     // never offered for a remote-viewed session.
@@ -6457,16 +6457,17 @@ function _composeErrorMessage(err) {
 /**
  * Send the current draft via POST /api/sessions/{name}/input -- the same
  * unmodified, fenced endpoint every other caller uses (see the section
- * banner above). Exactly one request in flight at a time (the send button
- * is disabled for the duration; a second Ctrl+Enter while pending is a
- * no-op). The draft is cleared ONLY on a 200 response -- a user who just
- * dictated a paragraph must never lose it to a 403.
+ * banner above). Exactly one request per device-qualified session identity
+ * is in flight at a time (the current session's send button is disabled for
+ * the duration; a second Ctrl+Enter for that identity is a no-op). The draft
+ * is cleared ONLY on a 200 response -- a user who just dictated a paragraph
+ * must never lose it to a 403.
  */
 async function _composeSend() {
   var input = $('compose-input');
   if (!input) return;
   var targetKey = _composeActiveKey();
-  if (_composeSendInFlightKey === targetKey) return;
+  if (_composeSendInFlightKeys.has(targetKey)) return;
   var targetSession = _viewingSession;
   var targetRemoteId = _viewingRemoteId;
   if (_composeIsRemoteId(targetRemoteId)) {
@@ -6486,7 +6487,7 @@ async function _composeSend() {
   }
 
   _composeStoreDraft(targetKey, raw);
-  _composeSendInFlightKey = targetKey;
+  _composeSendInFlightKeys.add(targetKey);
   var sendBtn = $('compose-send-btn');
   if (sendBtn) sendBtn.disabled = true;
   input.setAttribute('aria-busy', 'true');
@@ -6505,7 +6506,7 @@ async function _composeSend() {
   } catch (err) {
     if (_composeActiveKey() === targetKey) _composeShowError(_composeErrorMessage(err));
   } finally {
-    if (_composeSendInFlightKey === targetKey) _composeSendInFlightKey = null;
+    _composeSendInFlightKeys.delete(targetKey);
     if (_composeActiveKey() === targetKey) {
       input.removeAttribute('aria-busy');
       if (sendBtn) sendBtn.disabled = !(_serverSettings && _serverSettings.input_enabled === true);
@@ -7128,14 +7129,21 @@ function _sttStop() {
  * no error message, since switching sessions is an ordinary action.
  */
 function _sttForceStop() {
-  if (!_sttRecognition) return;
+  var recognition = _sttRecognition;
+  if (!recognition) return;
   // Chromium can deliver a final result after abort(). Invalidate it before
   // calling abort so it cannot land in a newly-selected session's textarea.
   _sttGeneration++;
+  // Retire the old handle synchronously, before abort() can invoke a delayed
+  // callback. The next session may start dictation immediately after a
+  // transition, and its recognition must not be blocked waiting for this
+  // browser-owned session's eventual `end` event.
+  _sttRecognition = null;
+  _sttSetState('idle');
   _sttOwnerKey = null;
   _sttUserStopped = true;
   _sttSuppressEndMessage = true;
-  try { _sttRecognition.abort(); } catch (_) { /* already stopped */ }
+  try { recognition.abort(); } catch (_) { /* already stopped */ }
 }
 
 /**
