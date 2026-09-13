@@ -4068,7 +4068,6 @@ def setup_tls(method: str = "auto") -> None:
     elif method_used == "ca":
         ca_cert_path_str = result.get("ca_cert_path", "")
         shell_ca_path = shlex.quote(ca_cert_path_str)
-        powershell_ca_path = ca_cert_path_str.replace("'", "''")
         wsl_ca_path = _wsl_ca_unc_path(Path(ca_cert_path_str))
         print(f"  Local CA:    {ca_cert_path_str}")
         print()

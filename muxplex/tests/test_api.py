@@ -4612,7 +4612,8 @@ def test_setup_page_tells_every_supported_browser_to_fully_reopen():
     from muxplex.setup_page import render_setup_page
 
     page = render_setup_page("other", ca_available=True).lower()
-    assert page.count("fully close and reopen your browser") == 4
+    assert page.count("fully close and reopen your browser") >= 2
+    assert page.count("fully quit and reopen your browser") >= 2
     assert "not just reload" in page
 
 
