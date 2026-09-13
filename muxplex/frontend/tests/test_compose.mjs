@@ -647,6 +647,33 @@ test('input_enabled=false (default) disables controls and shows the notice namin
   assert.strictEqual(elements['compose-bar'].classList.contains('compose-bar--disabled'), true);
 });
 
+test('remote compose is disabled and never posts to a same-named local session', async () => {
+  app._setLocalDeviceIdForTests('local-device');
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('remote-device');
+  app._setServerSettings({ input_enabled: true });
+  elements['compose-input'].value = 'remote draft';
+  let calls = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls++; return { ok: true, json: async () => ({}) }; };
+
+  app._composeRender();
+  assert.strictEqual(elements['compose-input'].disabled, true);
+  assert.strictEqual(elements['compose-send-btn'].disabled, true);
+  assert.match(elements['compose-notice'].textContent, /Remote session input is unavailable/);
+  await app._composeSend();
+
+  assert.strictEqual(calls, 0, 'remote input must not fall through to the local /input route');
+  assert.strictEqual(app._composeDrafts.get('remote-device:same-name'), 'remote draft');
+  globalThis.fetch = origFetch;
+});
+
+test('numeric federation identity zero is still remote and cannot share a local draft', () => {
+  app._setLocalDeviceIdForTests('local-device');
+  assert.strictEqual(app._composeSessionKey('same-name', 0), '0:same-name');
+  assert.notStrictEqual(app._composeSessionKey('same-name', 0), app._composeSessionKey('same-name', ''));
+});
+
 test('bar itself still renders (not hidden) even when input is disabled -- discoverable, not a dead button', async () => {
   app._setViewingSession('s1');
   app._composeSetPref(true);

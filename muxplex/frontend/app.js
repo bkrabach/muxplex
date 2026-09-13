@@ -5671,7 +5671,10 @@ async function openSession(name, opts = {}) {
   // to the session they just switched away from.
   var isLocal = !opts.isFollow;
   if (isLocal) _pendingLocalSwitches++;
-  _composeStoreActiveDraft();
+  // Transfer the old owner before assigning B or awaiting its connection.
+  // Failed-connect cleanup must never save the emptied B textarea over B's
+  // already-saved draft.
+  _composeCaptureAndClearForTransition();
   hidePreview();
   _viewingSession = name;
   _viewingRemoteId = opts.remoteId != null ? opts.remoteId : '';
@@ -5754,10 +5757,10 @@ async function openSession(name, opts = {}) {
     if (isLocal) _pendingLocalSwitches--;
     if (err && err.status === 409 && err.body && err.body.terminal_conflict) {
       showTerminalConflictDialog(name, err.body);
-      return closeSession();
+      return closeSession({ storeDraft: false });
     }
     showToast(err.message || 'Connection failed');
-    return closeSession();
+    return closeSession({ storeDraft: false });
   }
 
   // Persist active_remote_id so restoreState() can reopen remote sessions after page refresh.
@@ -5786,8 +5789,11 @@ async function openSession(name, opts = {}) {
  * Close the current session and return to the grid view.
  * @returns {Promise<void>}
  */
-function closeSession() {
-  _composeStoreActiveDraft();
+function closeSession(opts = {}) {
+  // A user close saves the current owner. openSession() has already saved A
+  // before attempting B, so its failed-connect cleanup only clears the view.
+  if (opts.storeDraft !== false) _composeCaptureAndClearForTransition();
+  else _composeClearDraft();
   _viewMode = 'grid';
   _viewingSession = null;
   _composeOnSessionClose();
@@ -6030,6 +6036,11 @@ const COMPOSE_LOCAL_FALLBACK_DEVICE_ID = '__muxplex-local__';
 const _composeDrafts = new Map();
 let _composeSendInFlightKey = null;
 
+/** `0` is a valid federation id, so remote is never a truthiness test. */
+function _composeIsRemoteId(remoteId) {
+  return remoteId !== '' && remoteId !== null && remoteId !== undefined;
+}
+
 /**
  * Return the device-qualified identity for the currently viewed session.
  *
@@ -6043,7 +6054,9 @@ let _composeSendInFlightKey = null;
  */
 function _composeSessionKey(name, remoteId) {
   if (!name) return null;
-  var deviceId = remoteId || _localDeviceId || COMPOSE_LOCAL_FALLBACK_DEVICE_ID;
+  var deviceId = _composeIsRemoteId(remoteId)
+    ? String(remoteId)
+    : (_localDeviceId || COMPOSE_LOCAL_FALLBACK_DEVICE_ID);
   var key = buildSessionKey(deviceId, name);
   if (_localDeviceId) {
     var fallbackPrefix = COMPOSE_LOCAL_FALLBACK_DEVICE_ID + ':';
@@ -6070,6 +6083,12 @@ function _composeStoreDraft(key, value) {
 function _composeStoreActiveDraft() {
   var input = $('compose-input');
   if (input) _composeStoreDraft(_composeActiveKey(), input.value);
+}
+
+/** Save the outgoing owner's text, then clear the shared textarea. */
+function _composeCaptureAndClearForTransition() {
+  _composeStoreActiveDraft();
+  _composeClearDraft();
 }
 
 function _composeClearSubmittedDraft(key, raw) {
@@ -6196,19 +6215,27 @@ function _composeRenderEnabledState() {
   var queueBtn = $('compose-queue-btn');
   var notice = $('compose-notice');
   if (!bar) return;
-  var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
+  var remote = _composeIsRemoteId(_viewingRemoteId);
+  // There is no federation /input proxy. Posting a remote same-named session
+  // to the local endpoint would silently type into the wrong pane.
+  var enabled = !remote && !!(_serverSettings && _serverSettings.input_enabled === true);
   bar.classList.toggle('compose-bar--disabled', !enabled);
   if (input) input.disabled = !enabled;
   if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlightKey === _composeActiveKey();
   if (queueBtn) {
     // Follow-ups run only on the host that owns the session (spec §8) --
     // never offered for a remote-viewed session.
-    queueBtn.disabled = !enabled || !!_viewingRemoteId;
-    queueBtn.title = _viewingRemoteId
+    queueBtn.disabled = !enabled || remote;
+    queueBtn.title = remote
       ? 'Follow-ups run on the host that owns the session'
       : 'Add to follow-ups (Ctrl+Shift+Enter)';
   }
-  if (notice) notice.classList.toggle('hidden', enabled);
+  if (notice) {
+    notice.classList.toggle('hidden', enabled);
+    notice.textContent = remote
+      ? 'Remote session input is unavailable here. Your draft stays in this browser for this remote session.'
+      : 'Session input is disabled on this server (input_enabled is false). An operator can turn it on by editing input_enabled and input_allowed_sessions in ~/.config/muxplex/settings.json on the host.';
+  }
   _sttRenderButton();
 }
 
@@ -6235,10 +6262,10 @@ function _composeShowError(msg) {
 }
 
 /**
- * Clear the draft and any error, and reset in-flight bookkeeping. Called
- * on session open (a NEW session never inherits a previous one's draft --
- * see docs/plans/2026-08-05-mobile-compose-bar-plan.md §7.6, deliberately
- * in-memory only, never localStorage) and on session close.
+ * Clear the shared textarea and any error. The outgoing value is captured
+ * before this runs during a session transition; session open then restores
+ * only the new owner's in-memory draft. Drafts are deliberately never sent
+ * to localStorage.
  */
 function _composeClearDraft() {
   var input = $('compose-input');
@@ -6371,7 +6398,7 @@ function _composeKeydown(e) {
  */
 function _followupsQueueKeydown(e) {
   if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
-  if (!_viewingSession || _viewingRemoteId) return; // no session open, or a remote view
+  if (!_viewingSession || _composeIsRemoteId(_viewingRemoteId)) return; // no session open, or a remote view
   var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
   if (!enabled) return; // matches compose-queue-btn's own disabled state
   e.preventDefault();
@@ -6440,6 +6467,12 @@ async function _composeSend() {
   var targetKey = _composeActiveKey();
   if (_composeSendInFlightKey === targetKey) return;
   var targetSession = _viewingSession;
+  var targetRemoteId = _viewingRemoteId;
+  if (_composeIsRemoteId(targetRemoteId)) {
+    _composeStoreDraft(targetKey, input.value);
+    _composeShowError('Remote session input is unavailable here. Your draft is still saved for this remote session.');
+    return;
+  }
   var raw = input.value;
   var normalized = _composeNormalizeText(input.value);
   if (!normalized.trim()) {
@@ -6632,6 +6665,8 @@ let _sttInterimLength = 0;          // length of the text currently written at _
 let _sttUserStopped = false;        // true only across an explicit _sttStop()/_sttForceStop() call
 let _sttSuppressEndMessage = false; // true once onerror (or a forced stop) already rendered a specific message
 let _sttConsentPending = false;     // true while #compose-cloud-consent is showing, awaiting the user's choice
+let _sttOwnerKey = null;            // compose identity captured when recognition starts
+let _sttGeneration = 0;             // invalidates callbacks from an aborted owner
 
 /**
  * The constructor the current browser exposes, or null. A tiny indirection
@@ -6751,7 +6786,8 @@ function _sttRenderButton() {
   btn.classList.toggle('compose-bar__mic--downloading', downloading);
   btn.classList.toggle('compose-bar__mic--cloud', cloud);
   btn.setAttribute('aria-pressed', listening ? 'true' : 'false');
-  btn.disabled = downloading || !(_serverSettings && _serverSettings.input_enabled === true);
+  btn.disabled = downloading || _composeIsRemoteId(_viewingRemoteId) ||
+    !(_serverSettings && _serverSettings.input_enabled === true);
   if (downloading) {
     btn.title = cloud ? 'Downloading\u2026' : 'Downloading on-device speech model\u2026';
   } else if (listening) {
@@ -6936,7 +6972,8 @@ function _sttApplyTranscript(input, results) {
  * without changing behavior for an engine that never re-delivers results.
  * @param {SpeechRecognitionEvent} event
  */
-function _sttHandleResult(event) {
+function _sttHandleResult(event, ownerKey, generation) {
+  if (ownerKey != null && (ownerKey !== _composeActiveKey() || generation !== _sttGeneration)) return;
   var input = $('compose-input');
   if (!input || !event || !event.results) return;
   _sttApplyTranscript(input, event.results);
@@ -6952,7 +6989,8 @@ function _sttHandleResult(event) {
  * doesn't ALSO render a second, more generic message for the same failure.
  * @param {SpeechRecognitionErrorEvent} event
  */
-function _sttHandleError(event) {
+function _sttHandleError(event, ownerKey, generation) {
+  if (ownerKey != null && (ownerKey !== _composeActiveKey() || generation !== _sttGeneration)) return;
   _sttSuppressEndMessage = true;
   var code = event && event.error;
   switch (code) {
@@ -7000,7 +7038,8 @@ function _sttHandleError(event) {
  * 'end'/'no-speech' is a documented trap that gets the origin
  * rate-limited by the browser. Only an explicit click resumes dictation.
  */
-function _sttHandleEnd() {
+function _sttHandleEnd(ownerKey, generation) {
+  if (ownerKey != null && (ownerKey !== _composeActiveKey() || generation !== _sttGeneration)) return;
   var wasUserStopped = _sttUserStopped;
   var suppressed = _sttSuppressEndMessage;
   _sttRecognition = null;
@@ -7034,6 +7073,9 @@ function _sttStart() {
   _sttInterimLength = 0;
   _sttUserStopped = false;
   _sttSuppressEndMessage = false;
+  _sttOwnerKey = _composeActiveKey();
+  var ownerKey = _sttOwnerKey;
+  var generation = ++_sttGeneration;
 
   var recognition;
   try {
@@ -7049,9 +7091,9 @@ function _sttStart() {
     if (phrases) {
       try { recognition.phrases = phrases; } catch (_) { /* optional biasing -- ignore if the setter rejects it */ }
     }
-    recognition.onresult = _sttHandleResult;
-    recognition.onerror = _sttHandleError;
-    recognition.onend = _sttHandleEnd;
+    recognition.onresult = function(event) { _sttHandleResult(event, ownerKey, generation); };
+    recognition.onerror = function(event) { _sttHandleError(event, ownerKey, generation); };
+    recognition.onend = function() { _sttHandleEnd(ownerKey, generation); };
     recognition.start();
   } catch (e) {
     _sttRecognition = null;
@@ -7086,6 +7128,10 @@ function _sttStop() {
  */
 function _sttForceStop() {
   if (!_sttRecognition) return;
+  // Chromium can deliver a final result after abort(). Invalidate it before
+  // calling abort so it cannot land in a newly-selected session's textarea.
+  _sttGeneration++;
+  _sttOwnerKey = null;
   _sttUserStopped = true;
   _sttSuppressEndMessage = true;
   try { _sttRecognition.abort(); } catch (_) { /* already stopped */ }
@@ -7202,7 +7248,7 @@ let _followupsData = null; // last GET .../followups response for _viewingSessio
  * queue affordance is absent, not present-and-failing, for a remote view.
  */
 async function _followupsRefresh() {
-  if (!_viewingSession || _viewingRemoteId) {
+  if (!_viewingSession || _composeIsRemoteId(_viewingRemoteId)) {
     _followupsData = null;
     _followupsRender();
     return;
@@ -7411,6 +7457,11 @@ async function _followupsQueueDraft() {
   var targetKey = _composeActiveKey();
   var targetSession = _viewingSession;
   var raw = input.value;
+  if (_composeIsRemoteId(_viewingRemoteId)) {
+    _composeStoreDraft(targetKey, raw);
+    _composeShowError('Remote session input is unavailable here. Your draft is still saved for this remote session.');
+    return;
+  }
   var normalized = _composeNormalizeText(input.value);
   if (!normalized.trim()) {
     _composeShowError('Nothing to queue.');
@@ -11205,10 +11256,12 @@ if (typeof module !== 'undefined' && module.exports) {
     _composeHideError,
     _composeShowError,
     _composeClearDraft,
+    _composeIsRemoteId,
     _composeSessionKey,
     _composeActiveKey,
     _composeStoreDraft,
     _composeStoreActiveDraft,
+    _composeCaptureAndClearForTransition,
     _composeClearSubmittedDraft,
     _composeDrafts,
     _composeOnSessionOpen,

@@ -2333,6 +2333,68 @@ test('openSession shows toast and calls closeSession on connect failure', async 
   globalThis.setTimeout = origSetTimeout;
 });
 
+test('openSession saves A before a failing B connect and rejects late A dictation', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const origSpeechRecognition = globalThis.window.SpeechRecognition;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const generic = {
+    textContent: '', style: {}, classList: classes, disabled: false,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  const composeInput = {
+    value: 'draft A', style: {}, classList: classes, disabled: false, selectionStart: 7,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+    setSelectionRange: () => {},
+  };
+  let recognition;
+  let connectObserved = false;
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._composeDrafts.set('local-device:beta', 'saved B');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+  app._setSttStatus('available');
+  app._setSttMode('ondevice');
+  app._sttSetState('idle');
+  globalThis.window.SpeechRecognition = function() {
+    recognition = this;
+    this.start = () => {};
+    this.abort = () => {};
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.fetch = async (url) => {
+    if (url.includes('/connect')) {
+      connectObserved = true;
+      assert.strictEqual(app._composeDrafts.get('local-device:alpha'), 'draft A');
+      assert.strictEqual(composeInput.value, '', 'A must be cleared before B identity is assigned');
+      throw new Error('B connect failed');
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._sttStart();
+  await app.openSession('beta', { skipAnimation: true });
+  recognition.onresult({ results: [{ 0: { transcript: 'late A' }, isFinal: true }] });
+
+  assert.strictEqual(connectObserved, true);
+  assert.strictEqual(app._composeDrafts.get('local-device:alpha'), 'draft A');
+  assert.strictEqual(app._composeDrafts.get('local-device:beta'), 'saved B');
+  assert.strictEqual(composeInput.value, '', 'late A recognition must not contaminate B or the closed view');
+
+  app._setSttRecognition(null);
+  app._sttSetState('idle');
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.window.SpeechRecognition = origSpeechRecognition;
+});
+
 test('openSession with remoteId POSTs connect to federation proxy URL', async () => {
   const fetchCalls = [];
   const origFetch = globalThis.fetch;

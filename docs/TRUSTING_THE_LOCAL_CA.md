@@ -88,10 +88,15 @@ Get-ChildItem Cert:\CurrentUser\Root | Where-Object Subject -like "*muxplex Loca
 
 ### macOS (Safari / Chrome / Edge)
 
+On a macOS **client**, download `muxplex-ca.crt` from the muxplex server's
+`/setup` page (or copy that public CA file to the client), then point
+`CA_FILE` at the client-side copy:
+
 ```sh
+CA_FILE="$HOME/Downloads/muxplex-ca.crt"
 sudo security add-trusted-cert -d -r trustRoot \
     -k /Library/Keychains/System.keychain \
-    ~/.config/muxplex/ca/muxplex-ca.crt
+    "$CA_FILE"
 ```
 
 This adds the CA to the System keychain and marks it as trusted for SSL. Safari, Chrome, and Edge all use the system keychain. Firefox uses its own store — see below.
@@ -110,8 +115,13 @@ sudo security delete-certificate -c "muxplex Local CA" /Library/Keychains/System
 
 ### Linux (system-wide)
 
+On a Linux **client**, download `muxplex-ca.crt` from the muxplex server's
+`/setup` page (or copy that public CA file to the client), then set `CA_FILE`
+to the client-side copy:
+
 ```sh
-sudo cp ~/.config/muxplex/ca/muxplex-ca.crt /usr/local/share/ca-certificates/muxplex-ca.crt
+CA_FILE="$HOME/Downloads/muxplex-ca.crt"
+sudo cp "$CA_FILE" /usr/local/share/ca-certificates/muxplex-ca.crt
 sudo update-ca-certificates
 ```
 
@@ -120,7 +130,7 @@ This covers the system trust store used by `curl`, `git`, etc., and Chrome / Chr
 For RPM-based systems (Fedora, RHEL):
 
 ```sh
-sudo cp ~/.config/muxplex/ca/muxplex-ca.crt /etc/pki/ca-trust/source/anchors/muxplex-ca.crt
+sudo cp "$CA_FILE" /etc/pki/ca-trust/source/anchors/muxplex-ca.crt
 sudo update-ca-trust
 ```
 

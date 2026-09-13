@@ -2274,6 +2274,16 @@ def _wsl_ca_unc_path(ca_cert_path: Path) -> str | None:
     return r"\\wsl.localhost" + "\\" + distro + str(ca_cert_path).replace("/", "\\")
 
 
+def _powershell_single_quoted(value: str) -> str:
+    """Quote one literal for a PowerShell single-quoted argument.
+
+    PowerShell escapes an embedded apostrophe by doubling it.  The WSL distro
+    name comes from the environment, so emitting it between bare quotes would
+    turn a copyable CA-install command into syntactically different code.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _read_remote_tmux_kit_pin(repo_url: str, ref: str) -> tuple[str | None, str | None]:
     """Shallow-clone `repo_url` at `ref` and read its pyproject.toml's own
     `tmux-kit==X.Y.Z` dependency pin.
@@ -4077,7 +4087,7 @@ def setup_tls(method: str = "auto") -> None:
         print("  Windows (PowerShell, no admin needed):")
         if wsl_ca_path:
             print(
-                f"    Import-Certificate -FilePath '{wsl_ca_path}' "
+                f"    Import-Certificate -FilePath {_powershell_single_quoted(wsl_ca_path)} "
                 "-CertStoreLocation Cert:\\CurrentUser\\Root"
             )
         else:
@@ -4087,13 +4097,13 @@ def setup_tls(method: str = "auto") -> None:
                 " into Cert:\\CurrentUser\\Root."
             )
         print()
-        print("  macOS:")
+        print("  macOS (when this command runs on that client/server host):")
         print(
             "    sudo security add-trusted-cert -d -r trustRoot "
             f"-k /Library/Keychains/System.keychain {shell_ca_path}"
         )
         print()
-        print("  Linux (system-wide):")
+        print("  Linux (system-wide, when this command runs on that client/server host):")
         print(f"    sudo cp {shell_ca_path} /usr/local/share/ca-certificates/")
         print("    sudo update-ca-certificates")
         print()
