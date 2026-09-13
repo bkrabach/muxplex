@@ -63,11 +63,13 @@ from muxplex.breaker import CircuitBreaker
 from muxplex.identity import load_device_id
 from muxplex.manifest import (
     clear_rename_journal,
+    clear_rename_journal_persisted,
     get_created_with,
     load_manifest,
+    manifest_write_lock,
     save_manifest,
     set_created_with,
-    start_rename_journal,
+    start_rename_journal_persisted,
     update_manifest,
 )
 from muxplex.pruning import load_pruning_state, save_pruning_state
@@ -78,6 +80,7 @@ from muxplex.sessions import (
     capture_pane_metadata,
     capture_pane_window,
     enumerate_sessions,
+    enumerate_sessions_strict,
     get_session_activity,
     get_session_created_times,
     get_session_cwds,
@@ -513,7 +516,13 @@ async def _run_poll_cycle() -> None:
 
     async with state_lock:
         # 1. Enumerate live tmux sessions
-        names = await enumerate_sessions()
+        try:
+            names = await enumerate_sessions_strict()
+        except (RuntimeError, FileNotFoundError) as exc:
+            _log.warning(
+                "poll: tmux inventory unavailable; retaining last known state: %s", exc
+            )
+            return
         name_set = set(names)
 
         # 1b. Update the session-presence manifest -- durable record of
@@ -543,7 +552,8 @@ async def _run_poll_cycle() -> None:
         _rename_kill_old: str | None = None
         try:
             _epoch_now = await probe_tmux_epoch()
-            _manifest = load_manifest()
+            with manifest_write_lock():
+                _manifest = load_manifest()
 
             # 1c. Honor an in-flight session-rename journal, BEFORE
             # update_manifest() touches this same manifest below (see
@@ -573,20 +583,26 @@ async def _run_poll_cycle() -> None:
                         _rj_settings = load_settings()
                         _rj_pruning = load_pruning_state()
                         _rj_device_id = load_device_id()
-                        _manifest, _rj_migrated = _migrate_session_name(
-                            _rj_state,
-                            _rj_settings,
-                            _manifest,
-                            _rj_pruning,
-                            _rj_from,
-                            _rj_to,
-                            _rj_device_id,
-                        )
-                        _manifest = clear_rename_journal(_manifest)
-                        save_state(_rj_state)
-                        save_settings(_rj_settings)
-                        save_pruning_state(_rj_pruning)
-                        save_manifest(_manifest)
+                        # Lock order is settings then manifest whenever both
+                        # are needed. The manifest is loaded only after its
+                        # lock is held, so a restore cannot be overwritten by
+                        # this migration's stale pending_restore snapshot.
+                        with manifest_write_lock():
+                            _manifest = load_manifest()
+                            _manifest, _rj_migrated = _migrate_session_name(
+                                _rj_state,
+                                _rj_settings,
+                                _manifest,
+                                _rj_pruning,
+                                _rj_from,
+                                _rj_to,
+                                _rj_device_id,
+                            )
+                            _manifest = clear_rename_journal(_manifest)
+                            save_state(_rj_state)
+                            save_settings(_rj_settings)
+                            save_pruning_state(_rj_pruning)
+                            save_manifest(_manifest)
                     _rename_kill_old = _rj_from
                     _log.info(
                         "rename: poll cycle completed in-flight migration "
@@ -602,8 +618,10 @@ async def _run_poll_cycle() -> None:
                     # nothing else. The cold-start/tombstone paths below
                     # already handle a dead session; a never-happened
                     # rename has nothing to migrate.
-                    _manifest = clear_rename_journal(_manifest)
-                    save_manifest(_manifest)
+                    with manifest_write_lock():
+                        _manifest = load_manifest()
+                        _manifest = clear_rename_journal(_manifest)
+                        save_manifest(_manifest)
                     _log.warning(
                         "rename: clearing stale in-flight journal %r -> %r "
                         "(to_live=%s, from_live=%s)",
@@ -617,11 +635,16 @@ async def _run_poll_cycle() -> None:
             # populated above (same tmux call, no extra subprocess) -- see
             # manifest.py's "Restore fidelity" section for why this is
             # recorded at all.
-            _manifest, _manifest_changed = update_manifest(
-                _manifest, _epoch_now, names, cwds=get_session_cwds()
-            )
-            if _manifest_changed:
-                save_manifest(_manifest)
+            # The normal poll update and restore are distinct processes. Hold
+            # the manifest-specific lock across this local RMW so a stale poll
+            # snapshot cannot re-add a name restore has already cleared.
+            with manifest_write_lock():
+                _manifest = load_manifest()
+                _manifest, _manifest_changed = update_manifest(
+                    _manifest, _epoch_now, names, cwds=get_session_cwds()
+                )
+                if _manifest_changed:
+                    save_manifest(_manifest)
         except Exception:
             _log.exception("session-presence manifest update error")
 
@@ -2291,9 +2314,10 @@ async def create_session(payload: CreateSessionPayload) -> dict:
     # behavior. Note: command["id"], not payload.command_id -- normalizes None
     # to the literal "default" so the record is always explicit.
     async with state_lock:
-        manifest = load_manifest()
-        manifest = set_created_with(manifest, effective_name, command["id"])
-        save_manifest(manifest)
+        with manifest_write_lock():
+            manifest = load_manifest()
+            manifest = set_created_with(manifest, effective_name, command["id"])
+            save_manifest(manifest)
 
     # `name` stays the field every existing client reads (app.js does
     # `data.name || name`), so returning the observed name here is what
@@ -3379,7 +3403,6 @@ async def rename_session(
 
     async with state_lock:
         state = load_state()
-        manifest = load_manifest()
 
         # \u00a77.2: a stale follow-up queue under new_name is user-authored text
         # queued for a DIFFERENT session -- the one keyspace where reusing
@@ -3399,16 +3422,6 @@ async def rename_session(
 
         # \u00a77.2: new_name is queued for restore -- taking the name now would
         # make a later `muxplex restore` fail confusingly.
-        pending = manifest.get("pending_restore") or {}
-        if new_name in (pending.get("sessions") or {}):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "detail": f"Session {new_name!r} is pending restore.",
-                    "pending_restore_conflict": True,
-                },
-            )
-
         # 5. Send-in-flight check -- reusing the existing precondition
         # rather than inventing a second one (\u00a77.4). This is also what
         # guarantees `_followup_sending` never contains `name` at migration
@@ -3426,8 +3439,14 @@ async def rename_session(
             )
 
         # ---- 6. Write journal, fsync'd, BEFORE anything else changes ----
-        manifest = start_rename_journal(manifest, name, new_name)
-        save_manifest(manifest)
+        if start_rename_journal_persisted(name, new_name) is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": f"Session {new_name!r} is pending restore.",
+                    "pending_restore_conflict": True,
+                },
+            )
 
     # ---- 7. tmux rename-session -t =<old> -- <new> (argv, no shell) ----
     try:
@@ -3437,9 +3456,7 @@ async def rename_session(
         # pre-flight check and this call. Nothing on tmux's side changed;
         # clear the journal, migrate nothing.
         async with state_lock:
-            manifest = load_manifest()
-            manifest = clear_rename_journal(manifest)
-            save_manifest(manifest)
+            clear_rename_journal_persisted()
         _log.warning("rename: tmux refused %r -> %r: %s", name, new_name, exc)
         raise HTTPException(
             status_code=409,
@@ -3474,9 +3491,7 @@ async def rename_session(
 
     if observed is None:
         async with state_lock:
-            manifest = load_manifest()
-            manifest = clear_rename_journal(manifest)
-            save_manifest(manifest)
+            clear_rename_journal_persisted()
         raise HTTPException(
             status_code=500,
             detail={
@@ -3502,25 +3517,27 @@ async def rename_session(
         with settings_write_lock():
             state = load_state()
             settings = load_settings()
-            manifest = load_manifest()
             pruning_state = load_pruning_state()
             local_device_id = load_device_id()
+            # Keep settings -> manifest as the global lock order. No await
+            # occurs in either critical section.
+            with manifest_write_lock():
+                manifest = load_manifest()
+                manifest, migrated = _migrate_session_name(
+                    state,
+                    settings,
+                    manifest,
+                    pruning_state,
+                    name,
+                    observed,
+                    local_device_id,
+                )
+                manifest = clear_rename_journal(manifest)
 
-            manifest, migrated = _migrate_session_name(
-                state,
-                settings,
-                manifest,
-                pruning_state,
-                name,
-                observed,
-                local_device_id,
-            )
-            manifest = clear_rename_journal(manifest)
-
-            save_state(state)
-            save_settings(settings)
-            save_manifest(manifest)
-            save_pruning_state(pruning_state)
+                save_state(state)
+                save_settings(settings)
+                save_manifest(manifest)
+                save_pruning_state(pruning_state)
 
     # ---- 10. kill_ttyd(old) (\u00a72.4) -- outside state_lock, like every other
     # subprocess call. Never touches the tmux session; the browser's WS

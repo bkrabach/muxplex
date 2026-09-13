@@ -26,14 +26,13 @@ The one thing this design choice must still account for: the manifest file
 CAN be concurrently written by a *running* muxplex service's poll loop while
 `muxplex restore` is executing (the service does not need to be stopped to
 run a restore -- and per the user's explicit instruction, it must never be
-stopped/restarted by this feature). See `_persist_restored()` below for how
-the write-side race is kept to a near-zero window without requiring a
-cross-process lock: every write re-reads the manifest immediately beforehand
-and touches ONLY the `pending_restore` field, never `sessions`/`epoch` (which
-belong to the poll loop). Losing a poll cycle's `sessions` update to this
-race is self-healing (the next ~2s poll cycle simply re-observes the still-
-live session); losing track of a name we just restored is not, which is why
-that field gets the careful treatment.
+stopped/restarted by this feature). `_persist_restored()` and the poll's
+manifest update each take the manifest-specific sidecar lock around their
+whole synchronous read-modify-write. This prevents a stale poll snapshot from
+re-adding a name restore has cleared, without holding a blocking lock across
+an await. Each writer still touches only its own fields where possible:
+`sessions`/`epoch` belong to the poll loop, and restore changes only
+`pending_restore`.
 
 Restore fidelity for sessions with no recorded command (2026-08-05)
 --------------------------------------------------------------------
@@ -95,6 +94,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Literal
 
 from muxplex.manifest import (
@@ -104,10 +104,16 @@ from muxplex.manifest import (
     get_renamed_from,
     get_restore_cwd,
     load_manifest,
+    manifest_write_lock,
     mark_restored,
     save_manifest,
 )
-from muxplex.sessions import enumerate_sessions, run_tmux, spawn_session_command
+from muxplex.sessions import (
+    enumerate_sessions,
+    enumerate_sessions_strict,
+    run_tmux,
+    spawn_session_command,
+)
 from muxplex.settings import find_session_command
 
 Status = Literal["ok", "fail", "warn"]
@@ -327,18 +333,19 @@ async def _probe_windows(name: str) -> int | None:
 
 
 async def _persist_restored(restored_names: set[str]) -> None:
-    """Clear *restored_names* from `pending_restore`, re-reading the manifest
-    immediately beforehand to minimize the window against a concurrently
-    running poll loop (see module docstring). Only `pending_restore` is
-    touched; `sessions`/`epoch` are carried through UNCHANGED from whatever
-    is on disk at write time, so a poll-loop write racing this one is never
-    clobbered outside that one field.
+    """Durably clear *restored_names* from ``pending_restore``.
+
+    The manifest-specific sidecar lock covers the entire local read-modify-
+    write, rather than merely the atomic replacement. It never spans an
+    await, so this cannot park the event loop while waiting for a competing
+    restore process.
     """
     if not restored_names:
         return
-    manifest = load_manifest()
-    updated = mark_restored(manifest, restored_names)
-    save_manifest(updated)
+    with manifest_write_lock():
+        manifest = load_manifest()
+        updated = mark_restored(manifest, restored_names)
+        save_manifest(updated)
 
 
 async def forget() -> int:
@@ -356,7 +363,12 @@ async def forget() -> int:
     return len(names)
 
 
-async def execute_restore(names: list[str], *, force: bool = False) -> RestoreReport:
+async def execute_restore(
+    names: list[str],
+    *,
+    force: bool = False,
+    on_result: Callable[[SessionResult], None] | None = None,
+) -> RestoreReport:
     """Actually create each session in *names*, sequentially, verifying each
     one as it goes. This is the only function in this module that creates
     or kills anything.
@@ -383,13 +395,18 @@ async def execute_restore(names: list[str], *, force: bool = False) -> RestoreRe
     flag for the identical "I know what I'm doing" intent.
     """
     report = RestoreReport()
-    restored: set[str] = set()
+
+    def record_result(result: SessionResult) -> None:
+        """Append, then stream one result after its durable work is complete."""
+        report.results.append(result)
+        if on_result is not None:
+            on_result(result)
 
     for name in names:
         # Load the manifest INSIDE the loop (not once before it): restore is
         # explicitly designed to run while the poll loop is live, and a
-        # per-iteration read is consistent with _persist_restored()'s
-        # read-right-before-write discipline.
+        # per-iteration read means every fidelity decision sees the latest
+        # persisted restore state.
         current_manifest = load_manifest()
 
         if not force:
@@ -400,7 +417,7 @@ async def execute_restore(names: list[str], *, force: bool = False) -> RestoreRe
             # substitutes {name} into a path, not only the default one.
             renamed_error = _check_renamed_restore_fidelity(name, current_manifest)
             if renamed_error is not None:
-                report.results.append(
+                record_result(
                     SessionResult(name=name, status="fail", detail=renamed_error)
                 )
                 continue
@@ -414,7 +431,7 @@ async def execute_restore(names: list[str], *, force: bool = False) -> RestoreRe
             # module's docstring and _check_unrecorded_restore_fidelity()'s.
             fidelity_error = _check_unrecorded_restore_fidelity(name, current_manifest)
             if fidelity_error is not None:
-                report.results.append(
+                record_result(
                     SessionResult(name=name, status="fail", detail=fidelity_error)
                 )
                 continue
@@ -426,7 +443,7 @@ async def execute_restore(names: list[str], *, force: bool = False) -> RestoreRe
             # default) would silently reintroduce the exact failure
             # AGENTS.md warns about -- "a bare tmux session ... looks
             # restored and isn't."
-            report.results.append(
+            record_result(
                 SessionResult(
                     name=name,
                     status="fail",
@@ -440,7 +457,7 @@ async def execute_restore(names: list[str], *, force: bool = False) -> RestoreRe
 
         ok, error = await spawn_session_command(name, command_id=recorded)
         if not ok:
-            report.results.append(
+            record_result(
                 SessionResult(name=name, status="fail", detail=error or "unknown error")
             )
             continue
@@ -448,17 +465,30 @@ async def execute_restore(names: list[str], *, force: bool = False) -> RestoreRe
         # Verify against LIVE tmux state -- never trust spawn_session_command's
         # own internal "exists" check as the final word; re-probe here so the
         # report reflects reality at the moment of verification, not creation.
-        live_now = await enumerate_sessions()
+        try:
+            live_now = await enumerate_sessions_strict()
+        except (RuntimeError, FileNotFoundError) as exc:
+            record_result(
+                SessionResult(
+                    name=name,
+                    status="fail",
+                    detail=f"could not verify restored session: {exc}",
+                )
+            )
+            continue
         if name not in live_now:
-            report.results.append(
+            record_result(
                 SessionResult(name=name, status="fail", detail="session did not appear")
             )
             continue
 
         windows = await _probe_windows(name)
-        restored.add(name)
+        # Progress is durable BEFORE this outcome can be reported. If a later
+        # result/reporting failure aborts this run, retry planning sees this
+        # name as complete and never recreates the verified session.
+        await _persist_restored({name})
         if windows is not None and windows <= 1:
-            report.results.append(
+            record_result(
                 SessionResult(
                     name=name,
                     status="warn",
@@ -468,11 +498,8 @@ async def execute_restore(names: list[str], *, force: bool = False) -> RestoreRe
                 )
             )
         else:
-            report.results.append(
+            record_result(
                 SessionResult(name=name, status="ok", windows=windows)
             )
 
-    # Only successfully-verified names are cleared from pending_restore.
-    # Failed names stay pending so a later `muxplex restore` retries them.
-    await _persist_restored(restored)
     return report

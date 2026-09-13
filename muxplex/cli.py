@@ -3429,11 +3429,18 @@ def cmd_restore(
 
     print()
     total = len(plan.names)
-    report = asyncio.run(restore_mod.execute_restore(plan.names, force=force))
-    for i, result in enumerate(report.results, start=1):
+    reported = 0
+
+    def report_progress(result: restore_mod.SessionResult) -> None:
+        nonlocal reported
+        reported += 1
         label = {"ok": "OK", "warn": "WARN", "fail": "FAIL"}[result.status]
         suffix = f"  {result.detail}" if result.detail else ""
-        print(f"  [{i:>2}/{total}] {result.name:<28} {label}{suffix}")
+        print(f"  [{reported:>2}/{total}] {result.name:<28} {label}{suffix}")
+
+    report = asyncio.run(
+        restore_mod.execute_restore(plan.names, force=force, on_result=report_progress)
+    )
 
     print(
         f"\n{report.ok_count} restored, {report.warn_count} with divergences, "

@@ -2557,6 +2557,7 @@ async def test_bell_hook_self_heals_after_startup_failure(monkeypatch):
         return {}
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", mock_enumerate)
     monkeypatch.setattr(main_mod, "snapshot_all", mock_snapshot_all)
     monkeypatch.setattr(main_mod, "update_session_cache", lambda names, snapshots: None)
     monkeypatch.setattr(main_mod, "process_bell_flags", AsyncMock())
@@ -2598,6 +2599,7 @@ async def test_bell_hook_not_retried_once_armed(monkeypatch):
         return {}
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", mock_enumerate)
     monkeypatch.setattr(main_mod, "snapshot_all", mock_snapshot_all)
     monkeypatch.setattr(main_mod, "update_session_cache", lambda names, snapshots: None)
     monkeypatch.setattr(main_mod, "process_bell_flags", AsyncMock())
@@ -2884,6 +2886,7 @@ def _mock_poll_dependencies(monkeypatch, main_mod, *, names, created_times):
         return {}
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", mock_enumerate)
     monkeypatch.setattr(main_mod, "snapshot_all", mock_snapshot_all)
     monkeypatch.setattr(
         main_mod, "get_session_created_times", lambda: dict(created_times)
@@ -7676,6 +7679,7 @@ async def test_poll_cycle_fires_federation_bell_clear_for_remote_session(
         pass
 
     monkeypatch.setattr("muxplex.main.enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr("muxplex.main.enumerate_sessions_strict", mock_enumerate)
     monkeypatch.setattr("muxplex.main.snapshot_all", mock_snapshot_all)
     monkeypatch.setattr(
         "muxplex.main.update_session_cache", lambda names, snapshots: None
@@ -7788,6 +7792,7 @@ async def test_poll_cycle_fires_federation_bell_clear_for_remote_session_with_uu
         pass
 
     monkeypatch.setattr("muxplex.main.enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr("muxplex.main.enumerate_sessions_strict", mock_enumerate)
     monkeypatch.setattr("muxplex.main.snapshot_all", mock_snapshot_all)
     monkeypatch.setattr(
         "muxplex.main.update_session_cache", lambda names, snapshots: None

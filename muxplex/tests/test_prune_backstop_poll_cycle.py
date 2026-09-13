@@ -79,6 +79,7 @@ def _mock_poll_dependencies(monkeypatch):
         return {}
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", mock_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", mock_enumerate)
     monkeypatch.setattr(main_mod, "snapshot_all", mock_snapshot_all)
     monkeypatch.setattr(main_mod, "get_session_created_times", dict)
     monkeypatch.setattr(main_mod, "update_session_cache", lambda names, snaps: None)
