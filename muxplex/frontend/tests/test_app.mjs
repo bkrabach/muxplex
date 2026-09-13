@@ -2420,6 +2420,7 @@ test('openSession A to B retires delayed A dictation before B starts', async () 
   app._composeDrafts.set('local-device:beta', 'saved B');
   app._setViewingSession('alpha');
   app._setViewingRemoteId('');
+  app._setServerSettings({ input_enabled: true });
   app._setSttStatus('available');
   app._setSttMode('ondevice');
   app._sttSetState('idle');
