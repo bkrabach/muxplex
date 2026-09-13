@@ -5789,7 +5789,8 @@ async function openSession(name, opts = {}) {
  * Close the current session and return to the grid view.
  * @returns {Promise<void>}
  */
-function closeSession(opts = {}) {
+function closeSession() {
+  var opts = arguments[0] || {};
   // A user close saves the current owner. openSession() has already saved A
   // before attempting B, so its failed-connect cleanup only clears the view.
   if (opts.storeDraft !== false) _composeCaptureAndClearForTransition();
