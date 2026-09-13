@@ -1,6 +1,6 @@
 # Maintainer handoff — muxplex maintenance
 
-**Ready for independent manager review.** Candidate head: `7e06fab67102a12a4dec03c20e464241c98d6e62` on `lane/muxplex-maintenance` (base: `a4c5aaf58124a418d2412d0118e4d23f95bbeb9b`). Nothing has been pushed and no PR was opened.
+**Ready for independent manager review.** Implementation was verified at `7e06fab67102a12a4dec03c20e464241c98d6e62` on `lane/muxplex-maintenance` (base: `a4c5aaf58124a418d2412d0118e4d23f95bbeb9b`); the immediately following commit records this handoff only. Nothing has been pushed and no PR was opened.
 
 ## Manager-review corrections
 
