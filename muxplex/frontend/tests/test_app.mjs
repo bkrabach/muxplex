@@ -2468,6 +2468,73 @@ test('openSession A to B retires delayed A dictation before B starts', async () 
   globalThis.window.SpeechRecognition = origSpeechRecognition;
 });
 
+test('superseded slow B connection preserves B draft and cannot mount or persist after C wins', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const composeInput = {
+    value: 'draft A', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+  };
+  const generic = {
+    textContent: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  const mounts = [];
+  const calls = [];
+  let resolveB;
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._composeDrafts.set('local-device:beta', 'saved B');
+  app._composeDrafts.set('local-device:gamma', 'saved C');
+  app._setServerSettings({ input_enabled: true });
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (name) => { mounts.push(name); };
+  globalThis.fetch = (url, opts) => {
+    calls.push({ url, opts });
+    if (url.indexOf('/api/sessions/beta/connect') === 0) {
+      return new Promise((resolve) => { resolveB = resolve; });
+    }
+    if (url.indexOf('/followups') !== -1) {
+      return Promise.resolve({ ok: true, json: async () => ({ session: 'gamma', items: [], halted: null }) });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  };
+
+  const openingB = app.openSession('beta', { skipAnimation: true });
+  const openingC = app.openSession('gamma', { skipAnimation: true });
+  await openingC;
+  assert.strictEqual(app._composeDrafts.get('local-device:alpha'), 'draft A');
+  assert.strictEqual(app._composeDrafts.get('local-device:beta'), 'saved B', 'C must not store B’s ownerless blank transition textarea');
+  assert.strictEqual(composeInput.value, 'saved C');
+
+  resolveB({ ok: true, json: async () => ({}) });
+  await openingB;
+  assert.deepStrictEqual(mounts, ['gamma'], 'stale B must not mount after C owns navigation');
+  assert.ok(
+    !calls.some((call) => call.opts && call.opts.method === 'PATCH' &&
+      call.url.indexOf('/api/state') === 0 &&
+      JSON.parse(call.opts.body).active_session === 'beta'),
+    'stale B must not persist active_session after C wins',
+  );
+  assert.strictEqual(composeInput.value, 'saved C', 'late B completion must not overwrite C’s visible draft');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  app._setServerSettings(null);
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  app._composeDrafts.clear();
+});
+
 test('openSession with remoteId POSTs connect to federation proxy URL', async () => {
   const fetchCalls = [];
   const origFetch = globalThis.fetch;
@@ -6025,6 +6092,106 @@ test('openSession with integer remoteId=0 POSTs to federation proxy URL, not loc
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
   globalThis.setTimeout = origSetTimeout;
+});
+
+test('numeric remote id persists as "0" and restores through federation with compose disabled', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const composeInput = {
+    value: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+  };
+  const generic = {
+    textContent: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = () => {};
+  app._setServerSettings({ input_enabled: true });
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    if (url.indexOf('/api/state') === 0 && (!opts || !opts.method || opts.method === 'GET')) {
+      return { ok: true, json: async () => ({ active_session: 'same-name', active_remote_id: 0 }) };
+    }
+    if (url.indexOf('/followups') !== -1) {
+      return { ok: true, json: async () => ({ session: 'same-name', items: [], halted: null }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  await app.restoreState();
+
+  const federationConnect = calls.find((call) => call.url === '/api/federation/0/connect/same-name');
+  const localConnect = calls.find((call) => call.url.indexOf('/api/sessions/same-name/connect') === 0);
+  const statePatch = calls.find((call) => call.opts && call.opts.method === 'PATCH' && call.url.indexOf('/api/state') === 0);
+  assert.ok(federationConnect, 'restoring persisted numeric 0 must use federation/0, not local connect');
+  assert.ok(!localConnect, 'numeric 0 must never fall through to a same-named local session');
+  assert.strictEqual(JSON.parse(statePatch.opts.body).active_remote_id, '0', 'state persistence must retain numeric 0 as a remote id');
+  assert.strictEqual(composeInput.disabled, true, 'restored remote session must keep compose input disabled');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  app._setServerSettings(null);
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+});
+
+test('follow with persisted numeric remote id uses federation and keeps compose disabled', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const composeInput = {
+    value: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+  };
+  const generic = {
+    textContent: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = () => {};
+  app._setServerSettings({ input_enabled: true });
+  app._setViewMode('fullscreen');
+  app._setViewingSession('local-other');
+  app._setViewingRemoteId('');
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    if (url.indexOf('/followups') !== -1) {
+      return { ok: true, json: async () => ({ session: 'same-name', items: [], halted: null }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app.followRemoteActiveSession({ active_session: 'same-name', active_remote_id: 0 });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(calls.some((call) => call.url === '/api/federation/0/connect/same-name'));
+  assert.ok(!calls.some((call) => call.url.indexOf('/api/sessions/same-name/connect') === 0));
+  assert.strictEqual(composeInput.disabled, true);
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  app._setServerSettings(null);
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
 });
 
 test('openSession with integer remoteId=0 passes 0 to window._openTerminal as second arg', async () => {

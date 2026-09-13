@@ -280,6 +280,10 @@ let _viewingSession = null;
 let _viewingRemoteId = '';
 let _viewMode = 'grid';
 let _lastInteractionAt = Date.now() / 1000;
+// Every open/close claims a generation before it starts asynchronous work.
+// A late /connect response is then unable to mount or persist a session which
+// a later navigation has already superseded.
+let _sessionNavigationGeneration = 0;
 // Count of LOCAL session switches (sidebar/grid/sheet click, auto-open after
 // create) whose server-side write hasn't been confirmed yet. openSession()
 // sets _viewingSession synchronously, but the server's active_session doesn't
@@ -1562,7 +1566,7 @@ async function restoreState() {
     if (state.active_session) {
       await openSession(state.active_session, {
         skipAnimation: true,
-        remoteId: state.active_remote_id || '',
+        remoteId: _normalizeRemoteId(state.active_remote_id),
         isFollow: true, // adopting server truth on load, not a fresh local decision
       });
     }
@@ -1740,7 +1744,7 @@ async function pollSessions() {
 function followRemoteActiveSession(state) {
   if (!state || !state.active_session) return;
   if (_viewingSession == null) return; // option (a): never force-open from the grid
-  var remoteId = state.active_remote_id || '';
+  var remoteId = _normalizeRemoteId(state.active_remote_id);
   if (state.active_session === _viewingSession && remoteId === _viewingRemoteId) return;
   // A local switch may still be in flight (see _pendingLocalSwitches' comment):
   // the server hasn't confirmed it yet, so THIS divergence is stale, not a
@@ -5662,6 +5666,11 @@ function updatePageTitle() {
  */
 async function openSession(name, opts = {}) {
   if (!name || !name.trim()) return;
+  var navigationGeneration = ++_sessionNavigationGeneration;
+  // `0` is a real remote id. Normalize every accepted remote identity once,
+  // so equality, persistence, and the compose remote fence cannot later
+  // collapse it through truthiness.
+  var remoteId = _normalizeRemoteId(opts.remoteId);
   // A LOCAL switch (as opposed to adopting a value the server already told us
   // about -- restoreState() on page load, or followRemoteActiveSession()
   // echoing a remote switch, both of which pass isFollow:true). Mark this
@@ -5671,13 +5680,19 @@ async function openSession(name, opts = {}) {
   // to the session they just switched away from.
   var isLocal = !opts.isFollow;
   if (isLocal) _pendingLocalSwitches++;
+  var localSwitchPending = isLocal;
+  function settleLocalSwitch() {
+    if (!localSwitchPending) return;
+    _pendingLocalSwitches--;
+    localSwitchPending = false;
+  }
   // Transfer the old owner before assigning B or awaiting its connection.
   // Failed-connect cleanup must never save the emptied B textarea over B's
   // already-saved draft.
   _composeCaptureAndClearForTransition();
   hidePreview();
   _viewingSession = name;
-  _viewingRemoteId = opts.remoteId != null ? opts.remoteId : '';
+  _viewingRemoteId = remoteId;
   _viewMode = 'fullscreen';
 
   // Pre-render sidebar with current sessions before first poll tick
@@ -5711,6 +5726,10 @@ async function openSession(name, opts = {}) {
   // Start animation concurrently with /connect POST — resolve when view is ready
   var animDone = new Promise(function (resolve) {
     var timerId = setTimeout(function () {
+      if (navigationGeneration !== _sessionNavigationGeneration) {
+        resolve();
+        return;
+      }
       var overview = $('view-overview');
       var expanded = $('view-expanded');
       if (overview) overview.style.display = 'none';
@@ -5745,7 +5764,7 @@ async function openSession(name, opts = {}) {
 
   // Always spawn ttyd for this session — ensures correct session after service restart or page restore
   // _deviceId holds the device_id string (was integer remoteId index in old protocol)
-  var _deviceId = opts.remoteId != null ? opts.remoteId : '';
+  var _deviceId = remoteId;
   try {
     if (_deviceId !== '') {
       // Remote session: route connect POST through same-origin federation proxy
@@ -5754,7 +5773,10 @@ async function openSession(name, opts = {}) {
       await api('POST', withDevice('/api/sessions/' + encodeURIComponent(name) + '/connect'));
     }
   } catch (err) {
-    if (isLocal) _pendingLocalSwitches--;
+    settleLocalSwitch();
+    // A later open/close owns the visible view. A stale connection failure
+    // must not close that view or write its blank transitional textarea.
+    if (navigationGeneration !== _sessionNavigationGeneration) return;
     if (err && err.status === 409 && err.body && err.body.terminal_conflict) {
       showTerminalConflictDialog(name, err.body);
       return closeSession({ storeDraft: false });
@@ -5763,22 +5785,36 @@ async function openSession(name, opts = {}) {
     return closeSession({ storeDraft: false });
   }
 
+  if (navigationGeneration !== _sessionNavigationGeneration) {
+    settleLocalSwitch();
+    return;
+  }
+
+  // Wait for animation to finish (may already be done if /connect was slow).
+  // Do this before state persistence: if a newer navigation wins while this
+  // request waits, this obsolete session never writes state at all.
+  await animDone;
+  if (navigationGeneration !== _sessionNavigationGeneration) {
+    settleLocalSwitch();
+    return;
+  }
+
   // Persist active_remote_id so restoreState() can reopen remote sessions after page refresh.
   // Fire-and-forget for the caller (never awaited -- must not delay terminal mount below), but
   // still tracked so a LOCAL switch's pending flag clears the moment the server confirms this
   // write (success or failure), rather than lingering indefinitely.
-  var statePatch = api('PATCH', withDevice('/api/state'), { active_session: name, active_remote_id: _deviceId || null }).catch(function() {});
+  var statePatch = api('PATCH', withDevice('/api/state'), {
+    active_session: name,
+    active_remote_id: _deviceId !== '' ? _deviceId : null,
+  }).catch(function() {});
   if (isLocal) {
-    statePatch.then(function() { _pendingLocalSwitches--; });
+    statePatch.then(settleLocalSwitch);
   }
 
   // Fire-and-forget bell-clear for remote sessions — acknowledge bells on the remote server
   if (_deviceId !== '') {
     api('POST', '/api/federation/' + encodeURIComponent(_deviceId) + '/sessions/' + encodeURIComponent(name) + '/bell/clear').catch(function() {});
   }
-
-  // Wait for animation to finish (may already be done if /connect was slow)
-  await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
   if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize, _ownDeviceId());
@@ -5791,6 +5827,9 @@ async function openSession(name, opts = {}) {
  */
 function closeSession() {
   var opts = arguments[0] || {};
+  // Retire any in-flight open before it can mount after a user closes the
+  // expanded view. closeSession itself becomes the current navigation.
+  _sessionNavigationGeneration++;
   // A user close saves the current owner. openSession() has already saved A
   // before attempting B, so its failed-connect cleanup only clears the view.
   if (opts.storeDraft !== false) _composeCaptureAndClearForTransition();
@@ -5894,6 +5933,7 @@ function getFocusedSessionName() {
 /** Test-only helper: set _viewingSession directly. */
 function _setViewingSession(name) {
   _viewingSession = name;
+  _composeTextareaOwnerKey = _composeActiveKey();
 }
 
 /**
@@ -5902,6 +5942,7 @@ function _setViewingSession(name) {
  */
 function _setViewingRemoteId(remoteId) {
   _viewingRemoteId = remoteId;
+  _composeTextareaOwnerKey = _composeActiveKey();
 }
 
 /** Test-only helper: set the local server's federation identity directly. */
@@ -6036,10 +6077,19 @@ const COMPOSE_PREF_STORAGE_KEY = 'muxplex-compose-bar'; // legacy key, migration
 const COMPOSE_LOCAL_FALLBACK_DEVICE_ID = '__muxplex-local__';
 const _composeDrafts = new Map();
 const _composeSendInFlightKeys = new Set();
+// The static textarea is only owned after a session-open restore. A transition
+// deliberately leaves it ownerless, so B->C cannot mistake B's cleared
+// transitional textarea for an instruction to delete B's saved draft.
+let _composeTextareaOwnerKey = null;
 
 /** `0` is a valid federation id, so remote is never a truthiness test. */
 function _composeIsRemoteId(remoteId) {
   return remoteId !== '' && remoteId !== null && remoteId !== undefined;
+}
+
+/** Normalize a persisted/federated remote id without collapsing numeric zero. */
+function _normalizeRemoteId(remoteId) {
+  return _composeIsRemoteId(remoteId) ? String(remoteId) : '';
 }
 
 /**
@@ -6083,7 +6133,8 @@ function _composeStoreDraft(key, value) {
 
 function _composeStoreActiveDraft() {
   var input = $('compose-input');
-  if (input) _composeStoreDraft(_composeActiveKey(), input.value);
+  var key = _composeActiveKey();
+  if (input && key && _composeTextareaOwnerKey === key) _composeStoreDraft(key, input.value);
 }
 
 /** Save the outgoing owner's text, then clear the shared textarea. */
@@ -6097,7 +6148,7 @@ function _composeClearSubmittedDraft(key, raw) {
   // guards both typing while a request is pending and an A response arriving
   // after the user has switched to B.
   if (_composeDrafts.get(key) === raw) _composeDrafts.delete(key);
-  if (_composeActiveKey() !== key) return false;
+  if (_composeActiveKey() !== key || _composeTextareaOwnerKey !== key) return false;
   var input = $('compose-input');
   if (!input || input.value !== raw) return false;
   input.value = '';
@@ -6274,6 +6325,7 @@ function _composeClearDraft() {
     input.value = '';
     input.style.height = '';
   }
+  _composeTextareaOwnerKey = null;
   _composeHideError();
   // A live dictation session belongs to the session/draft being cleared --
   // see _sttForceStop()'s docstring for why this is abort(), not stop().
@@ -6305,6 +6357,7 @@ function _composeOnSessionOpen() {
     input.value = _composeDrafts.get(_composeActiveKey()) || '';
     if (input.value) _composeAutoGrow(input);
   }
+  _composeTextareaOwnerKey = _composeActiveKey();
   _composeRender();
   _followupsRefresh();
 }
@@ -11334,6 +11387,7 @@ if (typeof module !== 'undefined' && module.exports) {
     followRemoteActiveSession,
     followRemoteActiveView,
     followRemoteViewDefinitions,
+    restoreState,
     pollActiveState,
     startPolling,
     stopPolling,
