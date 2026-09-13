@@ -434,6 +434,62 @@ def test_restore_uses_recorded_pair(isolated, tmp_path):
     assert (workspace_root / "restored-amp").is_dir()
 
 
+def test_restore_first_configured_template_bootstraps_absent_tmux_server(
+    isolated, tmp_path
+):
+    """A configured restore command can create the server it must then verify.
+
+    Planning begins with no tmux server at all. The first configured template
+    creates both it and the requested session; exact post-spawn verification
+    then clears the frozen pending name.
+    """
+    socket_dir = isolated
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    settings_mod.save_settings(
+        {
+            "session_commands": [
+                {
+                    "id": "amplifier",
+                    "label": "Amplifier",
+                    "new_session_template": _fake_workspace_template(workspace_root),
+                    "delete_session_template": "tmux kill-session -t {name}",
+                }
+            ]
+        }
+    )
+    manifest = manifest_mod.load_manifest()
+    manifest = manifest_mod.set_created_with(manifest, "cold-restore", "amplifier")
+    manifest["pending_restore"] = {
+        "detected_at": time.time(),
+        "lost_epoch": {},
+        "sessions": {"cold-restore": {}},
+    }
+    manifest_mod.save_manifest(manifest)
+
+    assert asyncio.run(probe_tmux_epoch()) is None
+    assert _live_names(socket_dir) == []
+    plan = asyncio.run(restore_mod.load_plan())
+    assert plan is not None
+    assert plan.names == ["cold-restore"]
+    # No fixture bootstrap: the immediately preceding observation confirms
+    # this template, not test setup, starts the isolated tmux server.
+    assert asyncio.run(probe_tmux_epoch()) is None
+
+    report = asyncio.run(restore_mod.execute_restore(plan.names))
+
+    assert report.ok_count == 1
+    assert not report.any_failed
+    assert "cold-restore" in _live_names(socket_dir)
+    assert _window_names(socket_dir, "cold-restore") == [
+        "amplifier",
+        "shell",
+        "git",
+        "files",
+    ]
+    assert manifest_mod.load_manifest()["pending_restore"] is None
+
+
 def test_restore_no_record_uses_default(isolated, tmp_path):
     """Byte-identity for the common, correctly-rooted case: a name with no
     created_with record, whose conventional ~/dev/<name> directory already

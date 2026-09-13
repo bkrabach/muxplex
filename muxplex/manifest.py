@@ -104,14 +104,22 @@ command. See restore.py's module docstring for the refusal itself, and its
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 from muxplex.state import STATE_DIR
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX-only; muxplex requires tmux
+    fcntl = None  # type: ignore[assignment]
 
 # Tmux-lib extraction stage S1 (plan §7.1): the PURE presence rule --
 # _same_epoch / update_manifest / compute_restore_plan / mark_restored and
@@ -137,6 +145,18 @@ from tmux_kit.presence import (  # noqa: F401  (re-exported)
 # Never synced to federation peers -- device-local, like pruning.json.
 MANIFEST_PATH: Path = STATE_DIR / "sessions.json"
 
+# The manifest has two cooperating writer processes: the server poll loop and
+# `muxplex restore`. Atomic replacement prevents torn JSON, but cannot protect
+# a stale load -> mutate -> save from restoring a pending name that restore
+# just cleared. The sidecar lock protects that whole small synchronous window.
+# It is deliberately specific to this one manifest, not a new general
+# transaction layer: the state/settings/pruning files have different writers
+# and consistency rules.
+MANIFEST_LOCK_SUFFIX = ".lock"
+_manifest_lock_guard = threading.RLock()
+_manifest_lock_fd: int | None = None
+_manifest_lock_depth = 0
+
 # How long a pending_restore entry may sit unactioned before `muxplex restore`
 # refuses to act on it without --force (SESSION_PERSISTENCE_DESIGN.md section
 # 7.3, "never restore stale ghosts"). A module constant rather than a setting
@@ -157,6 +177,99 @@ def _empty_manifest() -> dict[str, Any]:
         "created_with": {},
         "rename_in_flight": None,
     }
+
+
+def manifest_lock_path() -> Path:
+    """Return the never-replaced sidecar lock path for ``MANIFEST_PATH``."""
+    return MANIFEST_PATH.parent / f"{MANIFEST_PATH.name}{MANIFEST_LOCK_SUFFIX}"
+
+
+class ManifestWriteLockError(RuntimeError):
+    """A manifest writer could not establish its required exclusive lock."""
+
+
+def _acquire_manifest_flock() -> int:
+    """Take the manifest's exclusive sidecar flock, or fail before a write."""
+    if fcntl is None:  # pragma: no cover - muxplex requires POSIX/tmux
+        raise ManifestWriteLockError("fcntl.flock is unavailable on this platform")
+    path = manifest_lock_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        raise ManifestWriteLockError(
+            f"could not open manifest lock file {path}: {exc}"
+        ) from exc
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        os.close(fd)
+        raise ManifestWriteLockError(
+            f"could not acquire manifest lock file {path}: {exc}"
+        ) from exc
+    return fd
+
+
+@contextlib.contextmanager
+def manifest_write_lock() -> Iterator[bool]:
+    """Serialize a synchronous manifest load -> mutate -> save sequence.
+
+    The lock is re-entrant within this process and cross-process via a
+    sidecar ``flock``. It must never span an ``await``: observe tmux first,
+    then hold this lock only for local file I/O and pure manifest transforms.
+    That keeps the event loop responsive while ensuring a poll's stale
+    snapshot cannot overwrite a restore's already-persisted progress.
+    """
+    global _manifest_lock_fd, _manifest_lock_depth
+    with _manifest_lock_guard:
+        if _manifest_lock_depth > 0:
+            _manifest_lock_depth += 1
+            try:
+                yield _manifest_lock_fd is not None
+            finally:
+                _manifest_lock_depth -= 1
+            return
+
+        fd = _acquire_manifest_flock()
+        _manifest_lock_fd = fd
+        _manifest_lock_depth = 1
+        try:
+            yield True
+        finally:
+            _manifest_lock_depth = 0
+            _manifest_lock_fd = None
+            if fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
+
+def start_rename_journal_persisted(
+    old_name: str, new_name: str, *, now: float | None = None
+) -> dict[str, Any] | None:
+    """Atomically journal a rename unless *new_name* is pending restore.
+
+    This narrowly owns the rename endpoint's manifest read-modify-write. A
+    restore can clear its pending entry immediately before or after this call,
+    but never between this function's conflict check and durable journal.
+    """
+    with manifest_write_lock():
+        manifest = load_manifest()
+        pending = manifest.get("pending_restore") or {}
+        if new_name in (pending.get("sessions") or {}):
+            return None
+        updated = start_rename_journal(manifest, old_name, new_name, now=now)
+        save_manifest(updated)
+        return updated
+
+
+def clear_rename_journal_persisted() -> dict[str, Any]:
+    """Atomically clear the rename journal while retaining fresh manifest data."""
+    with manifest_write_lock():
+        manifest = clear_rename_journal(load_manifest())
+        save_manifest(manifest)
+        return manifest
 
 
 # ---------------------------------------------------------------------------

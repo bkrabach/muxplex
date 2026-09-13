@@ -672,14 +672,15 @@ async def test_snapshot_all_returns_empty_string_on_individual_failure():
 # ---------------------------------------------------------------------------
 
 
-def test_capture_pane_uses_escape_flag():
-    """capture-pane must include -e for ANSI color preservation."""
+def test_capture_pane_preserves_escape_default_when_delegating_to_tmux_kit():
+    """The facade must retain tmux-kit's ANSI-preserving default."""
     import inspect
 
     from muxplex.sessions import capture_pane
 
     source = inspect.getsource(capture_pane)
-    assert '"-e"' in source, "capture_pane must pass -e flag to preserve ANSI escapes"
+    assert "escapes: bool = True" in source
+    assert "escapes=escapes" in source
 
 
 def test_update_session_cache_populates_snapshots():
@@ -912,8 +913,8 @@ async def test_spawn_session_command_escaped_still_honors_tty_attach_recovery():
             new=AsyncMock(return_value=proc),
         ),
         patch(
-            "tmux_kit.spawn.enumerate_sessions",
-            new=AsyncMock(return_value=["my-session"]),
+            "tmux_kit.spawn.session_exists_strict",
+            new=AsyncMock(return_value=True),
         ),
         patch(
             "muxplex.sessions.load_settings",
@@ -1036,8 +1037,8 @@ async def test_spawn_named_pair_still_honors_tty_attach_recovery():
             new=AsyncMock(return_value=proc),
         ),
         patch(
-            "tmux_kit.spawn.enumerate_sessions",
-            new=AsyncMock(return_value=["my-session"]),
+            "tmux_kit.spawn.session_exists_strict",
+            new=AsyncMock(return_value=True),
         ),
         patch(
             "muxplex.sessions.load_settings",

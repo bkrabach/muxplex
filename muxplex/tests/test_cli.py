@@ -610,7 +610,7 @@ def test_cmd_restore_all_already_live_is_a_full_noop(tmp_path, monkeypatch, caps
 
     called = {"execute": False}
 
-    async def fake_execute_restore(names, force=False):
+    async def fake_execute_restore(names, force=False, on_result=None):
         called["execute"] = True
         raise AssertionError(
             "execute_restore must not be called when the plan is empty"
@@ -671,7 +671,7 @@ def test_cmd_restore_declined_confirmation_creates_nothing(
 
     called = {"execute": False}
 
-    async def fake_execute_restore(names, force=False):
+    async def fake_execute_restore(names, force=False, on_result=None):
         called["execute"] = True
         raise AssertionError("must not be called when the user declines")
 
@@ -706,11 +706,12 @@ def test_cmd_restore_yes_skips_prompt_and_executes(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr("builtins.input", fail_input)
 
-    async def fake_execute_restore(names, force=False):
+    async def fake_execute_restore(names, force=False, on_result=None):
         assert names == ["a2a"]
-        return RestoreReport(
-            results=[SessionResult(name="a2a", status="ok", windows=4)]
-        )
+        result = SessionResult(name="a2a", status="ok", windows=4)
+        if on_result is not None:
+            on_result(result)
+        return RestoreReport(results=[result])
 
     monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
 
@@ -741,15 +742,17 @@ def test_cmd_restore_partial_failure_is_loud_and_exits_nonzero(
 
     monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
 
-    async def fake_execute_restore(names, force=False):
-        return RestoreReport(
-            results=[
-                SessionResult(name="good-one", status="ok", windows=4),
-                SessionResult(
-                    name="bad-one", status="fail", detail="session did not appear"
-                ),
-            ]
-        )
+    async def fake_execute_restore(names, force=False, on_result=None):
+        results = [
+            SessionResult(name="good-one", status="ok", windows=4),
+            SessionResult(
+                name="bad-one", status="fail", detail="session did not appear"
+            ),
+        ]
+        if on_result is not None:
+            for result in results:
+                on_result(result)
+        return RestoreReport(results=results)
 
     monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
 
@@ -785,14 +788,13 @@ def test_cmd_restore_warn_divergence_does_not_fail_the_run(
 
     monkeypatch.setattr(restore_mod, "enumerate_sessions", fake_enumerate_sessions)
 
-    async def fake_execute_restore(names, force=False):
-        return RestoreReport(
-            results=[
-                SessionResult(
-                    name="bare-shell", status="warn", detail="windows 1", windows=1
-                )
-            ]
+    async def fake_execute_restore(names, force=False, on_result=None):
+        result = SessionResult(
+            name="bare-shell", status="warn", detail="windows 1", windows=1
         )
+        if on_result is not None:
+            on_result(result)
+        return RestoreReport(results=[result])
 
     monkeypatch.setattr(restore_mod, "execute_restore", fake_execute_restore)
 
@@ -816,7 +818,7 @@ def test_cmd_restore_forget_clears_pending_without_creating_anything(
 
     called = {"execute": False}
 
-    async def fake_execute_restore(names, force=False):
+    async def fake_execute_restore(names, force=False, on_result=None):
         called["execute"] = True
         raise AssertionError("--forget must never call execute_restore")
 
