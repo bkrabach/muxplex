@@ -498,8 +498,6 @@ async def execute_restore(
                 )
             )
         else:
-            record_result(
-                SessionResult(name=name, status="ok", windows=windows)
-            )
+            record_result(SessionResult(name=name, status="ok", windows=windows))
 
     return report

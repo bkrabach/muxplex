@@ -668,7 +668,10 @@ async def test_seeded_bell_isolation_preserved_after_halt_bell_feature(
     monkeypatch.setattr(
         "muxplex.main.enumerate_sessions", AsyncMock(return_value=["seeded-session"])
     )
-    monkeypatch.setattr("muxplex.main.enumerate_sessions_strict", AsyncMock(return_value=["seeded-session"]))
+    monkeypatch.setattr(
+        "muxplex.main.enumerate_sessions_strict",
+        AsyncMock(return_value=["seeded-session"]),
+    )
     monkeypatch.setattr(
         "muxplex.main.probe_tmux_epoch", AsyncMock(return_value={"epoch": 1})
     )
@@ -840,7 +843,9 @@ async def test_get_view_carries_followups_summary(client, monkeypatch):
 
 async def test_reap_only_runs_when_tmux_epoch_confirmed(monkeypatch):
     monkeypatch.setattr("muxplex.main.enumerate_sessions", AsyncMock(return_value=[]))
-    monkeypatch.setattr("muxplex.main.enumerate_sessions_strict", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "muxplex.main.enumerate_sessions_strict", AsyncMock(return_value=[])
+    )
     monkeypatch.setattr("muxplex.main.snapshot_all", AsyncMock(return_value={}))
     monkeypatch.setattr("muxplex.main.update_session_cache", lambda *a, **k: None)
     monkeypatch.setattr("muxplex.main.get_session_created_times", dict)

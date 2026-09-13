@@ -745,7 +745,9 @@ def test_cmd_restore_partial_failure_is_loud_and_exits_nonzero(
     async def fake_execute_restore(names, force=False, on_result=None):
         results = [
             SessionResult(name="good-one", status="ok", windows=4),
-            SessionResult(name="bad-one", status="fail", detail="session did not appear"),
+            SessionResult(
+                name="bad-one", status="fail", detail="session did not appear"
+            ),
         ]
         if on_result is not None:
             for result in results:

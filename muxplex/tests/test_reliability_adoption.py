@@ -22,6 +22,7 @@ from muxplex.manifest import (
 
 def _quiet_poll_dependencies(monkeypatch) -> None:
     """Replace the non-inventory poll work with no-ops for boundary tests."""
+
     async def snapshot_all(_names: list[str]) -> dict[str, str]:
         return {}
 
@@ -67,7 +68,9 @@ async def test_poll_failed_strict_inventory_retains_state_and_followups(monkeypa
     assert cache_updates == []
 
 
-async def test_poll_confirmed_empty_inventory_reconciles_but_retains_followups(monkeypatch):
+async def test_poll_confirmed_empty_inventory_reconciles_but_retains_followups(
+    monkeypatch,
+):
     """A successful empty inventory still performs normal absence reconciliation."""
     _quiet_poll_dependencies(monkeypatch)
     state_mod.save_state(
@@ -77,7 +80,9 @@ async def test_poll_confirmed_empty_inventory_reconciles_but_retains_followups(m
             "active_session": "gone",
             "terminal_session": "gone",
             "devices": {},
-            "followups": {"gone": {"revision": 1, "items": [{"id": "x", "text": "keep"}]}},
+            "followups": {
+                "gone": {"revision": 1, "items": [{"id": "x", "text": "keep"}]}
+            },
         }
     )
 
