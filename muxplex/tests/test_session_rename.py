@@ -400,6 +400,7 @@ def _seed_live_sessions(monkeypatch, names: list[str]) -> None:
         return list(names)
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", _fake_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", _fake_enumerate)
 
 
 def _mock_rename_success(monkeypatch, *, mangled_to: str | None = None):
@@ -736,6 +737,7 @@ async def test_poll_cycle_completes_in_flight_rename(monkeypatch, poll_cycle_env
         return [new_name]
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", _fake_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", _fake_enumerate)
 
     async def _fake_snapshot_all(names):
         return {n: "" for n in names}
@@ -786,6 +788,7 @@ async def test_poll_cycle_reverts_journal_when_rename_never_happened(
         return [old_name]
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", _fake_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", _fake_enumerate)
 
     async def _fake_snapshot_all(names):
         return {n: "" for n in names}
@@ -830,6 +833,7 @@ async def test_poll_cycle_clears_journal_when_session_died_mid_rename(
         return []
 
     monkeypatch.setattr(main_mod, "enumerate_sessions", _fake_enumerate)
+    monkeypatch.setattr(main_mod, "enumerate_sessions_strict", _fake_enumerate)
 
     async def _fake_snapshot_all(names):
         return {}
