@@ -74,6 +74,7 @@ async def test_poll_confirmed_empty_inventory_reconciles_but_retains_followups(m
         {
             "session_order": ["gone"],
             "sessions": {"gone": {"bell": {"unseen_count": 1}}},
+            "active_session": "gone",
             "terminal_session": "gone",
             "followups": {"gone": {"revision": 1, "items": [{"id": "x", "text": "keep"}]}},
         }
@@ -89,6 +90,7 @@ async def test_poll_confirmed_empty_inventory_reconciles_but_retains_followups(m
     state = state_mod.load_state()
     assert state["sessions"] == {}
     assert state["session_order"] == []
+    assert state["active_session"] is None
     assert state["terminal_session"] is None
     assert state["followups"]["gone"]["items"][0]["text"] == "keep"
 
