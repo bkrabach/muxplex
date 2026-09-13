@@ -4087,7 +4087,8 @@ def setup_tls(method: str = "auto") -> None:
         print("  Windows (PowerShell, no admin needed):")
         if wsl_ca_path:
             print(
-                f"    Import-Certificate -FilePath {_powershell_single_quoted(wsl_ca_path)} "
+                "    Import-Certificate -FilePath "
+                f"{_powershell_single_quoted(wsl_ca_path)} "
                 "-CertStoreLocation Cert:\\CurrentUser\\Root"
             )
         else:
@@ -4103,7 +4104,9 @@ def setup_tls(method: str = "auto") -> None:
             f"-k /Library/Keychains/System.keychain {shell_ca_path}"
         )
         print()
-        print("  Linux (system-wide, when this command runs on that client/server host):")
+        print(
+            "  Linux (system-wide, when this command runs on that client/server host):"
+        )
         print(f"    sudo cp {shell_ca_path} /usr/local/share/ca-certificates/")
         print("    sudo update-ca-certificates")
         print()

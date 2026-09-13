@@ -6058,7 +6058,8 @@ def test_wsl_ca_command_quotes_an_apostrophe_in_the_distro_name(monkeypatch, tmp
 
 def test_ca_guide_uses_client_side_ca_paths_for_macos_and_linux():
     """Remote clients must not be told the server's config path exists locally."""
-    guide = (Path(__file__).parents[2] / "docs" / "TRUSTING_THE_LOCAL_CA.md").read_text()
+    guide_path = Path(__file__).parents[2] / "docs" / "TRUSTING_THE_LOCAL_CA.md"
+    guide = guide_path.read_text()
     macos = guide.split("### macOS", 1)[1].split("### Linux", 1)[0]
     linux = guide.split("### Linux", 1)[1].split("### iOS", 1)[0]
     assert 'CA_FILE="$HOME/Downloads/muxplex-ca.crt"' in macos

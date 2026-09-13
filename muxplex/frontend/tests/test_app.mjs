@@ -2388,6 +2388,8 @@ test('openSession saves A before a failing B connect and rejects late A dictatio
 
   app._setSttRecognition(null);
   app._sttSetState('idle');
+  app._setSttStatus(null);
+  app._setSttMode(null);
   globalThis.fetch = origFetch;
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
