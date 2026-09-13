@@ -53,18 +53,24 @@ Re-running `muxplex setup-tls --method ca` is idempotent for the CA: if `~/.conf
 
 ### Windows (Chrome / Edge)
 
-PowerShell, **no admin needed**. Replace `<path-to-ca.crt>` with the path you copied the file to.
+PowerShell, **no admin needed**. On a Windows client, open this muxplex
+server's `/setup` page, download `muxplex-ca.crt`, then import the downloaded
+file.
 
 ```powershell
-Import-Certificate -FilePath <path-to-ca.crt> -CertStoreLocation Cert:\CurrentUser\Root
+Import-Certificate -FilePath "$env:USERPROFILE\Downloads\muxplex-ca.crt" -CertStoreLocation Cert:\CurrentUser\Root
 ```
+
+When muxplex runs in WSL, `muxplex setup-tls --method ca` prints the exact
+quoted Windows UNC path when WSL supplies its distro name. If it cannot name
+the distro, use the `/setup` download above instead of guessing a UNC share.
 
 If you'd rather not type the path, paste the PEM inline:
 
 ```powershell
 $pem = @'
 -----BEGIN CERTIFICATE-----
-... paste PEM contents from ~/.config/muxplex/ca/muxplex-ca.crt ...
+... paste PEM contents from the generated ~/.config/muxplex/ca/muxplex-ca.crt ...
 -----END CERTIFICATE-----
 '@
 $path = "$env:TEMP\muxplex-ca.crt"
@@ -82,10 +88,15 @@ Get-ChildItem Cert:\CurrentUser\Root | Where-Object Subject -like "*muxplex Loca
 
 ### macOS (Safari / Chrome / Edge)
 
+On a macOS **client**, download `muxplex-ca.crt` from the muxplex server's
+`/setup` page (or copy that public CA file to the client), then point
+`CA_FILE` at the client-side copy:
+
 ```sh
+CA_FILE="$HOME/Downloads/muxplex-ca.crt"
 sudo security add-trusted-cert -d -r trustRoot \
     -k /Library/Keychains/System.keychain \
-    /path/to/muxplex-ca.crt
+    "$CA_FILE"
 ```
 
 This adds the CA to the System keychain and marks it as trusted for SSL. Safari, Chrome, and Edge all use the system keychain. Firefox uses its own store — see below.
@@ -104,8 +115,13 @@ sudo security delete-certificate -c "muxplex Local CA" /Library/Keychains/System
 
 ### Linux (system-wide)
 
+On a Linux **client**, download `muxplex-ca.crt` from the muxplex server's
+`/setup` page (or copy that public CA file to the client), then set `CA_FILE`
+to the client-side copy:
+
 ```sh
-sudo cp /path/to/muxplex-ca.crt /usr/local/share/ca-certificates/muxplex-ca.crt
+CA_FILE="$HOME/Downloads/muxplex-ca.crt"
+sudo cp "$CA_FILE" /usr/local/share/ca-certificates/muxplex-ca.crt
 sudo update-ca-certificates
 ```
 
@@ -114,7 +130,7 @@ This covers the system trust store used by `curl`, `git`, etc., and Chrome / Chr
 For RPM-based systems (Fedora, RHEL):
 
 ```sh
-sudo cp /path/to/muxplex-ca.crt /etc/pki/ca-trust/source/anchors/muxplex-ca.crt
+sudo cp "$CA_FILE" /etc/pki/ca-trust/source/anchors/muxplex-ca.crt
 sudo update-ca-trust
 ```
 
@@ -190,7 +206,7 @@ The CA itself is valid for 10 years; you only need to re-deploy a new CA + re-tr
 
 **"`curl` says `verify ok` but the browser still warns."**
 
-The browser uses a different trust store than the system CLI in some configurations. Most often this is a Firefox issue (separate store) or a stale browser session that hasn't reloaded the cert store.
+The browser may use a different trust store (most often Firefox), or still hold a stale trust decision. Fully quit and reopen it first; then clear site data for this muxplex URL and retry. This is troubleshooting only, not a reason to disable certificate verification globally.
 
 **"My LAN IP changed and now the cert doesn't cover the new IP."**
 

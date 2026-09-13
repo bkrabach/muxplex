@@ -216,6 +216,33 @@ def test_pam_available_returns_false_on_import_error(monkeypatch):
     assert pam_available() is False
 
 
+def test_pam_probe_distinguishes_missing_pam_from_broken_dependency(monkeypatch):
+    """A normal optional absence is quiet; a partial install is diagnosable."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def missing_pam(name, *args, **kwargs):
+        if name == "pam":
+            raise ImportError("No module named pam", name="pam")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_pam)
+    from muxplex.auth import pam_probe
+
+    assert pam_probe() == (False, None)
+
+    def missing_dependency(name, *args, **kwargs):
+        if name == "pam":
+            raise ImportError("No module named six", name="six")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_dependency)
+    available, error = pam_probe()
+    assert available is False
+    assert error and "six" in error
+
+
 def test_authenticate_pam_success(monkeypatch):
     """authenticate_pam() returns True when PAM succeeds for the running user."""
     from muxplex.auth import authenticate_pam

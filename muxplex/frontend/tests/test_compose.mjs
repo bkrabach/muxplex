@@ -194,6 +194,9 @@ beforeEach(() => {
   globalThis.window.innerWidth = 1024;
   installSettingsFetchStub();
   app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  app._setLocalDeviceIdForTests(null);
+  app._composeDrafts.clear();
   app._setDeviceId('dev-1');
   // Start every test from "server settings loaded, composeBarOpen never
   // explicitly set" -- the real post-load state initComposePref() is
@@ -614,6 +617,46 @@ test('a second send while one is pending is ignored', async () => {
   assert.strictEqual(callCount, 1);
 });
 
+test('overlapping A and B sends remain independently pending', async () => {
+  app._setLocalDeviceIdForTests('local-device');
+  app._setServerSettings({ input_enabled: true });
+  const input = elements['compose-input'];
+  const sendBtn = elements['compose-send-btn'];
+  const pending = [];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Promise((resolve) => { pending.push(resolve); });
+
+  app._setViewingSession('a');
+  input.value = 'first A';
+  const sendA = app._composeSend();
+
+  app._setViewingSession('b');
+  input.value = 'first B';
+  const sendB = app._composeSend();
+  assert.strictEqual(pending.length, 2, 'different session identities may each have one request pending');
+
+  app._setViewingSession('a');
+  input.value = 'first A';
+  app._composeRenderEnabledState();
+  assert.strictEqual(sendBtn.disabled, true, 'returning to A must preserve A pending state');
+  await app._composeSend();
+  assert.strictEqual(pending.length, 2, 'a second A request must be refused while A is pending');
+
+  pending[0]({ ok: true, json: async () => ({ ok: true, session: 'a' }) });
+  await sendA;
+  assert.strictEqual(sendBtn.disabled, false, 'A is enabled once its own request completes, even while B remains pending');
+
+  input.value = 'second A';
+  const sendA2 = app._composeSend();
+  assert.strictEqual(pending.length, 3, 'A can send again after its original request completes');
+
+  pending[1]({ ok: true, json: async () => ({ ok: true, session: 'b' }) });
+  await sendB;
+  pending[2]({ ok: true, json: async () => ({ ok: true, session: 'a' }) });
+  await sendA2;
+  globalThis.fetch = origFetch;
+});
+
 // --- Enabled/disabled render from settings.input_enabled ---
 
 test('input_enabled=true enables the textarea and send button, hides the notice', async () => {
@@ -642,6 +685,33 @@ test('input_enabled=false (default) disables controls and shows the notice namin
   assert.strictEqual(elements['compose-send-btn'].disabled, true);
   assert.strictEqual(elements['compose-notice'].classList.contains('hidden'), false);
   assert.strictEqual(elements['compose-bar'].classList.contains('compose-bar--disabled'), true);
+});
+
+test('remote compose is disabled and never posts to a same-named local session', async () => {
+  app._setLocalDeviceIdForTests('local-device');
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('remote-device');
+  app._setServerSettings({ input_enabled: true });
+  elements['compose-input'].value = 'remote draft';
+  let calls = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => { calls++; return { ok: true, json: async () => ({}) }; };
+
+  app._composeRender();
+  assert.strictEqual(elements['compose-input'].disabled, true);
+  assert.strictEqual(elements['compose-send-btn'].disabled, true);
+  assert.match(elements['compose-notice'].textContent, /Remote session input is unavailable/);
+  await app._composeSend();
+
+  assert.strictEqual(calls, 0, 'remote input must not fall through to the local /input route');
+  assert.strictEqual(app._composeDrafts.get('remote-device:same-name'), 'remote draft');
+  globalThis.fetch = origFetch;
+});
+
+test('numeric federation identity zero is still remote and cannot share a local draft', () => {
+  app._setLocalDeviceIdForTests('local-device');
+  assert.strictEqual(app._composeSessionKey('same-name', 0), '0:same-name');
+  assert.notStrictEqual(app._composeSessionKey('same-name', 0), app._composeSessionKey('same-name', ''));
 });
 
 test('bar itself still renders (not hidden) even when input is disabled -- discoverable, not a dead button', async () => {
@@ -675,20 +745,66 @@ test('bar shows when a session is open and preference is on', () => {
   assert.strictEqual(elements['compose-bar'].classList.contains('hidden'), false);
 });
 
-test('_composeOnSessionOpen clears any stale draft from a previous session', () => {
-  elements['compose-input'].value = 'leftover draft';
+test('session drafts restore only for their device-qualified identity', () => {
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('');
+  elements['compose-input'].value = 'local draft';
+  app._composeStoreActiveDraft();
+
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('remote-device');
   app._composeOnSessionOpen();
   assert.strictEqual(elements['compose-input'].value, '');
+  elements['compose-input'].value = 'remote draft';
+  app._composeStoreActiveDraft();
+
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('');
+  app._composeOnSessionOpen();
+  assert.strictEqual(elements['compose-input'].value, 'local draft');
+
+  app._setViewingSession('same-name');
+  app._setViewingRemoteId('remote-device');
+  app._composeOnSessionOpen();
+  assert.strictEqual(elements['compose-input'].value, 'remote draft');
 });
 
-test('_composeOnSessionClose hides the bar and clears the draft', () => {
+test('late send response cannot erase the newly viewed session draft', async () => {
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._setViewingSession('a');
+  app._setViewingRemoteId('');
+  elements['compose-input'].value = 'send A';
+  let resolveFetch;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Promise((resolve) => { resolveFetch = resolve; });
+  const send = app._composeSend();
+
+  app._setViewingSession('b');
+  elements['compose-input'].value = 'draft B';
+  app._composeStoreActiveDraft();
+  resolveFetch({ ok: true, json: async () => ({ ok: true }) });
+  await send;
+  globalThis.fetch = origFetch;
+
+  assert.strictEqual(elements['compose-input'].value, 'draft B');
+  assert.strictEqual(app._composeDrafts.get('local-device:b'), 'draft B');
+});
+
+test('close preserves the outgoing draft while hiding the bar', () => {
   app._setViewingSession('s1');
+  app._setViewingRemoteId('');
+  app._setLocalDeviceIdForTests('local-device');
   app._composeSetPref(true);
   elements['compose-input'].value = 'draft';
+  app._composeStoreActiveDraft(); // mirrors closeSession's pre-mutation capture
   app._setViewingSession(null); // mirrors closeSession()'s ordering
   app._composeOnSessionClose();
   assert.strictEqual(elements['compose-input'].value, '');
   assert.strictEqual(elements['compose-bar'].classList.contains('hidden'), true);
+  assert.strictEqual(app._composeDrafts.get('local-device:s1'), 'draft');
 });
 
 test('refit is called on show, on hide, and on auto-grow', () => {

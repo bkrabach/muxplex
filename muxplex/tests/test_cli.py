@@ -6004,12 +6004,69 @@ def test_upgrade_fails_loud_when_the_version_did_not_move(monkeypatch, capsys):
 
     monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "0.31.2")
 
-    assert cli_mod._verify_version_moved("0.31.2", True) is False
+    assert cli_mod._verify_version_moved("0.31.2", True, installer="uv") is False
 
     out = capsys.readouterr().out
     assert "did not change" in out
     assert "still v0.31.2" in out
-    assert "--refresh" in out, "must hand over the command that actually fixes it"
+    assert "--refresh" in out, "uv retry may refresh a local cache"
+    assert "cannot make a stale corporate/upstream mirror" in out
+    assert "--default-index" not in out
+
+
+def test_upgrade_no_version_change_uses_pip_recovery_when_pip_installed(
+    monkeypatch, capsys
+):
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_installed_version_on_disk", lambda: "0.31.2")
+    assert cli_mod._verify_version_moved("0.31.2", True, installer="pip") is False
+    out = capsys.readouterr().out
+    assert "pip install --upgrade --no-cache-dir muxplex" in out
+    assert "uv tool install" not in out
+
+
+def test_wsl_ca_unc_path_requires_a_safe_known_distro(monkeypatch, tmp_path):
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.platform, "release", lambda: "5.15.90-microsoft-standard-WSL2"
+    )
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
+    assert cli_mod._wsl_ca_unc_path(tmp_path / "ca" / "muxplex-ca.crt") == (
+        r"\\wsl.localhost\Ubuntu-24.04"
+        + str(tmp_path / "ca" / "muxplex-ca.crt").replace("/", "\\")
+    )
+    monkeypatch.setenv("WSL_DISTRO_NAME", "bad/name")
+    assert cli_mod._wsl_ca_unc_path(tmp_path / "ca" / "muxplex-ca.crt") is None
+
+
+def test_wsl_ca_command_quotes_an_apostrophe_in_the_distro_name(monkeypatch, tmp_path):
+    """The emitted PowerShell single-quoted path must remain one literal."""
+    import muxplex.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.platform, "release", lambda: "5.15.90-microsoft-standard-WSL2"
+    )
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Brian's Distro")
+    unc_path = cli_mod._wsl_ca_unc_path(tmp_path / "ca" / "muxplex-ca.crt")
+    assert unc_path is not None
+    assert cli_mod._powershell_single_quoted(unc_path) == (
+        "'" + unc_path.replace("'", "''") + "'"
+    )
+
+
+def test_ca_guide_uses_client_side_ca_paths_for_macos_and_linux():
+    """Remote clients must not be told the server's config path exists locally."""
+    guide_path = Path(__file__).parents[2] / "docs" / "TRUSTING_THE_LOCAL_CA.md"
+    guide = guide_path.read_text()
+    macos = guide.split("### macOS", 1)[1].split("### Linux", 1)[0]
+    linux = guide.split("### Linux", 1)[1].split("### iOS", 1)[0]
+    assert 'CA_FILE="$HOME/Downloads/muxplex-ca.crt"' in macos
+    assert '"$CA_FILE"' in macos
+    assert 'CA_FILE="$HOME/Downloads/muxplex-ca.crt"' in linux
+    assert '"$CA_FILE"' in linux
+    assert "~/.config/muxplex/ca/muxplex-ca.crt" not in macos + linux
 
 
 def test_upgrade_accepts_a_force_reinstall_of_the_same_version(monkeypatch):

@@ -2333,6 +2333,208 @@ test('openSession shows toast and calls closeSession on connect failure', async 
   globalThis.setTimeout = origSetTimeout;
 });
 
+test('openSession saves A before a failing B connect and rejects late A dictation', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const origSpeechRecognition = globalThis.window.SpeechRecognition;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const generic = {
+    textContent: '', style: {}, classList: classes, disabled: false,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  const composeInput = {
+    value: 'draft A', style: {}, classList: classes, disabled: false, selectionStart: 7,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+    setSelectionRange: () => {},
+  };
+  let recognition;
+  let connectObserved = false;
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._composeDrafts.set('local-device:beta', 'saved B');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+  app._setSttStatus('available');
+  app._setSttMode('ondevice');
+  app._sttSetState('idle');
+  globalThis.window.SpeechRecognition = function() {
+    recognition = this;
+    this.start = () => {};
+    this.abort = () => {};
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.fetch = async (url) => {
+    if (url.includes('/connect')) {
+      connectObserved = true;
+      assert.strictEqual(app._composeDrafts.get('local-device:alpha'), 'draft A');
+      assert.strictEqual(composeInput.value, '', 'A must be cleared before B identity is assigned');
+      throw new Error('B connect failed');
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app._sttStart();
+  await app.openSession('beta', { skipAnimation: true });
+  recognition.onresult({ results: [{ 0: { transcript: 'late A' }, isFinal: true }] });
+
+  assert.strictEqual(connectObserved, true);
+  assert.strictEqual(app._composeDrafts.get('local-device:alpha'), 'draft A');
+  assert.strictEqual(app._composeDrafts.get('local-device:beta'), 'saved B');
+  assert.strictEqual(composeInput.value, '', 'late A recognition must not contaminate B or the closed view');
+  recognition.onend();
+  assert.strictEqual(app._getSttRecognition(), null, 'the aborted A handle must already be retired');
+  assert.strictEqual(app._getSttState(), 'idle', 'delayed A end must not leave dictation stuck');
+
+  app._setSttStatus(null);
+  app._setSttMode(null);
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.window.SpeechRecognition = origSpeechRecognition;
+});
+
+test('openSession A to B retires delayed A dictation before B starts', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const origSpeechRecognition = globalThis.window.SpeechRecognition;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const generic = {
+    textContent: '', style: {}, classList: classes, disabled: false,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  const composeInput = {
+    value: 'draft A', style: {}, classList: classes, disabled: false, selectionStart: 7,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+    setSelectionRange: () => {},
+  };
+  const recognitions = [];
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._composeDrafts.set('local-device:beta', 'saved B');
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+  app._setServerSettings({ input_enabled: true });
+  app._setSttStatus('available');
+  app._setSttMode('ondevice');
+  app._sttSetState('idle');
+  globalThis.window.SpeechRecognition = function() {
+    recognitions.push(this);
+    this.start = () => {};
+    this.abort = () => {};
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.fetch = async (url) => ({
+    ok: true,
+    json: async () => url.includes('/followups')
+      ? { session: 'beta', items: [], halted: null }
+      : {},
+  });
+
+  app._sttStart();
+  const recognitionA = recognitions[0];
+  await app.openSession('beta', { skipAnimation: true });
+  assert.strictEqual(composeInput.value, 'saved B');
+  assert.strictEqual(app._getSttRecognition(), null, 'A must be retired synchronously at the transition');
+  assert.strictEqual(app._getSttState(), 'idle');
+
+  app._sttStart();
+  const recognitionB = recognitions[1];
+  assert.ok(recognitionB, 'B can start its own recognition session without waiting for A end');
+  recognitionA.onresult({ results: [{ 0: { transcript: 'late A' }, isFinal: true }] });
+  recognitionA.onend();
+
+  assert.strictEqual(composeInput.value, 'saved B', 'late A callbacks must not alter B draft');
+  assert.strictEqual(app._getSttRecognition(), recognitionB, 'late A end must not retire B recognition');
+  assert.strictEqual(app._getSttState(), 'listening');
+  recognitionB.onend();
+  assert.strictEqual(app._getSttRecognition(), null);
+  assert.strictEqual(app._getSttState(), 'idle');
+
+  app._setSttStatus(null);
+  app._setSttMode(null);
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  globalThis.window.SpeechRecognition = origSpeechRecognition;
+});
+
+test('superseded slow B connection preserves B draft and cannot mount or persist after C wins', async () => {
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const composeInput = {
+    value: 'draft A', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+  };
+  const generic = {
+    textContent: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  const mounts = [];
+  const calls = [];
+  let resolveB;
+  app._composeDrafts.clear();
+  app._setLocalDeviceIdForTests('local-device');
+  app._composeDrafts.set('local-device:beta', 'saved B');
+  app._composeDrafts.set('local-device:gamma', 'saved C');
+  app._setServerSettings({ input_enabled: true });
+  app._setViewingSession('alpha');
+  app._setViewingRemoteId('');
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = (name) => { mounts.push(name); };
+  globalThis.fetch = (url, opts) => {
+    calls.push({ url, opts });
+    if (url.indexOf('/api/sessions/beta/connect') === 0) {
+      return new Promise((resolve) => { resolveB = resolve; });
+    }
+    if (url.indexOf('/followups') !== -1) {
+      return Promise.resolve({ ok: true, json: async () => ({ session: 'gamma', items: [], halted: null }) });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  };
+
+  const openingB = app.openSession('beta', { skipAnimation: true });
+  const openingC = app.openSession('gamma', { skipAnimation: true });
+  await openingC;
+  assert.strictEqual(app._composeDrafts.get('local-device:alpha'), 'draft A');
+  assert.strictEqual(app._composeDrafts.get('local-device:beta'), 'saved B', 'C must not store B’s ownerless blank transition textarea');
+  assert.strictEqual(composeInput.value, 'saved C');
+
+  resolveB({ ok: true, json: async () => ({}) });
+  await openingB;
+  assert.deepStrictEqual(mounts, ['gamma'], 'stale B must not mount after C owns navigation');
+  assert.ok(
+    !calls.some((call) => call.opts && call.opts.method === 'PATCH' &&
+      call.url.indexOf('/api/state') === 0 &&
+      JSON.parse(call.opts.body).active_session === 'beta'),
+    'stale B must not persist active_session after C wins',
+  );
+  assert.strictEqual(composeInput.value, 'saved C', 'late B completion must not overwrite C’s visible draft');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  app._setServerSettings(null);
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  app._composeDrafts.clear();
+});
+
 test('openSession with remoteId POSTs connect to federation proxy URL', async () => {
   const fetchCalls = [];
   const origFetch = globalThis.fetch;
@@ -3273,17 +3475,18 @@ test('openSession mounts terminal AFTER connect POST, not inside animation timer
     new URL('../app.js', import.meta.url), 'utf8'
   );
 
-  // Find the openSession function body. Window is intentionally generous
-  // (not just enough for the CURRENT source) so a legitimate addition near
-  // the top of the function (e.g. a guard/comment block) doesn't push
-  // _openTerminal outside the window and produce a false failure here --
-  // that exact false failure is what widened this from 4000 to 5000.
   const fnStart = source.indexOf('async function openSession');
-  // Widened 5000 -> 6000 for the sync-groups terminal-conflict handling
-  // (showTerminalConflictDialog branch) added to the /connect catch block --
-  // same reasoning as the prior 4000 -> 5000 widening: a legitimate addition
-  // near the top of the function must not produce a false failure here.
-  const fnBody = source.substring(fnStart, fnStart + 6000);
+  const braceStart = source.indexOf(') {', fnStart) + 2;
+  let depth = 0;
+  let fnEnd = -1;
+  for (let i = braceStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) { fnEnd = i; break; }
+    }
+  }
+  const fnBody = source.slice(fnStart, fnEnd + 1);
 
   // _openTerminal must NOT appear inside setTimeout
   const setTimeoutIdx = fnBody.indexOf('setTimeout');
@@ -4898,7 +5101,17 @@ test('closeSession reapplies fit layout when returning to dashboard', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const fnStart = source.indexOf('function closeSession');
   assert.ok(fnStart !== -1, 'closeSession function must exist');
-  const fnBody = source.substring(fnStart, fnStart + 1500);
+  const braceStart = source.indexOf('{', fnStart);
+  let depth = 0;
+  let fnEnd = -1;
+  for (let i = braceStart; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) { fnEnd = i; break; }
+    }
+  }
+  const fnBody = source.slice(fnStart, fnEnd + 1);
   assert.ok(
     fnBody.includes('applyFitLayout'),
     'closeSession must call applyFitLayout for fit mode when returning to dashboard'
@@ -5890,6 +6103,106 @@ test('openSession with integer remoteId=0 POSTs to federation proxy URL, not loc
   globalThis.document.getElementById = origGetById;
   globalThis.document.querySelector = origQS;
   globalThis.setTimeout = origSetTimeout;
+});
+
+test('numeric remote id persists as "0" and restores through federation with compose disabled', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const composeInput = {
+    value: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+  };
+  const generic = {
+    textContent: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = () => {};
+  app._setServerSettings({ input_enabled: true });
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    if (url.indexOf('/api/state') === 0 && (!opts || !opts.method || opts.method === 'GET')) {
+      return { ok: true, json: async () => ({ active_session: 'same-name', active_remote_id: 0 }) };
+    }
+    if (url.indexOf('/followups') !== -1) {
+      return { ok: true, json: async () => ({ session: 'same-name', items: [], halted: null }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  await app.restoreState();
+
+  const federationConnect = calls.find((call) => call.url === '/api/federation/0/connect/same-name');
+  const localConnect = calls.find((call) => call.url.indexOf('/api/sessions/same-name/connect') === 0);
+  const statePatch = calls.find((call) => call.opts && call.opts.method === 'PATCH' && call.url.indexOf('/api/state') === 0);
+  assert.ok(federationConnect, 'restoring persisted numeric 0 must use federation/0, not local connect');
+  assert.ok(!localConnect, 'numeric 0 must never fall through to a same-named local session');
+  assert.strictEqual(JSON.parse(statePatch.opts.body).active_remote_id, '0', 'state persistence must retain numeric 0 as a remote id');
+  assert.strictEqual(composeInput.disabled, true, 'restored remote session must keep compose input disabled');
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  app._setServerSettings(null);
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
+});
+
+test('follow with persisted numeric remote id uses federation and keeps compose disabled', async () => {
+  const calls = [];
+  const origFetch = globalThis.fetch;
+  const origGetById = globalThis.document.getElementById;
+  const origQS = globalThis.document.querySelector;
+  const origSetTimeout = globalThis.setTimeout;
+  const classes = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false };
+  const composeInput = {
+    value: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {}, focus: () => {},
+  };
+  const generic = {
+    textContent: '', style: {}, disabled: false, classList: classes,
+    setAttribute: () => {}, removeAttribute: () => {},
+  };
+  globalThis.document.getElementById = (id) => id === 'compose-input' ? composeInput : generic;
+  globalThis.document.querySelector = () => null;
+  globalThis.setTimeout = (fn) => { fn(); };
+  globalThis.window._openTerminal = () => {};
+  app._setServerSettings({ input_enabled: true });
+  app._setViewMode('fullscreen');
+  app._setViewingSession('local-other');
+  app._setViewingRemoteId('');
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url, opts });
+    if (url.indexOf('/followups') !== -1) {
+      return { ok: true, json: async () => ({ session: 'same-name', items: [], halted: null }) };
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+
+  app.followRemoteActiveSession({ active_session: 'same-name', active_remote_id: 0 });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(calls.some((call) => call.url === '/api/federation/0/connect/same-name'));
+  assert.ok(!calls.some((call) => call.url.indexOf('/api/sessions/same-name/connect') === 0));
+  assert.strictEqual(composeInput.disabled, true);
+
+  globalThis.fetch = origFetch;
+  globalThis.document.getElementById = origGetById;
+  globalThis.document.querySelector = origQS;
+  globalThis.setTimeout = origSetTimeout;
+  app._setServerSettings(null);
+  app._setViewMode('grid');
+  app._setViewingSession(null);
+  app._setViewingRemoteId('');
 });
 
 test('openSession with integer remoteId=0 passes 0 to window._openTerminal as second arg', async () => {

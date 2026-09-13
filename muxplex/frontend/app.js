@@ -280,6 +280,10 @@ let _viewingSession = null;
 let _viewingRemoteId = '';
 let _viewMode = 'grid';
 let _lastInteractionAt = Date.now() / 1000;
+// Every open/close claims a generation before it starts asynchronous work.
+// A late /connect response is then unable to mount or persist a session which
+// a later navigation has already superseded.
+let _sessionNavigationGeneration = 0;
 // Count of LOCAL session switches (sidebar/grid/sheet click, auto-open after
 // create) whose server-side write hasn't been confirmed yet. openSession()
 // sets _viewingSession synchronously, but the server's active_session doesn't
@@ -1562,7 +1566,7 @@ async function restoreState() {
     if (state.active_session) {
       await openSession(state.active_session, {
         skipAnimation: true,
-        remoteId: state.active_remote_id || '',
+        remoteId: _normalizeRemoteId(state.active_remote_id),
         isFollow: true, // adopting server truth on load, not a fresh local decision
       });
     }
@@ -1740,7 +1744,7 @@ async function pollSessions() {
 function followRemoteActiveSession(state) {
   if (!state || !state.active_session) return;
   if (_viewingSession == null) return; // option (a): never force-open from the grid
-  var remoteId = state.active_remote_id || '';
+  var remoteId = _normalizeRemoteId(state.active_remote_id);
   if (state.active_session === _viewingSession && remoteId === _viewingRemoteId) return;
   // A local switch may still be in flight (see _pendingLocalSwitches' comment):
   // the server hasn't confirmed it yet, so THIS divergence is stale, not a
@@ -5662,6 +5666,11 @@ function updatePageTitle() {
  */
 async function openSession(name, opts = {}) {
   if (!name || !name.trim()) return;
+  var navigationGeneration = ++_sessionNavigationGeneration;
+  // `0` is a real remote id. Normalize every accepted remote identity once,
+  // so equality, persistence, and the compose remote fence cannot later
+  // collapse it through truthiness.
+  var remoteId = _normalizeRemoteId(opts.remoteId);
   // A LOCAL switch (as opposed to adopting a value the server already told us
   // about -- restoreState() on page load, or followRemoteActiveSession()
   // echoing a remote switch, both of which pass isFollow:true). Mark this
@@ -5671,9 +5680,19 @@ async function openSession(name, opts = {}) {
   // to the session they just switched away from.
   var isLocal = !opts.isFollow;
   if (isLocal) _pendingLocalSwitches++;
+  var localSwitchPending = isLocal;
+  function settleLocalSwitch() {
+    if (!localSwitchPending) return;
+    _pendingLocalSwitches--;
+    localSwitchPending = false;
+  }
+  // Transfer the old owner before assigning B or awaiting its connection.
+  // Failed-connect cleanup must never save the emptied B textarea over B's
+  // already-saved draft.
+  _composeCaptureAndClearForTransition();
   hidePreview();
   _viewingSession = name;
-  _viewingRemoteId = opts.remoteId != null ? opts.remoteId : '';
+  _viewingRemoteId = remoteId;
   _viewMode = 'fullscreen';
 
   // Pre-render sidebar with current sessions before first poll tick
@@ -5707,6 +5726,10 @@ async function openSession(name, opts = {}) {
   // Start animation concurrently with /connect POST — resolve when view is ready
   var animDone = new Promise(function (resolve) {
     var timerId = setTimeout(function () {
+      if (navigationGeneration !== _sessionNavigationGeneration) {
+        resolve();
+        return;
+      }
       var overview = $('view-overview');
       var expanded = $('view-expanded');
       if (overview) overview.style.display = 'none';
@@ -5741,7 +5764,7 @@ async function openSession(name, opts = {}) {
 
   // Always spawn ttyd for this session — ensures correct session after service restart or page restore
   // _deviceId holds the device_id string (was integer remoteId index in old protocol)
-  var _deviceId = opts.remoteId != null ? opts.remoteId : '';
+  var _deviceId = remoteId;
   try {
     if (_deviceId !== '') {
       // Remote session: route connect POST through same-origin federation proxy
@@ -5750,31 +5773,48 @@ async function openSession(name, opts = {}) {
       await api('POST', withDevice('/api/sessions/' + encodeURIComponent(name) + '/connect'));
     }
   } catch (err) {
-    if (isLocal) _pendingLocalSwitches--;
+    settleLocalSwitch();
+    // A later open/close owns the visible view. A stale connection failure
+    // must not close that view or write its blank transitional textarea.
+    if (navigationGeneration !== _sessionNavigationGeneration) return;
     if (err && err.status === 409 && err.body && err.body.terminal_conflict) {
       showTerminalConflictDialog(name, err.body);
-      return closeSession();
+      return closeSession({ storeDraft: false });
     }
     showToast(err.message || 'Connection failed');
-    return closeSession();
+    return closeSession({ storeDraft: false });
+  }
+
+  if (navigationGeneration !== _sessionNavigationGeneration) {
+    settleLocalSwitch();
+    return;
+  }
+
+  // Wait for animation to finish (may already be done if /connect was slow).
+  // Do this before state persistence: if a newer navigation wins while this
+  // request waits, this obsolete session never writes state at all.
+  await animDone;
+  if (navigationGeneration !== _sessionNavigationGeneration) {
+    settleLocalSwitch();
+    return;
   }
 
   // Persist active_remote_id so restoreState() can reopen remote sessions after page refresh.
   // Fire-and-forget for the caller (never awaited -- must not delay terminal mount below), but
   // still tracked so a LOCAL switch's pending flag clears the moment the server confirms this
   // write (success or failure), rather than lingering indefinitely.
-  var statePatch = api('PATCH', withDevice('/api/state'), { active_session: name, active_remote_id: _deviceId || null }).catch(function() {});
+  var statePatch = api('PATCH', withDevice('/api/state'), {
+    active_session: name,
+    active_remote_id: _deviceId !== '' ? _deviceId : null,
+  }).catch(function() {});
   if (isLocal) {
-    statePatch.then(function() { _pendingLocalSwitches--; });
+    statePatch.then(settleLocalSwitch);
   }
 
   // Fire-and-forget bell-clear for remote sessions — acknowledge bells on the remote server
   if (_deviceId !== '') {
     api('POST', '/api/federation/' + encodeURIComponent(_deviceId) + '/sessions/' + encodeURIComponent(name) + '/bell/clear').catch(function() {});
   }
-
-  // Wait for animation to finish (may already be done if /connect was slow)
-  await animDone;
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
   if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize, _ownDeviceId());
@@ -5786,6 +5826,14 @@ async function openSession(name, opts = {}) {
  * @returns {Promise<void>}
  */
 function closeSession() {
+  var opts = arguments[0] || {};
+  // Retire any in-flight open before it can mount after a user closes the
+  // expanded view. closeSession itself becomes the current navigation.
+  _sessionNavigationGeneration++;
+  // A user close saves the current owner. openSession() has already saved A
+  // before attempting B, so its failed-connect cleanup only clears the view.
+  if (opts.storeDraft !== false) _composeCaptureAndClearForTransition();
+  else _composeClearDraft();
   _viewMode = 'grid';
   _viewingSession = null;
   _composeOnSessionClose();
@@ -5885,6 +5933,7 @@ function getFocusedSessionName() {
 /** Test-only helper: set _viewingSession directly. */
 function _setViewingSession(name) {
   _viewingSession = name;
+  _composeTextareaOwnerKey = _composeActiveKey();
 }
 
 /**
@@ -5893,6 +5942,12 @@ function _setViewingSession(name) {
  */
 function _setViewingRemoteId(remoteId) {
   _viewingRemoteId = remoteId;
+  _composeTextareaOwnerKey = _composeActiveKey();
+}
+
+/** Test-only helper: set the local server's federation identity directly. */
+function _setLocalDeviceIdForTests(deviceId) {
+  _localDeviceId = deviceId || null;
 }
 
 /**
@@ -6019,7 +6074,93 @@ function _setLastHeartbeatGoneIdForTests(id) {
 // left in place afterward, unread from now on -- harmless, not worth a
 // second write path just to clear it.
 const COMPOSE_PREF_STORAGE_KEY = 'muxplex-compose-bar'; // legacy key, migration-only -- see initComposePref
-let _composeSendInFlight = false;
+const COMPOSE_LOCAL_FALLBACK_DEVICE_ID = '__muxplex-local__';
+const _composeDrafts = new Map();
+const _composeSendInFlightKeys = new Set();
+// The static textarea is only owned after a session-open restore. A transition
+// deliberately leaves it ownerless, so B->C cannot mistake B's cleared
+// transitional textarea for an instruction to delete B's saved draft.
+let _composeTextareaOwnerKey = null;
+
+/** `0` is a valid federation id, so remote is never a truthiness test. */
+function _composeIsRemoteId(remoteId) {
+  return remoteId !== '' && remoteId !== null && remoteId !== undefined;
+}
+
+/** Normalize a persisted/federated remote id without collapsing numeric zero. */
+function _normalizeRemoteId(remoteId) {
+  return _composeIsRemoteId(remoteId) ? String(remoteId) : '';
+}
+
+/**
+ * Return the device-qualified identity for the currently viewed session.
+ *
+ * A federation remote always supplies its stable server device id.  A local
+ * server can briefly be unknown while /api/instance-info is still loading;
+ * give that case a private in-memory namespace rather than the bare name, so
+ * a remote session called "shell" can never borrow its draft.  Once the local
+ * id arrives, migrate those in-memory entries to the normal buildSessionKey()
+ * form.  This is intentionally memory-only: compose text remains private to
+ * this browser tab and is never sent or written to localStorage.
+ */
+function _composeSessionKey(name, remoteId) {
+  if (!name) return null;
+  var deviceId = _composeIsRemoteId(remoteId)
+    ? String(remoteId)
+    : (_localDeviceId || COMPOSE_LOCAL_FALLBACK_DEVICE_ID);
+  var key = buildSessionKey(deviceId, name);
+  if (_localDeviceId) {
+    var fallbackPrefix = COMPOSE_LOCAL_FALLBACK_DEVICE_ID + ':';
+    _composeDrafts.forEach(function(value, oldKey) {
+      if (oldKey.indexOf(fallbackPrefix) === 0) {
+        _composeDrafts.set(buildSessionKey(_localDeviceId, oldKey.slice(fallbackPrefix.length)), value);
+        _composeDrafts.delete(oldKey);
+      }
+    });
+    if (_composeTextareaOwnerKey && _composeTextareaOwnerKey.indexOf(fallbackPrefix) === 0) {
+      _composeTextareaOwnerKey = buildSessionKey(
+        _localDeviceId,
+        _composeTextareaOwnerKey.slice(fallbackPrefix.length),
+      );
+    }
+  }
+  return key;
+}
+
+function _composeActiveKey() {
+  return _composeSessionKey(_viewingSession, _viewingRemoteId);
+}
+
+function _composeStoreDraft(key, value) {
+  if (!key) return;
+  if (value) _composeDrafts.set(key, value);
+  else _composeDrafts.delete(key);
+}
+
+function _composeStoreActiveDraft() {
+  var input = $('compose-input');
+  var key = _composeActiveKey();
+  if (input && key && _composeTextareaOwnerKey === key) _composeStoreDraft(key, input.value);
+}
+
+/** Save the outgoing owner's text, then clear the shared textarea. */
+function _composeCaptureAndClearForTransition() {
+  _composeStoreActiveDraft();
+  _composeClearDraft();
+}
+
+function _composeClearSubmittedDraft(key, raw) {
+  // A response is allowed to clear only the exact draft it submitted.  This
+  // guards both typing while a request is pending and an A response arriving
+  // after the user has switched to B.
+  if (_composeDrafts.get(key) === raw) _composeDrafts.delete(key);
+  if (_composeActiveKey() !== key || _composeTextareaOwnerKey !== key) return false;
+  var input = $('compose-input');
+  if (!input || input.value !== raw) return false;
+  input.value = '';
+  input.style.height = '';
+  return true;
+}
 
 /**
  * Resolve the effective on/off state from the loaded server setting.
@@ -6132,19 +6273,27 @@ function _composeRenderEnabledState() {
   var queueBtn = $('compose-queue-btn');
   var notice = $('compose-notice');
   if (!bar) return;
-  var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
+  var remote = _composeIsRemoteId(_viewingRemoteId);
+  // There is no federation /input proxy. Posting a remote same-named session
+  // to the local endpoint would silently type into the wrong pane.
+  var enabled = !remote && !!(_serverSettings && _serverSettings.input_enabled === true);
   bar.classList.toggle('compose-bar--disabled', !enabled);
   if (input) input.disabled = !enabled;
-  if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlight;
+  if (sendBtn) sendBtn.disabled = !enabled || _composeSendInFlightKeys.has(_composeActiveKey());
   if (queueBtn) {
     // Follow-ups run only on the host that owns the session (spec §8) --
     // never offered for a remote-viewed session.
-    queueBtn.disabled = !enabled || !!_viewingRemoteId;
-    queueBtn.title = _viewingRemoteId
+    queueBtn.disabled = !enabled || remote;
+    queueBtn.title = remote
       ? 'Follow-ups run on the host that owns the session'
       : 'Add to follow-ups (Ctrl+Shift+Enter)';
   }
-  if (notice) notice.classList.toggle('hidden', enabled);
+  if (notice) {
+    notice.classList.toggle('hidden', enabled);
+    notice.textContent = remote
+      ? 'Remote session input is unavailable here. Your draft stays in this browser for this remote session.'
+      : 'Session input is disabled on this server (input_enabled is false). An operator can turn it on by editing input_enabled and input_allowed_sessions in ~/.config/muxplex/settings.json on the host.';
+  }
   _sttRenderButton();
 }
 
@@ -6171,10 +6320,10 @@ function _composeShowError(msg) {
 }
 
 /**
- * Clear the draft and any error, and reset in-flight bookkeeping. Called
- * on session open (a NEW session never inherits a previous one's draft --
- * see docs/plans/2026-08-05-mobile-compose-bar-plan.md §7.6, deliberately
- * in-memory only, never localStorage) and on session close.
+ * Clear the shared textarea and any error. The outgoing value is captured
+ * before this runs during a session transition; session open then restores
+ * only the new owner's in-memory draft. Drafts are deliberately never sent
+ * to localStorage.
  */
 function _composeClearDraft() {
   var input = $('compose-input');
@@ -6182,8 +6331,8 @@ function _composeClearDraft() {
     input.value = '';
     input.style.height = '';
   }
+  _composeTextareaOwnerKey = null;
   _composeHideError();
-  _composeSendInFlight = false;
   // A live dictation session belongs to the session/draft being cleared --
   // see _sttForceStop()'s docstring for why this is abort(), not stop().
   _sttForceStop();
@@ -6209,6 +6358,12 @@ function _composeClearDraft() {
  */
 function _composeOnSessionOpen() {
   _composeClearDraft();
+  var input = $('compose-input');
+  if (input) {
+    input.value = _composeDrafts.get(_composeActiveKey()) || '';
+    if (input.value) _composeAutoGrow(input);
+  }
+  _composeTextareaOwnerKey = _composeActiveKey();
   _composeRender();
   _followupsRefresh();
 }
@@ -6303,7 +6458,7 @@ function _composeKeydown(e) {
  */
 function _followupsQueueKeydown(e) {
   if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
-  if (!_viewingSession || _viewingRemoteId) return; // no session open, or a remote view
+  if (!_viewingSession || _composeIsRemoteId(_viewingRemoteId)) return; // no session open, or a remote view
   var enabled = !!(_serverSettings && _serverSettings.input_enabled === true);
   if (!enabled) return; // matches compose-queue-btn's own disabled state
   e.preventDefault();
@@ -6361,26 +6516,37 @@ function _composeErrorMessage(err) {
 /**
  * Send the current draft via POST /api/sessions/{name}/input -- the same
  * unmodified, fenced endpoint every other caller uses (see the section
- * banner above). Exactly one request in flight at a time (the send button
- * is disabled for the duration; a second Ctrl+Enter while pending is a
- * no-op). The draft is cleared ONLY on a 200 response -- a user who just
- * dictated a paragraph must never lose it to a 403.
+ * banner above). Exactly one request per device-qualified session identity
+ * is in flight at a time (the current session's send button is disabled for
+ * the duration; a second Ctrl+Enter for that identity is a no-op). The draft
+ * is cleared ONLY on a 200 response -- a user who just dictated a paragraph
+ * must never lose it to a 403.
  */
 async function _composeSend() {
-  if (_composeSendInFlight) return;
   var input = $('compose-input');
   if (!input) return;
+  var targetKey = _composeActiveKey();
+  if (_composeSendInFlightKeys.has(targetKey)) return;
+  var targetSession = _viewingSession;
+  var targetRemoteId = _viewingRemoteId;
+  if (_composeIsRemoteId(targetRemoteId)) {
+    _composeStoreDraft(targetKey, input.value);
+    _composeShowError('Remote session input is unavailable here. Your draft is still saved for this remote session.');
+    return;
+  }
+  var raw = input.value;
   var normalized = _composeNormalizeText(input.value);
   if (!normalized.trim()) {
     _composeShowError('Nothing to send.');
     return;
   }
-  if (!_viewingSession) {
+  if (!targetSession || !targetKey) {
     _composeShowError('No session is open.');
     return;
   }
 
-  _composeSendInFlight = true;
+  _composeStoreDraft(targetKey, raw);
+  _composeSendInFlightKeys.add(targetKey);
   var sendBtn = $('compose-send-btn');
   if (sendBtn) sendBtn.disabled = true;
   input.setAttribute('aria-busy', 'true');
@@ -6388,20 +6554,22 @@ async function _composeSend() {
   try {
     await api(
       'POST',
-      withDevice('/api/sessions/' + encodeURIComponent(_viewingSession) + '/input'),
+      withDevice('/api/sessions/' + encodeURIComponent(targetSession) + '/input'),
       { text: normalized, enter: true },
     );
-    input.value = '';
-    input.style.height = '';
-    _composeHideError();
-    if (window._refitTerminal) window._refitTerminal();
-    input.focus();
+    if (_composeClearSubmittedDraft(targetKey, raw)) {
+      _composeHideError();
+      if (window._refitTerminal) window._refitTerminal();
+      input.focus();
+    }
   } catch (err) {
-    _composeShowError(_composeErrorMessage(err));
+    if (_composeActiveKey() === targetKey) _composeShowError(_composeErrorMessage(err));
   } finally {
-    _composeSendInFlight = false;
-    input.removeAttribute('aria-busy');
-    if (sendBtn) sendBtn.disabled = !(_serverSettings && _serverSettings.input_enabled === true);
+    _composeSendInFlightKeys.delete(targetKey);
+    if (_composeActiveKey() === targetKey) {
+      input.removeAttribute('aria-busy');
+      if (sendBtn) sendBtn.disabled = !(_serverSettings && _serverSettings.input_enabled === true);
+    }
   }
 }
 
@@ -6424,7 +6592,10 @@ function _bindComposeEventListeners() {
   var input = $('compose-input');
   if (input) {
     input.addEventListener('keydown', _composeKeydown);
-    input.addEventListener('input', function() { _composeAutoGrow(input); });
+    input.addEventListener('input', function() {
+      _composeStoreActiveDraft();
+      _composeAutoGrow(input);
+    });
   }
   // Queue shortcut is document-level, not local to #compose-input -- see
   // _followupsQueueKeydown()'s docstring for why (the terminal has focus
@@ -6555,6 +6726,8 @@ let _sttInterimLength = 0;          // length of the text currently written at _
 let _sttUserStopped = false;        // true only across an explicit _sttStop()/_sttForceStop() call
 let _sttSuppressEndMessage = false; // true once onerror (or a forced stop) already rendered a specific message
 let _sttConsentPending = false;     // true while #compose-cloud-consent is showing, awaiting the user's choice
+let _sttOwnerKey = null;            // compose identity captured when recognition starts
+let _sttGeneration = 0;             // invalidates callbacks from an aborted owner
 
 /**
  * The constructor the current browser exposes, or null. A tiny indirection
@@ -6674,7 +6847,8 @@ function _sttRenderButton() {
   btn.classList.toggle('compose-bar__mic--downloading', downloading);
   btn.classList.toggle('compose-bar__mic--cloud', cloud);
   btn.setAttribute('aria-pressed', listening ? 'true' : 'false');
-  btn.disabled = downloading || !(_serverSettings && _serverSettings.input_enabled === true);
+  btn.disabled = downloading || _composeIsRemoteId(_viewingRemoteId) ||
+    !(_serverSettings && _serverSettings.input_enabled === true);
   if (downloading) {
     btn.title = cloud ? 'Downloading\u2026' : 'Downloading on-device speech model\u2026';
   } else if (listening) {
@@ -6859,10 +7033,12 @@ function _sttApplyTranscript(input, results) {
  * without changing behavior for an engine that never re-delivers results.
  * @param {SpeechRecognitionEvent} event
  */
-function _sttHandleResult(event) {
+function _sttHandleResult(event, ownerKey, generation) {
+  if (ownerKey != null && (ownerKey !== _composeActiveKey() || generation !== _sttGeneration)) return;
   var input = $('compose-input');
   if (!input || !event || !event.results) return;
   _sttApplyTranscript(input, event.results);
+  _composeStoreActiveDraft();
   _composeAutoGrow(input);
 }
 
@@ -6874,7 +7050,8 @@ function _sttHandleResult(event) {
  * doesn't ALSO render a second, more generic message for the same failure.
  * @param {SpeechRecognitionErrorEvent} event
  */
-function _sttHandleError(event) {
+function _sttHandleError(event, ownerKey, generation) {
+  if (ownerKey != null && (ownerKey !== _composeActiveKey() || generation !== _sttGeneration)) return;
   _sttSuppressEndMessage = true;
   var code = event && event.error;
   switch (code) {
@@ -6922,7 +7099,8 @@ function _sttHandleError(event) {
  * 'end'/'no-speech' is a documented trap that gets the origin
  * rate-limited by the browser. Only an explicit click resumes dictation.
  */
-function _sttHandleEnd() {
+function _sttHandleEnd(ownerKey, generation) {
+  if (ownerKey != null && (ownerKey !== _composeActiveKey() || generation !== _sttGeneration)) return;
   var wasUserStopped = _sttUserStopped;
   var suppressed = _sttSuppressEndMessage;
   _sttRecognition = null;
@@ -6956,6 +7134,9 @@ function _sttStart() {
   _sttInterimLength = 0;
   _sttUserStopped = false;
   _sttSuppressEndMessage = false;
+  _sttOwnerKey = _composeActiveKey();
+  var ownerKey = _sttOwnerKey;
+  var generation = ++_sttGeneration;
 
   var recognition;
   try {
@@ -6971,9 +7152,9 @@ function _sttStart() {
     if (phrases) {
       try { recognition.phrases = phrases; } catch (_) { /* optional biasing -- ignore if the setter rejects it */ }
     }
-    recognition.onresult = _sttHandleResult;
-    recognition.onerror = _sttHandleError;
-    recognition.onend = _sttHandleEnd;
+    recognition.onresult = function(event) { _sttHandleResult(event, ownerKey, generation); };
+    recognition.onerror = function(event) { _sttHandleError(event, ownerKey, generation); };
+    recognition.onend = function() { _sttHandleEnd(ownerKey, generation); };
     recognition.start();
   } catch (e) {
     _sttRecognition = null;
@@ -7007,10 +7188,21 @@ function _sttStop() {
  * no error message, since switching sessions is an ordinary action.
  */
 function _sttForceStop() {
-  if (!_sttRecognition) return;
+  var recognition = _sttRecognition;
+  if (!recognition) return;
+  // Chromium can deliver a final result after abort(). Invalidate it before
+  // calling abort so it cannot land in a newly-selected session's textarea.
+  _sttGeneration++;
+  // Retire the old handle synchronously, before abort() can invoke a delayed
+  // callback. The next session may start dictation immediately after a
+  // transition, and its recognition must not be blocked waiting for this
+  // browser-owned session's eventual `end` event.
+  _sttRecognition = null;
+  _sttSetState('idle');
+  _sttOwnerKey = null;
   _sttUserStopped = true;
   _sttSuppressEndMessage = true;
-  try { _sttRecognition.abort(); } catch (_) { /* already stopped */ }
+  try { recognition.abort(); } catch (_) { /* already stopped */ }
 }
 
 /**
@@ -7124,7 +7316,7 @@ let _followupsData = null; // last GET .../followups response for _viewingSessio
  * queue affordance is absent, not present-and-failing, for a remote view.
  */
 async function _followupsRefresh() {
-  if (!_viewingSession || _viewingRemoteId) {
+  if (!_viewingSession || _composeIsRemoteId(_viewingRemoteId)) {
     _followupsData = null;
     _followupsRender();
     return;
@@ -7330,26 +7522,35 @@ function _followupsSetDataForTests(data) {
 async function _followupsQueueDraft() {
   var input = $('compose-input');
   if (!input) return;
+  var targetKey = _composeActiveKey();
+  var targetSession = _viewingSession;
+  var raw = input.value;
+  if (_composeIsRemoteId(_viewingRemoteId)) {
+    _composeStoreDraft(targetKey, raw);
+    _composeShowError('Remote session input is unavailable here. Your draft is still saved for this remote session.');
+    return;
+  }
   var normalized = _composeNormalizeText(input.value);
   if (!normalized.trim()) {
     _composeShowError('Nothing to queue.');
     return;
   }
-  if (!_viewingSession) {
+  if (!targetSession || !targetKey) {
     _composeShowError('No session is open.');
     return;
   }
+  _composeStoreDraft(targetKey, raw);
   try {
     await api(
       'POST',
-      '/api/sessions/' + encodeURIComponent(_viewingSession) + '/followups',
+      '/api/sessions/' + encodeURIComponent(targetSession) + '/followups',
       { text: normalized, enter: true },
     );
-    input.value = '';
-    input.style.height = '';
-    _composeHideError();
-    if (window._refitTerminal) window._refitTerminal();
-    await _followupsRefresh();
+    if (_composeClearSubmittedDraft(targetKey, raw)) {
+      _composeHideError();
+      if (window._refitTerminal) window._refitTerminal();
+      await _followupsRefresh();
+    }
   } catch (err) {
     // A failed queue attempt must be impossible to miss: the inline
     // compose-error box is easy to overlook (no auto-dismiss, but also no
@@ -7359,9 +7560,11 @@ async function _followupsQueueDraft() {
     // surface used elsewhere in this file for other errors; using it here
     // too means "nothing happened" and "it failed" are never visually
     // identical outcomes.
-    var msg = _composeErrorMessage(err);
-    _composeShowError(msg);
-    showToast('Follow-up not queued: ' + msg);
+    if (_composeActiveKey() === targetKey) {
+      var msg = _composeErrorMessage(err);
+      _composeShowError(msg);
+      showToast('Follow-up not queued: ' + msg);
+    }
   }
 }
 
@@ -11121,6 +11324,14 @@ if (typeof module !== 'undefined' && module.exports) {
     _composeHideError,
     _composeShowError,
     _composeClearDraft,
+    _composeIsRemoteId,
+    _composeSessionKey,
+    _composeActiveKey,
+    _composeStoreDraft,
+    _composeStoreActiveDraft,
+    _composeCaptureAndClearForTransition,
+    _composeClearSubmittedDraft,
+    _composeDrafts,
     _composeOnSessionOpen,
     _composeOnSessionClose,
     _composeNormalizeText,
@@ -11182,6 +11393,7 @@ if (typeof module !== 'undefined' && module.exports) {
     followRemoteActiveSession,
     followRemoteActiveView,
     followRemoteViewDefinitions,
+    restoreState,
     pollActiveState,
     startPolling,
     stopPolling,
@@ -11213,6 +11425,7 @@ if (typeof module !== 'undefined' && module.exports) {
     getFocusedSessionName,
     _setViewingSession,
     _setViewingRemoteId,
+    _setLocalDeviceIdForTests,
     _setPendingLocalSwitches,
     _setPendingViewSwitches,
     _setSyncGroupMode,
