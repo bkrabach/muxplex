@@ -668,6 +668,7 @@ async def test_seeded_bell_isolation_preserved_after_halt_bell_feature(
     monkeypatch.setattr(
         "muxplex.main.enumerate_sessions", AsyncMock(return_value=["seeded-session"])
     )
+    monkeypatch.setattr("muxplex.main.enumerate_sessions_strict", AsyncMock(return_value=["seeded-session"]))
     monkeypatch.setattr(
         "muxplex.main.probe_tmux_epoch", AsyncMock(return_value={"epoch": 1})
     )
