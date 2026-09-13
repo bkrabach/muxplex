@@ -1,3 +1,17 @@
+## v0.58.5 (2026-09-13)
+
+**Reliability hardening for remote compose navigation and persisted session restore.**
+
+### Fixed
+
+- **Remote compose and navigation:** preserve drafts while navigating, normalize remote identifiers consistently, and discard late connection responses from a superseded session navigation.
+- **Diagnostics and setup guidance:** report broken PAM bindings when PAM is selected, distinguish a stale package mirror from a local installer cache after an upgrade, and give client-side local-CA trust guidance for Windows, macOS, and Linux.
+- **Restore and state reliability:** distinguish unavailable tmux inventory from a confirmed empty inventory, persist every verified restore before optional follow-up work, retain pending names when strict verification cannot complete, and serialize manifest read-modify-write updates so poll and restore cannot restore completed work.
+
+### Changed
+
+- **Restore compatibility:** use `tmux-kit==0.6.0` for strict inventory and restore verification. Regression coverage proves a configured restore template can bootstrap an absent tmux server and that reporter failures or cancellation do not lose already-persisted restore progress.
+
 ## v0.58.4 (2026-09-09)
 
 **Terminal links now open safe HTTP(S) destinations directly on plain click.**
