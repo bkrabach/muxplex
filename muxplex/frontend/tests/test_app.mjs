@@ -3476,7 +3476,7 @@ test('openSession mounts terminal AFTER connect POST, not inside animation timer
   );
 
   const fnStart = source.indexOf('async function openSession');
-  const braceStart = source.indexOf('{', fnStart);
+  const braceStart = source.indexOf(') {', fnStart) + 2;
   let depth = 0;
   let fnEnd = -1;
   for (let i = braceStart; i < source.length; i++) {
