@@ -1,0 +1,97 @@
+Third-party glyph notices for the bundled Nerd Font Mono files
+===============================================================
+
+Muxplex redistributes the two unmodified Nerd Fonts v3.3.0 outputs named in
+provenance.json.  Nerd Fonts generated their Mono variants from the listed
+base fonts and glyph inputs.  The patcher remaps and, where required, scales
+glyphs for the Mono output.  This file identifies the glyph inputs, their
+license evidence, and the bundled notice or license text.
+
+This is an evidence and attribution record, not legal, trademark, or
+chain-of-title clearance.  In particular, notices about brand icons do not
+claim endorsement.
+
+Nerd Fonts build provenance
+---------------------------
+
+Release: v3.3.0, commit e2dc2203202ed148ceb76d2c3100216170e94297
+Repository: https://github.com/ryanoasis/nerd-fonts
+Patcher input mapping:
+https://raw.githubusercontent.com/ryanoasis/nerd-fonts/e2dc2203202ed148ceb76d2c3100216170e94297/font-patcher
+
+The complete (`-c`) and Mono (`-s`) Nerd Fonts build selections enable every
+source below except the separately disabled Material legacy input.  Exact
+input paths, glyph ranges, source URLs, evidence hashes, and status are in
+provenance.json.
+
+Supported glyph inputs
+----------------------
+
+* Seti / Original Source — Seti-UI copyright (c) 2014 Jesse Weed, MIT.
+  `Seti-UI-MIT-LICENSE.txt` preserves the upstream grant.  The Nerd Fonts
+  `original-source.otf` input also falls under the repository's explicitly
+  stated default MIT grant for source files not in a folder with an explicit
+  license; `Nerd-Fonts-LICENSE` preserves that grant.
+* Extra glyphs / Hack — Hack Regular v3.003 input, Copyright 2018 Source
+  Foundry Authors and Copyright 2003 Bitstream, Inc.  `Hack-LICENSE.txt`
+  preserves the combined MIT and Bitstream Vera license and notices.
+* Devicons — Devicon 2.16.0 source (Copyright (c) 2015 konpa), MIT:
+  `Devicon-MIT-LICENSE.txt`.  Nerd Fonts also retains the older Devicons
+  glyphs credited by Theodore Vorillas; its upstream README identifies the
+  project as MIT-licensed and supplies that credit.  Brand icons are
+  trademarks of their respective owners; their use does not imply
+  endorsement.
+* Powerline Symbols — Copyright 2013 Kim Silkebækken and contributors, MIT;
+  `Powerline-Symbols-LICENSE.txt`.
+* Powerline Extra Symbols — Copyright (c) 2016 Ryan L McIntyre, MIT;
+  `Powerline-Extra-MIT-LICENSE`.
+* Pomicons — Copyright (c) 2021 Gabriele Lana, with Reserved Font Name
+  Pomicons, SIL OFL 1.1; `Pomicons-OFL.txt`.
+* Font Awesome Free 6.5.1 — Font Awesome's combined notice is preserved in
+  `Font-Awesome-LICENSE.txt`.  Nerd Fonts used selected SVG icons, for which
+  Font Awesome identifies CC BY 4.0; its font files are separately OFL 1.1.
+  The source notice requests retention of attribution comments and includes
+  its brand-icon notice.
+* Font Awesome Extension — Copyright (c) 2017 André Luiz Gava, MIT;
+  `Font-Awesome-Extension-MIT-LICENSE.txt`.
+* Material Design Icons — Nerd Fonts' input carries the Pictogrammers Free
+  License statement in `Material-Design-Icons-NOTICE.txt`, which declares
+  desktop fonts Apache 2.0 while noting that some icons may retain their own
+  licenses.  `Apache-2.0-LICENSE.txt` preserves the full Apache 2.0 text.
+  Attribution remains to Templarian / the MaterialDesignIcons community; this
+  record does not assert a per-icon chain of title.
+* Weather Icons 2.0.12 — upstream states that the font is SIL OFL 1.1 and
+  credits Lukas Bischoff for the original icon designs and Erik Flowers for
+  v1.1-forward icon art.  `Weather-Icons-OFL-1.1.txt` preserves the complete
+  OFL terms.  The Nerd Fonts source header has unfilled attribution template
+  fields, so those placeholders are intentionally not reproduced as facts.
+* Font Logos 1.3.0 — Copyright 2014–2024 Lukas W; the upstream `LICENSE` is
+  the Unlicense, preserved in `Font-Logos-UNLICENSE.txt`.  Its README says
+  brand icons are trademarks of their respective owners and should be used
+  only to represent the relevant company or product.  The Nerd Fonts
+  license-audit table's older “Unlicensed” row is not relied upon: the pinned
+  upstream Unlicense is the cited grant.
+* Octicons 18.3.0 — Copyright (c) 2023 GitHub Inc., MIT;
+  `Octicons-MIT-LICENSE.txt`.
+* Codicons 0.0.35 — CC BY 4.0, `Codicons-CC-BY-4.0.txt`.  Nerd Fonts records
+  two glyph patches in its input provenance.
+
+Blocked glyph input
+-------------------
+
+IEC Power Symbols is deliberately not represented as supported.  Nerd Fonts
+maps `Unicode_IEC_symbol_font.otf` into U+23FB–U+23FE and U+2B58 and its
+license-audit table labels the source MIT, but the inspected upstream font
+metadata supplies only family/version names and the upstream repository did
+not provide a LICENSE or COPYING file.  The audit label is not itself a
+license grant.  No upstream grant or copyright notice is bundled for this
+source; provenance.json records the input hash and the specific missing
+evidence.
+
+Bundled base-font and Nerd Fonts licenses
+-----------------------------------------
+
+`FiraCode-LICENSE`, `JetBrainsMono-OFL.txt`, and `Nerd-Fonts-LICENSE` preserve
+the existing base-font and Nerd Fonts license texts.  This notice bundle adds
+only the glyph-source evidence required to make those patched outputs
+auditable.
