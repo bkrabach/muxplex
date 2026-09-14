@@ -1,3 +1,17 @@
+## v0.59.0 (2026-09-14)
+
+**Optional bundled terminal fonts, with System mono still the default.**
+
+### Added
+
+- **Terminal font choices:** select Fira Code Nerd Font Mono or JetBrains Mono Nerd Font Mono in Settings → Display → Terminal font. Both fonts ship with muxplex and load from its own server only when selected; no OS font installation or external font service is needed. The existing System mono default is unchanged.
+- **Font provenance and notices:** include pinned upstream font hashes, source-specific licenses and attribution for the embedded glyph sets, and packaging checks for the bundled assets. Inspired by @btafoya's original proposal in #63.
+
+### Fixed
+
+- **Font loading and terminal sizing:** wait for the selected face before applying its metrics, ignore superseded loads, and provide visible fallback and retry without overwriting the shared preference.
+- **Display-setting synchronization:** apply remote font changes to open terminals, serialize concurrent saves, preserve newer pending choices across conflicts, and keep the settings cache aligned with successful saves or visible failure recovery.
+
 ## v0.58.5 (2026-09-13)
 
 **Reliability hardening for remote compose navigation and persisted session restore.**
