@@ -242,9 +242,9 @@
    DIVERGENCE FROM THE SUPERSEDED BRANDED SYSTEM: it specified
    Urbanist / DM Sans / JetBrains Mono under the SAME names this file
    uses (--font-ui, --font-mono). The app ships system-ui and SF Mono
-   and always has — no webfont is loaded by index.html. Naming fonts
-   here that the app does not load would make this file describe
-   something nobody can see.
+   for all dashboard typography. Optional bundled Nerd Font Mono faces
+   are loaded only for a user's live terminal selection by fonts.js;
+   they never change --font-mono or cause an eager webfont request.
 
    Its --text-* scale also shared every name with this one at a
    different value: --text-md 1rem (16px) against the 13px the app

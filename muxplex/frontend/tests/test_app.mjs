@@ -6871,7 +6871,7 @@ test('DISPLAY_DEFAULTS includes gridViewMode with default flat', () => {
   );
 });
 
-test('DISPLAY_DEFAULTS has exactly 11 keys', () => {
+test('DISPLAY_DEFAULTS has exactly 12 keys', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
   assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
@@ -6879,7 +6879,7 @@ test('DISPLAY_DEFAULTS has exactly 11 keys', () => {
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
   const keyMatches = defaultsBody.match(/^\s+\w+:/gm);
   assert.ok(keyMatches, 'DISPLAY_DEFAULTS must have keys');
-  assert.strictEqual(keyMatches.length, 11, `DISPLAY_DEFAULTS must have exactly 11 keys (previewFontSize/previewZoom added), got ${keyMatches.length}`);
+  assert.strictEqual(keyMatches.length, 12, `DISPLAY_DEFAULTS must have exactly 12 keys (including terminalFont), got ${keyMatches.length}`);
 });
 
 test('DISPLAY_DEFAULTS includes previewFontSize: 11 and previewZoom: 100', () => {
@@ -6909,6 +6909,7 @@ test('getDisplaySettings returns DISPLAY_DEFAULTS when _serverSettings is null',
   app._setServerSettings(null);
   const ds = app.getDisplaySettings();
   assert.strictEqual(ds.fontSize, 14, 'getDisplaySettings must return default fontSize');
+  assert.strictEqual(ds.terminalFont, 'System', 'getDisplaySettings must retain System as the terminal font default');
   assert.strictEqual(ds.hoverPreviewDelay, 1500, 'getDisplaySettings must return default hoverPreviewDelay');
   assert.strictEqual(ds.gridColumns, 'auto', 'getDisplaySettings must return default gridColumns');
   assert.strictEqual(ds.bellSound, false, 'getDisplaySettings must return default bellSound');
@@ -6940,6 +6941,13 @@ test('getDisplaySettings reads previewFontSize/previewZoom from _serverSettings 
   assert.strictEqual(ds.previewFontSize, 18, 'getDisplaySettings must use previewFontSize from _serverSettings');
   assert.strictEqual(ds.previewZoom, 150, 'getDisplaySettings must use previewZoom from _serverSettings');
   app._setServerSettings(null);
+});
+
+test('terminalFont is a server-backed display setting and is applied without reconnecting', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes("terminalFont: 'System'"), 'DISPLAY_DEFAULTS must default terminalFont to System');
+  assert.ok(source.includes('setting-terminal-font'), 'Display settings must read the terminal font control');
+  assert.ok(source.includes('window._setTerminalFont(ds.terminalFont)'), 'Live terminal must receive selected terminalFont');
 });
 
 // ---------------------------------------------------------------------------

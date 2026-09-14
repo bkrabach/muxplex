@@ -453,6 +453,16 @@
               <option value="18">18</option>
             </select>
           </div>
+          <div class="settings-field settings-field--column">
+            <label class="settings-label" for="setting-terminal-font">Terminal font</label>
+            <select id="setting-terminal-font" class="settings-select">
+              <option value="System" selected>System mono (default)</option>
+              <option value="FiraCode">Fira Code Nerd Font Mono</option>
+              <option value="JetBrainsMono">JetBrains Mono Nerd Font Mono</option>
+            </select>
+            <span class="settings-helper">Optional terminal fonts download only when selected.</span>
+            <span id="terminal-font-status" class="settings-helper" aria-live="polite"></span>
+          </div>
           <div class="settings-field">
             <label class="settings-label" for="setting-preview-font-size">Preview Font Size</label>
             <select id="setting-preview-font-size" class="settings-select">
@@ -1130,6 +1140,7 @@
   <script src="/vendor/xterm-addon-web-links.js"></script>
   <script src="/vendor/xterm-addon-search.js"></script>
   <script src="/vendor/addon-image.js"></script>
+  <script src="/fonts.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/terminal.js" defer></script>
   <script src="/chat.js" defer></script>

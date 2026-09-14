@@ -169,6 +169,10 @@ DEFAULT_SETTINGS: dict = {
     "tls_cert": "",
     "tls_key": "",
     "fontSize": 14,
+    # The live xterm face. This is a closed catalog rather than a CSS URL:
+    # every optional face is a bundled, provenance-recorded asset and
+    # unrecognised settings safely retain the established system stack.
+    "terminalFont": "System",
     # Font size (px) of the tile/sidebar preview text -- independent of
     # `fontSize` above, which only ever drove the live xterm.js terminal.
     # Feeds --preview-font-size (frontend/app.js's applyDisplaySettings()),
@@ -545,6 +549,20 @@ def normalize_preview_font_size(value: object) -> int:
     return _coerce_clamped_int(value, 8, 24, DEFAULT_SETTINGS["previewFontSize"])
 
 
+TERMINAL_FONTS: frozenset[str] = frozenset({"System", "FiraCode", "JetBrainsMono"})
+
+
+def normalize_terminal_font(value: object) -> str:
+    """Return a supported terminal font preference or the safe System default.
+
+    This intentionally accepts no aliases or arbitrary CSS family names.  The
+    matching frontend catalog only names bundled assets whose source and
+    licenses are recorded beside them, and ``System`` preserves muxplex's
+    historical xterm stack without a network request.
+    """
+    return value if isinstance(value, str) and value in TERMINAL_FONTS else "System"
+
+
 def normalize_preview_zoom(value: object) -> int:
     """Clamp/coerce ``previewZoom`` (a percentage) into ``[50, 200]``.
 
@@ -584,6 +602,7 @@ SYNCABLE_KEYS: frozenset[str] = frozenset(
     {
         # Display preferences
         "fontSize",
+        "terminalFont",
         "previewFontSize",
         "previewZoom",
         "hoverPreviewDelay",
@@ -792,6 +811,7 @@ def load_settings() -> dict:
     # range, hand-edited nonsense) can never reach the renderer.
     result["previewFontSize"] = normalize_preview_font_size(result["previewFontSize"])
     result["previewZoom"] = normalize_preview_zoom(result["previewZoom"])
+    result["terminalFont"] = normalize_terminal_font(result["terminalFont"])
 
     # One-time migration: an existing settings.json predating deviceLabelPlacement
     # carries only showDeviceBadges. Derive the placement from it so the mirror
@@ -1651,7 +1671,11 @@ def patch_settings(
                 # send it. Same single-writer discipline as the
                 # deviceLabelPlacement pair just above.
                 continue
-            current[key] = patch[key]
+            current[key] = (
+                normalize_terminal_font(patch[key])
+                if key == "terminalFont"
+                else patch[key]
+            )
 
     # deviceLabelPlacement/showDeviceBadges: authoritative-key-with-derived-
     # mirror reconciliation (see reconcile_device_label's docstring for the
@@ -1883,7 +1907,11 @@ def apply_synced_settings(
             # deviceLabelPlacement is never applied directly (it must
             # instead fall through to R2/R4, keeping the local value).
             continue
-        current[key] = incoming_settings[key]
+        current[key] = (
+            normalize_terminal_font(incoming_settings[key])
+            if key == "terminalFont"
+            else incoming_settings[key]
+        )
 
     # deviceLabelPlacement/showDeviceBadges reconciliation -- same mechanism
     # as patch_settings, applied to the sync payload. A peer sending an

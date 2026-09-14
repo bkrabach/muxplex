@@ -61,6 +61,7 @@ function loadTerminal() {
       },
     },
   };
+  const pendingFontLoads = {};
 
   // Capture all messages sent via WebSocket.send()
   const sentMessages = [];
@@ -135,6 +136,7 @@ function loadTerminal() {
     innerWidth: 1024,
     Terminal: function Terminal(options) {
       terminalOptions = options;
+      mockTerm.options = options;
       return mockTerm;
     },
     FitAddon: {
@@ -147,6 +149,22 @@ function loadTerminal() {
     },
     _openTerminal: undefined,
     _closeTerminal: undefined,
+    muxplexFonts: {
+      catalog: {
+        System: { label: 'System mono' },
+        FiraCode: { label: 'Fira Code Nerd Font Mono' },
+        JetBrainsMono: { label: 'JetBrains Mono Nerd Font Mono' },
+      },
+      normalize: (value) => ['FiraCode', 'JetBrainsMono'].includes(value) ? value : 'System',
+      cssFamily: (value) => value === 'FiraCode'
+        ? "'FiraCode Nerd Font Mono', monospace"
+        : value === 'JetBrainsMono'
+          ? "'JetBrainsMono NFM', monospace"
+          : "'SF Mono', 'Fira Code', Consolas, monospace",
+      ensureLoaded: (value) => new Promise((resolve, reject) => {
+        pendingFontLoads[value] = { resolve, reject };
+      }),
+    },
   };
   // Node 21+ ships a built-in read-only `navigator` global (Web platform
   // compat), so a plain assignment throws. Redefine it for the duration of
@@ -221,6 +239,8 @@ function loadTerminal() {
       }
     },
     fireReconnect() { if (capturedReconnectFn) { capturedReconnectFn(); capturedReconnectFn = null; } },
+    resolveFont(name) { pendingFontLoads[name].resolve(); },
+    rejectFont(name) { pendingFontLoads[name].reject(new Error('font unavailable')); },
     // Expose so we can re-patch setTimeout for the actual calls
     patchTimeout(fn) {
       const orig = globalThis.setTimeout;
@@ -1683,6 +1703,28 @@ test('openTerminal uses passed fontSize to configure xterm.js Terminal construct
   } finally {
     globalThis.setTimeout = originalSetTimeout;
   }
+});
+
+test('optional terminal font waits for readiness, and a later System selection wins', async () => {
+  const t = loadTerminal();
+  t.openTerminal('session', '', 14, '', 'FiraCode');
+  assert.strictEqual(t.terminalOptions, null, 'optional face must load before xterm measures it');
+  t.window._openTerminal('session', '', 14, '', 'System');
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
+  t.resolveFont('FiraCode');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace",
+    'late FiraCode completion must not overwrite the newer System request');
+});
+
+test('optional terminal font failure opens with the System fallback', async () => {
+  const t = loadTerminal();
+  t.openTerminal('session', '', 14, '', 'JetBrainsMono');
+  t.rejectFont('JetBrainsMono');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
 });
 
 test('plain-click OSC 8 labels and visible URLs share safe HTTP(S)-only activation', () => {

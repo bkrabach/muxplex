@@ -32,7 +32,7 @@
 ### Settings
 
 - **In-browser settings panel** — gear icon or `,` shortcut
-- **Display** — font size, grid columns, hover delay, view mode, device badges, activity indicator
+- **Display** — terminal font size and optional bundled Nerd Font Mono choices (System mono remains the default), grid columns, hover delay, view mode, device badges, activity indicator. Optional font files download only when selected; their source and license evidence is in `muxplex/frontend/fonts/`.
 - **Sessions** — default session, sort order, hidden sessions, auto-open, bell sound, notifications
 - **Commands** — custom create/delete session templates
 - **Multi-Device** — remote instance federation

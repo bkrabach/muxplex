@@ -473,6 +473,7 @@ let _localDeviceId = null;
 let _localVersion = null;
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
+  terminalFont: 'System',
   previewFontSize: 11,           // px, tile/sidebar preview text -- independent of fontSize (the terminal font)
   previewZoom: 100,               // %, tile size / grid min column width scale; 100 = today's exact sizing
   hoverPreviewDelay: 1500,
@@ -5817,7 +5818,10 @@ async function openSession(name, opts = {}) {
   }
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize, _ownDeviceId());
+  if (window._openTerminal) {
+    var _openDs = getDisplaySettings();
+    window._openTerminal(name, _deviceId, _openDs.fontSize, _ownDeviceId(), _openDs.terminalFont);
+  }
   _composeOnSessionOpen();
 }
 
@@ -8288,6 +8292,9 @@ function applyDisplaySettings(ds) {
   if (window._setTerminalFontSize) {
     window._setTerminalFontSize(ds.fontSize);
   }
+  if (window._setTerminalFont) {
+    window._setTerminalFont(ds.terminalFont);
+  }
 
   // Apply view mode to grid
   var grid = document.getElementById('session-grid');
@@ -8349,6 +8356,8 @@ function onDisplaySettingChange() {
 
   var fontSizeEl = document.getElementById('setting-font-size');
   if (fontSizeEl) ds.fontSize = parseInt(fontSizeEl.value, 10) || ds.fontSize;
+  var terminalFontEl = document.getElementById('setting-terminal-font');
+  if (terminalFontEl) ds.terminalFont = terminalFontEl.value;
 
   var previewFontSizeEl = document.getElementById('setting-preview-font-size');
   if (previewFontSizeEl) ds.previewFontSize = parseInt(previewFontSizeEl.value, 10) || ds.previewFontSize;
@@ -8373,6 +8382,7 @@ function onDisplaySettingChange() {
 
   var patch = {
     fontSize: ds.fontSize,
+    terminalFont: ds.terminalFont,
     previewFontSize: ds.previewFontSize,
     previewZoom: ds.previewZoom,
     hoverPreviewDelay: ds.hoverPreviewDelay,
@@ -8476,6 +8486,8 @@ function openSettings() {
   const settings = getDisplaySettings();
   const fontSizeEl = $('setting-font-size');
   if (fontSizeEl) fontSizeEl.value = String(settings.fontSize);
+  const terminalFontEl = $('setting-terminal-font');
+  if (terminalFontEl) terminalFontEl.value = settings.terminalFont;
   const previewFontSizeEl = $('setting-preview-font-size');
   if (previewFontSizeEl) previewFontSizeEl.value = String(settings.previewFontSize);
   const previewZoomEl = $('setting-preview-zoom');
@@ -10705,6 +10717,7 @@ function bindStaticEventListeners() {
 
   // Display settings — bind change events for immediate apply
   on($('setting-font-size'), 'change', onDisplaySettingChange);
+  on($('setting-terminal-font'), 'change', onDisplaySettingChange);
   on($('setting-preview-font-size'), 'change', onDisplaySettingChange);
   on($('setting-preview-zoom'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);

@@ -13,6 +13,10 @@ let _vpTracker = null;
 let _reconnectAttempts = 0; // tracks consecutive failed reconnect attempts for backoff + ttyd respawn
 let _searchAddon = null;
 let _resizeObserver = null;
+// Every open/close and font selection advances this generation. A slow optional
+// face must never apply after another selection, a new terminal, or close.
+let _termFontGeneration = 0;
+let _termRequestedFont = 'System';
 // This browser's own device_id (distinct from remoteId, a federation
 // concept). Empty string when unknown/unset -- treated as "no device_id",
 // matching today's behavior exactly (see the §0 hazard's residual gap:
@@ -747,7 +751,7 @@ function initVisualViewport() {
  * Stores the results in module-level _term and _fitAddon.
  * @param {number} [fontSize=14] - font size in pixels, from server display settings
  */
-function createTerminal(fontSize) {
+function createTerminal(fontSize, terminalFont) {
   // Dispose any existing instance
   if (_term) {
     _term.dispose();
@@ -764,7 +768,7 @@ function createTerminal(fontSize) {
   _term = new window.Terminal({
     cursorBlink: true,
     fontSize: effectiveFontSize,
-    fontFamily: "'SF Mono', 'Fira Code', Consolas, monospace",
+    fontFamily: _termFontCssFamily(terminalFont),
     theme: {
       background: '#000000',
       foreground: '#c9d1d9',
@@ -887,7 +891,7 @@ function _searchPrev() {
  *   When provided, the WebSocket connects via the federation proxy path
  *   ws://host/federation/{remoteId}/terminal/ws (same origin, no cross-origin).
  */
-function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
+function openTerminal(sessionName, remoteId, fontSize, ownDeviceId, terminalFont) {
   // Null _currentSession first so any in-flight close handler on the old WS won't
   // schedule a reconnect (it checks `if (!_currentSession) return;`).
   _currentSession = null;
@@ -908,6 +912,8 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
   }
 
   _currentSession = sessionName;
+  var openGeneration = ++_termFontGeneration;
+  _termRequestedFont = _termNormalizeFont(terminalFont);
 
   const container = document.getElementById('terminal-container');
   if (!container) {
@@ -915,7 +921,27 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
     return;
   }
 
-  createTerminal(fontSize);
+  var requestedFont = _termRequestedFont;
+  if (requestedFont !== 'System') {
+    _termSetFontStatus('Loading ' + _termFontLabel(requestedFont) + '…');
+    window.muxplexFonts.ensureLoaded(requestedFont).then(function() {
+      if (openGeneration !== _termFontGeneration || _currentSession !== sessionName) return;
+      _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, requestedFont);
+    }, function() {
+      if (openGeneration !== _termFontGeneration || _currentSession !== sessionName) return;
+      _termSetFontStatus(_termFontLabel(requestedFont) + ' could not load; rendering System mono.');
+      _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, 'System');
+    });
+    return;
+  }
+  _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, requestedFont);
+}
+
+function _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, terminalFont) {
+  var container = document.getElementById('terminal-container');
+  if (!container || _currentSession !== sessionName) return;
+  createTerminal(fontSize, terminalFont);
+  _termRequestedFont = terminalFont;
 
   _term.open(container);
 
@@ -1147,6 +1173,8 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId) {
  * Close the current terminal session and clean up all resources.
  */
 function closeTerminal() {
+  _termFontGeneration++;
+  _termRequestedFont = 'System';
   // Tear down the visualViewport tracker (see _trackVisualViewportHeight):
   // removes the resize/scroll listeners, cancels a still-pending coalesced
   // refit so a stray callback from THIS session never fires an extra
@@ -1210,6 +1238,56 @@ function setTerminalFontSize(size) {
 }
 
 window._setTerminalFontSize = setTerminalFontSize;
+
+function _termNormalizeFont(value) {
+  return window.muxplexFonts ? window.muxplexFonts.normalize(value) : 'System';
+}
+
+function _termFontCssFamily(value) {
+  return window.muxplexFonts
+    ? window.muxplexFonts.cssFamily(value)
+    : "'SF Mono', 'Fira Code', Consolas, monospace";
+}
+
+function _termFontLabel(value) {
+  var entry = window.muxplexFonts && window.muxplexFonts.catalog[_termNormalizeFont(value)];
+  return entry ? entry.label : 'System mono';
+}
+
+function _termSetFontStatus(message) {
+  var status = document.getElementById('terminal-font-status');
+  if (status) status.textContent = message;
+}
+
+/** Apply a requested face to the currently open terminal without reconnecting. */
+function setTerminalFont(value) {
+  if (!_term) return;
+  var requested = _termNormalizeFont(value);
+  if (requested === _termRequestedFont) return;
+  _termRequestedFont = requested;
+  var generation = ++_termFontGeneration;
+  var terminal = _term;
+  if (requested === 'System') {
+    terminal.options.fontFamily = _termFontCssFamily('System');
+    _termSetFontStatus('Rendering System mono.');
+    _termRefit();
+    return;
+  }
+  _termSetFontStatus('Loading ' + _termFontLabel(requested) + '…');
+  window.muxplexFonts.ensureLoaded(requested).then(function() {
+    if (generation !== _termFontGeneration || terminal !== _term) return;
+    terminal.options.fontFamily = _termFontCssFamily(requested);
+    _termSetFontStatus('Rendering ' + _termFontLabel(requested) + '.');
+    _termRefit();
+  }, function() {
+    if (generation !== _termFontGeneration || terminal !== _term) return;
+    terminal.options.fontFamily = _termFontCssFamily('System');
+    _termSetFontStatus(_termFontLabel(requested) + ' could not load; rendering System mono.');
+    _termRefit();
+  });
+}
+
+window._setTerminalFont = setTerminalFont;
 
 // ---------------------------------------------------------------------------
 // Mobile touch scroll — rAF-batched WheelEvent dispatch

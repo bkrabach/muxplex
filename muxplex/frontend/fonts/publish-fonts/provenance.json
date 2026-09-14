@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "source": {
+    "repository": "https://github.com/ryanoasis/nerd-fonts",
+    "version": "v3.3.0",
+    "commit": "e2dc2203202ed148ceb76d2c3100216170e94297",
+    "release_base_url": "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.3.0/"
+  },
+  "fonts": [
+    {
+      "setting": "FiraCode",
+      "file": "FiraCodeNerdFontMono-Regular.ttf",
+      "archive": "FiraCode.zip",
+      "archive_sha256": "89978e6f870d044286a339161d5ed961569744b1cd2afee62337fa140cd0b397",
+      "ttf_sha256": "25e08bcd4ce0273c388458fc07b01fa2216fc7e867d37f997482803312764e5d",
+      "git_blob_sha1": "003ee6203fd63785bed47bb0baa9c7430aee569c",
+      "source_path": "patched-fonts/FiraCode/Regular/FiraCodeNerdFontMono-Regular.ttf",
+      "name_table": {"1": "FiraCode Nerd Font Mono", "2": "Regular", "4": "FiraCode Nerd Font Mono Reg", "6": "FiraCodeNFM-Reg"},
+      "license": "FiraCode-LICENSE"
+    },
+    {
+      "setting": "JetBrainsMono",
+      "file": "JetBrainsMonoNerdFontMono-Regular.ttf",
+      "archive": "JetBrainsMono.zip",
+      "archive_sha256": "2d83782a350b604bfa70fce880604a41a7f77c3eec8f922f9cdc3c20952ddbe4",
+      "ttf_sha256": "9e4dad8c34fb31045d53790a936a0afc3aae3fb830e874faadf3670662b04853",
+      "git_blob_sha1": "99f2e9b8906ceadf457bb7ad153afd8061cfe415",
+      "source_path": "patched-fonts/JetBrainsMono/Ligatures/Regular/JetBrainsMonoNerdFontMono-Regular.ttf",
+      "name_table": {"1": "JetBrainsMono NFM", "2": "Regular", "4": "JetBrainsMono NFM Regular", "6": "JetBrainsMonoNFM-Regular"},
+      "license": "JetBrainsMono-OFL.txt"
+    }
+  ],
+  "notices": [
+    "Nerd-Fonts-LICENSE",
+    "Nerd-Fonts-license-audit.md",
+    "Powerline-Extra-MIT-LICENSE",
+    "Powerline-Symbols-LICENSE.txt"
+  ],
+  "excluded": [{"setting": "Meslo", "reason": "The pinned source only provides an abbreviated Apache notice while its name table declares Apple Menlo and Bitstream Vera lineage; this audit did not establish the required upstream full license and NOTICE obligations."}]
+}
