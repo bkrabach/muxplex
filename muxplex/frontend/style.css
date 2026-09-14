@@ -3547,6 +3547,10 @@ body {
   font-style: italic;
 }
 
+.terminal-font-retry {
+  align-self: flex-start;
+}
+
 /* ============================================================
    Notifications tab controls
    ============================================================ */

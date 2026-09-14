@@ -9587,6 +9587,100 @@ test('after refresh, a session newly added to a view on another device is reflec
   globalThis.fetch = undefined;
 });
 
+test('remote settings refresh updates an open terminal and font select without PATCHing back', async () => {
+  const calls = [];
+  const fontSelect = { value: 'System' };
+  const originalGetById = globalThis.document.getElementById;
+  const originalSetFont = globalThis.window._setTerminalFont;
+  const applied = [];
+  globalThis.document.getElementById = (id) => id === 'setting-terminal-font' ? fontSelect : null;
+  globalThis.window._setTerminalFont = (font) => applied.push(font);
+  globalThis.fetch = async (url, opts) => {
+    calls.push(((opts && opts.method) || 'GET') + ' ' + url);
+    return { ok: true, json: async () => ({ terminalFont: 'JetBrainsMono', settings_updated_at: 700 }) };
+  };
+
+  app._setServerSettings({ terminalFont: 'System' });
+  await app.followRemoteViewDefinitions({ settings_updated_at: 700 });
+
+  assert.deepStrictEqual(applied, ['JetBrainsMono'], 'fresh server font must apply to the existing terminal');
+  assert.strictEqual(fontSelect.value, 'JetBrainsMono', 'open Settings select must follow the server setting');
+  assert.ok(!calls.some((call) => call.startsWith('PATCH ')), 'following a remote setting must not PATCH it back');
+
+  globalThis.document.getElementById = originalGetById;
+  globalThis.window._setTerminalFont = originalSetFont;
+  globalThis.fetch = undefined;
+});
+
+test('rapid display-font changes serialize guarded writes so a stale CAS retry cannot overwrite the latest choice', async () => {
+  const controls = {
+    'setting-font-size': { value: '14' },
+    'setting-terminal-font': { value: 'FiraCode' },
+    'setting-preview-font-size': { value: '11' },
+    'setting-preview-zoom': { value: '100' },
+    'setting-hover-delay': { value: '150' },
+    'setting-grid-columns': { value: 'auto' },
+    'setting-device-label-placement': { value: 'bottom' },
+    'setting-activity-indicator': { value: 'both' },
+  };
+  const originalGetById = globalThis.document.getElementById;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalSetFont = globalThis.window._setTerminalFont;
+  const appliedFonts = [];
+  globalThis.document.getElementById = (id) => controls[id] || null;
+  globalThis.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  globalThis.window._setTerminalFont = (font) => appliedFonts.push(font);
+  const patchBodies = [];
+  let firstPatch;
+  let persisted = 'System';
+  globalThis.fetch = (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'GET' && url === '/api/settings') {
+      return Promise.resolve({ ok: true, json: async () => ({ terminalFont: persisted, settings_updated_at: 2 }) });
+    }
+    if (method === 'PATCH' && url === '/api/settings') {
+      const body = JSON.parse(opts.body);
+      patchBodies.push(body);
+      if (patchBodies.length === 1) {
+        return new Promise((resolve) => { firstPatch = resolve; });
+      }
+      persisted = body.terminalFont;
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ terminalFont: persisted, settings_updated_at: patchBodies.length + 2 }),
+      });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  };
+  app._setServerSettings({ terminalFont: 'System', settings_updated_at: 1 });
+
+  const first = app.onDisplaySettingChange();
+  controls['setting-terminal-font'].value = 'JetBrainsMono';
+  const latest = app.onDisplaySettingChange();
+  assert.deepStrictEqual(appliedFonts, ['FiraCode', 'JetBrainsMono'],
+    'both local selections apply before either queued guarded write settles');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(patchBodies.length, 1, 'later intent waits while the first guarded request is unresolved');
+
+  firstPatch({ ok: false, status: 409, statusText: 'Conflict', json: async () => ({ settings_updated_at: 2 }) });
+  await latest;
+  await first.catch(() => {});
+
+  assert.deepStrictEqual(
+    patchBodies.map((body) => body.terminalFont),
+    ['FiraCode', 'FiraCode', 'JetBrainsMono'],
+    'the conflict retry preserves its own intent, then the later intent wins in write order',
+  );
+  assert.ok(patchBodies.every((body) => Object.hasOwn(body, 'expected_settings_updated_at')),
+    'every serialized write must remain guarded by the CAS precondition');
+  assert.strictEqual(persisted, 'JetBrainsMono', 'server persistence must match the last requested font');
+
+  globalThis.document.getElementById = originalGetById;
+  globalThis.setTimeout = originalSetTimeout;
+  globalThis.window._setTerminalFont = originalSetFont;
+  globalThis.fetch = undefined;
+});
+
 // --- patchSettingsGuarded (settings-clobber CAS protection) ---
 // Real incident this fixes: a PWA tab holding a STALE _serverSettings.views
 // snapshot PATCHed the entire array back over the server's newer state,

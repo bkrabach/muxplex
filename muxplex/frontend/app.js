@@ -1897,6 +1897,13 @@ function followRemoteViewDefinitions(state) {
   if (_lastSettingsUpdatedAt !== null && ts === _lastSettingsUpdatedAt) return; // unchanged
   _lastSettingsUpdatedAt = ts;
   return loadServerSettings().then(function() {
+    // A font setting is display state too, but it is deliberately applied
+    // narrowly here: the rest of this follow path remains view-definition
+    // rendering.  A queued local display choice wins over a stale server
+    // snapshot until its guarded write has settled (see
+    // onDisplaySettingChange), so a poll cannot briefly roll a newer local
+    // selection back to an older one while its predecessor is retrying.
+    _applyFollowedTerminalFont();
     renderViewDropdown();
     renderGrid(_currentSessions || []);
     renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
@@ -7788,6 +7795,14 @@ function onSortOrderChange() {
 const SETTINGS_CAS_MAX_ATTEMPTS = 5;
 const SETTINGS_CAS_BASE_BACKOFF_MS = 25;
 const SETTINGS_CAS_MAX_BACKOFF_MS = 1000;
+// Display controls share one optimistic settings document.  Keep their writes
+// in request order so an older CAS retry can never land after a later font
+// selection.  This is intentionally narrower than patchSettingsGuarded():
+// non-display settings retain their existing independent behavior.
+let _displaySettingsWrite = Promise.resolve();
+let _latestDisplaySettingsIntent = 0;
+let _pendingDisplaySettingsIntent = 0;
+let _latestDisplaySettingsPatch = null;
 
 /**
  * Jittered exponential backoff before CAS retry `attempt` (0-based).
@@ -8219,6 +8234,20 @@ function getDisplaySettings() {
 }
 
 /**
+ * Apply only the terminal-font portion of a newly followed settings snapshot.
+ * A local display write in flight remains the visible intent until its queue
+ * settles; the server snapshot is still retained for every other setting.
+ */
+function _applyFollowedTerminalFont() {
+  var font = _pendingDisplaySettingsIntent && _latestDisplaySettingsPatch
+    ? _latestDisplaySettingsPatch.terminalFont
+    : getDisplaySettings().terminalFont;
+  var terminalFontEl = $('setting-terminal-font');
+  if (terminalFontEl) terminalFontEl.value = font;
+  if (window._setTerminalFont) window._setTerminalFont(font);
+}
+
+/**
  * Set grid template for fit mode based on tile count.
  * Pure arithmetic — no DOM measurement, no getComputedStyle, no clientHeight.
  * Safe to call at any time regardless of display state or layout phase.
@@ -8391,11 +8420,33 @@ function onDisplaySettingChange() {
     activityIndicator: ds.activityIndicator,
   };
   Object.assign(_serverSettings, patch);
-  patchSettingsGuarded(function() { return patch; })
-    .then(function() { showToast('Settings saved'); })
-    .catch(function(err) { console.warn('[onDisplaySettingChange] failed:', err); });
+  var intent = ++_latestDisplaySettingsIntent;
+  _pendingDisplaySettingsIntent = intent;
+  _latestDisplaySettingsPatch = patch;
+  // Continue after a prior failure so one rejected save never wedges every
+  // later display choice.  Each queued write keeps the guarded CAS
+  // precondition and rebuild/retry behavior from patchSettingsGuarded().
+  _displaySettingsWrite = _displaySettingsWrite.catch(function() {}).then(function() {
+    return patchSettingsGuarded(function() { return patch; });
+  });
   applyDisplaySettings(ds);
   _updateDeviceLabelAmbiguityNote(ds);
+  return _displaySettingsWrite.then(function() {
+    // A completion for an older selection is true but no longer useful.  Do
+    // not show a "saved" toast that appears to confirm the newer choice.
+    if (intent === _latestDisplaySettingsIntent) {
+      _pendingDisplaySettingsIntent = 0;
+      _latestDisplaySettingsPatch = null;
+      showToast('Settings saved');
+    }
+  }).catch(function(err) {
+    if (intent === _latestDisplaySettingsIntent) {
+      _pendingDisplaySettingsIntent = 0;
+      _latestDisplaySettingsPatch = null;
+    }
+    console.warn('[onDisplaySettingChange] failed:', err);
+    throw err;
+  });
 }
 
 /**
@@ -11461,6 +11512,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // Settings
     getDisplaySettings,
     applyDisplaySettings,
+    onDisplaySettingChange,
+    _applyFollowedTerminalFont,
     loadGridViewMode,
     saveGridViewMode,
     applyFitLayout,

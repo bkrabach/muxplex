@@ -17,6 +17,7 @@ let _resizeObserver = null;
 // face must never apply after another selection, a new terminal, or close.
 let _termFontGeneration = 0;
 let _termRequestedFont = 'System';
+let _termFailedFont = null;
 // This browser's own device_id (distinct from remoteId, a federation
 // concept). Empty string when unknown/unset -- treated as "no device_id",
 // matching today's behavior exactly (see the §0 hazard's residual gap:
@@ -914,6 +915,7 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId, terminalFont
   _currentSession = sessionName;
   var openGeneration = ++_termFontGeneration;
   _termRequestedFont = _termNormalizeFont(terminalFont);
+  _termSetFontRetry(null);
 
   const container = document.getElementById('terminal-container');
   if (!container) {
@@ -929,8 +931,9 @@ function openTerminal(sessionName, remoteId, fontSize, ownDeviceId, terminalFont
       _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, requestedFont);
     }, function() {
       if (openGeneration !== _termFontGeneration || _currentSession !== sessionName) return;
-      _termSetFontStatus(_termFontLabel(requestedFont) + ' could not load; rendering System mono.');
       _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, 'System');
+      _termSetFontStatus(_termFontLabel(requestedFont) + ' could not load; rendering System mono.');
+      _termSetFontRetry(requestedFont);
     });
     return;
   }
@@ -942,6 +945,9 @@ function _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, termin
   if (!container || _currentSession !== sessionName) return;
   createTerminal(fontSize, terminalFont);
   _termRequestedFont = terminalFont;
+  _termSetFontStatus(terminalFont === 'System'
+    ? 'Rendering System mono.'
+    : 'Rendering ' + _termFontLabel(terminalFont) + '.');
 
   _term.open(container);
 
@@ -1175,6 +1181,7 @@ function _openTerminalReady(sessionName, remoteId, fontSize, ownDeviceId, termin
 function closeTerminal() {
   _termFontGeneration++;
   _termRequestedFont = 'System';
+  _termSetFontRetry(null);
   // Tear down the visualViewport tracker (see _trackVisualViewportHeight):
   // removes the resize/scroll listeners, cancels a still-pending coalesced
   // refit so a stray callback from THIS session never fires an extra
@@ -1259,14 +1266,28 @@ function _termSetFontStatus(message) {
   if (status) status.textContent = message;
 }
 
+function _termSetFontRetry(failedFont) {
+  _termFailedFont = failedFont || null;
+  var retry = document.getElementById('terminal-font-retry');
+  if (!retry) return;
+  if (_termFailedFont) {
+    retry.classList.remove('hidden');
+    retry.onclick = function() { setTerminalFont(_termFailedFont, true); };
+  } else {
+    retry.classList.add('hidden');
+    retry.onclick = null;
+  }
+}
+
 /** Apply a requested face to the currently open terminal without reconnecting. */
-function setTerminalFont(value) {
+function setTerminalFont(value, forceRetry) {
   if (!_term) return;
   var requested = _termNormalizeFont(value);
-  if (requested === _termRequestedFont) return;
+  if (requested === _termRequestedFont && !forceRetry) return;
   _termRequestedFont = requested;
   var generation = ++_termFontGeneration;
   var terminal = _term;
+  _termSetFontRetry(null);
   if (requested === 'System') {
     terminal.options.fontFamily = _termFontCssFamily('System');
     _termSetFontStatus('Rendering System mono.');
@@ -1283,6 +1304,7 @@ function setTerminalFont(value) {
     if (generation !== _termFontGeneration || terminal !== _term) return;
     terminal.options.fontFamily = _termFontCssFamily('System');
     _termSetFontStatus(_termFontLabel(requested) + ' could not load; rendering System mono.');
+    _termSetFontRetry(requested);
     _termRefit();
   });
 }
