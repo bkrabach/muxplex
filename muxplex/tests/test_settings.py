@@ -1282,10 +1282,16 @@ def test_terminal_font_normalizes_on_load_patch_and_sync(redirect_settings_path)
     assert load_settings()["terminalFont"] == "System"
 
     assert patch_settings({"terminalFont": "not-a-font"})["terminalFont"] == "System"
-    assert apply_synced_settings({"terminalFont": "JetBrainsMono"}, 1712600000.0)[
-        "terminalFont"
-    ] == "JetBrainsMono"
-    assert apply_synced_settings({"terminalFont": 99}, 1712600001.0)["terminalFont"] == "System"
+    assert (
+        apply_synced_settings({"terminalFont": "JetBrainsMono"}, 1712600000.0)[
+            "terminalFont"
+        ]
+        == "JetBrainsMono"
+    )
+    assert (
+        apply_synced_settings({"terminalFont": 99}, 1712600001.0)["terminalFont"]
+        == "System"
+    )
 
 
 # ============================================================
