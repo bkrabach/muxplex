@@ -473,6 +473,7 @@ let _localDeviceId = null;
 let _localVersion = null;
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
+  terminalFont: 'System',
   previewFontSize: 11,           // px, tile/sidebar preview text -- independent of fontSize (the terminal font)
   previewZoom: 100,               // %, tile size / grid min column width scale; 100 = today's exact sizing
   hoverPreviewDelay: 1500,
@@ -1896,6 +1897,13 @@ function followRemoteViewDefinitions(state) {
   if (_lastSettingsUpdatedAt !== null && ts === _lastSettingsUpdatedAt) return; // unchanged
   _lastSettingsUpdatedAt = ts;
   return loadServerSettings().then(function() {
+    // A font setting is display state too, but it is deliberately applied
+    // narrowly here: the rest of this follow path remains view-definition
+    // rendering.  A queued local display choice wins over a stale server
+    // snapshot until its guarded write has settled (see
+    // onDisplaySettingChange), so a poll cannot briefly roll a newer local
+    // selection back to an older one while its predecessor is retrying.
+    _applyFollowedTerminalFont();
     renderViewDropdown();
     renderGrid(_currentSessions || []);
     renderSidebar(_currentSessions || [], _viewingSession, _viewingRemoteId);
@@ -5817,7 +5825,10 @@ async function openSession(name, opts = {}) {
   }
 
   // Mount terminal NOW — /connect has completed, new ttyd is serving the correct session
-  if (window._openTerminal) window._openTerminal(name, _deviceId, getDisplaySettings().fontSize, _ownDeviceId());
+  if (window._openTerminal) {
+    var _openDs = getDisplaySettings();
+    window._openTerminal(name, _deviceId, _openDs.fontSize, _ownDeviceId(), _openDs.terminalFont);
+  }
   _composeOnSessionOpen();
 }
 
@@ -7784,6 +7795,14 @@ function onSortOrderChange() {
 const SETTINGS_CAS_MAX_ATTEMPTS = 5;
 const SETTINGS_CAS_BASE_BACKOFF_MS = 25;
 const SETTINGS_CAS_MAX_BACKOFF_MS = 1000;
+// Display controls share one optimistic settings document.  Keep their writes
+// in request order so an older CAS retry can never land after a later font
+// selection.  This is intentionally narrower than patchSettingsGuarded():
+// non-display settings retain their existing independent behavior.
+let _displaySettingsWrite = Promise.resolve();
+let _latestDisplaySettingsIntent = 0;
+let _pendingDisplaySettingsIntent = 0;
+let _latestDisplaySettingsPatch = null;
 
 /**
  * Jittered exponential backoff before CAS retry `attempt` (0-based).
@@ -8205,13 +8224,28 @@ function _updateMultiDeviceFieldsState(enabled) {
  */
 function getDisplaySettings() {
   const result = Object.assign({}, DISPLAY_DEFAULTS);
-  const ss = _serverSettings || {};
+  const ss = Object.assign({}, _serverSettings || {},
+    _pendingDisplaySettingsIntent ? _latestDisplaySettingsPatch : null);
   for (const key of Object.keys(DISPLAY_DEFAULTS)) {
     if (Object.prototype.hasOwnProperty.call(ss, key)) {
       result[key] = ss[key];
     }
   }
   return result;
+}
+
+/**
+ * Apply only the terminal-font portion of a newly followed settings snapshot.
+ * A local display write in flight remains the visible intent until its queue
+ * settles; the server snapshot is still retained for every other setting.
+ */
+function _applyFollowedTerminalFont() {
+  var font = _pendingDisplaySettingsIntent && _latestDisplaySettingsPatch
+    ? _latestDisplaySettingsPatch.terminalFont
+    : getDisplaySettings().terminalFont;
+  var terminalFontEl = $('setting-terminal-font');
+  if (terminalFontEl) terminalFontEl.value = font;
+  if (window._setTerminalFont) window._setTerminalFont(font);
 }
 
 /**
@@ -8288,6 +8322,9 @@ function applyDisplaySettings(ds) {
   if (window._setTerminalFontSize) {
     window._setTerminalFontSize(ds.fontSize);
   }
+  if (window._setTerminalFont) {
+    window._setTerminalFont(ds.terminalFont);
+  }
 
   // Apply view mode to grid
   var grid = document.getElementById('session-grid');
@@ -8349,6 +8386,8 @@ function onDisplaySettingChange() {
 
   var fontSizeEl = document.getElementById('setting-font-size');
   if (fontSizeEl) ds.fontSize = parseInt(fontSizeEl.value, 10) || ds.fontSize;
+  var terminalFontEl = document.getElementById('setting-terminal-font');
+  if (terminalFontEl) ds.terminalFont = terminalFontEl.value;
 
   var previewFontSizeEl = document.getElementById('setting-preview-font-size');
   if (previewFontSizeEl) ds.previewFontSize = parseInt(previewFontSizeEl.value, 10) || ds.previewFontSize;
@@ -8373,6 +8412,7 @@ function onDisplaySettingChange() {
 
   var patch = {
     fontSize: ds.fontSize,
+    terminalFont: ds.terminalFont,
     previewFontSize: ds.previewFontSize,
     previewZoom: ds.previewZoom,
     hoverPreviewDelay: ds.hoverPreviewDelay,
@@ -8381,11 +8421,64 @@ function onDisplaySettingChange() {
     activityIndicator: ds.activityIndicator,
   };
   Object.assign(_serverSettings, patch);
-  patchSettingsGuarded(function() { return patch; })
-    .then(function() { showToast('Settings saved'); })
-    .catch(function(err) { console.warn('[onDisplaySettingChange] failed:', err); });
+  var intent = ++_latestDisplaySettingsIntent;
+  _pendingDisplaySettingsIntent = intent;
+  _latestDisplaySettingsPatch = patch;
+  // Continue after a prior failure so one rejected save never wedges every
+  // later display choice.  Each queued write keeps the guarded CAS
+  // precondition and rebuild/retry behavior from patchSettingsGuarded().
+  _displaySettingsWrite = _displaySettingsWrite.catch(function() {}).then(function() {
+    return patchSettingsGuarded(function() { return patch; });
+  }).then(function(saved) {
+    // CAS recovery may have replaced the optimistic cache with an older
+    // snapshot. Retain the successful response, while getDisplaySettings()
+    // overlays any newer queued intent until its own write settles.
+    _serverSettings = Object.assign({}, _serverSettings, saved);
+    return saved;
+  });
   applyDisplaySettings(ds);
   _updateDeviceLabelAmbiguityNote(ds);
+  return _displaySettingsWrite.then(function() {
+    // A completion for an older selection is true but no longer useful.  Do
+    // not show a "saved" toast that appears to confirm the newer choice.
+    if (intent === _latestDisplaySettingsIntent) {
+      _pendingDisplaySettingsIntent = 0;
+      _latestDisplaySettingsPatch = null;
+      showToast('Settings saved');
+    }
+  }).catch(async function(err) {
+    if (intent === _latestDisplaySettingsIntent) {
+      _pendingDisplaySettingsIntent = 0;
+      _latestDisplaySettingsPatch = null;
+      try {
+        await loadServerSettings();
+        if (intent !== _latestDisplaySettingsIntent) return;
+        _lastSettingsUpdatedAt = _serverSettings.settings_updated_at || _lastSettingsUpdatedAt;
+        var restored = getDisplaySettings();
+        var controls = {
+          fontSize: 'setting-font-size',
+          terminalFont: 'setting-terminal-font',
+          previewFontSize: 'setting-preview-font-size',
+          previewZoom: 'setting-preview-zoom',
+          hoverPreviewDelay: 'setting-hover-delay',
+          gridColumns: 'setting-grid-columns',
+          deviceLabelPlacement: 'setting-device-label-placement',
+          activityIndicator: 'setting-activity-indicator',
+        };
+        Object.keys(controls).forEach(function(key) {
+          var control = $(controls[key]);
+          if (control) control.value = restored[key];
+        });
+        applyDisplaySettings(restored);
+        showToast('Failed to save display settings; restored saved values.');
+      } catch (reloadError) {
+        if (intent === _latestDisplaySettingsIntent) {
+          showToast('Failed to save display settings; changes are not saved.');
+        }
+      }
+    }
+    console.warn('[onDisplaySettingChange] failed:', err);
+  });
 }
 
 /**
@@ -8476,6 +8569,8 @@ function openSettings() {
   const settings = getDisplaySettings();
   const fontSizeEl = $('setting-font-size');
   if (fontSizeEl) fontSizeEl.value = String(settings.fontSize);
+  const terminalFontEl = $('setting-terminal-font');
+  if (terminalFontEl) terminalFontEl.value = settings.terminalFont;
   const previewFontSizeEl = $('setting-preview-font-size');
   if (previewFontSizeEl) previewFontSizeEl.value = String(settings.previewFontSize);
   const previewZoomEl = $('setting-preview-zoom');
@@ -10705,6 +10800,7 @@ function bindStaticEventListeners() {
 
   // Display settings — bind change events for immediate apply
   on($('setting-font-size'), 'change', onDisplaySettingChange);
+  on($('setting-terminal-font'), 'change', onDisplaySettingChange);
   on($('setting-preview-font-size'), 'change', onDisplaySettingChange);
   on($('setting-preview-zoom'), 'change', onDisplaySettingChange);
   on($('setting-hover-delay'), 'change', onDisplaySettingChange);
@@ -11448,6 +11544,8 @@ if (typeof module !== 'undefined' && module.exports) {
     // Settings
     getDisplaySettings,
     applyDisplaySettings,
+    onDisplaySettingChange,
+    _applyFollowedTerminalFont,
     loadGridViewMode,
     saveGridViewMode,
     applyFitLayout,

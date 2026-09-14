@@ -24,6 +24,7 @@ from muxplex.settings import (
     load_settings,
     normalize_preview_font_size,
     normalize_preview_zoom,
+    normalize_terminal_font,
     patch_settings,
     resolve_session_commands,
     save_settings,
@@ -1078,6 +1079,11 @@ def test_defaults_include_display_settings():
     assert DEFAULT_SETTINGS["fontSize"] == 14, (
         f"fontSize default must be 14, got: {DEFAULT_SETTINGS['fontSize']!r}"
     )
+    assert DEFAULT_SETTINGS["terminalFont"] == "System"
+    assert normalize_terminal_font("FiraCode") == "FiraCode"
+    assert normalize_terminal_font("JetBrainsMono") == "JetBrainsMono"
+    assert normalize_terminal_font("untrusted CSS") == "System"
+    assert normalize_terminal_font(None) == "System"
 
     assert "hoverPreviewDelay" in DEFAULT_SETTINGS, (
         "DEFAULT_SETTINGS must include 'hoverPreviewDelay'"
@@ -1243,6 +1249,7 @@ def test_display_settings_round_trip_via_patch():
     """patch_settings() + load_settings() cycle must preserve custom display setting values."""
     custom_values = {
         "fontSize": 18,
+        "terminalFont": "FiraCode",
         "hoverPreviewDelay": 800,
         "gridColumns": 3,
         "bellSound": True,
@@ -1267,6 +1274,24 @@ def test_display_settings_round_trip_via_patch():
         assert loaded[key] == expected, (
             f"load_settings() must return persisted {key}={expected!r}, got: {loaded[key]!r}"
         )
+
+
+def test_terminal_font_normalizes_on_load_patch_and_sync(redirect_settings_path):
+    """Every settings ingress rejects unknown/wrong-type terminal font values."""
+    redirect_settings_path.write_text(json.dumps({"terminalFont": ["FiraCode"]}))
+    assert load_settings()["terminalFont"] == "System"
+
+    assert patch_settings({"terminalFont": "not-a-font"})["terminalFont"] == "System"
+    assert (
+        apply_synced_settings({"terminalFont": "JetBrainsMono"}, 1712600000.0)[
+            "terminalFont"
+        ]
+        == "JetBrainsMono"
+    )
+    assert (
+        apply_synced_settings({"terminalFont": 99}, 1712600001.0)["terminalFont"]
+        == "System"
+    )
 
 
 # ============================================================
@@ -1406,6 +1431,7 @@ def test_syncable_keys_contains_display_settings():
     """SYNCABLE_KEYS must include all display preference keys."""
     display_keys = {
         "fontSize",
+        "terminalFont",
         "hoverPreviewDelay",
         "gridColumns",
         "bellSound",

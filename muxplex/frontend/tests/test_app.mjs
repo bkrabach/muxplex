@@ -6871,7 +6871,7 @@ test('DISPLAY_DEFAULTS includes gridViewMode with default flat', () => {
   );
 });
 
-test('DISPLAY_DEFAULTS has exactly 11 keys', () => {
+test('DISPLAY_DEFAULTS has exactly 12 keys', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
   const defaultsStart = source.indexOf('const DISPLAY_DEFAULTS');
   assert.ok(defaultsStart !== -1, 'DISPLAY_DEFAULTS must exist');
@@ -6879,7 +6879,7 @@ test('DISPLAY_DEFAULTS has exactly 11 keys', () => {
   const defaultsBody = source.substring(defaultsStart, defaultsEnd + 2);
   const keyMatches = defaultsBody.match(/^\s+\w+:/gm);
   assert.ok(keyMatches, 'DISPLAY_DEFAULTS must have keys');
-  assert.strictEqual(keyMatches.length, 11, `DISPLAY_DEFAULTS must have exactly 11 keys (previewFontSize/previewZoom added), got ${keyMatches.length}`);
+  assert.strictEqual(keyMatches.length, 12, `DISPLAY_DEFAULTS must have exactly 12 keys (including terminalFont), got ${keyMatches.length}`);
 });
 
 test('DISPLAY_DEFAULTS includes previewFontSize: 11 and previewZoom: 100', () => {
@@ -6909,6 +6909,7 @@ test('getDisplaySettings returns DISPLAY_DEFAULTS when _serverSettings is null',
   app._setServerSettings(null);
   const ds = app.getDisplaySettings();
   assert.strictEqual(ds.fontSize, 14, 'getDisplaySettings must return default fontSize');
+  assert.strictEqual(ds.terminalFont, 'System', 'getDisplaySettings must retain System as the terminal font default');
   assert.strictEqual(ds.hoverPreviewDelay, 1500, 'getDisplaySettings must return default hoverPreviewDelay');
   assert.strictEqual(ds.gridColumns, 'auto', 'getDisplaySettings must return default gridColumns');
   assert.strictEqual(ds.bellSound, false, 'getDisplaySettings must return default bellSound');
@@ -6940,6 +6941,13 @@ test('getDisplaySettings reads previewFontSize/previewZoom from _serverSettings 
   assert.strictEqual(ds.previewFontSize, 18, 'getDisplaySettings must use previewFontSize from _serverSettings');
   assert.strictEqual(ds.previewZoom, 150, 'getDisplaySettings must use previewZoom from _serverSettings');
   app._setServerSettings(null);
+});
+
+test('terminalFont is a server-backed display setting and is applied without reconnecting', () => {
+  const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  assert.ok(source.includes("terminalFont: 'System'"), 'DISPLAY_DEFAULTS must default terminalFont to System');
+  assert.ok(source.includes('setting-terminal-font'), 'Display settings must read the terminal font control');
+  assert.ok(source.includes('window._setTerminalFont(ds.terminalFont)'), 'Live terminal must receive selected terminalFont');
 });
 
 // ---------------------------------------------------------------------------
@@ -9577,6 +9585,135 @@ test('after refresh, a session newly added to a view on another device is reflec
 
   globalThis.document.getElementById = origGetById;
   globalThis.fetch = undefined;
+});
+
+test('remote settings refresh updates an open terminal and font select without PATCHing back', async () => {
+  const calls = [];
+  const fontSelect = { value: 'System' };
+  const originalGetById = globalThis.document.getElementById;
+  const originalSetFont = globalThis.window._setTerminalFont;
+  const applied = [];
+  globalThis.document.getElementById = (id) => id === 'setting-terminal-font' ? fontSelect : null;
+  globalThis.window._setTerminalFont = (font) => applied.push(font);
+  globalThis.fetch = async (url, opts) => {
+    calls.push(((opts && opts.method) || 'GET') + ' ' + url);
+    return { ok: true, json: async () => ({ terminalFont: 'JetBrainsMono', settings_updated_at: 700 }) };
+  };
+
+  app._setServerSettings({ terminalFont: 'System' });
+  await app.followRemoteViewDefinitions({ settings_updated_at: 700 });
+
+  assert.deepStrictEqual(applied, ['JetBrainsMono'], 'fresh server font must apply to the existing terminal');
+  assert.strictEqual(fontSelect.value, 'JetBrainsMono', 'open Settings select must follow the server setting');
+  assert.ok(!calls.some((call) => call.startsWith('PATCH ')), 'following a remote setting must not PATCH it back');
+
+  globalThis.document.getElementById = originalGetById;
+  globalThis.window._setTerminalFont = originalSetFont;
+  globalThis.fetch = undefined;
+});
+
+test('rapid display-font changes serialize guarded writes so a stale CAS retry cannot overwrite the latest choice', async () => {
+  const controls = {
+    'setting-font-size': { value: '14' },
+    'setting-terminal-font': { value: 'FiraCode' },
+    'setting-preview-font-size': { value: '11' },
+    'setting-preview-zoom': { value: '100' },
+    'setting-hover-delay': { value: '150' },
+    'setting-grid-columns': { value: 'auto' },
+    'setting-device-label-placement': { value: 'bottom' },
+    'setting-activity-indicator': { value: 'both' },
+  };
+  const originalGetById = globalThis.document.getElementById;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalSetFont = globalThis.window._setTerminalFont;
+  const appliedFonts = [];
+  globalThis.document.getElementById = (id) => controls[id] || null;
+  globalThis.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  globalThis.window._setTerminalFont = (font) => appliedFonts.push(font);
+  const patchBodies = [];
+  let firstPatch;
+  let persisted = 'System';
+  globalThis.fetch = (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    if (method === 'GET' && url === '/api/settings') {
+      return Promise.resolve({ ok: true, json: async () => ({ terminalFont: persisted, settings_updated_at: 2 }) });
+    }
+    if (method === 'PATCH' && url === '/api/settings') {
+      const body = JSON.parse(opts.body);
+      patchBodies.push(body);
+      if (patchBodies.length === 1) {
+        return new Promise((resolve) => { firstPatch = resolve; });
+      }
+      persisted = body.terminalFont;
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ terminalFont: persisted, settings_updated_at: patchBodies.length + 2 }),
+      });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  };
+  app._setServerSettings({ terminalFont: 'System', settings_updated_at: 1 });
+
+  const first = app.onDisplaySettingChange();
+  controls['setting-terminal-font'].value = 'JetBrainsMono';
+  const latest = app.onDisplaySettingChange();
+  assert.deepStrictEqual(appliedFonts, ['FiraCode', 'JetBrainsMono'],
+    'both local selections apply before either queued guarded write settles');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(patchBodies.length, 1, 'later intent waits while the first guarded request is unresolved');
+
+  firstPatch({ ok: false, status: 409, statusText: 'Conflict', json: async () => ({ settings_updated_at: 2 }) });
+  await latest;
+  await first.catch(() => {});
+
+  assert.deepStrictEqual(
+    patchBodies.map((body) => body.terminalFont),
+    ['FiraCode', 'FiraCode', 'JetBrainsMono'],
+    'the conflict retry preserves its own intent, then the later intent wins in write order',
+  );
+  assert.ok(patchBodies.every((body) => Object.hasOwn(body, 'expected_settings_updated_at')),
+    'every serialized write must remain guarded by the CAS precondition');
+  assert.strictEqual(persisted, 'JetBrainsMono', 'server persistence must match the last requested font');
+  assert.strictEqual(app.getDisplaySettings().terminalFont, 'JetBrainsMono',
+    'a subsequent terminal open must read the successful latest choice, not the stale CAS baseline');
+
+  globalThis.document.getElementById = originalGetById;
+  globalThis.setTimeout = originalSetTimeout;
+  globalThis.window._setTerminalFont = originalSetFont;
+  globalThis.fetch = undefined;
+});
+
+test('failed display-font save restores server state and reports failure without an unhandled rejection', async () => {
+  const originalGetById = globalThis.document.getElementById;
+  const originalSetFont = globalThis.window._setTerminalFont;
+  const originalSetTimeout = globalThis.setTimeout;
+  const fontSelect = { value: 'FiraCode' };
+  const toast = { textContent: '', classList: { add() {}, remove() {} } };
+  const applied = [];
+  globalThis.document.getElementById = (id) =>
+    id === 'setting-terminal-font' ? fontSelect : id === 'toast' ? toast : null;
+  globalThis.window._setTerminalFont = (font) => applied.push(font);
+  globalThis.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  globalThis.fetch = async (url, opts) => {
+    if (opts && opts.method === 'PATCH') {
+      return { ok: false, status: 503, statusText: 'Unavailable',
+        json: async () => ({ detail: 'Save unavailable' }) };
+    }
+    return { ok: true, json: async () => ({ terminalFont: 'System', settings_updated_at: 800 }) };
+  };
+  try {
+    app._setServerSettings({ terminalFont: 'System', settings_updated_at: 800 });
+    await assert.doesNotReject(app.onDisplaySettingChange());
+    assert.strictEqual(app.getDisplaySettings().terminalFont, 'System');
+    assert.strictEqual(fontSelect.value, 'System');
+    assert.deepStrictEqual(applied, ['FiraCode', 'System']);
+    assert.match(toast.textContent, /Failed to save.*restored saved values/);
+  } finally {
+    globalThis.document.getElementById = originalGetById;
+    globalThis.window._setTerminalFont = originalSetFont;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.fetch = undefined;
+  }
 });
 
 // --- patchSettingsGuarded (settings-clobber CAS protection) ---

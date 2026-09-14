@@ -35,6 +35,7 @@ function loadTerminal() {
   let clipboardWrites = [];
   let terminalOptions = null;
   let webLinksCallback = null;
+  let fontLoadCalls = 0;
 
   let capturedWsUrl = null;
   let onDataCallCount = 0;
@@ -61,6 +62,7 @@ function loadTerminal() {
       },
     },
   };
+  const pendingFontLoads = {};
 
   // Capture all messages sent via WebSocket.send()
   const sentMessages = [];
@@ -115,6 +117,19 @@ function loadTerminal() {
     },
     onclick: null,
   };
+  let retryHidden = true;
+  const retryBtnEl = {
+    classList: {
+      add: (c) => { if (c === 'hidden') retryHidden = true; },
+      remove: (c) => { if (c === 'hidden') retryHidden = false; },
+    },
+    onclick: null,
+  };
+  let fontStatus = '';
+  const fontStatusEl = {
+    get textContent() { return fontStatus; },
+    set textContent(v) { fontStatus = v; },
+  };
 
   globalThis.document = {
     getElementById: (id) => {
@@ -122,6 +137,8 @@ function loadTerminal() {
       if (id === 'reconnect-overlay') return overlayEl;
       if (id === 'reconnect-overlay-text') return overlayTextEl;
       if (id === 'reconnect-overlay-takeover-btn') return takeoverBtnEl;
+      if (id === 'terminal-font-retry') return retryBtnEl;
+      if (id === 'terminal-font-status') return fontStatusEl;
       return null;
     },
     querySelector: () => null,
@@ -135,6 +152,7 @@ function loadTerminal() {
     innerWidth: 1024,
     Terminal: function Terminal(options) {
       terminalOptions = options;
+      mockTerm.options = options;
       return mockTerm;
     },
     FitAddon: {
@@ -147,6 +165,23 @@ function loadTerminal() {
     },
     _openTerminal: undefined,
     _closeTerminal: undefined,
+    muxplexFonts: {
+      catalog: {
+        System: { label: 'System mono' },
+        FiraCode: { label: 'Fira Code Nerd Font Mono' },
+        JetBrainsMono: { label: 'JetBrains Mono Nerd Font Mono' },
+      },
+      normalize: (value) => ['FiraCode', 'JetBrainsMono'].includes(value) ? value : 'System',
+      cssFamily: (value) => value === 'FiraCode'
+        ? "'FiraCode Nerd Font Mono', monospace"
+        : value === 'JetBrainsMono'
+          ? "'JetBrainsMono NFM', monospace"
+          : "'SF Mono', 'Fira Code', Consolas, monospace",
+      ensureLoaded: (value) => new Promise((resolve, reject) => {
+        fontLoadCalls++;
+        pendingFontLoads[value] = { resolve, reject };
+      }),
+    },
   };
   // Node 21+ ships a built-in read-only `navigator` global (Web platform
   // compat), so a plain assignment throws. Redefine it for the duration of
@@ -201,12 +236,16 @@ function loadTerminal() {
     get focusCallCount() { return focusCallCount; },
     get clipboardWrites() { return clipboardWrites; },
     get terminalOptions() { return terminalOptions; },
+    get fontLoadCalls() { return fontLoadCalls; },
+    get fontStatus() { return fontStatus; },
     get webLinksCallback() { return webLinksCallback; },
     window: globalThis.window,
     wsConstructedCount() { return wsConstructedCount; },
     overlayVisible() { return !overlayHidden; },
     overlayText() { return overlayText; },
     takeoverBtnVisible() { return !takeoverBtnHidden; },
+    retryButtonVisible() { return !retryHidden; },
+    retryFont() { if (retryBtnEl.onclick) retryBtnEl.onclick(); },
     fireClose(event) { if (capturedCloseHandler) capturedCloseHandler(event); },
     fireOpen() { if (lastOpenHandler) lastOpenHandler(); },
     fireOsc52(base64Payload) {
@@ -221,6 +260,8 @@ function loadTerminal() {
       }
     },
     fireReconnect() { if (capturedReconnectFn) { capturedReconnectFn(); capturedReconnectFn = null; } },
+    resolveFont(name) { pendingFontLoads[name].resolve(); },
+    rejectFont(name) { pendingFontLoads[name].reject(new Error('font unavailable')); },
     // Expose so we can re-patch setTimeout for the actual calls
     patchTimeout(fn) {
       const orig = globalThis.setTimeout;
@@ -1683,6 +1724,51 @@ test('openTerminal uses passed fontSize to configure xterm.js Terminal construct
   } finally {
     globalThis.setTimeout = originalSetTimeout;
   }
+});
+
+test('optional terminal font waits for readiness, and a later System selection wins', async () => {
+  const t = loadTerminal();
+  t.openTerminal('session', '', 14, '', 'FiraCode');
+  assert.strictEqual(t.terminalOptions, null, 'optional face must load before xterm measures it');
+  t.window._openTerminal('session', '', 14, '', 'System');
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
+  t.resolveFont('FiraCode');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace",
+    'late FiraCode completion must not overwrite the newer System request');
+});
+
+test('optional terminal font failure opens with the System fallback', async () => {
+  const t = loadTerminal();
+  t.openTerminal('session', '', 14, '', 'JetBrainsMono');
+  t.rejectFont('JetBrainsMono');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
+});
+
+test('failed optional font stays selected and the explicit retry reloads it without a System PATCH', async () => {
+  const t = loadTerminal();
+  t.openTerminal('session', '', 14, '', 'System');
+  t.window._setTerminalFont('FiraCode');
+  assert.strictEqual(t.fontLoadCalls, 1, 'first Fira selection must make one load request');
+  t.rejectFont('FiraCode');
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
+  assert.strictEqual(t.retryButtonVisible(), true, 'only a failed face exposes an explicit retry');
+  assert.match(t.fontStatus, /could not load; rendering System mono/);
+
+  t.retryFont();
+  assert.strictEqual(t.fontLoadCalls, 2, 'retrying the same selected face must call the loader again');
+  t.resolveFont('FiraCode');
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.strictEqual(t.terminalOptions.fontFamily, "'FiraCode Nerd Font Mono', monospace");
+  assert.strictEqual(t.retryButtonVisible(), false, 'a successful retry hides the retry action');
 });
 
 test('plain-click OSC 8 labels and visible URLs share safe HTTP(S)-only activation', () => {

@@ -32,7 +32,7 @@
 ### Settings
 
 - **In-browser settings panel** — gear icon or `,` shortcut
-- **Display** — font size, grid columns, hover delay, view mode, device badges, activity indicator
+- **Display** — terminal font size and optional bundled Nerd Font Mono choices (System mono remains the default), grid columns, hover delay, view mode, device badges, activity indicator. Optional font files download only when selected; their source and license evidence is in `muxplex/frontend/fonts/`.
 - **Sessions** — default session, sort order, hidden sessions, auto-open, bell sound, notifications
 - **Commands** — custom create/delete session templates
 - **Multi-Device** — remote instance federation
@@ -366,6 +366,7 @@ syncs it. See [Editing local-file-only keys](#editing-local-file-only-keys) belo
 | `tls_cert` † | `""` | Path to TLS certificate file (empty = HTTP) |
 | `tls_key` † | `""` | Path to TLS private key file (empty = HTTP) |
 | `fontSize` | `14` | Terminal font size (px) |
+| `terminalFont` | `"System"` | Live terminal face: `System` preserves the established system stack and causes no font download; `FiraCode` and `JetBrainsMono` select a bundled Nerd Font Mono regular face. Unknown, absent, and wrong-type values normalize to `System`. Optional faces download only when selected. Source hashes, font-name records, licenses, and third-party notices are in [`muxplex/frontend/fonts/`](muxplex/frontend/fonts/). |
 | `previewFontSize` | `11` | Tile/sidebar preview text font size (px), `8`-`24`. Independent of `fontSize`, which drives only the live terminal. |
 | `previewZoom` | `100` | Tile size / grid minimum column width scale (%), `50`-`200`. `100` reproduces the default sizing. |
 | `hoverPreviewDelay` | `1500` | Hover preview popup delay (ms). `0` = Off. The sole control for the popover (as of v0.47.0; folds in the retired `showHoverPreview` checkbox -- see below) |

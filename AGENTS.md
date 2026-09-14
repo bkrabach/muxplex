@@ -474,6 +474,25 @@ parses the real `<script src=...>` tags out of `index.html` (excluding
 asserting none throws a `SyntaxError`. Any new frontend script is
 automatically covered the moment it's added to `index.html`.
 
+## Optional terminal fonts: loading and sizing must agree
+
+`terminalFont` is a shared, federation-syncable display preference. `System`
+preserves the existing font stack; bundled alternatives are opt-in and affect
+only the live terminal. Keep the catalog and lazy loading in `fonts.js`.
+
+Do not apply or measure an optional face before it finishes loading. Guard
+completion by both request generation and terminal identity: a late load must
+not override a newer choice or reopen a closed terminal. A local load failure
+renders the System fallback with an explicit retry; it must not PATCH the
+shared preference to System. Settings-save tests must check the server value,
+the client cache, and subsequent terminal opens after CAS retries, not just
+the order of successful writes.
+
+New bundled fonts need pinned upstream provenance, verified binary/name-table
+identity, and the applicable licenses/notices beside the asset. Verify their
+presence and bytes in the built wheel. Browser proof must inspect real xterm
+output and cell metrics, not merely the selector or sidebar snapshot.
+
 ## Terminal links: plain-click activation has one security boundary
 
 Both OSC 8 Markdown-style labels (`Terminal`'s `linkHandler`) and visible
@@ -1056,6 +1075,10 @@ by construction rather than merely refusing to proceed. Read
 | autouse `uvicorn.run` neutering | Any test opening a REAL listening socket for the app by accident (closes incident 2's root cause) |
 | `pytest_sessionstart` structural (AST) scan | A NEW test reintroducing incident 2's exact shape (opts into the real killer without pinning a port) — fails at collection, not merely a code-review nit; never refuses just because something else is running |
 | `test_safety_rails.py` | Silent removal or weakening of any of the above |
+
+CLI port-holder unit tests must stub the identity fetch as well as the health
+probe. Stubbing only health still lets `_fetch_local_instance_info` contact a
+running service, making the expected refusal message depend on its device ID.
 
 To reach the real port killer or the real `uvicorn.run`, a test must opt in
 explicitly with `@pytest.mark.allow_real_port_killer` /
