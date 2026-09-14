@@ -8224,7 +8224,8 @@ function _updateMultiDeviceFieldsState(enabled) {
  */
 function getDisplaySettings() {
   const result = Object.assign({}, DISPLAY_DEFAULTS);
-  const ss = _serverSettings || {};
+  const ss = Object.assign({}, _serverSettings || {},
+    _pendingDisplaySettingsIntent ? _latestDisplaySettingsPatch : null);
   for (const key of Object.keys(DISPLAY_DEFAULTS)) {
     if (Object.prototype.hasOwnProperty.call(ss, key)) {
       result[key] = ss[key];
@@ -8428,6 +8429,12 @@ function onDisplaySettingChange() {
   // precondition and rebuild/retry behavior from patchSettingsGuarded().
   _displaySettingsWrite = _displaySettingsWrite.catch(function() {}).then(function() {
     return patchSettingsGuarded(function() { return patch; });
+  }).then(function(saved) {
+    // CAS recovery may have replaced the optimistic cache with an older
+    // snapshot. Retain the successful response, while getDisplaySettings()
+    // overlays any newer queued intent until its own write settles.
+    _serverSettings = Object.assign({}, _serverSettings, saved);
+    return saved;
   });
   applyDisplaySettings(ds);
   _updateDeviceLabelAmbiguityNote(ds);
@@ -8439,13 +8446,38 @@ function onDisplaySettingChange() {
       _latestDisplaySettingsPatch = null;
       showToast('Settings saved');
     }
-  }).catch(function(err) {
+  }).catch(async function(err) {
     if (intent === _latestDisplaySettingsIntent) {
       _pendingDisplaySettingsIntent = 0;
       _latestDisplaySettingsPatch = null;
+      try {
+        await loadServerSettings();
+        if (intent !== _latestDisplaySettingsIntent) return;
+        _lastSettingsUpdatedAt = _serverSettings.settings_updated_at || _lastSettingsUpdatedAt;
+        var restored = getDisplaySettings();
+        var controls = {
+          fontSize: 'setting-font-size',
+          terminalFont: 'setting-terminal-font',
+          previewFontSize: 'setting-preview-font-size',
+          previewZoom: 'setting-preview-zoom',
+          hoverPreviewDelay: 'setting-hover-delay',
+          gridColumns: 'setting-grid-columns',
+          deviceLabelPlacement: 'setting-device-label-placement',
+          activityIndicator: 'setting-activity-indicator',
+        };
+        Object.keys(controls).forEach(function(key) {
+          var control = $(controls[key]);
+          if (control) control.value = restored[key];
+        });
+        applyDisplaySettings(restored);
+        showToast('Failed to save display settings; restored saved values.');
+      } catch (reloadError) {
+        if (intent === _latestDisplaySettingsIntent) {
+          showToast('Failed to save display settings; changes are not saved.');
+        }
+      }
     }
     console.warn('[onDisplaySettingChange] failed:', err);
-    throw err;
   });
 }
 

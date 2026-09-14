@@ -9674,11 +9674,46 @@ test('rapid display-font changes serialize guarded writes so a stale CAS retry c
   assert.ok(patchBodies.every((body) => Object.hasOwn(body, 'expected_settings_updated_at')),
     'every serialized write must remain guarded by the CAS precondition');
   assert.strictEqual(persisted, 'JetBrainsMono', 'server persistence must match the last requested font');
+  assert.strictEqual(app.getDisplaySettings().terminalFont, 'JetBrainsMono',
+    'a subsequent terminal open must read the successful latest choice, not the stale CAS baseline');
 
   globalThis.document.getElementById = originalGetById;
   globalThis.setTimeout = originalSetTimeout;
   globalThis.window._setTerminalFont = originalSetFont;
   globalThis.fetch = undefined;
+});
+
+test('failed display-font save restores server state and reports failure without an unhandled rejection', async () => {
+  const originalGetById = globalThis.document.getElementById;
+  const originalSetFont = globalThis.window._setTerminalFont;
+  const originalSetTimeout = globalThis.setTimeout;
+  const fontSelect = { value: 'FiraCode' };
+  const toast = { textContent: '', classList: { add() {}, remove() {} } };
+  const applied = [];
+  globalThis.document.getElementById = (id) =>
+    id === 'setting-terminal-font' ? fontSelect : id === 'toast' ? toast : null;
+  globalThis.window._setTerminalFont = (font) => applied.push(font);
+  globalThis.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
+  globalThis.fetch = async (url, opts) => {
+    if (opts && opts.method === 'PATCH') {
+      return { ok: false, status: 503, statusText: 'Unavailable',
+        json: async () => ({ detail: 'Save unavailable' }) };
+    }
+    return { ok: true, json: async () => ({ terminalFont: 'System', settings_updated_at: 800 }) };
+  };
+  try {
+    app._setServerSettings({ terminalFont: 'System', settings_updated_at: 800 });
+    await assert.doesNotReject(app.onDisplaySettingChange());
+    assert.strictEqual(app.getDisplaySettings().terminalFont, 'System');
+    assert.strictEqual(fontSelect.value, 'System');
+    assert.deepStrictEqual(applied, ['FiraCode', 'System']);
+    assert.match(toast.textContent, /Failed to save.*restored saved values/);
+  } finally {
+    globalThis.document.getElementById = originalGetById;
+    globalThis.window._setTerminalFont = originalSetFont;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.fetch = undefined;
+  }
 });
 
 // --- patchSettingsGuarded (settings-clobber CAS protection) ---
