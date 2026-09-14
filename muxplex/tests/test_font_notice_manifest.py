@@ -21,7 +21,7 @@ EXPECTED_SOURCE_STATUS = {
     "pomicons": "supported",
     "font-awesome": "supported",
     "font-awesome-extension": "supported",
-    "iec-power-symbols": "blocked",
+    "iec-power-symbols": "supported",
     "material-design-icons": "supported",
     "weather-icons": "supported",
     "font-logos": "supported",
@@ -113,6 +113,9 @@ def test_font_notice_manifest_paths_and_text_are_present_and_not_placeholder_not
         in _notice_path("THIRD-PARTY-NOTICES.txt").read_text()
     )
     assert "Apache License" in _notice_path("Apache-2.0-LICENSE.txt").read_text()
+    assert "Copyright (c) 2013 Joe Loughry" in _notice_path(
+        "IEC-Power-Symbols-MIT-LICENSE.txt"
+    ).read_text()
     assert "Creative Commons Attribution 4.0" in _notice_path(
         "Codicons-CC-BY-4.0.txt"
     ).read_text(encoding="utf-8-sig")

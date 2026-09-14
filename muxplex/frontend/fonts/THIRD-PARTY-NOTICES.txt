@@ -76,17 +76,12 @@ Supported glyph inputs
 * Codicons 0.0.35 — CC BY 4.0, `Codicons-CC-BY-4.0.txt`.  Nerd Fonts records
   two glyph patches in its input provenance.
 
-Blocked glyph input
--------------------
-
-IEC Power Symbols is deliberately not represented as supported.  Nerd Fonts
-maps `Unicode_IEC_symbol_font.otf` into U+23FB–U+23FE and U+2B58 and its
-license-audit table labels the source MIT, but the inspected upstream font
-metadata supplies only family/version names and the upstream repository did
-not provide a LICENSE or COPYING file.  The audit label is not itself a
-license grant.  No upstream grant or copyright notice is bundled for this
-source; provenance.json records the input hash and the specific missing
-evidence.
+* IEC Power Symbols — Copyright (c) 2013 Joe Loughry, MIT;
+  `IEC-Power-Symbols-MIT-LICENSE.txt` preserves the upstream `LICENSE.txt` at
+  commit 4c79c6a81f29584e18f827b07c0bf6f02fc3ebbe.  The source OTF at that
+  revision is byte-identical to the Nerd Fonts input recorded in
+  provenance.json.  This relies on the original license text, not merely
+  the Nerd Fonts audit's MIT label or the font's limited name metadata.
 
 Bundled base-font and Nerd Fonts licenses
 -----------------------------------------

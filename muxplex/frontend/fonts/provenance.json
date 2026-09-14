@@ -38,6 +38,7 @@
     "Font-Awesome-LICENSE.txt",
     "Font-Logos-UNLICENSE.txt",
     "Hack-LICENSE.txt",
+    "IEC-Power-Symbols-MIT-LICENSE.txt",
     "Material-Design-Icons-NOTICE.txt",
     "Nerd-Fonts-LICENSE",
     "Nerd-Fonts-license-audit.md",
@@ -140,13 +141,16 @@
     },
     {
       "id": "iec-power-symbols",
-      "status": "blocked",
+      "status": "supported",
       "input": "src/glyphs/Unicode_IEC_symbol_font.otf",
       "input_sha256": "6fac775371f33ea71d2136d5c516ea46287c8627576fb673de1a21bd1b0a7f89",
       "ranges": ["U+23FB-U+23FE", "U+2B58"],
-      "blocker": "Nerd Fonts' audit labels this input MIT, but the inspected upstream font metadata has no copyright, name-table license, or license URL and the upstream repository provided no LICENSE or COPYING. The audit label is not a grant.",
-      "evidence": ["https://github.com/jloughry/Unicode", "https://raw.githubusercontent.com/ryanoasis/nerd-fonts/e2dc2203202ed148ceb76d2c3100216170e94297/license-audit.md"],
-      "notice_files": []
+      "upstream_input": "https://raw.githubusercontent.com/jloughry/Unicode/4c79c6a81f29584e18f827b07c0bf6f02fc3ebbe/Unicode_IEC_symbol_font.otf",
+      "license": "MIT",
+      "license_source": "https://raw.githubusercontent.com/jloughry/Unicode/4c79c6a81f29584e18f827b07c0bf6f02fc3ebbe/LICENSE.txt",
+      "license_sha256": "11aef1cdf2d58d822e6857e2574870ccc59d4900052bf5c098e319d750e7ac3d",
+      "notice_sha256": "11aef1cdf2d58d822e6857e2574870ccc59d4900052bf5c098e319d750e7ac3d",
+      "notice_files": ["IEC-Power-Symbols-MIT-LICENSE.txt"]
     },
     {
       "id": "material-design-icons",
