@@ -1079,11 +1079,12 @@ def test_defaults_include_display_settings():
     assert DEFAULT_SETTINGS["fontSize"] == 14, (
         f"fontSize default must be 14, got: {DEFAULT_SETTINGS['fontSize']!r}"
     )
-    assert DEFAULT_SETTINGS["terminalFont"] == "System"
+    assert DEFAULT_SETTINGS["terminalFont"] == "FiraCode"
+    assert normalize_terminal_font("System") == "System"
     assert normalize_terminal_font("FiraCode") == "FiraCode"
     assert normalize_terminal_font("JetBrainsMono") == "JetBrainsMono"
-    assert normalize_terminal_font("untrusted CSS") == "System"
-    assert normalize_terminal_font(None) == "System"
+    assert normalize_terminal_font("untrusted CSS") == "FiraCode"
+    assert normalize_terminal_font(None) == "FiraCode"
 
     assert "hoverPreviewDelay" in DEFAULT_SETTINGS, (
         "DEFAULT_SETTINGS must include 'hoverPreviewDelay'"
@@ -1276,12 +1277,37 @@ def test_display_settings_round_trip_via_patch():
         )
 
 
+@pytest.mark.parametrize("saved_font", ("System", "FiraCode", "JetBrainsMono"))
+def test_terminal_font_explicit_saved_choices_survive_load(
+    redirect_settings_path, saved_font
+):
+    """A saved supported choice is never migrated to the new default."""
+    redirect_settings_path.write_text(json.dumps({"terminalFont": saved_font}))
+    assert load_settings()["terminalFont"] == saved_font
+
+
+@pytest.mark.parametrize("invalid_font", ("not-a-font", None, ["FiraCode"], 14))
+def test_terminal_font_missing_and_invalid_values_fall_back_to_fira(
+    redirect_settings_path, invalid_font
+):
+    """Fresh, missing, and invalid settings use FiraCode without a migration."""
+    assert not redirect_settings_path.exists()
+    assert load_settings()["terminalFont"] == "FiraCode"
+    assert not redirect_settings_path.exists()
+
+    redirect_settings_path.write_text(json.dumps({}))
+    assert load_settings()["terminalFont"] == "FiraCode"
+
+    redirect_settings_path.write_text(json.dumps({"terminalFont": invalid_font}))
+    assert load_settings()["terminalFont"] == "FiraCode"
+
+
 def test_terminal_font_normalizes_on_load_patch_and_sync(redirect_settings_path):
     """Every settings ingress rejects unknown/wrong-type terminal font values."""
     redirect_settings_path.write_text(json.dumps({"terminalFont": ["FiraCode"]}))
-    assert load_settings()["terminalFont"] == "System"
+    assert load_settings()["terminalFont"] == "FiraCode"
 
-    assert patch_settings({"terminalFont": "not-a-font"})["terminalFont"] == "System"
+    assert patch_settings({"terminalFont": "not-a-font"})["terminalFont"] == "FiraCode"
     assert (
         apply_synced_settings({"terminalFont": "JetBrainsMono"}, 1712600000.0)[
             "terminalFont"
@@ -1290,7 +1316,7 @@ def test_terminal_font_normalizes_on_load_patch_and_sync(redirect_settings_path)
     )
     assert (
         apply_synced_settings({"terminalFont": 99}, 1712600001.0)["terminalFont"]
-        == "System"
+        == "FiraCode"
     )
 
 

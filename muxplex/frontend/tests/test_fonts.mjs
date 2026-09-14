@@ -29,10 +29,11 @@ function loadFonts() {
   return { fonts: globalThis.window.muxplexFonts, added, requested, get loads() { return loads; } };
 }
 
-test('font catalog is closed and System never creates a font request', async () => {
+test('font catalog defaults invalid values to FiraCode and System never creates a font request', async () => {
   const env = loadFonts();
-  assert.equal(env.fonts.normalize('unknown'), 'System');
-  assert.equal(env.fonts.normalize({}), 'System');
+  assert.equal(env.fonts.normalize('unknown'), 'FiraCode');
+  assert.equal(env.fonts.normalize({}), 'FiraCode');
+  assert.equal(env.fonts.normalize('System'), 'System');
   await env.fonts.ensureLoaded('System');
   assert.equal(env.loads, 0);
   assert.equal(env.added.length, 0);

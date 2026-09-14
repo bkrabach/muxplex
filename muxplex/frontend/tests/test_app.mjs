@@ -6905,11 +6905,11 @@ test('saveDisplaySettings is NOT exported from app.js', () => {
   assert.ok(!('saveDisplaySettings' in app), 'app.js must NOT export saveDisplaySettings (deleted)');
 });
 
-test('getDisplaySettings returns DISPLAY_DEFAULTS when _serverSettings is null', () => {
+test('getDisplaySettings defaults terminalFont to FiraCode when settings are unavailable', () => {
   app._setServerSettings(null);
   const ds = app.getDisplaySettings();
   assert.strictEqual(ds.fontSize, 14, 'getDisplaySettings must return default fontSize');
-  assert.strictEqual(ds.terminalFont, 'System', 'getDisplaySettings must retain System as the terminal font default');
+  assert.strictEqual(ds.terminalFont, 'FiraCode', 'getDisplaySettings must default terminalFont to FiraCode');
   assert.strictEqual(ds.hoverPreviewDelay, 1500, 'getDisplaySettings must return default hoverPreviewDelay');
   assert.strictEqual(ds.gridColumns, 'auto', 'getDisplaySettings must return default gridColumns');
   assert.strictEqual(ds.bellSound, false, 'getDisplaySettings must return default bellSound');
@@ -6931,7 +6931,22 @@ test('getDisplaySettings reads display keys from _serverSettings with DISPLAY_DE
   assert.strictEqual(ds.gridViewMode, 'flat', 'getDisplaySettings must fall back to default gridViewMode');
   assert.strictEqual(ds.previewFontSize, 11, 'getDisplaySettings must fall back to default previewFontSize');
   assert.strictEqual(ds.previewZoom, 100, 'getDisplaySettings must fall back to default previewZoom');
+  assert.strictEqual(ds.terminalFont, 'FiraCode', 'a missing terminalFont must fall back to FiraCode');
   assert.ok(!('unknownKey' in ds), 'getDisplaySettings must not include keys not in DISPLAY_DEFAULTS');
+  app._setServerSettings(null);
+});
+
+test('getDisplaySettings preserves an explicit System terminalFont', () => {
+  app._setServerSettings({ terminalFont: 'System' });
+  assert.strictEqual(app.getDisplaySettings().terminalFont, 'System');
+  app._setServerSettings(null);
+});
+
+test('getDisplaySettings normalizes null and invalid cached terminalFont values to FiraCode', () => {
+  app._setServerSettings({ terminalFont: null });
+  assert.strictEqual(app.getDisplaySettings().terminalFont, 'FiraCode');
+  app._setServerSettings({ terminalFont: 'not-a-font' });
+  assert.strictEqual(app.getDisplaySettings().terminalFont, 'FiraCode');
   app._setServerSettings(null);
 });
 
@@ -6945,7 +6960,12 @@ test('getDisplaySettings reads previewFontSize/previewZoom from _serverSettings 
 
 test('terminalFont is a server-backed display setting and is applied without reconnecting', () => {
   const source = fs.readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-  assert.ok(source.includes("terminalFont: 'System'"), 'DISPLAY_DEFAULTS must default terminalFont to System');
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(source.includes("terminalFont: 'FiraCode'"), 'DISPLAY_DEFAULTS must default terminalFont to FiraCode');
+  assert.match(html, /<option value="FiraCode" selected>Fira Code Nerd Font Mono \(default\)<\/option>/,
+    'the initial font selector must mark FiraCode as selected');
+  assert.match(html, /<option value="System">System mono<\/option>/,
+    'System must remain an ordinary explicit selector choice');
   assert.ok(source.includes('setting-terminal-font'), 'Display settings must read the terminal font control');
   assert.ok(source.includes('window._setTerminalFont(ds.terminalFont)'), 'Live terminal must receive selected terminalFont');
 });

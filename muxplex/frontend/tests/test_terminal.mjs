@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
  * Load a fresh copy of terminal.js with isolated module-level state.
  * Returns { window } after the script has executed.
  */
-function loadTerminal() {
+function loadTerminal({ fallbackFont = 'System' } = {}) {
   // Delete from require cache so each test gets fresh module-level state
   const modulePath = join(__dirname, '..', 'terminal.js');
   delete require.cache[require.resolve(modulePath)];
@@ -171,7 +171,7 @@ function loadTerminal() {
         FiraCode: { label: 'Fira Code Nerd Font Mono' },
         JetBrainsMono: { label: 'JetBrains Mono Nerd Font Mono' },
       },
-      normalize: (value) => ['FiraCode', 'JetBrainsMono'].includes(value) ? value : 'System',
+      normalize: (value) => ['System', 'FiraCode', 'JetBrainsMono'].includes(value) ? value : fallbackFont,
       cssFamily: (value) => value === 'FiraCode'
         ? "'FiraCode Nerd Font Mono', monospace"
         : value === 'JetBrainsMono'
@@ -1709,21 +1709,44 @@ test('terminal.js createTerminal does not read fontSize from localStorage', () =
   );
 });
 
-test('openTerminal uses passed fontSize to configure xterm.js Terminal constructor', () => {
-  const t = loadTerminal();
+test('omitted terminalFont waits for the FiraCode default before xterm measures it', async () => {
+  const t = loadTerminal({ fallbackFont: 'FiraCode' });
   const originalSetTimeout = globalThis.setTimeout;
   try {
     globalThis.setTimeout = () => 0;
     t.openTerminal('session', '', 20);
 
-    assert.ok(t.terminalOptions, 'Terminal constructor must have been called');
+    assert.strictEqual(t.terminalOptions, null,
+      'the default optional face must load before xterm measures it');
+    t.resolveFont('FiraCode');
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(t.terminalOptions, 'Terminal constructor must run after FiraCode is ready');
     assert.strictEqual(
       t.terminalOptions.fontSize, 20,
-      'openTerminal must pass the fontSize argument to the xterm.js Terminal constructor',
+      'openTerminal must preserve its passed fontSize after default-font readiness',
     );
+    assert.strictEqual(t.terminalOptions.fontFamily, "'FiraCode Nerd Font Mono', monospace");
   } finally {
     globalThis.setTimeout = originalSetTimeout;
   }
+});
+
+test('explicit System remains the immediate safety fallback if fonts.js is unavailable', () => {
+  const t = loadTerminal({ fallbackFont: 'FiraCode' });
+  delete t.window.muxplexFonts;
+  t.openTerminal('session', '', 14, '', 'System');
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
+});
+
+test('failed default FiraCode load opens with the System fallback', async () => {
+  const t = loadTerminal({ fallbackFont: 'FiraCode' });
+  t.openTerminal('session');
+  t.rejectFont('FiraCode');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
+  assert.match(t.fontStatus, /Fira Code Nerd Font Mono could not load; rendering System mono/);
 });
 
 test('optional terminal font waits for readiness, and a later System selection wins', async () => {

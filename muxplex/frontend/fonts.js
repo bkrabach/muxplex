@@ -25,7 +25,7 @@
   var completed = Object.create(null);
 
   function normalize(value) {
-    return typeof value === 'string' && catalog[value] ? value : 'System';
+    return typeof value === 'string' && catalog[value] ? value : 'FiraCode';
   }
 
   function cssFamily(value) {
