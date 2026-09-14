@@ -171,8 +171,8 @@ DEFAULT_SETTINGS: dict = {
     "fontSize": 14,
     # The live xterm face. This is a closed catalog rather than a CSS URL:
     # every optional face is a bundled, provenance-recorded asset and
-    # unrecognised settings safely retain the established system stack.
-    "terminalFont": "System",
+    # unrecognised settings safely fall back to the default bundled face.
+    "terminalFont": "FiraCode",
     # Font size (px) of the tile/sidebar preview text -- independent of
     # `fontSize` above, which only ever drove the live xterm.js terminal.
     # Feeds --preview-font-size (frontend/app.js's applyDisplaySettings()),
@@ -553,14 +553,14 @@ TERMINAL_FONTS: frozenset[str] = frozenset({"System", "FiraCode", "JetBrainsMono
 
 
 def normalize_terminal_font(value: object) -> str:
-    """Return a supported terminal font preference or the safe System default.
+    """Return a supported terminal font preference or the FiraCode default.
 
     This intentionally accepts no aliases or arbitrary CSS family names.  The
     matching frontend catalog only names bundled assets whose source and
-    licenses are recorded beside them, and ``System`` preserves muxplex's
-    historical xterm stack without a network request.
+    licenses are recorded beside them. ``System`` remains an explicit choice
+    that preserves muxplex's historical xterm stack without a network request.
     """
-    return value if isinstance(value, str) and value in TERMINAL_FONTS else "System"
+    return value if isinstance(value, str) and value in TERMINAL_FONTS else "FiraCode"
 
 
 def normalize_preview_zoom(value: object) -> int:

@@ -476,9 +476,10 @@ automatically covered the moment it's added to `index.html`.
 
 ## Optional terminal fonts: loading and sizing must agree
 
-`terminalFont` is a shared, federation-syncable display preference. `System`
-preserves the existing font stack; bundled alternatives are opt-in and affect
-only the live terminal. Keep the catalog and lazy loading in `fonts.js`.
+`terminalFont` is a shared, federation-syncable display preference. `FiraCode`
+is the default bundled face; an explicitly saved `System` preserves the
+existing stack without an asset request, and `JetBrainsMono` remains a
+supported explicit choice. Keep the catalog and lazy loading in `fonts.js`.
 
 Do not apply or measure an optional face before it finishes loading. Guard
 completion by both request generation and terminal identity: a late load must

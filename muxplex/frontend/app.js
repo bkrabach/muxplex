@@ -473,7 +473,7 @@ let _localDeviceId = null;
 let _localVersion = null;
 const DISPLAY_DEFAULTS = {
   fontSize: 14,
-  terminalFont: 'System',
+  terminalFont: 'FiraCode',
   previewFontSize: 11,           // px, tile/sidebar preview text -- independent of fontSize (the terminal font)
   previewZoom: 100,               // %, tile size / grid min column width scale; 100 = today's exact sizing
   hoverPreviewDelay: 1500,
@@ -8228,7 +8228,14 @@ function getDisplaySettings() {
     _pendingDisplaySettingsIntent ? _latestDisplaySettingsPatch : null);
   for (const key of Object.keys(DISPLAY_DEFAULTS)) {
     if (Object.prototype.hasOwnProperty.call(ss, key)) {
-      result[key] = ss[key];
+      // The server normally normalizes this shared preference before it
+      // reaches the cache. Keep the bootstrap path safe as well: a stale or
+      // unavailable response must not leave the static selector with no
+      // effective choice.
+      result[key] = key === 'terminalFont' &&
+        !['System', 'FiraCode', 'JetBrainsMono'].includes(ss[key])
+        ? DISPLAY_DEFAULTS.terminalFont
+        : ss[key];
     }
   }
   return result;

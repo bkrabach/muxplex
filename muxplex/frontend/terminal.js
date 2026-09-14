@@ -16,7 +16,10 @@ let _resizeObserver = null;
 // Every open/close and font selection advances this generation. A slow optional
 // face must never apply after another selection, a new terminal, or close.
 let _termFontGeneration = 0;
-let _termRequestedFont = 'System';
+// The initial value matches fonts.js's fallback. _termNormalizeFont retains
+// System if that module is unexpectedly unavailable, so a missing script never
+// turns an explicit System choice into an optional-load attempt.
+let _termRequestedFont = 'FiraCode';
 let _termFailedFont = null;
 // This browser's own device_id (distinct from remoteId, a federation
 // concept). Empty string when unknown/unset -- treated as "no device_id",
