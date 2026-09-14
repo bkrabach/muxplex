@@ -5490,6 +5490,13 @@ def test_kill_stale_port_holder_refuses_to_kill_healthy_server(monkeypatch, caps
     monkeypatch.setattr(
         cli_mod, "_port_holder_is_healthy_muxplex", lambda *a, **k: True
     )
+    # Health and identity are separate probes; neither may consult a live service.
+    monkeypatch.setattr(
+        cli_mod,
+        "_fetch_local_instance_info",
+        lambda *a, **k: {"device_id": "test-local", "version": "test"},
+    )
+    monkeypatch.setattr("muxplex.identity.load_device_id", lambda: "test-local")
 
     with pytest.raises(SystemExit) as exc:
         cli_mod._kill_stale_port_holder(8088)

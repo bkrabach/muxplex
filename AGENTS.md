@@ -1076,6 +1076,10 @@ by construction rather than merely refusing to proceed. Read
 | `pytest_sessionstart` structural (AST) scan | A NEW test reintroducing incident 2's exact shape (opts into the real killer without pinning a port) — fails at collection, not merely a code-review nit; never refuses just because something else is running |
 | `test_safety_rails.py` | Silent removal or weakening of any of the above |
 
+CLI port-holder unit tests must stub the identity fetch as well as the health
+probe. Stubbing only health still lets `_fetch_local_instance_info` contact a
+running service, making the expected refusal message depend on its device ID.
+
 To reach the real port killer or the real `uvicorn.run`, a test must opt in
 explicitly with `@pytest.mark.allow_real_port_killer` /
 `@pytest.mark.allow_real_uvicorn_run` — visible in review, and (for the
