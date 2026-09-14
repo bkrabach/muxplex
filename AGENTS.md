@@ -474,6 +474,25 @@ parses the real `<script src=...>` tags out of `index.html` (excluding
 asserting none throws a `SyntaxError`. Any new frontend script is
 automatically covered the moment it's added to `index.html`.
 
+## Optional terminal fonts: loading and sizing must agree
+
+`terminalFont` is a shared, federation-syncable display preference. `System`
+preserves the existing font stack; bundled alternatives are opt-in and affect
+only the live terminal. Keep the catalog and lazy loading in `fonts.js`.
+
+Do not apply or measure an optional face before it finishes loading. Guard
+completion by both request generation and terminal identity: a late load must
+not override a newer choice or reopen a closed terminal. A local load failure
+renders the System fallback with an explicit retry; it must not PATCH the
+shared preference to System. Settings-save tests must check the server value,
+the client cache, and subsequent terminal opens after CAS retries, not just
+the order of successful writes.
+
+New bundled fonts need pinned upstream provenance, verified binary/name-table
+identity, and the applicable licenses/notices beside the asset. Verify their
+presence and bytes in the built wheel. Browser proof must inspect real xterm
+output and cell metrics, not merely the selector or sidebar snapshot.
+
 ## Terminal links: plain-click activation has one security boundary
 
 Both OSC 8 Markdown-style labels (`Terminal`'s `linkHandler`) and visible
