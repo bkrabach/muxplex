@@ -1,3 +1,12 @@
+## v0.60.0 (2026-09-14)
+
+**Fira Code Nerd Font Mono is now the default terminal font.**
+
+### Changed
+
+- **Default terminal face:** new installations and missing or invalid terminal-font preferences use the bundled Fira Code Nerd Font Mono face. This follows the original default proposed by @btafoya in #63 and the owner's trial of the selectable fonts shipped in v0.59.0.
+- **Existing choices are preserved:** explicitly saved System mono, Fira Code, and JetBrains Mono selections remain unchanged. System mono remains available without a font download and remains the visible local fallback, with retry, if a bundled font fails to load.
+
 ## v0.59.0 (2026-09-14)
 
 **Optional bundled terminal fonts, with System mono still the default.**
