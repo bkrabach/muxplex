@@ -8226,15 +8226,15 @@ function getDisplaySettings() {
   const result = Object.assign({}, DISPLAY_DEFAULTS);
   const ss = Object.assign({}, _serverSettings || {},
     _pendingDisplaySettingsIntent ? _latestDisplaySettingsPatch : null);
+  const normalizeFont = window.muxplexFonts && window.muxplexFonts.normalize;
   for (const key of Object.keys(DISPLAY_DEFAULTS)) {
     if (Object.prototype.hasOwnProperty.call(ss, key)) {
       // The server normally normalizes this shared preference before it
       // reaches the cache. Keep the bootstrap path safe as well: a stale or
       // unavailable response must not leave the static selector with no
       // effective choice.
-      result[key] = key === 'terminalFont' &&
-        !['System', 'FiraCode', 'JetBrainsMono'].includes(ss[key])
-        ? DISPLAY_DEFAULTS.terminalFont
+      result[key] = key === 'terminalFont'
+        ? typeof normalizeFont === 'function' ? normalizeFont(ss[key]) : 'System'
         : ss[key];
     }
   }

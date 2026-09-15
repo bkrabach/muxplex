@@ -52,6 +52,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const require = createRequire(import.meta.url);
+require(join(__dirname, '..', 'fonts.js'));
 const app = require(join(__dirname, '..', 'app.js'));
 
 test('app.js exports all 7 pure functions', () => {
@@ -6948,6 +6949,37 @@ test('getDisplaySettings normalizes null and invalid cached terminalFont values 
   app._setServerSettings({ terminalFont: 'not-a-font' });
   assert.strictEqual(app.getDisplaySettings().terminalFont, 'FiraCode');
   app._setServerSettings(null);
+});
+
+test('getDisplaySettings delegates terminal-font validation to the shared catalog', () => {
+  const originalCatalog = globalThis.window.muxplexFonts;
+  const received = [];
+  globalThis.window.muxplexFonts = {
+    normalize(value) {
+      received.push(value);
+      return 'CatalogProvided';
+    },
+  };
+  try {
+    app._setServerSettings({ terminalFont: 'new-catalog-entry' });
+    assert.strictEqual(app.getDisplaySettings().terminalFont, 'CatalogProvided');
+    assert.deepStrictEqual(received, ['new-catalog-entry']);
+  } finally {
+    globalThis.window.muxplexFonts = originalCatalog;
+    app._setServerSettings(null);
+  }
+});
+
+test('getDisplaySettings falls back to System when the font catalog is unavailable', () => {
+  const originalCatalog = globalThis.window.muxplexFonts;
+  try {
+    globalThis.window.muxplexFonts = undefined;
+    app._setServerSettings({ terminalFont: 'FiraCode' });
+    assert.strictEqual(app.getDisplaySettings().terminalFont, 'System');
+  } finally {
+    globalThis.window.muxplexFonts = originalCatalog;
+    app._setServerSettings(null);
+  }
 });
 
 test('getDisplaySettings reads previewFontSize/previewZoom from _serverSettings when present', () => {

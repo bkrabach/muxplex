@@ -1739,6 +1739,13 @@ test('explicit System remains the immediate safety fallback if fonts.js is unava
   assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
 });
 
+test('a partial font catalog uses the System fallback without throwing', () => {
+  const t = loadTerminal({ fallbackFont: 'FiraCode' });
+  t.window.muxplexFonts = {};
+  assert.doesNotThrow(() => t.openTerminal('session', '', 14, '', 'FiraCode'));
+  assert.strictEqual(t.terminalOptions.fontFamily, "'SF Mono', 'Fira Code', Consolas, monospace");
+});
+
 test('failed default FiraCode load opens with the System fallback', async () => {
   const t = loadTerminal({ fallbackFont: 'FiraCode' });
   t.openTerminal('session');
