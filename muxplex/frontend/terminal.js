@@ -1250,17 +1250,20 @@ function setTerminalFontSize(size) {
 window._setTerminalFontSize = setTerminalFontSize;
 
 function _termNormalizeFont(value) {
-  return window.muxplexFonts ? window.muxplexFonts.normalize(value) : 'System';
+  var normalize = window.muxplexFonts && window.muxplexFonts.normalize;
+  return typeof normalize === 'function' ? normalize(value) : 'System';
 }
 
 function _termFontCssFamily(value) {
-  return window.muxplexFonts
-    ? window.muxplexFonts.cssFamily(value)
+  var cssFamily = window.muxplexFonts && window.muxplexFonts.cssFamily;
+  return typeof cssFamily === 'function'
+    ? cssFamily(value)
     : "'SF Mono', 'Fira Code', Consolas, monospace";
 }
 
 function _termFontLabel(value) {
-  var entry = window.muxplexFonts && window.muxplexFonts.catalog[_termNormalizeFont(value)];
+  var catalog = window.muxplexFonts && window.muxplexFonts.catalog;
+  var entry = catalog && catalog[_termNormalizeFont(value)];
   return entry ? entry.label : 'System mono';
 }
 

@@ -39,6 +39,7 @@ test('font catalog defaults invalid values to FiraCode and System never creates 
   assert.equal(env.added.length, 0);
 });
 
+
 test('optional font loads once, uses its verified family, and is memoized', async () => {
   const env = loadFonts();
   const first = env.fonts.ensureLoaded('FiraCode');
