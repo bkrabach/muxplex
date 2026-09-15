@@ -1,3 +1,12 @@
+## v0.60.1 (2026-09-15)
+
+**Coordinated dependency update to tmux-kit 0.7.0.**
+
+### Changed
+
+- **tmux-kit dependency:** update the exact package pin, matching Git source tag, and lockfile to the published 0.7.0 release. This makes the new non-owning `TmuxScope` observation API available in the dependency while preserving muxplex's existing runtime integration.
+- **Coordinated packaging:** publish `muxplex` and `muxplex-client` 0.60.1 together. No client API, terminal-font behavior, or server behavior changes are included.
+
 ## v0.60.0 (2026-09-14)
 
 **Fira Code Nerd Font Mono is now the default terminal font.**
