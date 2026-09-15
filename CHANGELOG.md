@@ -1,3 +1,12 @@
+## v0.60.2 (2026-09-15)
+
+### Fixed
+
+- **Terminal font bootstrap resilience:** the shared font catalog now owns valid
+  preference names. A missing or partial optional font script safely falls back
+  to System mono during settings bootstrap and terminal opening instead of
+  aborting the interface.
+
 ## v0.60.1 (2026-09-15)
 
 **Coordinated dependency update to tmux-kit 0.7.0.**
