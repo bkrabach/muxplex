@@ -1,3 +1,12 @@
+## v0.61.1 (2026-09-16)
+
+### Fixed
+
+- **Soft Deck appearance controls:** scales now use 75–150% sliders (100% is
+  normal size), save immediately while dragging for Android lifecycle
+  resilience, and visibly warn when device-local storage cannot persist
+  changes. No API, client, or federation changes.
+
 ## v0.61.0 (2026-09-16)
 
 ### Added
