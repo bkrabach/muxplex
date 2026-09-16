@@ -763,6 +763,27 @@ html, body {
   width: 100%;
   min-height: 48px;
 }
+#deck-settings .settings-appearance-scale-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  margin-top: 4px;
+}
+#deck-settings input[type='range'].settings-appearance-scale {
+  flex: 1 1 auto;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: #7C5CFF;
+}
+#deck-settings .settings-appearance-scale-value {
+  flex: 0 0 4.5ch;
+  color: var(--appearance-interface-color, #E6EDF3);
+  font-size: calc(0.9rem * var(--appearance-interface-scale, 1));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 #deck-settings textarea {
   font-family: var(--appearance-interface-family, "SF Mono", "Fira Code", "Consolas", "Menlo", monospace);
   font-style: var(--appearance-interface-style, normal);

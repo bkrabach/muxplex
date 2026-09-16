@@ -124,10 +124,16 @@
         <details class="settings-appearance-role" open>
           <summary>Primary text</summary>
           <div class="settings-appearance-role-fields">
-            <label>Scale
-              <input type="number" id="settings-appearance-primary-scale"
-                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
-            </label>
+            <label for="settings-appearance-primary-scale">Scale</label>
+            <div class="settings-appearance-scale-control">
+              <input type="range" id="settings-appearance-primary-scale"
+                class="settings-appearance-scale" min="75" max="150" step="1" value="100"
+                aria-valuemin="75" aria-valuemax="150" aria-valuenow="100"
+                aria-valuetext="100%" aria-describedby="settings-appearance-primary-scale-value settings-appearance-primary-error" />
+              <output id="settings-appearance-primary-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-primary-scale"
+                aria-live="polite">100%</output>
+            </div>
             <label>Color override
               <input type="text" id="settings-appearance-primary-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
@@ -156,15 +162,21 @@
               </select>
             </label>
           </div>
-          <p id="settings-appearance-primary-error" class="settings-error" aria-live="polite"></p>
+          <p id="settings-appearance-primary-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <details class="settings-appearance-role">
           <summary>Secondary text</summary>
           <div class="settings-appearance-role-fields">
-            <label>Scale
-              <input type="number" id="settings-appearance-secondary-scale"
-                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
-            </label>
+            <label for="settings-appearance-secondary-scale">Scale</label>
+            <div class="settings-appearance-scale-control">
+              <input type="range" id="settings-appearance-secondary-scale"
+                class="settings-appearance-scale" min="75" max="150" step="1" value="100"
+                aria-valuemin="75" aria-valuemax="150" aria-valuenow="100"
+                aria-valuetext="100%" aria-describedby="settings-appearance-secondary-scale-value settings-appearance-secondary-error" />
+              <output id="settings-appearance-secondary-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-secondary-scale"
+                aria-live="polite">100%</output>
+            </div>
             <label>Color override
               <input type="text" id="settings-appearance-secondary-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
@@ -193,15 +205,21 @@
               </select>
             </label>
           </div>
-          <p id="settings-appearance-secondary-error" class="settings-error" aria-live="polite"></p>
+          <p id="settings-appearance-secondary-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <details class="settings-appearance-role">
           <summary>Preview text</summary>
           <div class="settings-appearance-role-fields">
-            <label>Scale
-              <input type="number" id="settings-appearance-preview-scale"
-                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
-            </label>
+            <label for="settings-appearance-preview-scale">Scale</label>
+            <div class="settings-appearance-scale-control">
+              <input type="range" id="settings-appearance-preview-scale"
+                class="settings-appearance-scale" min="75" max="150" step="1" value="100"
+                aria-valuemin="75" aria-valuemax="150" aria-valuenow="100"
+                aria-valuetext="100%" aria-describedby="settings-appearance-preview-scale-value settings-appearance-preview-error" />
+              <output id="settings-appearance-preview-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-preview-scale"
+                aria-live="polite">100%</output>
+            </div>
             <label>Color override
               <input type="text" id="settings-appearance-preview-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
@@ -230,15 +248,21 @@
               </select>
             </label>
           </div>
-          <p id="settings-appearance-preview-error" class="settings-error" aria-live="polite"></p>
+          <p id="settings-appearance-preview-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <details class="settings-appearance-role">
           <summary>Interface text</summary>
           <div class="settings-appearance-role-fields">
-            <label>Scale
-              <input type="number" id="settings-appearance-interface-scale"
-                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
-            </label>
+            <label for="settings-appearance-interface-scale">Scale</label>
+            <div class="settings-appearance-scale-control">
+              <input type="range" id="settings-appearance-interface-scale"
+                class="settings-appearance-scale" min="75" max="150" step="1" value="100"
+                aria-valuemin="75" aria-valuemax="150" aria-valuenow="100"
+                aria-valuetext="100%" aria-describedby="settings-appearance-interface-scale-value settings-appearance-interface-error" />
+              <output id="settings-appearance-interface-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-interface-scale"
+                aria-live="polite">100%</output>
+            </div>
             <label>Color override
               <input type="text" id="settings-appearance-interface-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
@@ -267,7 +291,7 @@
               </select>
             </label>
           </div>
-          <p id="settings-appearance-interface-error" class="settings-error" aria-live="polite"></p>
+          <p id="settings-appearance-interface-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <div class="settings-appearance-reset-row">
           <button type="button" id="settings-appearance-reset">Reset appearance</button>

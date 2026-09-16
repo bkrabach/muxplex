@@ -77,6 +77,10 @@ var S_STEP = 4;
 // an unbounded amount of space.
 var APPEARANCE_SCALE_MIN = 0.75;
 var APPEARANCE_SCALE_MAX = 1.5;
+var APPEARANCE_SCALE_PERCENT_MIN = APPEARANCE_SCALE_MIN * 100;
+var APPEARANCE_SCALE_PERCENT_MAX = APPEARANCE_SCALE_MAX * 100;
+var APPEARANCE_PERSISTENCE_ERROR =
+  'Changes are applied for this session, but could not be saved on this device.';
 var APPEARANCE_ROLE_NAMES = ['primary', 'secondary', 'preview', 'interface'];
 var APPEARANCE_HEX_RE = /^#[0-9a-fA-F]{6}$/;
 var APPEARANCE_FAMILY_VALUES = ['component', 'system', 'mono'];
@@ -132,6 +136,75 @@ function defaultAppearance() {
     secondary: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
     preview: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
     interface: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+  };
+}
+
+/**
+ * Convert the range-slider's user-facing percentage to the stored scale.
+ * Keep this conversion separate from validation so old fractional settings
+ * remain untouched when they are loaded or imported.
+ * @param {number|string} percent
+ * @returns {number|null}
+ */
+function appearanceScalePercentToValue(percent) {
+  var numeric = typeof percent === 'number' ? percent : Number(percent);
+  return Number.isFinite(numeric) ? numeric / 100 : null;
+}
+
+/**
+ * Convert a stored scale to the integer percentage shown beside a slider.
+ * @param {number|string} scale
+ * @returns {number|null}
+ */
+function appearanceScaleValueToPercent(scale) {
+  var numeric = typeof scale === 'number' ? scale : Number(scale);
+  return Number.isFinite(numeric) ? Math.round(numeric * 100) : null;
+}
+
+/**
+ * Apply one range-slider value to an immutable settings copy. This is kept
+ * pure with respect to the DOM and storage so the event handler can apply the
+ * value immediately, then persist each distinct valid user input.
+ * @param {object} settings
+ * @param {string} role
+ * @param {number|string} percent
+ * @returns {{valid:boolean, settings:object, value:number|null, error:string}}
+ */
+function updateAppearanceScale(settings, role, percent) {
+  var nextAppearance = sanitizeAppearance(settings && settings.appearance);
+  var value = appearanceScalePercentToValue(percent);
+  if (
+    !Object.prototype.hasOwnProperty.call(nextAppearance, role) ||
+    value == null ||
+    value < APPEARANCE_SCALE_MIN ||
+    value > APPEARANCE_SCALE_MAX
+  ) {
+    return {
+      valid: false,
+      settings: settings,
+      value: nextAppearance[role] ? nextAppearance[role].scale : null,
+      error:
+        'Scale must be between ' +
+        APPEARANCE_SCALE_PERCENT_MIN +
+        '% and ' +
+        APPEARANCE_SCALE_PERCENT_MAX +
+        '%.',
+    };
+  }
+
+  nextAppearance[role].scale = value;
+  var nextSettings = {};
+  if (settings && typeof settings === 'object') {
+    for (var key in settings) {
+      if (Object.prototype.hasOwnProperty.call(settings, key)) nextSettings[key] = settings[key];
+    }
+  }
+  nextSettings.appearance = nextAppearance;
+  return {
+    valid: true,
+    settings: nextSettings,
+    value: value,
+    error: '',
   };
 }
 
@@ -1305,19 +1378,23 @@ function persistableDeckSettings(settings) {
 }
 
 /**
- * Persist deck settings. Best-effort: a full/unavailable storage (e.g.
- * private browsing) is swallowed, never thrown -- losing a settings write
- * must not break the deck itself. Brightness is never written -- see
+ * Persist deck settings. A full/unavailable storage (e.g. private browsing)
+ * is still swallowed, never thrown -- losing a settings write must not break
+ * the deck itself -- but the boolean result makes that outcome observable to
+ * callers that need to tell the user. Brightness is never written -- see
  * `persistableDeckSettings`.
  * @param {{setItem:function(string,string):void}|null|undefined} storage
  * @param {object} settings
+ * @returns {boolean} true when storage accepted the write, false otherwise
  */
 function saveDeckSettings(storage, settings) {
-  if (!storage) return;
+  if (!storage) return false;
   try {
     storage.setItem(DECK_SETTINGS_KEY, JSON.stringify(persistableDeckSettings(settings)));
+    return true;
   } catch (e) {
-    // best-effort; see docstring
+    // best-effort; see docstring -- the false result is the visible signal
+    return false;
   }
 }
 
@@ -2826,7 +2903,16 @@ if (typeof document !== 'undefined') {
 
     // ── Settings menu state (BACKLOG.md item 2) -- see the deck.js pure-logic
     // section for why this is local (localStorage), not server-synced. ──
-    var deckSettings = loadDeckSettings(safeLocalStorage());
+    var storage = safeLocalStorage();
+    var deckSettings = loadDeckSettings(storage);
+    var appearancePersistenceErrors = {};
+    var appearanceScaleEventValues = {};
+    function recordAppearancePersistenceResult(saved) {
+      var message = saved ? '' : APPEARANCE_PERSISTENCE_ERROR;
+      for (var i = 0; i < APPEARANCE_ROLE_NAMES.length; i++) {
+        appearancePersistenceErrors[APPEARANCE_ROLE_NAMES[i]] = message;
+      }
+    }
     var boundKeys = keyBindingsFromConfig(deckSettings.bindings, 0); // recomputed per recomputeGrid
     var dialBindings = dialBindingsFromConfig(deckSettings.bindings, deckSettings.dialCount);
     var dialEls = [];
@@ -2862,8 +2948,6 @@ if (typeof document !== 'undefined') {
         return null;
       }
     }
-    var storage = safeLocalStorage();
-
     // ── "Follows" pairing state (docs/plans/2026-08-16-deck-control-target-design.md
     // §9.1/§9.3, Step 3) -- this Soft Deck's own device_id/label are stable
     // for the page lifetime; the devices registry and server name are
@@ -3499,11 +3583,16 @@ if (typeof document !== 'undefined') {
       root.style.setProperty('--deck-dim', String(deckSettings.brightness / 100));
     }
 
+    function appearanceStyleTargets() {
+      var styles = [root.style];
+      if (settingsEl) styles.push(settingsEl.style);
+      return styles;
+    }
+
     function applyAppearance() {
       var appearance = sanitizeAppearance(deckSettings.appearance);
       deckSettings.appearance = appearance;
-      var styles = [root.style];
-      if (settingsEl) styles.push(settingsEl.style);
+      var styles = appearanceStyleTargets();
       for (var i = 0; i < APPEARANCE_ROLE_NAMES.length; i++) {
         var role = APPEARANCE_ROLE_NAMES[i];
         var leaf = appearance[role];
@@ -3528,6 +3617,16 @@ if (typeof document !== 'undefined') {
           else styles[j].setProperty(weightName, APPEARANCE_WEIGHT_CSS[leaf.weight]);
           styles[j].setProperty(styleName, APPEARANCE_STYLE_CSS[leaf.style]);
         }
+      }
+    }
+
+    function applyAppearanceScale(role) {
+      var appearance = deckSettings.appearance;
+      if (!appearance || !Object.prototype.hasOwnProperty.call(appearance, role)) return;
+      var scaleName = '--appearance-' + role + '-scale';
+      var styles = appearanceStyleTargets();
+      for (var i = 0; i < styles.length; i++) {
+        styles[i].setProperty(scaleName, String(appearance[role].scale));
       }
     }
 
@@ -4883,6 +4982,9 @@ if (typeof document !== 'undefined') {
         var appearanceScaleInput = settingsEl.querySelector(
           '#settings-appearance-' + appearanceRole + '-scale'
         );
+        var appearanceScaleOutput = settingsEl.querySelector(
+          '#settings-appearance-' + appearanceRole + '-scale-value'
+        );
         var appearanceColorInput = settingsEl.querySelector(
           '#settings-appearance-' + appearanceRole + '-color'
         );
@@ -4898,12 +5000,32 @@ if (typeof document !== 'undefined') {
         var appearanceError = settingsEl.querySelector(
           '#settings-appearance-' + appearanceRole + '-error'
         );
-        if (appearanceScaleInput) appearanceScaleInput.value = String(appearanceLeaf.scale);
+        var appearanceScalePercent = appearanceScaleValueToPercent(appearanceLeaf.scale);
+        if (appearanceScalePercent == null) appearanceScalePercent = APPEARANCE_SCALE_PERCENT_MIN;
+        appearanceScaleEventValues[appearanceRole] = appearanceScalePercent;
+        if (appearanceScaleInput) {
+          appearanceScaleInput.value = String(appearanceScalePercent);
+          appearanceScaleInput.setAttribute('aria-valuenow', String(appearanceScalePercent));
+          appearanceScaleInput.setAttribute('aria-valuetext', String(appearanceScalePercent) + '%');
+        }
+        if (appearanceScaleOutput) appearanceScaleOutput.textContent = String(appearanceScalePercent) + '%';
         if (appearanceColorInput) appearanceColorInput.value = appearanceLeaf.color || '';
         if (appearanceFamilySelect) appearanceFamilySelect.value = appearanceLeaf.family;
         if (appearanceWeightSelect) appearanceWeightSelect.value = appearanceLeaf.weight;
         if (appearanceStyleSelect) appearanceStyleSelect.value = appearanceLeaf.style;
-        if (appearanceError) appearanceError.textContent = '';
+        var appearanceHasError = Boolean(appearancePersistenceErrors[appearanceRole]);
+        if (appearanceScaleInput) appearanceScaleInput.setAttribute('aria-invalid', appearanceHasError ? 'true' : 'false');
+        if (appearanceColorInput) appearanceColorInput.setAttribute('aria-invalid', appearanceHasError ? 'true' : 'false');
+        if (appearanceFamilySelect) appearanceFamilySelect.setAttribute('aria-invalid', appearanceHasError ? 'true' : 'false');
+        if (appearanceWeightSelect) appearanceWeightSelect.setAttribute('aria-invalid', appearanceHasError ? 'true' : 'false');
+        if (appearanceStyleSelect) appearanceStyleSelect.setAttribute('aria-invalid', appearanceHasError ? 'true' : 'false');
+        if (appearanceError) {
+          appearanceError.textContent = appearancePersistenceErrors[appearanceRole] || '';
+          appearanceError.setAttribute(
+            'aria-hidden',
+            appearancePersistenceErrors[appearanceRole] ? 'false' : 'true'
+          );
+        }
       }
 
       renderKeyMap();
@@ -5138,7 +5260,7 @@ if (typeof document !== 'undefined') {
       if (resetBtn) {
         resetBtn.addEventListener('click', function () {
           deckSettings = defaultDeckSettings();
-          saveDeckSettings(storage, deckSettings);
+          recordAppearancePersistenceResult(saveDeckSettings(storage, deckSettings));
           applyBrightness();
           applyAppearance();
           populateSettingsForm();
@@ -5149,7 +5271,7 @@ if (typeof document !== 'undefined') {
       if (appearanceResetBtn) {
         appearanceResetBtn.addEventListener('click', function () {
           deckSettings.appearance = defaultAppearance();
-          saveDeckSettings(storage, deckSettings);
+          recordAppearancePersistenceResult(saveDeckSettings(storage, deckSettings));
           applyAppearance();
           populateSettingsForm();
         });
@@ -5158,6 +5280,7 @@ if (typeof document !== 'undefined') {
       for (var appearanceIndex = 0; appearanceIndex < APPEARANCE_ROLE_NAMES.length; appearanceIndex++) {
         (function (role) {
           var scaleInput = settingsEl.querySelector('#settings-appearance-' + role + '-scale');
+          var scaleOutput = settingsEl.querySelector('#settings-appearance-' + role + '-scale-value');
           var colorInput = settingsEl.querySelector('#settings-appearance-' + role + '-color');
           var familySelect = settingsEl.querySelector('#settings-appearance-' + role + '-family');
           var weightSelect = settingsEl.querySelector('#settings-appearance-' + role + '-weight');
@@ -5165,7 +5288,9 @@ if (typeof document !== 'undefined') {
           var errorEl = settingsEl.querySelector('#settings-appearance-' + role + '-error');
 
           function setAppearanceError(message) {
+            appearancePersistenceErrors[role] = message || '';
             if (errorEl) errorEl.textContent = message;
+            if (errorEl) errorEl.setAttribute('aria-hidden', message ? 'false' : 'true');
             if (scaleInput) scaleInput.setAttribute('aria-invalid', message ? 'true' : 'false');
             if (colorInput) colorInput.setAttribute('aria-invalid', message ? 'true' : 'false');
             if (familySelect) familySelect.setAttribute('aria-invalid', message ? 'true' : 'false');
@@ -5175,35 +5300,47 @@ if (typeof document !== 'undefined') {
 
           function saveAppearanceLeaf(next) {
             deckSettings.appearance = next;
-            saveDeckSettings(storage, deckSettings);
+            var saved = saveDeckSettings(storage, deckSettings);
+            recordAppearancePersistenceResult(saved);
             applyAppearance();
             var exportArea = settingsEl.querySelector('#settings-export');
             if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
-            setAppearanceError('');
+            setAppearanceError(saved ? '' : APPEARANCE_PERSISTENCE_ERROR);
+            return saved;
           }
 
           if (scaleInput) {
-            scaleInput.addEventListener('change', function () {
-              var value = Number(scaleInput.value);
-              var next = sanitizeAppearance(deckSettings.appearance);
-              if (
-                !Number.isFinite(value) ||
-                value < APPEARANCE_SCALE_MIN ||
-                value > APPEARANCE_SCALE_MAX
-              ) {
-                scaleInput.value = String(next[role].scale);
-                setAppearanceError(
-                  'Scale must be between ' +
-                    APPEARANCE_SCALE_MIN +
-                    ' and ' +
-                    APPEARANCE_SCALE_MAX +
-                    '.'
-                );
+            function handleScaleInput() {
+              var percent = Number(scaleInput.value);
+              var result = updateAppearanceScale(deckSettings, role, percent);
+              if (!result.valid) {
+                var fallbackPercent = appearanceScaleValueToPercent(result.value);
+                if (fallbackPercent == null) fallbackPercent = APPEARANCE_SCALE_PERCENT_MIN;
+                scaleInput.value = String(fallbackPercent);
+                if (scaleOutput) scaleOutput.textContent = String(fallbackPercent) + '%';
+                scaleInput.setAttribute('aria-valuenow', String(fallbackPercent));
+                scaleInput.setAttribute('aria-valuetext', String(fallbackPercent) + '%');
+                setAppearanceError(result.error);
                 return;
               }
-              next[role].scale = value;
-              saveAppearanceLeaf(next);
-            });
+              // Native range controls emit `input` while dragging and then
+              // `change` on commit. Persist every distinct input immediately;
+              // the shared value guard makes the follow-up change a no-op.
+              if (percent === appearanceScaleEventValues[role]) return;
+              appearanceScaleEventValues[role] = percent;
+              if (scaleOutput) scaleOutput.textContent = String(percent) + '%';
+              scaleInput.setAttribute('aria-valuenow', String(percent));
+              scaleInput.setAttribute('aria-valuetext', String(percent) + '%');
+              deckSettings = result.settings;
+              applyAppearanceScale(role);
+              var saved = saveDeckSettings(storage, deckSettings);
+              recordAppearancePersistenceResult(saved);
+              var exportArea = settingsEl.querySelector('#settings-export');
+              if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
+              setAppearanceError(saved ? '' : APPEARANCE_PERSISTENCE_ERROR);
+            }
+            scaleInput.addEventListener('input', handleScaleInput);
+            scaleInput.addEventListener('change', handleScaleInput);
           }
 
           if (colorInput) {
@@ -5615,7 +5752,12 @@ if (typeof module !== 'undefined' && module.exports) {
     applyRelativeTicks: applyRelativeTicks,
     APPEARANCE_SCALE_MIN: APPEARANCE_SCALE_MIN,
     APPEARANCE_SCALE_MAX: APPEARANCE_SCALE_MAX,
+    APPEARANCE_SCALE_PERCENT_MIN: APPEARANCE_SCALE_PERCENT_MIN,
+    APPEARANCE_SCALE_PERCENT_MAX: APPEARANCE_SCALE_PERCENT_MAX,
     APPEARANCE_ROLE_NAMES: APPEARANCE_ROLE_NAMES,
+    appearanceScalePercentToValue: appearanceScalePercentToValue,
+    appearanceScaleValueToPercent: appearanceScaleValueToPercent,
+    updateAppearanceScale: updateAppearanceScale,
     defaultAppearance: defaultAppearance,
     isAppearanceHexColor: isAppearanceHexColor,
     sanitizeAppearanceLeaf: sanitizeAppearanceLeaf,

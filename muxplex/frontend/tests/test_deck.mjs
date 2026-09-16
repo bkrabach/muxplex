@@ -56,6 +56,9 @@ test('deck.js exports all pure functions', () => {
     'dialDragTicks',
     'isDialTap',
     'applyRelativeTicks',
+    'appearanceScalePercentToValue',
+    'appearanceScaleValueToPercent',
+    'updateAppearanceScale',
     'defaultAppearance',
     'isAppearanceHexColor',
     'sanitizeAppearanceLeaf',
@@ -1176,6 +1179,39 @@ test('appearance typography: each role has constrained family/weight/style contr
   assert.doesNotMatch(js, /setProperty\(weightName, leaf\.weight\)/);
 });
 
+test('appearance scale controls: all roles use bounded accessible range sliders with live percent output', () => {
+  const css = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.css'), 'utf8');
+  const html = fs.readFileSync(join(__dirname, '..', 'deck', 'index.html'), 'utf8');
+  const js = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.js'), 'utf8');
+  const roles = ['primary', 'secondary', 'preview', 'interface'];
+
+  for (const role of roles) {
+    const id = `settings-appearance-${role}-scale`;
+    const outputId = `${id}-value`;
+    assert.match(html, new RegExp(`<input type="range"[^>]*id="${id}"`), `${id} should be a range`);
+    assert.doesNotMatch(html, new RegExp(`<input type="number"[^>]*id="${id}"`));
+    assert.match(
+      html,
+      new RegExp(`id="${id}"[^>]*min="75"[^>]*max="150"[^>]*step="1"`),
+      `${id} should keep the 75%-150% bounds with 1%-point steps`
+    );
+    assert.match(html, new RegExp(`id="${outputId}"[^>]*>100%<\\/output>`));
+    assert.match(html, new RegExp(`aria-describedby="${outputId} settings-appearance-${role}-error"`));
+  }
+  assert.match(css, /\.settings-appearance-scale-control/);
+  assert.match(css, /input\[type='range'\]\.settings-appearance-scale[\s\S]*min-height:\s*48px/);
+  assert.match(js, /scaleInput\.addEventListener\('input', handleScaleInput\)/);
+  assert.match(js, /scaleInput\.addEventListener\('change', handleScaleInput\)/);
+  assert.match(js, /updateAppearanceScale\(deckSettings, role, percent\)/);
+  assert.match(js, /function applyAppearanceScale\(role\)/);
+  assert.match(js, /if \(percent === appearanceScaleEventValues\[role\]\) return;/);
+  assert.match(js, /appearanceScaleEventValues\[role\] = percent;/);
+  assert.match(js, /var saved = saveDeckSettings\(storage, deckSettings\);/);
+  assert.doesNotMatch(js, /var isCommit = event && event\.type === 'change'/);
+  assert.match(js, /var storage = safeLocalStorage\(\);\s*var deckSettings = loadDeckSettings\(storage\);/);
+  assert.doesNotMatch(js, /loadDeckSettings\(safeLocalStorage\(\)\)/);
+});
+
 test('appearance reset: the accessible reset control restores all typography fields to defaults', () => {
   const html = fs.readFileSync(join(__dirname, '..', 'deck', 'index.html'), 'utf8');
   const js = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.js'), 'utf8');
@@ -1890,6 +1926,22 @@ test('appearance defaults: four semantic roles preserve component typography and
   assert.strictEqual(deck.isAppearanceHexColor('rgb(1, 2, 3)'), false);
 });
 
+test('appearance scale slider conversions: 75/.75, 100/1, and 150/1.5 stay bidirectionally exact', () => {
+  const cases = [
+    [75, 0.75],
+    [100, 1],
+    [150, 1.5],
+  ];
+  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MIN, 75);
+  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MAX, 150);
+  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MIN, deck.APPEARANCE_SCALE_MIN * 100);
+  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MAX, deck.APPEARANCE_SCALE_MAX * 100);
+  for (const [percent, value] of cases) {
+    assert.strictEqual(deck.appearanceScalePercentToValue(percent), value);
+    assert.strictEqual(deck.appearanceScaleValueToPercent(value), percent);
+  }
+});
+
 test('sanitizeAppearance: invalid leaves fall back independently while valid siblings survive', () => {
   const appearance = deck.sanitizeAppearance({
     primary: { scale: 1.25, color: '#123456' },
@@ -2069,22 +2121,79 @@ test('loadDeckSettings: old storage without appearance migrates to appearance de
   assert.deepEqual(loaded.appearance, deck.defaultAppearance());
 });
 
+test('loadDeckSettings: valid legacy fractional scales load exactly while an invalid leaf falls back', () => {
+  const storage = fakeStorage({
+    [deck.DECK_SETTINGS_KEY]: JSON.stringify({
+      appearance: {
+        primary: { scale: 0.75 },
+        secondary: { scale: 1.5 },
+        preview: { scale: 0.9 },
+        interface: { scale: 2 },
+      },
+    }),
+  });
+  const loaded = deck.loadDeckSettings(storage);
+  assert.strictEqual(loaded.appearance.primary.scale, 0.75);
+  assert.strictEqual(loaded.appearance.secondary.scale, 1.5);
+  assert.strictEqual(loaded.appearance.preview.scale, 0.9);
+  assert.strictEqual(loaded.appearance.interface.scale, 1);
+});
+
+test('loadDeckSettings: a .83 scale maps to an 83% slider/output without an implicit write', () => {
+  let writes = 0;
+  const stored = JSON.stringify({
+    appearance: {
+      primary: { scale: 0.83 },
+    },
+  });
+  const storage = {
+    getItem: () => stored,
+    setItem: () => {
+      writes += 1;
+    },
+  };
+  const loaded = deck.loadDeckSettings(storage);
+  const sliderValue = deck.appearanceScaleValueToPercent(loaded.appearance.primary.scale);
+  const sliderOutput = `${sliderValue}%`;
+  assert.strictEqual(loaded.appearance.primary.scale, 0.83);
+  assert.strictEqual(sliderValue, 83);
+  assert.strictEqual(sliderOutput, '83%');
+  assert.strictEqual(writes, 0);
+});
+
 test('saveDeckSettings + loadDeckSettings round-trip', () => {
   const storage = fakeStorage();
   const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), { sort: 'server', dialCount: 2 });
-  deck.saveDeckSettings(storage, settings);
+  assert.strictEqual(deck.saveDeckSettings(storage, settings), true);
   const loaded = deck.loadDeckSettings(storage);
   assert.strictEqual(loaded.sort, 'server');
   assert.strictEqual(loaded.dialCount, 2);
 });
 
-test('saveDeckSettings: a throwing storage (full/private-browsing) is swallowed', () => {
+test('updateAppearanceScale: a slider input updates only the selected role in the persistable settings copy', () => {
+  const settings = deck.defaultDeckSettings();
+  const result = deck.updateAppearanceScale(settings, 'primary', 125);
+  assert.strictEqual(result.valid, true);
+  assert.strictEqual(result.settings.appearance.primary.scale, 1.25);
+  assert.strictEqual(result.settings.appearance.secondary.scale, 1);
+  assert.strictEqual(settings.appearance.primary.scale, 1);
+});
+
+test('updateAppearanceScale: canonical stored-scale bounds reject out-of-range input', () => {
+  for (const percent of [74, 151]) {
+    const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'primary', percent);
+    assert.strictEqual(result.valid, false);
+    assert.match(result.error, /75% and 150%/);
+  }
+});
+
+test('saveDeckSettings: a failed storage write is explicit to callers', () => {
   const throwingStorage = {
     setItem: () => {
       throw new Error('QuotaExceededError');
     },
   };
-  assert.doesNotThrow(() => deck.saveDeckSettings(throwingStorage, deck.defaultDeckSettings()));
+  assert.strictEqual(deck.saveDeckSettings(throwingStorage, deck.defaultDeckSettings()), false);
 });
 
 test('exportSettingsJSON + importSettingsJSON: round-trips a settings object', () => {
