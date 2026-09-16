@@ -69,6 +69,169 @@ var N_MAX = 32;
 var ASPECT_TOLERANCE = 1.15;
 var S_STEP = 4;
 
+// Deck-local appearance settings. These are intentionally a small, typed
+// vocabulary rather than arbitrary CSS: the saved shape stays portable,
+// leaf-validatable, and safe to apply through component-scoped custom
+// properties. The range matches the existing zoom control so a user can make
+// a role more legible without allowing it to collapse a key face or consume
+// an unbounded amount of space.
+var APPEARANCE_SCALE_MIN = 0.75;
+var APPEARANCE_SCALE_MAX = 1.5;
+var APPEARANCE_ROLE_NAMES = ['primary', 'secondary', 'preview', 'interface'];
+var APPEARANCE_HEX_RE = /^#[0-9a-fA-F]{6}$/;
+var APPEARANCE_FAMILY_VALUES = ['component', 'system', 'mono'];
+var APPEARANCE_WEIGHT_VALUES = ['component', 'normal', 'medium', 'semibold', 'bold'];
+var APPEARANCE_STYLE_VALUES = ['normal', 'italic'];
+var APPEARANCE_FAMILY_ALIASES = { default: 'component' };
+var APPEARANCE_WEIGHT_ALIASES = {
+  '400': 'normal',
+  '500': 'medium',
+  '600': 'semibold',
+  '700': 'bold',
+};
+var APPEARANCE_FAMILY_CSS = {
+  system: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  mono: '"SF Mono", "Fira Code", "Consolas", "Menlo", monospace',
+};
+var APPEARANCE_WEIGHT_CSS = {
+  normal: '400',
+  medium: '500',
+  semibold: '600',
+  bold: '700',
+};
+var APPEARANCE_STYLE_CSS = {
+  normal: 'normal',
+  italic: 'italic',
+};
+
+/**
+ * Canonicalize a finite appearance enum. Numeric weight aliases are accepted
+ * for imported settings, but the persisted shape is always the named enum;
+ * arbitrary CSS values never pass this boundary.
+ * @param {*} value
+ * @param {string[]} values
+ * @param {object} aliases
+ * @returns {?string}
+ */
+function canonicalAppearanceEnum(value, values, aliases) {
+  if (typeof value === 'number') value = String(value);
+  if (typeof value !== 'string') return null;
+  var canonical = Object.prototype.hasOwnProperty.call(aliases || {}, value) ? aliases[value] : value;
+  return values.indexOf(canonical) === -1 ? null : canonical;
+}
+
+/**
+ * The default appearance contract. A null color means "keep this component's
+ * existing color"; CSS fallbacks therefore preserve the pre-appearance visual
+ * treatment for special states such as attention and failure.
+ * @returns {{primary:object, secondary:object, preview:object, interface:object}}
+ */
+function defaultAppearance() {
+  return {
+    primary: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    secondary: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    preview: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    interface: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+  };
+}
+
+/**
+ * @param {*} value
+ * @returns {boolean}
+ */
+function isAppearanceHexColor(value) {
+  return typeof value === 'string' && APPEARANCE_HEX_RE.test(value);
+}
+
+/**
+ * Validate one appearance role without allowing a bad leaf to discard its
+ * sibling. Invalid/missing leaves fall back independently.
+ * @param {*} raw
+ * @param {{scale:number, color:?string, family:string, weight:string, style:string}} fallback
+ * @returns {{scale:number, color:?string, family:string, weight:string, style:string}}
+ */
+function sanitizeAppearanceLeaf(raw, fallback) {
+  var base = fallback || defaultAppearance().primary;
+  var baseFamily = canonicalAppearanceEnum(base.family, APPEARANCE_FAMILY_VALUES, APPEARANCE_FAMILY_ALIASES);
+  var baseWeight = canonicalAppearanceEnum(base.weight, APPEARANCE_WEIGHT_VALUES, APPEARANCE_WEIGHT_ALIASES);
+  var baseStyle = canonicalAppearanceEnum(base.style, APPEARANCE_STYLE_VALUES, {});
+  var out = {
+    scale:
+      typeof base.scale === 'number' &&
+      Number.isFinite(base.scale) &&
+      base.scale >= APPEARANCE_SCALE_MIN &&
+      base.scale <= APPEARANCE_SCALE_MAX
+        ? base.scale
+        : 1,
+    color: base.color === null || isAppearanceHexColor(base.color) ? base.color : null,
+    family: baseFamily || 'component',
+    weight: baseWeight || 'component',
+    style: baseStyle || 'normal',
+  };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  if (
+    typeof raw.scale === 'number' &&
+    Number.isFinite(raw.scale) &&
+    raw.scale >= APPEARANCE_SCALE_MIN &&
+    raw.scale <= APPEARANCE_SCALE_MAX
+  ) {
+    out.scale = raw.scale;
+  }
+  if (raw.color === null || raw.color === '') {
+    out.color = null;
+  } else if (isAppearanceHexColor(raw.color)) {
+    out.color = raw.color;
+  }
+  var rawFamily = raw.family !== undefined ? raw.family : raw.fontFamily;
+  var rawWeight = raw.weight !== undefined ? raw.weight : raw.fontWeight;
+  var rawStyle = raw.style !== undefined ? raw.style : raw.fontStyle;
+  var family = canonicalAppearanceEnum(rawFamily, APPEARANCE_FAMILY_VALUES, APPEARANCE_FAMILY_ALIASES);
+  var weight = canonicalAppearanceEnum(rawWeight, APPEARANCE_WEIGHT_VALUES, APPEARANCE_WEIGHT_ALIASES);
+  var style = canonicalAppearanceEnum(rawStyle, APPEARANCE_STYLE_VALUES, {});
+  if (family) out.family = family;
+  if (weight) out.weight = weight;
+  if (style) out.style = style;
+  return out;
+}
+
+/**
+ * Validate/migrate the deck-local appearance object. Missing appearance
+ * (including every pre-appearance stored settings blob) becomes defaults;
+ * malformed roles or leaves do not poison valid sibling values.
+ * @param {*} raw
+ * @returns {{primary:object, secondary:object, preview:object, interface:object}}
+ */
+function sanitizeAppearance(raw) {
+  var out = defaultAppearance();
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (var i = 0; i < APPEARANCE_ROLE_NAMES.length; i++) {
+    var role = APPEARANCE_ROLE_NAMES[i];
+    out[role] = sanitizeAppearanceLeaf(raw[role], out[role]);
+  }
+  return out;
+}
+
+/**
+ * Map an existing KeyFace band to a semantic appearance role. The mapping is
+ * deliberately based on the rendered meaning, not on arbitrary CSS selectors:
+ * session names and main action/control bodies are primary; activity,
+ * device/status text, and control names are secondary; terminal snapshots
+ * are preview; settings/recovery chrome is interface.
+ * @param {string} faceRole
+ * @param {'name'|'body'|'state'|'preview'|'interface'} part
+ * @returns {'primary'|'secondary'|'preview'|'interface'}
+ */
+function appearanceRoleForFace(faceRole, part) {
+  if (part === 'preview') return 'preview';
+  if (part === 'interface') return 'interface';
+  if (part === 'state') return 'secondary';
+  if (part === 'name') return faceRole === 'session' ? 'primary' : 'secondary';
+  if (part === 'body') {
+    return faceRole === 'session' || faceRole === 'status' ? 'secondary' : 'primary';
+  }
+  return 'interface';
+}
+
 /**
  * Classify liveness/staleness from the age of the last successful poll.
  * `lastOk` is a boolean -- a request in flight or errored counts as "not ok"
@@ -1014,6 +1177,7 @@ function defaultDeckSettings() {
     stripCount: 0, // 0-4 touch-strip zones (independent of dialCount)
     previewFontSize: 11, // px, 8-20 -- drives --texture (the key-preview TEXTURE font)
     zoom: 1.0, // 0.75-1.5 -- scales the whole key face (primary/secondary/texture + cell size)
+    appearance: defaultAppearance(), // deck-local text roles; absent on old stored blobs
     brightness: 100, // 10-100, session-local, never persisted -- see persistableDeckSettings
     bindings: {}, // address (key.N | dial.N.turn | dial.N.push | strip.N.tap | strip.N.drag | strip.swipe.left | strip.swipe.right) -> action
     // Pairing target (docs/plans/2026-08-16-deck-control-target-design.md
@@ -1081,6 +1245,10 @@ function mergeDeckSettings(defaults, incoming) {
   if (typeof incoming.zoom === 'number' && incoming.zoom >= 0.75 && incoming.zoom <= 1.5) {
     out.zoom = incoming.zoom;
   }
+  // Appearance is deliberately merged leaf-by-leaf. This preserves valid
+  // role siblings when one imported/storage leaf is malformed, and turns an
+  // absent appearance object into the backward-compatible defaults.
+  out.appearance = sanitizeAppearance(incoming.appearance);
   out.bindings = sanitizeBindings(incoming.bindings);
   out.follows = sanitizeFollows(incoming.follows);
   return out;
@@ -2644,6 +2812,8 @@ if (typeof document !== 'undefined') {
     var pickerKind = 'view'; // 'view' | 'page' -- which generic-picker flavor is open
     var page = 0; // current session grid page
     var pickerPage = 0; // current view/page-picker page
+    var keyMapPage = 0; // current settings binding key-map page
+    var KEY_MAP_PAGE_SIZE = 16; // keep the keyboard/touch cells at least 48px
     var grid = null; // last computeGrid()/computeEffectiveGrid() result
     var allSessionsAnnotated = []; // last-known LOCAL federation-tagged payload (full objects, with `views`) -- used only for picker view/hidden counts
     var reserved = null; // last reservedControlKeys() result
@@ -3327,6 +3497,38 @@ if (typeof document !== 'undefined') {
       // brightness, including the 10% floor. See
       // docs/plans/2026-08-06-settings-recovery-plan.md \u00a76.1.
       root.style.setProperty('--deck-dim', String(deckSettings.brightness / 100));
+    }
+
+    function applyAppearance() {
+      var appearance = sanitizeAppearance(deckSettings.appearance);
+      deckSettings.appearance = appearance;
+      var styles = [root.style];
+      if (settingsEl) styles.push(settingsEl.style);
+      for (var i = 0; i < APPEARANCE_ROLE_NAMES.length; i++) {
+        var role = APPEARANCE_ROLE_NAMES[i];
+        var leaf = appearance[role];
+        var scaleName = '--appearance-' + role + '-scale';
+        var colorName = '--appearance-' + role + '-color';
+        var familyName = '--appearance-' + role + '-family';
+        var weightName = '--appearance-' + role + '-weight';
+        var styleName = '--appearance-' + role + '-style';
+        for (var j = 0; j < styles.length; j++) {
+          styles[j].setProperty(scaleName, String(leaf.scale));
+          // Do not set a null color variable. Selector-specific CSS fallbacks
+          // retain the exact existing colors when no override is requested.
+          if (leaf.color) styles[j].setProperty(colorName, leaf.color);
+          else styles[j].removeProperty(colorName);
+          // "component" deliberately removes the override instead of writing
+          // a CSS keyword. Each consuming selector owns its old typography as
+          // the fallback, so a session title stays bold and a preview stays
+          // mono when the user has not opted into a role-wide override.
+          if (leaf.family === 'component') styles[j].removeProperty(familyName);
+          else styles[j].setProperty(familyName, APPEARANCE_FAMILY_CSS[leaf.family]);
+          if (leaf.weight === 'component') styles[j].removeProperty(weightName);
+          else styles[j].setProperty(weightName, APPEARANCE_WEIGHT_CSS[leaf.weight]);
+          styles[j].setProperty(styleName, APPEARANCE_STYLE_CSS[leaf.style]);
+        }
+      }
     }
 
     function applyGridTokens(g, t) {
@@ -4674,6 +4876,36 @@ if (typeof document !== 'undefined') {
       if (brightInput) brightInput.value = String(deckSettings.brightness);
       if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
 
+      var appearance = sanitizeAppearance(deckSettings.appearance);
+      for (var ai = 0; ai < APPEARANCE_ROLE_NAMES.length; ai++) {
+        var appearanceRole = APPEARANCE_ROLE_NAMES[ai];
+        var appearanceLeaf = appearance[appearanceRole];
+        var appearanceScaleInput = settingsEl.querySelector(
+          '#settings-appearance-' + appearanceRole + '-scale'
+        );
+        var appearanceColorInput = settingsEl.querySelector(
+          '#settings-appearance-' + appearanceRole + '-color'
+        );
+        var appearanceFamilySelect = settingsEl.querySelector(
+          '#settings-appearance-' + appearanceRole + '-family'
+        );
+        var appearanceWeightSelect = settingsEl.querySelector(
+          '#settings-appearance-' + appearanceRole + '-weight'
+        );
+        var appearanceStyleSelect = settingsEl.querySelector(
+          '#settings-appearance-' + appearanceRole + '-style'
+        );
+        var appearanceError = settingsEl.querySelector(
+          '#settings-appearance-' + appearanceRole + '-error'
+        );
+        if (appearanceScaleInput) appearanceScaleInput.value = String(appearanceLeaf.scale);
+        if (appearanceColorInput) appearanceColorInput.value = appearanceLeaf.color || '';
+        if (appearanceFamilySelect) appearanceFamilySelect.value = appearanceLeaf.family;
+        if (appearanceWeightSelect) appearanceWeightSelect.value = appearanceLeaf.weight;
+        if (appearanceStyleSelect) appearanceStyleSelect.value = appearanceLeaf.style;
+        if (appearanceError) appearanceError.textContent = '';
+      }
+
       renderKeyMap();
       renderBindingsList();
       renderFollowsUI();
@@ -4696,12 +4928,20 @@ if (typeof document !== 'undefined') {
       if (!settingsEl) return;
       var mapEl = settingsEl.querySelector('#settings-key-map');
       var noteEl = settingsEl.querySelector('#settings-key-map-note');
+      var controlsEl = settingsEl.querySelector('#settings-key-map-controls');
+      var previousBtn = settingsEl.querySelector('#settings-key-map-previous');
+      var nextBtn = settingsEl.querySelector('#settings-key-map-next');
+      var pageEl = settingsEl.querySelector('#settings-key-map-page');
       if (!mapEl) return;
       mapEl.innerHTML = '';
       var shape = shapeNow();
       var reserved = reservedControlKeys(shape.rows, shape.cols);
       var boundKeys = keyBindingsFromConfig(deckSettings.bindings, shape.rows * shape.cols);
       var count = shape.rows * shape.cols;
+      var pageCount = Math.max(1, Math.ceil(count / KEY_MAP_PAGE_SIZE));
+      keyMapPage = Math.min(Math.max(keyMapPage, 0), pageCount - 1);
+      var firstIndex = keyMapPage * KEY_MAP_PAGE_SIZE;
+      var lastIndex = Math.min(count, firstIndex + KEY_MAP_PAGE_SIZE);
 
       if (noteEl) {
         if (shape.tooSmall) {
@@ -4717,34 +4957,53 @@ if (typeof document !== 'undefined') {
         }
       }
 
-      mapEl.style.gridTemplateColumns = 'repeat(' + Math.max(1, shape.cols) + ', 1fr)';
-      mapEl.style.gridTemplateRows = 'repeat(' + Math.max(1, shape.rows) + ', 1fr)';
+      // This settings picker uses responsive tracks, unlike the live deck.
+      // Pagination plus minmax() keeps every interactive cell at least 48px.
+      mapEl.style.gridTemplateColumns = 'repeat(auto-fit, minmax(48px, 1fr))';
+      mapEl.style.gridTemplateRows = '';
+      if (controlsEl) controlsEl.classList.toggle('hidden', pageCount <= 1);
+      if (previousBtn) previousBtn.disabled = keyMapPage <= 0;
+      if (nextBtn) nextBtn.disabled = keyMapPage >= pageCount - 1;
+      if (pageEl) {
+        pageEl.textContent =
+          count === 0
+            ? 'No keys'
+            : 'Keys ' + firstIndex + '\u2013' + (lastIndex - 1) + ' \u00b7 page ' + (keyMapPage + 1) + ' of ' + pageCount;
+      }
 
-      for (var i = 0; i < count; i++) {
+      for (var i = firstIndex; i < lastIndex; i++) {
         (function (index) {
-          var cell = document.createElement('div');
+          // Native button semantics provide an accessible role and keyboard
+          // activation while preserving the existing click behavior.
+          var cell = document.createElement('button');
+          cell.type = 'button';
           cell.className = 'settings-key-map-cell';
           var tag = '\u00b7';
+          var accessibleTag = 'unbound';
           if (reserved.view === index) {
             tag = 'VIEW';
+            accessibleTag = 'VIEW control';
             cell.classList.add('settings-key-map-cell--reserved');
           } else if (reserved.prev === index) {
             tag = 'PREV';
+            accessibleTag = 'PREV control';
             cell.classList.add('settings-key-map-cell--reserved');
           } else if (reserved.next === index) {
             tag = 'NEXT';
+            accessibleTag = 'NEXT control';
             cell.classList.add('settings-key-map-cell--reserved');
           } else if (Object.prototype.hasOwnProperty.call(boundKeys, index)) {
             tag = boundKeys[index];
+            accessibleTag = 'bound action ' + tag;
             cell.classList.add('settings-key-map-cell--bound');
           }
+          cell.setAttribute('aria-label', 'Key ' + index + ', ' + accessibleTag);
           var idxEl = document.createElement('div');
           idxEl.textContent = String(index);
           var tagEl = document.createElement('div');
           tagEl.textContent = tag;
           cell.appendChild(idxEl);
           cell.appendChild(tagEl);
-          cell.setAttribute('role', 'listitem');
           cell.addEventListener('click', function () {
             var addrInput = settingsEl.querySelector('#settings-add-address');
             if (!addrInput) return;
@@ -4857,6 +5116,23 @@ if (typeof document !== 'undefined') {
 
       var closeBtn = settingsEl.querySelector('#settings-close');
       if (closeBtn) closeBtn.addEventListener('click', closeSettings);
+      var doneBtn = settingsEl.querySelector('#settings-done');
+      if (doneBtn) doneBtn.addEventListener('click', closeSettings);
+
+      var previousKeyMapBtn = settingsEl.querySelector('#settings-key-map-previous');
+      if (previousKeyMapBtn) {
+        previousKeyMapBtn.addEventListener('click', function () {
+          keyMapPage -= 1;
+          renderKeyMap();
+        });
+      }
+      var nextKeyMapBtn = settingsEl.querySelector('#settings-key-map-next');
+      if (nextKeyMapBtn) {
+        nextKeyMapBtn.addEventListener('click', function () {
+          keyMapPage += 1;
+          renderKeyMap();
+        });
+      }
 
       var resetBtn = settingsEl.querySelector('#settings-reset');
       if (resetBtn) {
@@ -4864,8 +5140,105 @@ if (typeof document !== 'undefined') {
           deckSettings = defaultDeckSettings();
           saveDeckSettings(storage, deckSettings);
           applyBrightness();
+          applyAppearance();
           populateSettingsForm();
         });
+      }
+
+      var appearanceResetBtn = settingsEl.querySelector('#settings-appearance-reset');
+      if (appearanceResetBtn) {
+        appearanceResetBtn.addEventListener('click', function () {
+          deckSettings.appearance = defaultAppearance();
+          saveDeckSettings(storage, deckSettings);
+          applyAppearance();
+          populateSettingsForm();
+        });
+      }
+
+      for (var appearanceIndex = 0; appearanceIndex < APPEARANCE_ROLE_NAMES.length; appearanceIndex++) {
+        (function (role) {
+          var scaleInput = settingsEl.querySelector('#settings-appearance-' + role + '-scale');
+          var colorInput = settingsEl.querySelector('#settings-appearance-' + role + '-color');
+          var familySelect = settingsEl.querySelector('#settings-appearance-' + role + '-family');
+          var weightSelect = settingsEl.querySelector('#settings-appearance-' + role + '-weight');
+          var styleSelect = settingsEl.querySelector('#settings-appearance-' + role + '-style');
+          var errorEl = settingsEl.querySelector('#settings-appearance-' + role + '-error');
+
+          function setAppearanceError(message) {
+            if (errorEl) errorEl.textContent = message;
+            if (scaleInput) scaleInput.setAttribute('aria-invalid', message ? 'true' : 'false');
+            if (colorInput) colorInput.setAttribute('aria-invalid', message ? 'true' : 'false');
+            if (familySelect) familySelect.setAttribute('aria-invalid', message ? 'true' : 'false');
+            if (weightSelect) weightSelect.setAttribute('aria-invalid', message ? 'true' : 'false');
+            if (styleSelect) styleSelect.setAttribute('aria-invalid', message ? 'true' : 'false');
+          }
+
+          function saveAppearanceLeaf(next) {
+            deckSettings.appearance = next;
+            saveDeckSettings(storage, deckSettings);
+            applyAppearance();
+            var exportArea = settingsEl.querySelector('#settings-export');
+            if (exportArea) exportArea.value = exportSettingsJSON(deckSettings);
+            setAppearanceError('');
+          }
+
+          if (scaleInput) {
+            scaleInput.addEventListener('change', function () {
+              var value = Number(scaleInput.value);
+              var next = sanitizeAppearance(deckSettings.appearance);
+              if (
+                !Number.isFinite(value) ||
+                value < APPEARANCE_SCALE_MIN ||
+                value > APPEARANCE_SCALE_MAX
+              ) {
+                scaleInput.value = String(next[role].scale);
+                setAppearanceError(
+                  'Scale must be between ' +
+                    APPEARANCE_SCALE_MIN +
+                    ' and ' +
+                    APPEARANCE_SCALE_MAX +
+                    '.'
+                );
+                return;
+              }
+              next[role].scale = value;
+              saveAppearanceLeaf(next);
+            });
+          }
+
+          if (colorInput) {
+            colorInput.addEventListener('change', function () {
+              var value = colorInput.value.trim();
+              var next = sanitizeAppearance(deckSettings.appearance);
+              if (value !== '' && !isAppearanceHexColor(value)) {
+                colorInput.value = next[role].color || '';
+                setAppearanceError('Color must be empty or a six-digit hex value such as #RRGGBB.');
+                return;
+              }
+              next[role].color = value === '' ? null : value;
+              saveAppearanceLeaf(next);
+            });
+          }
+
+          function wireAppearanceSelect(input, field, values, aliases, label) {
+            if (!input) return;
+            input.addEventListener('change', function () {
+              var next = sanitizeAppearance(deckSettings.appearance);
+              var value = canonicalAppearanceEnum(input.value, values, aliases);
+              if (!value) {
+                input.value = next[role][field];
+                setAppearanceError('Font ' + label + ' must use one of the listed options.');
+                return;
+              }
+              next[role][field] = value;
+              saveAppearanceLeaf(next);
+            });
+          }
+
+          wireAppearanceSelect(familySelect, 'family', APPEARANCE_FAMILY_VALUES, APPEARANCE_FAMILY_ALIASES, 'family');
+          wireAppearanceSelect(weightSelect, 'weight', APPEARANCE_WEIGHT_VALUES, APPEARANCE_WEIGHT_ALIASES, 'weight');
+          wireAppearanceSelect(styleSelect, 'style', APPEARANCE_STYLE_VALUES, {}, 'style');
+        })(APPEARANCE_ROLE_NAMES[appearanceIndex]);
       }
 
       var followsSel = settingsEl.querySelector('#settings-follows');
@@ -5097,6 +5470,7 @@ if (typeof document !== 'undefined') {
           deckSettings = result.settings;
           saveDeckSettings(storage, deckSettings);
           applyBrightness();
+          applyAppearance();
           populateSettingsForm();
           // A WARNING, not a refusal: import is a restore path, and refusing
           // a whole blob over one field would contradict mergeDeckSettings's
@@ -5147,9 +5521,10 @@ if (typeof document !== 'undefined') {
     // ── Boot ──
 
     function boot() {
-      applyBrightness();
-      wireTouchStrip();
       var wantsSettings = checkURLEscapeHatch();
+      applyBrightness();
+      applyAppearance();
+      wireTouchStrip();
       recomputeGrid();
       render();
       // Boot-time reachability detector (\u00a76.3): if the persisted settings
@@ -5238,6 +5613,14 @@ if (typeof module !== 'undefined' && module.exports) {
     dialDragTicks: dialDragTicks,
     isDialTap: isDialTap,
     applyRelativeTicks: applyRelativeTicks,
+    APPEARANCE_SCALE_MIN: APPEARANCE_SCALE_MIN,
+    APPEARANCE_SCALE_MAX: APPEARANCE_SCALE_MAX,
+    APPEARANCE_ROLE_NAMES: APPEARANCE_ROLE_NAMES,
+    defaultAppearance: defaultAppearance,
+    isAppearanceHexColor: isAppearanceHexColor,
+    sanitizeAppearanceLeaf: sanitizeAppearanceLeaf,
+    sanitizeAppearance: sanitizeAppearance,
+    appearanceRoleForFace: appearanceRoleForFace,
     defaultDeckSettings: defaultDeckSettings,
     mergeDeckSettings: mergeDeckSettings,
     loadDeckSettings: loadDeckSettings,

@@ -91,8 +91,188 @@
            property whose absence caused the 2026-07 incident this whole area
            of work exists to prevent. Never repairs anything; only explains. -->
       <div id="settings-recovery-banner" class="hidden" role="alert"></div>
-      <button type="button" id="settings-close">&larr; BACK</button>
-      <h1>Deck Settings</h1>
+      <header id="settings-header">
+        <button type="button" id="settings-close" aria-label="Back to deck">&larr; BACK</button>
+        <h1 id="settings-title">Deck Settings</h1>
+        <button type="button" id="settings-done">DONE</button>
+      </header>
+
+      <details class="settings-group settings-appearance" open>
+        <summary>Appearance</summary>
+        <p class="settings-appearance-intro">
+          Deck-local text controls. Scale stays within a readable range; colors accept only six-digit hex values.
+          Font choices are limited to portable component, system, and monospace options.
+        </p>
+        <div class="settings-appearance-samples" aria-label="Appearance samples">
+          <div class="settings-appearance-sample">
+            <span class="settings-appearance-sample-label">Primary</span>
+            <span class="settings-appearance-sample-primary">Session title / action</span>
+          </div>
+          <div class="settings-appearance-sample">
+            <span class="settings-appearance-sample-label">Secondary</span>
+            <span class="settings-appearance-sample-secondary">Device · 4m · state</span>
+          </div>
+          <div class="settings-appearance-sample">
+            <span class="settings-appearance-sample-label">Preview</span>
+            <span class="settings-appearance-sample-preview">terminal preview</span>
+          </div>
+          <div class="settings-appearance-sample">
+            <span class="settings-appearance-sample-label">Interface</span>
+            <span class="settings-appearance-sample-interface">Settings controls</span>
+          </div>
+        </div>
+        <details class="settings-appearance-role" open>
+          <summary>Primary text</summary>
+          <div class="settings-appearance-role-fields">
+            <label>Scale
+              <input type="number" id="settings-appearance-primary-scale"
+                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
+            </label>
+            <label>Color override
+              <input type="text" id="settings-appearance-primary-color"
+                placeholder="#RRGGBB" maxlength="7" inputmode="text"
+                autocomplete="off" spellcheck="false" />
+            </label>
+            <label>Font family
+              <select id="settings-appearance-primary-family">
+                <option value="component">Component default</option>
+                <option value="system">System</option>
+                <option value="mono">Monospace</option>
+              </select>
+            </label>
+            <label>Font weight
+              <select id="settings-appearance-primary-weight">
+                <option value="component">Component default</option>
+                <option value="normal">Normal (400)</option>
+                <option value="medium">Medium (500)</option>
+                <option value="semibold">Semibold (600)</option>
+                <option value="bold">Bold (700)</option>
+              </select>
+            </label>
+            <label>Font style
+              <select id="settings-appearance-primary-style">
+                <option value="normal">Normal</option>
+                <option value="italic">Italic</option>
+              </select>
+            </label>
+          </div>
+          <p id="settings-appearance-primary-error" class="settings-error" aria-live="polite"></p>
+        </details>
+        <details class="settings-appearance-role">
+          <summary>Secondary text</summary>
+          <div class="settings-appearance-role-fields">
+            <label>Scale
+              <input type="number" id="settings-appearance-secondary-scale"
+                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
+            </label>
+            <label>Color override
+              <input type="text" id="settings-appearance-secondary-color"
+                placeholder="#RRGGBB" maxlength="7" inputmode="text"
+                autocomplete="off" spellcheck="false" />
+            </label>
+            <label>Font family
+              <select id="settings-appearance-secondary-family">
+                <option value="component">Component default</option>
+                <option value="system">System</option>
+                <option value="mono">Monospace</option>
+              </select>
+            </label>
+            <label>Font weight
+              <select id="settings-appearance-secondary-weight">
+                <option value="component">Component default</option>
+                <option value="normal">Normal (400)</option>
+                <option value="medium">Medium (500)</option>
+                <option value="semibold">Semibold (600)</option>
+                <option value="bold">Bold (700)</option>
+              </select>
+            </label>
+            <label>Font style
+              <select id="settings-appearance-secondary-style">
+                <option value="normal">Normal</option>
+                <option value="italic">Italic</option>
+              </select>
+            </label>
+          </div>
+          <p id="settings-appearance-secondary-error" class="settings-error" aria-live="polite"></p>
+        </details>
+        <details class="settings-appearance-role">
+          <summary>Preview text</summary>
+          <div class="settings-appearance-role-fields">
+            <label>Scale
+              <input type="number" id="settings-appearance-preview-scale"
+                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
+            </label>
+            <label>Color override
+              <input type="text" id="settings-appearance-preview-color"
+                placeholder="#RRGGBB" maxlength="7" inputmode="text"
+                autocomplete="off" spellcheck="false" />
+            </label>
+            <label>Font family
+              <select id="settings-appearance-preview-family">
+                <option value="component">Component default</option>
+                <option value="system">System</option>
+                <option value="mono">Monospace</option>
+              </select>
+            </label>
+            <label>Font weight
+              <select id="settings-appearance-preview-weight">
+                <option value="component">Component default</option>
+                <option value="normal">Normal (400)</option>
+                <option value="medium">Medium (500)</option>
+                <option value="semibold">Semibold (600)</option>
+                <option value="bold">Bold (700)</option>
+              </select>
+            </label>
+            <label>Font style
+              <select id="settings-appearance-preview-style">
+                <option value="normal">Normal</option>
+                <option value="italic">Italic</option>
+              </select>
+            </label>
+          </div>
+          <p id="settings-appearance-preview-error" class="settings-error" aria-live="polite"></p>
+        </details>
+        <details class="settings-appearance-role">
+          <summary>Interface text</summary>
+          <div class="settings-appearance-role-fields">
+            <label>Scale
+              <input type="number" id="settings-appearance-interface-scale"
+                min="0.75" max="1.5" step="0.05" inputmode="decimal" />
+            </label>
+            <label>Color override
+              <input type="text" id="settings-appearance-interface-color"
+                placeholder="#RRGGBB" maxlength="7" inputmode="text"
+                autocomplete="off" spellcheck="false" />
+            </label>
+            <label>Font family
+              <select id="settings-appearance-interface-family">
+                <option value="component">Component default</option>
+                <option value="system">System</option>
+                <option value="mono">Monospace</option>
+              </select>
+            </label>
+            <label>Font weight
+              <select id="settings-appearance-interface-weight">
+                <option value="component">Component default</option>
+                <option value="normal">Normal (400)</option>
+                <option value="medium">Medium (500)</option>
+                <option value="semibold">Semibold (600)</option>
+                <option value="bold">Bold (700)</option>
+              </select>
+            </label>
+            <label>Font style
+              <select id="settings-appearance-interface-style">
+                <option value="normal">Normal</option>
+                <option value="italic">Italic</option>
+              </select>
+            </label>
+          </div>
+          <p id="settings-appearance-interface-error" class="settings-error" aria-live="polite"></p>
+        </details>
+        <div class="settings-appearance-reset-row">
+          <button type="button" id="settings-appearance-reset">Reset appearance</button>
+        </div>
+      </details>
 
       <!-- Pairing target picker (docs/plans/2026-08-16-deck-control-target-design.md
            \u00a79.1/\u00a79.3 -- Step 3, "prototype the UX here first"). Options are built
@@ -103,58 +283,58 @@
            shape \u00a79.1 specifies, using a plain, accessible, cross-browser
            <optgroup> rather than custom markup. Local section only -- no
            federated/"Elsewhere" section in this step (\u00a710 Step 6). -->
-      <section>
-        <h2>Follows</h2>
+      <details class="settings-group">
+        <summary>Follows</summary>
         <p>Which device's active session/view this Soft Deck controls and highlights.</p>
         <label>Follows
           <select id="settings-follows"></select>
         </label>
         <p id="settings-follows-error" class="settings-error"></p>
-      </section>
+      </details>
 
-      <section>
-        <h2>Session order</h2>
+      <details class="settings-group">
+        <summary>Session order</summary>
         <label>Sort
           <select id="settings-sort">
             <option value="attention">Attention (needs-attention first)</option>
             <option value="server">Server (dashboard's own order)</option>
           </select>
         </label>
-      </section>
+      </details>
 
-      <section>
-        <h2>Polling</h2>
+      <details class="settings-group">
+        <summary>Polling</summary>
         <label>Poll interval (ms)
           <input type="number" id="settings-poll" min="500" max="60000" step="100" />
         </label>
-      </section>
+      </details>
 
-      <section>
-        <h2>Grid layout</h2>
+      <details class="settings-group">
+        <summary>Grid layout</summary>
         <p>Per-device key grid override. Leave blank for automatic (viewport-derived) sizing.</p>
         <label>Rows <input type="number" id="settings-rows" min="1" max="12" /></label>
         <label>Cols <input type="number" id="settings-cols" min="1" max="12" /></label>
         <button type="button" id="settings-grid-auto">Auto</button>
         <p id="settings-grid-error" class="settings-error"></p>
-      </section>
+      </details>
 
-      <section>
-        <h2>Dials</h2>
+      <details class="settings-group">
+        <summary>Dials</summary>
         <label>Dial count (0-4)
           <input type="number" id="settings-dial-count" min="0" max="4" />
         </label>
-      </section>
+      </details>
 
-      <section>
-        <h2>Touch strip</h2>
+      <details class="settings-group">
+        <summary>Touch strip</summary>
         <p>Zones support tap (momentary) and drag (tick-based or, for <code>brightness_set</code>, absolute); the whole strip also supports a left/right swipe independent of any zone.</p>
         <label>Strip zone count (0-4)
           <input type="number" id="settings-strip-count" min="0" max="4" />
         </label>
-      </section>
+      </details>
 
-      <section>
-        <h2>Preview</h2>
+      <details class="settings-group">
+        <summary>Preview</summary>
         <label>Preview font size (8-20px)
           <input type="number" id="settings-preview-font-size" min="8" max="20" />
         </label>
@@ -162,22 +342,27 @@
           <input type="number" id="settings-zoom" min="0.75" max="1.5" step="0.05" />
         </label>
         <p>Per-device, like the grid/dial/strip settings above &mdash; not synced across decks.</p>
-      </section>
+      </details>
 
-      <section>
-        <h2>Brightness</h2>
+      <details class="settings-group">
+        <summary>Brightness</summary>
         <label>Brightness (10-100%)
           <input type="range" id="settings-brightness" min="10" max="100" />
         </label>
         <p>Session only &mdash; resets to 100% when the deck restarts, like the hardware deck.</p>
-      </section>
+      </details>
 
-      <section>
-        <h2>Key/dial/strip bindings</h2>
+      <details class="settings-group">
+        <summary>Key/dial/strip bindings</summary>
         <p>Address form: <code>key.N</code>, <code>dial.N.turn</code>, <code>dial.N.push</code>, <code>strip.N.tap</code>, <code>strip.N.drag</code>, <code>strip.swipe.left</code>, <code>strip.swipe.right</code>.</p>
-        <p>Tap a key below to fill the address field.</p>
+        <p>Activate a key below with touch or keyboard to fill the address field. Pages keep every key at a usable touch target.</p>
         <p id="settings-key-map-note" class="settings-error"></p>
-        <div id="settings-key-map" class="settings-key-map" role="list" aria-label="key addresses"></div>
+        <div id="settings-key-map" class="settings-key-map" role="group" aria-label="key addresses"></div>
+        <div id="settings-key-map-controls" class="settings-key-map-controls hidden" role="group" aria-label="Key map pages">
+          <button type="button" id="settings-key-map-previous" aria-label="Previous key map page">Previous</button>
+          <span id="settings-key-map-page" aria-live="polite"></span>
+          <button type="button" id="settings-key-map-next" aria-label="Next key map page">Next</button>
+        </div>
         <div id="settings-bindings-list"></div>
         <div class="settings-add-binding">
           <input type="text" id="settings-add-address" placeholder="key.3" />
@@ -186,24 +371,25 @@
         </div>
         <p id="settings-add-error" class="settings-error"></p>
         <p id="settings-bindings-warning" class="settings-error"></p>
-      </section>
+      </details>
 
-      <section>
-        <h2>Export</h2>
+      <details class="settings-group">
+        <summary>Export</summary>
         <textarea id="settings-export" readonly rows="6"></textarea>
         <button type="button" id="settings-export-copy">Copy</button>
-      </section>
+      </details>
 
-      <section>
-        <h2>Import</h2>
+      <details class="settings-group">
+        <summary>Import</summary>
         <textarea id="settings-import" rows="6" placeholder="Paste exported settings JSON here"></textarea>
         <button type="button" id="settings-import-apply">Apply</button>
         <p id="settings-import-error" class="settings-error"></p>
-      </section>
+      </details>
 
-      <section>
+      <details class="settings-group">
+        <summary>Reset</summary>
         <button type="button" id="settings-reset">Reset to defaults</button>
-      </section>
+      </details>
     </div>
   </div>
 

@@ -599,7 +599,7 @@ blocked, and the trade changes.
 | **Importing `layout.py` across repos** | A packaging dependency for ~40 lines of arithmetic. Port the rule, defend it with a shared golden fixture. §3.1. |
 | **A native Android app / TWA** | Already settled in `SOFT_DECK_DESIGN.md` §3. Fullscreen + forced orientation + wake lock are all available to an installed PWA; the residual native win is haptics on iOS, which is not the target. |
 | **Per-device breakpoints or a size-class table** | `f(viewport, density)` covers every case including ones that don't exist yet, and §5.4 shows portrait needs no branch. |
-| **An override/config surface in v1** | A second configuration surface for a five-entry default table. Dispatch by action name so it stays additive. §3.2. |
+| **A server-side override/config surface in v1** | A second configuration surface for a five-entry default table. The deck-local `deckSettings.appearance` extension is intentionally not server-synced and stays within the existing local settings surface. Dispatch by action name so it stays additive. §3.2. |
 | **`brightness_*` and `focus_app`** | The browser owns neither screen brightness nor OS foreground. |
 | **Caching in the service worker** | This surface is useless offline by design. A cache would only manufacture stale-state risk in a project that has shipped five such bugs. |
 | **An icon set, gradients, rounded corners, drop shadows** | Inherited rejection from `KEY_DESIGN_SYSTEM.md` §7. The original reason (PIL cost) is gone; the conclusion isn't. Six ASCII words already work. |
@@ -644,3 +644,26 @@ the only genuinely new risk this medium introduces.
 
 **A phone is a deck with `dial_count = 0`, `is_touch = false`, and an `R × C` derived from
 its own viewport — and once you say that, there is almost nothing left to design.**
+
+---
+
+## 14. Addendum — deck-local appearance settings
+
+The “v1 ships defaults only — no override surface” decision in §3.2 is amended only for
+appearance. The soft deck now exposes a typed, deck-local `deckSettings.appearance` object; it
+is not a server setting, API field, or PWA setting. It contains the semantic text roles
+`primary`, `secondary`, `preview`, and `interface`. Each role has a bounded scale (default `1`),
+an optional six-digit hex color override, a finite family (`component`, `system`, or `mono`), a
+finite weight (`component`, `normal`, `medium`, `semibold`, or `bold`), and a style (`normal` or
+`italic`). Missing or invalid leaves migrate independently to defaults. The `component` family and
+weight values remove the role override so each selector retains its existing typography: in
+particular, session titles remain bold and preview text remains monospace by default.
+
+The values are applied through component-scoped CSS custom properties, not arbitrary CSS or
+user-supplied font input; only the finite family/weight/style lookup values reach CSS. The existing
+`previewFontSize` and `zoom` settings keep their meanings. The settings surface keeps a visible
+sample for every role, exposes accessible native selects for the three typography controls,
+supports leaf-level export/import and appearance-only reset, and uses a safe-area-aware sticky
+Back/Done header with touch-sized controls for phone use. Attention-state key names continue to
+use their state-owned dark ink regardless of appearance overrides. These controls intentionally do
+not alter the server settings contract or the PWA application.

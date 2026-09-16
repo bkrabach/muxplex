@@ -253,16 +253,19 @@ html, body {
   justify-content: center;
   text-align: center;
   padding: 0 var(--m);
-  font-size: var(--secondary);
-  font-weight: 500; /* SECONDARY weight -- \u00a74.2: weight becomes available */
-  color: #8888AA;
+  font-size: calc(var(--secondary) * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 500); /* SECONDARY weight -- \u00a74.2 */
+  color: var(--appearance-secondary-color, #8888AA);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Attention = NAME band fills amber, ink inverts to black -- 10.4:1
-   contrast. Outranks active. (KEY_DESIGN_SYSTEM.md \u00a73) */
+/* Attention = NAME band fills amber, ink is state-owned black -- 10.4:1
+   contrast. Outranks active; user primary/secondary colors cannot override it.
+   (KEY_DESIGN_SYSTEM.md \u00a73) */
 .deck-key.needs-attention .key-name {
   background: #F1A640;
   color: #000000;
@@ -272,9 +275,11 @@ html, body {
    PRIMARY -- KEY_DESIGN_SYSTEM.md \u00a76.1), on a translucent band over the
    preview field. */
 .deck-key.is-session .key-name {
-  font-size: var(--primary);
-  font-weight: 600; /* PRIMARY weight */
-  color: #FFFFFF;
+  font-size: calc(var(--primary) * var(--appearance-primary-scale, 1));
+  font-family: var(--appearance-primary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-primary-style, normal);
+  font-weight: var(--appearance-primary-weight, 600); /* PRIMARY weight */
+  color: var(--appearance-primary-color, #FFFFFF);
   background: rgba(0, 0, 0, 0.76);
 }
 .deck-key.is-session.needs-attention .key-name {
@@ -290,11 +295,13 @@ html, body {
   flex-direction: column;
   justify-content: flex-end;
   padding: 0 var(--m) var(--state-h);
-  font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
-  font-size: var(--texture); /* TEXTURE: never scales with S -- user-configurable via
+  font-family: var(--appearance-preview-family, "SF Mono", "Fira Code", "Consolas", "Menlo", monospace);
+  font-style: var(--appearance-preview-style, normal);
+  font-weight: var(--appearance-preview-weight, 400);
+  font-size: calc(var(--texture) * var(--appearance-preview-scale, 1)); /* TEXTURE: never scales with S -- user-configurable via
      deckSettings.previewFontSize (default 11px) and deckSettings.zoom (see deriveTokens()) */
   line-height: 1.3;
-  color: #7A7A7A; /* least important thing on the face; not the highest-contrast */
+  color: var(--appearance-preview-color, #7A7A7A); /* least important thing on the face; not the highest-contrast */
   white-space: pre;
   overflow: hidden;
   pointer-events: none;
@@ -309,9 +316,11 @@ html, body {
   justify-content: center;
   text-align: center;
   padding: 0 var(--m);
-  font-size: var(--primary);
-  font-weight: 600; /* PRIMARY weight */
-  color: #FFFFFF;
+  font-size: calc(var(--primary) * var(--appearance-primary-scale, 1));
+  font-family: var(--appearance-primary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-primary-style, normal);
+  font-weight: var(--appearance-primary-weight, 600); /* PRIMARY weight */
+  color: var(--appearance-primary-color, #FFFFFF);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -327,9 +336,11 @@ html, body {
   justify-content: center;
   text-align: center;
   padding: 0 var(--m);
-  font-size: var(--secondary);
-  font-weight: 400; /* SECONDARY/TEXTURE weight */
-  color: #8888AA;
+  font-size: calc(var(--secondary) * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 400); /* SECONDARY/TEXTURE weight */
+  color: var(--appearance-secondary-color, #8888AA);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -337,8 +348,8 @@ html, body {
 }
 
 .deck-key.is-failed .key-state {
-  color: #f85149;
-  font-weight: 600;
+  color: var(--appearance-secondary-color, #f85149);
+  font-weight: var(--appearance-secondary-weight, 600);
 }
 
 /* Session tiles render BODY+STATE as one field (the terminal preview,
@@ -380,9 +391,11 @@ html, body {
   width: auto;
   max-width: 70%;
   text-align: left;
-  font-size: var(--secondary);
-  font-weight: 400;
-  color: #8888AA;
+  font-size: calc(var(--secondary) * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 400);
+  color: var(--appearance-secondary-color, #8888AA);
   padding: 2px 24px 2px calc(var(--m));
   background: linear-gradient(to right, #0A0A0A 55%, transparent);
 }
@@ -398,12 +411,14 @@ html, body {
   cursor: default;
 }
 .deck-key.is-status .key-name {
-  color: #C9A66B;
+  color: var(--appearance-secondary-color, #C9A66B);
 }
 .deck-key.is-status .key-body {
-  color: #8A7A5A;
-  font-size: var(--secondary);
-  font-weight: 600;
+  color: var(--appearance-secondary-color, #8A7A5A);
+  font-size: calc(var(--secondary) * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 600);
 }
 
 /* Picker option: NAME stays reserved-but-empty (every option is the same
@@ -420,7 +435,7 @@ html, body {
   background: #241033;
 }
 .deck-key.is-bound .key-name {
-  color: #C9A6E8;
+  color: var(--appearance-secondary-color, #C9A6E8);
 }
 
 /* \u2500\u2500\u2500 Emulated dial strip (BACKLOG.md item 2) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
@@ -462,8 +477,11 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #8888AA;
-  font-size: 10px;
+  color: var(--appearance-secondary-color, #8888AA);
+  font-size: calc(10px * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 400);
   line-height: 1.3;
   text-align: center;
   padding: 4px;
@@ -491,7 +509,7 @@ html, body {
   max-width: 100%;
 }
 .deck-dial-push-label {
-  color: #6A6A88;
+  color: var(--appearance-secondary-color, #6A6A88);
 }
 
 /* --- Emulated touch strip (BACKLOG.md item 2) --- */
@@ -549,8 +567,11 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
   text-align: center;
-  color: #C7CBE6;
-  font-size: 10px;
+  color: var(--appearance-secondary-color, #C7CBE6);
+  font-size: calc(10px * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 400);
   line-height: 1.4;
   padding-top: 2px;
 }
@@ -580,8 +601,11 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #8888AA;
-  font-size: 9px;
+  color: var(--appearance-secondary-color, #8888AA);
+  font-size: calc(9px * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 400);
   line-height: 1.3;
   text-align: center;
   padding: 4px;
@@ -597,7 +621,7 @@ html, body {
   max-width: 100%;
 }
 .deck-strip-drag-label {
-  color: #6A6A88;
+  color: var(--appearance-secondary-color, #6A6A88);
 }
 .deck-strip-swipe-label {
   display: flex;
@@ -605,8 +629,11 @@ html, body {
   justify-content: center;
   width: 28px;
   flex-shrink: 0;
-  color: #6A6A88;
-  font-size: 9px;
+  color: var(--appearance-secondary-color, #6A6A88);
+  font-size: calc(9px * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 400);
   line-height: 1.2;
   text-align: center;
 }
@@ -624,23 +651,59 @@ html, body {
   inset: 0;
   z-index: 10;
   background: #05050A;
-  color: #E6EDF3;
+  color: var(--appearance-interface-color, #E6EDF3);
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
   overflow-y: auto;
-  padding: 16px 20px calc(24px + env(safe-area-inset-bottom, 0px));
+  /* Keep explicit room in the scroll box for the final 48px control. Without
+     this clearance, Firefox can leave the last control's fractional border
+     box a few CSS pixels below the viewport at max scroll on short screens.
+     The safe-area inset remains additive to the usable bottom gap. */
+  padding: calc(16px * var(--appearance-interface-scale, 1))
+    20px calc(28px + env(safe-area-inset-bottom, 0px));
   box-sizing: border-box;
 }
 #deck-settings.hidden {
   display: none;
 }
+#settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: calc(-16px * var(--appearance-interface-scale, 1)) -20px 16px;
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;
+  background: rgba(5, 5, 10, 0.96);
+  border-bottom: 1px solid #1C1C22;
+  backdrop-filter: blur(8px);
+}
+#settings-header h1 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  text-align: center;
+}
+#settings-header button {
+  flex: 0 0 auto;
+  min-width: 76px;
+}
 #deck-settings h1 {
-  font-size: 1.1rem;
+  font-size: calc(1.1rem * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 700);
+  color: var(--appearance-interface-color, #FFFFFF);
   margin: 8px 0 16px;
 }
 #deck-settings h2 {
-  font-size: 0.85rem;
+  font-size: calc(0.85rem * var(--appearance-interface-scale, 1));
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #8888AA;
+  color: var(--appearance-interface-color, #8888AA);
   margin: 0 0 8px;
 }
 #deck-settings section {
@@ -648,44 +711,85 @@ html, body {
   padding-bottom: 16px;
   border-bottom: 1px solid #1C1C22;
 }
+#deck-settings > details {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #1C1C22;
+}
+#deck-settings > details > summary,
+#deck-settings .settings-appearance-role > summary {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  cursor: pointer;
+  color: var(--appearance-interface-color, #E6EDF3);
+  font-size: calc(0.95rem * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 600);
+  list-style-position: inside;
+  touch-action: manipulation;
+}
+#deck-settings > details > summary::marker,
+#deck-settings .settings-appearance-role > summary::marker {
+  color: var(--appearance-interface-color, #8888AA);
+}
+#deck-settings > details > summary h2 {
+  margin: 0;
+}
 #deck-settings label {
   display: block;
   margin-bottom: 8px;
-  font-size: 0.9rem;
+  font-size: calc(0.9rem * var(--appearance-interface-scale, 1));
 }
 #deck-settings input[type='number'],
 #deck-settings input[type='text'],
 #deck-settings select,
 #deck-settings textarea {
   background: #101018;
-  color: #E6EDF3;
+  color: var(--appearance-interface-color, #E6EDF3);
   border: 1px solid #2A2A4A;
   border-radius: 4px;
   padding: 6px 8px;
-  font-size: 0.9rem;
+  font-size: calc(0.9rem * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
   width: 100%;
   box-sizing: border-box;
   margin-top: 4px;
 }
 #deck-settings input[type='range'] {
   width: 100%;
+  min-height: 48px;
 }
 #deck-settings textarea {
-  font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
-  font-size: 12px;
+  font-family: var(--appearance-interface-family, "SF Mono", "Fira Code", "Consolas", "Menlo", monospace);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
+  font-size: calc(12px * var(--appearance-interface-scale, 1));
 }
 #deck-settings button {
   background: #101036;
-  color: #FFFFFF;
+  color: var(--appearance-interface-color, #FFFFFF);
   border: 1px solid #2A2A4A;
   border-radius: 4px;
   padding: 8px 14px;
-  font-size: 0.9rem;
+  font-size: calc(0.9rem * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
   cursor: pointer;
   touch-action: manipulation;
+  min-height: 48px;
+}
+#deck-settings input[type='number'],
+#deck-settings input[type='text'],
+#deck-settings select {
+  min-height: 48px;
 }
 #settings-close {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 #settings-reset {
   background: #3A1010;
@@ -697,7 +801,7 @@ html, body {
   justify-content: space-between;
   gap: 8px;
   padding: 6px 0;
-  font-size: 0.85rem;
+  font-size: calc(0.85rem * var(--appearance-interface-scale, 1));
   border-bottom: 1px solid #14141A;
 }
 .settings-add-binding {
@@ -713,9 +817,92 @@ html, body {
   margin-top: 0;
 }
 .settings-error {
-  color: #f85149;
-  font-size: 0.8rem;
+  color: var(--appearance-interface-color, #f85149);
+  font-size: calc(0.8rem * var(--appearance-interface-scale, 1));
   min-height: 1em;
+}
+
+/* Appearance is a typed role surface, not a raw CSS editor. Samples stay
+   visible while the role controls progressively collapse for phone use. */
+.settings-appearance-intro {
+  margin-top: 0;
+}
+.settings-appearance-samples {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.settings-appearance-sample {
+  min-height: 72px;
+  padding: 8px;
+  background: #101018;
+  border: 1px solid #2A2A4A;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  overflow: hidden;
+}
+.settings-appearance-sample-label {
+  color: var(--appearance-interface-color, #8888AA);
+  font-size: calc(0.7rem * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.settings-appearance-sample-primary {
+  color: var(--appearance-primary-color, #FFFFFF);
+  font-size: calc(1.1rem * var(--appearance-primary-scale, 1));
+  font-family: var(--appearance-primary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-primary-style, normal);
+  font-weight: var(--appearance-primary-weight, 600);
+}
+.settings-appearance-sample-secondary {
+  color: var(--appearance-secondary-color, #8888AA);
+  font-size: calc(0.9rem * var(--appearance-secondary-scale, 1));
+  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-secondary-style, normal);
+  font-weight: var(--appearance-secondary-weight, 400);
+}
+.settings-appearance-sample-preview {
+  color: var(--appearance-preview-color, #7A7A7A);
+  font-family: var(--appearance-preview-family, "SF Mono", "Fira Code", "Consolas", "Menlo", monospace);
+  font-style: var(--appearance-preview-style, normal);
+  font-weight: var(--appearance-preview-weight, 400);
+  font-size: calc(0.75rem * var(--appearance-preview-scale, 1));
+}
+.settings-appearance-sample-interface {
+  color: var(--appearance-interface-color, #E6EDF3);
+  font-size: calc(0.9rem * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
+}
+.settings-appearance-role {
+  margin: 8px 0;
+  padding: 0 8px 8px;
+  border: 1px solid #1C1C22;
+  border-radius: 4px;
+}
+.settings-appearance-role-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.settings-appearance-role-fields label {
+  margin-bottom: 0;
+}
+.settings-appearance-role-fields input {
+  margin-top: 4px;
+}
+.settings-appearance-reset-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 /* A binding that resolves to nothing on the CURRENT device shape --
@@ -726,37 +913,47 @@ html, body {
 }
 .settings-binding-reason {
   flex-basis: 100%;
-  color: #8888AA;
-  font-size: 0.75rem;
+  color: var(--appearance-interface-color, #8888AA);
+  font-size: calc(0.75rem * var(--appearance-interface-scale, 1));
 }
 
-/* Read-only key-address legend inside the bindings section (\u00a77.3). Capped
-   at ~30% of the viewport height and shrinks its cells (both axes are
-   `1fr` grid tracks, not fixed sizes) rather than overflowing -- a 4x8
-   (32-cell) map must still fit above a scroll the user can reach. */
+/* Read-only key-address legend inside the bindings section (\u00a77.3).
+   The map is paginated by deck.js so these controls never need to shrink below
+   the 48px touch target on a short-landscape phone. */
 .settings-key-map {
   display: grid;
+  grid-auto-rows: minmax(48px, auto);
   gap: 4px;
-  max-height: 30vh;
-  overflow: hidden;
   margin: 8px 0;
 }
 .settings-key-map-cell {
+  appearance: none;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-width: 0;
-  min-height: 0;
+  width: 100%;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 4px;
   overflow: hidden;
   background: #101018;
   border: 1px solid #2A2A4A;
   border-radius: 4px;
-  color: #E6EDF3;
-  font-family: "SF Mono", "Fira Code", "Consolas", "Menlo", monospace;
+  color: var(--appearance-interface-color, #E6EDF3);
+  font-family: var(--appearance-interface-family, "SF Mono", "Fira Code", "Consolas", "Menlo", monospace);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
   cursor: pointer;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+}
+.settings-key-map-cell > div {
+  color: inherit;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .settings-key-map-cell > div:first-child {
   font-size: 8px;
@@ -765,16 +962,38 @@ html, body {
 }
 .settings-key-map-cell > div:last-child {
   font-size: 9px;
-  font-weight: 600;
+  font-weight: var(--appearance-interface-weight, 600);
   line-height: 1.1;
+}
+.settings-key-map-cell:focus-visible,
+.settings-key-map-controls button:focus-visible {
+  outline: 2px solid var(--appearance-interface-color, #FFFFFF);
+  outline-offset: 2px;
 }
 .settings-key-map-cell--reserved {
   border-color: #4A2A6A;
-  color: #C9A0FF;
+  color: var(--appearance-interface-color, #C9A0FF);
 }
 .settings-key-map-cell--bound {
   border-color: #1C4A2A;
-  color: #7FE0A0;
+  color: var(--appearance-interface-color, #7FE0A0);
+}
+.settings-key-map-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0;
+}
+.settings-key-map-controls button {
+  flex: 1 1 0;
+}
+#settings-key-map-page {
+  flex: 0 0 auto;
+  min-width: 7rem;
+  text-align: center;
+  color: var(--appearance-interface-color, #E6EDF3);
+  font-size: calc(0.8rem * var(--appearance-interface-scale, 1));
 }
 
 /* ─── Disconnected / too-small takeover ──────────────────────────────────── */
@@ -801,8 +1020,11 @@ html, body {
 }
 
 #deck-disconnected-message {
-  font-size: 1.05rem;
-  color: #8888AA;
+  font-size: calc(1.05rem * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 400);
+  color: var(--appearance-interface-color, #8888AA);
   max-width: 32rem;
 }
 
@@ -824,9 +1046,11 @@ html, body {
   height: 160px;
   background: #101036;
   border: 1px solid #1C1C22;
-  color: #FFFFFF;
-  font-size: 22px;
-  font-weight: 600;
+  color: var(--appearance-interface-color, #FFFFFF);
+  font-size: calc(22px * var(--appearance-interface-scale, 1));
+  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-interface-style, normal);
+  font-weight: var(--appearance-interface-weight, 600);
   cursor: pointer;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
