@@ -1,3 +1,12 @@
+## v0.61.2 (2026-09-16)
+
+### Changed
+
+- **Soft Deck appearance scales:** all role sliders now range from 50–120% (100%
+  is the default). Previously stored values outside that range are clamped for
+  rendering without a load-time storage write. No API, client, server, or
+  federation changes.
+
 ## v0.61.1 (2026-09-16)
 
 ### Fixed
