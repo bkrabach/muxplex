@@ -1,3 +1,19 @@
+## v0.61.0 (2026-09-16)
+
+### Added
+
+- **Soft Deck appearance:** device-local controls for semantic text roles let
+  people choose bounded sizes, colors, font families, weights, and styles
+  without changing server, API, client, or federation behavior.
+
+### Changed
+
+- **Phone settings UX:** an appearance-first, touch-friendly settings layout
+  adds live samples, sticky Back/Done controls, progressive disclosure, and
+  accessible paginated key bindings.
+- **Coordinated packaging:** publish `muxplex` and `muxplex-client` 0.61.0
+  together. No API, client, or federation changes are included.
+
 ## v0.60.2 (2026-09-15)
 
 ### Fixed
