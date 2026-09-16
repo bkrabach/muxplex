@@ -652,12 +652,16 @@ its own viewport — and once you say that, there is almost nothing left to desi
 The “v1 ships defaults only — no override surface” decision in §3.2 is amended only for
 appearance. The soft deck now exposes a typed, deck-local `deckSettings.appearance` object; it
 is not a server setting, API field, or PWA setting. It contains the semantic text roles
-`primary`, `secondary`, `preview`, and `interface`. Each role has a bounded scale (default `1`),
+`primary`, `secondary`, `preview`, and `interface`. Each role has a bounded scale from `0.5` to
+`1.2` inclusive in `0.01` steps (displayed as 50% to 120%; default `1`),
 an optional six-digit hex color override, a finite family (`component`, `system`, or `mono`), a
 finite weight (`component`, `normal`, `medium`, `semibold`, or `bold`), and a style (`normal` or
-`italic`). Missing or invalid leaves migrate independently to defaults. The `component` family and
-weight values remove the role override so each selector retains its existing typography: in
-particular, session titles remain bold and preview text remains monospace by default.
+`italic`). Missing or non-numeric leaves migrate independently to defaults. Finite numeric scales
+outside the current range are clamped in memory at load/render time; opening Settings does not
+rewrite the stored blob, while a deliberate adjustment, reset, or later settings save persists the
+clamped value. The `component` family and weight values remove the role override so each selector
+retains its existing typography: in particular, session titles remain bold and preview text remains
+monospace by default.
 
 The values are applied through component-scoped CSS custom properties, not arbitrary CSS or
 user-supplied font input; only the finite family/weight/style lookup values reach CSS. The existing

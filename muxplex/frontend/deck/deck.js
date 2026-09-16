@@ -72,11 +72,10 @@ var S_STEP = 4;
 // Deck-local appearance settings. These are intentionally a small, typed
 // vocabulary rather than arbitrary CSS: the saved shape stays portable,
 // leaf-validatable, and safe to apply through component-scoped custom
-// properties. The range matches the existing zoom control so a user can make
-// a role more legible without allowing it to collapse a key face or consume
-// an unbounded amount of space.
-var APPEARANCE_SCALE_MIN = 0.75;
-var APPEARANCE_SCALE_MAX = 1.5;
+// properties. The range keeps each role between 50% and 120% of its
+// component-owned size.
+var APPEARANCE_SCALE_MIN = 0.5;
+var APPEARANCE_SCALE_MAX = 1.2;
 var APPEARANCE_SCALE_PERCENT_MIN = APPEARANCE_SCALE_MIN * 100;
 var APPEARANCE_SCALE_PERCENT_MAX = APPEARANCE_SCALE_MAX * 100;
 var APPEARANCE_PERSISTENCE_ERROR =
@@ -162,6 +161,24 @@ function appearanceScaleValueToPercent(scale) {
 }
 
 /**
+ * Clamp a finite stored scale to the current appearance range. This is used
+ * while loading/rendering without rewriting localStorage as a side effect of
+ * opening Settings. Non-finite values remain invalid and use the supplied
+ * fallback.
+ * @param {*} value
+ * @param {number} fallback
+ * @returns {number}
+ */
+function clampAppearanceScale(value, fallback) {
+  var safeFallback =
+    typeof fallback === 'number' && Number.isFinite(fallback)
+      ? Math.min(APPEARANCE_SCALE_MAX, Math.max(APPEARANCE_SCALE_MIN, fallback))
+      : 1;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return safeFallback;
+  return Math.min(APPEARANCE_SCALE_MAX, Math.max(APPEARANCE_SCALE_MIN, value));
+}
+
+/**
  * Apply one range-slider value to an immutable settings copy. This is kept
  * pure with respect to the DOM and storage so the event handler can apply the
  * value immediately, then persist each distinct valid user input.
@@ -172,10 +189,12 @@ function appearanceScaleValueToPercent(scale) {
  */
 function updateAppearanceScale(settings, role, percent) {
   var nextAppearance = sanitizeAppearance(settings && settings.appearance);
+  var numericPercent = typeof percent === 'number' ? percent : Number(percent);
   var value = appearanceScalePercentToValue(percent);
   if (
     !Object.prototype.hasOwnProperty.call(nextAppearance, role) ||
     value == null ||
+    !Number.isInteger(numericPercent) ||
     value < APPEARANCE_SCALE_MIN ||
     value > APPEARANCE_SCALE_MAX
   ) {
@@ -229,27 +248,14 @@ function sanitizeAppearanceLeaf(raw, fallback) {
   var baseWeight = canonicalAppearanceEnum(base.weight, APPEARANCE_WEIGHT_VALUES, APPEARANCE_WEIGHT_ALIASES);
   var baseStyle = canonicalAppearanceEnum(base.style, APPEARANCE_STYLE_VALUES, {});
   var out = {
-    scale:
-      typeof base.scale === 'number' &&
-      Number.isFinite(base.scale) &&
-      base.scale >= APPEARANCE_SCALE_MIN &&
-      base.scale <= APPEARANCE_SCALE_MAX
-        ? base.scale
-        : 1,
+    scale: clampAppearanceScale(base.scale, 1),
     color: base.color === null || isAppearanceHexColor(base.color) ? base.color : null,
     family: baseFamily || 'component',
     weight: baseWeight || 'component',
     style: baseStyle || 'normal',
   };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
-  if (
-    typeof raw.scale === 'number' &&
-    Number.isFinite(raw.scale) &&
-    raw.scale >= APPEARANCE_SCALE_MIN &&
-    raw.scale <= APPEARANCE_SCALE_MAX
-  ) {
-    out.scale = raw.scale;
-  }
+  out.scale = clampAppearanceScale(raw.scale, out.scale);
   if (raw.color === null || raw.color === '') {
     out.color = null;
   } else if (isAppearanceHexColor(raw.color)) {
@@ -5757,6 +5763,7 @@ if (typeof module !== 'undefined' && module.exports) {
     APPEARANCE_ROLE_NAMES: APPEARANCE_ROLE_NAMES,
     appearanceScalePercentToValue: appearanceScalePercentToValue,
     appearanceScaleValueToPercent: appearanceScaleValueToPercent,
+    clampAppearanceScale: clampAppearanceScale,
     updateAppearanceScale: updateAppearanceScale,
     defaultAppearance: defaultAppearance,
     isAppearanceHexColor: isAppearanceHexColor,

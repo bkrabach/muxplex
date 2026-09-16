@@ -58,6 +58,7 @@ test('deck.js exports all pure functions', () => {
     'applyRelativeTicks',
     'appearanceScalePercentToValue',
     'appearanceScaleValueToPercent',
+    'clampAppearanceScale',
     'updateAppearanceScale',
     'defaultAppearance',
     'isAppearanceHexColor',
@@ -1192,12 +1193,13 @@ test('appearance scale controls: all roles use bounded accessible range sliders 
     assert.doesNotMatch(html, new RegExp(`<input type="number"[^>]*id="${id}"`));
     assert.match(
       html,
-      new RegExp(`id="${id}"[^>]*min="75"[^>]*max="150"[^>]*step="1"`),
-      `${id} should keep the 75%-150% bounds with 1%-point steps`
+      new RegExp(`id="${id}"[^>]*min="50"[^>]*max="120"[^>]*step="1"`),
+      `${id} should keep the 50%-120% bounds with 1%-point steps`
     );
     assert.match(html, new RegExp(`id="${outputId}"[^>]*>100%<\\/output>`));
     assert.match(html, new RegExp(`aria-describedby="${outputId} settings-appearance-${role}-error"`));
   }
+  assert.strictEqual((html.match(/Scale \(50%-120%\)/g) || []).length, roles.length);
   assert.match(css, /\.settings-appearance-scale-control/);
   assert.match(css, /input\[type='range'\]\.settings-appearance-scale[\s\S]*min-height:\s*48px/);
   assert.match(js, /scaleInput\.addEventListener\('input', handleScaleInput\)/);
@@ -1926,14 +1928,14 @@ test('appearance defaults: four semantic roles preserve component typography and
   assert.strictEqual(deck.isAppearanceHexColor('rgb(1, 2, 3)'), false);
 });
 
-test('appearance scale slider conversions: 75/.75, 100/1, and 150/1.5 stay bidirectionally exact', () => {
+test('appearance scale slider conversions: 50/.5, 100/1, and 120/1.2 stay bidirectionally exact', () => {
   const cases = [
-    [75, 0.75],
+    [50, 0.5],
     [100, 1],
-    [150, 1.5],
+    [120, 1.2],
   ];
-  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MIN, 75);
-  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MAX, 150);
+  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MIN, 50);
+  assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MAX, 120);
   assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MIN, deck.APPEARANCE_SCALE_MIN * 100);
   assert.strictEqual(deck.APPEARANCE_SCALE_PERCENT_MAX, deck.APPEARANCE_SCALE_MAX * 100);
   for (const [percent, value] of cases) {
@@ -1950,14 +1952,14 @@ test('sanitizeAppearance: invalid leaves fall back independently while valid sib
     interface: 'not an object',
   });
   assert.deepEqual(appearance.primary, {
-    scale: 1.25,
+    scale: 1.2,
     color: '#123456',
     family: 'component',
     weight: 'component',
     style: 'normal',
   });
   assert.deepEqual(appearance.secondary, {
-    scale: 1,
+    scale: 1.2,
     color: '#ABCDEF',
     family: 'component',
     weight: 'component',
@@ -1977,6 +1979,15 @@ test('sanitizeAppearance: invalid leaves fall back independently while valid sib
     weight: 'component',
     style: 'normal',
   });
+});
+
+test('clampAppearanceScale: every finite saved value clamps to the current bounds while non-finite values use the fallback', () => {
+  assert.strictEqual(deck.clampAppearanceScale(0.25, 1), 0.5);
+  assert.strictEqual(deck.clampAppearanceScale(0.75, 1), 0.75);
+  assert.strictEqual(deck.clampAppearanceScale(1.5, 1), 1.2);
+  assert.strictEqual(deck.clampAppearanceScale(2, 0.83), 1.2);
+  assert.strictEqual(deck.clampAppearanceScale('1.5', 0.83), 0.83);
+  assert.strictEqual(deck.clampAppearanceScale(Infinity, 0.83), 0.83);
 });
 
 test('sanitizeAppearance: finite typography enums are accepted, aliases migrate, and CSS-looking values are rejected', () => {
@@ -2121,22 +2132,35 @@ test('loadDeckSettings: old storage without appearance migrates to appearance de
   assert.deepEqual(loaded.appearance, deck.defaultAppearance());
 });
 
-test('loadDeckSettings: valid legacy fractional scales load exactly while an invalid leaf falls back', () => {
+test('loadDeckSettings: old saved .75 stays exact and old saved 1.5 clamps without an automatic write', () => {
+  let writes = 0;
   const storage = fakeStorage({
     [deck.DECK_SETTINGS_KEY]: JSON.stringify({
       appearance: {
         primary: { scale: 0.75 },
         secondary: { scale: 1.5 },
         preview: { scale: 0.9 },
-        interface: { scale: 2 },
+        interface: { scale: 0.25 },
       },
     }),
   });
+  const originalSetItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    writes += 1;
+    originalSetItem(key, value);
+  };
   const loaded = deck.loadDeckSettings(storage);
   assert.strictEqual(loaded.appearance.primary.scale, 0.75);
-  assert.strictEqual(loaded.appearance.secondary.scale, 1.5);
+  assert.strictEqual(loaded.appearance.secondary.scale, 1.2);
   assert.strictEqual(loaded.appearance.preview.scale, 0.9);
-  assert.strictEqual(loaded.appearance.interface.scale, 1);
+  assert.strictEqual(loaded.appearance.interface.scale, 0.5);
+  assert.strictEqual(writes, 0);
+  assert.strictEqual(deck.saveDeckSettings(storage, loaded), true);
+  assert.strictEqual(writes, 1);
+  assert.strictEqual(
+    JSON.parse(storage._map.get(deck.DECK_SETTINGS_KEY)).appearance.secondary.scale,
+    1.2
+  );
 });
 
 test('loadDeckSettings: a .83 scale maps to an 83% slider/output without an implicit write', () => {
@@ -2161,6 +2185,21 @@ test('loadDeckSettings: a .83 scale maps to an 83% slider/output without an impl
   assert.strictEqual(writes, 0);
 });
 
+test('updateAppearanceScale + saveDeckSettings: 50% and 120% inputs persist exact boundary values', () => {
+  for (const [percent, expected] of [
+    [50, 0.5],
+    [120, 1.2],
+  ]) {
+    const storage = fakeStorage();
+    const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'primary', percent);
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.value, expected);
+    assert.strictEqual(deck.saveDeckSettings(storage, result.settings), true);
+    const loaded = deck.loadDeckSettings(storage);
+    assert.strictEqual(loaded.appearance.primary.scale, expected);
+  }
+});
+
 test('saveDeckSettings + loadDeckSettings round-trip', () => {
   const storage = fakeStorage();
   const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), { sort: 'server', dialCount: 2 });
@@ -2172,19 +2211,25 @@ test('saveDeckSettings + loadDeckSettings round-trip', () => {
 
 test('updateAppearanceScale: a slider input updates only the selected role in the persistable settings copy', () => {
   const settings = deck.defaultDeckSettings();
-  const result = deck.updateAppearanceScale(settings, 'primary', 125);
+  const result = deck.updateAppearanceScale(settings, 'primary', 115);
   assert.strictEqual(result.valid, true);
-  assert.strictEqual(result.settings.appearance.primary.scale, 1.25);
+  assert.strictEqual(result.settings.appearance.primary.scale, 1.15);
   assert.strictEqual(result.settings.appearance.secondary.scale, 1);
   assert.strictEqual(settings.appearance.primary.scale, 1);
 });
 
 test('updateAppearanceScale: canonical stored-scale bounds reject out-of-range input', () => {
-  for (const percent of [74, 151]) {
+  for (const percent of [49, 121]) {
     const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'primary', percent);
     assert.strictEqual(result.valid, false);
-    assert.match(result.error, /75% and 150%/);
+    assert.match(result.error, /50% and 120%/);
   }
+});
+
+test('updateAppearanceScale: one-percent input steps reject fractional percentages', () => {
+  const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'primary', 83.5);
+  assert.strictEqual(result.valid, false);
+  assert.match(result.error, /50% and 120%/);
 });
 
 test('saveDeckSettings: a failed storage write is explicit to callers', () => {
@@ -2201,7 +2246,7 @@ test('exportSettingsJSON + importSettingsJSON: round-trips a settings object', (
     sort: 'server',
     appearance: {
       primary: {
-        scale: 1.25,
+        scale: 1.15,
         color: '#123456',
         family: 'system',
         weight: 'bold',
@@ -2222,7 +2267,7 @@ test('exportSettingsJSON + importSettingsJSON: round-trips a settings object', (
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.settings.sort, 'server');
   assert.deepEqual(result.settings.appearance.primary, {
-    scale: 1.25,
+    scale: 1.15,
     color: '#123456',
     family: 'system',
     weight: 'bold',
