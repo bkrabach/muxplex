@@ -494,6 +494,21 @@ identity, and the applicable licenses/notices beside the asset. Verify their
 presence and bytes in the built wheel. Browser proof must inspect real xterm
 output and cell metrics, not merely the selector or sidebar snapshot.
 
+## Mobile terminal scrolling: ending a gesture must not erase queued motion
+
+`touchmove` prevents native scrolling and queues synthetic wheel events for
+animation frames. Keep that queue on `touchend`: a quick swipe can finish before
+the first frame, so canceling it loses the entire gesture. `touchcancel` and a
+new gesture discard pending motion; a terminal identity guard prevents an old
+gesture from scrolling a newly opened session. Preserve one wheel event per
+frame and the existing pixel threshold.
+
+Test the registered listeners with a controlled frame clock, including
+`touchstart -> touchmove -> touchend -> frame`, both directions, cancellation,
+and session replacement. Source-string assertions alone cannot prove this.
+For browser verification, use real tmux history with mouse reporting enabled:
+without it, xterm can send arrow keys instead of scrolling tmux history.
+
 ## Terminal links: plain-click activation has one security boundary
 
 Both OSC 8 Markdown-style labels (`Terminal`'s `linkHandler`) and visible

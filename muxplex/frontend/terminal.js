@@ -1334,11 +1334,13 @@ window._setTerminalFont = setTerminalFont;
   var _lastY      = 0;
   var _accumulated = 0;  // pixel debt between rAF ticks
   var _rafId       = null;
+  var _scrollTerm  = null; // queued motion belongs to this terminal only
   var SCROLL_PX    = 20; // pixels of touch movement = one WheelEvent dispatch
 
   function flushScroll() {
     _rafId = null;
-    if (!_term || Math.abs(_accumulated) < SCROLL_PX) return;
+    if (!_term || _term !== _scrollTerm) { _accumulated = 0; return; }
+    if (Math.abs(_accumulated) < SCROLL_PX) return;
 
     var viewport = container.querySelector('.xterm-viewport');
     if (!viewport) { _accumulated = 0; return; }
@@ -1360,13 +1362,14 @@ window._setTerminalFont = setTerminalFont;
   }
 
   container.addEventListener('touchstart', function (e) {
+    _scrollTerm  = _term;
     _lastY       = e.touches[0].clientY;
     _accumulated = 0;
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
   }, { passive: true });
 
   container.addEventListener('touchmove', function (e) {
-    if (!_term) return;
+    if (!_term || _term !== _scrollTerm) return;
     e.preventDefault(); // block outer-container scroll
 
     var y      = e.touches[0].clientY;
@@ -1379,6 +1382,14 @@ window._setTerminalFont = setTerminalFont;
   }, { passive: false }); // passive:false required for preventDefault
 
   container.addEventListener('touchend', function () {
+    _lastY = 0;
+    // A quick swipe can end before its first rAF. Keep the queued motion:
+    // touchmove already suppressed native scrolling, so dropping it loses
+    // the gesture entirely. Continue draining at one wheel event per frame.
+  }, { passive: true });
+
+  container.addEventListener('touchcancel', function () {
+    _scrollTerm  = null;
     _lastY       = 0;
     _accumulated = 0;
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
