@@ -98,56 +98,62 @@
       </header>
 
       <details class="settings-group settings-appearance" open>
-        <summary>Appearance</summary>
+        <summary>Text appearance</summary>
         <p class="settings-appearance-intro">
-          Deck-local text controls. Scale ranges from 50% to 120% in one-percent steps; colors accept only six-digit hex values.
+          Each named text role is independent. Scale ranges from 50% to 120% in one-percent steps; colors accept only six-digit hex values.
           Font choices are limited to portable component, system, and monospace options.
         </p>
-        <div class="settings-appearance-samples" aria-label="Appearance samples">
-          <div class="settings-appearance-sample">
-            <span class="settings-appearance-sample-label">Primary</span>
-            <span class="settings-appearance-sample-primary">Session title / action</span>
+        <div class="settings-appearance-live-preview" aria-label="Live text appearance preview">
+          <div class="settings-appearance-live-preview-title">Live preview</div>
+          <div class="settings-mini-deck" aria-label="Read-only Soft Deck example">
+            <div class="settings-mini-key settings-mini-session">
+              <div class="key-name">amplifier-main</div>
+              <div class="key-preview">$ amplifier status<br />ready · 3 panes</div>
+              <div class="key-body"></div>
+              <div class="key-state">spark-2 · 4m</div>
+            </div>
+            <div class="settings-mini-key settings-mini-navigation">
+              <div class="key-name">NEXT &gt;</div>
+              <div class="key-preview"></div>
+              <div class="key-body">PAGE</div>
+              <div class="key-state">2 / 5</div>
+            </div>
+            <div class="settings-mini-key settings-mini-picker">
+              <div class="key-name">VIEW</div>
+              <div class="key-preview"></div>
+              <div class="key-body">Projects</div>
+              <div class="key-state">6 sessions</div>
+            </div>
           </div>
-          <div class="settings-appearance-sample">
-            <span class="settings-appearance-sample-label">Secondary</span>
-            <span class="settings-appearance-sample-secondary">Device · 4m · state</span>
-          </div>
-          <div class="settings-appearance-sample">
-            <span class="settings-appearance-sample-label">Preview</span>
-            <span class="settings-appearance-sample-preview">terminal preview</span>
-          </div>
-          <div class="settings-appearance-sample">
-            <span class="settings-appearance-sample-label">Interface</span>
-            <span class="settings-appearance-sample-interface">Settings controls</span>
-          </div>
+          <div class="settings-appearance-live-preview-caption">Settings &amp; recovery</div>
         </div>
         <details class="settings-appearance-role" open>
-          <summary>Primary text</summary>
+          <summary>Session titles</summary>
           <div class="settings-appearance-role-fields">
-            <label for="settings-appearance-primary-scale">Scale (50%-120%)</label>
+            <label for="settings-appearance-sessionTitle-scale">Scale (50%-120%)</label>
             <div class="settings-appearance-scale-control">
-              <input type="range" id="settings-appearance-primary-scale"
+              <input type="range" id="settings-appearance-sessionTitle-scale"
                 class="settings-appearance-scale" min="50" max="120" step="1" value="100"
                 aria-valuemin="50" aria-valuemax="120" aria-valuenow="100"
-                aria-valuetext="100%" aria-describedby="settings-appearance-primary-scale-value settings-appearance-primary-error" />
-              <output id="settings-appearance-primary-scale-value"
-                class="settings-appearance-scale-value" for="settings-appearance-primary-scale"
+                aria-valuetext="100%" aria-describedby="settings-appearance-sessionTitle-scale-value settings-appearance-sessionTitle-error" />
+              <output id="settings-appearance-sessionTitle-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-sessionTitle-scale"
                 aria-live="polite">100%</output>
             </div>
             <label>Color override
-              <input type="text" id="settings-appearance-primary-color"
+              <input type="text" id="settings-appearance-sessionTitle-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
                 autocomplete="off" spellcheck="false" />
             </label>
             <label>Font family
-              <select id="settings-appearance-primary-family">
+              <select id="settings-appearance-sessionTitle-family">
                 <option value="component">Component default</option>
                 <option value="system">System</option>
                 <option value="mono">Monospace</option>
               </select>
             </label>
             <label>Font weight
-              <select id="settings-appearance-primary-weight">
+              <select id="settings-appearance-sessionTitle-weight">
                 <option value="component">Component default</option>
                 <option value="normal">Normal (400)</option>
                 <option value="medium">Medium (500)</option>
@@ -156,41 +162,41 @@
               </select>
             </label>
             <label>Font style
-              <select id="settings-appearance-primary-style">
+              <select id="settings-appearance-sessionTitle-style">
                 <option value="normal">Normal</option>
                 <option value="italic">Italic</option>
               </select>
             </label>
           </div>
-          <p id="settings-appearance-primary-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
+          <p id="settings-appearance-sessionTitle-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <details class="settings-appearance-role">
-          <summary>Secondary text</summary>
+          <summary>Actions &amp; view names</summary>
           <div class="settings-appearance-role-fields">
-            <label for="settings-appearance-secondary-scale">Scale (50%-120%)</label>
+            <label for="settings-appearance-buttonText-scale">Scale (50%-120%)</label>
             <div class="settings-appearance-scale-control">
-              <input type="range" id="settings-appearance-secondary-scale"
+              <input type="range" id="settings-appearance-buttonText-scale"
                 class="settings-appearance-scale" min="50" max="120" step="1" value="100"
                 aria-valuemin="50" aria-valuemax="120" aria-valuenow="100"
-                aria-valuetext="100%" aria-describedby="settings-appearance-secondary-scale-value settings-appearance-secondary-error" />
-              <output id="settings-appearance-secondary-scale-value"
-                class="settings-appearance-scale-value" for="settings-appearance-secondary-scale"
+                aria-valuetext="100%" aria-describedby="settings-appearance-buttonText-scale-value settings-appearance-buttonText-error" />
+              <output id="settings-appearance-buttonText-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-buttonText-scale"
                 aria-live="polite">100%</output>
             </div>
             <label>Color override
-              <input type="text" id="settings-appearance-secondary-color"
+              <input type="text" id="settings-appearance-buttonText-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
                 autocomplete="off" spellcheck="false" />
             </label>
             <label>Font family
-              <select id="settings-appearance-secondary-family">
+              <select id="settings-appearance-buttonText-family">
                 <option value="component">Component default</option>
                 <option value="system">System</option>
                 <option value="mono">Monospace</option>
               </select>
             </label>
             <label>Font weight
-              <select id="settings-appearance-secondary-weight">
+              <select id="settings-appearance-buttonText-weight">
                 <option value="component">Component default</option>
                 <option value="normal">Normal (400)</option>
                 <option value="medium">Medium (500)</option>
@@ -199,41 +205,41 @@
               </select>
             </label>
             <label>Font style
-              <select id="settings-appearance-secondary-style">
+              <select id="settings-appearance-buttonText-style">
                 <option value="normal">Normal</option>
                 <option value="italic">Italic</option>
               </select>
             </label>
           </div>
-          <p id="settings-appearance-secondary-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
+          <p id="settings-appearance-buttonText-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <details class="settings-appearance-role">
-          <summary>Preview text</summary>
+          <summary>Control labels, pages &amp; errors</summary>
           <div class="settings-appearance-role-fields">
-            <label for="settings-appearance-preview-scale">Scale (50%-120%)</label>
+            <label for="settings-appearance-controlDetail-scale">Scale (50%-120%)</label>
             <div class="settings-appearance-scale-control">
-              <input type="range" id="settings-appearance-preview-scale"
+              <input type="range" id="settings-appearance-controlDetail-scale"
                 class="settings-appearance-scale" min="50" max="120" step="1" value="100"
                 aria-valuemin="50" aria-valuemax="120" aria-valuenow="100"
-                aria-valuetext="100%" aria-describedby="settings-appearance-preview-scale-value settings-appearance-preview-error" />
-              <output id="settings-appearance-preview-scale-value"
-                class="settings-appearance-scale-value" for="settings-appearance-preview-scale"
+                aria-valuetext="100%" aria-describedby="settings-appearance-controlDetail-scale-value settings-appearance-controlDetail-error" />
+              <output id="settings-appearance-controlDetail-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-controlDetail-scale"
                 aria-live="polite">100%</output>
             </div>
             <label>Color override
-              <input type="text" id="settings-appearance-preview-color"
+              <input type="text" id="settings-appearance-controlDetail-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
                 autocomplete="off" spellcheck="false" />
             </label>
             <label>Font family
-              <select id="settings-appearance-preview-family">
+              <select id="settings-appearance-controlDetail-family">
                 <option value="component">Component default</option>
                 <option value="system">System</option>
                 <option value="mono">Monospace</option>
               </select>
             </label>
             <label>Font weight
-              <select id="settings-appearance-preview-weight">
+              <select id="settings-appearance-controlDetail-weight">
                 <option value="component">Component default</option>
                 <option value="normal">Normal (400)</option>
                 <option value="medium">Medium (500)</option>
@@ -242,41 +248,41 @@
               </select>
             </label>
             <label>Font style
-              <select id="settings-appearance-preview-style">
+              <select id="settings-appearance-controlDetail-style">
                 <option value="normal">Normal</option>
                 <option value="italic">Italic</option>
               </select>
             </label>
           </div>
-          <p id="settings-appearance-preview-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
+          <p id="settings-appearance-controlDetail-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <details class="settings-appearance-role">
-          <summary>Interface text</summary>
+          <summary>Activity time &amp; device name</summary>
           <div class="settings-appearance-role-fields">
-            <label for="settings-appearance-interface-scale">Scale (50%-120%)</label>
+            <label for="settings-appearance-sessionMeta-scale">Scale (50%-120%)</label>
             <div class="settings-appearance-scale-control">
-              <input type="range" id="settings-appearance-interface-scale"
+              <input type="range" id="settings-appearance-sessionMeta-scale"
                 class="settings-appearance-scale" min="50" max="120" step="1" value="100"
                 aria-valuemin="50" aria-valuemax="120" aria-valuenow="100"
-                aria-valuetext="100%" aria-describedby="settings-appearance-interface-scale-value settings-appearance-interface-error" />
-              <output id="settings-appearance-interface-scale-value"
-                class="settings-appearance-scale-value" for="settings-appearance-interface-scale"
+                aria-valuetext="100%" aria-describedby="settings-appearance-sessionMeta-scale-value settings-appearance-sessionMeta-error" />
+              <output id="settings-appearance-sessionMeta-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-sessionMeta-scale"
                 aria-live="polite">100%</output>
             </div>
             <label>Color override
-              <input type="text" id="settings-appearance-interface-color"
+              <input type="text" id="settings-appearance-sessionMeta-color"
                 placeholder="#RRGGBB" maxlength="7" inputmode="text"
                 autocomplete="off" spellcheck="false" />
             </label>
             <label>Font family
-              <select id="settings-appearance-interface-family">
+              <select id="settings-appearance-sessionMeta-family">
                 <option value="component">Component default</option>
                 <option value="system">System</option>
                 <option value="mono">Monospace</option>
               </select>
             </label>
             <label>Font weight
-              <select id="settings-appearance-interface-weight">
+              <select id="settings-appearance-sessionMeta-weight">
                 <option value="component">Component default</option>
                 <option value="normal">Normal (400)</option>
                 <option value="medium">Medium (500)</option>
@@ -285,16 +291,102 @@
               </select>
             </label>
             <label>Font style
-              <select id="settings-appearance-interface-style">
+              <select id="settings-appearance-sessionMeta-style">
                 <option value="normal">Normal</option>
                 <option value="italic">Italic</option>
               </select>
             </label>
           </div>
-          <p id="settings-appearance-interface-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
+          <p id="settings-appearance-sessionMeta-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
+        </details>
+        <details class="settings-appearance-role">
+          <summary>Terminal preview</summary>
+          <div class="settings-appearance-role-fields">
+            <label for="settings-appearance-terminalPreview-scale">Scale (50%-120%)</label>
+            <div class="settings-appearance-scale-control">
+              <input type="range" id="settings-appearance-terminalPreview-scale"
+                class="settings-appearance-scale" min="50" max="120" step="1" value="100"
+                aria-valuemin="50" aria-valuemax="120" aria-valuenow="100"
+                aria-valuetext="100%" aria-describedby="settings-appearance-terminalPreview-scale-value settings-appearance-terminalPreview-error" />
+              <output id="settings-appearance-terminalPreview-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-terminalPreview-scale"
+                aria-live="polite">100%</output>
+            </div>
+            <label>Color override
+              <input type="text" id="settings-appearance-terminalPreview-color"
+                placeholder="#RRGGBB" maxlength="7" inputmode="text"
+                autocomplete="off" spellcheck="false" />
+            </label>
+            <label>Font family
+              <select id="settings-appearance-terminalPreview-family">
+                <option value="component">Component default</option>
+                <option value="system">System</option>
+                <option value="mono">Monospace</option>
+              </select>
+            </label>
+            <label>Font weight
+              <select id="settings-appearance-terminalPreview-weight">
+                <option value="component">Component default</option>
+                <option value="normal">Normal (400)</option>
+                <option value="medium">Medium (500)</option>
+                <option value="semibold">Semibold (600)</option>
+                <option value="bold">Bold (700)</option>
+              </select>
+            </label>
+            <label>Font style
+              <select id="settings-appearance-terminalPreview-style">
+                <option value="normal">Normal</option>
+                <option value="italic">Italic</option>
+              </select>
+            </label>
+          </div>
+          <p id="settings-appearance-terminalPreview-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
+        </details>
+        <details class="settings-appearance-role">
+          <summary>Settings &amp; recovery</summary>
+          <div class="settings-appearance-role-fields">
+            <label for="settings-appearance-settingsText-scale">Scale (50%-120%)</label>
+            <div class="settings-appearance-scale-control">
+              <input type="range" id="settings-appearance-settingsText-scale"
+                class="settings-appearance-scale" min="50" max="120" step="1" value="100"
+                aria-valuemin="50" aria-valuemax="120" aria-valuenow="100"
+                aria-valuetext="100%" aria-describedby="settings-appearance-settingsText-scale-value settings-appearance-settingsText-error" />
+              <output id="settings-appearance-settingsText-scale-value"
+                class="settings-appearance-scale-value" for="settings-appearance-settingsText-scale"
+                aria-live="polite">100%</output>
+            </div>
+            <label>Color override
+              <input type="text" id="settings-appearance-settingsText-color"
+                placeholder="#RRGGBB" maxlength="7" inputmode="text"
+                autocomplete="off" spellcheck="false" />
+            </label>
+            <label>Font family
+              <select id="settings-appearance-settingsText-family">
+                <option value="component">Component default</option>
+                <option value="system">System</option>
+                <option value="mono">Monospace</option>
+              </select>
+            </label>
+            <label>Font weight
+              <select id="settings-appearance-settingsText-weight">
+                <option value="component">Component default</option>
+                <option value="normal">Normal (400)</option>
+                <option value="medium">Medium (500)</option>
+                <option value="semibold">Semibold (600)</option>
+                <option value="bold">Bold (700)</option>
+              </select>
+            </label>
+            <label>Font style
+              <select id="settings-appearance-settingsText-style">
+                <option value="normal">Normal</option>
+                <option value="italic">Italic</option>
+              </select>
+            </label>
+          </div>
+          <p id="settings-appearance-settingsText-error" class="settings-error" aria-live="polite" aria-hidden="true"></p>
         </details>
         <div class="settings-appearance-reset-row">
-          <button type="button" id="settings-appearance-reset">Reset appearance</button>
+          <button type="button" id="settings-appearance-reset">Reset text appearance</button>
         </div>
       </details>
 
@@ -358,11 +450,11 @@
       </details>
 
       <details class="settings-group">
-        <summary>Preview</summary>
-        <label>Preview font size (8-20px)
+        <summary>Terminal preview / Whole-key size</summary>
+        <label>Terminal preview base size (8-20px)
           <input type="number" id="settings-preview-font-size" min="8" max="20" />
         </label>
-        <label>Zoom (0.75-1.5x)
+        <label>Whole-key zoom (0.75-1.5x)
           <input type="number" id="settings-zoom" min="0.75" max="1.5" step="0.05" />
         </label>
         <p>Per-device, like the grid/dial/strip settings above &mdash; not synced across decks.</p>

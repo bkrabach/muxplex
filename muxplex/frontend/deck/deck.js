@@ -80,7 +80,22 @@ var APPEARANCE_SCALE_PERCENT_MIN = APPEARANCE_SCALE_MIN * 100;
 var APPEARANCE_SCALE_PERCENT_MAX = APPEARANCE_SCALE_MAX * 100;
 var APPEARANCE_PERSISTENCE_ERROR =
   'Changes are applied for this session, but could not be saved on this device.';
-var APPEARANCE_ROLE_NAMES = ['primary', 'secondary', 'preview', 'interface'];
+var APPEARANCE_ROLE_NAMES = [
+  'sessionTitle',
+  'buttonText',
+  'controlDetail',
+  'sessionMeta',
+  'terminalPreview',
+  'settingsText',
+];
+var APPEARANCE_LEGACY_ROLE_BY_NAME = {
+  sessionTitle: 'primary',
+  buttonText: 'primary',
+  controlDetail: 'secondary',
+  sessionMeta: 'secondary',
+  terminalPreview: 'preview',
+  settingsText: 'interface',
+};
 var APPEARANCE_HEX_RE = /^#[0-9a-fA-F]{6}$/;
 var APPEARANCE_FAMILY_VALUES = ['component', 'system', 'mono'];
 var APPEARANCE_WEIGHT_VALUES = ['component', 'normal', 'medium', 'semibold', 'bold'];
@@ -123,19 +138,28 @@ function canonicalAppearanceEnum(value, values, aliases) {
   return values.indexOf(canonical) === -1 ? null : canonical;
 }
 
+function defaultAppearanceLeaf() {
+  return {
+    scale: 1,
+    color: null,
+    family: 'component',
+    weight: 'component',
+    style: 'normal',
+  };
+}
+
 /**
  * The default appearance contract. A null color means "keep this component's
  * existing color"; CSS fallbacks therefore preserve the pre-appearance visual
  * treatment for special states such as attention and failure.
- * @returns {{primary:object, secondary:object, preview:object, interface:object}}
+ * @returns {{sessionTitle:object, buttonText:object, controlDetail:object, sessionMeta:object, terminalPreview:object, settingsText:object}}
  */
 function defaultAppearance() {
-  return {
-    primary: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
-    secondary: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
-    preview: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
-    interface: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
-  };
+  var appearance = {};
+  for (var i = 0; i < APPEARANCE_ROLE_NAMES.length; i++) {
+    appearance[APPEARANCE_ROLE_NAMES[i]] = defaultAppearanceLeaf();
+  }
+  return appearance;
 }
 
 /**
@@ -243,7 +267,7 @@ function isAppearanceHexColor(value) {
  * @returns {{scale:number, color:?string, family:string, weight:string, style:string}}
  */
 function sanitizeAppearanceLeaf(raw, fallback) {
-  var base = fallback || defaultAppearance().primary;
+  var base = fallback || defaultAppearanceLeaf();
   var baseFamily = canonicalAppearanceEnum(base.family, APPEARANCE_FAMILY_VALUES, APPEARANCE_FAMILY_ALIASES);
   var baseWeight = canonicalAppearanceEnum(base.weight, APPEARANCE_WEIGHT_VALUES, APPEARANCE_WEIGHT_ALIASES);
   var baseStyle = canonicalAppearanceEnum(base.style, APPEARANCE_STYLE_VALUES, {});
@@ -277,38 +301,39 @@ function sanitizeAppearanceLeaf(raw, fallback) {
  * Validate/migrate the deck-local appearance object. Missing appearance
  * (including every pre-appearance stored settings blob) becomes defaults;
  * malformed roles or leaves do not poison valid sibling values.
+ *
+ * v0.61.2 stored four broad roles. They are read as field-level fallbacks for
+ * the named leaves so a legacy value is never discarded merely because the
+ * new settings shape is being opened. An explicitly named value wins over
+ * its legacy source; named and legacy leaves may therefore be mixed in one
+ * imported blob. This is intentionally a load/import-only migration:
+ * `sanitizeAppearance` returns only named leaves, and no storage write occurs
+ * here.
  * @param {*} raw
- * @returns {{primary:object, secondary:object, preview:object, interface:object}}
+ * @returns {{sessionTitle:object, buttonText:object, controlDetail:object, sessionMeta:object, terminalPreview:object, settingsText:object}}
  */
 function sanitizeAppearance(raw) {
   var out = defaultAppearance();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (var i = 0; i < APPEARANCE_ROLE_NAMES.length; i++) {
     var role = APPEARANCE_ROLE_NAMES[i];
-    out[role] = sanitizeAppearanceLeaf(raw[role], out[role]);
+    var fallback = out[role];
+    var legacyRole = APPEARANCE_LEGACY_ROLE_BY_NAME[role];
+    if (raw[legacyRole] !== undefined) fallback = sanitizeAppearanceLeaf(raw[legacyRole], fallback);
+    out[role] = sanitizeAppearanceLeaf(raw[role], fallback);
   }
   return out;
 }
 
 /**
- * Map an existing KeyFace band to a semantic appearance role. The mapping is
- * deliberately based on the rendered meaning, not on arbitrary CSS selectors:
- * session names and main action/control bodies are primary; activity,
- * device/status text, and control names are secondary; terminal snapshots
- * are preview; settings/recovery chrome is interface.
- * @param {string} faceRole
- * @param {'name'|'body'|'state'|'preview'|'interface'} part
- * @returns {'primary'|'secondary'|'preview'|'interface'}
+ * Convert a named appearance leaf to its CSS custom-property stem.
+ * @param {string} role
+ * @returns {string}
  */
-function appearanceRoleForFace(faceRole, part) {
-  if (part === 'preview') return 'preview';
-  if (part === 'interface') return 'interface';
-  if (part === 'state') return 'secondary';
-  if (part === 'name') return faceRole === 'session' ? 'primary' : 'secondary';
-  if (part === 'body') {
-    return faceRole === 'session' || faceRole === 'status' ? 'secondary' : 'primary';
-  }
-  return 'interface';
+function appearanceCssRoleName(role) {
+  return role.replace(/[A-Z]/g, function (letter) {
+    return '-' + letter.toLowerCase();
+  });
 }
 
 /**
@@ -2250,6 +2275,43 @@ function fitLabel(text, maxWidthPx, measureWidth) {
   return t + '\u2026';
 }
 
+/**
+ * Return the width available to text inside a rendered element. `clientWidth`
+ * is deliberately measured after custom properties have been applied; the
+ * computed padding is removed because the label's box includes it.
+ *
+ * Kept DOM-safe for tests: callers may provide a computed-style object, and
+ * missing geometry returns zero rather than throwing.
+ * @param {?object} element
+ * @param {?object} computedStyle
+ * @returns {number}
+ */
+function elementLabelWidth(element, computedStyle) {
+  if (!element || typeof element.clientWidth !== 'number') return 0;
+  var width = element.clientWidth;
+  var style = computedStyle || {};
+  var left = parseFloat(style.paddingLeft);
+  var right = parseFloat(style.paddingRight);
+  if (Number.isFinite(left)) width -= left;
+  if (Number.isFinite(right)) width -= right;
+  return Math.max(0, width);
+}
+
+/**
+ * Fit a label against a rendered element's actual usable width. This small
+ * adapter is exported so DOM-measurement tests can supply a safe fake element
+ * and a deterministic measurer without constructing a browser.
+ * @param {string} text
+ * @param {?object} element
+ * @param {?object} computedStyle
+ * @param {(s:string) => number} measureWidth
+ * @returns {string}
+ */
+function fitLabelToElement(text, element, computedStyle, measureWidth) {
+  var width = elementLabelWidth(element, computedStyle);
+  return width > 0 ? fitLabel(text, width, measureWidth) : text;
+}
+
 // ─── Federation-aware session merge (v2 federation-aware deck rendering) ───
 //
 // GET /api/federation/sessions returns one flat array mixing three shapes
@@ -3602,11 +3664,12 @@ if (typeof document !== 'undefined') {
       for (var i = 0; i < APPEARANCE_ROLE_NAMES.length; i++) {
         var role = APPEARANCE_ROLE_NAMES[i];
         var leaf = appearance[role];
-        var scaleName = '--appearance-' + role + '-scale';
-        var colorName = '--appearance-' + role + '-color';
-        var familyName = '--appearance-' + role + '-family';
-        var weightName = '--appearance-' + role + '-weight';
-        var styleName = '--appearance-' + role + '-style';
+        var cssRole = appearanceCssRoleName(role);
+        var scaleName = '--appearance-' + cssRole + '-scale';
+        var colorName = '--appearance-' + cssRole + '-color';
+        var familyName = '--appearance-' + cssRole + '-family';
+        var weightName = '--appearance-' + cssRole + '-weight';
+        var styleName = '--appearance-' + cssRole + '-style';
         for (var j = 0; j < styles.length; j++) {
           styles[j].setProperty(scaleName, String(leaf.scale));
           // Do not set a null color variable. Selector-specific CSS fallbacks
@@ -3629,7 +3692,7 @@ if (typeof document !== 'undefined') {
     function applyAppearanceScale(role) {
       var appearance = deckSettings.appearance;
       if (!appearance || !Object.prototype.hasOwnProperty.call(appearance, role)) return;
-      var scaleName = '--appearance-' + role + '-scale';
+      var scaleName = '--appearance-' + appearanceCssRoleName(role) + '-scale';
       var styles = appearanceStyleTargets();
       for (var i = 0; i < styles.length; i++) {
         styles[i].setProperty(scaleName, String(appearance[role].scale));
@@ -3887,25 +3950,36 @@ if (typeof document !== 'undefined') {
     var _FACE_FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
     /**
-     * Build a label-measurement context from the current grid/tokens, for
-     * the one font size (`--primary`) truncatable text is ever painted at
-     * (session NAME, the VIEW key's BODY, a picker option's BODY). Returns
-     * null outside a real DOM (no canvas to measure with) -- callers must
-     * treat a null measure context as "skip truncation," which is exactly
-     * what happens in `node --test` today since nothing there paints.
-     * @returns {{maxWidth:number, width:(s:string)=>number}|null}
+     * Build a label-measurement context from the current grid/tokens. Labels
+     * are measured against the actual rendered element, not a generic
+     * unscaled font and guessed cell width: custom properties and role-specific
+     * typography have already reached the DOM by the time this runs.
+     * @returns {{fit:(s:string, element:HTMLElement)=>string}|null}
      */
     function buildMeasureContext() {
       if (!grid || !tokens || typeof document === 'undefined') return null;
       if (!_measureCanvas) _measureCanvas = document.createElement('canvas');
       var ctx = _measureCanvas.getContext('2d');
       if (!ctx) return null;
-      var font = '600 ' + tokens.primary + 'px ' + _FACE_FONT_FAMILY;
+      var fallbackFont = '600 ' + tokens.primary + 'px ' + _FACE_FONT_FAMILY;
       return {
-        maxWidth: grid.cellW - 2 * tokens.m,
-        width: function (text) {
+        fit: function (text, element) {
+          var computed = null;
+          if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+            computed = window.getComputedStyle(element);
+          } else if (typeof getComputedStyle === 'function') {
+            computed = getComputedStyle(element);
+          }
+          var font = computed && computed.font ? computed.font : fallbackFont;
           ctx.font = font;
-          return ctx.measureText(text).width;
+          return fitLabelToElement(
+            text,
+            element,
+            computed,
+            function (value) {
+              return ctx.measureText(value).width;
+            }
+          );
         },
       };
     }
@@ -3919,7 +3993,7 @@ if (typeof document !== 'undefined') {
      * painter has nothing else to call.
      * @param {HTMLElement} el
      * @param {KeyFace} face
-     * @param {{maxWidth:number, width:(s:string)=>number}|null} measure
+     * @param {{fit:(s:string, element:HTMLElement)=>string}|null} measure
      */
     function paintKeyFace(el, face, measure) {
       el.className = 'deck-key ' + faceClassName(face.role);
@@ -3935,29 +4009,33 @@ if (typeof document !== 'undefined') {
       // never-federated install.
       if (face.remoteId) el.classList.add('is-remote');
 
+      var nameEl = el.querySelector('.key-name');
+      var previewEl = el.querySelector('.key-preview');
+      var bodyEl = el.querySelector('.key-body');
+      var stateEl = el.querySelector('.key-state');
       var nameText = face.name;
       var bodyText = face.body;
-      if (measure) {
+      if (measure && typeof measure.fit === 'function') {
         // Truncation is scoped to exactly the bands that carry a
         // user-controlled, unbounded-length string -- see fitLabel's
         // doc comment for why this can't happen in computeKeyPlan.
         if (face.role === 'session') {
-          nameText = fitLabel(nameText, measure.maxWidth, measure.width);
+          nameText = measure.fit(nameText, nameEl);
           // A remote session's BODY now carries the origin device name
           // (computeKeyPlan) -- truncate it the same way NAME already is.
           // A no-op for every local session (empty body) and every
           // pre-federation fixture.
-          bodyText = fitLabel(bodyText, measure.maxWidth, measure.width);
+          bodyText = measure.fit(bodyText, bodyEl);
         }
         if (face.role === 'view' || face.role === 'view-option') {
-          bodyText = fitLabel(bodyText, measure.maxWidth, measure.width);
+          bodyText = measure.fit(bodyText, bodyEl);
         }
       }
 
-      el.querySelector('.key-name').textContent = nameText;
-      el.querySelector('.key-preview').textContent = face.preview || '';
-      el.querySelector('.key-body').textContent = bodyText;
-      el.querySelector('.key-state').textContent = face.state;
+      nameEl.textContent = nameText;
+      previewEl.textContent = face.preview || '';
+      bodyEl.textContent = bodyText;
+      stateEl.textContent = face.state;
       el.dataset.role = face.role;
       el.dataset.name = face.target || '';
       // Read back by onKeyTap -> connectTo (routes local vs. federation
@@ -5725,6 +5803,8 @@ if (typeof module !== 'undefined' && module.exports) {
     pickerOptionContent: pickerOptionContent,
     viewSessionCounts: viewSessionCounts,
     fitLabel: fitLabel,
+    elementLabelWidth: elementLabelWidth,
+    fitLabelToElement: fitLabelToElement,
     computeKeyPlan: computeKeyPlan,
     faceClassName: faceClassName,
     findBlankControlFaces: findBlankControlFaces,
@@ -5769,7 +5849,7 @@ if (typeof module !== 'undefined' && module.exports) {
     isAppearanceHexColor: isAppearanceHexColor,
     sanitizeAppearanceLeaf: sanitizeAppearanceLeaf,
     sanitizeAppearance: sanitizeAppearance,
-    appearanceRoleForFace: appearanceRoleForFace,
+    appearanceCssRoleName: appearanceCssRoleName,
     defaultDeckSettings: defaultDeckSettings,
     mergeDeckSettings: mergeDeckSettings,
     loadDeckSettings: loadDeckSettings,

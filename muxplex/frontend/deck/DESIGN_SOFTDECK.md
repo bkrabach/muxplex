@@ -651,23 +651,39 @@ its own viewport — and once you say that, there is almost nothing left to desi
 
 The “v1 ships defaults only — no override surface” decision in §3.2 is amended only for
 appearance. The soft deck now exposes a typed, deck-local `deckSettings.appearance` object; it
-is not a server setting, API field, or PWA setting. It contains the semantic text roles
-`primary`, `secondary`, `preview`, and `interface`. Each role has a bounded scale from `0.5` to
-`1.2` inclusive in `0.01` steps (displayed as 50% to 120%; default `1`),
-an optional six-digit hex color override, a finite family (`component`, `system`, or `mono`), a
-finite weight (`component`, `normal`, `medium`, `semibold`, or `bold`), and a style (`normal` or
-`italic`). Missing or non-numeric leaves migrate independently to defaults. Finite numeric scales
-outside the current range are clamped in memory at load/render time; opening Settings does not
-rewrite the stored blob, while a deliberate adjustment, reset, or later settings save persists the
-clamped value. The `component` family and weight values remove the role override so each selector
-retains its existing typography: in particular, session titles remain bold and preview text remains
-monospace by default.
+is not a server setting, API field, or PWA setting. It contains six explicit semantic leaves:
+`sessionTitle`, `buttonText`, `controlDetail`, `sessionMeta`, `terminalPreview`, and `settingsText`.
+Each leaf has a bounded scale from `0.5` to `1.2` inclusive in `0.01` steps (displayed as 50% to
+120%; default `1`), an optional six-digit hex color override, a finite family (`component`,
+`system`, or `mono`), a finite weight (`component`, `normal`, `medium`, `semibold`, or `bold`),
+and a style (`normal` or `italic`). Missing or non-numeric leaves migrate independently to
+defaults. Legacy v0.61.2 roles are accepted at load/import without an automatic write:
+`primary` populates `sessionTitle` and `buttonText`, `secondary` populates `controlDetail` and
+`sessionMeta`, `preview` populates `terminalPreview`, and `interface` populates `settingsText`.
+Explicit named leaves take precedence over legacy values. New saves and exports contain only the
+six named leaves.
 
-The values are applied through component-scoped CSS custom properties, not arbitrary CSS or
-user-supplied font input; only the finite family/weight/style lookup values reach CSS. The existing
-`previewFontSize` and `zoom` settings keep their meanings. The settings surface keeps a visible
-sample for every role, exposes accessible native selects for the three typography controls,
-supports leaf-level export/import and appearance-only reset, and uses a safe-area-aware sticky
-Back/Done header with touch-sized controls for phone use. Attention-state key names continue to
-use their state-owned dark ink regardless of appearance overrides. These controls intentionally do
-not alter the server settings contract or the PWA application.
+Finite numeric scales outside the current range are clamped in memory at load/render time;
+opening Settings does not rewrite the stored blob, while a deliberate adjustment, reset, or later
+settings save persists the clamped value. The `component` family and weight values remove the role
+override so each selector retains its existing typography. Values are applied through
+component-scoped CSS custom properties, not arbitrary CSS or user-supplied font input; only finite
+family/weight/style lookup values reach CSS.
+
+The six settings sections are labeled **Session titles**, **Actions & view names**, **Control
+labels, pages & errors**, **Activity time & device name**, **Terminal preview**, and **Settings &
+recovery**. A compact always-visible, read-only preview demonstrates a session (`amplifier-main`,
+terminal output, `spark-2 · 4m`), navigation (`NEXT >`, `PAGE`, `2 / 5`), a view picker (`VIEW`,
+`Projects`, `6 sessions`), and the Settings & recovery caption using the production semantic
+properties. The existing `previewFontSize` and `zoom` settings keep their storage meanings and
+are labeled **Terminal preview / Whole-key size**. Settings remains mobile-first with a sticky
+safe-area-aware Back/Done header and 48px controls.
+
+Rendering maps session names to `sessionTitle`, key previews to `terminalPreview`, control/bound/
+picker bodies to `buttonText`, non-session names/pages/counts/errors/dial/strip labels to
+`controlDetail`, session activity/origin and degraded peer tiles to `sessionMeta`, and settings/
+recovery UI to `settingsText`. Attention-state key names continue to use their state-owned dark
+ink regardless of appearance overrides. Title and applicable body fitting measures the actual
+computed font and usable element width after custom properties are applied; generic text flex items
+have `min-width: 0`, while remote labels retain their intentional maximum width. These controls
+intentionally do not alter the server settings contract or the PWA application.

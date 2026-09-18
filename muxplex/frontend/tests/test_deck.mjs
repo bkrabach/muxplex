@@ -64,7 +64,7 @@ test('deck.js exports all pure functions', () => {
     'isAppearanceHexColor',
     'sanitizeAppearanceLeaf',
     'sanitizeAppearance',
-    'appearanceRoleForFace',
+    'appearanceCssRoleName',
     'defaultDeckSettings',
     'mergeDeckSettings',
     'loadDeckSettings',
@@ -1133,27 +1133,28 @@ test('deck.css: attention-band text always uses state-owned black ink', () => {
   assert.ok(sessionAttentionRule, 'the session attention-band rule should exist');
   assert.match(attentionRule[1], /color\s*:\s*#000000\s*;/);
   assert.match(sessionAttentionRule[1], /color\s*:\s*#000000\s*;/);
-  assert.doesNotMatch(attentionRule[1], /--appearance-(primary|secondary)-color/);
-  assert.doesNotMatch(sessionAttentionRule[1], /--appearance-(primary|secondary)-color/);
+  assert.doesNotMatch(attentionRule[1], /--appearance-(session-title|button-text|control-detail|session-meta)-color/);
+  assert.doesNotMatch(sessionAttentionRule[1], /--appearance-(session-title|button-text|control-detail|session-meta)-color/);
 });
 
 test('appearance typography: each role has constrained family/weight/style controls and role-scoped CSS fallbacks', () => {
   const css = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.css'), 'utf8');
   const html = fs.readFileSync(join(__dirname, '..', 'deck', 'index.html'), 'utf8');
   const js = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.js'), 'utf8');
-  const roles = ['primary', 'secondary', 'preview', 'interface'];
+  const roles = ['sessionTitle', 'buttonText', 'controlDetail', 'sessionMeta', 'terminalPreview', 'settingsText'];
   const fields = ['family', 'weight', 'style'];
 
   for (const role of roles) {
+    const cssRole = deck.appearanceCssRoleName(role);
     for (const field of fields) {
       const id = `settings-appearance-${role}-${field}`;
       assert.match(html, new RegExp(`<select[^>]*id="${id}"`), `${id} should be a native select`);
-      assert.match(css, new RegExp(`--appearance-${role}-${field}`), `${role} should map ${field} through CSS`);
+      assert.match(css, new RegExp(`--appearance-${cssRole}-${field}`), `${role} should map ${field} through CSS`);
     }
   }
-  assert.match(html, /<label>Font family\s*<select[^>]*settings-appearance-primary-family/);
-  assert.match(html, /<label>Font weight\s*<select[^>]*settings-appearance-primary-weight/);
-  assert.match(html, /<label>Font style\s*<select[^>]*settings-appearance-primary-style/);
+  assert.match(html, /<label>Font family\s*<select[^>]*settings-appearance-sessionTitle-family/);
+  assert.match(html, /<label>Font weight\s*<select[^>]*settings-appearance-sessionTitle-weight/);
+  assert.match(html, /<label>Font style\s*<select[^>]*settings-appearance-sessionTitle-style/);
   assert.match(html, /<option value="component">Component default<\/option>/);
   assert.match(html, /<option value="system">System<\/option>/);
   assert.match(html, /<option value="mono">Monospace<\/option>/);
@@ -1163,10 +1164,10 @@ test('appearance typography: each role has constrained family/weight/style contr
   // Defaults are selector-owned, not a role-wide normal/serif flattening:
   // session titles remain bold and previews remain mono when the role is
   // still set to component.
-  assert.match(css, /--appearance-primary-weight,\s*600/);
-  assert.match(css, /--appearance-preview-family,\s*"SF Mono"/);
-  assert.match(css, /--appearance-preview-weight,\s*400/);
-  assert.match(css, /--appearance-interface-family,\s*"SF Mono"[^)]*monospace/);
+  assert.match(css, /--appearance-session-title-weight,\s*600/);
+  assert.match(css, /--appearance-terminal-preview-family,\s*"SF Mono"/);
+  assert.match(css, /--appearance-terminal-preview-weight,\s*400/);
+  assert.match(css, /--appearance-settings-text-family,\s*system-ui[^)]*sans-serif/);
 
   // Imported values are canonicalized before they reach CSS; only finite
   // lookup-table values are passed to custom properties.
@@ -1180,11 +1181,96 @@ test('appearance typography: each role has constrained family/weight/style contr
   assert.doesNotMatch(js, /setProperty\(weightName, leaf\.weight\)/);
 });
 
+test('appearance typography: named leaves retain live token scaling, remote origin width, and faithful mini preview roles', () => {
+  const css = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const ruleBody = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matches = [...css.matchAll(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 'g'))];
+    const match = matches.find((candidate) => /font-size\s*:/.test(candidate[1])) || matches[0];
+    assert.ok(match, `${selector} should have a final declaration block`);
+    return match[1];
+  };
+
+  assert.match(
+    css,
+    /#deck-root \.deck-key \.key-name,\s*#deck-root \.deck-key:not\(\.is-remote\) \.key-body,[\s\S]*?box-sizing:\s*border-box;/,
+    'the full-width rule must exclude remote session BODY',
+  );
+  assert.match(
+    css,
+    /\.deck-key\.is-session\.is-remote \.key-body\s*\{[^}]*width:\s*auto;[^}]*max-width:\s*70%/,
+    'remote session origin must keep its intrinsic width and 70% cap',
+  );
+  assert.match(ruleBody('#deck-root .deck-key .key-name'), /font-size:\s*calc\(var\(--secondary,\s*0\.75rem\)/);
+  assert.match(ruleBody('#deck-root .deck-key.is-session .key-name'), /font-size:\s*calc\(var\(--primary,\s*1rem\)/);
+  assert.match(ruleBody('#deck-root .deck-key .key-body'), /font-size:\s*calc\(var\(--primary,\s*1rem\)/);
+  assert.match(ruleBody('#deck-root .deck-key .key-preview'), /font-size:\s*calc\(var\(--texture,\s*0\.75rem\)/);
+  assert.match(
+    css,
+    /#deck-root \.deck-dial-turn-label,[\s\S]*?font-size:\s*calc\(var\(--secondary,\s*0\.75rem\)/,
+    'control-detail affordances must retain the secondary token channel',
+  );
+
+  assert.match(
+    css,
+    /#deck-root \.settings-mini-session \.key-name\s*\{[^}]*font-size:\s*calc\(var\(--primary,\s*1rem\)[^}]*appearance-session-title-scale/,
+    'session title preview must override the broad key-name rule',
+  );
+  assert.match(
+    css,
+    /#deck-root \.settings-mini-session \.key-state\s*\{[^}]*appearance-session-meta-scale/,
+    'session time/device preview must use sessionMeta',
+  );
+  assert.match(
+    css,
+    /#deck-root \.settings-mini-navigation \.key-name,\s*#deck-root \.settings-mini-navigation \.key-state,\s*#deck-root \.settings-mini-picker \.key-name,\s*#deck-root \.settings-mini-picker \.key-state\s*\{[^}]*appearance-control-detail-scale/,
+    'navigation/page/picker NAME and STATE selectors must win with controlDetail',
+  );
+  assert.match(
+    css,
+    /#deck-root \.settings-mini-navigation \.key-body,\s*#deck-root \.settings-mini-picker \.key-body\s*\{[^}]*appearance-button-text-scale/,
+    'navigation/page/picker BODY selectors must win with buttonText',
+  );
+});
+
+test('appearance typography: FAILED session STATE uses controlDetail without losing failure visuals', () => {
+  const css = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const sessionStateSelector = '#deck-root .deck-key.is-session .key-state';
+  const failedStateSelector = '#deck-root .deck-key.is-session.is-failed .key-state';
+  const sessionStateIndex = css.indexOf(sessionStateSelector);
+  const failedStateRule = css.match(
+    /#deck-root \.deck-key\.is-session\.is-failed \.key-state\s*\{([^}]*)\}/
+  );
+
+  assert.ok(sessionStateIndex !== -1, 'normal session STATE should use the sessionMeta rule');
+  assert.ok(failedStateRule, 'FAILED session STATE needs a dedicated cascade rule');
+  assert.ok(
+    failedStateSelector.split('.').length >
+      sessionStateSelector.split('.').length,
+    'FAILED session STATE selector must be more specific than normal session STATE',
+  );
+  assert.ok(
+    css.indexOf(failedStateSelector) > sessionStateIndex,
+    'FAILED session STATE override should be declared after the normal session rule',
+  );
+  assert.match(failedStateRule[1], /--appearance-control-detail-(color|scale|family|style|weight)/);
+  assert.doesNotMatch(failedStateRule[1], /--appearance-session-meta-/);
+
+  // The mapping fix must not flatten the existing failure treatment: the
+  // red ring and shake remain on the tile, while FAILED stays in the STATE
+  // band rather than becoming a new hierarchy level.
+  assert.match(css, /\.deck-key\.is-failed[^{}]*\{[^}]*box-shadow:[^}]*#f85149/);
+  assert.match(css, /\.deck-key\.is-failed\s*\{[^}]*animation:\s*deck-fail-shake/);
+  assert.match(css, /\.deck-key\.is-failed\s+\.key-state\s*\{/);
+});
+
 test('appearance scale controls: all roles use bounded accessible range sliders with live percent output', () => {
   const css = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.css'), 'utf8');
   const html = fs.readFileSync(join(__dirname, '..', 'deck', 'index.html'), 'utf8');
   const js = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.js'), 'utf8');
-  const roles = ['primary', 'secondary', 'preview', 'interface'];
+  const roles = ['sessionTitle', 'buttonText', 'controlDetail', 'sessionMeta', 'terminalPreview', 'settingsText'];
 
   for (const role of roles) {
     const id = `settings-appearance-${role}-scale`;
@@ -1916,12 +2002,14 @@ test('defaultDeckSettings: sane, valid-by-construction defaults', () => {
   assert.deepEqual(d.appearance, deck.defaultAppearance());
 });
 
-test('appearance defaults: four semantic roles preserve component typography and preview mono fallback', () => {
+test('appearance defaults: six semantic leaves preserve component typography', () => {
   assert.deepEqual(deck.defaultAppearance(), {
-    primary: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
-    secondary: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
-    preview: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
-    interface: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    sessionTitle: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    buttonText: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    controlDetail: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    sessionMeta: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    terminalPreview: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
+    settingsText: { scale: 1, color: null, family: 'component', weight: 'component', style: 'normal' },
   });
   assert.strictEqual(deck.isAppearanceHexColor('#aBcD09'), true);
   assert.strictEqual(deck.isAppearanceHexColor('#12345'), false);
@@ -1944,35 +2032,35 @@ test('appearance scale slider conversions: 50/.5, 100/1, and 120/1.2 stay bidire
   }
 });
 
-test('sanitizeAppearance: invalid leaves fall back independently while valid siblings survive', () => {
+test('sanitizeAppearance: invalid named leaves fall back independently while valid siblings survive', () => {
   const appearance = deck.sanitizeAppearance({
-    primary: { scale: 1.25, color: '#123456' },
-    secondary: { scale: 99, color: '#ABCDEF' },
-    preview: { scale: '1.25', color: 'red' },
-    interface: 'not an object',
+    sessionTitle: { scale: 1.25, color: '#123456' },
+    buttonText: { scale: 99, color: '#ABCDEF' },
+    terminalPreview: { scale: '1.25', color: 'red' },
+    settingsText: 'not an object',
   });
-  assert.deepEqual(appearance.primary, {
+  assert.deepEqual(appearance.sessionTitle, {
     scale: 1.2,
     color: '#123456',
     family: 'component',
     weight: 'component',
     style: 'normal',
   });
-  assert.deepEqual(appearance.secondary, {
+  assert.deepEqual(appearance.buttonText, {
     scale: 1.2,
     color: '#ABCDEF',
     family: 'component',
     weight: 'component',
     style: 'normal',
   });
-  assert.deepEqual(appearance.preview, {
+  assert.deepEqual(appearance.terminalPreview, {
     scale: 1,
     color: null,
     family: 'component',
     weight: 'component',
     style: 'normal',
   });
-  assert.deepEqual(appearance.interface, {
+  assert.deepEqual(appearance.settingsText, {
     scale: 1,
     color: null,
     family: 'component',
@@ -1990,51 +2078,61 @@ test('clampAppearanceScale: every finite saved value clamps to the current bound
   assert.strictEqual(deck.clampAppearanceScale(Infinity, 0.83), 0.83);
 });
 
-test('sanitizeAppearance: finite typography enums are accepted, aliases migrate, and CSS-looking values are rejected', () => {
-  const appearance = deck.sanitizeAppearance({
-    primary: {
-      family: 'system',
-      weight: 600,
-      style: 'italic',
-    },
-    secondary: {
-      fontFamily: 'default',
-      fontWeight: '700',
-      fontStyle: 'normal',
-    },
-    preview: {
-      family: 'url(https://example.invalid/font.woff2)',
-      weight: '900',
-      style: 'oblique',
-    },
-    interface: {
-      family: 'mono',
-      weight: 'medium',
-      style: 'italic',
-    },
-  });
-  assert.deepEqual(appearance.primary, {
-    scale: 1,
-    color: null,
-    family: 'system',
-    weight: 'semibold',
-    style: 'italic',
-  });
-  assert.deepEqual(appearance.secondary, {
-    scale: 1,
-    color: null,
-    family: 'component',
-    weight: 'bold',
-    style: 'normal',
-  });
-  assert.deepEqual(appearance.preview, {
+test('sanitizeAppearanceLeaf: an omitted fallback remains a valid default leaf', () => {
+  assert.deepEqual(deck.sanitizeAppearanceLeaf(undefined), {
     scale: 1,
     color: null,
     family: 'component',
     weight: 'component',
     style: 'normal',
   });
-  assert.deepEqual(appearance.interface, {
+});
+
+test('sanitizeAppearance: finite typography enums are accepted and CSS-looking values are rejected', () => {
+  const appearance = deck.sanitizeAppearance({
+    sessionTitle: {
+      family: 'system',
+      weight: 600,
+      style: 'italic',
+    },
+    buttonText: {
+      fontFamily: 'default',
+      fontWeight: '700',
+      fontStyle: 'normal',
+    },
+    terminalPreview: {
+      family: 'url(https://example.invalid/font.woff2)',
+      weight: '900',
+      style: 'oblique',
+    },
+    settingsText: {
+      family: 'mono',
+      weight: 'medium',
+      style: 'italic',
+    },
+  });
+  assert.deepEqual(appearance.sessionTitle, {
+    scale: 1,
+    color: null,
+    family: 'system',
+    weight: 'semibold',
+    style: 'italic',
+  });
+  assert.deepEqual(appearance.buttonText, {
+    scale: 1,
+    color: null,
+    family: 'component',
+    weight: 'bold',
+    style: 'normal',
+  });
+  assert.deepEqual(appearance.terminalPreview, {
+    scale: 1,
+    color: null,
+    family: 'component',
+    weight: 'component',
+    style: 'normal',
+  });
+  assert.deepEqual(appearance.settingsText, {
     scale: 1,
     color: null,
     family: 'mono',
@@ -2043,18 +2141,75 @@ test('sanitizeAppearance: finite typography enums are accepted, aliases migrate,
   });
 });
 
-test('appearanceRoleForFace: maps existing KeyFace bands to semantic roles', () => {
-  assert.strictEqual(deck.appearanceRoleForFace('session', 'name'), 'primary');
-  assert.strictEqual(deck.appearanceRoleForFace('session', 'body'), 'secondary');
-  assert.strictEqual(deck.appearanceRoleForFace('session', 'state'), 'secondary');
-  assert.strictEqual(deck.appearanceRoleForFace('bound', 'name'), 'secondary');
-  assert.strictEqual(deck.appearanceRoleForFace('bound', 'body'), 'primary');
-  assert.strictEqual(deck.appearanceRoleForFace('bound', 'state'), 'secondary');
-  assert.strictEqual(deck.appearanceRoleForFace('status', 'name'), 'secondary');
-  assert.strictEqual(deck.appearanceRoleForFace('status', 'body'), 'secondary');
-  assert.strictEqual(deck.appearanceRoleForFace('view-option', 'body'), 'primary');
-  assert.strictEqual(deck.appearanceRoleForFace('session', 'preview'), 'preview');
-  assert.strictEqual(deck.appearanceRoleForFace('settings', 'interface'), 'interface');
+test('sanitizeAppearance: v0.61.2 broad roles migrate losslessly without named overwrite', () => {
+  const legacy = deck.sanitizeAppearance({
+    primary: { scale: 0.75, color: '#123456', family: 'system' },
+    secondary: { scale: 1.1, weight: 'bold' },
+    preview: { scale: 0.9, style: 'italic' },
+    interface: { scale: 0.8, family: 'mono' },
+  });
+  assert.strictEqual(legacy.sessionTitle.scale, 0.75);
+  assert.strictEqual(legacy.buttonText.scale, 0.75);
+  assert.strictEqual(legacy.controlDetail.scale, 1.1);
+  assert.strictEqual(legacy.sessionMeta.scale, 1.1);
+  assert.strictEqual(legacy.terminalPreview.scale, 0.9);
+  assert.strictEqual(legacy.settingsText.scale, 0.8);
+  const mixed = deck.sanitizeAppearance({
+    primary: { scale: 0.75 },
+    sessionTitle: { scale: 1.05 },
+    buttonText: { scale: 1.15 },
+  });
+  assert.strictEqual(mixed.sessionTitle.scale, 1.05);
+  assert.strictEqual(mixed.buttonText.scale, 1.15);
+});
+
+test('appearance fitting: uses computed padding and actual element width rather than a generic font measure', () => {
+  const element = { clientWidth: 120 };
+  const style = { paddingLeft: '10px', paddingRight: '10px' };
+  const measure = (value) => value.length * 10;
+  assert.strictEqual(deck.elementLabelWidth(element, style), 100);
+  assert.strictEqual(deck.fitLabelToElement('abcdefghijk', element, style, measure), 'abcdefghi…');
+  assert.strictEqual(deck.fitLabelToElement('short', element, style, measure), 'short');
+  assert.strictEqual(deck.fitLabelToElement('long', { clientWidth: 0 }, style, measure), 'long');
+});
+
+test('appearance UI: uses explicit labels and a live production-shaped mini deck preview', () => {
+  const html = fs.readFileSync(join(__dirname, '..', 'deck', 'index.html'), 'utf8');
+  for (const label of [
+    'Session titles',
+    'Actions &amp; view names',
+    'Control labels, pages &amp; errors',
+    'Activity time &amp; device name',
+    'Terminal preview',
+    'Settings &amp; recovery',
+  ]) {
+    assert.match(html, new RegExp(`<summary>${label}</summary>`));
+  }
+  for (const sample of ['amplifier-main', '$ amplifier status', 'spark-2 · 4m', 'NEXT &gt;', '2 / 5', 'Projects', '6 sessions']) {
+    assert.match(html, new RegExp(sample.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  assert.match(html, /Terminal preview \/ Whole-key size/);
+});
+
+test('appearance mapping: CSS keeps session metadata and control labels on different named scale channels', () => {
+  const css = fs.readFileSync(join(__dirname, '..', 'deck', 'deck.css'), 'utf8');
+  assert.match(css, /key-state[\s\S]*--appearance-session-meta-scale/);
+  assert.match(css, /key-name[\s\S]*--appearance-control-detail-scale/);
+  assert.doesNotMatch(
+    css,
+    /#deck-root \.deck-key\.is-control \.key-body[\s\S]*--appearance-control-detail-/
+  );
+  const miniBody = css.match(
+    /#deck-root \.settings-mini-navigation \.key-body,\s*\n#deck-root \.settings-mini-picker \.key-body \{([\s\S]*?)\n\}/
+  );
+  assert.ok(miniBody, 'mini navigation and picker body selectors should share one rule');
+  assert.match(miniBody[1], /--appearance-button-text-(color|scale|family|style|weight)/);
+  assert.doesNotMatch(miniBody[1], /--appearance-control-detail-/);
+  const miniQualifierAndState = css.match(
+    /#deck-root \.settings-mini-navigation \.key-name,\s*\n#deck-root \.settings-mini-navigation \.key-state,[\s\S]*?\{([\s\S]*?)\n\}/
+  );
+  assert.ok(miniQualifierAndState, 'mini navigation and picker qualifiers/states should share one rule');
+  assert.match(miniQualifierAndState[1], /--appearance-control-detail-/);
 });
 
 test('mergeDeckSettings: valid incoming fields are adopted', () => {
@@ -2150,16 +2305,18 @@ test('loadDeckSettings: old saved .75 stays exact and old saved 1.5 clamps witho
     originalSetItem(key, value);
   };
   const loaded = deck.loadDeckSettings(storage);
-  assert.strictEqual(loaded.appearance.primary.scale, 0.75);
-  assert.strictEqual(loaded.appearance.secondary.scale, 1.2);
-  assert.strictEqual(loaded.appearance.preview.scale, 0.9);
-  assert.strictEqual(loaded.appearance.interface.scale, 0.5);
+  assert.strictEqual(loaded.appearance.sessionTitle.scale, 0.75);
+  assert.strictEqual(loaded.appearance.buttonText.scale, 0.75);
+  assert.strictEqual(loaded.appearance.controlDetail.scale, 1.2);
+  assert.strictEqual(loaded.appearance.sessionMeta.scale, 1.2);
+  assert.strictEqual(loaded.appearance.terminalPreview.scale, 0.9);
+  assert.strictEqual(loaded.appearance.settingsText.scale, 0.5);
   assert.strictEqual(writes, 0);
   assert.strictEqual(deck.saveDeckSettings(storage, loaded), true);
   assert.strictEqual(writes, 1);
   assert.strictEqual(
-    JSON.parse(storage._map.get(deck.DECK_SETTINGS_KEY)).appearance.secondary.scale,
-    1.2
+    JSON.parse(storage._map.get(deck.DECK_SETTINGS_KEY)).appearance.buttonText.scale,
+    0.75
   );
 });
 
@@ -2177,9 +2334,9 @@ test('loadDeckSettings: a .83 scale maps to an 83% slider/output without an impl
     },
   };
   const loaded = deck.loadDeckSettings(storage);
-  const sliderValue = deck.appearanceScaleValueToPercent(loaded.appearance.primary.scale);
+  const sliderValue = deck.appearanceScaleValueToPercent(loaded.appearance.sessionTitle.scale);
   const sliderOutput = `${sliderValue}%`;
-  assert.strictEqual(loaded.appearance.primary.scale, 0.83);
+  assert.strictEqual(loaded.appearance.sessionTitle.scale, 0.83);
   assert.strictEqual(sliderValue, 83);
   assert.strictEqual(sliderOutput, '83%');
   assert.strictEqual(writes, 0);
@@ -2191,12 +2348,12 @@ test('updateAppearanceScale + saveDeckSettings: 50% and 120% inputs persist exac
     [120, 1.2],
   ]) {
     const storage = fakeStorage();
-    const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'primary', percent);
+    const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'sessionTitle', percent);
     assert.strictEqual(result.valid, true);
     assert.strictEqual(result.value, expected);
     assert.strictEqual(deck.saveDeckSettings(storage, result.settings), true);
     const loaded = deck.loadDeckSettings(storage);
-    assert.strictEqual(loaded.appearance.primary.scale, expected);
+    assert.strictEqual(loaded.appearance.sessionTitle.scale, expected);
   }
 });
 
@@ -2211,23 +2368,23 @@ test('saveDeckSettings + loadDeckSettings round-trip', () => {
 
 test('updateAppearanceScale: a slider input updates only the selected role in the persistable settings copy', () => {
   const settings = deck.defaultDeckSettings();
-  const result = deck.updateAppearanceScale(settings, 'primary', 115);
+  const result = deck.updateAppearanceScale(settings, 'sessionTitle', 115);
   assert.strictEqual(result.valid, true);
-  assert.strictEqual(result.settings.appearance.primary.scale, 1.15);
-  assert.strictEqual(result.settings.appearance.secondary.scale, 1);
-  assert.strictEqual(settings.appearance.primary.scale, 1);
+  assert.strictEqual(result.settings.appearance.sessionTitle.scale, 1.15);
+  assert.strictEqual(result.settings.appearance.buttonText.scale, 1);
+  assert.strictEqual(settings.appearance.sessionTitle.scale, 1);
 });
 
 test('updateAppearanceScale: canonical stored-scale bounds reject out-of-range input', () => {
   for (const percent of [49, 121]) {
-    const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'primary', percent);
+    const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'sessionTitle', percent);
     assert.strictEqual(result.valid, false);
     assert.match(result.error, /50% and 120%/);
   }
 });
 
 test('updateAppearanceScale: one-percent input steps reject fractional percentages', () => {
-  const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'primary', 83.5);
+  const result = deck.updateAppearanceScale(deck.defaultDeckSettings(), 'sessionTitle', 83.5);
   assert.strictEqual(result.valid, false);
   assert.match(result.error, /50% and 120%/);
 });
@@ -2245,14 +2402,14 @@ test('exportSettingsJSON + importSettingsJSON: round-trips a settings object', (
   const settings = deck.mergeDeckSettings(deck.defaultDeckSettings(), {
     sort: 'server',
     appearance: {
-      primary: {
+      sessionTitle: {
         scale: 1.15,
         color: '#123456',
         family: 'system',
         weight: 'bold',
         style: 'italic',
       },
-      preview: {
+      terminalPreview: {
         scale: 0.9,
         color: '#ABCDEF',
         family: 'mono',
@@ -2266,14 +2423,14 @@ test('exportSettingsJSON + importSettingsJSON: round-trips a settings object', (
   const result = deck.importSettingsJSON(text);
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.settings.sort, 'server');
-  assert.deepEqual(result.settings.appearance.primary, {
+  assert.deepEqual(result.settings.appearance.sessionTitle, {
     scale: 1.15,
     color: '#123456',
     family: 'system',
     weight: 'bold',
     style: 'italic',
   });
-  assert.deepEqual(result.settings.appearance.preview, {
+  assert.deepEqual(result.settings.appearance.terminalPreview, {
     scale: 0.9,
     color: '#ABCDEF',
     family: 'mono',
@@ -2644,7 +2801,7 @@ test('persistableDeckSettings: excludes brightness, keeps every other key unchan
     dialCount: 2,
     stripCount: 1,
     appearance: {
-      secondary: {
+      controlDetail: {
         scale: 1.1,
         color: '#556677',
         family: 'system',
@@ -2662,7 +2819,7 @@ test('persistableDeckSettings: excludes brightness, keeps every other key unchan
   assert.deepEqual(persisted.gridOverride, { rows: 3, cols: 5 });
   assert.strictEqual(persisted.dialCount, 2);
   assert.strictEqual(persisted.stripCount, 1);
-  assert.deepEqual(persisted.appearance.secondary, {
+  assert.deepEqual(persisted.appearance.controlDetail, {
     scale: 1.1,
     color: '#556677',
     family: 'system',

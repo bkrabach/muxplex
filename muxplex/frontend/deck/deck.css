@@ -843,65 +843,9 @@ html, body {
   min-height: 1em;
 }
 
-/* Appearance is a typed role surface, not a raw CSS editor. Samples stay
-   visible while the role controls progressively collapse for phone use. */
+/* Appearance is a typed role surface, not a raw CSS editor. */
 .settings-appearance-intro {
   margin-top: 0;
-}
-.settings-appearance-samples {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 12px 0;
-}
-.settings-appearance-sample {
-  min-height: 72px;
-  padding: 8px;
-  background: #101018;
-  border: 1px solid #2A2A4A;
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  overflow: hidden;
-}
-.settings-appearance-sample-label {
-  color: var(--appearance-interface-color, #8888AA);
-  font-size: calc(0.7rem * var(--appearance-interface-scale, 1));
-  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
-  font-style: var(--appearance-interface-style, normal);
-  font-weight: var(--appearance-interface-weight, 400);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.settings-appearance-sample-primary {
-  color: var(--appearance-primary-color, #FFFFFF);
-  font-size: calc(1.1rem * var(--appearance-primary-scale, 1));
-  font-family: var(--appearance-primary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
-  font-style: var(--appearance-primary-style, normal);
-  font-weight: var(--appearance-primary-weight, 600);
-}
-.settings-appearance-sample-secondary {
-  color: var(--appearance-secondary-color, #8888AA);
-  font-size: calc(0.9rem * var(--appearance-secondary-scale, 1));
-  font-family: var(--appearance-secondary-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
-  font-style: var(--appearance-secondary-style, normal);
-  font-weight: var(--appearance-secondary-weight, 400);
-}
-.settings-appearance-sample-preview {
-  color: var(--appearance-preview-color, #7A7A7A);
-  font-family: var(--appearance-preview-family, "SF Mono", "Fira Code", "Consolas", "Menlo", monospace);
-  font-style: var(--appearance-preview-style, normal);
-  font-weight: var(--appearance-preview-weight, 400);
-  font-size: calc(0.75rem * var(--appearance-preview-scale, 1));
-}
-.settings-appearance-sample-interface {
-  color: var(--appearance-interface-color, #E6EDF3);
-  font-size: calc(0.9rem * var(--appearance-interface-scale, 1));
-  font-family: var(--appearance-interface-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
-  font-style: var(--appearance-interface-style, normal);
-  font-weight: var(--appearance-interface-weight, 400);
 }
 .settings-appearance-role {
   margin: 8px 0;
@@ -1076,6 +1020,207 @@ html, body {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   transition: transform 100ms ease, filter 100ms ease;
+}
+
+/* Named appearance leaves. The legacy rules above provide component
+   geometry/defaults; these final declarations bind each rendered band to the
+   independent semantic leaf selected in Settings. */
+#deck-root .deck-key .key-name,
+#deck-root .deck-key:not(.is-remote) .key-body,
+#deck-root .deck-key .key-state,
+#deck-root .deck-key .key-preview {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+#deck-root .deck-key .key-name {
+  color: var(--appearance-control-detail-color, #FFFFFF);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-control-detail-scale, 1));
+  font-family: var(--appearance-control-detail-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-control-detail-style, normal);
+  font-weight: var(--appearance-control-detail-weight, 600);
+}
+#deck-root .deck-key.is-session .key-name {
+  color: var(--appearance-session-title-color, #FFFFFF);
+  font-size: calc(var(--primary, 1rem) * var(--appearance-session-title-scale, 1));
+  font-family: var(--appearance-session-title-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-session-title-style, normal);
+  font-weight: var(--appearance-session-title-weight, 600);
+}
+#deck-root .deck-key.is-status .key-name,
+#deck-root .deck-key.is-status .key-body,
+#deck-root .deck-key.is-status .key-state {
+  color: var(--appearance-session-meta-color, #8888AA);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-session-meta-scale, 1));
+  font-family: var(--appearance-session-meta-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-session-meta-style, normal);
+  font-weight: var(--appearance-session-meta-weight, 400);
+}
+#deck-root .deck-key.needs-attention .key-name {
+  color: #000000;
+}
+#deck-root .deck-key .key-body {
+  color: var(--appearance-button-text-color, #FFFFFF);
+  font-size: calc(var(--primary, 1rem) * var(--appearance-button-text-scale, 1));
+  font-family: var(--appearance-button-text-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-button-text-style, normal);
+  font-weight: var(--appearance-button-text-weight, 600);
+}
+#deck-root .deck-key.is-session .key-body {
+  color: var(--appearance-session-meta-color, #8888AA);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-session-meta-scale, 1));
+  font-family: var(--appearance-session-meta-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-session-meta-style, normal);
+  font-weight: var(--appearance-session-meta-weight, 400);
+}
+#deck-root .deck-key .key-state {
+  color: var(--appearance-control-detail-color, #8888AA);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-control-detail-scale, 1));
+  font-family: var(--appearance-control-detail-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-control-detail-style, normal);
+  font-weight: var(--appearance-control-detail-weight, 400);
+}
+#deck-root .deck-key.is-session .key-state {
+  color: var(--appearance-session-meta-color, #8888AA);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-session-meta-scale, 1));
+  font-family: var(--appearance-session-meta-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-session-meta-style, normal);
+  font-weight: var(--appearance-session-meta-weight, 400);
+}
+/* FAILED is still the session STATE band, but its failure detail belongs to
+   controlDetail rather than normal session metadata. The extra state class
+   makes this outrank the session-meta rule without changing the failure ring,
+   shake, or tile hierarchy. */
+#deck-root .deck-key.is-session.is-failed .key-state {
+  color: var(--appearance-control-detail-color, #f85149);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-control-detail-scale, 1));
+  font-family: var(--appearance-control-detail-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-control-detail-style, normal);
+  font-weight: var(--appearance-control-detail-weight, 600);
+}
+#deck-root .deck-key .key-preview {
+  color: var(--appearance-terminal-preview-color, #7A7A7A);
+  font-size: calc(var(--texture, 0.75rem) * var(--appearance-terminal-preview-scale, 1));
+  font-family: var(--appearance-terminal-preview-family, "SF Mono", "Fira Code", "Consolas", "Menlo", monospace);
+  font-style: var(--appearance-terminal-preview-style, normal);
+  font-weight: var(--appearance-terminal-preview-weight, 400);
+}
+#deck-root .deck-dial-turn-label,
+#deck-root .deck-dial-push-label,
+#deck-root .deck-strip-status,
+#deck-root .deck-strip-tap-label,
+#deck-root .deck-strip-drag-label,
+#deck-root .deck-strip-swipe-label {
+  color: var(--appearance-control-detail-color, #6A6A88);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-control-detail-scale, 1));
+  font-family: var(--appearance-control-detail-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-control-detail-style, normal);
+  font-weight: var(--appearance-control-detail-weight, 400);
+}
+
+/* Settings and recovery already share the old interface selectors for their
+   spacing/target rules. Alias that implementation detail only in those
+   surfaces, so all of their typography follows settingsText. */
+#deck-settings,
+#deck-disconnected,
+.deck-takeover-key {
+  --appearance-interface-scale: var(--appearance-settings-text-scale, 1);
+  --appearance-interface-color: var(--appearance-settings-text-color, #E6EDF3);
+  --appearance-interface-family: var(--appearance-settings-text-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  --appearance-interface-weight: var(--appearance-settings-text-weight, 400);
+  --appearance-interface-style: var(--appearance-settings-text-style, normal);
+}
+
+/* Compact read-only example in Settings. The child class names intentionally
+   match the production key bands and consume the same semantic variables. */
+.settings-mini-deck {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+.settings-mini-key {
+  min-width: 0;
+  min-height: 112px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid #30304A;
+  border-radius: 6px;
+  background: #101036;
+}
+.settings-mini-key .key-name,
+.settings-mini-key .key-body,
+.settings-mini-key .key-state,
+.settings-mini-key .key-preview {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#deck-root .settings-mini-session .key-name {
+  color: var(--appearance-session-title-color, #FFFFFF);
+  font-size: calc(var(--primary, 1rem) * var(--appearance-session-title-scale, 1));
+  font-family: var(--appearance-session-title-family, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  font-style: var(--appearance-session-title-style, normal);
+  font-weight: var(--appearance-session-title-weight, 600);
+}
+#deck-root .settings-mini-session .key-preview {
+  color: var(--appearance-terminal-preview-color, #7A7A7A);
+  font-size: calc(var(--texture, 0.75rem) * var(--appearance-terminal-preview-scale, 1));
+  font-family: var(--appearance-terminal-preview-family, monospace);
+  font-style: var(--appearance-terminal-preview-style, normal);
+  font-weight: var(--appearance-terminal-preview-weight, 400);
+}
+#deck-root .settings-mini-session .key-state {
+  color: var(--appearance-session-meta-color, #8888AA);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-session-meta-scale, 1));
+  font-family: var(--appearance-session-meta-family, system-ui, sans-serif);
+  font-style: var(--appearance-session-meta-style, normal);
+  font-weight: var(--appearance-session-meta-weight, 400);
+}
+#deck-root .settings-mini-navigation .key-name,
+#deck-root .settings-mini-navigation .key-state,
+#deck-root .settings-mini-picker .key-name,
+#deck-root .settings-mini-picker .key-state {
+  color: var(--appearance-control-detail-color, #FFFFFF);
+  font-size: calc(var(--secondary, 0.75rem) * var(--appearance-control-detail-scale, 1));
+  font-family: var(--appearance-control-detail-family, system-ui, sans-serif);
+  font-style: var(--appearance-control-detail-style, normal);
+  font-weight: var(--appearance-control-detail-weight, 600);
+}
+#deck-root .settings-mini-navigation .key-body,
+#deck-root .settings-mini-picker .key-body {
+  color: var(--appearance-button-text-color, #FFFFFF);
+  font-size: calc(var(--primary, 1rem) * var(--appearance-button-text-scale, 1));
+  font-family: var(--appearance-button-text-family, system-ui, sans-serif);
+  font-style: var(--appearance-button-text-style, normal);
+  font-weight: var(--appearance-button-text-weight, 600);
+}
+.settings-appearance-live-preview-caption,
+.settings-appearance-live-preview-title {
+  color: var(--appearance-settings-text-color, #8888AA);
+  font-size: calc(0.8rem * var(--appearance-settings-text-scale, 1));
+  font-family: var(--appearance-settings-text-family, system-ui, sans-serif);
+  font-style: var(--appearance-settings-text-style, normal);
+  font-weight: var(--appearance-settings-text-weight, 400);
+}
+.settings-appearance-live-preview-title {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.settings-appearance-live-preview-caption {
+  margin-top: 6px;
+}
+@media (max-width: 520px) {
+  .settings-mini-deck {
+    grid-template-columns: 1fr;
+  }
+  .settings-mini-key {
+    min-height: 84px;
+  }
 }
 .deck-takeover-key:active {
   transform: scale(0.96);
