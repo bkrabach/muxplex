@@ -1452,6 +1452,19 @@ test('touchcancel discards pending motion and the next gesture starts cleanly', 
   assert.equal(h.frames.size, 0);
 });
 
+test('touchcancel also stops the remainder after a scroll frame has already fired', t => {
+  const h = loadTouchTerminal(t);
+  h.touch('touchstart', 100);
+  h.touch('touchmove', 40);
+  h.frame();
+  assert.equal(h.wheelEvents.length, 1);
+  assert.equal(h.frames.size, 1);
+  h.touch('touchcancel');
+  h.frame();
+  assert.equal(h.wheelEvents.length, 1);
+  assert.equal(h.frames.size, 0);
+});
+
 test('touch scroll ignores taps and does not carry small moves into the next gesture', t => {
   const h = loadTouchTerminal(t);
   h.touch('touchstart', 100);
