@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
  * Load a fresh copy of terminal.js with isolated module-level state.
  * Returns { window } after the script has executed.
  */
-function loadTerminal({ fallbackFont = 'System' } = {}) {
+function loadTerminal({ fallbackFont = 'System', userAgent = '', terminalContainer = null } = {}) {
   // Delete from require cache so each test gets fresh module-level state
   const modulePath = join(__dirname, '..', 'terminal.js');
   delete require.cache[require.resolve(modulePath)];
@@ -133,7 +133,7 @@ function loadTerminal({ fallbackFont = 'System' } = {}) {
 
   globalThis.document = {
     getElementById: (id) => {
-      if (id === 'terminal-container') return { appendChild: () => {}, addEventListener: () => {} };
+      if (id === 'terminal-container') return terminalContainer || { appendChild: () => {}, addEventListener: () => {} };
       if (id === 'reconnect-overlay') return overlayEl;
       if (id === 'reconnect-overlay-text') return overlayTextEl;
       if (id === 'reconnect-overlay-takeover-btn') return takeoverBtnEl;
@@ -189,6 +189,7 @@ function loadTerminal({ fallbackFont = 'System' } = {}) {
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
     value: {
+      userAgent,
       clipboard: {
         writeText: (text) => { clipboardWrites.push(text); return Promise.resolve(); },
       },
@@ -1342,6 +1343,175 @@ test('connectWebSocket uses local origin when remoteId is undefined', () => {
 });
 
 // --- Android touch scroll ---------------------------------------------------
+
+function loadTouchTerminal(t, userAgent = 'Mozilla/5.0 (Linux; Android 15)') {
+  const handlers = new Map();
+  const wheelEvents = [];
+  const frames = new Map();
+  let nextFrame = 1;
+  const viewport = { dispatchEvent: event => wheelEvents.push(event) };
+  const terminalContainer = {
+    appendChild() {},
+    addEventListener(type, callback, options) { handlers.set(type, { callback, options }); },
+    querySelector: selector => selector === '.xterm-viewport' ? viewport : null,
+  };
+  const terminal = loadTerminal({ userAgent, terminalContainer });
+  terminal.openTerminal('touch-test');
+
+  // Install a controllable clock AFTER the initial layout frame. Exercise the
+  // real registered listeners; never extract/reimplement the handler source.
+  for (const name of ['requestAnimationFrame', 'cancelAnimationFrame', 'WheelEvent']) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    t.after(() => {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    });
+  }
+  globalThis.requestAnimationFrame = callback => {
+    const id = nextFrame++;
+    frames.set(id, callback);
+    return id;
+  };
+  globalThis.cancelAnimationFrame = id => frames.delete(id);
+  globalThis.WheelEvent = class {
+    static DOM_DELTA_PIXEL = 0;
+    constructor(type, options) { this.type = type; Object.assign(this, options); }
+  };
+  return {
+    terminal, handlers, wheelEvents, frames,
+    touch(type, clientY) {
+      const event = {
+        touches: clientY === undefined ? [] : [{ clientY }],
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; },
+      };
+      const handler = handlers.get(type);
+      assert.ok(handler, `${type} listener must be registered`);
+      handler.callback(event);
+      return event;
+    },
+    frame() {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      for (const callback of callbacks) callback();
+    },
+  };
+}
+
+for (const [endY, deltaY] of [[150, -120], [50, 120]]) {
+  test(`touch scroll survives touchend before the first frame (deltaY ${deltaY})`, t => {
+    const h = loadTouchTerminal(t);
+    h.touch('touchstart', 100);
+    assert.equal(h.touch('touchmove', endY).defaultPrevented, true);
+    assert.equal(h.handlers.get('touchmove').options.passive, false);
+    assert.equal(h.frames.size, 1);
+    h.touch('touchend');
+    assert.equal(h.wheelEvents.length, 0, 'dispatch remains frame-batched');
+    h.frame();
+    assert.equal(h.wheelEvents.length, 1, 'the quick swipe must not disappear');
+    assert.deepEqual({ ...h.wheelEvents[0] }, {
+      type: 'wheel', deltaY, deltaMode: 0, bubbles: true, cancelable: true,
+    });
+    h.frame();
+    assert.equal(h.wheelEvents.length, 2, 'drain the remaining whole scroll step');
+    assert.equal(h.wheelEvents[1].deltaY, deltaY);
+    assert.equal(h.frames.size, 0, 'sub-threshold remainder must not schedule forever');
+  });
+}
+
+test('touch scroll coalesces burst moves and drains one wheel event per frame', t => {
+  const h = loadTouchTerminal(t);
+  h.touch('touchstart', 200);
+  h.touch('touchmove', 180);
+  h.touch('touchmove', 160);
+  h.touch('touchmove', 140);
+  assert.equal(h.frames.size, 1);
+  h.frame();
+  assert.equal(h.wheelEvents.length, 1);
+  h.touch('touchend');
+  h.frame();
+  assert.equal(h.wheelEvents.length, 2);
+  h.frame();
+  assert.equal(h.wheelEvents.length, 3);
+  assert.equal(h.frames.size, 0);
+});
+
+test('touchcancel discards pending motion and the next gesture starts cleanly', t => {
+  const h = loadTouchTerminal(t);
+  h.touch('touchstart', 100);
+  h.touch('touchmove', 40);
+  h.touch('touchcancel');
+  assert.equal(h.frames.size, 0);
+  h.frame();
+  assert.equal(h.wheelEvents.length, 0);
+  h.touch('touchstart', 100);
+  h.touch('touchmove', 120);
+  h.touch('touchend');
+  h.frame();
+  assert.deepEqual(h.wheelEvents.map(event => event.deltaY), [-120]);
+  assert.equal(h.frames.size, 0);
+});
+
+test('touch scroll ignores taps and does not carry small moves into the next gesture', t => {
+  const h = loadTouchTerminal(t);
+  h.touch('touchstart', 100);
+  h.touch('touchend');
+  assert.equal(h.frames.size, 0);
+  for (let i = 0; i < 2; i++) {
+    h.touch('touchstart', 100);
+    h.touch('touchmove', 85);
+    h.touch('touchend');
+    h.frame();
+  }
+  assert.equal(h.wheelEvents.length, 0);
+  assert.equal(h.frames.size, 0);
+});
+
+test('a new touch gesture cancels the old gesture remainder', t => {
+  const h = loadTouchTerminal(t);
+  h.touch('touchstart', 100);
+  h.touch('touchmove', 40);
+  h.touch('touchend');
+  h.frame();
+  h.touch('touchstart', 100);
+  assert.equal(h.frames.size, 0);
+  h.touch('touchmove', 120);
+  h.touch('touchend');
+  h.frame();
+  assert.deepEqual(h.wheelEvents.map(event => event.deltaY), [120, -120]);
+  assert.equal(h.frames.size, 0);
+});
+
+test('pending touch scroll is discarded when its terminal closes', t => {
+  const h = loadTouchTerminal(t);
+  h.touch('touchstart', 100);
+  h.touch('touchmove', 40);
+  h.touch('touchend');
+  h.terminal.closeTerminal();
+  h.frame();
+  assert.equal(h.wheelEvents.length, 0);
+  assert.equal(h.frames.size, 0);
+});
+
+test('pending touch scroll must not reach a different terminal session', t => {
+  const h = loadTouchTerminal(t);
+  h.touch('touchstart', 100);
+  h.touch('touchmove', 40);
+  h.touch('touchend');
+  // The base test harness reuses its mock; real xterm constructs a new object.
+  const OriginalTerminal = h.terminal.window.Terminal;
+  h.terminal.window.Terminal = function(options) { return { ...new OriginalTerminal(options) }; };
+  h.terminal.openTerminal('other-session');
+  h.frame();
+  assert.equal(h.wheelEvents.length, 0, 'old motion must not scroll the new session');
+  assert.equal(h.frames.size, 0);
+});
+
+test('desktop browsers do not install mobile touch scroll handlers', t => {
+  const h = loadTouchTerminal(t, 'Mozilla/5.0 (X11; Linux x86_64)');
+  assert.equal(h.handlers.has('touchstart'), false);
+  assert.equal(h.handlers.has('touchmove'), false);
+});
 
 test('terminal.js Android touch scroll is UA-gated', () => {
   const source = fs.readFileSync(
