@@ -1,3 +1,14 @@
+## v0.62.0 (2026-09-18)
+
+### Changed
+
+- **Soft Deck typography:** six explicit device-local controls now cover Session
+  titles; Actions & view names; Control labels, pages & errors; Activity time &
+  device name; Terminal preview; and Settings & recovery. Corrected scaled title
+  fitting uses the available band width, Settings shows live example faces, and
+  legacy generic roles migrate without reset. No API, client, server, or
+  federation changes.
+
 ## v0.61.2 (2026-09-16)
 
 ### Changed
